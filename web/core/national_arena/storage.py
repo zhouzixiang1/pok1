@@ -102,6 +102,18 @@ class ArenaStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         return ArenaSession.from_dict(payload)
 
+    def _load_session_for_discovery(self, session_id: str) -> ArenaSession:
+        """Read metadata without creating a directory or per-session lock.
+
+        ``list_sessions`` runs only while the process owns the exclusive Arena
+        root lease.  It must inspect an old session's epoch binding before any
+        per-session mutation (including creation of ``.lock``) occurs.
+        """
+
+        path = self.session_dir(session_id) / "session.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return ArenaSession.from_dict(payload)
+
     def list_sessions(self) -> list[ArenaSession]:
         if not self.root.is_dir():
             return []
@@ -110,7 +122,7 @@ class ArenaStore:
             if not path.is_dir() or not SESSION_ID_RE.fullmatch(path.name):
                 continue
             try:
-                rows.append(self.load_session(path.name))
+                rows.append(self._load_session_for_discovery(path.name))
             except (OSError, ValueError, json.JSONDecodeError, TypeError):
                 continue
         return sorted(rows, key=lambda item: item.created_at, reverse=True)
@@ -229,9 +241,16 @@ class ArenaStore:
                 break
         return rows
 
-    def artifact_path(self, session_id: str, name: str) -> Path:
+    def artifact_path(
+        self,
+        session_id: str,
+        name: str,
+        *,
+        create_parent: bool = False,
+    ) -> Path:
         if not ARTIFACT_NAME_RE.fullmatch(name):
             raise ValueError("invalid arena artifact name")
         directory = self.session_dir(session_id) / "artifacts"
-        directory.mkdir(parents=True, exist_ok=True)
+        if create_parent:
+            directory.mkdir(parents=True, exist_ok=True)
         return directory / name

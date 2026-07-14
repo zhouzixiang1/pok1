@@ -1,5 +1,15 @@
 # Archive Manifest — `/home/zzx/project/pok/archive/`
 
+> **Current authority notice (2026-07-14):** Everything below `archive/` is
+> historical `legacy-untrusted` material. Nothing in this manifest is a current
+> restore/run/import instruction, and no archived code, prompt, test, bot,
+> rating, replay, experience, result, or analysis may enter
+> `national_tcp_policy_v1`. Statements below describe the repository at the
+> time of earlier reorganizations and may name facilities that no longer exist
+> in the active tree. Current authority lives in root `AGENTS.md` and the
+> top-level documents under `docs/`; do not follow the historical restore
+> commands below without a separate, explicit forensic task.
+
 **Reorg date:** 2026-06-20
 **Principle:** 零删除（everything preserved, never `rm`'d）— only `mv` into this tree.
 **System safety:** all moves verified against read/write traces; the running

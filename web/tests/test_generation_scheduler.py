@@ -138,11 +138,11 @@ class TestParseBranchFrom:
 
     def test_v_prefix(self):
         from generation_scheduler import _parse_branch_from
-        assert _parse_branch_from("v15") == 15
+        assert _parse_branch_from("national_v15") == 15
 
-    def test_claude_v_prefix(self):
+    def test_retired_namespace_is_rejected(self):
         from generation_scheduler import _parse_branch_from
-        assert _parse_branch_from("claude_v10") == 10
+        assert _parse_branch_from("claude_v10") is None
 
     def test_invalid_returns_none(self):
         from generation_scheduler import _parse_branch_from
@@ -154,20 +154,20 @@ class TestParseBranchFrom:
 
     def test_negative_number(self):
         from generation_scheduler import _parse_branch_from
-        assert _parse_branch_from("-5") == -5
+        assert _parse_branch_from("-5") is None
 
 
 def _frozen_evidence(gs):
     from glicko2 import Glicko2Player
 
-    active = ("national_v1", "national_v4")
+    active = ("national_v143", "national_v146")
     ratings = {
-        "national_v1": Glicko2Player(r=1510, rd=80, sigma=0.06),
-        "national_v4": Glicko2Player(r=1550, rd=70, sigma=0.06),
+        "national_v143": Glicko2Player(r=1510, rd=80, sigma=0.06),
+        "national_v146": Glicko2Player(r=1550, rd=70, sigma=0.06),
     }
     rows = (
         {
-            "name": "national_v1",
+            "name": "national_v143",
             "selection_score": 0.55,
             "leaderboard_score": 0.56,
             "secondary_net_chips_mean": 100.0,
@@ -179,7 +179,7 @@ def _frozen_evidence(gs):
             "strength_confidence": "medium",
         },
         {
-            "name": "national_v4",
+            "name": "national_v146",
             "selection_score": 0.65,
             "leaderboard_score": 0.66,
             "secondary_net_chips_mean": 200.0,
@@ -196,7 +196,7 @@ def _frozen_evidence(gs):
         ratings=ratings,
         bot_stats={name: {"games": 20, "win_rate": 0.5} for name in active},
         h2h={
-            "national_v1 vs national_v4": {
+            "national_v143 vs national_v146": {
                 "games": 20,
                 "a_wins": 9,
                 "b_wins": 11,
@@ -213,16 +213,10 @@ def _frozen_evidence(gs):
 
 
 def test_frozen_selection_view_drives_leader_and_crossover_without_live_reads(monkeypatch):
-    import candidate_store
-    import crossover_compat
     import generation_scheduler as gs
-    import map_elites
     import tool_helpers
 
     monkeypatch.setattr(gs, "_read_source_v_history", lambda: [])
-    monkeypatch.setattr(candidate_store, "count_candidate_children", lambda _name: 0)
-    monkeypatch.setattr(crossover_compat, "is_crossover_pair_blocked", lambda *_args: False)
-    monkeypatch.setattr(map_elites, "read_behavior_archive", lambda: {})
     view = gs._build_selection_view(_frozen_evidence(gs))
 
     def no_live(*_args, **_kwargs):
@@ -233,35 +227,39 @@ def test_frozen_selection_view_drives_leader_and_crossover_without_live_reads(mo
     monkeypatch.setattr(tool_helpers, "load_h2h_avg_winrates_with_coverage", no_live)
     monkeypatch.setattr(tool_helpers, "_load_h2h_data", no_live)
 
-    assert gs._get_unified_leader_v({}, view) == 4
-    assert gs._strength_payload(4, selection_view=view)["selection_score"] == 0.65
-    assert gs._pick_crossover_parents({}, 4, selection_view=view) == (4, 1)
+    assert gs._get_unified_leader_v({}, view) == 146
+    assert gs._strength_payload(146, selection_view=view)["selection_score"] == 0.65
+    assert gs._pick_crossover_parents({}, 146, selection_view=view) == (146, 143)
     result = gs._decide_strategy(
         {"is_stagnant": True, "confidence": "high"},
-        current_v=4,
+        current_v=146,
         ratings={},
         selection_view=view,
     )
-    assert result == ("crossover", 4, (4, 1))
+    assert result == ("crossover", 146, (146, 143))
     with pytest.raises(TypeError):
-        view.metrics["national_v4"]["selection_score"] = 0.0
+        view.metrics["national_v146"]["selection_score"] = 0.0
 
 
-def test_successful_child_never_demotes_strong_parent_below_weak_unused_bot(monkeypatch):
+def test_selection_never_reads_mutable_candidate_child_counts(monkeypatch):
     import candidate_store
     import generation_scheduler as gs
 
     monkeypatch.setattr(gs, "_read_source_v_history", lambda: [])
+
+    def no_candidate_ledger_reads(*_args, **_kwargs):
+        raise AssertionError("mutable candidate ledger must not enter selection")
+
     monkeypatch.setattr(
         candidate_store,
         "count_candidate_children",
-        lambda name: 1 if str(name) in {"national_v4", "v4", "4"} else 0,
+        no_candidate_ledger_reads,
     )
     evidence = _frozen_evidence(gs)
     weak_rows = []
     for row in evidence.selection_rows:
         row = dict(row)
-        if row["name"] == "national_v1":
+        if row["name"] == "national_v143":
             row["selection_score"] = 0.40
         weak_rows.append(row)
     evidence = gs.EvaluationEvidence(
@@ -269,20 +267,14 @@ def test_successful_child_never_demotes_strong_parent_below_weak_unused_bot(monk
     )
     view = gs._build_selection_view(evidence)
 
-    assert view.child_counts["national_v4"] == 1
-    assert gs._pick_crossover_parents({}, 4, selection_view=view)[0] == 4
+    assert not hasattr(view, "child_counts")
+    assert gs._pick_crossover_parents({}, 146, selection_view=view)[0] == 146
 
 
 def test_frozen_selection_view_never_selects_inactive_rating(monkeypatch):
-    import candidate_store
-    import crossover_compat
     import generation_scheduler as gs
-    import map_elites
 
-    monkeypatch.setattr(gs, "_read_source_v_history", lambda: [1, 1, 1])
-    monkeypatch.setattr(candidate_store, "count_candidate_children", lambda _name: 0)
-    monkeypatch.setattr(crossover_compat, "is_crossover_pair_blocked", lambda *_args: False)
-    monkeypatch.setattr(map_elites, "read_behavior_archive", lambda: {})
+    monkeypatch.setattr(gs, "_read_source_v_history", lambda: [143, 143, 143])
     evidence = _frozen_evidence(gs)
     view = gs._build_selection_view(evidence)
     inactive = SimpleNamespace(
@@ -293,10 +285,10 @@ def test_frozen_selection_view_never_selects_inactive_rating(monkeypatch):
 
     result = gs._decide_strategy(
         {"is_stagnant": False, "confidence": "low"},
-        current_v=4,
-        ratings={**evidence.ratings, "national_v99": inactive},
+        current_v=146,
+        ratings={**evidence.ratings, "national_v199": inactive},
         selection_view=view,
     )
 
-    assert result[1] in {1, 4}
-    assert result[1] != 99
+    assert result[1] in {143, 146}
+    assert result[1] != 199

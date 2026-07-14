@@ -7,6 +7,8 @@ for extracting structured data from LLM responses.
 import asyncio
 import contextlib
 import contextvars
+import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -32,12 +34,44 @@ from claude_agent_sdk import (
     ClaudeSDKError,
 )
 from bot_namespace import ACTIVE_BOT_PREFIX
+from llm_availability import LLMAvailabilityBlocked, LLMAvailabilityTrace
 from llm_failure import is_shutdown_cancel_error, is_success_error_result
 
 log = logging.getLogger("pok.infra")
 _shutdown_manager = None
 _LLM_CANCEL_CONTEXT = contextvars.ContextVar("llm_cancel_context", default=None)
 _LLM_BILLING_RESULTS = contextvars.ContextVar("llm_billing_results", default=None)
+_LLM_TOOL_TRACE = contextvars.ContextVar("llm_tool_trace", default=None)
+_STRICT_PROVIDER_RESULTS = contextvars.ContextVar(
+    "strict_provider_results", default=None
+)
+
+
+@contextlib.contextmanager
+def capture_llm_tool_trace():
+    """Capture typed SDK tool-use/result events for the current async context.
+
+    Normal role callers pay no tracing cost beyond one context lookup.  The
+    operator SDK probe uses this scope to prove that the production streaming
+    path really executed its required tools; parsing the human role log is not
+    an execution receipt.
+    """
+
+    events = []
+    token = _LLM_TOOL_TRACE.set(events)
+    try:
+        yield events
+    finally:
+        _LLM_TOOL_TRACE.reset(token)
+
+
+def _record_llm_tool_trace_event(event):
+    trace = _LLM_TOOL_TRACE.get()
+    if not isinstance(trace, list):
+        return
+    payload = dict(event or {})
+    payload["sequence"] = len(trace) + 1
+    trace.append(payload)
 
 
 @contextlib.contextmanager
@@ -127,6 +161,22 @@ _SUBAGENT_PYTHON_VAR_PATH_WRITE_RE = re.compile(
     r"(?<![\w.])(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\.\s*"
     r"(?P<method>write_text|write_bytes|unlink|mkdir|rmdir)\s*\(",
     re.IGNORECASE,
+)
+_LLM_AVAILABILITY_CONTROL_MARKERS = (
+    "pok_llm_resume_evidence_digest",
+    "llm_availability_store",
+    "llm_availability_pause.json",
+    "reconcile_llm_pause",
+    "resume_llm_pause",
+    "consume_operator_resume_ack",
+    "persist_llm_pause",
+    "strict_authority_workflow",
+    "strict-role-accepted",
+    "accept_role_result",
+    "dispatch_call",
+    "complete_provider_call",
+    "strictroleaccepted",
+    "strictproviderresultobserved",
 )
 
 
@@ -1032,6 +1082,105 @@ def _make_subagent_cost_guard(role_name):
         return None
 
 
+def _subagent_llm_availability_control_violation(command):
+    """Return the protected marker used to reach global pause authority."""
+
+    low = str(command or "").lower().replace("\\", "/")
+    return next(
+        (marker for marker in _LLM_AVAILABILITY_CONTROL_MARKERS if marker in low),
+        None,
+    )
+
+
+def _make_subagent_llm_availability_guard(role_name):
+    """Deny every sub-agent Bash route to the pause/resume control plane."""
+
+    async def handler(hook_input, tool_use_id, context):
+        from claude_agent_sdk.types import SyncHookJSONOutput
+
+        tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+        tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+        if tool_name != "Bash":
+            return SyncHookJSONOutput()
+        command = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
+        marker = _subagent_llm_availability_control_violation(command)
+        if not marker:
+            return SyncHookJSONOutput()
+        reason = (
+            f"{role_name} may not access operator-owned LLM pause/resume control "
+            f"through Bash ({marker}). Manual resume is consumed once by the "
+            "parent launcher before any SDK child starts."
+        )
+        try:
+            from system_log import log_system_event
+            log_system_event(
+                "pipeline.subagent_llm_availability_guard_block",
+                "error",
+                f"BLOCKED {role_name} from LLM availability control",
+                {
+                    "role": role_name,
+                    "tool": tool_name,
+                    "marker": marker,
+                    "tool_use_id": str(tool_use_id)[:64],
+                    "command_preview": str(command)[:2000],
+                    "command_truncated": len(str(command)) > 2000,
+                    "operator_action_required": True,
+                },
+            )
+        except Exception:
+            pass
+        return SyncHookJSONOutput(hookSpecificOutput={
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        })
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+        return {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[handler])]}
+    except Exception:
+        return None
+
+
+def _make_exact_bash_allowlist_guard(role_name, allowed_commands):
+    """Deny Bash unless its complete command is explicitly operator-owned.
+
+    This is intentionally stricter than the generic read-only guard.  It is
+    used by capability probes which need Bash execution evidence but must not
+    let the model turn that capability into curl/wget/nc or an unreviewed shell
+    program.  Stripping outer whitespace is the only normalization performed.
+    """
+
+    allowed = frozenset(str(command).strip() for command in allowed_commands or ())
+
+    async def handler(hook_input, tool_use_id, context):
+        from claude_agent_sdk.types import SyncHookJSONOutput
+
+        tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
+        if tool_name != "Bash":
+            return SyncHookJSONOutput()
+        tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+        command = str(tool_input.get("command", "") if isinstance(tool_input, dict) else "").strip()
+        if command in allowed:
+            return SyncHookJSONOutput()
+        reason = (
+            f"{role_name} Bash command denied by the exact operator allowlist. "
+            "Network commands, shell rewrites, and unreviewed variants are not permitted."
+        )
+        return SyncHookJSONOutput(hookSpecificOutput={
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        })
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+
+        return {"PreToolUse": [HookMatcher(matcher="Bash", hooks=[handler])]}
+    except Exception:
+        return None
+
+
 _MASTER_LIVE_EVIDENCE_FILENAMES = (
     "glicko_ratings.json",
     "head_to_head.json",
@@ -1046,10 +1195,46 @@ _MASTER_LIVE_EVIDENCE_FILENAMES = (
 )
 
 
+def _live_evidence_marker(text):
+    """Return whether text names a mutable results tree or live alias.
+
+    Bash inputs are shell programs rather than clean paths.  Checking only the
+    basename of shlex tokens left directory reads and globs such as
+    ``find web/core/results`` and ``cat web/core/results/*`` outside the old
+    guard.  Treat a path-segment named ``results`` and every known live alias as
+    evidence markers; the exact generation snapshot is allowed separately by
+    resolved-path containment.
+    """
+
+    normalized = str(text or "").replace("\\", "/")
+    lowered = normalized.lower()
+    if any(name.lower() in lowered for name in _MASTER_LIVE_EVIDENCE_FILENAMES):
+        return True
+    # Preserve shell glob metacharacters inside each segment.  A literal-only
+    # comparison still permits ``res*``, ``result?`` or ``[r]esults`` to expand
+    # to the protected directory before the command executes.
+    segments = re.split(r"[/\s'\"=():;,&|<>]+", lowered)
+    protected_names = ("results",) + tuple(
+        name.lower() for name in _MASTER_LIVE_EVIDENCE_FILENAMES
+    )
+    for segment in segments:
+        pattern = segment.strip("`$")
+        if not pattern:
+            continue
+        for protected in protected_names:
+            try:
+                if fnmatch.fnmatchcase(protected, pattern):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
 def _master_live_evidence_read_violation(
     tool_name,
     tool_input,
     allowed_evidence_snapshot_dir=None,
+    allowed_results_dirs=None,
 ):
     """Return a forbidden live-evidence path read by a Master role, if any."""
     if not isinstance(tool_input, dict):
@@ -1064,8 +1249,12 @@ def _master_live_evidence_read_violation(
             if not candidate_path.is_absolute():
                 candidate_path = Path(PROJECT_ROOT) / candidate_path
             resolved = candidate_path.resolve(strict=False)
+            allowed_roots = []
             if allowed_evidence_snapshot_dir is not None:
-                allowed = Path(allowed_evidence_snapshot_dir).resolve(strict=False)
+                allowed_roots.append(allowed_evidence_snapshot_dir)
+            allowed_roots.extend(allowed_results_dirs or ())
+            for allowed_root in allowed_roots:
+                allowed = Path(allowed_root).resolve(strict=False)
                 try:
                     resolved.relative_to(allowed)
                     return None
@@ -1077,17 +1266,11 @@ def _master_live_evidence_read_violation(
             # a weak planner could otherwise read the other checkout's mutable
             # aliases.  Likewise, copied/stale results trees are not a valid
             # substitute for the exact generation snapshot.
-            if resolved.name in _MASTER_LIVE_EVIDENCE_FILENAMES:
-                return str(resolved)
-            if "results" in resolved.parts:
+            if _live_evidence_marker(raw_text):
                 return str(resolved)
             return None
         except Exception:
-            normalized = raw_text.replace("\\", "/")
-            if (
-                any(name in normalized for name in _MASTER_LIVE_EVIDENCE_FILENAMES)
-                or "/results/" in f"/{normalized.lstrip('/')}"
-            ):
+            if _live_evidence_marker(raw_text):
                 return raw_text[:500]
             return None
 
@@ -1105,15 +1288,20 @@ def _master_live_evidence_read_violation(
         return None
     for candidate in candidates:
         normalized = str(candidate).replace("\\", "/").strip("'\";,()[]{}")
-        if any(filename in normalized for filename in _MASTER_LIVE_EVIDENCE_FILENAMES):
-            violation = _path_violation(normalized)
-            if violation:
-                return violation[:500]
+        if not _live_evidence_marker(normalized):
+            continue
+        violation = _path_violation(normalized)
+        if violation:
+            return violation[:500]
     return None
 
 
-def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=None):
-    """Prevent a weak Master from bypassing its digest-bound snapshot."""
+def _make_master_evidence_read_guard(
+    role_name,
+    allowed_evidence_snapshot_dir=None,
+    allowed_results_dirs=None,
+):
+    """Prevent a planning/review role from bypassing its frozen snapshot."""
     async def handler(hook_input, tool_use_id, context):
         from claude_agent_sdk.types import SyncHookJSONOutput
 
@@ -1124,11 +1312,12 @@ def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=No
                 tool_name,
                 tool_input,
                 allowed_evidence_snapshot_dir,
+                allowed_results_dirs,
             )
             if not violation:
                 return SyncHookJSONOutput()
             reason = (
-                "Master live evaluation evidence read denied. Use only the "
+                "Live evaluation evidence read denied. Use only the "
                 "generation's vN/evidence_snapshot files supplied in the prompt; "
                 f"forbidden target: {violation}"
             )
@@ -1136,7 +1325,7 @@ def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=No
                 from system_log import log_system_event
 
                 log_system_event(
-                    "pipeline.master_live_evidence_read_blocked",
+                    "pipeline.frozen_evidence_read_blocked",
                     "error",
                     f"BLOCKED {role_name} live evaluation read",
                     {"role": role_name, "tool": tool_name, "target": violation},
@@ -1160,6 +1349,26 @@ def _make_master_evidence_read_guard(role_name, allowed_evidence_snapshot_dir=No
         ]}
     except Exception:
         return None
+
+
+def _role_requires_frozen_evidence_guard(role_name):
+    """Return whether a tool-capable role must be isolated from live results.
+
+    Planning roles may read their exact generation snapshot.  Crossover,
+    Reviewer, Worker, and the Worker debug helper do not need mutable runtime
+    results at all; with no explicit snapshot directory the same guard therefore
+    fails closed for every results path.
+    """
+
+    normalized = str(role_name or "").strip().upper()
+    return normalized.startswith((
+        "MASTER",
+        "STRATEGY CRITIC",
+        "CROSSOVER",
+        "LEAD CODE REVIEWER",
+        "WORKER",
+        "DEBUG AGENT",
+    ))
 
 
 def _merge_hooks(*hook_sets):
@@ -1450,8 +1659,7 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
     return "\n".join(lines) + "\n\n"
 
 
-# Serialize role-IO log rotation across threads/processes (mirrors
-# battle_experience._LOG_ROTATION_LOCK). Without this lock, two concurrent
+# Serialize role-IO log rotation across threads/processes. Without this lock, two concurrent
 # appenders can both observe the file over the size cap and race the rename
 # (one wins, the other's rename throws FileNotFoundError — swallowed by the
 # except, benign but loses the backup). The lock makes the rotate-then-append
@@ -1460,8 +1668,7 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
 _ROLE_IO_ROTATION_LOCK = threading.Lock()
 
 #: Cap a single role-IO log at 20MB before rotating to one backup (``.1``).
-#: battle_exp_llm.log previously grew to 103MB with no upper bound (root-cause
-#: 6); this is the structural cap. Mirrors battle_experience's 50MB cap
+#: Historical role logs grew without an upper bound; this is the structural cap
 #: (lowered here because role-IO files are append-heavy and per-role).
 _ROLE_IO_MAX_BYTES = 20 * 1024 * 1024
 
@@ -1480,7 +1687,7 @@ _LLM_SILENCE_WARN_SEC = float(
 
 _ROLE_TIMEOUT_DEFAULTS = {
     # Fallback for analysis/probe roles such as MATCH ANALYST, COMBINED
-    # ANALYST, literature probes, and battle-experience synthesis. These can be
+    # ANALYST and literature-probe roles. These can be
     # slower than gate roles on GLM-backed Claude-compatible endpoints, but must
     # still have a hard ceiling so the pipeline cannot wait forever.
     "DEFAULT": (240.0, 360.0, 900.0),
@@ -1640,15 +1847,12 @@ def _append_role_io(log_file_path, text):
     """Append text to a role-IO log file with fcntl locking + 20MB rotation.
 
     Replaces the bare ``with open(path, "a") as lf: lf.write(...)`` pattern that
-    had no locking and no size cap (root-cause 6: battle_exp_llm.log reached
-    103MB).
+    had no locking and no size cap.
 
       - fcntl LOCK_EX via ``evolution_infra.locked_file`` → cross-process +
-        cross-thread safe (orchestrator + battle_experience workers append
-        concurrently to the same path).
+        cross-thread safe when orchestrator roles append concurrently.
       - Before writing: if the file exceeds ``_ROLE_IO_MAX_BYTES`` (20MB),
-        rename it to ``.1`` (single overwrite backup, mirroring
-        battle_experience._LOG_ROTATION_LOCK). Rotation is serialized by
+        rename it to ``.1`` (single overwrite backup). Rotation is serialized by
         ``_ROLE_IO_ROTATION_LOCK`` so two appenders can't race the rename.
       - Each appended chunk is prefixed with ``[<run_id>] `` (or ``[-]`` when
         no run_id is resolvable) so role-IO lines join app.log + events.jsonl
@@ -1761,6 +1965,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     texts = []
     cost_usd = None
     usage = None
+    availability_trace = LLMAvailabilityTrace()
     stream_started_at = time.time()
     first_activity_logged = False
     # B2 (2026-07-09): a SystemMessage (e.g. subtype=init, thinking_tokens) is
@@ -1805,7 +2010,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         except Exception:
             return str(content)
 
-    def _record_tool_result(content, is_error=None, source="ToolResultBlock"):
+    def _record_tool_result(
+        content,
+        is_error=None,
+        source="ToolResultBlock",
+        tool_use_id=None,
+    ):
         nonlocal tool_result_count
         tool_result_count += 1
         result_text = _tool_result_text(content)
@@ -1815,6 +2025,15 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         header = f"[TOOL_RESULT source={source} is_error={bool(is_error)}]"
         _append_role_io(log_file_path, f"\n{header} {result_preview}\n")
         ui.log_io(result_preview, "tool_result", role_name)
+        _record_llm_tool_trace_event({
+            "event": "tool_result",
+            "tool_use_id": str(tool_use_id or ""),
+            "is_error": bool(is_error),
+            "source": str(source),
+            "content_chars": len(result_text),
+            "content_sha256": hashlib.sha256(result_text.encode("utf-8")).hexdigest(),
+            "content_preview": result_text[:3000],
+        })
 
     def _mark_first_activity(kind, substantive=True):
         nonlocal first_activity_logged, substantive_activity_logged
@@ -2007,6 +2226,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text = block.text
+                        availability_trace.observe_text(text)
                         text_chars += len(text or "")
                         texts.append(text)
                         _append_role_io(log_file_path, text + "\n")
@@ -2022,8 +2242,18 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         _append_role_io(log_file_path, f"\n[TOOL_CALL] {block.name}\n[ARGS] {args_str}\n")
                         ui.log_io(f"\n[tool: {block.name}]", "tool", role_name)
                         ui.emit_tool_call(block.name, block.input, role_name)
+                        _record_llm_tool_trace_event({
+                            "event": "tool_use",
+                            "tool_use_id": str(getattr(block, "id", "") or ""),
+                            "tool_name": str(block.name),
+                            "tool_input": dict(block.input or {}),
+                        })
                     elif isinstance(block, ToolResultBlock):
-                        _record_tool_result(block.content, getattr(block, "is_error", None))
+                        _record_tool_result(
+                            block.content,
+                            getattr(block, "is_error", None),
+                            tool_use_id=getattr(block, "tool_use_id", None),
+                        )
                 _emit_progress()
             elif isinstance(message, UserMessage):
                 productive_message = True
@@ -2036,6 +2266,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                             _record_tool_result(
                                 block.content,
                                 getattr(block, "is_error", None),
+                                tool_use_id=getattr(block, "tool_use_id", None),
                             )
                 tool_use_result = getattr(message, "tool_use_result", None)
                 if tool_use_result is not None and not saw_tool_result_block:
@@ -2043,6 +2274,11 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         tool_use_result,
                         None,
                         source="UserMessage.tool_use_result",
+                        tool_use_id=(
+                            tool_use_result.get("tool_use_id")
+                            if isinstance(tool_use_result, dict)
+                            else None
+                        ),
                     )
                 _emit_progress()
             elif isinstance(message, SystemMessage):
@@ -2083,11 +2319,29 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             elif isinstance(message, ResultMessage):
                 productive_message = True
                 _mark_first_activity("result")
+                availability_trace.observe_result(message)
                 cost_usd = message.total_cost_usd
                 usage = message.usage
                 billing_results = _LLM_BILLING_RESULTS.get()
                 if isinstance(billing_results, list):
                     billing_results.append(message)
+                strict_provider_capture = _STRICT_PROVIDER_RESULTS.get()
+                if isinstance(strict_provider_capture, dict):
+                    # The strict authority workflow consumes the SDK object in
+                    # the parent process.  Logs/cost projections are not an
+                    # execution authority and cannot synthesize this entry.
+                    from strict_authority_workflow import _observe_provider_result
+
+                    _observe_provider_result(
+                        message,
+                        invocation_id=str(
+                            strict_provider_capture.get("invocation_id") or ""
+                        ),
+                        effect_id=str(
+                            strict_provider_capture.get("effect_id") or ""
+                        ),
+                    )
+                    strict_provider_capture.setdefault("results", []).append(message)
                 _emit_progress()
                 # A1 (v125 retry-storm fix): capture ResultMessage diagnostic fields.
                 # Previously this branch read ONLY cost/usage, discarding subtype /
@@ -2139,6 +2393,9 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                                 pass
                 except Exception:
                     pass
+                availability_block = availability_trace.blocked(role=role_name)
+                if availability_block is not None:
+                    raise availability_block
             else:
                 unknown_message_count += 1
                 message_type = type(message).__name__
@@ -2170,7 +2427,40 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                     )
             if productive_message:
                 last_message_at = time.time()
+    except LLMAvailabilityBlocked as e:
+        issue = e.issue
+        _emit_llm_event(
+            "pipeline.llm_role_availability_blocked", "error",
+            f"{role_name}: LLM availability blocked ({issue.category})",
+            role=role_name,
+            elapsed_sec=round(time.time() - stream_started_at, 2),
+            messages_seen=message_count,
+            availability_category=issue.category,
+            availability_issue=issue.as_dict(),
+            **_role_log_metadata(log_file_path),
+        )
+        ui.log_io(f"[LLM UNAVAILABLE] {issue.summary}", "error", role_name)
+        raise
     except ClaudeSDKError as e:
+        availability_block = availability_trace.blocked(
+            role=role_name,
+            exception=e,
+        )
+        if availability_block is not None:
+            issue = availability_block.issue
+            _emit_llm_event(
+                "pipeline.llm_role_availability_blocked", "error",
+                f"{role_name}: LLM availability blocked ({issue.category})",
+                role=role_name,
+                elapsed_sec=round(time.time() - stream_started_at, 2),
+                messages_seen=message_count,
+                exception_type=type(e).__name__,
+                availability_category=issue.category,
+                availability_issue=issue.as_dict(),
+                **_role_log_metadata(log_file_path),
+            )
+            ui.log_io(f"[LLM UNAVAILABLE] {issue.summary}", "error", role_name)
+            raise availability_block from e
         _emit_llm_event(
             "pipeline.llm_role_stream_sdk_error", "warn",
             f"{role_name}: SDK stream error: {str(e)[:180]}",
@@ -2183,6 +2473,31 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
         )
         ui.log_io(f"[ERROR] {e}", "error", role_name)
         raise   # propagate so callers distinguish a hard SDK error from an empty-but-valid reply
+    except LLMRoleTimeout:
+        # This is our own role-policy deadline, not evidence that the provider
+        # transport failed.  Preserve the existing typed timeout contract.
+        raise
+    except Exception as e:
+        availability_block = availability_trace.blocked(
+            role=role_name,
+            exception=e,
+        )
+        if availability_block is not None:
+            issue = availability_block.issue
+            _emit_llm_event(
+                "pipeline.llm_role_availability_blocked", "error",
+                f"{role_name}: LLM availability blocked ({issue.category})",
+                role=role_name,
+                elapsed_sec=round(time.time() - stream_started_at, 2),
+                messages_seen=message_count,
+                exception_type=type(e).__name__,
+                availability_category=issue.category,
+                availability_issue=issue.as_dict(),
+                **_role_log_metadata(log_file_path),
+            )
+            ui.log_io(f"[LLM UNAVAILABLE] {issue.summary}", "error", role_name)
+            raise availability_block from e
+        raise
     except asyncio.CancelledError:
         _category, _severity, _cancel_fields = _cancelled_event(
             "pipeline.llm_role_stream_cancelled",
@@ -2216,6 +2531,9 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await watchdog_task
+    availability_block = availability_trace.blocked(role=role_name)
+    if availability_block is not None:
+        raise availability_block
     return texts, cost_usd, usage
 
 
@@ -2395,18 +2713,13 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                         pass
                 await asyncio.sleep(_backoff)
                 continue
-            # 自适应并发:正常完成上报成功;若 output 含限速标记(529/429/503熔断)上报失败→降并发
+            # A completed, non-error ResultMessage is success regardless of its
+            # prose. Provider failures are raised by _process_stream before this
+            # point; re-scanning model text would misread ordinary discussion of
+            # quotas/overload as transport evidence.
             try:
                 from api_concurrency import record_llm_outcome
-                _joined = "".join(texts or "")
-                if (_is_rate_limited(_joined) or _is_quota_exceeded(_joined)
-                        or ("所有供应商" in _joined and "熔断" in _joined)):
-                    # root-cause-audit 2026-06-21: 删 "503" in _joined[:200] 裸子串——绕过
-                    # _is_rate_limited 的 2000-char guard，误匹配正常输出(筹码 -8503/版本号/对手名)。
-                    # 真实 API 503 走下方 ClaudeSDKError 异常路径的 "503" in _es 检测。
-                    record_llm_outcome(success=False, rate_limited=True)
-                else:
-                    record_llm_outcome(success=True)
+                record_llm_outcome(success=True)
             except Exception:
                 pass
             return texts, total_cost, total_usage
@@ -2468,6 +2781,9 @@ async def run_claude_query(
     tools=None,
     allowed_write_dir=None,
     allowed_evidence_snapshot_dir=None,
+    allowed_read_dirs=None,
+    strict_authority=None,
+    exact_bash_commands=None,
 ):
     """Run a Claude query via the Agent SDK with cost tracking and typed streaming.
 
@@ -2479,6 +2795,14 @@ async def run_claude_query(
            Workers/crossover pass their target bot dir so a rogue worker prompt
            cannot edit web/core/*.py, other bot dirs, or pipeline state (the
            orchestrator-level guard does not cover sub-agents).
+    allowed_read_dirs: exact non-evidence trees a guarded role must read, such
+           as its lease-isolated candidate. These roots do not grant a tool or
+           write authority; they only prevent the live-results guard from
+           mistaking a candidate workspace under ``results/`` for evidence.
+    exact_bash_commands: optional complete-command allowlist.  When supplied,
+           every Bash call must match one of these strings (apart from outer
+           whitespace).  This is intended for read-only operator probes, not
+           general Worker execution.
     """
     call_started_at = time.time()
     from evolution_infra import (
@@ -2492,6 +2816,10 @@ async def run_claude_query(
     # analysis) intentionally have no dashboard. Normalize that boundary once
     # so stream, retry, cost, and error paths all receive the same UI contract.
     ui = resolve_ui(ui)
+    if exact_bash_commands is not None:
+        exact_bash_commands = tuple(
+            str(command).strip() for command in exact_bash_commands
+        )
 
     # Cost is monitor-only unless the operator enabled a finite positive hard
     # limit in the parent process.  This system-owned check is intentionally
@@ -2500,6 +2828,12 @@ async def run_claude_query(
     # call after an earlier parallel/sub-agent call crossed the operator limit.
     from orchestrator_cost_policy import assert_operator_cost_limit_available
     assert_operator_cost_limit_available()
+
+    # Every role shares the durable provider pause.  This process-local guard
+    # prevents background analysts or a direct MCP call from bypassing the
+    # Orchestrator/Worker pre-claim checks after a restart.
+    from llm_availability_store import raise_if_llm_paused
+    raise_if_llm_paused(role=str(role_name))
 
     # Pre-check: if already rate-limited, wait before making any API call
     from rate_limiter import rate_limiter
@@ -2572,8 +2906,22 @@ async def run_claude_query(
     # - write-scope guard for workers/crossover when allowed_write_dir is set
     _sub_hooks = None
     _cost_hooks = None
+    _availability_hooks = None
+    _exact_bash_hooks = None
     if tools and any(t == "Bash" for t in (tools if isinstance(tools, list) else [])):
         _cost_hooks = _make_subagent_cost_guard(role_name)
+        _availability_hooks = _make_subagent_llm_availability_guard(role_name)
+        if exact_bash_commands is not None:
+            _exact_bash_hooks = _make_exact_bash_allowlist_guard(
+                role_name,
+                exact_bash_commands,
+            )
+            if not _exact_bash_hooks:
+                raise RuntimeError(
+                    "exact Bash allowlist hook is unavailable; refusing SDK dispatch"
+                )
+    elif exact_bash_commands is not None:
+        raise ValueError("exact_bash_commands requires the Bash tool")
     _write_hooks = None
     _readonly_hooks = None
     _master_evidence_hooks = None
@@ -2585,16 +2933,29 @@ async def run_claude_query(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
         _readonly_hooks = _make_subagent_readonly_guard(role_name)
-    if str(role_name).upper().startswith("MASTER"):
+    if _role_requires_frozen_evidence_guard(role_name):
+        allowed_results_dirs = []
+        if allowed_write_dir is not None:
+            write_scope = _normalize_allowed_write_scope(allowed_write_dir)
+            allowed_results_dirs.extend(write_scope.get("dirs") or ())
+            allowed_results_dirs.extend(write_scope.get("files") or ())
+        if allowed_read_dirs is not None:
+            if isinstance(allowed_read_dirs, (str, os.PathLike)):
+                allowed_results_dirs.append(allowed_read_dirs)
+            else:
+                allowed_results_dirs.extend(allowed_read_dirs)
         _master_evidence_hooks = _make_master_evidence_read_guard(
             role_name,
             allowed_evidence_snapshot_dir,
+            allowed_results_dirs,
         )
     _sub_hooks = _merge_hooks(
         _cost_hooks,
         _write_hooks,
         _readonly_hooks,
         _master_evidence_hooks,
+        _availability_hooks,
+        _exact_bash_hooks,
     )
     options_kwargs = dict(
         model=model,
@@ -2618,10 +2979,43 @@ async def run_claude_query(
         "context_file_count": len(context_parts),
         "context_chars": context_chars,
         "allowed_write_dir": str(allowed_write_dir) if allowed_write_dir is not None else None,
+        "exact_bash_command_count": (
+            len(tuple(exact_bash_commands))
+            if exact_bash_commands is not None
+            else None
+        ),
         **_tools_metadata(tools),
         **_role_timeout_policy(role_name),
         **_role_log_metadata(log_file_path),
     }
+
+    # The strict bootstrap creates a one-attempt fenced effect only after the
+    # complete runtime/path contract and context-budgeting have produced the
+    # exact provider prompt, but before the SDK dispatch.  The mutable call
+    # descriptor is returned to role code out-of-band (the public 3-tuple API
+    # remains unchanged) and cannot be accepted until a real ResultMessage has
+    # completed this effect.
+    strict_provider_capture = None
+    strict_provider_token = None
+    if strict_authority is not None:
+        from strict_authority_workflow import dispatch_call
+
+        dispatch_call(
+            strict_authority,
+            full_prompt=full_prompt,
+            tools=tools,
+            owner=f"llm_query:{os.getpid()}:{role_name}",
+            actual_role=str(role_name),
+            model=str(model),
+        )
+        strict_provider_capture = {
+            "invocation_id": strict_authority.get("invocation_id"),
+            "effect_id": strict_authority.get("effect_id"),
+            "results": [],
+        }
+        strict_provider_token = _STRICT_PROVIDER_RESULTS.set(
+            strict_provider_capture
+        )
     _emit_llm_event(
         "pipeline.llm_role_start", "info",
         f"{role_name}: LLM call started",
@@ -2635,65 +3029,26 @@ async def run_claude_query(
     # Without this retry, the error propagates and the calling tool either rejects
     # (critic) or skips (battle_exp), stalling the pipeline.
     try:
-        full_text, cost_usd, usage = await _run_stream_with_signature_retry(
-            full_prompt, options, log_file_path, ui, role_name)
+        if strict_authority is not None and strict_authority.get(
+            "replay_provider"
+        ):
+            full_text = [str(strict_authority.get("replay_raw_output") or "")]
+            cost_usd = strict_authority.get("replay_cost_usd")
+            usage = strict_authority.get("replay_usage")
+            _emit_llm_event(
+                "pipeline.strict_llm_authority_replayed",
+                "info",
+                f"{role_name}: replayed accepted strict provider result",
+                role=role_name,
+                slot=strict_authority.get("slot"),
+                effect_id=strict_authority.get("effect_id"),
+                **_role_log_metadata(log_file_path),
+            )
+        else:
+            full_text, cost_usd, usage = await _run_stream_with_signature_retry(
+                full_prompt, options, log_file_path, ui, role_name)
 
         output = "\n".join(full_text)
-
-        # Auto-retry on API rate limit (529) with exponential backoff
-        if _is_rate_limited(output):
-            for backoff in [30, 60, 120]:
-                ui.log_history(f"API rate limited (529). Retrying in {backoff}s...", "warn")
-                _emit_llm_event(
-                    "pipeline.llm_role_rate_limit_retry", "warn",
-                    f"{role_name}: API rate limited, retrying in {backoff}s",
-                    role=role_name,
-                    backoff_sec=backoff,
-                    **_role_log_metadata(log_file_path),
-                )
-                await asyncio.sleep(backoff)
-                full_text.clear()
-                retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
-                    full_prompt, options, log_file_path, ui, role_name)
-                if retry_texts:
-                    full_text.extend(retry_texts)
-                if retry_cost:
-                    cost_usd = (cost_usd or 0) + retry_cost
-                if retry_usage:
-                    usage = _merge_billing_usage(usage, retry_usage)
-
-                output = "\n".join(full_text)
-                if not _is_rate_limited(output):
-                    break
-
-        # 429 quota exhaustion — parse reset time, block until reset, then retry once
-        if _is_quota_exceeded(output):
-            if rate_limiter.parse_429(output):
-                wait = rate_limiter.wait_seconds()
-                ui.log_history(
-                    f"API 配额耗尽 (429)。等待 {wait:.0f}s 至 {rate_limiter.reset_time_str()}",
-                    "error",
-                )
-                _emit_llm_event(
-                    "pipeline.llm_role_quota_wait", "warn",
-                    f"{role_name}: API quota exhausted, waiting {wait:.0f}s",
-                    role=role_name,
-                    wait_sec=round(wait, 2),
-                    reset_time=rate_limiter.reset_time_str(),
-                    **_role_log_metadata(log_file_path),
-                )
-                await rate_limiter.wait_until_reset()
-                # Retry after reset
-                full_text.clear()
-                retry_texts, retry_cost, retry_usage = await _run_stream_with_signature_retry(
-                    full_prompt, options, log_file_path, ui, role_name)
-                if retry_texts:
-                    full_text.extend(retry_texts)
-                if retry_cost:
-                    cost_usd = (cost_usd or 0) + retry_cost
-                if retry_usage:
-                    usage = _merge_billing_usage(usage, retry_usage)
-                output = "\n".join(full_text)
 
         # Every completed SDK Result (including an empty-output/signature retry)
         # was already recorded and UI-projected inside
@@ -2701,6 +3056,18 @@ async def run_claude_query(
         # concurrent sibling that crossed the operator threshold meanwhile.
         from orchestrator_cost_policy import assert_operator_cost_limit_available
         assert_operator_cost_limit_available()
+        if strict_authority is not None and not strict_authority.get(
+            "provider_completed"
+        ):
+            from strict_authority_workflow import complete_provider_call
+
+            complete_provider_call(
+                strict_authority,
+                raw_output=output,
+                provider_results=(strict_provider_capture or {}).get(
+                    "results", []
+                ),
+            )
         _emit_llm_event(
             "pipeline.llm_role_done", "success",
             f"{role_name}: LLM call finished in {time.time() - call_started_at:.1f}s",
@@ -2712,7 +3079,37 @@ async def run_claude_query(
             **lifecycle_fields,
         )
         return output, cost_usd, usage
+    except LLMAvailabilityBlocked as e:
+        if strict_authority is not None:
+            from strict_authority_workflow import fail_provider_call
+
+            fail_provider_call(strict_authority, e)
+        persistence_error = None
+        try:
+            from llm_availability_store import persist_llm_pause
+
+            pause_state = persist_llm_pause(e)
+        except Exception as exc:
+            pause_state = None
+            persistence_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+        _emit_llm_event(
+            "pipeline.llm_role_availability_pause_persisted"
+            if pause_state
+            else "pipeline.llm_role_availability_pause_persist_failed",
+            "error",
+            f"{role_name}: provider availability control activated",
+            elapsed_sec=round(time.time() - call_started_at, 2),
+            availability_issue=e.issue.as_dict(),
+            pause_persisted=bool(pause_state),
+            persistence_error=persistence_error,
+            **lifecycle_fields,
+        )
+        raise
     except asyncio.CancelledError:
+        if strict_authority is not None:
+            from strict_authority_workflow import fail_provider_call
+
+            fail_provider_call(strict_authority, "asyncio.CancelledError")
         is_shutdown = _is_shutdown_requested()
         _category, _severity, _cancel_fields = _cancelled_event(
             "pipeline.llm_role_cancelled",
@@ -2744,6 +3141,10 @@ async def run_claude_query(
         )
         raise
     except Exception as e:
+        if strict_authority is not None:
+            from strict_authority_workflow import fail_provider_call
+
+            fail_provider_call(strict_authority, e)
         if is_shutdown_cancel_error(e):
             shutdown_requested = _is_shutdown_requested()
             event_type = (
@@ -2778,6 +3179,9 @@ async def run_claude_query(
             **lifecycle_fields,
         )
         raise
+    finally:
+        if strict_provider_token is not None:
+            _STRICT_PROVIDER_RESULTS.reset(strict_provider_token)
 
 
 def parse_json_output(output):

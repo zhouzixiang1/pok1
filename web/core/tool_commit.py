@@ -2,7 +2,10 @@
 
 import json
 import os
+import stat
 import time
+import uuid
+from pathlib import Path
 from typing import Annotated, TypedDict
 
 from logging_config import get_logger
@@ -23,7 +26,6 @@ from evolution_core import (
     MAX_ACTIVE_BOTS,
     _run_crossover,
     locked_file,
-    EXPERIENCE_FILE,
     ARCHIVE_DIR,
     write_pipeline_checkpoint,
     archive_generation,
@@ -36,6 +38,9 @@ from evolution_infra import (
     evolution_git_push_enabled,
     evolution_git_push_required,
     git_push_refs,
+    ensure_bot_git_publication,
+    verify_remote_bot_publication,
+    remote_completion_ref_snapshot,
     publish_runtime_expected_head,
 )
 from tool_helpers import (
@@ -49,10 +54,13 @@ from tool_helpers import (
     _execute_exhausted_infrastructure_failure,
     _owned_infrastructure_failure,
     _record_infrastructure_failure,
+    _review_gate_ok,
+    _critic_gate_ok,
 )
 from system_log import log_system_event
 from pipeline_infrastructure import infrastructure_failure_digest
 from blocking_runtime import run_blocking_isolated
+from llm_availability import LLMAvailabilityBlocked
 
 # ──────────────────────────────────────────────
 # Commit Stage
@@ -98,6 +106,423 @@ def _push_existing_bot_refs(version):
     return ok
 
 
+def _official_certificate_projection(status):
+    identity = (
+        status.get("certification_identity")
+        if isinstance((status or {}).get("certification_identity"), dict)
+        else {}
+    )
+    return {
+        "certificate_digest": (status or {}).get("certificate_digest"),
+        "candidate_hash": identity.get("candidate_hash"),
+        "policy_id": (status or {}).get("policy_id"),
+        "certificate_path": (status or {}).get("certificate_path"),
+        "certification_identity": identity,
+    }
+
+
+def _write_completed_sentinel_durable(bot_dir, publication_id):
+    """Durably materialize the local cache only after publication proof."""
+
+    root = os.fspath(Path(bot_dir))
+    root_stat = os.lstat(root)
+    if not stat.S_ISDIR(root_stat.st_mode):
+        raise RuntimeError("completed sentinel parent is not a regular bot directory")
+
+    expected = f"publication_id={publication_id}\n"
+    sentinel = os.path.join(root, ".completed")
+
+    def validate_existing():
+        try:
+            metadata = os.lstat(sentinel)
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RuntimeError(
+                "existing completed sentinel is not a regular non-symlink file"
+            )
+        try:
+            with open(sentinel, "r", encoding="utf-8") as handle:
+                observed = handle.read()
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(
+                "existing completed sentinel is unreadable"
+            ) from exc
+        if observed != expected:
+            raise RuntimeError(
+                "existing completed sentinel belongs to a different publication"
+            )
+        return True
+
+    if validate_existing():
+        return True
+
+    temporary = os.path.join(
+        root,
+        f".completed.{os.getpid()}.{uuid.uuid4().hex}.tmp",
+    )
+    linked = False
+    try:
+        with open(temporary, "x", encoding="utf-8") as handle:
+            handle.write(expected)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            # Create-only publication: unlike os.replace(), link cannot clobber
+            # a sentinel raced in by another process.
+            os.link(temporary, sentinel, follow_symlinks=False)
+            linked = True
+        except FileExistsError:
+            validate_existing()
+        os.unlink(temporary)
+        temporary = ""
+        descriptor = os.open(
+            root,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if linked and not validate_existing():
+            raise RuntimeError("completed sentinel disappeared after publication")
+        return True
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+
+
+def _publication_pending_result(v, source_v, *, error, **extra):
+    return {
+        "error": error,
+        "version": int(v),
+        "source_v": int(source_v),
+        "committed": False,
+        "checkpoint_preserved": True,
+        **extra,
+    }
+
+
+def _revalidate_publication_authority_before_push(
+    v,
+    source_v,
+    *,
+    intent,
+    bot_dir,
+):
+    """Re-open the latest durable authority at the remote linearization point."""
+
+    from national_runtime_authority import (
+        build_pending_local_publication_proof,
+        strict_published_bot_names,
+    )
+    from official_certification import official_full_certified
+    from publication_transaction import (
+        publication_gate_ledger_digest,
+        publication_intent_checkpoint_errors,
+        publication_intent_live_errors,
+    )
+
+    current = read_pipeline_checkpoint()
+    checkpoint_errors = publication_intent_checkpoint_errors(intent, current)
+    if checkpoint_errors:
+        raise RuntimeError(
+            "pre-push publishing checkpoint changed: "
+            + "; ".join(checkpoint_errors[:30])
+        )
+    official_status = (
+        (((current or {}).get("gate_results") or {}).get("official_full") or {})
+        .get("status")
+        or {}
+    )
+    proof = build_pending_local_publication_proof(bot_dir)
+    ledger = validate_commit_gate_ledger(
+        v,
+        source_v,
+        current,
+        bot_dir=bot_dir,
+        pending_local_publication=proof,
+    )
+    errors = []
+    if ledger.get("missing_gates") or ledger.get("failed_gates"):
+        errors.append("pre_push_gate_ledger_invalid")
+    errors.extend(
+        publication_intent_live_errors(
+            intent,
+            checkpoint=current,
+            candidate_dir=bot_dir,
+            repo_root=PROJECT_ROOT,
+            official_status=official_status,
+            final_gate_ledger_digest=publication_gate_ledger_digest(ledger),
+            current_strict_bots=strict_published_bot_names(),
+            current_remote_required=evolution_git_push_required(),
+        )
+    )
+    tag_matches, tag_mismatch = _existing_local_bot_tag_matches_certificate(
+        v,
+        _official_certificate_projection(official_status),
+    )
+    if not tag_matches:
+        errors.append(
+            "pre_push_completion_identity_invalid:"
+            + (tag_mismatch or "unknown")
+        )
+    if not official_full_certified(
+        official_status,
+        bot_dir,
+        require_published=True,
+    ):
+        errors.append("pre_push_official_certificate_identity_invalid")
+    errors = list(dict.fromkeys(errors))
+    if errors:
+        raise RuntimeError(
+            "pre-push publication authority changed: "
+            + "; ".join(errors[:30])
+        )
+    return {
+        "proof": proof,
+        "ledger": ledger,
+        "checkpoint_revision": current.get("checkpoint_revision"),
+    }
+
+
+def _resume_publication_transaction(v, source_v, ckpt):
+    """Reconcile one immutable publication intent from observed effects."""
+
+    from national_runtime_authority import (
+        build_pending_local_publication_proof,
+        strict_published_bot_names,
+    )
+    from official_certification import official_full_certified
+    from publication_transaction import (
+        publication_gate_ledger_digest,
+        publication_intent_live_errors,
+    )
+
+    bot_dir = get_bot_dir(v)
+    intent = (ckpt or {}).get("publication_intent")
+    official_status = (
+        (((ckpt or {}).get("gate_results") or {}).get("official_full") or {})
+        .get("status")
+        or {}
+    )
+    official_certificate = _official_certificate_projection(official_status)
+    pending_proof = None
+    if git_has_tag(v):
+        tag_matches, mismatch = _existing_local_bot_tag_matches_certificate(
+            v, official_certificate
+        )
+        if not tag_matches:
+            return _publication_pending_result(
+                v,
+                source_v,
+                error=(
+                    "COMMIT BLOCKED: existing completion tag does not match "
+                    "the frozen publication intent."
+                ),
+                reason=mismatch,
+            )
+        try:
+            pending_proof = build_pending_local_publication_proof(bot_dir)
+        except Exception as exc:
+            return _publication_pending_result(
+                v,
+                source_v,
+                error="COMMIT BLOCKED: local publication proof is invalid.",
+                reason=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
+
+    remote_required = bool((intent or {}).get("remote_publication_required"))
+    remote_attempted = bool(
+        remote_required
+        or (intent or {}).get("remote_publication_enabled")
+    )
+    linearized_remote_proof = None
+    if pending_proof is not None and remote_attempted:
+        candidate_remote_proof = verify_remote_bot_publication(intent)
+        if candidate_remote_proof.get("valid") is True:
+            linearized_remote_proof = candidate_remote_proof
+
+    if linearized_remote_proof is None:
+        ledger = validate_commit_gate_ledger(
+            v,
+            source_v,
+            ckpt,
+            bot_dir=bot_dir,
+            pending_local_publication=pending_proof,
+        )
+        ledger_digest = publication_gate_ledger_digest(ledger)
+        if ledger.get("missing_gates") or ledger.get("failed_gates"):
+            return _publication_pending_result(
+                v,
+                source_v,
+                error="COMMIT BLOCKED: frozen publication gate ledger no longer validates.",
+                missing_gates=ledger.get("missing_gates"),
+                failed_gates=ledger.get("failed_gates"),
+            )
+        current_strict_bots = strict_published_bot_names()
+    else:
+        # The remote transaction is already irreversible.  Revalidate only
+        # frozen bytes/checkpoint/status; later strict publications must not
+        # self-lock this transaction's sentinel/CAS recovery.
+        ledger_digest = str((intent or {}).get("final_gate_ledger_digest") or "")
+        current_strict_bots = [
+            *(intent.get("prepublication_strict_bots") or []),
+            str(intent.get("bot") or ""),
+        ]
+    live_remote_required = (
+        bool((intent or {}).get("remote_publication_required"))
+        if linearized_remote_proof is not None
+        else evolution_git_push_required()
+    )
+    try:
+        live_errors = publication_intent_live_errors(
+            intent,
+            checkpoint=ckpt,
+            candidate_dir=bot_dir,
+            repo_root=PROJECT_ROOT,
+            official_status=official_status,
+            final_gate_ledger_digest=ledger_digest,
+            current_strict_bots=current_strict_bots,
+            current_remote_required=live_remote_required,
+        )
+    except Exception as exc:
+        live_errors = [
+            f"publication_intent_live_validation_error:{type(exc).__name__}:"
+            f"{str(exc)[:240]}"
+        ]
+    if live_errors:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT BLOCKED: publication intent or its live inputs drifted.",
+            validation_errors=live_errors[:30],
+        )
+    if not official_full_certified(official_status, bot_dir):
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT BLOCKED: frozen official full certificate is no longer valid.",
+        )
+
+    def pre_push_authority():
+        return _revalidate_publication_authority_before_push(
+            v,
+            source_v,
+            intent=intent,
+            bot_dir=bot_dir,
+        )
+
+    try:
+        local_state = ensure_bot_git_publication(
+            intent,
+            official_certificate=official_certificate,
+            pre_push_authority=pre_push_authority,
+        )
+    except Exception as exc:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT PENDING: local Git publication did not converge.",
+            reason=f"{type(exc).__name__}: {str(exc)[:500]}",
+            local_committed=bool(git_has_tag(v)),
+        )
+
+    if remote_required:
+        remote_proof = (
+            linearized_remote_proof
+            or verify_remote_bot_publication(intent, local_state=local_state)
+        )
+    elif linearized_remote_proof is not None:
+        remote_proof = linearized_remote_proof
+    else:
+        remote_proof = {
+            "valid": True,
+            "local_only": True,
+            "publication_id": intent.get("publication_id"),
+        }
+    if remote_required and remote_proof.get("valid") is not True:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT PENDING: required origin publication is not proven.",
+            local_committed=True,
+            push_ok=bool(local_state.get("push_ok")),
+            remote_proof=remote_proof,
+            completed_sentinel_written=False,
+        )
+
+    # From this point onward, only the frozen local/remote publication proof is
+    # re-opened.  Dynamic strict-pool authority was checked before the atomic
+    # push and may legitimately change after this transaction linearizes.
+    try:
+        frozen_local_proof = build_pending_local_publication_proof(bot_dir)
+    except Exception as exc:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT BLOCKED: frozen local publication proof is invalid.",
+            reason=f"{type(exc).__name__}: {str(exc)[:300]}",
+            remote_proof=remote_proof,
+        )
+    if not official_full_certified(
+        official_status,
+        bot_dir,
+        require_published=True,
+    ):
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT BLOCKED: committed certificate/tag attestation is invalid.",
+            local_publication_proof=frozen_local_proof,
+            remote_proof=remote_proof,
+        )
+
+    _write_completed_sentinel_durable(bot_dir, intent.get("publication_id"))
+    current = read_pipeline_checkpoint()
+    from publication_transaction import publication_intent_checkpoint_errors
+
+    current_errors = publication_intent_checkpoint_errors(intent, current)
+    if current_errors:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT PENDING: checkpoint changed before publication completion.",
+            completed_sentinel_written=True,
+            validation_errors=current_errors,
+            remote_proof=remote_proof,
+        )
+    cleared = clear_pipeline_checkpoint(
+        expected_workflow_run_id=current.get("workflow_run_id"),
+        expected_next_v=int(v),
+        expected_source_v=int(source_v),
+        expected_checkpoint_revision=current.get("checkpoint_revision"),
+        expected_checkpoint_stage="publishing",
+    )
+    if not cleared:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error="COMMIT PENDING: publication completed but checkpoint CAS did not clear.",
+            completed_sentinel_written=True,
+            remote_proof=remote_proof,
+        )
+    return {
+        "committed": True,
+        "version": int(v),
+        "source_v": int(source_v),
+        "publication_id": intent.get("publication_id"),
+        "commit_oid": local_state.get("commit_oid"),
+        "push_ok": bool(local_state.get("push_ok")),
+        "remote_proof": remote_proof,
+        "completed_sentinel_written": True,
+        "checkpoint_cleared": True,
+    }
+
+
 def _position_semantics_failed_gate(errors: list[str]) -> dict:
     return {
         "passed": False,
@@ -117,7 +542,14 @@ def _position_semantics_feedback(errors: list[str]) -> str:
     )
 
 
-def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
+def validate_commit_gate_ledger(
+    v,
+    source_v,
+    ckpt,
+    bot_dir=None,
+    *,
+    pending_local_publication=None,
+):
     """Validate the gate ledger and code fingerprint for finalizing a bot.
 
     This is intentionally shared by normal ``commit_bot`` and bare-commit
@@ -143,12 +575,17 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
             from workflow_profiles import get_workflow_profile
             workflow_profile = get_workflow_profile()
             expected_profile_id = getattr(workflow_profile, "profile_id", "")
-            expected_execution_mode = getattr(workflow_profile, "national_execution_mode", "adapter")
-            expected_evaluation_protocol = getattr(workflow_profile, "evaluation_protocol", "local_json")
-        except Exception:
+            expected_execution_mode = getattr(workflow_profile, "national_execution_mode", "")
+            expected_evaluation_protocol = getattr(workflow_profile, "evaluation_protocol", "")
+        except Exception as exc:
             expected_profile_id = ""
             expected_execution_mode = ""
             expected_evaluation_protocol = ""
+            failed_gates.append({
+                "gate": "workflow_profile",
+                "reason": "active workflow profile is unavailable or invalid",
+                "error": f"{type(exc).__name__}: {str(exc)[:240]}",
+            })
         checkpoint_profile_id = str(ckpt.get("workflow_profile_id") or "")
         checkpoint_execution_mode = str(ckpt.get("national_execution_mode") or "")
         if expected_profile_id and checkpoint_profile_id and checkpoint_profile_id != expected_profile_id:
@@ -269,6 +706,23 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
                         "runtime_probe_limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
                         "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
                     }
+                    quality_probe = (
+                        (quality.get("national_capability_contract") or {}).get(
+                            "dynamic_runtime_probe"
+                        )
+                        or {}
+                    )
+                    managed_isolation_digest = str(
+                        quality_probe.get("managed_isolation_digest") or ""
+                    )
+                    if len(managed_isolation_digest) != 64:
+                        failed_gates.append({
+                            "gate": "runtime_probe_identity",
+                            "reason": "managed isolation digest missing or invalid",
+                        })
+                    expected_runtime_identity[
+                        "runtime_probe_managed_isolation_digest"
+                    ] = managed_isolation_digest
                     mismatches = {
                         key: {"expected": value, "quality": quality.get(key)}
                         for key, value in expected_runtime_identity.items()
@@ -289,16 +743,25 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
         review = gate_results.get("review")
         if not review:
             missing_gates.append("review")
-        elif review.get("approved") is not True:
-            failed_gates.append({"gate": "review", "reason": "reviewer did not approve", "value": review})
+        elif not _review_gate_ok(ckpt):
+            failed_gates.append({
+                "gate": "review",
+                "reason": (
+                    "reviewer was not schema-valid/content-bound or did not approve"
+                ),
+                "value": review,
+            })
 
         critic = gate_results.get("critic")
         if not critic:
             missing_gates.append("critic")
-        elif critic.get("approved") is not True:
+        elif not _critic_gate_ok(ckpt):
             failed_gates.append({
                 "gate": "critic",
-                "reason": "critic advisory role did not complete successfully",
+                "reason": (
+                    "critic advisory role was not schema-valid/content-bound or "
+                    "did not complete successfully"
+                ),
                 "value": critic,
             })
 
@@ -369,6 +832,177 @@ def validate_commit_gate_ledger(v, source_v, ckpt, bot_dir=None):
                             "gate": "precommit_eval_contract",
                             "reason": "frozen precommit evaluator/opponent contract is invalid or drifted",
                             "errors": [*plan_issues, *contract_issues][:12],
+                        })
+
+                    # The one-time empty-pool control is not a published bot and
+                    # carries no strength/rating authority.  Recompute its full
+                    # live authority at the final ledger boundary, bind it back
+                    # to the exact quality receipt, and independently reapply
+                    # the complete-match W/L/D floor.  A concurrently published
+                    # strict bot therefore revokes this path before commit.
+                    from system_strict_bootstrap import is_declared_native_bootstrap
+
+                    declared_first_strict = is_declared_native_bootstrap(ckpt)
+                    plan_opponents = (
+                        precommit_plan.get("opponents") or []
+                        if isinstance(precommit_plan, dict)
+                        else []
+                    )
+                    control_opponents = [
+                        item for item in plan_opponents
+                        if isinstance(item, dict)
+                        and item.get("authority") == "system_first_strict_control"
+                    ]
+                    if declared_first_strict:
+                        from first_strict_control import (
+                            control_gate_blockers,
+                            validate_control_receipt,
+                            validate_control_result,
+                        )
+
+                        control_errors = []
+                        if len(control_opponents) != 1 or len(plan_opponents) != 1:
+                            control_errors.append(
+                                "first_strict_control_final_plan_shape_invalid"
+                            )
+                        quality_receipt = quality.get(
+                            "first_strict_control_receipt"
+                        )
+                        plan_receipt = (
+                            control_opponents[0].get("control_receipt")
+                            if len(control_opponents) == 1
+                            else None
+                        )
+                        if quality_receipt != plan_receipt:
+                            control_errors.append(
+                                "first_strict_control_quality_plan_receipt_mismatch"
+                            )
+                        control_errors.extend(validate_control_receipt(
+                            plan_receipt,
+                            checkpoint=ckpt,
+                            candidate_version=v,
+                            source_version=source_v,
+                            force_protocol_refresh=True,
+                            pending_local_publication=pending_local_publication,
+                        ))
+                        if precommit.get("precommit_eval_plan") != precommit_plan:
+                            control_errors.append(
+                                "first_strict_control_result_plan_mismatch"
+                            )
+                        expected_flags = {
+                            "precommit_gate_admitted": True,
+                            "strength_admitted": False,
+                            "rating_eligible": False,
+                            "official_opponent_eligible": False,
+                        }
+                        for field, expected in expected_flags.items():
+                            if precommit.get(field) is not expected:
+                                control_errors.append(
+                                    f"first_strict_control_final_{field}_mismatch"
+                                )
+                        strength_order = precommit.get("strength_order") or {}
+                        if int(strength_order.get("samples") or 0) != 0:
+                            control_errors.append(
+                                "first_strict_control_strength_samples_nonzero"
+                            )
+                        expected_control_samples = list(
+                            (precommit_plan or {}).get("sample_plan") or []
+                        )
+                        execution_scope = precommit.get(
+                            "control_execution_scope"
+                        )
+                        national_execution_scope = (
+                            (precommit.get("national") or {}).get(
+                                "control_execution_scope"
+                            )
+                        )
+                        if execution_scope != national_execution_scope:
+                            control_errors.append(
+                                "first_strict_control_execution_scope_projection_mismatch"
+                            )
+                        expected_execution_bindings = {
+                            "workflow_run_id": str(
+                                ckpt.get("workflow_run_id") or ""
+                            ),
+                            "candidate_version": int(v),
+                            "candidate_label": bot_name(v),
+                            "candidate_artifact_hash": str(
+                                current_code_fingerprint
+                            ),
+                            "control_id": "first_strict_control_v1",
+                            "control_artifact_hash": str(
+                                (((plan_receipt or {}).get("control") or {}).get(
+                                    "artifact_hash"
+                                ))
+                                or ""
+                            ),
+                            "control_receipt_digest": str(
+                                (plan_receipt or {}).get("receipt_digest") or ""
+                            ),
+                            "precommit_plan_digest": str(
+                                (precommit_plan or {}).get("plan_digest") or ""
+                            ),
+                            "evaluation_contract_digest": str(
+                                (precommit.get("precommit_eval_contract") or {}).get(
+                                    "contract_digest"
+                                )
+                                or ""
+                            ),
+                            "precommit_attempt": int(
+                                ckpt.get("precommit_attempt") or 0
+                            ),
+                        }
+                        if not isinstance(execution_scope, dict):
+                            control_errors.append(
+                                "first_strict_control_execution_scope_missing"
+                            )
+                        else:
+                            for field, expected in expected_execution_bindings.items():
+                                if execution_scope.get(field) != expected:
+                                    control_errors.append(
+                                        "first_strict_control_execution_scope_"
+                                        f"{field}_mismatch"
+                                    )
+                        result_errors, recomputed_control_gate = (
+                            validate_control_result(
+                                precommit,
+                                expected_sample_plan=expected_control_samples,
+                                expected_execution_scope=execution_scope,
+                            )
+                        )
+                        control_errors.extend(result_errors)
+                        control_blockers, _ = control_gate_blockers(
+                            precommit,
+                            expected_sample_plan=expected_control_samples,
+                            expected_execution_scope=execution_scope,
+                        )
+                        if control_blockers:
+                            control_errors.extend(
+                                str(item.get("reason") or "control_gate_failed")
+                                for item in control_blockers
+                            )
+                        if precommit.get(
+                            "first_strict_control_gate"
+                        ) != recomputed_control_gate:
+                            control_errors.append(
+                                "first_strict_control_gate_summary_mismatch"
+                            )
+                        if control_errors:
+                            failed_gates.append({
+                                "gate": "first_strict_control_final_ledger",
+                                "reason": (
+                                    "system control authority/content/floor is "
+                                    "invalid or the strict pool changed"
+                                ),
+                                "errors": list(dict.fromkeys(control_errors))[:20],
+                            })
+                    elif control_opponents:
+                        failed_gates.append({
+                            "gate": "first_strict_control_final_ledger",
+                            "reason": (
+                                "system control appeared outside the declared "
+                                "one-time empty-pool migration"
+                            ),
                         })
                 except Exception as exc:
                     failed_gates.append({
@@ -588,7 +1222,7 @@ def _record_official_bootstrap_required_checkpoint(
     *,
     candidate_hash: str,
 ) -> bool:
-    """Park the first candidate without letting automation consume the root."""
+    """Park v143 before the explicit one-time system-control authorization."""
     from official_bootstrap import build_operator_bootstrap_parked_request
 
     parked = build_operator_bootstrap_parked_request(
@@ -661,7 +1295,7 @@ def _record_official_full_pass_checkpoint(
         or (
             (((official_full_gate.get("status") or {}).get(
                 "certification_identity"
-            ) or {}).get("spec") or {}).get("bootstrap_root_id")
+            ) or {}).get("spec") or {}).get("bootstrap_control_id")
         )
     )
     target_stage = (
@@ -737,7 +1371,7 @@ async def _run_official_full_commit_gate(
     )
     from official_certification_job import start_or_poll_job
 
-    # A manually started bootstrap-full job is deliberately outside the
+    # A manually started bootstrap-first-strict job is deliberately outside the
     # automatic evolution path.  Once it has produced a valid content-bound
     # full certificate, commit_bot must publish that exact certificate instead
     # of requiring another already-published opponent (which cannot exist for
@@ -762,7 +1396,7 @@ async def _run_official_full_commit_gate(
             else {}
         )
         completed_bootstrap_authorization = None
-        if existing_spec.get("bootstrap_root_id"):
+        if existing_spec.get("bootstrap_control_id"):
             from official_bootstrap import (
                 validate_completed_operator_bootstrap_authorization,
             )
@@ -812,7 +1446,9 @@ async def _run_official_full_commit_gate(
             "certification_identity": identity,
             "issues": existing_status.get("issues") or [],
             "reused_existing_certificate": True,
-            "bootstrap_certificate": bool(existing_spec.get("bootstrap_root_id")),
+            "bootstrap_certificate": bool(
+                existing_spec.get("bootstrap_control_id")
+            ),
             "completed_bootstrap_authorization": (
                 completed_bootstrap_authorization
             ),
@@ -829,7 +1465,7 @@ async def _run_official_full_commit_gate(
             "passed": False,
             "outcome": "operator_bootstrap_required",
             "operator_action_required": True,
-            "action": "run_explicit_bootstrap_full",
+            "action": "run_explicit_first_strict_bootstrap",
             "error": "OFFICIAL FULL CERTIFICATION BLOCKED: no eligible official EXE opponent.",
             "version": v,
             "source_v": source_v,
@@ -919,6 +1555,11 @@ async def commit_bot(args):
     review_approved = args.get("review_approved", False)
 
     active_ckpt = _matching_checkpoint(v, source_v)
+    if (active_ckpt or {}).get("stage") == "publishing":
+        _set_pipeline_status(f"Recovering publication v{v}")
+        return _json_tool_result(
+            _resume_publication_transaction(v, source_v, active_ckpt)
+        )
     existing_infra, infra_error = _owned_infrastructure_failure(active_ckpt, "commit_bot")
     if infra_error:
         return _json_tool_result({
@@ -1055,7 +1696,7 @@ async def commit_bot(args):
                     "source_v": source_v,
                     "checkpoint_stage": "official_bootstrap_required",
                     "opponent_selection": official_full_gate.get("opponent_selection"),
-                    "operator_action": "run_explicit_bootstrap_full",
+                    "operator_action": "run_explicit_first_strict_bootstrap",
                     "automatic_bootstrap_forbidden": True,
                 },
             )
@@ -1066,16 +1707,16 @@ async def commit_bot(args):
             "committed": False,
             "outcome": "operator_bootstrap_required",
             "operator_action_required": True,
-            "action": "run_explicit_bootstrap_full",
+            "action": "run_explicit_first_strict_bootstrap",
             "automatic_bootstrap_forbidden": True,
             "version": v,
             "source_v": source_v,
             "checkpoint_stage": "official_bootstrap_required",
             "official_full_gate": official_full_gate,
             "directive": (
-                "Stop the orchestrator. Run scripts/official_certify.py bootstrap-full "
-                "with the repository-pinned root and explicit acknowledgement. After it "
-                "succeeds, call commit_bot manually; never let the LLM select or consume the root."
+                "Stop the orchestrator. Run scripts/official_certify.py "
+                "bootstrap-first-strict with the current system control and explicit "
+                "one-time acknowledgement. After it succeeds, call commit_bot manually."
             ),
         })
     if official_full_gate.get("pending"):
@@ -1237,44 +1878,9 @@ async def commit_bot(args):
         })
     ckpt = read_pipeline_checkpoint() or ckpt
 
-    # fix-6: novelty gate — warn (advisory) if new bot doesn't add behavioral
-    # diversity. This is advisory-only: it does NOT block the commit, because
-    # a bot can improve by fine-tuning within a niche. The warning feeds the
-    # archivist and next generation's Master context.
+    # Diversity evidence is owned by generation-frozen native TCP snapshots.
+    # Publication never reopens an auxiliary live behavior archive.
     novelty_info = {}
-    try:
-        from behavior_diversity import (
-            compute_decision_fingerprint, compute_delta_vendi,
-            load_fingerprints, save_fingerprint,
-        )
-        from evolution_infra import get_active_bots
-        candidate_bot = bot_name(v)
-        new_fp = compute_decision_fingerprint(candidate_bot)
-        pool_bots = get_active_bots()
-        # Build pool fingerprints from stored data
-        stored = load_fingerprints()
-        pool_fps = [stored[b] for b in pool_bots if b in stored and b != candidate_bot]
-        if pool_fps:
-            import numpy as np
-            pool_arr = np.stack(pool_fps)
-            delta_vs = compute_delta_vendi(pool_arr, new_fp)
-            novelty_info = {
-                "delta_vendi_score": round(float(delta_vs), 4),
-                "pool_size": len(pool_fps),
-            }
-            if delta_vs < 0.05:
-                novelty_info["novelty_warning"] = (
-                    f"Low behavioral novelty: delta_VS={delta_vs:.4f} < 0.05. "
-                    f"The new bot occupies a similar behavioral niche as existing pool bots."
-                )
-                _log.warning(
-                    "Novelty gate advisory for v%d: delta_VS=%.4f < 0.05",
-                    v, delta_vs,
-                )
-        # Save the new bot's fingerprint for future novelty checks
-        save_fingerprint(candidate_bot, new_fp)
-    except Exception as e:
-        _log.warning("Novelty gate skipped (non-fatal): %s", e)
 
     ratings = load_ratings()
     p = ratings.get(bot_name(v))
@@ -1287,7 +1893,6 @@ async def commit_bot(args):
     rating_info = f"rating: r={p.r:.1f} rd={p.rd:.1f}{wr_str}" if p else ""
 
     official_certificate = None
-    local_publish_retry = git_has_tag(v)
     if official_certification_status:
         from official_certification import official_full_certified
 
@@ -1304,7 +1909,7 @@ async def commit_bot(args):
         certificate_spec = (
             identity.get("spec") if isinstance(identity.get("spec"), dict) else {}
         )
-        if certificate_spec.get("bootstrap_root_id") and not local_publish_retry:
+        if certificate_spec.get("bootstrap_control_id"):
             from official_bootstrap import (
                 validate_completed_operator_bootstrap_authorization,
             )
@@ -1326,78 +1931,139 @@ async def commit_bot(args):
                     "source_v": source_v,
                     "validation": completed_rebind,
                 })
-        official_certificate = {
-            "certificate_digest": official_certification_status.get("certificate_digest"),
-            "candidate_hash": identity.get("candidate_hash"),
-            "policy_id": official_certification_status.get("policy_id"),
-            "certificate_path": official_certification_status.get("certificate_path"),
-            "certification_identity": identity,
-        }
-
-    parent2_v = ckpt.get("parent2_v") if ckpt else None
-    if local_publish_retry:
-        tag_matches, mismatch = _existing_local_bot_tag_matches_certificate(
-            v,
-            official_certificate or {},
-        )
-        if not tag_matches:
-            return _json_tool_result({
-                "error": "COMMIT BLOCKED: existing local bot tag does not match the current certified artifact.",
-                "version": v,
-                "source_v": source_v,
-                "reason": mismatch,
-            })
-        push_ok = (
-            _push_existing_bot_refs(v)
-            if evolution_git_push_enabled() or evolution_git_push_required()
-            else False
-        )
-    else:
-        push_ok = git_commit_bot(
-            v,
-            source_v,
-            strategy,
-            rating_info=rating_info,
-            parent2_v=parent2_v,
-            official_certificate=official_certificate,
+        official_certificate = _official_certificate_projection(
+            official_certification_status
         )
 
-    # Verify tag was created
-    if not git_has_tag(v):
+    # Official certification may take minutes.  Re-open the checkpoint and
+    # force the complete gate ledger (including the empty strict-pool receipt)
+    # through its live validators after certification and immediately before
+    # any Git tag/commit/push action.  A strict publication that appeared while
+    # the EXE job was running therefore revokes the one-time control authority.
+    ckpt = read_pipeline_checkpoint() or ckpt
+    final_ledger = validate_commit_gate_ledger(
+        v,
+        source_v,
+        ckpt,
+        bot_dir=bot_dir,
+    )
+    if final_ledger["missing_gates"] or final_ledger["failed_gates"]:
         return _json_tool_result({
-            "error": f"Git tag {bot_tag(v)} not found after commit. Git operations may have failed.",
-            "version": v,
-        })
-
-    if evolution_git_push_required() and not push_ok:
-        log_system_event(
-            "pipeline.bot_publish_required_failed",
-            "error",
-            f"v{v} is committed and tagged locally but required origin publication failed",
-            {
-                "version": v,
-                "source_v": source_v,
-                "tag": bot_tag(v),
-                "local_publish_retry": local_publish_retry,
-                "checkpoint_preserved": True,
-            },
-        )
-        return _json_tool_result({
-            "error": "COMMIT PENDING: required push to origin failed.",
+            "error": (
+                "COMMIT BLOCKED: final gate ledger drifted after official "
+                "certification."
+            ),
             "version": v,
             "source_v": source_v,
-            "committed": False,
-            "local_committed": True,
-            "push_ok": False,
-            "checkpoint_preserved": True,
-            "completed_sentinel_written": False,
-            "directive": (
-                "Keep the verified checkpoint and retry commit_bot after origin is reachable. "
-                "The retry will verify the existing tag/certificate and push refs without creating another commit."
-            ),
+            "checkpoint_stage": final_ledger["checkpoint_stage"],
+            "missing_gates": final_ledger["missing_gates"],
+            "failed_gates": final_ledger["failed_gates"],
+            "gate_results": final_ledger["gate_results"],
         })
 
-    (bot_dir / ".completed").touch()
+    # Linearize the publication before the first Git mutation.  A pre-existing
+    # tracked candidate/tag without this durable intent is ambiguous legacy
+    # debris and must never be adopted implicitly.
+    if git_has_tag(v) or git_dir_is_committed(v):
+        return _json_tool_result({
+            "error": (
+                "COMMIT BLOCKED: candidate already has Git publication effects "
+                "but no matching durable publication intent."
+            ),
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_preserved": True,
+        })
+    if not official_certificate:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: official certificate projection is missing.",
+            "version": v,
+            "source_v": source_v,
+        })
+    try:
+        from national_runtime_authority import strict_published_bot_names
+        from official_certification import publish_certificate_attestation
+        from publication_transaction import (
+            build_publication_intent,
+            file_sha256,
+            publication_gate_ledger_digest,
+        )
+
+        certificate_publication = publish_certificate_attestation(
+            official_certification_status,
+            bot_dir,
+        )
+        certificate_relative_path = str(
+            certificate_publication.get("relative_path") or ""
+        )
+        certificate_path = PROJECT_ROOT / certificate_relative_path
+        publication_intent = build_publication_intent(
+            checkpoint=ckpt,
+            candidate_artifact_hash=str(
+                official_certificate.get("candidate_hash") or ""
+            ),
+            certificate_digest=str(
+                official_certificate.get("certificate_digest") or ""
+            ),
+            certificate_policy_id=str(
+                official_certificate.get("policy_id") or ""
+            ),
+            official_status=official_certification_status,
+            certificate_relative_path=certificate_relative_path,
+            certificate_file_sha256=file_sha256(certificate_path),
+            certificate_attestation_digest=str(
+                certificate_publication.get("attestation_digest") or ""
+            ),
+            final_gate_ledger_digest=publication_gate_ledger_digest(final_ledger),
+            strategy_tag=strategy,
+            rating_info=rating_info,
+            baseline_head=_git("rev-parse", "refs/heads/main").strip(),
+            baseline_remote_main=_git(
+                "rev-parse", "refs/remotes/origin/main", check=False
+            ).strip(),
+            baseline_remote_completion_refs=(
+                remote_completion_ref_snapshot()
+                if (
+                    evolution_git_push_required()
+                    or evolution_git_push_enabled()
+                )
+                else {}
+            ),
+            prepublication_strict_bots=strict_published_bot_names(),
+            remote_publication_required=evolution_git_push_required(),
+            remote_publication_enabled=evolution_git_push_enabled(),
+        )
+    except Exception as exc:
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: publication intent could not be built.",
+            "version": v,
+            "source_v": source_v,
+            "reason": f"{type(exc).__name__}: {str(exc)[:500]}",
+        })
+    if not write_pipeline_checkpoint(
+        v,
+        source_v,
+        "publishing",
+        publication_intent=publication_intent,
+        expected_checkpoint_revision=(ckpt or {}).get("checkpoint_revision"),
+        expected_checkpoint_stage=(ckpt or {}).get("stage"),
+        expected_workflow_run_id=(ckpt or {}).get("workflow_run_id"),
+    ):
+        return _json_tool_result({
+            "error": "COMMIT BLOCKED: publication intent checkpoint CAS failed.",
+            "version": v,
+            "source_v": source_v,
+            "checkpoint_preserved": True,
+        })
+    publishing_ckpt = read_pipeline_checkpoint()
+    publication_result = _resume_publication_transaction(
+        v,
+        source_v,
+        publishing_ckpt,
+    )
+    if publication_result.get("committed") is not True:
+        return _json_tool_result(publication_result)
+    push_ok = bool(publication_result.get("push_ok"))
 
     # Write reap_signal early so daemon discovers new bot immediately, even if archive/timeout interrupts later
     reap_signal = RESULTS_DIR / ".reap_signal"
@@ -1458,42 +2124,9 @@ async def commit_bot(args):
     except Exception as e:
         _log.warning("Archive generation failed for v%d: %s", v, e)
 
-    # --- Meta-3: Record Critic Calibration Data (before clearing checkpoint) ---
-    # fix-2: Write rating_delta=None as placeholder. The real delta is backfilled
-    # asynchronously by reconcile_critic_calibration() once the daemon converges
-    # the bot's rating (rd < 60, games >= MIN_GAMES_FOR_EVAL). Writing the stale
-    # r-2*rd value at commit time was 98% zero (new bot rd=350 → delta~0),
-    # rendering calibration inert.
-    try:
-        if ckpt:
-            critic_gate = ckpt.get("gate_results", {}).get("critic", {})
-            critic_score = critic_gate.get("score", 0)
-            cal_file = RESULTS_DIR / "critic_calibration.jsonl"
-            cal_entry = json.dumps({
-                "version": v, "source_v": source_v,
-                "critic_score": critic_score,
-                "rating_delta": None,  # backfilled by reconcile_critic_calibration()
-                "reconciled": False,   # marker for reconcile to find unfilled rows
-                "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            })
-            with open(cal_file, "a", encoding="utf-8") as _cf:
-                _cf.write(cal_entry + "\n")
-    except Exception:
-        pass  # Calibration recording is advisory
-
-    # --- Phase 3: FAMOU nemesis archive (advisory) ---
-    # Recompute the nemesis/champion relationships from the on-disk h2h so the
-    # next generation's precommit nemesis probe has a fallback snapshot when
-    # the live h2h scan finds no qualifying nemesis. The new bot itself has no
-    # h2h yet (it just got tagged), but committing it refreshes every other
-    # bot's nemesis mapping. Best-effort: never blocks the commit path.
-    try:
-        from nemesis_archive import write_nemesis_archive
-        write_nemesis_archive(get_active_bots())
-    except Exception as e:
-        _log.warning("Nemesis archive write failed for v%d: %s", v, e)
-
-    clear_pipeline_checkpoint()
+    # The publication transaction already cleared the exact publishing
+    # checkpoint with workflow/revision/stage CAS before advisory post-commit
+    # work begins.  Never perform an unconditional second clear here.
 
     try:
         from server.state import app_state
@@ -1543,60 +2176,6 @@ async def commit_bot(args):
 # Archivist Stage
 # ──────────────────────────────────────────────
 
-def _append_experience_updates(version: int, updates: list[str],
-                                strategic_advice: str = "", generation_assessment: str = "",
-                                require_committed: bool = True):
-    """Append archivist experience_updates, strategic_advice, and assessment to experience_pool.md."""
-    if require_committed and not git_has_tag(version):
-        try:
-            log_system_event(
-                "pipeline.experience_write_blocked_uncommitted", "warn",
-                f"Blocked experience_pool.md write for uncommitted v{version}",
-                {"version": version, "updates": updates[:5],
-                 "generation_assessment": generation_assessment},
-            )
-        except Exception:
-            pass
-        return
-
-    # Build the lines to insert
-    new_lines = [f"- **v{version}**: {u}" for u in updates if u.strip()]
-
-    # Add strategic_advice as a separate line so Master sees it
-    if strategic_advice and strategic_advice.strip():
-        label = f" ({generation_assessment})" if generation_assessment and generation_assessment != "neutral" else ""
-        new_lines.append(f"- **v{version} 归档建议{label}**: {strategic_advice.strip()}")
-
-    if not new_lines:
-        return
-
-    with locked_file(EXPERIENCE_FILE, "r") as f:
-        content = f.read()
-
-    lines = content.split("\n")
-
-    # Find the RECENT_LESSONS section and append after it
-    recent_idx = None
-    for i, line in enumerate(lines):
-        if line.strip() == "## RECENT_LESSONS":
-            recent_idx = i
-            break
-
-    if recent_idx is not None:
-        # Insert after the ## RECENT_LESSONS header
-        insert_at = recent_idx + 1
-        for j, new_line in enumerate(new_lines):
-            lines.insert(insert_at + j, new_line)
-    else:
-        # Fallback: append at end
-        lines.append("")
-        lines.append("## RECENT_LESSONS")
-        lines.extend(new_lines)
-
-    with locked_file(EXPERIENCE_FILE, "w") as f:
-        f.write("\n".join(lines) + "\n")
-
-
 def _git_dirty_paths() -> set[str]:
     """Return porcelain dirty paths without mutating git state."""
     out = _git("status", "--porcelain", check=False)
@@ -1620,14 +2199,16 @@ def _path_was_dirty(path: str, preexisting_dirty: set[str]) -> bool:
     return any(p == path or p.startswith(prefix) for p in preexisting_dirty)
 
 
-def _archive_housekeeping_commit(version: int, reap_result: dict | None,
-                                 experience_touched: bool,
-                                 preexisting_dirty: set[str]) -> dict:
+def _archive_housekeeping_commit(
+    version: int,
+    reap_result: dict | None,
+    preexisting_dirty: set[str],
+) -> dict:
     """Commit archivist/reap tracked-file side effects so the worktree stays clean.
 
     commit_bot owns the bot commit and tag. run_archivist can still create tracked
-    housekeeping changes after that point: experience_pool.md updates and tracked
-    bot deletions from auto-reap. Those must be explicit, path-scoped commits
+    housekeeping changes after that point: tracked bot deletions from auto-reap.
+    Those must be explicit, path-scoped commits
     rather than hidden user-facing dirty state.
     """
     _git_ensure_main_branch()
@@ -1649,11 +2230,6 @@ def _archive_housekeeping_commit(version: int, reap_result: dict | None,
         }
 
     candidates: list[tuple[str, str]] = []
-    if experience_touched:
-        try:
-            candidates.append((str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT)), "add"))
-        except ValueError:
-            pass
     if reap_result and reap_result.get("reaped") and reap_result.get("culled"):
         candidates.append((f"bots/{reap_result['culled']}", "add-u"))
 
@@ -1736,7 +2312,7 @@ def _archive_housekeeping_commit(version: int, reap_result: dict | None,
     }
 
 
-@tool("run_archivist", "Run post-commit archive audit for a completed generation. Verifies consistency, auto-reaps if needed, calls LLM for strategic assessment and experience pool updates.", {"version": int, "source_v": int})
+@tool("run_archivist", "Run the one-shot post-commit consistency/archive audit. Advisory notes stay in the content-bound archive snapshot and never enter prompt evidence directly.", {"version": int, "source_v": int})
 async def run_archivist(args):
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
@@ -1831,37 +2407,28 @@ async def run_archivist(args):
     if review_info:
         snapshot["reviewer_context"] = review_info
 
-    # 4. LLM archivist analysis — run every commit to populate experience pool
+    # 4. Content-bound archive annotation; never a strategy-memory writer.
     llm_result = None
-    experience_touched = False
     try:
-        from experience_archivist import _run_archivist_analysis
-        llm_result = await _run_archivist_analysis(v, source_v, snapshot, ui)
+        from cycle_archivist import run_cycle_archivist_analysis
+        llm_result = await run_cycle_archivist_analysis(v, source_v, snapshot, ui)
         # Append LLM notes to archive snapshot
         if llm_result and archive_path.exists():
             snapshot["archivist_notes"] = llm_result
             with locked_file(archive_path, "w") as f:
                 json.dump(snapshot, f, indent=2, ensure_ascii=False)
 
-        # Write experience_updates + strategic_advice to experience_pool.md
-        if llm_result and isinstance(llm_result, dict):
-            updates = llm_result.get("experience_updates", [])
-            advice = llm_result.get("strategic_advice", "")
-            assessment = llm_result.get("generation_assessment", "")
-            if updates or (advice and advice.strip()):
-                _append_experience_updates(
-                    v, updates,
-                    strategic_advice=advice,
-                    generation_assessment=assessment,
-                )
-                experience_touched = True
+        # Cross-generation lessons are produced only by the identity-bound
+        # native replay memory pipeline.  Free-form Archivist text remains
+        # advisory inside this exact archive snapshot and is never promoted to
+        # prompt evidence or a tracked markdown pool.
     except Exception as e:
         llm_result = {"error": str(e)}
 
     housekeeping_commit = None
     try:
         housekeeping_commit = _archive_housekeeping_commit(
-            v, reap_result, experience_touched, preexisting_dirty
+            v, reap_result, preexisting_dirty
         )
     except Exception as e:
         housekeeping_commit = {"error": str(e)}
@@ -2174,8 +2741,9 @@ async def run_crossover(args):
     try:
         from workflow_profiles import get_workflow_profile
 
-        native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
-        if native_tcp and (parent_a_dir / "national_bot.py").exists():
+        if getattr(get_workflow_profile(), "national_execution_mode", None) != "native_tcp":
+            raise RuntimeError("crossover supports only native_tcp parents")
+        if (parent_a_dir / "national_bot.py").exists():
             from national_capability_contract import evaluate_national_capabilities
             from runtime_architecture_policy import build_architecture_policy
 
@@ -2458,6 +3026,39 @@ async def run_crossover(args):
         "suggested_merge_approach": "",
         "audit_unavailable": True,
     }
+    committed_projection_receipt = (
+        ((authoritative_ckpt.get("audit_context") or {}).get("crossover") or {})
+        if isinstance(authoritative_ckpt, dict)
+        else {}
+    )
+    committed_projection_resume = False
+    if (
+        authoritative_stage == "crossover_running"
+        and isinstance(committed_projection_receipt, dict)
+        and len(str(
+            committed_projection_receipt.get("isolated_output_artifact_hash")
+            or ""
+        )) == 64
+        and target_dir.is_dir()
+    ):
+        try:
+            from bot_artifact import hash_path
+
+            committed_projection_resume = hash_path(target_dir) == str(
+                committed_projection_receipt["isolated_output_artifact_hash"]
+            )
+        except Exception:
+            committed_projection_resume = False
+    if committed_projection_resume:
+        stored_compat = committed_projection_receipt.get("compatibility")
+        if not isinstance(stored_compat, dict):
+            return _json_tool_result({
+                "error": "CROSSOVER_COMMITTED_COMPATIBILITY_RECEIPT_MISSING",
+                "success": False,
+                "failure_class": "integrity",
+                "target_v": target_v,
+            })
+        compat = stored_compat
     if resume_prepared_transition is not None and isinstance(active_crossover_ckpt, dict):
         stored_compat = (
             ((active_crossover_ckpt.get("audit_context") or {}).get("crossover") or {})
@@ -2467,7 +3068,7 @@ async def run_crossover(args):
             compat = stored_compat
     try:
         from audit_agents import _run_crossover_compatibility_audit
-        if resume_prepared_transition is None:
+        if resume_prepared_transition is None and not committed_projection_resume:
             compat = await _run_crossover_compatibility_audit(
                 parent_a,
                 parent_b,
@@ -2494,6 +3095,8 @@ async def run_crossover(args):
                     "control_effect": "merge_guidance_only",
                 },
             )
+    except LLMAvailabilityBlocked:
+        raise
     except Exception as e:
         _log.warning("Crossover compat audit error (skipping): %s", e)
 
@@ -2508,6 +3111,24 @@ async def run_crossover(args):
             architecture_policy=architecture_policy,
             capability_context=capability_context,
         )
+
+    if (
+        isinstance(success, dict)
+        and success.get("outcome") == "concurrent_effect_in_progress"
+    ):
+        # Another process owns the only valid synthesis lease.  This is a
+        # transient idempotency response: do not write an infrastructure
+        # overlay or mutate the selected checkpoint underneath the owner.
+        return _json_tool_result({
+            "error": "CROSSOVER_SYNTHESIS_IN_PROGRESS",
+            "success": False,
+            "retryable": True,
+            "failure_class": "concurrency",
+            "target_v": target_v,
+            "parent_a": parent_a,
+            "parent_b": parent_b,
+            "issue": success.get("issue"),
+        })
 
     if isinstance(success, dict) and success.get("outcome") == "infrastructure_failure":
         failures = success.get("infrastructure_failures") or []
@@ -2526,6 +3147,49 @@ async def run_crossover(args):
             architecture_policy=architecture_policy,
             metadata={"resumed_preserved_candidate": False},
         )
+
+    post_synthesis_checkpoint = read_pipeline_checkpoint() or {}
+    post_synthesis_crossover_receipt = (
+        ((post_synthesis_checkpoint.get("audit_context") or {}).get("crossover") or {})
+        if isinstance(post_synthesis_checkpoint, dict)
+        else {}
+    )
+    if (
+        success
+        and resume_prepared_transition is None
+        and post_synthesis_checkpoint.get("stage") == "crossover_running"
+    ):
+        expected_output_hash = str(
+            post_synthesis_crossover_receipt.get("isolated_output_artifact_hash")
+            or ""
+        )
+        receipt_compat = post_synthesis_crossover_receipt.get("compatibility")
+        try:
+            from bot_artifact import hash_path
+
+            actual_output_hash = hash_path(target_dir)
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "CROSSOVER_COMMITTED_OUTPUT_IDENTITY_UNAVAILABLE",
+                "success": False,
+                "failure_class": "integrity",
+                "message": f"{type(exc).__name__}: {str(exc)[:240]}",
+            })
+        if (
+            len(expected_output_hash) != 64
+            or actual_output_hash != expected_output_hash
+            or not isinstance(receipt_compat, dict)
+        ):
+            return _json_tool_result({
+                "error": "CROSSOVER_COMMITTED_RECEIPT_MISMATCH",
+                "success": False,
+                "failure_class": "integrity",
+                "expected_output_artifact_hash": expected_output_hash,
+                "actual_output_artifact_hash": actual_output_hash,
+            })
+        # The compatibility evidence that guided synthesis is authoritative;
+        # a resumed wrapper invocation may not replace it with a fresh LLM call.
+        compat = receipt_compat
 
     # Crossover is a preparation operator.  Its child is a recombination
     # baseline, not a completed generation plan: direction audit, optional
@@ -2762,6 +3426,11 @@ async def run_crossover(args):
             prepare_scope_files=prepare_scope_files,
             audit_context={
                 "crossover": {
+                    **(
+                        post_synthesis_crossover_receipt
+                        if isinstance(post_synthesis_crossover_receipt, dict)
+                        else {}
+                    ),
                     "parent_a": parent_a,
                     "parent_b": parent_b,
                     "compatibility": compat,

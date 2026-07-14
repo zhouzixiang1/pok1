@@ -163,6 +163,37 @@ def test_fenced_completion_rejects_stale_worker(tmp_path):
     assert store.effect("worker-149")["result_payload"] == {"artifact": "new"}
 
 
+def test_strict_completion_rejects_current_but_expired_lease(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="strict-worker-149",
+        kind="strict-native-match",
+        input_payload={"hands": 70},
+        causation_id="request-strict-worker-149",
+    )
+    lease = store.claim_effect(
+        "strict-worker-149",
+        owner="worker-a",
+        lease_seconds=1,
+        now=10,
+    )
+
+    expired = store.complete_effect(
+        "strict-worker-149",
+        lease_epoch=lease.lease_epoch,
+        completion_id="expired-completion",
+        result_payload={"hands": 70},
+        causation_id="expired-complete",
+        require_live_lease=True,
+        now=11,
+    )
+
+    assert expired["accepted"] is False
+    assert expired["reason"] == "expired_lease"
+    assert store.effect("strict-worker-149")["status"] == "running"
+
+
 def test_three_failures_exhaust_one_logical_effect(tmp_path):
     store = _store(tmp_path)
     store.request_effect(
@@ -201,6 +232,69 @@ def test_three_failures_exhaust_one_logical_effect(tmp_path):
             owner="worker-4",
             lease_seconds=1,
         )
+
+
+def test_deferred_effect_releases_lease_without_consuming_attempt(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="worker_llm",
+        input_payload={"task_digest": "stable"},
+        causation_id="request-worker-149",
+        max_attempts=3,
+    )
+    first = store.claim_effect(
+        "worker-149", owner="worker-a", lease_seconds=60, now=10
+    )
+
+    deferred = store.defer_effect(
+        "worker-149",
+        lease_epoch=first.lease_epoch,
+        reason="billing-cycle usage limit",
+        metadata={"availability": {"evidence_digest": "a" * 64}},
+        causation_id="worker-149-deferred-1",
+    )
+
+    assert deferred["status"] == "deferred"
+    assert deferred["attempt"] == 0
+    assert deferred["lease_epoch"] == 1
+    assert deferred["lease_owner"] is None
+    assert deferred["lease_until"] is None
+    assert store.pending_outbox(now=100) == []
+    event = store.events("149#0")[-1]
+    assert event.event_type == "EffectDeferred"
+    assert event.payload["claimed_attempt"] == 1
+    assert event.payload["restored_attempt"] == 0
+    assert event.payload["metadata"]["availability"]["evidence_digest"] == (
+        "a" * 64
+    )
+    with pytest.raises(WorkflowConflict, match="explicit resume"):
+        store.claim_effect(
+            "worker-149", owner="worker-b", lease_seconds=60, now=20
+        )
+
+    resumed = store.resume_effect(
+        "worker-149", causation_id="worker-149-resumed-1"
+    )
+    assert resumed["status"] == "retry"
+    assert [row["effect_id"] for row in store.pending_outbox()] == [
+        "worker-149"
+    ]
+    second = store.claim_effect(
+        "worker-149", owner="worker-b", lease_seconds=60, now=20
+    )
+    assert second.attempt == 1
+    assert second.lease_epoch == 2
+
+    stale = store.complete_effect(
+        "worker-149",
+        lease_epoch=first.lease_epoch,
+        completion_id="stale-after-deferral",
+        result_payload={"artifact": "stale"},
+        causation_id="stale-after-deferral",
+    )
+    assert stale["accepted"] is False
 
 
 def test_stale_failure_cannot_overwrite_new_lease(tmp_path):

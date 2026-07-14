@@ -1,7 +1,7 @@
-"""手牌评估模块。
+"""国赛 TCP 规则使用的手牌评估模块。
 
-从 engine/judge.py 移植并适配 (suit, rank) 元组格式。
-支持完整 9 级牌型判定 + kicker 比较，含 wheel 顺子 A-2-3-4-5。
+直接消费国赛 ``(suit, rank)`` 元组编码，支持完整 9 级牌型、
+kicker 比较和 wheel 顺子 A-2-3-4-5。
 """
 from itertools import combinations
 

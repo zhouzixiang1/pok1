@@ -1,19 +1,24 @@
 """Bot management endpoints — list bots, detail, source code."""
 
 import io
-import re
 import subprocess
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 
-from server.cache import cached_read
-from server.routes._helpers import build_bot_summary
-from rating_snapshot import build_strength_rows
-from evolution_infra import active_bot_protocol_errors, get_active_bots
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version, parse_tag_version, version_sort_key
+from server.routes._helpers import build_bot_summary, load_strict_strength_snapshot
+from evolution_infra import (
+    get_published_active_bots_read_only,
+)
+from bot_namespace import (
+    ROLE_PARENT_SOURCE,
+    bot_name,
+    bot_tag,
+    resolve_national_bot_spec,
+    version_sort_key,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -26,129 +31,49 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 router = APIRouter(prefix="/api/bots", tags=["bots"])
 
 
-def _load_ratings() -> dict:
-    try:
-        return cached_read("ratings", RATINGS_FILE) or {}
-    except Exception as e:
-        import logging
-        logging.getLogger("bots").warning("Failed to load ratings: %s", e)
-        return {}
+def _strict_snapshot() -> dict:
+    snapshot = load_strict_strength_snapshot(RESULTS_DIR)
+    return snapshot if snapshot.get("available") is True else {}
 
 
-def _tagged_versions() -> set[int]:
+def _strict_published_inventory() -> list[str]:
+    """Return publication authority independently of daemon-cycle freshness."""
+
     try:
-        result = subprocess.run(
-            ["git", "tag", "-l", "national-bot-v*", "--sort=version:refname"],
-            capture_output=True,
-            text=True,
-            cwd=str(PROJECT_ROOT),
-            timeout=10,
-        )
+        from epoch_authority import strict_epoch_projection
+
+        projection = strict_epoch_projection(include_checkpoint=False)
     except Exception:
-        return set()
-    if result.returncode != 0:
-        return set()
-    versions = set()
-    for line in result.stdout.splitlines():
-        version = parse_tag_version(line.strip())
-        if version is not None:
-            versions.add(version)
-    return versions
+        return []
+    if not projection.get("initialized"):
+        return []
+    names = projection.get("active_bots")
+    if not isinstance(names, list) or len(names) != len(set(names)):
+        return []
+    return sorted((str(name) for name in names), key=version_sort_key)
 
 
-def _reaped_versions() -> set[int]:
-    path = RESULTS_DIR / "reaped_bots.jsonl"
-    versions = set()
-    if not path.exists():
-        return versions
-    try:
-        for line in path.read_text(errors="replace").splitlines():
-            match = re.search(r'"version"\s*:\s*(\d+)', line)
-            if match:
-                versions.add(int(match.group(1)))
-    except OSError:
-        return versions
-    return versions
+def _inventory_strength_snapshot(active_names: list[str]) -> dict:
+    """Use rating evidence only when it describes this exact published pool."""
+
+    snapshot = _strict_snapshot()
+    if set(snapshot.get("active_bots") or []) != set(active_names):
+        return {}
+    return snapshot
 
 
-def _bot_dirs(include_graveyard: bool) -> list[tuple[Path, bool]]:
-    dirs: list[tuple[Path, bool]] = []
-    if BOTS_DIR.exists():
-        for path in BOTS_DIR.iterdir():
-            if path.is_dir() and path.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(path.name):
-                dirs.append((path, False))
-    if include_graveyard:
-        graveyard_dir = BOTS_DIR / "graveyard"
-        if graveyard_dir.exists():
-            for path in graveyard_dir.iterdir():
-                if path.is_dir() and path.name.startswith(ACTIVE_BOT_PREFIX) and parse_bot_version(path.name):
-                    dirs.append((path, True))
-    return sorted(dirs, key=lambda item: version_sort_key(item[0].name))
-
-
-def _status_label(status: str) -> str:
-    return {
-        "active": "活跃",
-        "candidate": "候选",
-        "reaped": "已淘汰",
-        "protocol_ineligible": "协议不合规",
-        "untagged": "未打标签",
-        "incomplete": "未完成",
-        "graveyard": "已归档",
-        "inactive": "历史",
-    }.get(status, status)
-
-
-def _decorate_lifecycle(
-    summary: dict,
-    *,
-    active_names: set[str],
-    tagged_versions: set[int],
-    reaped_versions: set[int],
-    is_graveyard: bool,
-) -> dict:
-    version = summary["version"]
-    name = summary["name"]
-    completed = bool(summary.get("completed"))
-    tagged = version in tagged_versions
-    reaped = version in reaped_versions
-    protocol_errors = [] if is_graveyard else active_bot_protocol_errors(version)
-    reasons: list[str] = []
-
-    if is_graveyard:
-        status = "graveyard"
-        reasons.append("bot source is under bots/graveyard/")
-    elif name in active_names:
-        status = "active"
-    elif not completed and not tagged:
-        status = "candidate"
-        reasons.append("missing .completed sentinel and national-bot tag")
-    elif reaped:
-        status = "reaped"
-        reasons.append("removed from active pool by reap_weakest")
-    elif protocol_errors:
-        status = "protocol_ineligible"
-        reasons.append("fails current national native protocol contract")
-    elif not tagged:
-        status = "untagged"
-        reasons.append("missing national-bot-v<N> tag")
-    elif not completed:
-        status = "incomplete"
-        reasons.append("missing .completed sentinel")
-    else:
-        status = "inactive"
-        reasons.append("not selected into current active pool")
+def _decorate_published(summary: dict) -> dict:
+    """Project the already-resolved published pool without lifecycle guessing."""
 
     summary.update({
-        "active": status == "active",
-        "tagged": tagged,
-        "reaped": reaped,
-        "protocol_eligible": not protocol_errors,
-        "protocol_errors": protocol_errors,
-        "lifecycle_status": status,
-        "status_label": _status_label(status),
-        "status_reasons": reasons,
-        "graveyard": is_graveyard,
+        "active": True,
+        "tagged": True,
+        "reaped": False,
+        "protocol_eligible": True,
+        "protocol_errors": [],
+        "lifecycle_status": "active",
+        "status_label": "活跃",
+        "status_reasons": [],
     })
     return summary
 
@@ -158,100 +83,93 @@ def build_bot_listing(
     bot_stats_data: dict,
     h2h_data: dict,
     *,
-    include_graveyard: bool = False,
     include_history: bool = True,
+    active_names: list[str] | tuple[str, ...] | None = None,
+    strength_rows_data: list[dict] | tuple[dict, ...] | None = None,
+    strength_evidence_available: bool = True,
 ) -> dict:
-    active_names = set(get_active_bots())
-    active_dirs = [BOTS_DIR / name for name in active_names if (BOTS_DIR / name).is_dir()]
+    if active_names is None:
+        try:
+            active_names = get_published_active_bots_read_only()
+        except Exception:
+            active_names = []
+    active_names_set = set(active_names)
+    active_dirs = [
+        BOTS_DIR / name
+        for name in active_names_set
+        if (BOTS_DIR / name).is_dir()
+    ]
     strength_rows = {
-        row["name"]: row
-        for row in build_strength_rows(
-            ratings,
-            bot_stats_data,
-            h2h_data,
-            active_bots=sorted(active_names, key=version_sort_key),
-            match_history_path=MATCH_HISTORY_FILE,
-        )
+        str(row.get("name")): row
+        for row in (strength_rows_data or [])
+        if isinstance(row, dict) and row.get("name") in active_names_set
     }
-    tagged_versions = _tagged_versions()
-    reaped_versions = _reaped_versions()
-
     active = []
     for path in sorted(active_dirs, key=lambda p: version_sort_key(p.name)):
         summary = build_bot_summary(path, path.name, ratings, bot_stats_data, h2h_data, strength_rows)
-        active.append(_decorate_lifecycle(
-            summary,
-            active_names=active_names,
-            tagged_versions=tagged_versions,
-            reaped_versions=reaped_versions,
-            is_graveyard=False,
-        ))
-
-    graveyard = []
-    history = []
-    for path, is_graveyard in _bot_dirs(include_graveyard):
-        summary = build_bot_summary(path, path.name, ratings, bot_stats_data, h2h_data, strength_rows)
-        summary = _decorate_lifecycle(
-            summary,
-            active_names=active_names,
-            tagged_versions=tagged_versions,
-            reaped_versions=reaped_versions,
-            is_graveyard=is_graveyard,
+        summary["strength_evidence_available"] = bool(strength_evidence_available)
+        summary["strength_evidence_status"] = (
+            "current_evaluation_cycle"
+            if strength_evidence_available
+            else "awaiting_first_rating_cycle"
         )
-        if is_graveyard:
-            graveyard.append(summary)
-        elif include_history:
-            history.append(summary)
+        active.append(_decorate_published(summary))
 
-    result = {"active": active, "graveyard": graveyard}
+    result = {"active": active}
     if include_history:
-        result["history"] = history
+        # The former inventory mixed unfinished/reaped directories into the
+        # same UI history surface.  Keep the response shape for clients, but
+        # only repeat the exact current published pool.
+        result["history"] = list(active)
         result["counts"] = {
             "active": len(active),
-            "history": len(history),
-            "graveyard": len(graveyard),
-            "candidate": sum(1 for bot in history if bot["lifecycle_status"] == "candidate"),
-            "protocol_ineligible": sum(1 for bot in history if bot["lifecycle_status"] == "protocol_ineligible"),
-            "reaped": sum(1 for bot in history if bot["lifecycle_status"] == "reaped"),
+            "history": len(active),
+            "candidate": 0,
+            "protocol_ineligible": 0,
+            "reaped": 0,
         }
     return result
 
 
 @router.get("")
 async def list_bots(
-    include_graveyard: bool = Query(False),
-    include_history: bool = Query(False),
+    include_history: bool = False,
 ):
-    """List active bots and optionally historical/inactive bot inventory."""
-    ratings = _load_ratings()
-    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = cached_read("h2h", H2H_FILE) or {}
+    """List only bots in the current strict published evaluation pool."""
+    active_names = _strict_published_inventory()
+    snapshot = _inventory_strength_snapshot(active_names)
     return build_bot_listing(
-        ratings,
-        bot_stats_data,
-        h2h_data,
-        include_graveyard=include_graveyard,
+        snapshot.get("ratings") or {},
+        snapshot.get("bot_stats") or {},
+        snapshot.get("h2h") or {},
         include_history=include_history,
+        active_names=active_names,
+        strength_rows_data=snapshot.get("selection_rows") or [],
+        strength_evidence_available=bool(snapshot),
     )
 
 
-def _resolve_bot_dir(version: int) -> Path:
-    """Resolve the bot source directory for a version.
-
-    Prefers a ``.completed`` copy (the committed truth) and prefers the active
-    pool over the graveyard when both exist. Raises 404 if unknown.
-    """
+def _resolve_bot_dir(
+    version: int,
+    active_names: list[str] | tuple[str, ...] | None = None,
+) -> Path:
+    """Resolve only a current published strict bot; never a candidate/archive."""
     name = bot_name(version)
+    active_names = (
+        list(active_names)
+        if active_names is not None
+        else _strict_published_inventory()
+    )
+    if name not in set(active_names):
+        raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
     active_dir = BOTS_DIR / name
-    graveyard_dir = BOTS_DIR / "graveyard" / name
-    if active_dir.exists() and (active_dir / ".completed").exists():
+    spec = resolve_national_bot_spec(
+        active_dir,
+        ROLE_PARENT_SOURCE,
+        repo_root=BOTS_DIR.parent,
+    )
+    if spec.eligible:
         return active_dir
-    if graveyard_dir.exists() and (graveyard_dir / ".completed").exists():
-        return graveyard_dir
-    if active_dir.exists():
-        return active_dir
-    if graveyard_dir.exists():
-        return graveyard_dir
     raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
 
 
@@ -259,22 +177,25 @@ def _resolve_bot_dir(version: int) -> Path:
 async def bot_detail(version: int):
     """Get detailed info about a specific bot version."""
     name = bot_name(version)
-    bot_dir = _resolve_bot_dir(version)
+    active_names = _strict_published_inventory()
+    snapshot = _inventory_strength_snapshot(active_names)
+    bot_dir = _resolve_bot_dir(version, active_names)
 
-    ratings = _load_ratings()
-    bot_stats_data = cached_read("bot_stats_detail", BOT_STATS_FILE) or {}
-    h2h_data = cached_read("h2h_detail", H2H_FILE) or {}
+    ratings = snapshot.get("ratings") or {}
+    bot_stats_data = snapshot.get("bot_stats") or {}
+    h2h_data = snapshot.get("h2h") or {}
     strength_rows = {
-        row["name"]: row
-        for row in build_strength_rows(
-            ratings,
-            bot_stats_data,
-            h2h_data,
-            active_bots=list(ratings.keys()),
-            match_history_path=MATCH_HISTORY_FILE,
-        )
+        str(row.get("name")): row
+        for row in (snapshot.get("selection_rows") or [])
+        if isinstance(row, dict)
     }
     summary = build_bot_summary(bot_dir, name, ratings, bot_stats_data, h2h_data, strength_rows)
+    summary["strength_evidence_available"] = bool(snapshot)
+    summary["strength_evidence_status"] = (
+        "current_evaluation_cycle"
+        if snapshot
+        else "awaiting_first_rating_cycle"
+    )
 
     # Try to get git parent from tag
     try:
@@ -301,8 +222,7 @@ async def bot_download(version: int):
     Packs the whole bot directory into an in-memory zip (bots are small, at
     most a few hundred KB). Bytecode caches (``__pycache__`` / ``.pyc``) and
     symlinks are excluded — the former are compile artifacts, the latter could
-    resolve outside the bot dir and leak unrelated files. Works for both active
-    and graveyard bots.
+    resolve outside the bot dir and leak unrelated files.
     """
     bot_dir = _resolve_bot_dir(version)
     bot_name = bot_dir.name
@@ -343,10 +263,12 @@ async def bot_code(version: int, filename: str):
         return PlainTextResponse("Invalid filename", status_code=400)
 
     name = bot_name(version)
-    # Check active and graveyard
-    for base in [BOTS_DIR / name, BOTS_DIR / "graveyard" / name]:
-        path = base / filename
-        if path.is_file():
-            return PlainTextResponse(path.read_text(errors="replace"))
+    try:
+        base = _resolve_bot_dir(version)
+    except HTTPException:
+        return PlainTextResponse(f"File not found: {filename}", status_code=404)
+    path = base / filename
+    if path.is_file() and not path.is_symlink():
+        return PlainTextResponse(path.read_text(errors="replace"))
 
     return PlainTextResponse(f"File not found: {filename}", status_code=404)

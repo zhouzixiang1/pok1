@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "policy_id": "national-tcp-policy-active-roles-v1",
+  "epoch": "national_tcp_policy_v1",
+  "roles": {
+    "parent_source": {
+      "required": [
+        "strict_national_bot_spec",
+        "annotated_completion_publication",
+        "signed_official-full-v5"
+      ]
+    },
+    "rating_pool": {
+      "required": [
+        "strict_national_bot_spec",
+        "annotated_completion_publication",
+        "signed_official-full-v5"
+      ]
+    },
+    "official_opponent": {
+      "required": [
+        "strict_national_bot_spec",
+        "annotated_completion_publication",
+        "signed_official-full-v5"
+      ],
+      "strength_weight": 0
+    }
+  },
+  "transitional_grants": "forbidden",
+  "historical_signed_ledger_root": {
+    "status": "retired",
+    "active_role_authority": false,
+    "executable": false
+  },
+  "first_strict_control": {
+    "control_id": "first_strict_control_v1",
+    "authority": "system_first_strict_control",
+    "formal_bootstrap_scope": "first_policy_bot_empty_pool_only",
+    "normal_official_opponent": false,
+    "one_time": true,
+    "strength_weight": 0,
+    "rating_weight": 0
+  }
+}

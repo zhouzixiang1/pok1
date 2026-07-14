@@ -1,4 +1,4 @@
-"""Durable Git-backed state for the national-native evolution epoch.
+"""Durable Git-backed lifecycle identity for national_tcp_policy_v1.
 
 The historical reaped-bot ledger is runtime-local JSONL.  It is useful as a
 migration source, but it cannot remain authoritative because a fresh clone can
@@ -11,6 +11,10 @@ silently lose it.  This module moves the durable facts into annotated Git tags:
 Until the migration marker exists, a missing, empty, or malformed legacy ledger
 is explicitly unavailable.  After migration, durable tags are authoritative and
 the ledger is read only to produce diagnostics.
+
+This registry preserves identity/tombstone/version continuity only. It never
+authorizes archived bot bytes, ratings, H2H, replay/experience, parent/opponent
+roles, or certification in the strict policy epoch.
 """
 
 from __future__ import annotations

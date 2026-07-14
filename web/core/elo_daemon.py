@@ -1,9 +1,8 @@
-"""
-Background Rating Daemon for Poker Bot Evolution.
+"""Current-epoch national TCP Glicko-2 rating daemon.
 
-Continuously runs mirror battles between active bots. Uses per-game Elo
-updates and maintains a Head-to-Head win/loss matrix. Continuous scheduling
-eliminates idle cores.
+Each admitted strength sample is one complete 70-hand local native TCP match.
+The sign of final net chips supplies win/loss/draw; magnitude is retained only
+as a secondary tie-breaker. Official EXE and Arena results are never admitted.
 
 Usage:
     python web/core/elo_daemon.py --pairs 5 --workers 12 --verbose
@@ -28,10 +27,9 @@ import logging
 
 log = logging.getLogger("pok.daemon")
 
-# Stable identifier for this daemon run, stamped into every rating_history
-# snapshot. Lets readers (stagnation_analyzer, etc.) filter to the single
-# continuous timeline produced by THIS run, ignoring snapshots from prior runs
-# that were concatenated into the same file (which corrupt trend analysis).
+# Stable identifier for this daemon run, stamped into every rating-history
+# snapshot. Generation planning only consumes the bounded tail published in an
+# immutable evaluation cycle; the id prevents cross-run rows entering that tail.
 # Set once in main(); remains None for ad-hoc save_ratings() calls outside a run.
 import uuid as _uuid
 daemon_run_id: str | None = None
@@ -43,17 +41,6 @@ daemon_last_cycle_manifest_digest: str | None = None
 daemon_last_cycle_save_num: int | None = None
 _daemon_writer_lease_fd: int | None = None
 
-try:
-    from battle_scheduler import (
-        BattleResult,
-        drain_pending_jobs,
-        requeue_unclaimed_on_startup,
-        write_result,
-    )
-    _SCHEDULER_AVAILABLE = True
-except Exception as e:
-    log.debug("Scheduler module not available: %s", e)
-    _SCHEDULER_AVAILABLE = False
 from concurrent.futures.process import BrokenProcessPool
 from datetime import datetime
 from system_log import log_system_event  # Group B: structured events for SIGTERM/orphan source attribution
@@ -64,7 +51,6 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(CORE_DIR))
 
 from glicko2 import Glicko2Player, update_rating_period, decay_rd
-from engine.battle import mirror_battle
 from evolution_infra import (
     pair_key,
     get_active_bots, load_ratings,
@@ -90,7 +76,6 @@ REPLAY_DIR = RESULTS_DIR / "match_replay"
 # A1 (INERTNESS fix, evolution-plan-refresh-jun21): per-bot stderr telemetry.
 # The daemon now captures bot stderr (FOLD_GATE_FIRE / SB_OPEN_OPP_SIZE / ...) that
 # _PersistentBot previously discarded; grep these files to verify detector firing.
-TELEMETRY_DIR = RESULTS_DIR / "bot_telemetry"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 MAX_REPLAY_FILES = 2000
 
@@ -110,22 +95,8 @@ DIVERSITY_COUNT_DECAY = 100
 SAVE_EVERY_N_GAMES = 20
 SAVE_INTERVAL_SEC = 60
 POLL_TIMEOUT = 0.5
-# v193 root-cause-audit (2026-06-26): the daemon's main loop was `while running
-# and in_flight` — once in_flight emptied (all mirror battles done / reap canceled
-# matches / pool recovered) the loop exited, and any external (precommit) job
-# submitted AFTER that point was never drained (stayed queued in battle_jobs.jsonl
-# forever). This keep-alive lets the daemon idle-spin and keep draining external
-# jobs even with empty in_flight. DAEMON_IDLE_MAX_SEC bounds the idle spin so a
-# truly idle daemon (no external jobs arriving) eventually exits and the monitor
-# can restart it; any external job submission resets the idle timer. Must exceed
-# the longest plausible precommit submit→drain gap (a generation's master+workers
-# phase can take ~20-40min before precommit submits jobs).
-DAEMON_IDLE_MAX_SEC = 1800  # 30 min idle cap
-# Heartbeat freshness: is_daemon_scheduler_capable() treats the daemon as
-# unhealthy if the heartbeat written into .daemon_pid is older than this. Must
-# exceed the main-loop iteration cadence (POLL_TIMEOUT=0.5s × per-iteration work,
-# including periodic save_cycle which can take seconds) with comfortable margin
-# so a healthy busy daemon is never misclassified as stalled.
+# Heartbeat freshness for process observability. This exceeds the main-loop
+# iteration cadence (including periodic cycle publication) with ample margin.
 HEARTBEAT_STALE_SEC = 120
 
 running = True
@@ -135,11 +106,11 @@ ACTION_STATS_REFRESH_INTERVAL_SEC = float(os.environ.get("POK_ACTION_STATS_REFRE
 _pick_match_log_state: dict[str, object] = {"last_signature": None, "last_ts": 0.0}
 OFFICIAL_JOB_RECONCILE_INTERVAL_SEC = float(os.environ.get(
     "POK_OFFICIAL_JOB_INTERVAL_SEC",
-    os.environ.get("POK_OFFICIAL_QUEUE_INTERVAL_SEC", "60"),
+    "60",
 ))
 OFFICIAL_JOB_RECONCILE_LIMIT = max(1, int(os.environ.get(
     "POK_OFFICIAL_JOB_LIMIT",
-    os.environ.get("POK_OFFICIAL_QUEUE_LIMIT", "1"),
+    "1",
 )))
 
 
@@ -177,6 +148,20 @@ def _release_daemon_writer_lease():
 
 def _single_writer_daemon(func):
     def wrapped(*args, **kwargs):
+        # CLI help is read-only documentation. It must remain inspectable while
+        # the one-time epoch reset is still pending and must not create results
+        # state or take the writer lease.
+        if not args and not kwargs and any(
+            item in {"-h", "--help"} for item in sys.argv[1:]
+        ):
+            return func()
+        # Fail before creating results/, taking the writer lease, loading
+        # aliases, or publishing an empty baseline.  The subprocess repeats
+        # the parent-side daemon_management guard so a direct CLI invocation
+        # and a reset/Popen race are both closed.
+        from epoch_authority import require_policy_epoch_initialized
+
+        require_policy_epoch_initialized("elo_daemon.cli")
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         _acquire_daemon_writer_lease()
         try:
@@ -187,15 +172,12 @@ def _single_writer_daemon(func):
     return wrapped
 
 
-def _write_heartbeat(scheduler_capable=True):
+def _write_heartbeat():
     """Refresh the last_heartbeat field in .daemon_pid atomically.
 
-    v193 root-cause-audit (2026-06-26): the daemon only wrote .daemon_pid once
-    at startup, so is_daemon_scheduler_capable() (a static `scheduler_capable`
-    flag) could not detect a stalled main loop (process alive but not draining
-    jobs). A fresh heartbeat lets the liveness probe treat the daemon as healthy
-    only while the main loop is actually iterating. Safe no-op if the pid file
-    is missing/invalid (e.g. between restarts).
+    A fresh heartbeat distinguishes a live process from a stalled rating loop.
+    It is process observability only and grants no separate job-queue authority.
+    Safe no-op if the pid file is missing/invalid (for example during restart).
     """
     try:
         from evolution_infra import RESULTS_DIR
@@ -228,10 +210,7 @@ def _write_heartbeat(scheduler_capable=True):
 
 def start_official_certification_thread():
     """Process official EXE certification jobs without blocking quality gates."""
-    enabled = os.environ.get(
-        "POK_OFFICIAL_JOB_RECONCILER",
-        os.environ.get("POK_OFFICIAL_QUEUE_WORKER", "1"),
-    )
+    enabled = os.environ.get("POK_OFFICIAL_JOB_RECONCILER", "1")
     if enabled.strip().lower() in {"0", "false", "off", "no"}:
         log.info("Official certification job reconciler disabled")
         return None
@@ -341,7 +320,19 @@ def _handle_pool_break_for_shutdown(exc):
 
 
 def bot_path(bot_name):
-    return str(BOTS_DIR / bot_name / "main.py")
+    from bot_namespace import ROLE_RATING_POOL, resolve_national_bot_spec
+
+    spec = resolve_national_bot_spec(
+        bot_name,
+        ROLE_RATING_POOL,
+        repo_root=PROJECT_ROOT,
+    )
+    if not spec.eligible:
+        raise RuntimeError(
+            f"rating bot is not a strict published policy artifact: {bot_name}:"
+            + ";".join(spec.issues[:8])
+        )
+    return str(spec.entrypoint)
 
 
 def save_ratings(
@@ -655,6 +646,7 @@ def _save_match_replay_under_cycle_lock(
     expected_evaluation_identity_digest=None,
     stage_only=False,
 ):
+    from bot_namespace import EVALUATION_EPOCH
     from evaluation_data_identity import current_evaluation_digest
 
     evaluation_identity_digest = current_evaluation_digest(RESULTS_DIR)
@@ -684,8 +676,19 @@ def _save_match_replay_under_cycle_lock(
                 raise ValueError(f"70-hand strength replay {index} is incomplete")
             if replay.get("passed_compliance") is not True:
                 raise ValueError(f"70-hand strength replay {index} failed compliance")
-            if replay.get("wrapper_used") is True:
-                raise ValueError(f"70-hand strength replay {index} used a legacy wrapper")
+            from bot_artifact import hash_path
+            from national_native import _artifact_execution_is_valid
+
+            if not _artifact_execution_is_valid(
+                replay.get("artifact_execution"),
+                {
+                    a: hash_path(BOTS_DIR / a),
+                    b: hash_path(BOTS_DIR / b),
+                },
+            ):
+                raise ValueError(
+                    f"70-hand strength replay {index} has invalid artifact execution identity"
+                )
         strength_summary = summarize_70_hand_net_chips(net_chips_values)
         if (
             strength_summary["positive_matches"] != int(wins_a)
@@ -694,8 +697,11 @@ def _save_match_replay_under_cycle_lock(
         ):
             raise ValueError("70-hand net-chip samples disagree with recorded match outcomes")
     match_data = {
+        "replay_schema_version": 1,
         "id": fname,
         "timestamp": timestamp,
+        "execution_mode": "native_tcp",
+        "evaluation_epoch": EVALUATION_EPOCH,
         "bot0": a,
         "bot1": b,
         "bot0_wins": wins_a,
@@ -728,6 +734,8 @@ def _save_match_replay_under_cycle_lock(
     summary = {
         "id": fname,
         "timestamp": timestamp,
+        "execution_mode": "native_tcp",
+        "evaluation_epoch": EVALUATION_EPOCH,
         "bot0": a,
         "bot1": b,
         "bot0_wins": wins_a,
@@ -769,49 +777,6 @@ def _save_match_replay_under_cycle_lock(
     return fname
 
 
-def save_bot_telemetry(bot_a_name, bot_b_name, all_logs):
-    """A1 (INERTNESS fix, evolution-plan-refresh-jun21): extract per-bot stderr from
-    match logs and append to results/bot_telemetry/{bot}.jsonl so detector firing
-    (FOLD_GATE_FIRE / SB_OPEN_OPP_SIZE / PROTECT_FLOOR / ...) can be grep-verified.
-
-    The daemon path previously piped bot stderr to /dev/null, making every detector's
-    runtime firing UNVERIFIABLE for 6+ generations. _PersistentBot now drains stderr
-    into the per-decision log entry; this function aggregates it per match per bot.
-    Player key "0" -> bot_a, "1" -> bot_b (bot_paths order in mirror_battle)."""
-    try:
-        stderr_by_bot = {bot_a_name: [], bot_b_name: []}
-        key_to_bot = {"0": bot_a_name, "1": bot_b_name}
-        for game in all_logs:
-            logs = game.get("logs") if isinstance(game, dict) else None
-            if not isinstance(logs, list):
-                continue
-            for entry in logs:
-                if not isinstance(entry, dict):
-                    continue
-                for pkey, bot_name in key_to_bot.items():
-                    pinfo = entry.get(pkey)
-                    if isinstance(pinfo, dict) and pinfo.get("stderr"):
-                        stderr_by_bot[bot_name].append(pinfo["stderr"])
-        os.makedirs(TELEMETRY_DIR, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        opponent_of = {bot_a_name: bot_b_name, bot_b_name: bot_a_name}
-        for bot_name, chunks in stderr_by_bot.items():
-            joined = "".join(chunks).strip()
-            if not joined:
-                continue
-            entry = {
-                "ts": ts,
-                "opponent": opponent_of.get(bot_name, ""),
-                "stderr": joined,
-            }
-            try:
-                append_locked_jsonl(TELEMETRY_DIR / f"{bot_name}.jsonl", entry)
-            except Exception as e:
-                log.debug("Telemetry write failed for %s: %s", bot_name, e)
-    except Exception as e:
-        log.debug("Telemetry extraction failed (%s vs %s): %s", bot_a_name, bot_b_name, e)
-
-
 def cleanup_old_replays():
     if not REPLAY_DIR.exists():
         return
@@ -835,22 +800,14 @@ def cleanup_old_replays():
 
 def _rating_protocol_config(n_pairs=None):
     profile = get_workflow_profile()
-    protocol = os.environ.get(
-        "POK_RATING_PROTOCOL",
-        getattr(profile, "rating_protocol", "local_json"),
-    )
-    protocol = protocol if protocol in {"local_json", "national"} else "local_json"
-    national_execution_mode = getattr(profile, "national_execution_mode", "adapter")
-    if national_execution_mode == "native_tcp":
-        # Production strength identity is immutable: an environment variable
-        # may change sample count, but cannot switch backend or shorten a match.
-        protocol = "national"
-        national_hands = 70
-    else:
-        national_hands = int(os.environ.get(
-            "POK_NATIONAL_RATING_HANDS",
-            str(getattr(profile, "national_rating_hands", 70)),
-        ))
+    if (
+        getattr(profile, "rating_protocol", None) != "national"
+        or getattr(profile, "national_execution_mode", None) != "native_tcp"
+    ):
+        raise ValueError("rating daemon supports only national native_tcp matches")
+    if os.environ.get("POK_RATING_PROTOCOL", "national") != "national":
+        raise ValueError("POK_RATING_PROTOCOL cannot override national strength")
+    national_hands = 70
     matches_override = "POK_NATIONAL_RATING_MATCHES" in os.environ
     national_matches = int(os.environ.get(
         "POK_NATIONAL_RATING_MATCHES",
@@ -860,25 +817,14 @@ def _rating_protocol_config(n_pairs=None):
         national_matches = max(national_matches, int(n_pairs))
     national_hands = max(1, min(70, national_hands))
     national_matches = max(1, min(8, national_matches))
-    strict = os.environ.get("POK_NATIONAL_RATING_STRICT")
-    if strict is None:
-        strict_bool = bool(getattr(profile, "national_acceptance_hard", True))
-    else:
-        strict_bool = strict not in {"0", "false", "False", "no", "NO"}
     config = {
         "profile_id": getattr(profile, "profile_id", "default"),
-        "protocol": protocol,
-        "national_execution_mode": national_execution_mode,
+        "protocol": "national",
+        "national_execution_mode": "native_tcp",
         "national_hands": national_hands,
         "national_matches": national_matches,
-        "strict": strict_bool,
+        "artifact_execution_mode": "direct_content_bound_policy_artifact",
     }
-    if national_execution_mode == "native_tcp":
-        from national_native import current_strength_runtime_overlay_identity
-
-        config["native_strength_runtime_overlay"] = (
-            current_strength_runtime_overlay_identity()
-        )
     return config
 
 
@@ -921,71 +867,6 @@ def _rotate_jsonl(filepath, max_lines):
         log.debug("JSONL rotation failed for %s: %s", filepath.name, e)
 
 
-def _run_local_json_match(
-    bot_a_name,
-    bot_b_name,
-    bot_a_path,
-    bot_b_path,
-    n_pairs,
-    *,
-    persist_strength=True,
-    expected_identity=None,
-):
-    """Run the legacy local JSON mirror-battle rating backend."""
-    _match_wins, _draws, _n_played, all_logs, net_chips_list = mirror_battle(
-        bot_a_path, bot_b_path, n_games=n_pairs, verbose=False, save_log=True
-    )
-    # Count each game (normal + mirror) independently by winner
-    games_a, games_b, games_draw = 0, 0, 0
-    for game in all_logs:
-        w = game.get("winner", -1)
-        if w == 0:
-            games_a += 1
-        elif w == 1:
-            games_b += 1
-        else:
-            games_draw += 1
-    total = games_a + games_b + games_draw
-
-    # Save replay inside worker to avoid ~2MB cross-process transfer
-    admission = None
-    if persist_strength:
-        try:
-            admission = save_match_replay(
-                bot_a_name,
-                bot_b_name,
-                games_a,
-                games_b,
-                games_draw,
-                all_logs,
-                list(net_chips_list or []),
-                "legacy_mirror_pair",
-                expected_evaluation_identity_digest=expected_identity,
-                stage_only=True,
-            )
-        except Exception as e:
-            return (bot_a_name, bot_b_name, 0, 0, 0, 0, f"strength_admission_failed: {e}", [], None)
-
-    # A1 (INERTNESS fix): capture bot stderr telemetry for detector firing
-    # verification. Best-effort — never blocks match result processing.
-    try:
-        save_bot_telemetry(bot_a_name, bot_b_name, all_logs)
-    except Exception as e:
-        log.debug("Telemetry save failed: %s", e)
-
-    return (
-        bot_a_name,
-        bot_b_name,
-        games_a,
-        games_b,
-        games_draw,
-        total,
-        None,
-        list(net_chips_list or []),
-        admission,
-    )
-
-
 def _run_national_rating_match(
     bot_a_name,
     bot_b_name,
@@ -999,9 +880,7 @@ def _run_national_rating_match(
     """Run the national GameEngine rating backend and return daemon result shape."""
     hands = int(config["national_hands"])
     matches = int(config["national_matches"])
-    strict = bool(config["strict"])
-    native_tcp_mode = config.get("national_execution_mode") == "native_tcp"
-    if native_tcp_mode and hands != 70:
+    if config.get("national_execution_mode") != "native_tcp" or hands != 70:
         return (
             bot_a_name,
             bot_b_name,
@@ -1012,30 +891,28 @@ def _run_national_rating_match(
             f"native_rating_contract: expected exactly 70 hands, got {hands}",
             [],
         )
-    if native_tcp_mode:
-        from national_native import run_current_runtime_native_strength_pair
-    else:
-        from national_acceptance import resolve_bot, run_pair
-        bot_a = resolve_bot(bot_a_path)
-        bot_b = resolve_bot(bot_b_path)
+    from bot_artifact import hash_path
+    from national_native import (
+        _artifact_execution_is_valid,
+        run_native_strength_pair,
+    )
+    expected_artifacts = {
+        bot_a_name: hash_path(Path(bot_a_path).parent),
+        bot_b_name: hash_path(Path(bot_b_path).parent),
+    }
     wins_a = wins_b = draws = 0
     net_chips_list: list[int] = []
     replays: list[dict] = []
     issues: list[str] = []
 
     for repeat in range(matches):
-        if native_tcp_mode:
-            result = asyncio.run(run_current_runtime_native_strength_pair(
-                bot_a_path,
-                bot_b_path,
-                hands,
-                require_native_a=True,
-                require_native_b=True,
-            ))
-        else:
-            result = asyncio.run(run_pair(bot_a, bot_b, hands, strict=strict))
+        result = asyncio.run(run_native_strength_pair(
+            bot_a_path,
+            bot_b_path,
+            hands,
+        ))
         replay = dict(result)
-        replay["rating_protocol"] = "national_native_tcp" if native_tcp_mode else "national"
+        replay["rating_protocol"] = "national_native_tcp"
         replay["repeat"] = repeat + 1
         replays.append(replay)
         hands_played = int(result.get("hands_played", 0) or 0)
@@ -1044,16 +921,12 @@ def _run_national_rating_match(
         if result.get("passed_compliance") is not True:
             reported = [str(item) for item in (result.get("issues") or [])]
             issues.extend(reported or [f"repeat={repeat + 1}: compliance_failed"])
-        if native_tcp_mode and result.get("wrapper_used") is True:
-            issues.append(f"repeat={repeat + 1}: native_wrapper_used")
-        if native_tcp_mode:
-            overlay = result.get("runtime_overlay") or {}
-            if not (
-                overlay.get("enabled") is True
-                and overlay.get("both_sides") is True
-                and overlay.get("mode") == "current_system_wrapper_bilateral"
-            ):
-                issues.append(f"repeat={repeat + 1}: native_runtime_overlay_missing")
+        if not _artifact_execution_is_valid(
+            result.get("artifact_execution"), expected_artifacts
+        ):
+            issues.append(
+                f"repeat={repeat + 1}: native_artifact_execution_identity_invalid"
+            )
         if issues:
             continue
         net = int(result.get("net_chips_a", 0) or 0)
@@ -1077,8 +950,7 @@ def _run_national_rating_match(
             0,
             0,
             0,
-            ("native_rating_contract: " if native_tcp_mode else "national_rating_contract: ")
-            + "; ".join(issues[:8]),
+            "native_rating_contract: " + "; ".join(issues[:8]),
             [],
         )
     admission = None
@@ -1141,54 +1013,22 @@ def run_single_match(args):
         )
     try:
         config = _rating_protocol_config(n_pairs=n_pairs)
-        if (
-            config["protocol"] == "national"
-            and config.get("national_execution_mode") == "native_tcp"
-        ):
-            # The native runner is the single capacity owner for every caller
-            # (daemon, quality gate, and precommit). Acquiring here as well can
-            # deadlock all workers when every process holds an outer lease.
-            return _run_national_rating_match(
-                bot_a_name,
-                bot_b_name,
-                bot_a_path,
-                bot_b_path,
-                config,
-                persist_strength=persist_strength,
-                expected_identity=expected_identity,
-            )
-
-        from runtime_capacity import acquire_match_slots
-
-        with acquire_match_slots(
-            f"daemon:{bot_a_name}:{bot_b_name}:{os.getpid()}",
-            count=1,
-        ):
-            if config["protocol"] == "national":
-                return _run_national_rating_match(
-                    bot_a_name,
-                    bot_b_name,
-                    bot_a_path,
-                    bot_b_path,
-                    config,
-                    persist_strength=persist_strength,
-                    expected_identity=expected_identity,
-                )
-            return _run_local_json_match(
-                bot_a_name,
-                bot_b_name,
-                bot_a_path,
-                bot_b_path,
-                n_pairs,
-                persist_strength=persist_strength,
-                expected_identity=expected_identity,
-            )
+        # The native runner is the single capacity owner for every caller.
+        return _run_national_rating_match(
+            bot_a_name,
+            bot_b_name,
+            bot_a_path,
+            bot_b_path,
+            config,
+            persist_strength=persist_strength,
+            expected_identity=expected_identity,
+        )
     except Exception as e:
         return (bot_a_name, bot_b_name, 0, 0, 0, 0, str(e), [])
 
 
 def process_result(result, ratings, h2h, bot_stats, verbose=False):
-    """Process one completed match: update Elo, H2H, bot_stats."""
+    """Process complete native matches into Glicko-2, H2H, and bot stats."""
     a, b, wins_a, wins_b, draws, total, err, *_extra = result
     if err is not None:
         log.error("Error in %s vs %s: %s", a, b, err)
@@ -1406,6 +1246,7 @@ def _refresh_action_stats_async(active_bots):
                 force_full=False,
                 etag_path=etag_path,
                 allowed_replay_ids=allowed_replay_ids,
+                expected_evaluation_identity_digest=committed_identity,
             )
             flat = {
                 bot: get_global_stats(per_opp, bot)
@@ -1475,10 +1316,6 @@ def _refresh_action_stats_async(active_bots):
                 time.perf_counter() - t0, len(flat), etag_path.name,
             )
 
-            # Legacy MAP-Elites scanning is disabled: its accumulator was not
-            # evaluator-identity/committed-replay bound and the active native
-            # replay schema made its fingerprints inert. A future QD archive
-            # must be rebuilt from this committed native tracker source.
         except Exception as e:
             log.warning("Bot action stats computation failed (non-fatal): %s", e)
 
@@ -1735,30 +1572,11 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
 
     # JSONL rotation happens before immutable publication so its byte cutoffs
     # remain valid for restart recovery.
-    # Note: system_events.jsonl is written by web process, rotated by system_log.py
+    # The canonical events.jsonl ledger is rotated by evolution_infra.
 
-    # fix-2: Backfill real rating_delta into critic_calibration.jsonl for bots
-    # whose ratings have converged. Non-blocking best-effort.
-    try:
-        from agent_review import reconcile_critic_calibration
-        reconcile_critic_calibration(ratings, bot_stats)
-    except Exception as e:
-        log.debug("Calibration reconcile failed (non-fatal): %s", e)
-
-    # fix-12: Backfill rating_delta outcomes into experience_attribution sidecar
-    # for lessons whose source-gen bot has converged. Feeds Ratchet retire so
-    # repeatedly-tried lessons get retired. Hurt signal = rating_delta < 0
-    # (continuous), NOT precommit_passed (always True at commit → would be INERT).
-    try:
-        from experience_attribution import reconcile_lesson_outcomes
-        reconcile_lesson_outcomes(ratings, bot_stats)
-    except Exception as e:
-        log.debug("Lesson attribution reconcile failed (non-fatal): %s", e)
-
-    # Compute bot_action_stats ASYNCHRONOUSLY (Phase 0 follow-up): the full replay
-    # scan is expensive (~260s for 2000 replays) and blocks the main scheduling loop
-    # when run synchronously. Stats feed only the Master-prompt injection (no commit
-    # gate depends on them), so a one-cycle-stale read is acceptable. Non-blocking.
+    # Compute native action evidence asynchronously.  The writer publishes its
+    # source-cycle identity; generation preparation only admits a bounded-stale
+    # copy inside the immutable evidence snapshot.
     _refresh_action_stats_async(active_bots)
 
     if verbose:
@@ -1777,105 +1595,6 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
             score = strength_scores.get(b, 0.0)
             log.info("  %d. %s: score=%.4f h2h_avg_wr=%.2f%% r=%.1f rd=%.1f wr=%.2f%% (%d games)",
                      i + 1, b, score, hwr * 100, p.r, p.rd, wr * 100, g)
-
-
-def _is_external(m):
-    """A queued job is an external (precommit/eval) job iff it's the external tuple form.
-
-    External job tuple shape: ("external", job_id, a, b, path_a, path_b, n_pairs[, priority]).
-    The trailing `priority` element (Phase 0 F) is optional for back-compat.
-    """
-    return (isinstance(m, tuple) and len(m) in (7, 8) and m[0] == "external")
-
-
-def _external_priority(m):
-    """Effective priority for an external job tuple.
-
-    External job tuple shape: ("external", job_id, a, b, path_a, path_b, n_pairs[, priority])
-    New submissions carry an 8th element = BattleJob.priority (higher = more urgent).
-    Legacy/unknown external jobs default to priority 0. precommit_eval jobs always rank
-    strictly above any daemon full-pool (internal) match.
-    """
-    if len(m) >= 8:
-        try:
-            return int(m[7])
-        except (TypeError, ValueError):
-            return 0
-    return 0
-
-
-def _pop_next_job(match_queue):
-    """Pop the highest-priority queued job, external-jobs-first.
-
-    Scheduler priority (Phase 0 F): precommit external jobs preempt daemon full-pool
-    matches. Among external jobs, higher `priority` (BattleJob.priority) wins. Internal
-    matches are only popped when no external job remains. This keeps the daemon's full
-    pool evaluation healthy while guaranteeing precommit jobs never starve behind a
-    wall of daemon-generated matches.
-
-    Returns the job tuple, or None if the queue is empty.
-    """
-    if not match_queue:
-        return None
-    # Fast path: most iterations have at most one external job (the one just drained).
-    # Find the best external job if any exist; else pop the first internal match.
-    best_ext_idx = None
-    best_ext_pri = None
-    for idx, m in enumerate(match_queue):
-        if not _is_external(m):
-            continue
-        pri = _external_priority(m)
-        if best_ext_idx is None or pri > best_ext_pri:
-            best_ext_idx = idx
-            best_ext_pri = pri
-    if best_ext_idx is not None:
-        # deque has no O(1) index-delete; rotate to pop. The queue is short (≤ a few
-        # hundred entries in pathological cases, usually <20), so this is fine.
-        m = match_queue[best_ext_idx]
-        del match_queue[best_ext_idx]
-        return m
-    return match_queue.popleft()
-
-
-def _log_external_dispatch(job_id, bot_a, bot_b, source, in_flight_count, queue_count):
-    try:
-        log_system_event(
-            "daemon.external_job_dispatched", "info",
-            f"Dispatched external job {job_id}: {bot_a} vs {bot_b} ({source})",
-            {
-                "job_id": job_id,
-                "bot_a": bot_a,
-                "bot_b": bot_b,
-                "source": source,
-                "in_flight": in_flight_count,
-                "queue": queue_count,
-            },
-        )
-    except Exception:
-        pass
-
-
-def _log_external_result(job_id, bot_a, bot_b, result=None, error=None):
-    try:
-        payload = {"job_id": job_id, "bot_a": bot_a, "bot_b": bot_b}
-        severity = "info"
-        message = f"External job {job_id} completed: {bot_a} vs {bot_b}"
-        if error is not None:
-            severity = "warn"
-            message = f"External job {job_id} failed: {bot_a} vs {bot_b}"
-            payload["error"] = str(error)[:500]
-        elif result is not None:
-            payload.update({
-                "wins_a": result[2],
-                "wins_b": result[3],
-                "draws": result[4],
-                "total": result[5],
-                "error": result[6] if len(result) > 6 and result[6] else None,
-                "net_chips_samples": len(result[7]) if len(result) > 7 and result[7] else 0,
-            })
-        log_system_event("daemon.external_job_result", severity, message, payload)
-    except Exception:
-        pass
 
 
 def _load_committed_daemon_state():
@@ -1988,21 +1707,20 @@ def _internal_match_job(bot_a, bot_b, path_a, path_b, n_pairs):
     )
 
 
-def _external_match_args(args):
-    """Precommit/external matches are gates, never daemon rating evidence."""
-    return (
-        *tuple(args[:5]),
-        {
-            "admit_strength": False,
-            "evaluation_identity_digest": daemon_evaluation_identity_digest,
-        },
-    )
-
-
 @_single_writer_daemon
 def main():
-    parser = argparse.ArgumentParser(description="Background Rating Daemon")
-    parser.add_argument("--pairs", type=int, default=5, help="Mirror pairs per match")
+    parser = argparse.ArgumentParser(
+        description=(
+            "national_tcp_policy_v1 Glicko-2 daemon; one sample is one complete "
+            "70-hand local native TCP match"
+        )
+    )
+    parser.add_argument(
+        "--pairs",
+        type=int,
+        default=5,
+        help="Complete 70-hand native matches per scheduled bot pairing (1..8)",
+    )
     parser.add_argument("--workers", type=int, default=max(1, min(12, int(multiprocessing.cpu_count() * 28 / 32))), help="Parallel workers (capped at 12 to avoid OOM; see MAX_SAFE_DAEMON_WORKERS)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print match results")
     parser.add_argument("--once", action="store_true", help="Run ~14 matches then exit")
@@ -2034,7 +1752,7 @@ def main():
     configure_logging()
 
     log.info("Starting rating daemon (workers=%d, pairs=%d)", args.workers, args.pairs)
-    log.info("Elo ranking + Head-to-Head matrix + per-game updates")
+    log.info("Glicko-2 + H2H from complete 70-hand local native TCP matches")
     _backend_config = _rating_protocol_config(n_pairs=args.pairs)
     from evaluation_data_identity import ensure_evaluation_data_identity
 
@@ -2122,65 +1840,25 @@ def main():
     import multiprocessing as _mp
     mp_ctx = _mp.get_context("spawn")
     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
-    in_flight = {}  # future -> (bot_a, bot_b) or (bot_a, bot_b, ext_job_id)
-
-    _first_iteration = True
-    # External (precommit) job drain capacity: how many external jobs we keep staged in
-    # the match_queue per poll cycle. With priority-aware dispatch (_pop_next_job),
-    # queued external jobs always grab the next freed worker slot before any daemon
-    # full-pool match, so a higher buffer lowers precommit queueing latency without
-    # starving the full pool (internal matches still fill all remaining slots).
-    _capacity = max(2, n_workers // 2)
-
-    # Start battle experience background thread (non-fatal if unavailable)
-    try:
-        from battle_experience import start_experience_thread
-        start_experience_thread()
-        log.info("Battle experience background thread started")
-    except Exception as e:
-        log.warning("Battle experience thread failed to start (non-fatal): %s", e)
+    in_flight = {}  # future -> (bot_a, bot_b)
 
     try:
         start_official_certification_thread()
     except Exception as e:
         log.warning("Official certification job reconciler failed to start (non-fatal): %s", e)
 
-    # 预留 worker slot 给 external(precommit) job。root-cause-audit 2026-06-21: daemon
-    # 启动即用 internal matches 填满全部 n_workers 槽 → 外部 precommit job 只能在某个
-    # in-flight internal match 完成后才拿到 slot（app.log "Drained 3 pending" → "Collected
-    # 0/3" 数十分钟），precommit 永走慢路径 ~22min/代。预留 + _pop_next_job external-first
-    # 让 external job 立即占用预留 slot。steady-state replenish(L898/L913) 是"完成一个补
-    # 一个"维持平衡，不会突破此上限。
-    _ext_reserved = min(2, max(0, n_workers - 2))
-    # Fill initial pool (priority-aware: external jobs first)
-    while len(in_flight) < n_workers - _ext_reserved and match_queue:
-        m = _pop_next_job(match_queue)
-        if m is None:
-            break
-        # Detect external jobs: ("external", job_id, a, b, path_a, path_b, n_pairs[, priority])
-        is_external = _is_external(m)
-        if is_external:
-            exec_args = m[2:7]
-            ext_job_id = m[1]
-            fut = executor.submit(run_single_match, _external_match_args(exec_args))
-            in_flight[fut] = (exec_args[0], exec_args[1], ext_job_id)
-            _log_external_dispatch(
-                ext_job_id, exec_args[0], exec_args[1],
-                "initial_fill", len(in_flight), len(match_queue),
-            )
-        else:
-            if m[0] not in active_bots or m[1] not in active_bots:
-                continue
-            fut = executor.submit(run_single_match, m)
-            in_flight[fut] = (m[0], m[1])
+    # The daemon owns only current-pool strength scheduling. Precommit and
+    # official certification have their own identity-bound direct runners.
+    while len(in_flight) < n_workers and match_queue:
+        m = match_queue.popleft()
+        if m[0] not in active_bots or m[1] not in active_bots:
+            continue
+        fut = executor.submit(run_single_match, m)
+        in_flight[fut] = (m[0], m[1])
 
     games_since_save = 0
     last_save_time = time.time()
     last_parent_check = time.time()
-    # v193 keep-alive: track when the daemon last had real work (in_flight non-empty
-    # OR an external job to drain). Bounds the idle spin so a truly idle daemon
-    # exits after DAEMON_IDLE_MAX_SEC; any external-job submission resets it.
-    last_busy_time = time.time()
     last_heartbeat_time = 0.0
     save_num = int(_recovered_save_num)
     total_matches = 0
@@ -2194,11 +1872,9 @@ def main():
         # H4 (2026-06-29): track priority_eval.json mtime so a newly-committed bot's
         # priority signal takes effect without waiting for the current match_queue
         # (potentially hundreds of daemon matches) to drain. When the file's mtime
-        # changes, the daemon-internal matches in match_queue are cleared so the
-        # next refill (pick_matches) re-reads the updated priority. External
-        # (precommit) jobs are preserved — they have deadlines and are priority-
-        # dispatched anyway. Initialized to the current mtime so a fresh start does
-        # not immediately nuke the seed queue.
+        # changes, queued internal matches are cleared so the next refill
+        # re-reads the updated priority. Initialized to the current mtime so a
+        # fresh start does not immediately discard the seed queue.
         _priority_eval_mtime = 0.0
         try:
             if PRIORITY_EVAL_FILE.exists():
@@ -2210,192 +1886,58 @@ def main():
             try:
                 while running:
                     # H4: hot-reload priority signal. If priority_eval.json was
-                    # rewritten (new commit), drop daemon-internal queued matches so
-                    # the next pick_matches picks up the new priority bot. External
-                    # jobs are kept (they are deadline-bound + priority-dispatched).
+                    # rewritten (new commit), drop queued matches so the next
+                    # pick_matches call uses the new priority bot.
                     try:
                         if PRIORITY_EVAL_FILE.exists():
                             _mt = os.path.getmtime(PRIORITY_EVAL_FILE)
                             if _mt != _priority_eval_mtime:
-                                _kept = [m for m in match_queue if _is_external(m)]
-                                _dropped = len(match_queue) - len(_kept)
+                                _dropped = len(match_queue)
                                 if _dropped > 0:
                                     match_queue.clear()
-                                    match_queue.extend(_kept)
                                     _priority_bot_now = _load_priority_eval()
                                     log.info(
                                         "H4: priority_eval.json changed (mtime %.0f→%.0f); "
-                                        "dropped %d internal queued match(es), kept %d external; "
+                                        "dropped %d queued match(es); "
                                         "priority_bot=%s",
-                                        _priority_eval_mtime, _mt, _dropped, len(_kept),
+                                        _priority_eval_mtime, _mt, _dropped,
                                         _priority_bot_now,
                                     )
                                 _priority_eval_mtime = _mt
                     except OSError:
                         pass
 
-                    # Poll external job queue
-                    if _SCHEDULER_AVAILABLE:
-                        ext_in_queue = sum(1 for m in match_queue if _is_external(m))
-                        if ext_in_queue < _capacity:
-                            if _first_iteration:
-                                recovered = requeue_unclaimed_on_startup()
-                                for job in recovered:
-                                    match_queue.append((
-                                        "external", job["job_id"],
-                                        job["bot_a_name"], job["bot_b_name"],
-                                        job["bot_a_path"], job["bot_b_path"],
-                                        job["n_pairs"], job.get("priority", 0),
-                                    ))
-                            pending = drain_pending_jobs()
-                            if pending:
-                                log.info(
-                                    "[dispatch] drained %d external job(s); "
-                                    "match_queue=%d (ext=%d), in_flight=%d",
-                                    len(pending), len(match_queue),
-                                    sum(1 for m in match_queue if _is_external(m)),
-                                    len(in_flight),
-                                )
-                            for job in pending:
-                                match_queue.append((
-                                    "external", job["job_id"],
-                                    job["bot_a_name"], job["bot_b_name"],
-                                    job["bot_a_path"], job["bot_b_path"],
-                                    job["n_pairs"], job.get("priority", 0),
-                                ))
-                            _first_iteration = False
-
-                    # OPT-1' (precommit-stall fix 2026-06-24): proactively fill the
-                    # reserved empty slots with queued external (precommit) jobs.
-                    # Steady-state replenish (:992-1006) only fires on `for fut in
-                    # done` (1:1 per completed match), so without this the 2 reserved
-                    # slots stay structurally empty while external jobs wait for an
-                    # in-flight internal match to complete — root cause of the 640s
-                    # scheduler_stall (collected=0/N) then 23-43min serial fallback.
-                    # Only external jobs may claim the reserved slots; internal still
-                    # flows 1:1 through replenish. In_flight rises to n_workers only
-                    # while external jobs are queued, else stays at n_workers-2.
-                    while len(in_flight) < n_workers and match_queue:
-                        _next_ext = None
-                        for _q_idx, _q_m in enumerate(match_queue):
-                            if _is_external(_q_m):
-                                _next_ext = _q_idx
-                                break
-                        if _next_ext is None:
-                            break
-                        _q_m = match_queue[_next_ext]
-                        del match_queue[_next_ext]
-                        _exec_args = _q_m[2:7]
-                        _ext_job_id = _q_m[1]
-                        new_fut = executor.submit(
-                            run_single_match,
-                            _external_match_args(_exec_args),
-                        )
-                        in_flight[new_fut] = (_exec_args[0], _exec_args[1], _ext_job_id)
-                        _log_external_dispatch(
-                            _ext_job_id, _exec_args[0], _exec_args[1],
-                            "proactive_reserved_slot", len(in_flight), len(match_queue),
-                        )
-                        log.info(
-                            "[dispatch] proactively submitted external job %s into "
-                            "reserved slot (in_flight=%d, queue=%d)",
-                            _ext_job_id, len(in_flight), len(match_queue),
-                        )
-
-                    # v193 root-cause-audit (2026-06-26) keep-alive path: with the
-                    # main loop now `while running` (not `while running and in_flight`),
-                    # we reach here even with empty in_flight — which lets external
-                    # (precommit) jobs submitted after the last internal batch be
-                    # drained instead of stranded forever. Two cases:
-                    #  (a) in_flight non-empty: normal — wait on futures as before.
-                    #  (b) in_flight empty: idle-spin. If there's a queued external
-                    #      job it was just submitted above (proactive fill), so loop
-                    #      back immediately; otherwise sleep POLL_TIMEOUT and keep
-                    #      polling the external queue. DAEMON_IDLE_MAX_SEC bounds the
-                    #      spin so a truly idle daemon exits cleanly (rc=0) for the
-                    #      monitor to restart. The empty-set wait() below would raise,
-                    #      so we skip it entirely when in_flight is empty.
-                    _has_external = any(_is_external(m) for m in match_queue)
-                    if in_flight:
-                        last_busy_time = time.time()
-                    elif _has_external:
-                        # External job just got submitted into in_flight (or still
-                        # queued) — reset idle timer and loop back to dispatch it.
-                        last_busy_time = time.time()
                     if not in_flight:
-                        # Periodic heartbeat even while idle, so the liveness probe
-                        # sees a live main loop (not a stalled one).
+                        if not match_queue:
+                            for ma, mb in pick_matches(
+                                active_bots, h2h, ratings, n_picks=n_workers * 2
+                            ):
+                                match_queue.append(
+                                    _internal_match_job(
+                                        ma, mb, bot_path(ma), bot_path(mb), n_pairs
+                                    )
+                                )
+                        while len(in_flight) < n_workers and match_queue:
+                            m = match_queue.popleft()
+                            if m[0] not in active_bots or m[1] not in active_bots:
+                                continue
+                            future = executor.submit(run_single_match, m)
+                            in_flight[future] = (m[0], m[1])
                         if time.time() - last_heartbeat_time >= 5:
                             _write_heartbeat()
                             last_heartbeat_time = time.time()
-                        if not _has_external:
-                            # Genuinely idle: bound the spin. rc=0 idle exit lets the
-                            # monitor restart without burning the restart budget.
-                            idle_for = time.time() - last_busy_time
-                            if idle_for >= DAEMON_IDLE_MAX_SEC:
-                                log.info(
-                                    "[dispatch] idle for %.0fs with no in_flight / external "
-                                    "jobs — exiting keep-alive (rc=0).", idle_for,
-                                )
-                                try:
-                                    log_system_event(
-                                        "daemon.idle_exit", "info",
-                                        f"Daemon idle-exit after {idle_for:.0f}s "
-                                        f"(no in_flight/external jobs).",
-                                        {"idle_sec": round(idle_for, 1)},
-                                    )
-                                except Exception:
-                                    pass
-                                running = False
-                                break
-                            time.sleep(POLL_TIMEOUT)
-                            continue
-                        # External job queued but not yet in in_flight (capacity full
-                        # of externals, or reserved slots saturated) — brief sleep,
-                        # loop back; replenish on the next completed future.
-                        time.sleep(POLL_TIMEOUT)
+                        if not in_flight:
+                            log.warning(
+                                "No valid current-pool match could be scheduled; exiting"
+                            )
+                            running = False
+                            break
                         continue
 
                     done, _ = wait(in_flight.keys(), timeout=POLL_TIMEOUT, return_when=FIRST_COMPLETED)
 
                     for fut in done:
-                        entry = in_flight.pop(fut)
-                        is_external = len(entry) == 3
-                        if is_external:
-                            a, b, ext_job_id = entry
-                            try:
-                                result = fut.result()
-                                if _SCHEDULER_AVAILABLE:
-                                    try:
-                                        write_result(BattleResult(
-                                            job_id=ext_job_id,
-                                            wins_a=result[2], wins_b=result[3],
-                                            draws=result[4], total=result[5],
-                                            net_chips=list(result[7]) if len(result) > 7 and result[7] else [],
-                                            error=result[6] if len(result) > 6 and result[6] else None,
-                                            completed_at=time.time(),
-                                            source="scheduler",
-                                        ))
-                                        _log_external_result(ext_job_id, a, b, result=result)
-                                    except Exception as wr_err:
-                                        log.warning("write_result failed for %s: %s", ext_job_id, wr_err)
-                            except Exception as e:
-                                if _SCHEDULER_AVAILABLE:
-                                    try:
-                                        write_result(BattleResult(
-                                            job_id=ext_job_id,
-                                            wins_a=0, wins_b=0, draws=0, total=0,
-                                            net_chips=[],
-                                            error=str(e),
-                                            completed_at=time.time(),
-                                            source="scheduler",
-                                        ))
-                                        _log_external_result(ext_job_id, a, b, error=e)
-                                    except Exception as wr_err:
-                                        log.warning("write_result(error) failed for %s: %s", ext_job_id, wr_err)
-                            continue
-
-                        a, b = entry
+                        a, b = in_flight.pop(fut)
                         from evaluation_data_identity import current_evaluation_digest
 
                         if current_evaluation_digest(RESULTS_DIR) != daemon_evaluation_identity_digest:
@@ -2456,28 +1998,13 @@ def main():
                         except Exception as er_err:
                             log.warning("Eval round tracking error (non-fatal): %s", er_err)
 
-                        # Replenish: submit next match (priority-aware: external jobs first)
+                        # Replenish from the current-pool native match queue.
                         if match_queue and executor is not None:
-                            m = _pop_next_job(match_queue)
-                            if m is not None:
-                                is_ext = _is_external(m)
-                                if is_ext:
-                                    exec_args = m[2:7]
-                                    ext_job_id = m[1]
-                                    new_fut = executor.submit(
-                                        run_single_match,
-                                        _external_match_args(exec_args),
-                                    )
-                                    in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
-                                    _log_external_dispatch(
-                                        ext_job_id, exec_args[0], exec_args[1],
-                                        "replenish_after_done", len(in_flight), len(match_queue),
-                                    )
-                                else:
-                                    if m[0] not in active_bots or m[1] not in active_bots:
-                                        continue
-                                    new_fut = executor.submit(run_single_match, m)
-                                    in_flight[new_fut] = (m[0], m[1])
+                            m = match_queue.popleft()
+                            if m[0] not in active_bots or m[1] not in active_bots:
+                                continue
+                            new_fut = executor.submit(run_single_match, m)
+                            in_flight[new_fut] = (m[0], m[1])
                         elif executor is not None:
                             # Refill queue when empty
                             matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
@@ -2488,26 +2015,11 @@ def main():
                                     )
                                 )
                             if match_queue:
-                                m = _pop_next_job(match_queue)
-                                if m is not None:
-                                    is_ext = _is_external(m)
-                                    if is_ext:
-                                        exec_args = m[2:7]
-                                        ext_job_id = m[1]
-                                        new_fut = executor.submit(
-                                            run_single_match,
-                                            _external_match_args(exec_args),
-                                        )
-                                        in_flight[new_fut] = (exec_args[0], exec_args[1], ext_job_id)
-                                        _log_external_dispatch(
-                                            ext_job_id, exec_args[0], exec_args[1],
-                                            "replenish_after_refill", len(in_flight), len(match_queue),
-                                        )
-                                    else:
-                                        if m[0] not in active_bots or m[1] not in active_bots:
-                                            continue
-                                        new_fut = executor.submit(run_single_match, m)
-                                        in_flight[new_fut] = (m[0], m[1])
+                                m = match_queue.popleft()
+                                if m[0] not in active_bots or m[1] not in active_bots:
+                                    continue
+                                new_fut = executor.submit(run_single_match, m)
+                                in_flight[new_fut] = (m[0], m[1])
 
                     # Periodic save
                     try:
@@ -2537,10 +2049,7 @@ def main():
                         log.critical("Evaluation cycle commit failed; stopping daemon: %s", e)
                         raise
 
-                    # v193: refresh heartbeat while busy so the liveness probe sees
-                    # a live main loop (throttled to ~every 5s; aligns with the idle
-                    # path's cadence). last_busy_time already reset above when
-                    # in_flight was non-empty.
+                    # Refresh process health while the rating loop is active.
                     now_hb = time.time()
                     if now_hb - last_heartbeat_time >= 5:
                         _write_heartbeat()
@@ -2596,20 +2105,13 @@ def main():
                                 if b not in ratings:
                                     ratings[b] = Glicko2Player()
                             active_bots = new_bots
-                            # Filter match_queue: preserve external jobs (priority-aware form)
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if _is_external(m)
-                                    or (m[0] not in removed and m[1] not in removed)
+                                    if m[0] not in removed and m[1] not in removed
                                 )
                                 for fut in list(in_flight):
-                                    entry = in_flight[fut]
-                                    is_ext = len(entry) == 3
-                                    if is_ext:
-                                        a, b, _ = entry
-                                    else:
-                                        a, b = entry
+                                    a, b = in_flight[fut]
                                     if a in removed or b in removed:
                                         fut.cancel()
                                         del in_flight[fut]
@@ -2682,16 +2184,10 @@ def main():
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if _is_external(m)
-                                    or (m[0] not in removed and m[1] not in removed)
+                                    if m[0] not in removed and m[1] not in removed
                                 )
                                 for fut in list(in_flight):
-                                    entry = in_flight[fut]
-                                    is_ext = len(entry) == 3
-                                    if is_ext:
-                                        fa, fb, _ = entry
-                                    else:
-                                        fa, fb = entry
+                                    fa, fb = in_flight[fut]
                                     if fa in removed or fb in removed:
                                         fut.cancel()
                                         del in_flight[fut]
@@ -2718,16 +2214,10 @@ def main():
                             if removed:
                                 match_queue = deque(
                                     m for m in match_queue
-                                    if _is_external(m)
-                                    or (m[0] not in removed and m[1] not in removed)
+                                    if m[0] not in removed and m[1] not in removed
                                 )
                                 for fut in list(in_flight):
-                                    entry = in_flight[fut]
-                                    is_ext = len(entry) == 3
-                                    if is_ext:
-                                        fa, fb, _ = entry
-                                    else:
-                                        fa, fb = entry
+                                    fa, fb = in_flight[fut]
                                     if fa in removed or fb in removed:
                                         fut.cancel()
                                         del in_flight[fut]
@@ -2755,25 +2245,9 @@ def main():
                     break
                 recovery_count += 1
                 log.error("ProcessPool broken (recovery %d/%d): %s", recovery_count, MAX_POOL_RECOVERIES, e)
-                # Write error results for any external jobs before clearing
                 for fut in list(in_flight):
-                    entry = in_flight[fut]
-                    if len(entry) == 3:
-                        a, b, ext_job_id = entry
-                        if _SCHEDULER_AVAILABLE:
-                            try:
-                                write_result(BattleResult(
-                                    job_id=ext_job_id,
-                                    wins_a=0, wins_b=0, draws=0, total=0,
-                                    net_chips=[],
-                                    error="daemon_pool_broken",
-                                    completed_at=time.time(),
-                                    source="scheduler",
-                                ))
-                            except Exception as wr_err:
-                                log.warning("write_result(recovery) failed for %s: %s", ext_job_id, wr_err)
                     try:
-                        fut.result(timeout=1)
+                        _discard_staged_match(fut.result(timeout=1))
                     except Exception:
                         pass
                 in_flight.clear()
@@ -2784,10 +2258,7 @@ def main():
                 try:
                     mp_ctx = _mp.get_context("spawn")
                     executor = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp_ctx)
-                    # Preserve external jobs from old queue before discarding
-                    old_external = [m for m in match_queue if _is_external(m)]
-                    match_queue = deque(old_external)
-                    # Rebuild internal matches on top of preserved externals
+                    match_queue = deque()
                     matches = pick_matches(active_bots, h2h, ratings, n_picks=n_workers * 2)
                     for a, b in matches:
                         match_queue.append(
@@ -2795,22 +2266,10 @@ def main():
                                 a, b, bot_path(a), bot_path(b), n_pairs
                             )
                         )
-                    while len(in_flight) < n_workers - _ext_reserved and match_queue:
-                        m = _pop_next_job(match_queue)
-                        if m is None:
-                            break
-                        is_ext = _is_external(m)
-                        if is_ext:
-                            exec_args = m[2:7]
-                            ext_job_id = m[1]
-                            fut = executor.submit(
-                                run_single_match,
-                                _external_match_args(exec_args),
-                            )
-                            in_flight[fut] = (exec_args[0], exec_args[1], ext_job_id)
-                        else:
-                            fut = executor.submit(run_single_match, m)
-                            in_flight[fut] = (m[0], m[1])
+                    while len(in_flight) < n_workers and match_queue:
+                        m = match_queue.popleft()
+                        fut = executor.submit(run_single_match, m)
+                        in_flight[fut] = (m[0], m[1])
                 except (ConnectionRefusedError, OSError) as recover_exc:
                     log.error("Failed to create new process pool after break: %s. Will retry next cycle.", recover_exc)
                     # Don't re-raise — let the daemon continue and retry on next save cycle

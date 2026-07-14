@@ -1,68 +1,85 @@
-"""Prompt editor endpoints — read/write LLM prompt files."""
+"""Read-only catalog for source-controlled active LLM prompts.
 
-import os
-import subprocess
+Prompt bytes are exact generation inputs and must move through Git plus the
+evaluation-contract reconciliation boundary.  The dashboard is deliberately
+not a second, unaudited prompt deployment mechanism.
+"""
+
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROMPTS_DIR = PROJECT_ROOT / "web" / "core" / "prompts"
 
-# Allowed prompt names (no path traversal possible)
-ALLOWED_PROMPTS = {
-    "orchestrator",
-    "master",
-    "worker",
-    "reviewer",
-    "critic",
-    "crossover",
-    "direction_auditor",
-    "initial",
-    "match_analyst",
-    "performance_analyst",
-    "stagnation_analyzer",
-    "experience_consolidator",
-    "archivist",
-    "combined_analyst",
+# Explicit registry of every reachable active prompt.  Do not infer filenames:
+# that previously kept a retired ``initial_prompt.md`` in the UI while omitting
+# several prompts that production actually executed.
+PROMPT_FILES = {
+    "orchestrator": "orchestrator.md",
+    "master": "master_prompt.md",
+    "master_plan_audit": "master_plan_audit.md",
+    "worker": "worker_prompt.md",
+    "worker_profile_national_native": "worker_profile_national_native.md",
+    "worker_cot_check": "worker_cot_check.md",
+    "debug_worker": "debug_worker_prompt.md",
+    "reviewer": "reviewer_prompt.md",
+    "critic": "critic_prompt.md",
+    "crossover": "crossover_prompt.md",
+    "crossover_compatibility": "crossover_compatibility.md",
+    "direction_auditor": "direction_auditor_prompt.md",
+    "literature_probe": "literature_probe_prompt.md",
+    "combined_analyst": "combined_analyst.md",
+    "degeneration_diagnosis": "degeneration_diagnosis.md",
+    "cycle_archivist": "cycle_archivist.md",
+    "official_platform_analysis": "official_platform_analysis.md",
 }
+ALLOWED_PROMPTS = frozenset(PROMPT_FILES)
 
 PROMPT_ROLES = {
     "orchestrator": "LLM Orchestrator — controls the full evolution pipeline autonomously",
     "master": "Master Architect — analyzes ratings and plans worker improvement tasks",
+    "master_plan_audit": "Master Plan Auditor — checks the frozen plan contract",
     "worker": "Worker Agent — directly edits bot source code per assigned role",
+    "worker_profile_national_native": "National Worker Profile — strict raw-TCP policy ABI",
+    "worker_cot_check": "Worker Consistency Auditor — checks claims against the diff",
+    "debug_worker": "Debug Worker — repairs one checkpoint-owned blocker",
     "reviewer": "Lead Code Reviewer — checks code quality and role boundary compliance",
     "critic": "Poker Strategy Critic — scores strategic quality 1–10",
     "crossover": "Crossover Agent — merges two elite bots into a hybrid child",
+    "crossover_compatibility": "Crossover Compatibility Auditor — advisory post-publication analysis",
     "direction_auditor": "Direction Auditor — detects repetitive evolution directions before Master planning",
-    "initial": "Initial Bot Generator — creates the first-generation bot from scratch",
-    "match_analyst": "Match Analyst — analyzes replay summaries for weaknesses and patterns",
-    "performance_analyst": "Performance Analyst — synthesises rating/win-rate trends into actionable insight",
-    "stagnation_analyzer": "Stagnation Analyzer — detects whether evolution is stuck in a local optimum",
-    "experience_consolidator": "Experience Consolidator — deduplicates and trims the experience pool",
-    "archivist": "Cycle Archivist — audits completed generations and produces strategic summaries",
+    "literature_probe": "Literature Probe — researches one governance-approved strategy hypothesis",
+    "cycle_archivist": "Cycle Archivist — writes a content-bound archive annotation only",
     "combined_analyst": "Combined Analyst — merged stagnation detection + performance verification",
+    "degeneration_diagnosis": "Degeneration Diagnostician — advisory explanation of frozen decline evidence",
+    "official_platform_analysis": "Official Platform Analyst — advisory interpretation of deterministic EXE evidence",
 }
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
 
 def _prompt_path(name: str) -> Path:
-    # Special names that don't follow the "{name}_prompt.md" convention
-    exact_names = {"orchestrator", "archivist", "match_analyst", "performance_analyst",
-                   "stagnation_analyzer", "experience_consolidator", "combined_analyst"}
-    if name in exact_names:
-        return PROMPTS_DIR / f"{name}.md"
-    return PROMPTS_DIR / f"{name}_prompt.md"
+    filename = PROMPT_FILES.get(name)
+    if filename is None:
+        raise KeyError(name)
+    return PROMPTS_DIR / filename
 
 
 def _prompt_info(name: str) -> dict:
     path = _prompt_path(name)
     if not path.exists():
-        return {"name": name, "exists": False, "lines": 0, "mtime": None, "role": PROMPT_ROLES.get(name, "")}
+        return {
+            "name": name,
+            "exists": False,
+            "lines": 0,
+            "mtime": None,
+            "role": PROMPT_ROLES.get(name, ""),
+            "editable": False,
+            "mutation_authority": "source_control_only",
+        }
     stat = path.stat()
     with open(path, "r", errors="ignore") as f:
         lines = sum(1 for _ in f)
@@ -74,6 +91,8 @@ def _prompt_info(name: str) -> dict:
         "mtime": stat.st_mtime,
         "mtime_str": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
         "role": PROMPT_ROLES.get(name, ""),
+        "editable": False,
+        "mutation_authority": "source_control_only",
     }
 
 
@@ -92,48 +111,3 @@ async def get_prompt(name: str):
     if not path.exists():
         return PlainTextResponse(f"Prompt file not found: {path.name}", status_code=404)
     return PlainTextResponse(path.read_text(errors="replace"))
-
-
-class PromptUpdateRequest(BaseModel):
-    content: str
-
-
-@router.put("/{name}")
-async def update_prompt(name: str, req: PromptUpdateRequest):
-    """Write a prompt file. Changes take effect on the next LLM call."""
-    if name not in ALLOWED_PROMPTS:
-        raise HTTPException(status_code=404, detail=f"Unknown prompt: {name}")
-    path = _prompt_path(name)
-    try:
-        path.write_text(req.content, encoding="utf-8")
-        return {
-            "saved": True,
-            "name": name,
-            "filename": path.name,
-            "lines": req.content.count("\n") + 1,
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/{name}/reset")
-async def reset_prompt(name: str):
-    """Reset a prompt file to the last git-committed version."""
-    if name not in ALLOWED_PROMPTS:
-        raise HTTPException(status_code=404, detail=f"Unknown prompt: {name}")
-    path = _prompt_path(name)
-    rel_path = path.relative_to(PROJECT_ROOT)
-    try:
-        result = subprocess.run(
-            ["git", "checkout", "HEAD", "--", str(rel_path)],
-            capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-        )
-        if result.returncode == 0:
-            info = _prompt_info(name)
-            return {"reset": True, "name": name, **info}
-        else:
-            raise HTTPException(status_code=500, detail=result.stderr.strip() or "git checkout failed")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

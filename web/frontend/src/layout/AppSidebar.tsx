@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import { Link, useLocation } from "react-router";
-import { GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon, BoxIcon, DocsIcon, FileIcon, VideoIcon } from "../icons";
+import { GridIcon, PieChartIcon, TableIcon, PageIcon, BoltIcon, ChatIcon, PlugInIcon, BoxIcon, FileIcon, VideoIcon } from "../icons";
 import { useSidebar } from "../context/SidebarContext";
 import { cn } from "../lib/utils";
 
@@ -20,9 +20,8 @@ const navItems: NavItem[] = [
   { icon: <TableIcon />, name: "对局矩阵", path: "/match-matrix", group: "对局" },
   { icon: <PageIcon />, name: "迭代日志", path: "/logs", group: "管理" },
   { icon: <PlugInIcon />, name: "控制面板", path: "/control", group: "管理" },
-  { icon: <BoxIcon />, name: "Bot 管理", path: "/bots", group: "管理" },
-  { icon: <DocsIcon />, name: "经验池", path: "/experience", group: "管理" },
-  { icon: <FileIcon />, name: "提示词编辑器", path: "/prompts", group: "管理" },
+  { icon: <BoxIcon />, name: "严格发布 Bot", path: "/bots", group: "管理" },
+  { icon: <FileIcon />, name: "提示词契约", path: "/prompts", group: "管理" },
 ];
 
 const GROUP_ORDER = ["概览", "对局", "管理"];

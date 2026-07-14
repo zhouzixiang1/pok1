@@ -22,13 +22,17 @@ usage() {
     cat <<EOF
 Usage: $0 [options]
 
+Restart and observe the national_tcp_policy_v1 Web/API control plane. Rating
+samples remain complete current-cycle 70-hand local raw native TCP matches;
+this helper does not promote archived results, Arena diagnostics, or EXE chips.
+
 Options:
   --host HOST                     default: 0.0.0.0
   --port PORT                     default: 8000
   --build                         allow frontend build on startup
   --no-build                      skip frontend build on startup (default)
   --daemon-workers N              written to web/core/results/app_config.json (default: 12, clamped by app)
-  --daemon-pairs N                written to web/core/results/app_config.json (default: 5)
+  --daemon-pairs N                complete 70-hand matches per scheduled pairing (default: 5)
   --clear-session stale|always|never
                                   stale = clear only when no pipeline checkpoint exists (default)
   --clear-checkpoint never|backup-and-clear

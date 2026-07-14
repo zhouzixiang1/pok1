@@ -14,9 +14,10 @@ process, screenshot, and THP evidence.
 
 The EXE is authoritative for official-protocol and runtime compliance. It does
 not contribute to Glicko, H2H, source selection, chip-EV, or strategy strength.
-Those remain local national-native TCP responsibilities.
+Those remain complete 70-hand local raw native TCP responsibilities in the
+current evaluation cycle.
 
-Native bots must send raw stream tokens without assuming newline boundaries:
+Native bots must send raw stream tokens with no `\n` or `\r\n` delimiter:
 `raise <amount>`, `fold`, `call`, `check`, or `allin`. They must never send
 `bet`, must treat raise amounts as street raise-to totals, and must split sticky
 packets such as `earnChips -100preflop|...` and `raise 200call`.
@@ -49,7 +50,7 @@ the same terminal behavior. Together they prove the following wire behavior:
   history TCP token. The official THP footer does contain the cumulative match
   result, and every `STATE` record contains named per-hand earnings.
 
-The current generated native runtime therefore records relayed opponent
+The current strict typed-policy runtime therefore records relayed opponent
 actions normally and infers only a terminal call/check that is proven by the
 next street, showdown, or settlement boundary. It feeds those actions,
 showdown cards, and `earnChips` values into the bot's in-match state and
@@ -104,7 +105,7 @@ Use the low-level harness for diagnosis without issuing a certificate:
 python3 scripts/official_platform_acceptance.py --check-env
 
 python3 scripts/official_platform_acceptance.py \
-  --candidate bots/national_v142 \
+  --candidate bots/national_v<N> \
   --self-play-rounds 1 \
   --opponent-rounds 0 \
   --target-hands 5
@@ -115,13 +116,12 @@ Use the policy-governed durable manager for evolution and formal acceptance:
 ```bash
 python3 scripts/official_certify.py smoke bots/national_v<N> --wait-if-busy
 python3 scripts/official_certify.py full bots/national_v<N> --wait-if-busy
-python3 scripts/official_certify.py queue-status
-python3 scripts/official_certify.py process-queue --limit 4
+python3 scripts/official_certify.py jobs-status
+python3 scripts/official_certify.py reconcile-jobs --limit 4
 ```
 
-The CLI keeps `queue-status` and `process-queue` names for compatibility, but
-they operate on durable job directories. The retired JSONL queue is not a
-production path.
+These commands inspect and reconcile durable job directories. The retired
+JSONL queue is not a production path or a compatibility API.
 
 A command-line opponent is only a preference. Formal runs revalidate the exact
 tagged native opponent and its artifact hash. Standalone sample scripts may be
@@ -173,6 +173,17 @@ immutable `official-full-v5` profile: five self-play rounds plus three eligible
 opponent rounds, every round complete at 70 hands. The checkpoint moves to
 `official_certifying` and polls the same identity-bound job; commit/tag cannot
 occur before the signed certificate validates.
+
+The sole first-strict exception is still operator-started by the acknowledged
+v143 `bootstrap-first-strict` CLI. While its exact request-bound checkpoint is
+parked at `official_bootstrap_required`, Web clients may only read that one
+durable job from `GET /api/certification/jobs` or
+`GET /api/certification/jobs/{job_id}`. Its
+projection declares `formal_authority=operator_bootstrap_full_v5_job`,
+`read_only=true`, and `cancel_allowed=false`. HTTP enqueue remains 410 and
+bootstrap cancellation remains 404; the retired
+`/api/certification/queue` route is absent, and old-epoch, v155, unbound,
+drifted, or ambiguous jobs remain invisible.
 
 `official-failed` means deterministic candidate-side evidence. It may enter bot
 repair. `official-inconclusive` means platform, Wine, signer, opponent, or

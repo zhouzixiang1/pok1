@@ -1,16 +1,14 @@
-"""Unified event bus — single ``emit()`` entry enforcing a correlation schema.
+"""Unified event bus — the sole persistent structured-event authority.
 
-This is the backbone of the log-system redesign (Phase 0). It coexists with
-``system_log.log_system_event`` (now a thin forwarding shim) via dual-write:
+``system_log.log_system_event`` remains only as a call-signature shim:
 
     caller → system_log.log_system_event(type, sev, msg, data)   # 161 existing sites
                  ↓ forwards
            event_bus.emit(type, sev, msg, **data)
                  ↓ resolves correlation (run_id/stage/attempt) + normalises severity
            _dispatch(event)
-                 ↓ dual-write
-           ├─ events.jsonl          (new authoritative schema, with correlation)
-           └─ system_log._write_system_event_raw  (legacy system_events.jsonl + SSE)
+                 ├─ events.jsonl          (canonical, correlation-bound ledger)
+                 └─ dashboard SSE         (the exact same event object)
 
 The six audited root causes are eliminated *structurally* at this entry point:
 
@@ -29,10 +27,6 @@ Correlation across process/thread boundaries (the blind spot all three design
 candidates shared):
 
   - In-process (orchestrator asyncio.gather): contextvars (tasks copy context).
-  - Long-lived worker threads (battle_experience._experience_loop,
-    qd_async_eval._qd_eval_worker): deliberately NOT pinned — they span many
-    generations, so per-event ``_resolve_context()`` reads the *live* checkpoint
-    to get the current generation's run_id. Pinning would freeze a stale id.
   - daemon subprocess (subprocess.Popen): ``daemon_management`` injects
     ``POK_PROC=daemon``; daemon events fall back to checkpoint too.
   - checkpoint-clear race: ``_last_known`` survives ``clear_pipeline_checkpoint``
@@ -108,11 +102,21 @@ _ckpt_cache: dict = {"ts": 0.0, "data": None}
 _ckpt_cache_lock = threading.Lock()
 _CKPT_TTL_SEC = 0.5
 
-#: Module-level path so conftest can redirect it to tmp (mirrors the existing
-#: SYSTEM_EVENTS_FILE / WORKER_FAILURES_FILE pattern). Resolved lazily to avoid
+#: Module-level path so tests can redirect it to a temporary ledger. Resolved
+#: lazily to avoid
 #: importing evolution_infra at module-load time (lets tests import event_bus
 #: without the full results dir wired up).
 EVENTS_FILE = None
+
+# The epoch reset receipt is immutable after initialization.  Cache its
+# identity by regular-file stat so hot daemon logging does not repeatedly
+# validate the archive trust chain, while a reset appearing after web startup
+# is still detected immediately.
+_epoch_identity_cache: dict = {
+    "signature": None,
+    "evaluation_epoch": None,
+    "receipt_digest": None,
+}
 
 
 def _events_file():
@@ -124,6 +128,47 @@ def _events_file():
         except Exception:
             return None
     return EVENTS_FILE
+
+
+def _current_epoch_identity() -> tuple[str | None, str | None]:
+    try:
+        from evolution_infra import RESULTS_DIR
+        from system_strict_bootstrap import (
+            POLICY_EPOCH_RESET_RECEIPT_FILENAME,
+            load_policy_epoch_reset_receipt,
+        )
+
+        path = RESULTS_DIR / POLICY_EPOCH_RESET_RECEIPT_FILENAME
+        stat = path.lstat()
+        if path.is_symlink() or not path.is_file():
+            raise OSError("unsafe epoch reset receipt")
+        signature = (
+            str(path),
+            int(stat.st_dev),
+            int(stat.st_ino),
+            int(stat.st_size),
+            int(stat.st_mtime_ns),
+        )
+        if _epoch_identity_cache["signature"] == signature:
+            return (
+                _epoch_identity_cache["evaluation_epoch"],
+                _epoch_identity_cache["receipt_digest"],
+            )
+        receipt, errors = load_policy_epoch_reset_receipt(RESULTS_DIR)
+        if errors or not isinstance(receipt, dict):
+            raise ValueError("invalid epoch reset receipt")
+        evaluation_epoch = str(receipt.get("epoch") or "") or None
+        receipt_digest = str(receipt.get("receipt_digest") or "") or None
+    except Exception:
+        signature = None
+        evaluation_epoch = None
+        receipt_digest = None
+    _epoch_identity_cache.update({
+        "signature": signature,
+        "evaluation_epoch": evaluation_epoch,
+        "receipt_digest": receipt_digest,
+    })
+    return evaluation_epoch, receipt_digest
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -303,8 +348,8 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
         failure_mode: NO_JSON/NO_FENCE/PARSE_ERROR/OK for parse-failure events (RC4).
         **fields: arbitrary business payload (next_v, worker_id, cost, …).
 
-    Dual-writes to events.jsonl (new schema) and system_events.jsonl (legacy,
-    via system_log._write_system_event_raw, which also drives SSE).
+    Persists exactly once to ``events.jsonl`` and broadcasts the same object to
+    dashboard listeners. There is no compatibility or fallback event ledger.
     """
     if _STRICT:
         assert category and "." in category, f"event_bus.emit: bad category {category!r}"
@@ -330,12 +375,25 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
         payload_run_id = f"{payload_v}#{gen_attempt}"
 
     emitter_proc = current_proc()
+    workflow_run_id = fields.get("workflow_run_id")
+    if workflow_run_id is None:
+        try:
+            workflow_run_id = _read_ckpt_cached().get("workflow_run_id")
+        except Exception:
+            workflow_run_id = None
+    evaluation_epoch, epoch_reset_receipt_digest = _current_epoch_identity()
     data = {
         **fields,
         "category": category,
         "stage": stage if stage is not None else ctx_stage,
         "attempt": attempt if attempt is not None else ctx_attempt,
         "run_id": run_id if run_id is not None else (payload_run_id or rid),
+        "workflow_run_id": workflow_run_id,
+        "evaluation_epoch": evaluation_epoch or fields.get("evaluation_epoch"),
+        "epoch_reset_receipt_digest": (
+            epoch_reset_receipt_digest
+            or fields.get("epoch_reset_receipt_digest")
+        ),
         "emitter_pid": _PID,
         "emitter_ppid": os.getppid(),
         "emitter_proc": emitter_proc,
@@ -362,8 +420,7 @@ def emit(category, severity, message, *, stage=None, attempt=None, run_id=None,
 
 
 def _dispatch(event):
-    """Dual-write one event: events.jsonl (new) + legacy system_events.jsonl + SSE."""
-    # Write 1 — new authoritative schema
+    """Persist one canonical event and broadcast the same object over SSE."""
     try:
         from evolution_infra import append_locked_jsonl
         path = _events_file()
@@ -372,12 +429,10 @@ def _dispatch(event):
     except Exception:
         # Never let logging crash the pipeline — mirror system_log's tolerance.
         pass
-    # Write 2 — legacy system_events.jsonl + SSE broadcast. Goes through the raw
-    # writer (NOT log_system_event) to avoid a re-entrant loop back into emit().
     try:
-        from system_log import _write_system_event_raw
-        _write_system_event_raw(
-            event["type"], event["severity"], event["message"], event["data"])
+        from system_log import broadcast_system_event
+
+        broadcast_system_event(event)
     except Exception:
         pass
 
@@ -495,3 +550,8 @@ def reset_for_test():
     with _ckpt_cache_lock:
         _ckpt_cache["ts"] = 0.0
         _ckpt_cache["data"] = None
+    _epoch_identity_cache.update({
+        "signature": None,
+        "evaluation_epoch": None,
+        "receipt_digest": None,
+    })

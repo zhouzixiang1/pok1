@@ -25,7 +25,6 @@ from evolution_core import (
     _run_master_analysis,
     _run_direction_audit,
     _execute_workers,
-    EXPERIENCE_FILE,
     write_pipeline_checkpoint,
     check_code_size,
     MAX_PRECOMMIT_REWORK_ROUNDS,
@@ -44,12 +43,14 @@ from tool_helpers import (
 )
 from system_log import log_system_event
 from pipeline_state import route_policy
+from llm_availability import LLMAvailabilityBlocked
 from output_schema import (
-    LEGACY_CONSUMER_MIGRATION_CHECKS,
-    LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS,
-    LEGACY_CONSUMER_MIGRATION_FILES,
-    LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
     MASTER_PLAN_MAX_TASKS,
+    NATIONAL_POLICY_FOCUS_ID,
+    POLICY_CONTEXT_SCHEMA_VERSION,
+    POLICY_CONTEXT_TOP_LEVEL_FIELDS,
+    POLICY_ENTRYPOINTS,
+    POLICY_INTENT_KINDS,
     PRECOMPUTE_KEY_SHAPE_PATTERN,
     PRECOMPUTE_MAX_BUILD_MS,
     PRECOMPUTE_MAX_BYTES,
@@ -65,9 +66,14 @@ from output_schema import (
 
 
 _PROTOCOL_BOOTSTRAP_NO_STRENGTH = (
-    "PROTOCOL BOOTSTRAP NO-STRENGTH: historical match, rating, replay, "
-    "experience-pool, exploitability, and critic strength evidence was not loaded."
+    "PROTOCOL BOOTSTRAP NO-STRENGTH: no current-cycle strength evidence exists. "
+    "Use only the digest-bound strict prepared artifact, repository-pinned "
+    "protocol evidence, and bootstrap receipt supplied by the system."
 )
+
+# national_tcp_policy_v1 has one candidate-owned source artifact.  System
+# runtime/precompute bytes and any extra helper/asset are never Worker targets.
+_ACTIVE_CANDIDATE_WRITABLE_FILES = frozenset({"policy.py"})
 
 
 def _protocol_bootstrap_direction_audit(
@@ -140,7 +146,7 @@ def _protocol_bootstrap_master_audit(plan: dict) -> dict:
         "plan_coherent": True,
         "contradiction_found": False,
         "contradictions": [],
-        "experience_alignment": "not_applicable",
+        "evidence_alignment": "not_applicable",
         "direction_novelty": "not_applicable",
         "overall_pass": True,
         "feedback": "",
@@ -286,7 +292,7 @@ def _literature_probe_inject_text(payload: dict) -> str:
         return (
             "## Research Proposal\n"
             "No codable proposal was produced because the web research stage timed out. "
-            "Proceed with run_master using direction audit, H2H, replay, and experience-pool evidence."
+            "Proceed with run_master using frozen direction, H2H, replay, and identity-bound native memory evidence."
         )
     if reason and reason != "completed":
         return (
@@ -687,15 +693,16 @@ def _bump_master_fail_count(next_v, source_v, value=None, audit_context=None):
 
 
 def _touch_master_checkpoint(next_v, source_v, *, phase, audit_attempt=None, audit_context=None):
-    """Refresh the active checkpoint while Master/audit LLM work is progressing.
+    """Publish runtime liveness while Master/audit LLM work is progressing.
 
     `run_master` can legitimately spend many minutes inside Master retries and
-    plan-audit loops before it reaches the real `master_planned` stage. Without
-    this heartbeat, watchdogs see the checkpoint parked at `direction_audited`
-    and misclassify an active LLM stream as a stale pipeline.
+    plan-audit loops before it reaches the real `master_planned` stage.  This is
+    deliberately a gitignored sidecar, not a semantic checkpoint write: billing
+    or authentication pauses must leave pipeline_state bytes/revision unchanged.
     """
     try:
         from evolution_infra import read_pipeline_checkpoint
+        from pipeline_state import write_pipeline_runtime_heartbeat
 
         ckpt = read_pipeline_checkpoint() or {}
         if ckpt.get("next_v") != next_v:
@@ -703,16 +710,11 @@ def _touch_master_checkpoint(next_v, source_v, *, phase, audit_attempt=None, aud
         stage = ckpt.get("stage") or "direction_audited"
         if stage in {"timed_out", "infra_timed_out", "archived", "abandoned"}:
             return False
-        checkpoint_kwargs = {"touch_stage_timestamp": True}
-        if audit_attempt is not None:
-            checkpoint_kwargs["audit_attempt"] = audit_attempt
-        if audit_context is not None:
-            checkpoint_kwargs["audit_context"] = audit_context
-        ok = write_pipeline_checkpoint(
-            next_v,
-            ckpt.get("source_v", source_v),
-            stage,
-            **checkpoint_kwargs,
+        ok = write_pipeline_runtime_heartbeat(
+            ckpt,
+            phase=phase,
+            audit_attempt=audit_attempt,
+            audit_context=audit_context,
         )
         if ok:
             log_system_event(
@@ -729,8 +731,25 @@ def _touch_master_checkpoint(next_v, source_v, *, phase, audit_attempt=None, aud
             )
         return bool(ok)
     except Exception as exc:
-        _log.debug("Master checkpoint heartbeat failed (%s): %s", phase, exc)
+        _log.debug("Master runtime heartbeat failed (%s): %s", phase, exc)
         return False
+
+
+def _clear_master_runtime_heartbeat(next_v, source_v):
+    """Remove only the current generation's liveness sidecar."""
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        from pipeline_state import clear_pipeline_runtime_heartbeat
+
+        checkpoint = read_pipeline_checkpoint() or {}
+        if (
+            checkpoint.get("next_v") == next_v
+            and checkpoint.get("source_v") == source_v
+        ):
+            return clear_pipeline_runtime_heartbeat(checkpoint)
+    except Exception:
+        pass
+    return False
 
 
 async def _abandon_master_generation(next_v, source_v, *, error, fail_count, reason,
@@ -1094,26 +1113,37 @@ _CITATION_RE = re.compile(
 )
 
 
-def _load_replay_anchor_map():
-    """Load the spotlight manifest and return {base_id: anchor} map.
+def _load_replay_anchor_map(next_v=None):
+    """Load the generation snapshot citations as ``{base_id: anchor}``.
 
     Returns:
         dict mapping citation base ID (e.g. "G3H25") to anchor string, or
-        None if the manifest is missing/corrupt (caller should skip checks).
+        ``None`` only for context-free utility calls with no generation id.
+        A missing/corrupt generation snapshot returns an empty map so any
+        citation fails closed.
     """
+    if next_v is None:
+        return None
     try:
-        _manifest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      "results", "spotlight_manifest.json")
-        if not os.path.exists(_manifest_path):
-            return None  # spotlight didn't run this gen — can't verify
-        with open(_manifest_path, encoding="utf-8") as f:
-            manifest = json.load(f)
+        from evidence_snapshot import load_generation_evaluation_snapshot
+
+        frozen = load_generation_evaluation_snapshot(int(next_v))
+        if not frozen.get("available"):
+            return {}
+        spotlight = frozen.get("replay_spotlight")
+        if not isinstance(spotlight, dict):
+            return {}
     except Exception:
-        return None  # corrupt/missing manifest — can't verify
+        return {}
 
     anchor_map = {}
-    for c in manifest.get("citations", []):
-        anchor_map[c.get("id", "")] = c.get("anchor", "")
+    for citation in spotlight.get("citations", []):
+        if not isinstance(citation, dict):
+            continue
+        base = str(citation.get("id") or "")
+        anchor = str(citation.get("anchor") or "")
+        if base and anchor:
+            anchor_map[base] = anchor
     return anchor_map
 
 
@@ -1160,7 +1190,7 @@ def _sanitize_unverified_replay_citations(text, anchor_map):
     """Remove stale replay hand IDs from Master side context.
 
     The current replay spotlight is the only authoritative citation source for
-    a generation. Direction-audit, match-analysis, research, or experience text
+    a generation. Direction-audit, match-analysis, research, or other advisory text
     can mention historical GxHy IDs from prior generations; if injected as-is,
     Master tends to repeat them and the evidence gate correctly rejects the
     plan. Keep valid current IDs, fix stale anchors, and redact invalid IDs
@@ -1189,20 +1219,19 @@ def _sanitize_unverified_replay_citations(text, anchor_map):
     return _CITATION_RE.sub(repl, text), count
 
 
-def _verify_cited_replays(plan):
+def _verify_cited_replays(plan, *, next_v=None):
     """A4 (evidence_gate): reject Master/Worker replay citations that don't
     correspond to any real replay hand in the spotlight manifest.
 
-    The v127-v143 "G3H25/G2H44" fabrication recurred 9x because Master/Worker
-    prompts cited hand IDs that don't exist in any recent replay (real files are
-    timestamp-named; agents invented GxHx IDs). find_critical_hands now writes
-    results/spotlight_manifest.json listing every citation it actually emitted;
-    this function cross-checks the plan's citations against it.
+    Historical agents invented GxHx IDs that did not exist in the bound replay
+    set. The pure spotlight builder now stores every emitted citation directly
+    inside the immutable generation evidence snapshot; this function
+    cross-checks the plan only against that snapshot.
 
-    Returns a list of BLOCKING error strings. Like EXHAUSTED-direction positive
-    intent, fabricated evidence must not reach workers.
+    Returns a list of BLOCKING error strings. Fabricated evidence must not
+    reach Workers.
     """
-    anchor_map = _load_replay_anchor_map()
+    anchor_map = _load_replay_anchor_map(next_v)
     tasks = plan if isinstance(plan, list) else (
         plan.get("tasks", []) if isinstance(plan, dict) else []
     )
@@ -1218,43 +1247,9 @@ def _verify_cited_replays(plan):
     return _check_citations(texts, anchor_map)
 
 
-def _exhausted_plan_violations(plan, next_v=None, precomputed_exhausted_keywords=None):
-    """Return blocking positive-intent matches against EXHAUSTED directions.
-
-    This deliberately inspects only positive execution intent. Guardrail prose
-    such as "do not repeat fold-gate tuning" is stripped by
-    _positive_execution_text_from_task, so the gate blocks plans that actually
-    ask workers to implement a stale axis, not plans that merely quote the ban.
-    """
-    exhausted_keywords = (
-        precomputed_exhausted_keywords
-        if precomputed_exhausted_keywords is not None
-        else _extract_exhausted_keywords()
-    )
-    if not exhausted_keywords or not isinstance(plan, dict):
-        return []
-
-    violations = []
-    for i, task in enumerate(plan.get("tasks", []) or []):
-        if not isinstance(task, dict):
-            continue
-        prompt_text = _positive_execution_text_from_task(task)
-        if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
-            worker_id = task.get("worker_id", i)
-            violations.append(
-                "EXHAUSTED_DIRECTION_REPEATED: "
-                f"Task {i} (worker_id={worker_id}) positive implementation intent "
-                "matches an EXHAUSTED direction from experience_pool.md. "
-                "Produce a fundamentally different axis before executing workers."
-            )
-    return violations
-
-
 def _validate_master_plan(
     plan,
     next_v=None,
-    precomputed_exhausted_keywords=None,
-    exhausted_policy="error",
 ):
     """Validate master plan constraints before dispatching workers.
 
@@ -1262,9 +1257,6 @@ def _validate_master_plan(
     Boundary warnings are logged but non-blocking; the reviewer/critic
     enforce actual role boundaries during code review.
 
-    exhausted_policy:
-    - "error": normal Master planning; stale directions must not reach workers.
-    - "warn": repair/backward-compatible callers; record risk without blocking.
     """
     errors = []
     warnings = []
@@ -1289,23 +1281,32 @@ def _validate_master_plan(
             )
         layer = str(task.get("skill_layer", "") or "").strip()
         errors.extend(_runtime_contract_errors(task, i, layer))
+        declared_rels = {
+            (
+                _target_rel(item, next_v)
+                if next_v is not None
+                else Path(str(item)).name
+            )
+            for item in [*targets, *files_allowed]
+            if str(item).strip()
+        }
+        if declared_rels != _ACTIVE_CANDIDATE_WRITABLE_FILES:
+            errors.append(
+                f"Task {i}: national_tcp_policy_v1 writable scope must be exactly "
+                f"['policy.py']; got {sorted(declared_rels)}. System files, helper "
+                "modules, and assets are not Worker targets."
+            )
         role = str(task.get("role", ""))
         if normalize_worker_role(role) == "tuner":
-            # Tuners MUST only modify constants.py — error if target_files or
-            # files_allowed includes other files. files_allowed is an expansion
-            # of the writable boundary, so accepting non-constants there would
-            # bypass the Tuner contract even when target_files is clean.
-            # This prevents the shared-file boundary validation false positive (Bug 1)
-            # where two workers target the same file, causing all changes to be incorrectly
-            # reverted as a Tuner boundary violation.
-            tuner_only_files = {"constants.py"}
+            # All roles share the sole candidate artifact; Tuner scope is
+            # semantic (existing numeric values only), not a separate module.
+            tuner_only_files = _ACTIVE_CANDIDATE_WRITABLE_FILES
             declared_files = list(targets) + list(files_allowed)
             non_tuner_files = [t for t in declared_files if Path(str(t)).name not in tuner_only_files]
             if non_tuner_files:
                 errors.append(
-                    f"Task {i}: Hyperparameter Tuner declares non-constants file(s) {non_tuner_files} "
-                    f"in target_files/files_allowed. Tuners MUST only modify constants.py. "
-                    f"Assign {non_tuner_files} to a Logic Architect task."
+                    f"Task {i}: Hyperparameter Tuner declares non-policy file(s) {non_tuner_files}; "
+                    "all candidate edits must remain in policy.py."
                 )
             prompt_lower = prompt.lower()
             # Skip structural keywords that appear in constraint/negative contexts
@@ -1370,37 +1371,20 @@ def _validate_master_plan(
             else:
                 all_targets[rel] = i
 
-    # Hard error: Architect and Tuner sharing any file causes boundary validation
-    # false positives because the Tuner check sees the Architect's structural changes.
+    # All active tasks necessarily share policy.py. Per-worker snapshots isolate
+    # boundary review, and the executor serializes overlapping tasks.
     overlap = set(architect_targets.keys()) & set(tuner_targets.keys())
     if overlap:
-        errors.append(
-            f"Architect and Tuner share target file(s): {sorted(overlap)}. "
-            f"This causes boundary validation false positives (Tuner check sees Architect's changes). "
-            f"Assign constants.py to Tuner only; other files go to Architect."
+        warnings.append(
+            f"Architect and Tuner share the sole policy target {sorted(overlap)}; "
+            "execute sequentially and audit each worker against its own snapshot."
         )
 
-    # Check positive worker intent against exhausted directions from experience
-    # pool. This used to be advisory, which let v33 spend a full worker timeout
-    # on a direction the system had already identified as stale. Normal Master
-    # planning now blocks here; repair flows can request warning mode.
-    exhausted_violations = _exhausted_plan_violations(
-        plan,
-        next_v=next_v,
-        precomputed_exhausted_keywords=precomputed_exhausted_keywords,
-    )
-    if exhausted_violations:
-        if exhausted_policy == "warn":
-            warnings.extend(v.replace("EXHAUSTED_DIRECTION_REPEATED: ", "") for v in exhausted_violations)
-        else:
-            errors.extend(exhausted_violations)
-
-    # A4 (evidence_gate, evolution-plan-refresh-jun21): BLOCKING — reject cited
-    # replay hands that don't exist in the spotlight manifest (FABRICATED evidence,
-    # recurred 9x v127-v143). Unlike the exhausted-direction check above, this is a
-    # hard error: a plan built on hallucinated evidence must not reach workers.
+    # BLOCKING: reject replay hands that do not exist in this generation's
+    # digest-bound spotlight payload. A plan built on invented evidence must
+    # not reach Workers.
     try:
-        errors.extend(_verify_cited_replays(plan))
+        errors.extend(_verify_cited_replays(plan, next_v=next_v))
     except Exception:
         pass  # never let the gate itself crash the pipeline
 
@@ -1476,6 +1460,24 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
     if validated.match_memory is not None:
         owners.append(validated.match_memory.owner_file)
     owners.extend(item.owner_file for item in validated.precompute_artifacts)
+    invalid_precompute_owners = sorted({
+        item.owner_file
+        for item in validated.precompute_artifacts
+        if item.owner_file != "precompute.py"
+    })
+    if invalid_precompute_owners:
+        return [
+            f"Task {index}: precompute artifacts must be existing read-only "
+            f"precompute.py objects, got owners {invalid_precompute_owners}."
+        ]
+    if (
+        validated.match_memory is not None
+        and validated.match_memory.owner_file != "national_bot.py"
+    ):
+        return [
+            f"Task {index}: match memory is owned by read-only national_bot.py, "
+            f"got {validated.match_memory.owner_file!r}."
+        ]
     missing_owners = sorted({
         owner
         for owner in owners
@@ -1487,19 +1489,8 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             "the declared writable/read-only scope: "
             f"writable={sorted(writable_scope)}, read_only={sorted(read_only_scope)}."
         ]
-    target_scope = {
-        Path(str(item)).name for item in task.get("target_files") or []
-    }
-    if (
-        validated.match_memory is not None
-        and validated.match_memory.owner_file == "national_bot.py"
-        and "national_bot.py" not in target_scope
-        and "national_bot.py" in writable_scope
-    ):
-        return [
-            f"Task {index}: system-provided national_bot.py must be a target_file when "
-            "writable; otherwise put it in read_only_dependencies."
-        ]
+    # national_bot.py and precompute.py can only be declared read-only; their
+    # content failures are system/infrastructure failures, never Worker repairs.
 
     state_learning = validated.state_learning
     if state_learning is not None:
@@ -1513,14 +1504,6 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
                 f"Task {index}: state_learning primary innovation "
                 f"{state_learning.primary_innovation()!r} requires checks_required "
                 f"{missing_checks}."
-            ]
-        if (
-            state_learning.work_primitive == "bounded_precompute_lookup"
-            and not validated.precompute_artifacts
-        ):
-            return [
-                f"Task {index}: bounded_precompute_lookup requires a concrete "
-                "precompute_artifacts declaration."
             ]
         if (
             state_learning.work_primitive == "sample_counted_candidate_batch"
@@ -1543,51 +1526,6 @@ def _runtime_contract_errors(task: dict, index: int, layer: str) -> list[str]:
             )
             if reference_errors:
                 return [f"Task {index}: {error}" for error in reference_errors]
-
-    migration = validated.legacy_consumer_migration
-    if migration is not None:
-        if focus_id != LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-            return [
-                f"Task {index}: legacy_consumer_migration belongs only to "
-                f"{LEGACY_CONSUMER_MIGRATION_FOCUS_ID!r}."
-            ]
-        missing_checks = sorted(
-            set(LEGACY_CONSUMER_MIGRATION_CHECKS).difference(
-                str(item) for item in task.get("checks_required") or []
-            )
-        )
-        if missing_checks:
-            return [
-                f"Task {index}: universal legacy consumer migration omitted "
-                f"checks {missing_checks}."
-            ]
-        missing_files = sorted(
-            set(LEGACY_CONSUMER_MIGRATION_FILES).difference(writable_scope)
-        )
-        if missing_files:
-            return [
-                f"Task {index}: universal legacy consumer migration omitted "
-                f"writable files {missing_files}."
-            ]
-        unexpected_files = sorted(
-            writable_scope.difference(LEGACY_CONSUMER_MIGRATION_FILES)
-        )
-        if unexpected_files:
-            return [
-                f"Task {index}: universal legacy consumer migration has "
-                f"unexpected writable files {unexpected_files}."
-            ]
-        forbidden_extra_checks = sorted(
-            set(str(item) for item in task.get("checks_required") or []).intersection(
-                LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS
-            )
-        )
-        if forbidden_extra_checks:
-            return [
-                f"Task {index}: universal legacy consumer migration carries "
-                "ordinary innovation or aggregate checks "
-                f"{forbidden_extra_checks}."
-            ]
 
     prompt = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
     contract_terms = runtime_contract_worker_prompt_terms(validated)
@@ -1680,14 +1618,29 @@ def _master_snapshot_binding_errors(checkpoint, next_v):
         receipt = audit_context.get("protocol_bootstrap")
         try:
             from evolution_infra import get_active_bots
-            from national_protocol_quarantine import validate_protocol_bootstrap_receipt
+            active_bots = list(get_active_bots())
+            if (
+                isinstance(receipt, dict)
+                and receipt.get("mode") == "fresh_national_policy_bootstrap"
+            ):
+                from system_strict_bootstrap import validate_fresh_bootstrap_receipt
 
-            errors.extend(
-                validate_protocol_bootstrap_receipt(
-                    receipt,
-                    active_bots=get_active_bots(),
-                )
-            )
+                errors.extend(validate_fresh_bootstrap_receipt(
+                    receipt, active_bots=active_bots
+                ))
+            else:
+                from bot_artifact import canonical_digest
+
+                unsigned = {
+                    key: value for key, value in (receipt or {}).items()
+                    if key != "receipt_digest"
+                }
+                if not isinstance(receipt, dict) or receipt.get(
+                    "receipt_digest"
+                ) != canonical_digest(unsigned):
+                    errors.append("policy_bootstrap_receipt_digest_mismatch")
+                if sorted((receipt or {}).get("active_bots") or []) != sorted(active_bots):
+                    errors.append("policy_bootstrap_active_pool_mismatch")
         except Exception as exc:
             errors.append(
                 f"protocol_bootstrap_validation_error:{type(exc).__name__}:"
@@ -1712,20 +1665,31 @@ def _master_snapshot_binding_errors(checkpoint, next_v):
                 errors.append("protocol_bootstrap_runtime_hash_mismatch")
         if (
             isinstance(receipt, dict)
-            and receipt.get("mode") == "legacy_strategy_migration"
+            and receipt.get("mode") == "fresh_national_policy_bootstrap"
             and prepare.get("system_runtime_replaced") is not True
         ):
             errors.append("protocol_bootstrap_system_runtime_not_replaced")
         try:
-            from national_native import check_native_contract
-
+            from bot_namespace import (
+                NATIONAL_RUNTIME_MANIFEST,
+                POLICY_EPOCH_RECEIPT,
+                epoch_receipt_errors,
+                runtime_manifest_errors,
+            )
+            runtime_manifest = json.loads(
+                (candidate_dir / NATIONAL_RUNTIME_MANIFEST).read_text(encoding="utf-8")
+            )
+            epoch_receipt = json.loads(
+                (candidate_dir / POLICY_EPOCH_RECEIPT).read_text(encoding="utf-8")
+            )
             errors.extend(
                 "protocol_bootstrap_candidate_contract:" + item
-                for item in check_native_contract(
-                    candidate_dir,
-                    require_current_stream_decoder=True,
-                    require_current_decision_runtime=True,
-                )
+                for item in [
+                    *runtime_manifest_errors(candidate_dir, runtime_manifest),
+                    *epoch_receipt_errors(
+                        candidate_dir, int(next_v), runtime_manifest, epoch_receipt
+                    ),
+                ]
             )
         except Exception as exc:
             errors.append(
@@ -2427,9 +2391,8 @@ async def run_master(args):
             ),
         )
 
-    # Direction audit is persisted by its owning tool.  The caller copy is only
-    # a legacy fallback; it cannot override the checkpoint verdict or rewrite
-    # mandatory/exhausted directions.
+    # Direction audit is persisted by its owning tool. The caller copy cannot
+    # override the checkpoint verdict or rewrite mandatory directions.
     direction_audit = None
     _checkpoint_direction_audit = (
         _master_entry_ckpt.get("direction_audit")
@@ -2461,13 +2424,8 @@ async def run_master(args):
     elif isinstance(_caller_direction_audit, dict):
         direction_audit = _caller_direction_audit
 
-    # Inject mandatory constraints into performance_verification if audit found repetition.
-    # B-class guard: if the Direction Auditor's LLM call crashed (infrastructure
-    # failure), its "no repetition" verdict is untrustworthy — do NOT inject its
-    # (empty) mandatory_constraints block as if the audit were authoritative.
-    # The mechanical cross-gen backstop (_build_cross_gen_constraint_block below)
-    # still runs and provides exhausted-direction protection independent of this
-    # LLM gate, so a crashed auditor does not leave the Master unconstrained.
+    # Inject only the current, checkpoint-bound Direction audit constraint when
+    # it found repetition.
     if protocol_bootstrap_no_strength:
         # Direction Audit remains a durable stage receipt, but its historical
         # match/critic conclusions are not evidence for the first strict plan.
@@ -2475,15 +2433,14 @@ async def run_master(args):
     elif direction_audit and direction_audit.get("llm_failed"):
         _log.warning(
             "Direction audit for v%s reported LLM infrastructure failure — "
-            "skipping audit mandatory_constraints injection (untrustworthy). "
-            "Cross-gen mechanical backstop still applies.",
+            "skipping audit mandatory_constraints injection (untrustworthy).",
             next_v,
         )
         try:
             log_system_event(
                 "pipeline.direction_audit_infra", "warn",
                 f"Direction audit for v{next_v} unavailable (LLM infra error). "
-                "Skipping audit constraints; cross-gen mechanical backstop still applies.",
+                "Skipping audit constraints.",
                 {"next_v": next_v, "source_v": source_v},
             )
         except Exception:
@@ -2500,21 +2457,6 @@ async def run_master(args):
         constraint_block += "\nYou MUST comply with these constraints. A plan that repeats an exhausted direction will be rejected.\n"
         performance_verification = (performance_verification or "") + constraint_block
 
-    # Cross-gen mechanical backstop: inject prior critic local-optima rejections
-    # + experience-pool EXHAUSTED directions directly into performance_verification,
-    # independent of the direction_audit LLM gate (which historically under-detects
-    # — v82 repetition_detected=false despite the pool flagging constant-tuning
-    # EXHAUSTED). No-op when there is no prior critic local-optima rejection and
-    # no EXHAUSTED direction (first-ever gen / clean crossover unaffected).
-    # Idempotent: guarded by CROSS_GEN_MARKER so run_master retries don't stack it.
-    _cross_gen_block = (
-        ""
-        if protocol_bootstrap_no_strength
-        else _build_cross_gen_constraint_block(next_v)
-    )
-    if _cross_gen_block and CROSS_GEN_MARKER not in (performance_verification or ""):
-        performance_verification = (performance_verification or "") + _cross_gen_block
-
     ui = _get_ui()
 
     # --- Extract replay_spotlight for Master prompt ---
@@ -2522,30 +2464,23 @@ async def run_master(args):
     if not protocol_bootstrap_no_strength:
         replay_spotlight = ""
         try:
-            from generation_scheduler import GenerationContext
-            # replay_spotlight is computed in prepare_generation() and stored in
-            # GenerationContext, but the MCP tool layer doesn't have direct access
-            # to the gen_ctx object. Re-compute from the replay files instead.
-            from replay_spotlight import find_critical_hands
-            from evolution_infra import RESULTS_DIR
             from evidence_snapshot import load_generation_evaluation_snapshot
 
             _replay_evidence = load_generation_evaluation_snapshot(next_v)
             if not _replay_evidence.get("available"):
                 raise RuntimeError("generation replay evidence unavailable")
-            replays_dir = str(RESULTS_DIR / "match_replay")
-            replay_spotlight = find_critical_hands(
-                bot_name=bot_name(source_v),
-                replays_dir=replays_dir,
-                max_hands=10,
-                recent_n_files=20,
-                allowed_replay_ids=(
-                    (_replay_evidence.get("match_history_index") or {}).get(
-                        "replay_ids"
-                    )
-                    or []
-                ),
-            )
+            _spotlight_payload = _replay_evidence.get("replay_spotlight")
+            if not isinstance(_spotlight_payload, dict):
+                raise RuntimeError("generation replay spotlight payload missing")
+            if _spotlight_payload.get("bot") != bot_name(source_v):
+                raise RuntimeError("generation replay spotlight bot mismatch")
+            if _spotlight_payload.get("evaluation_identity_digest") != (
+                (_replay_evidence.get("manifest") or {}).get(
+                    "evaluation_identity_digest"
+                )
+            ):
+                raise RuntimeError("generation replay spotlight identity mismatch")
+            replay_spotlight = str(_spotlight_payload.get("text") or "")
         except Exception:
             pass
 
@@ -2553,7 +2488,11 @@ async def run_master(args):
     # IDs. Side contexts can carry historical GxHy references from old audits,
     # research proposals, or match summaries; redact those before Master sees
     # them so the hard fabricated-evidence gate can remain strict.
-    _anchor_map = None if protocol_bootstrap_no_strength else _load_replay_anchor_map()
+    _anchor_map = (
+        None
+        if protocol_bootstrap_no_strength
+        else _load_replay_anchor_map(next_v)
+    )
     _citation_sanitized = {}
     for _name, _value in (
         ("stagnation_info", stagnation_info),
@@ -2865,91 +2804,60 @@ async def run_master(args):
     except Exception:
         pass
 
-    # --- Read battle experience for Master prompt ---
-    battle_experience = (
-        _PROTOCOL_BOOTSTRAP_NO_STRENGTH
-        if protocol_bootstrap_no_strength
-        else ""
-    )
-    if not protocol_bootstrap_no_strength:
-        try:
-            from battle_experience import get_battle_experience
-            battle_experience = get_battle_experience(source_bot=bot_name(source_v))
-        except Exception:
-            pass
+    _system_bootstrap_master = False
+    _system_bootstrap_master_receipt = None
+    from system_strict_bootstrap import is_declared_native_bootstrap
 
-    # --- Read exploitability probe results for Master prompt ---
-    # exploitability.json is written by exploitability_prober.run_exploitability_probes()
-    # (called from generation_scheduler.post_generation_cleanup against the
-    # PREVIOUS generation's bot). It is write-only until consumed here.
-    exploitability_weaknesses = (
-        _PROTOCOL_BOOTSTRAP_NO_STRENGTH
-        if protocol_bootstrap_no_strength
-        else ""
-    )
-    try:
-        from evolution_infra import RESULTS_DIR as _RES
-        _exploit_file = _RES / "exploitability.json"
-        if not protocol_bootstrap_no_strength and _exploit_file.exists():
-            with open(_exploit_file, "r") as _f:
-                _exploit = json.load(_f)
-            _overall = _exploit.get("overall_score")
-            _weak_list = _exploit.get("weaknesses", []) or []
-            _games = _exploit.get("num_hands")
-            _bot_path = _exploit.get("bot_path", "")
-            _source_bot = bot_name(source_v)
-            # Stale-safe: only inject the cached probe data if it was actually
-            # run for the CURRENT source bot. The post-gen probe refreshes this
-            # file per generation; if it hasn't run the file holds stale data for
-            # a DIFFERENT bot — injecting that would mislabel another bot's
-            # weaknesses as this bot's (active misinformation into Master).
-            # Stale-safe + reliability gate (defense in depth):
-            # (a) Inject cached data ONLY when the cached bot_path's parent dir
-            #     is EXACTLY the current source bot. A substring match
-            #     (_source_bot in _bot_path) would mis-fire on similarly named
-            #     bot directories, and a cached result for a DIFFERENT bot would
-            #     mislabel another bot's weaknesses as this bot's (active
-            #     misinformation into Master).
-            # (b) Require enough hands per probe to be statistically meaningful.
-            #     A tiny sample (e.g. a 2-hand diagnostic run) yields near-random
-            #     win_rates that would inject noise into the Master's direction.
-            _MIN_RELIABLE_PROBE_GAMES = 30
-            _cached_bot = Path(_bot_path).parent.name if _bot_path else ""
-            _reliable = _games is None or int(_games) >= _MIN_RELIABLE_PROBE_GAMES
-            if _bot_path and _cached_bot != _source_bot:
-                exploitability_weaknesses = (
-                    f"No fresh exploitability probe data for {_source_bot} "
-                    f"(cached result is for a different bot: {_bot_path})."
-                )
-            elif not _reliable:
-                exploitability_weaknesses = (
-                    f"Exploitability probe data for {_source_bot} is unreliable "
-                    f"(only {_games} games/probe, need >= {_MIN_RELIABLE_PROBE_GAMES}). "
-                    f"Treating as no data."
-                )
-                _log.warning("exploitability probe unreliable: %s hands for %s",
-                             _games, _source_bot)
-            else:
-                _parts = []
-                if _overall is not None:
-                    _parts.append(f"overall_score={_overall:.2f}/1.0")
-                if _games is not None:
-                    _parts.append(f"{int(_games)} games per probe")
-                if _bot_path:
-                    _parts.append(f"vs {_bot_path}")
-                header = ("Exploitability probe results (4 probe bots: min_bettor, "
-                          "overbettor, check_raiser, always_caller): "
-                          + ", ".join(_parts)) if _parts else (
-                          "Exploitability probe results (4 probe bots):")
-                if _weak_list:
-                    exploitability_weaknesses = header + "\nWEAKNESSES:\n- " + "\n- ".join(_weak_list)
-                else:
-                    exploitability_weaknesses = header + "\nNo exploitable weaknesses detected."
-    except Exception as e:
-        # Never silent: a parse/read failure here used to swallow the whole
-        # block. Log it so a corrupt/missing exploitability.json stays observable.
-        _log.warning("Exploitability probe read failed for source_v=%s: %s", source_v, e)
+    if is_declared_native_bootstrap(_master_entry_ckpt):
+        from system_strict_bootstrap import (
+            validate_bootstrap_checkpoint,
+        )
 
+        _system_errors = validate_bootstrap_checkpoint(
+            _master_entry_ckpt,
+            architecture_policy=architecture_policy,
+            candidate_dir=get_bot_dir(next_v),
+            require_direction_audit=True,
+        )
+        if _system_errors:
+            return await _abandon_master_generation(
+                next_v,
+                source_v,
+                error="SYSTEM_STRICT_BOOTSTRAP_AUTHORITY_INVALID",
+                fail_count=0,
+                reason=(
+                    "system_strict_bootstrap_authority_invalid:"
+                    + ";".join(_system_errors[:8])
+                ),
+                event_type="pipeline.system_strict_bootstrap_invalid",
+                event_message=(
+                    f"System strict bootstrap authority drifted for v{next_v}; "
+                    "abandoning without falling back to an LLM"
+                ),
+                ui=ui,
+                payload={"validation_errors": _system_errors},
+                directive=(
+                    "The exact first-migration receipt, prepared artifact, checked-in "
+                    "blueprint, or strict-pool state changed. The generation was "
+                    "abandoned; repair the control-plane contract and re-prepare."
+                ),
+            )
+        _system_bootstrap_master = True
+        log_system_event(
+            "pipeline.system_strict_bootstrap_authority_verified",
+            "info",
+            f"Verified deterministic Worker authority before Master for v{next_v}",
+            {
+                "next_v": next_v,
+                "source_v": source_v,
+                "executor": "system_policy_bootstrap_v1",
+                "master_governance": "three_proposals_two_anonymous_ballots",
+            },
+        )
+
+    # The deterministic package owns implementation bytes only.  Governance is
+    # unchanged: Master must still produce three independent proposals, collect
+    # two anonymous criterion ballots, and publish one schema-valid plan.
     try:
         data = await _run_master_analysis(
             source_v, next_v, stagnation_info, ui,
@@ -2957,8 +2865,6 @@ async def run_master(args):
             performance_verification=performance_verification,
             replay_spotlight=replay_spotlight,
             bot_action_stats=bot_action_stats,
-            battle_experience=battle_experience,
-            exploitability_weaknesses=exploitability_weaknesses,
             opponent_profiles=opponent_profiles,
             research_proposals=research_proposals,
             architecture_policy=architecture_policy,
@@ -2969,6 +2875,10 @@ async def run_master(args):
                 else {}
             ),
         )
+    except LLMAvailabilityBlocked:
+        # Availability pauses are attempt-neutral and must park at Direction.
+        _clear_master_runtime_heartbeat(next_v, source_v)
+        raise
     except Exception as exc:
         from agent_master import MasterInfrastructureError
 
@@ -3020,14 +2930,7 @@ async def run_master(args):
                 {"next_v": next_v, "source_v": source_v, "phase": phase, "error": str(_compile_exc)[:500]},
             )
 
-        _exhausted_kw = (
-            []
-            if protocol_bootstrap_no_strength
-            else _extract_exhausted_keywords()
-        )
-        plan_errors, plan_warnings = _validate_master_plan(
-            plan, next_v=next_v, precomputed_exhausted_keywords=_exhausted_kw
-        )
+        plan_errors, plan_warnings = _validate_master_plan(plan, next_v=next_v)
         if plan_warnings:
             try:
                 log_system_event(
@@ -3143,6 +3046,58 @@ async def run_master(args):
     )
     if _early_validation_result is not None:
         return _early_validation_result
+    if _system_bootstrap_master:
+        from system_strict_bootstrap import (
+            SystemStrictBootstrapError,
+            build_master_receipt,
+        )
+
+        try:
+            _system_bootstrap_master_receipt = build_master_receipt(
+                _matching_checkpoint(next_v, source_v) or _master_entry_ckpt,
+                data,
+                architecture_policy=architecture_policy,
+                candidate_dir=get_bot_dir(next_v),
+            )
+        except SystemStrictBootstrapError as exc:
+            return await _abandon_master_generation(
+                next_v,
+                source_v,
+                error="SYSTEM_STRICT_BOOTSTRAP_MASTER_RECEIPT_INVALID",
+                fail_count=0,
+                reason="system_strict_bootstrap_master_receipt_invalid:" + str(exc)[:300],
+                event_type="pipeline.system_strict_bootstrap_receipt_invalid",
+                event_message=(
+                    f"System strict bootstrap receipt failed closed for v{next_v}"
+                ),
+                ui=ui,
+                payload={"validation_errors": list(exc.errors)},
+                directive=(
+                    "The compiled plan or its authority chain drifted. The generation "
+                    "was abandoned without invoking an LLM fallback."
+                ),
+            )
+        except Exception as exc:
+            return await _abandon_master_generation(
+                next_v,
+                source_v,
+                error="SYSTEM_STRICT_BOOTSTRAP_MASTER_RECEIPT_ERROR",
+                fail_count=0,
+                reason=(
+                    "system_strict_bootstrap_master_receipt_error:"
+                    f"{type(exc).__name__}:{str(exc)[:260]}"
+                ),
+                event_type="pipeline.system_strict_bootstrap_receipt_error",
+                event_message=(
+                    f"System strict bootstrap receipt errored for v{next_v}"
+                ),
+                ui=ui,
+                payload={"exception_type": type(exc).__name__},
+                directive=(
+                    "The system receipt controller failed unexpectedly. The "
+                    "generation was abandoned; never fall back to an LLM Worker."
+                ),
+            )
     _touch_master_checkpoint(next_v, source_v, phase="master_plan_ready")
 
     # --- P0-1: Post-Master Plan Verification Audit ---
@@ -3192,7 +3147,7 @@ async def run_master(args):
                     "plan_coherent": False,
                     "contradiction_found": True,
                     "contradictions": _h2h_citation_errors[:10],
-                    "experience_alignment": "misaligned",
+                    "evidence_alignment": "misaligned",
                     "direction_novelty": "incremental",
                     "overall_pass": False,
                     "feedback": (
@@ -3268,6 +3223,31 @@ async def run_master(args):
                 )
             # Re-plan with rejection feedback, then re-audit the new plan
             _audit_attempt += 1
+            _rejection_ckpt = read_pipeline_checkpoint() or {}
+            _rejection_written = write_pipeline_checkpoint(
+                next_v,
+                source_v,
+                _rejection_ckpt.get("stage") or "direction_audited",
+                audit_attempt=_audit_attempt,
+                audit_context={"master_audit_rejection": master_audit_ctx},
+                touch_stage_timestamp=True,
+                expected_checkpoint_revision=int(
+                    _rejection_ckpt.get("checkpoint_revision") or 0
+                ),
+                expected_checkpoint_stage=str(
+                    _rejection_ckpt.get("stage") or "direction_audited"
+                ),
+                expected_workflow_run_id=str(
+                    _rejection_ckpt.get("workflow_run_id") or ""
+                ),
+            )
+            if not _rejection_written:
+                return _state_blocked(
+                    "master audit rejection checkpoint CAS was refused",
+                    next_v,
+                    source_v,
+                    _matching_checkpoint(next_v, source_v),
+                )
             _touch_master_checkpoint(
                 next_v,
                 source_v,
@@ -3311,8 +3291,6 @@ async def run_master(args):
                     performance_verification=performance_verification,
                     replay_spotlight=replay_spotlight,
                     bot_action_stats=bot_action_stats,
-                    battle_experience=battle_experience,
-                    exploitability_weaknesses=exploitability_weaknesses,
                     opponent_profiles=opponent_profiles,
                     research_proposals=research_proposals,
                     architecture_policy=architecture_policy,
@@ -3323,6 +3301,9 @@ async def run_master(args):
                         else {}
                     ),
                 )
+            except LLMAvailabilityBlocked:
+                _clear_master_runtime_heartbeat(next_v, source_v)
+                raise
             except Exception as exc:
                 from agent_master import MasterInfrastructureError
 
@@ -3358,22 +3339,12 @@ async def run_master(args):
                 phase="master_retry_plan_ready",
                 audit_attempt=_audit_attempt,
             )
-            # Persist audit_attempt so crash-resume resumes at this count (not 0)
-            try:
-                _ckpt_retry = read_pipeline_checkpoint() or {}
-                write_pipeline_checkpoint(
-                    next_v, source_v,
-                    _ckpt_retry.get("stage", "direction_audited"),
-                    audit_attempt=_audit_attempt,
-                    direction_audit=_ckpt_retry.get("direction_audit") or direction_audit,
-                    audit_context={"master_audit_rejection": master_audit_ctx},
-                    touch_stage_timestamp=True,
-                )
-            except Exception:
-                pass
             log_system_event("pipeline.master_audit_retry", "info",
                              f"Master re-planned after audit rejection for v{next_v} (attempt {_audit_attempt})",
                              {"next_v": next_v})
+    except LLMAvailabilityBlocked:
+        _clear_master_runtime_heartbeat(next_v, source_v)
+        raise
     except Exception as e:
         _log.warning("Master plan audit infrastructure error: %s", e)
         try:
@@ -3392,99 +3363,6 @@ async def run_master(args):
                 json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest(),
         )
-
-    # ── fix-5: Cross-gen direction pivot check ──
-    # Three conditions must ALL be true to force re-planning:
-    #   1. direction_audit confidence == "high"
-    #   2. exhausted_directions is non-empty
-    #   3. Same exhausted direction appeared in >=2 consecutive prior generations
-    #      (checked via cross_gen_exhausted_history.jsonl)
-    # This breaks the "same axis dies 6 gens in a row" loop (v138-v143 stackoff guard).
-    if direction_audit and not direction_audit.get("llm_failed"):
-        _confidence = direction_audit.get("confidence", "low")
-        _exhausted_dirs = direction_audit.get("exhausted_directions", [])
-        if _confidence == "high" and _exhausted_dirs:
-            # Record this generation's exhausted directions
-            _record_cross_gen_exhausted(next_v, source_v, _exhausted_dirs, _confidence)
-            # Check for consecutive same-axis exhaustion
-            _pivot_axis = _check_consecutive_exhaustion(next_v, _exhausted_dirs)
-            if _pivot_axis:
-                _plan_repeats, _matched_direction = _plan_repeats_exhausted_direction(
-                    data, _exhausted_dirs
-                )
-                if not _plan_repeats:
-                    log_system_event(
-                        "pipeline.cross_gen_pivot_satisfied", "info",
-                        f"Cross-gen pivot axis '{_pivot_axis}' is present in history, "
-                        f"but Master v{next_v} plan appears to use a different execution axis; continuing.",
-                        {"next_v": next_v, "source_v": source_v,
-                         "pivot_axis": _pivot_axis,
-                         "exhausted_directions": _exhausted_dirs,
-                         "plan_repeats_exhausted": False},
-                    )
-                else:
-                    _nf = _bump_master_fail_count(next_v, source_v)
-                    try:
-                        log_system_event("pipeline.cross_gen_pivot_runtime_only", "warn",
-                                         f"Cross-gen direction pivot triggered for v{next_v}: "
-                                         f"exhausted axis '{_pivot_axis}' persisted >=2 consecutive gens "
-                                         f"and the accepted Master plan still matches '{_matched_direction}'. "
-                                         f"Forcing structural alternative without writing experience_pool.md before commit.",
-                                         {"next_v": next_v, "source_v": source_v,
-                                          "pivot_axis": _pivot_axis,
-                                          "matched_direction": _matched_direction,
-                                          "exhausted_directions": _exhausted_dirs,
-                                          "experience_pool_marked": False,
-                                          "fail_count": _nf})
-                    except Exception:
-                        pass
-                    _pivot_payload = {
-                        "pivot_axis": _pivot_axis,
-                        "matched_direction": _matched_direction,
-                        "exhausted_directions": _exhausted_dirs,
-                        "confidence": _confidence,
-                    }
-                    if _nf >= MAX_MASTER_TOTAL_FAILURES:
-                        return await _abandon_master_generation(
-                            next_v,
-                            source_v,
-                            error="CROSS_GEN_PIVOT_EXHAUSTED",
-                            fail_count=_nf,
-                            reason=(
-                                f"cross_gen_pivot_repeated v{next_v}: "
-                                f"{_matched_direction[:300]}"
-                            ),
-                            event_type="pipeline.cross_gen_pivot_exhausted_abandon",
-                            event_message=(
-                                f"Cross-gen pivot repeated for v{next_v} after {_nf} "
-                                "Master failures — abandoning instead of re-calling Master"
-                            ),
-                            ui=ui,
-                            payload=_pivot_payload,
-                            directive=(
-                                "The accepted Master plan still matches an exhausted "
-                                "cross-generation direction after the corrective re-plan "
-                                "budget was used. This generation was abandoned; start a "
-                                "fresh generation on a different strategic axis."
-                            ),
-                        )
-                    return {"content": [{"type": "text", "text": json.dumps({
-                        "error": "CROSS_GEN_PIVOT",
-                        "fail_count": _nf,
-                        "pivot_axis": _pivot_axis,
-                        "matched_direction": _matched_direction,
-                        "exhausted_directions": _exhausted_dirs,
-                        "confidence": _confidence,
-                        "directive": (
-                            f"Direction pivot FORCED: the exhausted axis '{_pivot_axis}' has been "
-                            f"flagged for >=2 consecutive generations with HIGH confidence, and "
-                            f"the current plan still matches '{_matched_direction}'. You MUST produce a "
-                            f"FUNDAMENTALLY different plan — new structural mechanism, new opp-line "
-                            f"signal, or a completely different strategic axis. "
-                            f"Do NOT re-tune constants in the same exhausted area."
-                        ),
-                        "logs": ui.get_output(),
-                    })}]}
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
     _ckpt = _matching_checkpoint(next_v, source_v)
@@ -3509,7 +3387,14 @@ async def run_master(args):
         master_plan=data,
         direction_audit=existing_audit,
         worker_failure_count=_ckpt.get("worker_failure_count", 0) if _ckpt else 0,
-        audit_context={"master_audit": master_audit_ctx} if master_audit_ctx else None,
+        audit_context={
+            **({"master_audit": master_audit_ctx} if master_audit_ctx else {}),
+            **(
+                {"system_strict_bootstrap": _system_bootstrap_master_receipt}
+                if _system_bootstrap_master_receipt is not None
+                else {}
+            ),
+        } or None,
         reset_generation_attempt=True,
         reset_audit_attempt=True,
         **checkpoint_kwargs,
@@ -3529,7 +3414,18 @@ async def run_master(args):
     except Exception:
         pass
 
-    result = {"plan": data, "logs": ui.get_output()}
+    result = {
+        "plan": data,
+        "logs": ui.get_output(),
+        **(
+            {
+                "implementation_executor": "system_policy_bootstrap_v1",
+                "master_ensemble_invoked": True,
+            }
+            if _system_bootstrap_master
+            else {}
+        ),
+    }
     return {"content": [{"type": "text", "text": json.dumps(result, indent=2, ensure_ascii=False)}]}
 
 
@@ -3804,6 +3700,10 @@ async def run_literature_probe(args):
             ),
             timeout=LITERATURE_PROBE_TIMEOUT,
         )
+    except LLMAvailabilityBlocked:
+        # A provider stop cannot satisfy the scheduler-owned literature receipt.
+        # Leave the checkpoint/revision untouched for exact resume.
+        raise
     except _asyncio.TimeoutError:
         elapsed = round(time.time() - _t0, 1)
         try:
@@ -3818,7 +3718,7 @@ async def run_literature_probe(args):
         inject_text = (
             "## Research Proposal\n"
             "No codable proposal was produced because the web research stage timed out. "
-            "Proceed with run_master using direction audit, H2H, replay, and experience-pool evidence."
+            "Proceed with run_master using frozen direction, H2H, replay, and identity-bound native memory evidence."
         )
         payload = {
             "skipped": True,
@@ -3948,644 +3848,6 @@ async def run_literature_probe(args):
 # ──────────────────────────────────────────────
 # Worker Stage
 # ──────────────────────────────────────────────
-
-def _extract_exhausted_keywords():
-    """Extract focused topic keywords from EXHAUSTED experience pool entries.
-
-    For each [POSSIBLY EXHAUSTED] line, extracts:
-    1. The section header (e.g., OPPONENT_MODELING, PARAMETER_TUNING)
-    2. A cleaned short phrase (first clause before the explanation)
-    Returns a list of (section, phrase) tuples for fuzzy matching.
-    Returns an empty list if the file doesn't exist or has no EXHAUSTED entries.
-    """
-    if not EXPERIENCE_FILE.exists():
-        return []
-    try:
-        text = EXPERIENCE_FILE.read_text(encoding="utf-8")
-    except Exception:
-        return []
-
-    keywords = []
-    current_section = ""
-    # Tolerant marker: matches [POSSIBLY EXHAUSTED] AND [EXHAUSTED — hard gate]
-    # (any bracketed tag containing the word EXHAUSTED). Using a regex avoids the
-    # round-trip closure bug where an LLM-appended "— hard gate" suffix made the
-    # old literal "[POSSIBLY EXHAUSTED]" check silently miss every marker,
-    # disabling the exhausted-direction hard gate (returned []  -> gate no-op).
-    marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
-    for line in text.splitlines():
-        if line.startswith("## "):
-            current_section = line.replace("## ", "").strip()
-            continue
-        if not marker_re.search(line):
-            continue
-        # Skip non-direction sections: RECENT_LESSONS holds free-form critic
-        # commentary (e.g. a 1188-char v82 review dump) that can contain an
-        # inline [POSSIBLY EXHAUSTED] reference but is NOT a direction — extracted
-        # verbatim it becomes a parasitic 84-token keyword that matches almost
-        # any plan. Only top-level strategy sections hold real directions.
-        if current_section.upper() == "RECENT_LESSONS":
-            continue
-        # Extract the topic phrase: everything before the explanation
-        cleaned = marker_re.sub("", line).strip(" -•")
-        if not cleaned:
-            continue
-        # Length cap: a genuine direction phrase is a clause, not a paragraph.
-        # Real directions run ~300-400 chars; over-long entries (e.g. a 1188-char
-        # critic-review dump) are commentary, not directions. 500 keeps real
-        # directions while excluding dumps.
-        if len(cleaned) > 500:
-            continue
-        # Take the first clause (before common joiners) as the core topic
-        for sep in [" are exhausted", " has not ", " have repeatedly ", " shows "]:
-            if sep in cleaned:
-                cleaned = cleaned[:cleaned.index(sep)]
-                break
-        keywords.append((current_section.lower(), cleaned.lower()))
-    return keywords
-
-
-# Generic poker action/street vocabulary that appears in almost every plan.
-# Excluded from "distinctive" token matching so that a legitimate novel plan
-# mentioning fold/call/sizing isn't falsely flagged as repeating an EXHAUSTED
-# direction. Only direction-characteristic words (parameter/tuning/structural/
-# commitment/barrel/archetype/...) count as distinctive.
-_EXHAUSTED_BLOCKLIST = frozenset({
-    "fold", "call", "raise", "bet", "bets", "check", "allin", "pot",
-    "sizing", "threshold", "thresholds", "margin", "margins",
-    "equity", "hand", "hands", "street", "streets",
-    "flop", "turn", "river", "preflop", "postflop",
-    "strategy", "value", "tier", "probe", "probes", "axis", "opponent",
-    "modeling", "with", "without", "only", "decision", "decisions",
-    "fire", "fires", "rate", "chip", "chips",
-})
-
-
-# Direction-characteristic tokens that uniquely identify an EXHAUSTED direction
-# (as opposed to generic poker vocabulary). The HARD gate (_validate_master_plan)
-# additionally requires >=1 of these in the prompt so a legitimate novel plan
-# that merely shares generic strategy words (value/strategy/strong/tier/...) is
-# not falsely rejected. Excludes constant/margin/fold/grounded — too generic,
-# they appear in legitimate opponent-stat / continuous-stat reframes (the very
-# reframe v82's critic asked for).
-_EXHAUSTED_DIRECTION_TOKENS = frozenset({
-    "parameter", "parameters", "tuning", "commitment",
-    # NOTE: "mechanism", "canonical", "archetype", "refactor" REMOVED — these
-    # are generic structural-improvement verbs that fire on legitimate novel
-    # plans (the source of 5+ false-positive blocks observed). Only keep tokens
-    # that unambiguously characterize the truly-exhausted constant-tuning /
-    # commitment-axis patterns.
-    # NOTE: "continuous" is deliberately EXCLUDED — the POSTFLOP_STRATEGY
-    # exhausted phrase says "refactor old archetype guard to continuous-stat"
-    # where "continuous" is the refactor TARGET, not the exhausted pattern.
-    # Including it would reject legitimate continuous-stat opponent-modeling
-    # plans (the exact reframe v82's critic asked for).
-})
-
-
-def _exhausted_match_tokens(text: str) -> set[str]:
-    """Tokenize text for EXHAUSTED-axis matching without substring leakage."""
-    return {
-        token
-        for token in re.split(r"[^a-z0-9]+", str(text or "").lower())
-        if len(token) > 3
-    }
-
-
-def _fuzzy_match_exhausted(prompt_text: str, keywords: list, require_direction_token: bool = False) -> bool:
-    """Check if prompt_text matches an EXHAUSTED keyword using fuzzy token matching.
-
-    Distinctive tokens EXCLUDE generic poker vocabulary (_EXHAUSTED_BLOCKLIST) so
-    that a legitimate novel plan isn't rejected just for mentioning fold/call/
-    sizing. A match requires >=2 distinctive tokens (the BLOCKLIST makes "2
-    tokens" meaningful — direction-characteristic words, not fold/call/sizing).
-
-    When require_direction_token=True (HARD gate in _validate_master_plan), also
-    requires >=1 _EXHAUSTED_DIRECTION_TOKEN in the prompt. This eliminates the
-    remaining false-positive class where a long EXHAUSTED prose entry shares
-    generic words (value/strategy/strong/tier) with a legitimate novel plan,
-    without losing true positives (a real fold-gate reintroduction mentions
-    mechanism/canonical/archetype; a real constant-tuning plan mentions
-    parameter/tuning). The soft warning path (execute_workers) keeps the default
-    False to preserve recall — warnings are cheap.
-    """
-    prompt_tokens = _exhausted_match_tokens(prompt_text)
-
-    for section, phrase in keywords:
-        distinctive = set()
-        for src in (phrase, section):
-            # Split on any non-alphanumeric (spaces, underscores, slashes, dashes)
-            # so 'parameter_tuning' and 'constant/margin' tokenize the same way
-            # the prompt does ('parameter tuning', 'constant margin').
-            distinctive.update(_exhausted_match_tokens(src) - _EXHAUSTED_BLOCKLIST)
-        if not distinctive:
-            continue
-        matches = len(distinctive & prompt_tokens)
-        # Match on >=2 distinctive (non-generic) tokens; for very short keywords
-        # (<=2 distinctive, e.g. a bare section name) require all to match.
-        if matches < min(2, len(distinctive)):
-            continue
-        # HARD gate: additionally require a direction-characteristic token, so a
-        # plan that merely shares generic words (value/strategy/strong/tier) is
-        # not rejected.
-        if require_direction_token:
-            direction_hits = len(_EXHAUSTED_DIRECTION_TOKENS & prompt_tokens)
-            if direction_hits < 1:
-                continue
-        return True
-    return False
-
-
-_EXHAUSTED_NEGATIVE_CUES = (
-    "do not", "don't", "must not", "never", "avoid", "forbidden",
-    "prohibit", "prohibited", "unchanged", "preserve", "no retune",
-    "no tuning", "without modifying", "do n't", "should not",
-    "may violate an exhausted", "marks this area as exhausted",
-    "not the current bottleneck", "shelve until",
-)
-
-
-_REFACTOR_AWAY_CLAUSES = (
-    re.compile(
-        r"\b(replace|replaces|replaced|replacing)\s+[^.;:\n]+?\s+\b(with|by)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"[,;]\s*(replace|replaces|replaced|replacing|instead of|rather than)\b[^.;:\n]*",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(structural\s+)?replacement\s+for\b[^.;:\n]*",
-        re.IGNORECASE,
-    ),
-)
-
-
-def _strip_refactor_away_clauses(text: str) -> str:
-    """Remove prose describing the obsolete mechanism being replaced."""
-    cleaned = text
-    for pattern in _REFACTOR_AWAY_CLAUSES:
-        cleaned = pattern.sub(" ", cleaned)
-    return cleaned
-
-
-def _positive_execution_text_from_task(task: dict) -> str:
-    """Extract the task's positive implementation intent.
-
-    Fields that are explicitly prohibitions (`prohibited_files`, `do_not_touch`)
-    are excluded. Free-form prompts are split into sentences and negative
-    constraint sentences are dropped.
-    """
-    if not isinstance(task, dict):
-        return ""
-    structured_fields = (
-        "behavior_hypothesis",
-        "expected_diff_shape",
-        "targeted_failure",
-        "worker_goal",
-        "implementation_plan",
-        "merge_policy",
-    )
-    prompt_fallback_fields = (
-        "worker_prompt",
-        "instruction",
-    )
-    chunks = [str(task.get(field, "")) for field in structured_fields if str(task.get(field, "")).strip()]
-    # The full worker_prompt often contains code skeletons, hard constraints, and
-    # negative comparisons to exhausted directions. Those details are useful for
-    # the worker but too noisy for the hard EXHAUSTED-axis gate. Use it only as a
-    # fallback for old/minimal checkpoints that lack structured intent fields.
-    if not chunks:
-        chunks = [
-            str(task.get(field, ""))
-            for field in prompt_fallback_fields
-            if str(task.get(field, "")).strip()
-        ]
-    splitter = re.compile(r"[\n;]+|(?<=[A-Za-z0-9_)])\.(?=\s+|$)")
-    segments = []
-    for chunk in chunks:
-        for segment in splitter.split(chunk):
-            text = _strip_refactor_away_clauses(segment).strip().lower()
-            if not text:
-                continue
-            if any(cue in text for cue in _EXHAUSTED_NEGATIVE_CUES):
-                continue
-            segments.append(text)
-    return "\n".join(segments)
-
-
-def _plan_repeats_exhausted_direction(plan: dict, exhausted_directions: list[str]) -> tuple[bool, str]:
-    """Return whether a Master plan actively repeats a currently exhausted axis.
-
-    Cross-gen exhaustion is historical evidence, not proof that the new plan is
-    bad. Only positive execution fields are inspected; `do_not_touch` and audit
-    constraint prose are ignored so "avoid fold calibration" is not treated as
-    fold calibration.
-    """
-    if not isinstance(plan, dict) or not exhausted_directions:
-        return False, ""
-
-    chunks = [
-        str(plan.get("targeted_failure", "")),
-        str(plan.get("expected_behavior_change", "")),
-    ]
-    for task in plan.get("tasks", []) or []:
-        if not isinstance(task, dict):
-            continue
-        chunks.append(_positive_execution_text_from_task(task))
-    sentence_splitter = re.compile(r"[\n;]+|(?<=[A-Za-z0-9_)])\.(?=\s+|$)")
-    positive_segments = []
-    for chunk in chunks:
-        for segment in sentence_splitter.split(str(chunk)):
-            segment_l = segment.lower()
-            if not segment_l.strip():
-                continue
-            if any(cue in segment_l for cue in _EXHAUSTED_NEGATIVE_CUES):
-                continue
-            positive_segments.append(segment_l)
-    plan_text = "\n".join(positive_segments)
-    if not plan_text.strip():
-        return False, ""
-    target_files = set()
-    for task in plan.get("tasks", []) or []:
-        if not isinstance(task, dict):
-            continue
-        for f in task.get("target_files", []) or []:
-            target_files.add(str(f).split("/")[-1].lower())
-    fold_axis = any(
-        any(term in str(direction).lower() for term in (
-            "fold-side", "fold-threshold", "fold threshold", "fold gate",
-            "opponent.py", "state.py", "_multibarrel_line_fold",
-            "_estimate_bluff_frequency",
-        ))
-        for direction in exhausted_directions
-    )
-    offense_constructor = any(term in plan_text for term in (
-        "semi-bluff", "semibluff", "raise constructor", "raise_construct",
-        "draw equity", "fold equity", "chip path", "constructs a raise",
-    ))
-    fold_edit_terms = (
-        "_multibarrel_line_fold", "_allin_polarized_equity_fold",
-        "_river_potodds_equity_margin", "_estimate_bluff_frequency",
-        "betsize_polarity", "fold threshold", "fold thresholds",
-        "fold ceiling", "fold ceilings", "fold gate", "fold gates",
-        "fold-side", "made_strength cutoff", "made_strength cutoffs",
-        "bluff frequency",
-    )
-    fold_edit_verbs = (
-        "adjust", "alter", "calibrate", "change", "edit", "increase",
-        "lower", "modify", "narrow", "raise the", "recalibrate",
-        "retune", "tune", "widen",
-    )
-    fold_position_cues = (
-        "before the existing fold", "before any fold", "before fold",
-        "ahead of the existing fold", "ahead of fold", "runs before",
-        "run before", "not a fold", "never in a fold", "fold equity",
-        "fold_to_raise",
-    )
-
-    def _is_explicit_fold_edit(segment: str) -> bool:
-        if not any(term in segment for term in fold_edit_terms):
-            return False
-        # A new action constructor often has to be placed before existing fold
-        # gates. That is a control-flow position, not a fold-gate retune.
-        if any(cue in segment for cue in fold_position_cues):
-            return False
-        return any(verb in segment for verb in fold_edit_verbs)
-
-    explicit_fold_edit = bool(target_files & {"opponent.py", "state.py"}) or any(
-        _is_explicit_fold_edit(segment) for segment in positive_segments
-    )
-    if fold_axis and offense_constructor and not explicit_fold_edit:
-        # A structural raise/semi-bluff constructor is the intended escape from
-        # the fold-side axis. Do not treat mentions of "fold equity" or guarded
-        # opponent fold-to-raise signals as fold-threshold calibration unless the
-        # plan explicitly edits the exhausted fold code or targets those files.
-        if not (target_files & {"opponent.py", "state.py"}):
-            return False, ""
-    plan_tokens = {
-        t for t in re.split(r"[^a-z0-9]+", plan_text)
-        if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST
-    }
-
-    for direction in exhausted_directions:
-        tokens = {
-            t for t in re.split(r"[^a-z0-9]+", str(direction).lower())
-            if len(t) > 3 and t not in _EXHAUSTED_BLOCKLIST
-        }
-        if not tokens:
-            continue
-        matches = sorted(tokens & plan_tokens)
-        if len(matches) >= min(2, len(tokens)):
-            pivot_direction_tokens = _EXHAUSTED_DIRECTION_TOKENS | {
-                "calibration", "frequency", "floor", "ceiling", "continuation",
-            }
-            if not any(t in pivot_direction_tokens for t in matches):
-                continue
-            return True, str(direction)
-    return False, ""
-
-
-# ──────────────────────────────────────────────
-# Cross-generation local-optima constraint (mechanical backstop)
-# ──────────────────────────────────────────────
-# When the previous generation was rejected by the Critic as a local optimum,
-# or the experience pool marks a direction EXHAUSTED, inject a hard constraint
-# into the Master so it stops re-proposing the same exhausted direction
-# (observed: v82 master re-proposed constant-tuning after critic rejected it
-# for exactly that). This is independent of the direction_audit LLM gate
-# (which historically under-detects — v82 repetition_detected=false despite
-# the pool flagging constant-tuning EXHAUSTED), so it works even when the
-# LLM auditor fails to flag repetition.
-
-CROSS_GEN_MARKER = "# CROSS-GEN LOCAL-OPTIMA CONSTRAINT"
-H6_CROSS_GEN_THRESHOLD = 2
-H6_RECENT_GENERATION_WINDOW = 10
-
-
-def _load_recent_critic_local_optima(next_v, max_entries=3):
-    """Load recent critic local-optima rejections from worker_failures.jsonl.
-
-    The file is append-only and accumulates across generations. Selects critic
-    entries with local_optima_warning=True and gen <= next_v (the just-rejected
-    version is included — that is the loop we want to break), dedups by gen
-    (latest timestamp wins; retry_workers can reject the same gen repeatedly).
-
-    Returns [(gen, reason, error_first_line), ...] most-recent-gen first.
-
-    _record_quality_failure (tool_gates.py) filters `v is not False`, so
-    local_optima_warning=False is never written — `is True` selection is exact,
-    and reviewer/worker records (which lack the field) are skipped.
-    """
-    try:
-        from evolution_infra import WORKER_FAILURES_FILE, locked_file
-    except Exception:
-        return []
-    if not WORKER_FAILURES_FILE.exists():
-        return []
-    by_gen = {}
-    try:
-        with locked_file(WORKER_FAILURES_FILE, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    e = json.loads(line)
-                except Exception:
-                    continue
-                if e.get("local_optima_warning") is not True:
-                    continue
-                if str(e.get("worker_id", "")) != "critic":
-                    continue
-                g = e.get("gen")
-                if g is None or g > next_v or g < next_v - 8:
-                    continue
-                ts = e.get("timestamp", 0)
-                if g not in by_gen or ts > by_gen[g][3]:
-                    reason = (e.get("local_optima_reason") or "").strip()
-                    err_first = (e.get("error", "")).split("\n")[0][:150]
-                    by_gen[g] = (g, reason, err_first, ts)
-    except Exception:
-        return []
-    return [t[:3] for t in sorted(by_gen.values(), key=lambda x: -x[0])][:max_entries]
-
-
-def _recent_prior_worker_failure_gens(
-    records,
-    *,
-    next_v,
-    generation_window=H6_RECENT_GENERATION_WINDOW,
-):
-    """Return prior worker-failure gens close enough to affect ``next_v``.
-
-    ``worker_failures.jsonl`` is append-only across the whole epoch, so tailing a
-    few rows is not a reliable definition of recent. A failure is recent for H6
-    only if it belongs to a prior generation within a small generation-distance
-    window from the generation that is about to run.
-    """
-    try:
-        current = int(next_v)
-        window = int(generation_window)
-    except (TypeError, ValueError):
-        return []
-    if window <= 0:
-        return []
-
-    failed_gens: set[int] = set()
-    for record in records or []:
-        if not isinstance(record, dict):
-            continue
-        if record.get("category", "worker") != "worker":
-            continue
-        gen = record.get("gen")
-        if isinstance(gen, bool):
-            continue
-        try:
-            gen_int = int(gen)
-        except (TypeError, ValueError):
-            continue
-        distance = current - gen_int
-        if 0 < distance <= window:
-            failed_gens.add(gen_int)
-    return sorted(failed_gens, reverse=True)
-
-
-def _build_cross_gen_constraint_block(next_v):
-    """Build a cross-generation mandatory constraint block from prior critic
-    local-optima rejections + experience-pool EXHAUSTED directions.
-
-    Returns "" (no injection) when there is neither a recent critic local-optima
-    rejection nor any EXHAUSTED direction — so first-ever generations and
-    crossovers with no prior rejection are unaffected.
-
-    Wording is deliberately NOT an unconditional FORBIDDEN: a Master that brings
-    a structural new method + H2H evidence may still proceed in the direction,
-    and legitimate opponent-stat-driven sizing (the very reframe v82's critic
-    asked for) is explicitly permitted — this prevents over-generalized refusal.
-    """
-    lo_entries = _load_recent_critic_local_optima(next_v)
-    exhausted = _extract_exhausted_keywords()
-    if not lo_entries and not exhausted:
-        return ""
-    parts = [f"\n\n{CROSS_GEN_MARKER} (MANDATORY)\n"]
-    if lo_entries:
-        parts.append(
-            "The PREVIOUS generation(s) were REJECTED by the Critic as a LOCAL OPTIMUM "
-            "(stuck repeating the same exhausted direction). To proceed in that same "
-            "direction you MUST provide a STRUCTURAL new method AND H2H evidence "
-            "(>=100g vs a confirmed weak matchup); pure constant/margin tuning will be "
-            "rejected again.\n"
-            "Recent critic local-optima rejections:\n"
-        )
-        for g, reason, err_short in lo_entries:
-            parts.append(f"- v{g}: {reason or err_short}\n")
-    if exhausted:
-        parts.append(
-            "\nDirections the experience pool marks EXHAUSTED (tried repeatedly, no gain):\n"
-        )
-        for sec, phrase in exhausted:
-            parts.append(f"- [{sec}] {phrase}\n")
-    parts.append(
-        "\nUnless you have a genuinely structural alternative + H2H evidence, AVOID these "
-        "exact patterns. Do NOT over-generalize: legitimate opponent-stat-driven sizing, "
-        "new decision systems, or structural refactors are still permitted and encouraged.\n"
-    )
-    return "".join(parts)
-
-
-# ──────────────────────────────────────────────
-# fix-5: Cross-gen direction pivot (consecutive exhaustion detector)
-# ──────────────────────────────────────────────
-# Tracks exhausted directions per generation in a JSONL file so that when the
-# SAME semantic axis is flagged exhausted with HIGH confidence for >=2
-# consecutive generations, run_master forces a structural pivot rather than
-# allowing the bot to keep tuning constants on the dead axis (v138-v143
-# stackoff guard, 6 gens same direction, 0 improvement).
-#
-# The JSONL file is append-only and fcntl-locked (consistent with daemon writes).
-# Each record: {version, source_v, exhausted_directions: [...], confidence, ts}
-# Semantic axis matching: compares exhausted_directions lists by SET INTERSECTION
-# (not literal string match) so "river fold gate" and "postflop fold threshold"
-# are recognized as the same axis when they share >=1 direction keyword.
-
-
-def _record_cross_gen_exhausted(next_v, source_v, exhausted_directions, confidence):
-    """Append a cross-gen exhausted history record for this generation.
-
-    Called from run_master after direction_audit completes with non-empty
-    exhausted_directions. Uses fcntl locking for safe concurrent writes.
-    """
-    from evolution_infra import CROSS_GEN_EXHAUSTED_HISTORY, locked_file
-    record = {
-        "version": next_v,
-        "source_v": source_v,
-        "exhausted_directions": list(exhausted_directions),
-        "confidence": confidence,
-        "timestamp": time.time(),
-    }
-    try:
-        with locked_file(CROSS_GEN_EXHAUSTED_HISTORY, "a") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception as e:
-        _log.warning("Failed to record cross-gen exhausted history: %s", e)
-
-
-def _check_consecutive_exhaustion(next_v, current_exhausted, lookback=5, min_consecutive=2):
-    """Check if any exhausted direction axis persisted across >=2 consecutive gens.
-
-    Reads the last `lookback` records from cross_gen_exhausted_history.jsonl and
-    checks for semantic overlap (set intersection of direction keywords) between
-    consecutive entries. Returns the matched axis description if found, else None.
-
-    Semantic matching: tokenizes each exhausted direction string into words,
-    then checks if consecutive entries share >=1 direction-characteristic token
-    (reuses _EXHAUSTED_DIRECTION_TOKENS for consistency).
-    """
-    from evolution_infra import CROSS_GEN_EXHAUSTED_HISTORY, locked_file
-    if not CROSS_GEN_EXHAUSTED_HISTORY.exists():
-        return None
-
-    records = []
-    try:
-        with locked_file(CROSS_GEN_EXHAUSTED_HISTORY, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    # Only include records for generations BEFORE this one
-                    # (don't compare the just-written record against itself)
-                    if rec.get("version", 0) < next_v:
-                        records.append(rec)
-                except (json.JSONDecodeError, TypeError):
-                    continue
-    except Exception:
-        return None
-
-    # Take the last `lookback` records (most recent first)
-    records.sort(key=lambda r: r.get("version", 0), reverse=True)
-    records = records[:lookback]
-
-    if len(records) < min_consecutive - 1:
-        return None  # Not enough history
-
-    def _tokenize_directions(directions):
-        """Extract distinctive tokens from exhausted direction strings."""
-        tokens = set()
-        for d in directions:
-            for word in re.split(r'[^a-z0-9]+', str(d).lower()):
-                if len(word) > 3 and word not in _EXHAUSTED_BLOCKLIST:
-                    tokens.add(word)
-        return tokens
-
-    current_tokens = _tokenize_directions(current_exhausted)
-    if not current_tokens:
-        return None
-
-    # Check consecutive records (sorted newest-first) for axis overlap
-    # We need >= min_consecutive-1 consecutive prior records that share axis
-    consecutive_count = 0
-    matched_axis = None
-    for rec in records:
-        rec_tokens = _tokenize_directions(rec.get("exhausted_directions", []))
-        overlap = current_tokens & rec_tokens
-        if overlap:
-            consecutive_count += 1
-            if matched_axis is None:
-                matched_axis = ", ".join(sorted(overlap)[:3])
-        else:
-            break  # Non-consecutive breaks the streak
-
-    if consecutive_count >= min_consecutive - 1:
-        return matched_axis or "unknown_axis"
-    return None
-
-
-def _mark_axis_exhausted_in_pool(axis, version):
-    """H5 (2026-06-29): write a cross-gen-pivot result back into experience_pool.md.
-
-    `_check_consecutive_exhaustion` reads cross_gen_exhausted_history.jsonl and
-    fires a pivot directive, but until that axis is marked in the experience
-    pool the next run_master call cannot see it via `_extract_exhausted_keywords`
-    (which only reads the pool). The result: master keeps proposing the same
-    exhausted axis and the pivot keeps firing. This helper appends an
-    `[EXHAUSTED — cross_gen_pivot auto-mark]` line to the pool so the marker_re
-    regex in `_extract_exhausted_keywords` (matches `[A-Z ]*EXHAUSTED`) picks it
-    up on the very next generation.
-
-    Idempotent within a generation: a per-version tag in the line prevents the
-    same (version, axis) from being appended twice.
-    """
-    try:
-        from evolution_infra import locked_file
-        if not EXPERIENCE_FILE.exists():
-            return
-        marker_line = f"- [EXHAUSTED — cross_gen_pivot auto-mark v{version}] {axis}"
-        with locked_file(EXPERIENCE_FILE, "r", encoding="utf-8") as f:
-            text = f.read()
-        if marker_line in text:
-            return  # already marked for this version+axis
-        addition = marker_line + "\n"
-        if "## EXHAUSTED" in text:
-            # Insert right after the section header
-            idx = text.index("## EXHAUSTED")
-            nl = text.index("\n", idx)
-            new_text = text[:nl + 1] + addition + text[nl + 1:]
-        else:
-            # No section yet — append one
-            new_text = text.rstrip() + f"\n\n## EXHAUSTED (cross-gen pivot auto-marks)\n{addition}"
-        with locked_file(EXPERIENCE_FILE, "w", encoding="utf-8") as f:
-            f.write(new_text)
-        log_system_event(
-            "pipeline.cross_gen_pivot_marked", "warn",
-            f"Marked axis '{axis}' EXHAUSTED in experience_pool for v{version}",
-            {"version": version, "axis": axis},
-        )
-    except Exception as e:
-        _log.warning("H5: _mark_axis_exhausted_in_pool failed for v%d axis=%s: %s", version, axis, e)
-
 
 def _incremental_reset_next_dir(next_dir, source_dir):
     """Incremental reset: overwrite files present in source (undo worker edits to
@@ -5231,15 +4493,6 @@ def _quality_rework_skipper(
         except Exception:
             pass
         try:
-            from protected_contracts import check_bot_protocol_contract
-            protected_errors = check_bot_protocol_contract(next_dir)
-            checked.add("protected_contract")
-            if protected_errors:
-                files = _extract_quality_failure_files(protected_errors)
-                blockers["protected_contract"] = set(files)
-        except Exception:
-            pass
-        try:
             from national_native import check_native_contract
             native_errors = check_native_contract(
                 next_dir,
@@ -5287,7 +4540,7 @@ def _quality_rework_skipper(
             checked.add("runtime_architecture")
             if not transition.get("ok"):
                 files = set(_architecture_transition_repair_files(transition, next_dir))
-                blockers["runtime_architecture"] = files or {"strategy.py"}
+                blockers["runtime_architecture"] = files or {"policy.py"}
         except Exception:
             pass
         return blockers, checked
@@ -5349,14 +4602,12 @@ def _worker_execution_task_digest(
     tasks,
     reviewer_feedback,
     worker_template,
-    worker_execution_context,
 ):
     """Identity of every frozen input supplied to one outer Worker batch."""
     return hashlib.sha256(json.dumps({
         "tasks": tasks,
         "reviewer_feedback": reviewer_feedback,
         "worker_template": worker_template,
-        "worker_execution_context": worker_execution_context,
     }, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
@@ -5370,6 +4621,26 @@ def _worker_backend_contract():
             "ANTHROPIC_BASE_URL",
         )
     }
+
+
+def _expected_worker_backend_contract(checkpoint, envelope=None):
+    """Return the backend identity selected by the frozen execution policy."""
+    policy = (
+        (envelope or {}).get("execution_policy")
+        if isinstance(envelope, dict)
+        else None
+    ) or {}
+    if policy.get("executor") == "system_policy_bootstrap_v1":
+        from system_strict_bootstrap import system_worker_backend_contract
+
+        master_receipt = (
+            ((checkpoint or {}).get("audit_context") or {}).get(
+                "system_strict_bootstrap"
+            )
+            or {}
+        )
+        return system_worker_backend_contract(master_receipt)
+    return _worker_backend_contract()
 
 
 def _frozen_rework_task_authority_errors(ckpt, tasks):
@@ -5624,14 +4895,7 @@ def _precommit_changed_python_files(ckpt):
         return []
 
     preferred_order = {
-        "strategy.py": 0,
-        "postflop.py": 1,
-        "preflop.py": 2,
-        "strategy_helpers.py": 3,
-        "opponent.py": 4,
-        "state.py": 5,
-        "national_bot.py": 6,
-        "main.py": 7,
+        "policy.py": 0,
     }
     normalized = []
     seen = set()
@@ -5639,23 +4903,17 @@ def _precommit_changed_python_files(ckpt):
         rel = _target_rel(item, next_v)
         if not rel or "backup" in rel:
             continue
-        if rel.endswith(".py") and rel not in seen:
+        if rel in _ACTIVE_CANDIDATE_WRITABLE_FILES and rel not in seen:
             seen.add(rel)
             normalized.append(rel)
     return sorted(normalized, key=lambda rel: (preferred_order.get(rel, 100), rel))
 
 
 _PRECOMMIT_STRATEGY_REPAIR_FILES = [
-    "strategy.py",
-    "postflop.py",
-    "preflop.py",
-    "strategy_helpers.py",
-    "opponent.py",
-    "state.py",
-    "constants.py",
+    "policy.py",
 ]
 
-_PRECOMMIT_PROTOCOL_REPAIR_FILES = {"national_bot.py", "main.py"}
+_PRECOMMIT_PROTOCOL_REPAIR_FILES = frozenset()
 
 _PRECOMMIT_PROTOCOL_EVIDENCE_MARKERS = (
     "official_smoke",
@@ -5670,10 +4928,6 @@ _PRECOMMIT_PROTOCOL_EVIDENCE_MARKERS = (
     "wire output",
     "action serialization",
     "action format",
-    "botzone json",
-    "json response",
-    "debug text to stdout",
-    "stdout",
     "bet keyword",
     "extra spaces",
     "leading/trailing",
@@ -5697,12 +4951,15 @@ def _precommit_protocol_compliance_failure(failures, feedback=""):
 
 
 def _precommit_filter_repair_targets(files, *, allow_protocol_files=False):
+    """Return only candidate-owned policy targets.
+
+    ``allow_protocol_files`` is retained for caller compatibility; system
+    runtime files are never made writable by failure prose.
+    """
     allowed = []
     for item in files or []:
         rel = Path(str(item)).name
-        if not rel or not rel.endswith(".py"):
-            continue
-        if rel in _PRECOMMIT_PROTOCOL_REPAIR_FILES and not allow_protocol_files:
+        if rel not in _ACTIVE_CANDIDATE_WRITABLE_FILES:
             continue
         allowed.append(rel)
     return allowed
@@ -5718,7 +4975,7 @@ def _limit_precommit_repair_targets(files):
     seen = set()
     for item in files or []:
         rel = Path(str(item)).name
-        if rel and rel.endswith(".py") and rel not in seen:
+        if rel in _ACTIVE_CANDIDATE_WRITABLE_FILES and rel not in seen:
             seen.add(rel)
             targets.append(rel)
         if len(targets) >= limit:
@@ -5728,19 +4985,22 @@ def _limit_precommit_repair_targets(files):
 
 def _precommit_repair_target_files(ckpt, feedback):
     failures = _precommit_failure_items(ckpt)
+    if _precommit_protocol_compliance_failure(failures, feedback):
+        # Protocol/runtime bytes are system-owned.  Do not reinterpret a
+        # compliance failure as permission for an LLM to mutate them.
+        return []
     evidence_files = _extract_quality_failure_files(failures)
     if not evidence_files and feedback:
         evidence_files = _extract_quality_failure_files([feedback])
 
-    allow_protocol_files = _precommit_protocol_compliance_failure(failures, feedback)
     changed_files = _precommit_changed_python_files(ckpt)
     changed_repair_files = _precommit_filter_repair_targets(
         changed_files,
-        allow_protocol_files=allow_protocol_files,
+        allow_protocol_files=False,
     )
     evidence_repair_files = _precommit_filter_repair_targets(
         evidence_files,
-        allow_protocol_files=allow_protocol_files,
+        allow_protocol_files=False,
     )
     if changed_files and evidence_files:
         evidence_set = set(evidence_repair_files)
@@ -5764,7 +5024,7 @@ def _precommit_repair_target_files(ckpt, feedback):
                 return _limit_precommit_repair_targets(existing[:1])
     except Exception:
         pass
-    return ["strategy.py"]
+    return ["policy.py"]
 
 
 def _official_failure_items(ckpt, feedback=""):
@@ -5842,9 +5102,6 @@ def _official_failure_is_protocol(items):
         "unknown action",
         "wire",
         "raise format",
-        "stdout",
-        "botzone",
-        "json response",
         "sticky",
         "connectionrefused",
         "brokenpipe",
@@ -5855,14 +5112,7 @@ def _official_repair_target_files(ckpt, feedback):
     deterministic_items = _official_deterministic_failure_items(ckpt)
     evidence_files = _extract_quality_failure_files(deterministic_items)
     if _official_failure_is_protocol(deterministic_items):
-        protocol_targets = [
-            rel for rel in _precommit_filter_repair_targets(
-                evidence_files or ["national_bot.py"],
-                allow_protocol_files=True,
-            )
-            if rel in _PRECOMMIT_PROTOCOL_REPAIR_FILES or rel == "national_bot.py"
-        ]
-        return _limit_precommit_repair_targets(protocol_targets or ["national_bot.py"])
+        return []
 
     changed_files = _precommit_changed_python_files(ckpt)
     strategy_candidates = [
@@ -5894,15 +5144,14 @@ def _official_repair_target_files(ckpt, feedback):
                 return _limit_precommit_repair_targets(existing[:2])
     except Exception:
         pass
-    return ["strategy.py"]
+    return ["policy.py"]
 
 
 def _official_repair_tasks(ckpt, feedback):
     items = _official_failure_items(ckpt, feedback)
     targets = _official_repair_target_files(ckpt, feedback)
-    protocol_repair = _official_failure_is_protocol(
-        _official_deterministic_failure_items(ckpt)
-    )
+    if not targets:
+        return []
     evidence = "\n".join(str(item) for item in items[:30]) or str(feedback or "official full certification failed")
     next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else "?"
     source_v = ckpt.get("source_v") if isinstance(ckpt, dict) else "?"
@@ -5911,27 +5160,22 @@ def _official_repair_tasks(ckpt, feedback):
         "- Read the official_evidence_path and summarized round issues before editing.\n"
         "- Fix only the bot-side reason the official 70-hand full gate could not complete.\n"
         "- Do not loosen local validators, suppress official evidence, or mark certification passed manually.\n"
-        "- Keep the native TCP entrypoint direct; do not depend on bot_adapter."
+        "- Keep the five-file strict artifact intact and the system-owned TCP entrypoint byte-identical."
     )
-    if protocol_repair:
-        method += (
-            "\n- Protocol-focused: repair action serialization, pending-action gating, sticky-packet parsing, stdout cleanliness, or connection handling in the named entrypoint."
-            "\n- Every send must be exactly `fold`, `call`, `check`, `allin`, or `raise <amount>`."
-        )
-        role = "Protocol Integration Architect"
-    else:
-        method += (
-            "\n- Decision/state-focused: repair catastrophic seat asymmetry, full-match bankruptcy, all-in/runout state, or obvious state-machine misreads exposed by official 70-hand logs."
-            "\n- Use the official logs to identify why the match ended before 70 hands; do not optimize for EXE win/loss."
-        )
-        role = "Algorithmic Logic Architect"
+    method += (
+        "\n- Candidate scope is policy.py only. Repair only a policy exception, "
+        "invalid typed intent, or bounded-deadline behavior proven by the evidence."
+        "\n- A wire/parser/reducer/entrypoint failure is system-owned and must remain "
+        "fail-closed; never edit national_bot.py or precompute.py."
+    )
+    role = "Algorithmic Logic Architect"
     prompt = (
         f"Repair official EXE full-certification blocker for bots/national_v{next_v} from source v{source_v}.\n\n"
         f"Official evidence:\n{evidence[:5000]}\n\n"
         f"Required method:\n{method}\n\n"
         "Verification expectation:\n"
         "- Run the smallest compile/import check for edited files.\n"
-        "- If you edit protocol code, preserve `POK_OFFICIAL_ACTION_DELAY` and detailed `--log` communication tracing.\n"
+        "- Confirm only policy.py changed; system artifacts must remain byte-identical.\n"
         "- End with the concrete official failure class you addressed."
     )
     return [{
@@ -6066,7 +5310,7 @@ def _critic_repair_target_files(ckpt, feedback):
                 return _limit_precommit_repair_targets(existing[:1])
     except Exception:
         pass
-    return ["strategy.py"]
+    return ["policy.py"]
 
 
 def _review_primary_feedback_text(feedback):
@@ -6099,7 +5343,7 @@ def _review_repair_target_files(ckpt, feedback):
     )
     if changed_repair_files:
         return _limit_precommit_repair_targets(changed_repair_files)
-    return ["strategy.py"]
+    return ["policy.py"]
 
 
 def _review_repair_task_refresh_reason(tasks, ckpt, feedback=""):
@@ -6334,14 +5578,14 @@ def _is_position_semantics_failure_text(item):
     text = str(item or "").lower()
     return (
         "position_semantics" in text
-        or "sb must be dealer_id" in text
-        or "bb must be 1 - dealer_id" in text
-        or "dealer is sb" in text
+        or "retired position identifier" in text
+        or "retired decision_context key" in text
+        or "decision_context.hand.position" in text
+        or "decision_context.line.position" in text
+        or "acts_first_postflop" in text
+        or "hero_in_position_postflop" in text
         or "bb acts first postflop" in text
-        or "postflop oop helper" in text
-        or "must key on my_is_bb" in text
-        or "must key on my_is_bb/bb" in text
-        or "not my_is_sb" in text
+        or "candidate-side seat reconstruction" in text
     )
 
 
@@ -6534,89 +5778,18 @@ def _position_contracts(quality):
 
 
 def _national_native_contracts(quality, failures):
-    """Return file-scoped contracts for direct national TCP entrypoint blockers."""
-    source_items = []
-    source_items.extend(_flatten_text_items(quality.get("national_native_contract_errors")))
-    source_items.extend(
-        item for item in _flatten_text_items(quality.get("failed_gates"))
-        if _is_national_native_contract_failure_text(item)
-    )
-    source_items.extend(
-        item for item in failures or []
-        if _is_national_native_contract_failure_text(item)
-    )
-    if quality.get("national_native_contract_ok") is False and not source_items:
-        source_items.append(
-            "national_native_contract failed; national native bots must keep a direct TCP entrypoint"
-        )
-
-    deduped = []
-    seen = set()
-    for item in source_items:
-        text = str(item).strip()
-        if text and text not in seen:
-            seen.add(text)
-            deduped.append(text)
-
-    files = _extract_quality_failure_files(deduped)
-    if not files and (deduped or quality.get("national_native_contract_ok") is False):
-        files = ["national_bot.py"]
-
-    return [
-        {
-            "blocker": "national_native_contract",
-            "file": rel,
-            "evidence": "\n".join(deduped[:8]) or "national_native_contract failed",
-        }
-        for rel in files
-    ]
+    """System runtime contract failures are never candidate repair tasks."""
+    return []
 
 
 def _official_smoke_contracts(quality, failures):
-    """Return a national_bot.py repair contract for real official-platform violations."""
-    classification = str(quality.get("official_smoke_classification") or "").lower()
-    blocking = bool(quality.get("official_smoke_blocking"))
-    if classification != "protocol_violation" and not blocking:
-        return []
-
-    source_items = []
-    source_items.extend(_flatten_text_items(quality.get("official_smoke_errors")))
-    official_payload = quality.get("official_smoke") or {}
-    if isinstance(official_payload, dict):
-        llm_summary = official_payload.get("official_llm_analysis_summary") or {}
-        source_items.extend(_flatten_text_items(official_payload.get("official_llm_repair_guidance")))
-        source_items.extend(_flatten_text_items(official_payload.get("official_llm_prompt_feedback")))
-        source_items.extend(_flatten_text_items(llm_summary.get("repair_guidance")))
-        source_items.extend(_flatten_text_items(llm_summary.get("prompt_feedback")))
-    source_items.extend(
-        item for item in failures or []
-        if _is_official_smoke_protocol_failure_text(item)
-    )
-    source_items = [str(item).strip() for item in source_items if str(item).strip()]
-    protocol_items = [item for item in source_items if _is_official_smoke_protocol_failure_text(item)]
-    # Once deterministic evidence has established a blocking official-platform
-    # violation, LLM guidance is allowed to be descriptive rather than keyword
-    # matched.  Keep it bounded but do not discard useful phrasing such as
-    # "Normalize raise formatting".
-    guidance_items = [item for item in source_items if item not in protocol_items]
-    source_items = protocol_items + guidance_items
-    if blocking and not source_items:
-        source_items.append("official_smoke protocol_violation")
-    if not source_items:
-        return []
-    return [{
-        "blocker": "official_smoke",
-        "file": "national_bot.py",
-        "evidence": "\n".join(dict.fromkeys(source_items)),
-    }]
+    """Official wire failures remain fail-closed system/infrastructure debt."""
+    return []
 
 
 _ARCHITECTURE_FOCUS_LAYERS = {
-    LEGACY_CONSUMER_MIGRATION_FOCUS_ID: "runtime_architecture",
-    "national_runtime_v3_migration": "runtime_architecture",
-    "national_runtime_v4_state_learning": "runtime_architecture",
+    NATIONAL_POLICY_FOCUS_ID: "runtime_architecture",
     "incremental_match_model": "opponent_model",
-    "reusable_precompute": "precompute",
     "deadline_refinement": "runtime_architecture",
     "bounded_runtime_enumeration": "precompute",
     "decision_path_purity": "runtime_architecture",
@@ -6625,25 +5798,30 @@ _ARCHITECTURE_FOCUS_LAYERS = {
 _ARCHITECTURE_CHECK_FILES = {
     "official_safe_wire_send": ["national_bot.py"],
     "clean_diagnostics_channel": ["national_bot.py"],
-    "decision_time_budget_visible": ["strategy.py", "simulation.py"],
+    "national_policy_module": ["policy.py"],
+    "decision_context_v1": ["policy.py"],
+    "typed_intent_v1": ["policy.py"],
+    "policy_baseline_entrypoint": ["policy.py"],
+    "policy_refinement_entrypoint": ["policy.py"],
+    "decision_time_budget_visible": ["policy.py"],
     "killable_decision_runtime": ["national_bot.py"],
-    "fast_strategy_baseline": ["strategy.py"],
-    "incremental_refinement_protocol": ["strategy.py"],
-    "budget_scaled_refinement": ["strategy.py", "simulation.py"],
-    "decision_path_no_external_io": ["strategy.py", "postflop.py", "opponent.py"],
-    "decision_path_no_full_history_scan": ["strategy.py", "opponent.py", "state.py"],
-    "decision_path_no_large_runtime_tables": ["simulation.py", "card_utils.py", "strategy.py"],
-    "precompute_lookup_path": ["precompute.py", "card_utils.py", "simulation.py", "strategy.py"],
+    "fast_policy_baseline": ["policy.py"],
+    "incremental_refinement_protocol": ["policy.py"],
+    "budget_scaled_refinement": ["policy.py"],
+    "decision_path_no_external_io": ["policy.py"],
+    "decision_path_no_full_history_scan": ["policy.py"],
+    "decision_path_no_large_runtime_tables": ["policy.py"],
+    "precompute_lookup_path": ["policy.py"],
     "persistent_match_memory": ["national_bot.py"],
     "terminal_response_memory": ["national_bot.py"],
     "showdown_range_posterior": ["national_bot.py"],
     "authoritative_hand_context": ["national_bot.py"],
-    "incremental_opponent_model": ["strategy.py", "opponent.py", "state.py"],
-    "terminal_response_adaptation": ["strategy.py", "opponent.py"],
-    "showdown_range_adaptation": ["strategy.py", "opponent.py", "simulation.py"],
-    "donk_line_reachability": ["strategy.py", "donk_probe.py"],
-    "delayed_probe_line_reachability": ["strategy.py", "donk_probe.py"],
-    "semantic_line_reachability": ["strategy.py", "donk_probe.py"],
+    "incremental_opponent_model": ["policy.py"],
+    "terminal_response_adaptation": ["policy.py"],
+    "showdown_range_adaptation": ["policy.py"],
+    "donk_line_reachability": ["policy.py"],
+    "delayed_probe_line_reachability": ["policy.py"],
+    "semantic_line_reachability": ["policy.py"],
 }
 
 _STATE_LEARNING_ORACLE_REFS = [
@@ -6663,11 +5841,11 @@ def _detected_artifact_consumer(artifact):
             )
             if match:
                 candidates.append(f"{match.group(1)}.{match.group(2)}")
-    for preferred in ("get_baseline_action", "get_action"):
+    for preferred in POLICY_ENTRYPOINTS:
         for candidate in candidates:
             if candidate.endswith(f".{preferred}"):
                 return candidate
-    return candidates[0] if candidates else "strategy.get_baseline_action"
+    return candidates[0] if candidates else "policy.get_baseline_decision"
 
 
 def _candidate_consumed_precompute_contracts(
@@ -6713,7 +5891,7 @@ def _candidate_consumed_precompute_contracts(
     for artifact in static_artifacts:
         owner_file = str(artifact.get("location") or "").split(":", 1)[0]
         name = str(artifact.get("name") or "").strip()
-        if not owner_file.endswith(".py") or len(name) < 2:
+        if owner_file != "precompute.py" or len(name) < 2:
             continue
         dynamic = dynamic_rows.get((owner_file, name)) or {}
         if require_action_influence and not dynamic.get("value_affects_final_wire"):
@@ -6751,25 +5929,18 @@ def _default_state_learning_contract(
     required_checks,
     candidate_capabilities=None,
 ):
-    if focus_id != "national_runtime_v4_state_learning":
+    if focus_id != NATIONAL_POLICY_FOCUS_ID:
         return None
     required = {str(item) for item in required_checks or []}
     work_primitive = None
     profile_dimensions = []
     line_controls = []
     wants_precompute = "precompute_lookup_path" in required or skill_layer == "precompute"
-    has_live_precompute = bool(_candidate_consumed_precompute_contracts(
-        candidate_capabilities,
-        require_action_influence=True,
-    ))
-    if wants_precompute and has_live_precompute:
-        work_primitive = "bounded_precompute_lookup"
-    elif wants_precompute:
-        # Do not manufacture a generic bounded_decision_lookup merely to get a
-        # repair task past schema validation.  A Master must name an actual
-        # artifact and earn its value-sensitive runtime evidence.  Until then,
-        # the deterministic repair contract uses the independently verifiable
-        # bounded-candidate primitive.
+    if wants_precompute:
+        # Compact system facts remain valid acceleration inputs, but table use
+        # cannot be selected as the generation's primary innovation until a
+        # digest-bound value-variant probe exists.  Use the independently
+        # measurable bounded-candidate primary for deterministic repair plans.
         work_primitive = "sample_counted_candidate_batch"
     elif "terminal_response_adaptation" in required:
         profile_dimensions = ["terminal_response"]
@@ -6804,14 +5975,17 @@ def _architecture_default_runtime_contract(
     candidate_capabilities=None,
 ):
     """Return a strict fallback contract for deterministic/crossover repair plans."""
-    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-        from runtime_architecture_policy import (
-            legacy_consumer_migration_runtime_contract,
-        )
-
-        return legacy_consumer_migration_runtime_contract()
     required_checks = {str(item) for item in required_checks or []}
     contract = {
+        "policy_abi": {
+            "module": "policy.py",
+            "context_schema_version": POLICY_CONTEXT_SCHEMA_VERSION,
+            "context_fields": list(POLICY_CONTEXT_TOP_LEVEL_FIELDS),
+            "entrypoints": list(POLICY_ENTRYPOINTS),
+            "intent_kinds": list(POLICY_INTENT_KINDS),
+            "raise_field": "raise_to",
+            "pass_mapping": "socket_owner_call_or_check",
+        },
         "decision": None,
         "precompute_artifacts": [],
         "match_memory": None,
@@ -6824,7 +5998,7 @@ def _architecture_default_runtime_contract(
         "reference_pack_id": "",
         "official_feedback_refs": [],
         "forbidden_runtime_work": [
-            "full-match requests/responses/showdowns scan inside the decision path",
+            "reconstructing match state outside decision_context",
             "file, network, or subprocess I/O inside the decision path",
             "unbounded combinatorial construction per decision",
         ],
@@ -6840,7 +6014,6 @@ def _architecture_default_runtime_contract(
         skill_layer in {"match_memory", "opponent_model"}
         or focus_id in {
             "incremental_match_model",
-            "national_runtime_v3_migration",
         }
         or primary_profiles
         or required_checks.intersection({
@@ -6868,23 +6041,20 @@ def _architecture_default_runtime_contract(
                 "settlement",
                 "showdown",
             ],
-            "snapshot_field": "opponent_runtime",
+            "snapshot_field": "opponent",
             "max_recent_hands": 8,
             "prior_rule": "beta_prior_weight_8",
             "confidence_rule": (
                 "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
             ),
             "adaptation_cap": 0.65,
-            "consumer": "strategy.get_baseline_action",
+            "consumer": "policy.get_baseline_decision",
         }
     if (
         skill_layer == "precompute"
         or focus_id in {
-            "reusable_precompute",
             "bounded_runtime_enumeration",
-            "national_runtime_v3_migration",
         }
-        or primary_work == "bounded_precompute_lookup"
         or required_checks.intersection({
             "precompute_lookup_path",
             "decision_path_no_large_runtime_tables",
@@ -6892,20 +6062,19 @@ def _architecture_default_runtime_contract(
     ):
         contract["precompute_artifacts"] = _candidate_consumed_precompute_contracts(
             candidate_capabilities,
-            require_action_influence=(primary_work == "bounded_precompute_lookup"),
+            require_action_influence=False,
         )
     if (
         skill_layer in {"runtime_architecture", "native_tcp"}
         or focus_id in {
             "deadline_refinement",
             "decision_path_purity",
-            "national_runtime_v3_migration",
         }
         or primary_work == "sample_counted_candidate_batch"
         or required_checks.intersection({
             "decision_time_budget_visible",
             "killable_decision_runtime",
-            "fast_strategy_baseline",
+            "fast_policy_baseline",
             "incremental_refinement_protocol",
             "budget_scaled_refinement",
             "decision_path_no_external_io",
@@ -6917,7 +6086,7 @@ def _architecture_default_runtime_contract(
             "baseline_target_ms": 250,
             "refinement_budget_ms": 54_000,
             "baseline_path": "compute a legal deterministic action before optional refinement",
-            "fallback_action": "check when legal, otherwise call or fold",
+            "fallback_action": "return typed pass when no wager is faced, otherwise fold",
             "refinement_bound": "stop on the monotonic deadline and an explicit finite sample cap",
             "max_samples": 4_096,
         }
@@ -6929,21 +6098,14 @@ def _merge_runtime_contract_floor(inherited, floor_contract):
     result = deepcopy(floor_contract)
     if not isinstance(inherited, dict):
         return result
-    if result.get("legacy_consumer_migration") is not None:
-        # The migration bundle is system-owned and all-or-nothing. Inheriting a
-        # prior one-primary state_learning choice is the exact repair loop this
-        # focus exists to prevent.
-        return result
+    if inherited.get("policy_abi") is not None:
+        result["policy_abi"] = deepcopy(inherited["policy_abi"])
     if inherited.get("decision") is not None:
         result["decision"] = deepcopy(inherited["decision"])
     if inherited.get("match_memory") is not None:
         result["match_memory"] = deepcopy(inherited["match_memory"])
     if inherited.get("state_learning") is not None:
         result["state_learning"] = deepcopy(inherited["state_learning"])
-    if inherited.get("legacy_consumer_migration") is not None:
-        result["legacy_consumer_migration"] = deepcopy(
-            inherited["legacy_consumer_migration"]
-        )
     if inherited.get("reference_pack_id"):
         result["reference_pack_id"] = str(inherited["reference_pack_id"])
     state_learning = result.get("state_learning") or {}
@@ -7021,17 +6183,11 @@ def _architecture_transition_repair_files(transition, candidate_dir=None):
 
     def add_file(value):
         rel = Path(str(value)).name
-        if not rel or not rel.endswith(".py") or rel in files:
+        if rel not in _ACTIVE_CANDIDATE_WRITABLE_FILES or rel in files:
             return
         if require_existing and not (Path(candidate_dir) / rel).is_file():
             return
         files.append(rel)
-
-    if str(focus.get("focus_id") or "") == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-        for rel in LEGACY_CONSUMER_MIGRATION_FILES:
-            if rel not in files:
-                files.append(rel)
-        return files
 
     for check_id in _architecture_transition_failure_ids(transition):
         check = checks_by_id.get(check_id) or {}
@@ -7073,6 +6229,17 @@ def _architecture_contracts(quality, ckpt):
     # debt. Do not waste a worker edit trying to change a digest.
     if not failing_ids:
         return []
+    worker_repairable = (
+        "runtime_contract_implementation" in failing_ids
+        or any(
+            "policy.py" in _ARCHITECTURE_CHECK_FILES.get(check_id, ())
+            for check_id in failing_ids
+        )
+    )
+    if not worker_repairable:
+        # Reducer, socket, tracker, or system-precompute failures cannot be
+        # redirected into policy.py merely to obtain a repair task.
+        return []
 
     inherited_layer, inherited_contract = _architecture_repair_context(ckpt, focus_id)
     skill_layer = inherited_layer or _ARCHITECTURE_FOCUS_LAYERS.get(focus_id, "")
@@ -7099,32 +6266,9 @@ def _architecture_contracts(quality, ckpt):
     for error in transition.get("runtime_contract_implementation_errors") or []:
         evidence_lines.append(f"runtime_contract_implementation: {error}")
 
-    if not target_files:
-        target_files = ["strategy.py"]
-    if not target_files:
-        return []
-    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-        target_files = [
-            item
-            for item in LEGACY_CONSUMER_MIGRATION_FILES
-            if item in target_files
-        ]
-    else:
-        target_files = target_files[:WORKER_TASK_MAX_TARGET_FILES]
+    target_files = ["policy.py"]
     primary = target_files[0]
-    if primary != "national_bot.py":
-        # national_bot.py is refreshed by the system template. Provider failures
-        # may mention it as context, but that must not silently widen a strategy
-        # repair worker's write boundary. A genuine entrypoint repair still keeps
-        # it when it is the primary target.
-        target_files = [item for item in target_files if item != "national_bot.py"]
-    precompute_owner = next(
-        (
-            item for item in target_files
-            if item in {"strategy.py", "simulation.py", "card_utils.py", "constants.py"}
-        ),
-        primary,
-    )
+    precompute_owner = "precompute.py"
     floor_contract = _architecture_default_runtime_contract(
         focus_id,
         skill_layer,
@@ -7139,19 +6283,10 @@ def _architecture_contracts(quality, ckpt):
         if validated_runtime_contract.state_learning is not None
         else []
     )
-    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-        # Repair keeps the same generation-owned authority as initial planning:
-        # system floor plus the exact four migration checks. Candidate/aggregate
-        # failure labels are evidence, not permission to add another objective.
-        task_required_checks = list(dict.fromkeys([
-            *(policy.get("plan_required_floor_checks") or []),
-            *LEGACY_CONSUMER_MIGRATION_CHECKS,
-        ]))
-    else:
-        task_required_checks = list(dict.fromkeys([
-            *failing_ids,
-            *primary_checks,
-        ]))
+    task_required_checks = list(dict.fromkeys([
+        *failing_ids,
+        *primary_checks,
+    ]))
     return [{
         "blocker": "runtime_architecture",
         "file": primary,
@@ -7269,8 +6404,8 @@ def _has_scope_drift_marker(item):
 def _scope_drift_feedback_files(item):
     """Return the actual files that a reviewer asks to revert/restore.
 
-    Reviewer feedback can begin with positive context like "opponent.py and
-    strategy.py changes are compliant" and only later say "However,
+    Reviewer feedback can begin with positive context like "policy.py changes
+    are compliant" and only later say "However,
     national_bot.py was in do_not_touch; revert it". The first file mention is
     then explicitly not the repair target. Parse scope-drift/revert cues before
     falling back to generic primary-file extraction.
@@ -7308,8 +6443,8 @@ def _scope_drift_feedback_files(item):
 def _feedback_quality_contracts(feedback):
     """Return file-scoped contracts from reviewer feedback.
 
-    Reviewer prose often names consumer files while describing a producer-file
-    problem, for example "opponent.py returns fields never read by strategy.py".
+    Reviewer prose often names helper files while describing a policy-consumer
+    problem, for example "ranges.py returns fields never read by policy.py".
     Use the first/primary file in the issue snippet as the repair target instead
     of expanding to every mentioned file.
     """
@@ -7332,7 +6467,7 @@ def _feedback_quality_contracts(feedback):
         }
         lower = evidence.lower()
         if (
-            rel == "constants.py"
+            rel == "policy.py"
             and (
                 "hyperparameter tuner" in lower
                 or "role boundary" in lower
@@ -7441,6 +6576,10 @@ def _quality_repair_contracts(ckpt, feedback=""):
     ordered = []
     seen = set()
     for contract in contracts:
+        if Path(str(contract.get("file") or "")).name not in _ACTIVE_CANDIDATE_WRITABLE_FILES:
+            # System artifacts, extra modules, and undeclared files are not
+            # repaired by candidate Workers. Their owning gate remains failed.
+            continue
         key = (contract.get("blocker"), contract.get("file"))
         if key in seen:
             continue
@@ -7461,6 +6600,11 @@ def _format_position_details(details):
 def _quality_contract_task(contract, ckpt, preservation, task_kind):
     next_v = ckpt.get("next_v")
     filename = contract["file"]
+    if Path(str(filename)).name not in _ACTIVE_CANDIDATE_WRITABLE_FILES:
+        raise ValueError(
+            "quality repair cannot make a system or extra artifact writable: "
+            f"{filename}"
+        )
     suffix = _task_id_suffix(filename)
     blocker = contract.get("blocker")
     if blocker == "file_size":
@@ -7522,18 +6666,18 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"Repair contract: position_semantics\n"
             f"- Target file: `{filename}`\n"
             f"- Flagged locations:\n{_format_position_details(contract.get('details'))}\n\n"
-            "Authoritative heads-up contract:\n"
-            "- dealer_id is the small blind.\n"
-            "- big blind is `1 - dealer_id`.\n"
-            "- small blind acts first preflop; big blind acts first postflop.\n\n"
-            "- A helper named or documented as postflop/OOP must key on `my_is_bb`/BB, not `my_is_sb`/SB; SB/dealer is in position postflop.\n\n"
+            "Authoritative typed position contract:\n"
+            "- Read `decision_context.hand.position` or `decision_context.line.position`; values are `small_blind` and `big_blind`.\n"
+            "- Read `decision_context.hand.acts_first_postflop`; it is true only for `big_blind`.\n"
+            "- Read `decision_context.line.hero_in_position_postflop`; it is true only for `small_blind`.\n"
+            "- Read `decision_context.line.can_donk`, `can_delayed_probe`, and `responding_to_check` as system-derived facts.\n\n"
             "Required method:\n"
             f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
-            "- Replace code patterns exactly when present: `sb = next_player(dealer_id, 1)` -> `sb = dealer_id`; `bb = next_player(dealer_id, 2)` -> `bb = 1 - dealer_id`.\n"
-            "- Also fix same-family dealer variables when present: `*_sb = next_player(<dealer_var>, 1)` -> `*_sb = <dealer_var>`; `*_bb = next_player(<dealer_var>, 2)` -> `*_bb = 1 - <dealer_var>`.\n"
+            "- Remove every candidate-side seat/action-order derivation and replace it with a direct read of the typed fields above.\n"
+            "- Do not introduce alternate top-level context keys or inspect protocol/runtime internals.\n"
             "- If the flagged line is prose/comment/test text, update that text to the authoritative contract above.\n"
             "- Do not change card mapping, action protocol, or unrelated strategy behavior.\n"
-            "- Before finishing, grep the file to confirm no sb/bb assignment remains derived from `next_player(...dealer..., 1/2)`."
+            "- Before finishing, verify every position-dependent branch is sourced from `hand` or `line` in `decision_context`."
         )
         return {
             "worker_id": f"auto_quality_repair_position_{suffix}",
@@ -7545,76 +6689,13 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             "repair_blocker": "position_semantics",
             "repair_contract": contract,
         }
-    if blocker == "national_native_contract":
-        prompt = (
-            f"{preservation.format(next_v=next_v)}\n\n"
-            "Repair contract: national_native_contract\n"
-            f"- Target file: `{filename}`\n"
-            f"- Evidence:\n{contract.get('evidence') or 'national_native_contract failed'}\n\n"
-            "Authoritative national-native entrypoint contract:\n"
-            "- `national_bot.py` is the formal submitted entrypoint for new bots.\n"
-            "- It must be a direct TCP client for the national line protocol; do not depend on `sever/bot_adapter.py`.\n"
-            "- It must emit only legal line actions such as `raise <amount>`, `call`, `check`, `fold`, or `allin`; never emit Botzone JSON as the formal response.\n"
-            "- If state reconstruction or action sanitization fails, choose a bounded legal fallback action instead of passing through a raw Botzone integer action.\n\n"
-            "Required method:\n"
-            f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
-            "- Keep card mapping and national protocol formatting intact.\n"
-            "- Fix the exact native contract violation shown above without weakening existing legal-action validation.\n"
-            "- Run `python -m py_compile` on the edited entrypoint before finishing."
+    if blocker in {"national_native_contract", "official_smoke"}:
+        raise ValueError(
+            f"{blocker} is a fail-closed system-runtime blocker, not a Worker repair"
         )
-        return {
-            "worker_id": f"auto_quality_repair_national_native_{suffix}",
-            "role": "Protocol Integration Architect",
-            "target_files": [filename],
-            "must_change_files": [filename],
-            "worker_prompt": prompt,
-            "task_kind": task_kind,
-            "repair_blocker": "national_native_contract",
-            "repair_contract": contract,
-        }
-    if blocker == "official_smoke":
-        prompt = (
-            f"{preservation.format(next_v=next_v)}\n\n"
-            "Repair contract: official_smoke\n"
-            f"- Target file: `{filename}`\n"
-            f"- Official-platform evidence:\n{contract.get('evidence') or 'official smoke reported a protocol violation'}\n\n"
-            "Authoritative official compliance rule:\n"
-            "- The Windows national platform is only a compliance oracle here; fix the exact illegal wire output it observed.\n"
-            "- `national_bot.py` must send exactly one of `fold`, `call`, `check`, `allin`, or `raise <amount>`.\n"
-            "- `raise <amount>` uses exactly one ASCII space, no tabs, no leading/trailing whitespace, and no `bet` keyword.\n"
-            "- Do not print debug/prose to stdout; logs must go to stderr or the configured log file.\n\n"
-            "Required method:\n"
-            f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
-            "- Fix the action serialization/sanitization path that produced the official-platform evidence above.\n"
-            "- Preserve card mapping, seat handling, and local native TCP behavior that already passed.\n"
-            "- Add or tighten a local guard if needed so impossible/internal actions degrade to a legal official action string."
-        )
-        return {
-            "worker_id": f"auto_quality_repair_official_smoke_{suffix}",
-            "role": "Protocol Integration Architect",
-            "target_files": [filename],
-            "must_change_files": [filename],
-            "worker_prompt": prompt,
-            "task_kind": task_kind,
-            "repair_blocker": "official_smoke",
-            "repair_contract": contract,
-        }
     if blocker == "runtime_architecture":
-        all_targets = [
-            Path(str(item)).name
-            for item in contract.get("files") or [filename]
-        ]
-        all_targets = list(dict.fromkeys(
-            item for item in all_targets if item.endswith(".py")
-        ))
-        targets = all_targets[:WORKER_TASK_MAX_TARGET_FILES]
-        extra_writable_targets = all_targets[WORKER_TASK_MAX_TARGET_FILES:]
-        must_change = [
-            Path(str(item)).name
-            for item in contract.get("must_change_files") or [filename]
-            if str(item).endswith(".py")
-        ]
-        must_change = list(dict.fromkeys(must_change)) or [filename]
+        targets = ["policy.py"]
+        must_change = ["policy.py"]
         focus_id = str(contract.get("focus_id") or "")
         policy = contract.get("architecture_policy") or {}
         focus = policy.get("selected_focus") or {}
@@ -7635,20 +6716,16 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             or state_learning.get("line_controls")
         ):
             owner_files.append("national_bot.py")
-        target_set = set(targets)
-        read_only_dependencies = list(dict.fromkeys(
-            owner
-            for owner in owner_files
-            if owner == "national_bot.py" and owner not in target_set
-        ))
-        files_allowed = list(dict.fromkeys([
-            *extra_writable_targets,
+        read_only_dependencies = list(dict.fromkeys([
+            "national_bot.py",
+            "precompute.py",
             *(
-            owner
-            for owner in owner_files
-            if owner not in target_set and owner not in read_only_dependencies
+                owner
+                for owner in owner_files
+                if owner in {"national_bot.py", "precompute.py"}
             ),
         ]))
+        files_allowed = []
         try:
             selected_state = RuntimeContract.model_validate(runtime_contract).state_learning
             primary_innovation = (
@@ -7666,14 +6743,9 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
                 "strength envelope; the official 55-second ceiling is safety headroom, not a target "
                 "to spend on every decision.\n"
             ),
-            "bounded_precompute_lookup": (
-                "- Primary innovation: consume the declared candidate artifact (or create the "
-                "declared `precompute.py` fallback), enforce its entry/byte/build bounds, and "
-                "prove a reachable decision lookup plus legal empty-mapping fallback in telemetry.\n"
-            ),
             "action_profile": (
                 "- Primary innovation: consume the `action_profile` fields from bounded "
-                "`opponent_runtime`, scale by confidence, and prove a sanitized-action "
+                "`decision_context.opponent`, scale by confidence, and prove a typed-intent "
                 "counterfactual plus telemetry.\n"
             ),
             "terminal_response": (
@@ -7686,39 +6758,19 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
                 "with confidence and prove a tight/loose sanitized-action counterfactual plus telemetry.\n"
             ),
             "donk": (
-                "- Primary innovation: consume `hand_runtime.can_donk` and prove its one-predicate "
-                "positive/control transcript changes a sanitized action and telemetry.\n"
+                "- Primary innovation: consume `decision_context.line.can_donk` and prove its "
+                "one-predicate positive/control transcript changes a typed intent and telemetry.\n"
             ),
             "delayed_probe": (
-                "- Primary innovation: consume `hand_runtime.can_delayed_probe` and prove its "
-                "one-predicate positive/control transcript changes a sanitized action and telemetry.\n"
+                "- Primary innovation: consume `decision_context.line.can_delayed_probe` and prove "
+                "its one-predicate positive/control transcript changes a typed intent and telemetry.\n"
             ),
         }.get(primary_innovation, "")
-        migration_active = (
-            focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
-            or bool(runtime_contract.get("legacy_consumer_migration"))
-        )
-        migration_guidance = (
-            "- Universal migration bundle: all terminal_response_adaptation, "
-            "showdown_range_adaptation, donk_line_reachability, and "
-            "delayed_probe_line_reachability checks are final-blocking. Consume "
-            "terminal_response and showdown_range from opponent_runtime, and "
-            "can_donk/can_delayed_probe from hand_runtime, with separate final "
-            "sanitized wire action counterfactuals. Do not implement an ordinary "
-            "state_learning innovation in this repair.\n"
-            if migration_active
-            else ""
-        )
         if skill_layer in {"match_memory", "opponent_model"}:
             role = "Opponent Modeler"
         else:
             role = "Algorithmic Runtime Architect"
-        primary_scope_line = (
-            "- Typed primary innovation: `none`; this system-owned migration "
-            "bundle is universal and may not defer one consumer as shadow/advisory.\n"
-            if migration_active
-            else f"- Typed primary innovation: `{primary_innovation or 'none'}`. Other strategy dimensions are shadow/advisory unless listed in parent preservation checks.\n"
-        )
+        primary_scope_line = f"- Typed primary innovation: `{primary_innovation or 'none'}`. Other policy dimensions are shadow/advisory unless listed in parent preservation checks.\n"
         prompt = (
             f"{preservation.format(next_v=next_v)}\n\n"
             "Repair contract: runtime_architecture\n"
@@ -7726,7 +6778,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"- Focus rationale: {focus.get('rationale') or 'Restore evidence-backed runtime behavior.'}\n"
             f"- Required AST checks: {', '.join(required_checks)}\n"
             f"- Parent checks that must not regress: {', '.join(preserve_checks)}\n"
-            f"- Writable migration files: {', '.join(f'`{item}`' for item in [*targets, *files_allowed])}\n"
+            "- Writable candidate file: `policy.py` only.\n"
             f"- Files that must change: {', '.join(f'`{item}`' for item in must_change)}\n"
             f"- Read-only system dependencies: {', '.join(f'`{item}`' for item in read_only_dependencies) or 'none'}; never edit these files.\n"
             f"{primary_scope_line}"
@@ -7735,10 +6787,9 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
             f"```json\n{json.dumps(runtime_contract, ensure_ascii=False, indent=2)}\n```\n\n"
             "Required method:\n"
             "- Read every target plus the source-parent counterpart before editing. Preserve the legal fast baseline.\n"
-            "- Implement the provider-to-consumer behavior in the real get_action call graph. A class, cache, label, comment, or telemetry field that the decision path does not consume is failure.\n"
-            f"{migration_guidance}"
+            "- Implement the behavior in policy.get_baseline_decision and/or policy.iter_decisions over the schema-versioned decision_context. A class, cache, label, comment, or telemetry field that neither entrypoint consumes is failure.\n"
             f"{primary_guidance}"
-            "- Treat wrapper-provided `hand_runtime`/`opponent_runtime` as bounded authoritative inputs; do not rescan full-match requests/responses/showdowns.\n"
+            "- Treat decision_context.hand/betting/history/line/legal/opponent as the only authoritative decision input; never reconstruct another protocol history.\n"
             "- Do not weaken native TCP, official wire, card mapping, or any parent capability to make the selected check pass.\n"
             "- Run `evaluate_national_capabilities` on the candidate and report the required check states before finishing."
         )
@@ -7781,8 +6832,8 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         role_guidance = (
             "\nConstants-only role method:\n"
             "- This repair is assigned to Hyperparameter Tuner because the reviewer "
-            "evidence concerns an existing numeric constant/threshold in `constants.py`.\n"
-            "- Edit only `constants.py`; do not add imports, functions, classes, loops, "
+            "evidence concerns an existing numeric constant/threshold in `policy.py`.\n"
+            "- Edit only an existing numeric constant in `policy.py`; do not add imports, functions, classes, loops, "
             "or control flow.\n"
             "- Fix the exact reviewer evidence by reverting or retuning the named "
             "numeric constant as a Tuner-owned change, with adjacent rationale if needed.\n"
@@ -8000,13 +7051,13 @@ def _apply_mechanical_file_size_trims(tasks, next_dir, source_dir, next_v, sourc
 
 
 def _precommit_repair_task(filename, ckpt, feedback):
+    if Path(str(filename)).name not in _ACTIVE_CANDIDATE_WRITABLE_FILES:
+        raise ValueError(
+            f"precommit repair cannot write system/extra artifact {filename!r}"
+        )
     next_v = ckpt.get("next_v")
     source_v = ckpt.get("source_v")
     suffix = _task_id_suffix(filename)
-    protocol_compliance_task = (
-        filename in _PRECOMMIT_PROTOCOL_REPAIR_FILES
-        and _precommit_protocol_compliance_failure(_precommit_failure_items(ckpt), feedback)
-    )
     line_note = ""
     try:
         path = get_bot_dir(next_v) / filename
@@ -8020,51 +7071,6 @@ def _precommit_repair_task(filename, ckpt, feedback):
     except Exception:
         line_note = ""
 
-    if protocol_compliance_task:
-        prompt = (
-            "This is one file-scoped national protocol compliance repair from a failed "
-            f"precommit/official compliance signal for bots/national_v{next_v}.\n\n"
-            f"Target file: `{filename}`\n"
-            f"Source parent for diff: bots/national_v{source_v}/\n"
-            f"Failed candidate: bots/national_v{next_v}/\n\n"
-            f"Exact compliance feedback:\n{feedback}\n\n"
-            "Boundary:\n"
-            "- The official Windows/national platform is only a compliance oracle here; "
-            "do not use this task for full-flow strength tuning.\n"
-            "- `national_bot.py` and `main.py` are protocol entrypoint files, not EV policy files.\n"
-            "- Fix only the exact illegal wire/action-format/entrypoint behavior shown in the evidence.\n"
-            "- Do not add strategy thresholds, matchup heuristics, range logic, or broad action gates here.\n"
-            "- If the diff contains non-protocol strategy logic in this file, remove or narrow it instead "
-            "of tuning it.\n\n"
-            "Required method:\n"
-            f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
-            f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}`.\n"
-            "- Preserve card mapping, seat handling, native TCP line formatting, and legal-action sanitization.\n"
-            "- Ensure actions serialize only as `fold`, `call`, `check`, `allin`, or `raise <amount>` with "
-            "exactly one ASCII space for raises.\n"
-            "- Run a compile check for the bot package before finishing."
-            f"{line_note}"
-        )
-        return {
-            "worker_id": f"auto_precommit_repair_{suffix}",
-            "role": "Protocol Compliance Repair Architect",
-            "target_files": [filename],
-            "must_change_files": [filename],
-            "worker_prompt": prompt,
-            "task_kind": "precommit_repair",
-            "repair_blocker": "precommit_regression",
-            "repair_contract": {
-                "blocker": "precommit_regression",
-                "subtype": "protocol_compliance",
-                "file": filename,
-                "evidence": feedback[:2000],
-                "protected_invariants": [
-                    "national_position_semantics",
-                    "protocol_compliance_only",
-                ],
-            },
-        }
-
     prompt = (
         "This is one file-scoped precommit regression repair from a failed native "
         f"national TCP final gate for bots/national_v{next_v}.\n\n"
@@ -8075,18 +7081,16 @@ def _precommit_repair_task(filename, ckpt, feedback):
         "Non-negotiable national position invariant:\n"
         "- This invariant is protocol correctness, not an EV/matchup lever. Do not change, relax, "
         "or roll it back to chase a precommit result.\n"
-        "- Heads-up `dealer_id` is the small blind; `bb = 1 - dealer_id`.\n"
-        "- Postflop the BB acts first and is out of position; the SB/dealer is in position.\n"
-        "- Forbidden rollback patterns in the target file include "
-        "`sb = next_player(dealer_id, 1)`, `bb = next_player(dealer_id, 2)`, "
-        "and same-family `*_sb`/`*_bb` assignments derived from a dealer variable via "
-        "`next_player(..., 1/2)`.\n"
-        "- If the source parent or diff contains the old Botzone-era formula, do not copy it; "
-        "preserve the candidate's native national position semantics and BOT-006 repairs.\n\n"
+        "- Read `decision_context.hand.position`/`acts_first_postflop` and "
+        "`decision_context.line.position`/`hero_in_position_postflop` directly.\n"
+        "- `big_blind` acts first postflop; `small_blind` is in position postflop.\n"
+        "- Never reconstruct seat identity, action order, donk, delayed-probe, or "
+        "responding-to-check state inside candidate policy.\n"
+        "- Preserve the candidate's national TCP position semantics and the official oracle boundaries.\n\n"
         "Required method:\n"
         f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
-        "- This is a strategy/matchup repair. Do not edit or reason around `national_bot.py` or `main.py`; "
-        "those protocol entrypoints are compliance-only unless exact illegal wire output was reported.\n"
+        "- This is a policy/matchup repair. `policy.py` is the sole writable file; "
+        "national_bot.py and precompute.py remain byte-identical system artifacts.\n"
         f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}` "
         "and identify which changed behavior could explain the losing 70-hand national TCP matchups.\n"
         "- Make one bounded EV/matchup correction in this file. Prefer tightening, gating, or partially "
@@ -8143,7 +7147,8 @@ def _precommit_repair_task_refresh_reason(tasks, ckpt, feedback=""):
         prompt_text = str(task.get("worker_prompt", task.get("instruction", ""))).lower()
         if (
             "national position invariant" not in prompt_text
-            or "dealer_id` is the small blind" not in prompt_text
+            or "decision_context.hand.position" not in prompt_text
+            or "decision_context.line.position" not in prompt_text
             or "not an ev/matchup lever" not in prompt_text
         ):
             return "precommit repair task is missing national position invariant"
@@ -8269,7 +7274,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         method = (
             "- Read the listed target files before editing.\n"
             "- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n"
-            "- For position_semantics blockers, follow the national heads-up position contract exactly: small blind is dealer_id, big blind is 1 - dealer_id.\n"
+            "- For position_semantics blockers, remove local seat derivation and read `decision_context.hand.position`/`acts_first_postflop` plus `decision_context.line.position` directly.\n"
             "- Do not change protocol/card mapping behavior outside the named blockers.\n"
             "- Leave stderr telemetry honest if touched."
         )
@@ -8284,7 +7289,7 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         method = (
             "- Read the listed target files before editing.\n"
             "- For file_size blockers, remove dead/duplicated code or consolidate helper logic; do not weaken strategy by deleting active decisions blindly.\n"
-            "- For position_semantics blockers, follow the national heads-up position contract exactly: small blind is dealer_id, big blind is 1 - dealer_id.\n"
+            "- For position_semantics blockers, remove local seat derivation and read `decision_context.hand.position`/`acts_first_postflop` plus `decision_context.line.position` directly.\n"
             "- Do not change protocol/card mapping behavior outside the named blockers.\n"
             "- Leave stderr telemetry honest if touched."
         )
@@ -8470,27 +7475,26 @@ def _should_reset_before_rework(ckpt, tasks):
 
 
 def _load_worker_prompt_template(prompts_dir, *, native_tcp=None):
-    """Compose the worker harness from common policy and one execution profile."""
+    """Compose the worker harness for the sole national-native profile."""
     prompts_dir = Path(prompts_dir)
     if native_tcp is None:
         from workflow_profiles import get_workflow_profile
 
         native_tcp = (
-            getattr(get_workflow_profile(), "national_execution_mode", "adapter")
+            getattr(get_workflow_profile(), "national_execution_mode", "native_tcp")
             == "native_tcp"
         )
-    profile_name = (
-        "worker_profile_national_native.md"
-        if native_tcp
-        else "worker_profile_legacy_adapter.md"
-    )
+    if not native_tcp:
+        raise RuntimeError("active Worker execution requires national native TCP")
     common = (prompts_dir / "worker_prompt.md").read_text(encoding="utf-8")
     marker = "{execution_profile_contract}"
     if common.count(marker) != 1:
         raise RuntimeError(
             "worker_prompt.md must contain exactly one execution profile marker"
         )
-    profile = (prompts_dir / profile_name).read_text(encoding="utf-8")
+    profile = (prompts_dir / "worker_profile_national_native.md").read_text(
+        encoding="utf-8"
+    )
     return common.replace(marker, profile)
 
 
@@ -8554,14 +7558,28 @@ async def _project_durable_worker_output(worker_workflow, next_dir, state):
         # this output was published; never rewind candidate bytes that a later
         # authorized stage may have transformed.
         if checkpoint.get("stage") == "workers_done":
-            worker_workflow.artifacts.materialize(
-                str(state.get("output_snapshot_hash") or ""),
-                next_dir,
-            )
-            if (
+            expected_output = str(state.get("output_artifact_hash") or "")
+            canonical_exists = Path(next_dir).exists()
+            canonical_hash = (
                 _complete_artifact_fingerprint(next_dir)
-                != state.get("output_artifact_hash")
-            ):
+                if canonical_exists
+                else ""
+            )
+            if canonical_exists and canonical_hash != expected_output:
+                return _json_tool_result({
+                    "error": "DURABLE_WORKER_PROJECTED_ARTIFACT_MISMATCH",
+                    "success": False,
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                })
+            if not canonical_exists:
+                worker_workflow.artifacts.materialize(
+                    str(state.get("output_snapshot_hash") or ""),
+                    next_dir,
+                    expected_destination_digest=None,
+                )
+            if _complete_artifact_fingerprint(next_dir) != expected_output:
                 return _json_tool_result({
                     "error": "DURABLE_WORKER_PROJECTED_ARTIFACT_MISMATCH",
                     "success": False,
@@ -8605,9 +7623,43 @@ async def _project_durable_worker_output(worker_workflow, next_dir, state):
                 "history with the current projection."
             ),
         })
-    worker_workflow.artifacts.materialize(
+    projection_preimage_hash = str(
+        envelope.get("projection_preimage_artifact_hash") or ""
+    )
+    projection_preimage_snapshot = str(
+        envelope.get("projection_preimage_snapshot_hash") or ""
+    )
+    output_hash = str(state.get("output_artifact_hash") or "")
+    current_artifact_hash = _complete_artifact_fingerprint(next_dir)
+    if (
+        Path(next_dir).exists()
+        and current_artifact_hash not in {
+            projection_preimage_hash,
+            output_hash,
+        }
+    ):
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_PRE_PROJECTION_ARTIFACT_DRIFT",
+            "success": False,
+            "action": "operator_reconcile",
+            "next_v": next_v,
+            "source_v": source_v,
+            "expected_output_artifact_hash": output_hash,
+            "expected_projection_preimage_artifact_hash": (
+                projection_preimage_hash
+            ),
+            "current_artifact_hash": current_artifact_hash,
+            "directive": (
+                "The canonical candidate no longer matches either immutable "
+                "Worker boundary. Do not overwrite concurrent or operator bytes."
+            ),
+        })
+    materialization_receipt = worker_workflow.artifacts.materialize(
         str(state.get("output_snapshot_hash") or ""),
         next_dir,
+        expected_destination_digest=(
+            current_artifact_hash if Path(next_dir).exists() else None
+        ),
     )
     audit_context = deepcopy(projection.get("audit_context") or {})
     audit_context["durable_worker_output"] = deepcopy(
@@ -8632,6 +7684,95 @@ async def _project_durable_worker_output(worker_workflow, next_dir, state):
         expected_workflow_run_id=str(contract.get("workflow_run_id") or ""),
     )
     if not projected:
+        current_checkpoint = _matching_checkpoint(next_v, source_v)
+        if _durable_output_already_projected(current_checkpoint, projection):
+            if (
+                current_checkpoint.get("stage") == "workers_done"
+                and _complete_artifact_fingerprint(next_dir) != output_hash
+            ):
+                return _json_tool_result({
+                    "error": "DURABLE_WORKER_CONCURRENT_PROJECTION_ARTIFACT_MISMATCH",
+                    "success": False,
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "expected_output_artifact_hash": output_hash,
+                    "current_artifact_hash": _complete_artifact_fingerprint(next_dir),
+                })
+            worker_workflow.projected("workers_done")
+            return _json_tool_result({
+                "success": True,
+                "durable_recovery": "confirmed_concurrent_worker_projection",
+                "current_checkpoint_stage": current_checkpoint.get("stage"),
+                "output_artifact_hash": output_hash,
+                "next_v": next_v,
+                "source_v": source_v,
+            })
+
+        if not materialization_receipt.installed:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_OUTPUT_PREEXISTED_FAILED_CHECKPOINT_CAS",
+                "success": False,
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "output_artifact_hash": output_hash,
+                "materialization_receipt_digest": (
+                    materialization_receipt.receipt_digest
+                ),
+                "directive": (
+                    "The output bytes predated this command, so this command has "
+                    "no authority to roll them back after losing the checkpoint CAS."
+                ),
+            })
+
+        # Candidate bytes and checkpoint projection are one semantic effect.
+        # If the CAS lost, restore the exact immutable preimage, but only while
+        # the canonical tree is still the output written by this command.  A
+        # different hash proves a concurrent writer and must never be clobbered.
+        post_cas_artifact_hash = _complete_artifact_fingerprint(next_dir)
+        if post_cas_artifact_hash != output_hash:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_OUTPUT_PROJECTION_CONCURRENT_DRIFT",
+                "success": False,
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_output_artifact_hash": output_hash,
+                "current_artifact_hash": post_cas_artifact_hash,
+                "directive": (
+                    "The checkpoint CAS failed and another writer changed the "
+                    "candidate. Preserve both histories for operator reconciliation."
+                ),
+            })
+        try:
+            worker_workflow.artifacts.materialize(
+                projection_preimage_snapshot,
+                next_dir,
+                expected_destination_digest=output_hash,
+            )
+        except BaseException as exc:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_OUTPUT_ROLLBACK_FAILED",
+                "success": False,
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+            })
+        restored_hash = _complete_artifact_fingerprint(next_dir)
+        if restored_hash != projection_preimage_hash:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_OUTPUT_ROLLBACK_MISMATCH",
+                "success": False,
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "expected_projection_preimage_artifact_hash": (
+                    projection_preimage_hash
+                ),
+                "restored_artifact_hash": restored_hash,
+            })
         return _json_tool_result({
             "error": "DURABLE_WORKER_OUTPUT_PROJECTION_FAILED",
             "success": False,
@@ -8639,10 +7780,23 @@ async def _project_durable_worker_output(worker_workflow, next_dir, state):
             "next_v": next_v,
             "source_v": source_v,
             "output_artifact_hash": state.get("output_artifact_hash"),
+            "canonical_artifact_restored": True,
+            "restored_artifact_hash": restored_hash,
             "directive": (
                 "The immutable Worker output receipt is safe. Retry execute_workers "
                 "to project it; the LLM will not be called again."
             ),
+        })
+    post_commit_artifact_hash = _complete_artifact_fingerprint(next_dir)
+    if post_commit_artifact_hash != output_hash:
+        return _json_tool_result({
+            "error": "DURABLE_WORKER_POST_COMMIT_ARTIFACT_MISMATCH",
+            "success": False,
+            "action": "operator_reconcile",
+            "next_v": next_v,
+            "source_v": source_v,
+            "expected_output_artifact_hash": output_hash,
+            "current_artifact_hash": post_commit_artifact_hash,
         })
     worker_workflow.projected("workers_done")
     return _json_tool_result({
@@ -8765,6 +7919,7 @@ async def _run_durable_worker_effect(
 ):
     """Run exactly one fenced Worker activity from a frozen envelope."""
     from agent_workers import WorkerInfrastructureError
+    from llm_availability import LLMAvailabilityBlocked
     from worker_boundary import (
         diff_file_snapshot,
         restore_complete_artifact_snapshot,
@@ -8800,6 +7955,46 @@ async def _run_durable_worker_effect(
             "current_source_hash": source_hash,
         })
 
+    _worker_uses_llm = policy.get("executor") != "system_policy_bootstrap_v1"
+    if _worker_uses_llm:
+        try:
+            from llm_availability_store import active_llm_pause
+
+            active_pause = active_llm_pause()
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "LLM_AVAILABILITY_STATE_INVALID",
+                "success": False,
+                "failure_class": "control_plane",
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "directive": (
+                    "The provider pause record is invalid. No Worker effect "
+                    "was claimed."
+                ),
+            })
+        if active_pause is not None:
+            state = worker_workflow.state()
+            return _json_tool_result({
+                "error": "LLM_AVAILABILITY_BLOCKED",
+                "success": False,
+                "failure_class": "availability",
+                "action": "wait_for_llm_availability",
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_status": state.get("status"),
+                "attempt": int(state.get("attempt") or 0),
+                "max_attempts": int(state.get("max_attempts") or 0),
+                "effect_id": state.get("effect_id"),
+                "availability": active_pause,
+                "directive": (
+                    "The provider pause became active before lease claim. No "
+                    "Worker attempt was consumed."
+                ),
+            })
+
     try:
         lease = worker_workflow.request_or_claim(
             owner=f"pid:{os.getpid()}",
@@ -8816,7 +8011,81 @@ async def _run_durable_worker_effect(
         })
 
     workspace = None
+    availability_defer_failed = False
     try:
+        if _worker_uses_llm:
+            try:
+                from llm_availability_store import active_llm_pause
+
+                active_pause = active_llm_pause()
+            except Exception as exc:
+                with worker_workflow.store.command_lock(
+                    worker_workflow.run_id,
+                    blocking=True,
+                ):
+                    worker_workflow.availability_deferred(
+                        lease,
+                        {
+                            "schema_version": 1,
+                            "active": True,
+                            "category": "availability_control_invalid",
+                            "summary": (
+                                "provider pause state could not be read after claim"
+                            ),
+                            "evidence_digest": hashlib.sha256(
+                                (
+                                    f"{type(exc).__name__}:"
+                                    f"{str(exc)[:300]}"
+                                ).encode("utf-8")
+                            ).hexdigest(),
+                            "persistence_error": (
+                                f"{type(exc).__name__}: {str(exc)[:300]}"
+                            ),
+                        },
+                    )
+                return _json_tool_result({
+                    "error": "LLM_AVAILABILITY_STATE_INVALID",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "effect_id": lease.effect_id,
+                    "claimed_attempt": lease.attempt,
+                    "restored_attempt": int(
+                        worker_workflow.state().get("attempt") or 0
+                    ),
+                    "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                })
+            if active_pause is not None:
+                with worker_workflow.store.command_lock(
+                    worker_workflow.run_id,
+                    blocking=True,
+                ):
+                    deferred_state = worker_workflow.availability_deferred(
+                        lease,
+                        active_pause,
+                    )
+                return _json_tool_result({
+                    "error": "LLM_AVAILABILITY_BLOCKED",
+                    "success": False,
+                    "failure_class": "availability",
+                    "action": "wait_for_llm_availability",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "effect_id": lease.effect_id,
+                    "lease_epoch": lease.lease_epoch,
+                    "claimed_attempt": lease.attempt,
+                    "restored_attempt": int(
+                        deferred_state.get("attempt") or 0
+                    ),
+                    "max_attempts": lease.max_attempts,
+                    "availability": active_pause,
+                    "directive": (
+                        "The provider pause became active at the claim boundary. "
+                        "The lease was deferred without consuming an attempt."
+                    ),
+                })
         workspace = worker_workflow.artifacts.workspace_for(
             lease,
             str(envelope.get("prepared_snapshot_hash") or ""),
@@ -8835,22 +8104,45 @@ async def _run_durable_worker_effect(
             )
         baseline = snapshot_python_files(workspace)
         ui = _get_ui()
+        system_worker_receipt = None
         try:
-            success, worker_snapshots, audit_focus_areas = await _execute_workers(
-                tasks,
-                worker_template,
-                workspace,
-                next_v,
-                [],
-                ui,
-                reviewer_feedback=reviewer_feedback,
-                source_v=source_v,
-                force_sequential=bool(policy.get("force_sequential")),
-                task_skipper=task_skipper,
-                worker_execution_context=deepcopy(
-                    envelope.get("worker_execution_context") or {}
-                ),
-            )
+            if policy.get("executor") == "system_policy_bootstrap_v1":
+                from system_strict_bootstrap import (
+                    apply_blueprint,
+                    bind_worker_effect_receipt,
+                )
+
+                worker_snapshots, audit_focus_areas, system_worker_receipt = (
+                    apply_blueprint(
+                        workspace,
+                        checkpoint=checkpoint,
+                        envelope=envelope,
+                    )
+                )
+                system_worker_receipt = bind_worker_effect_receipt(
+                    system_worker_receipt,
+                    effect_id=lease.effect_id,
+                    lease_epoch=lease.lease_epoch,
+                )
+                success = True
+                ui.log_history(
+                    "Applied the content-bound strict-v1 consumer blueprint "
+                    "without invoking an LLM Worker.",
+                    "info",
+                )
+            else:
+                success, worker_snapshots, audit_focus_areas = await _execute_workers(
+                    tasks,
+                    worker_template,
+                    workspace,
+                    next_v,
+                    [],
+                    ui,
+                    reviewer_feedback=reviewer_feedback,
+                    source_v=source_v,
+                    force_sequential=bool(policy.get("force_sequential")),
+                    task_skipper=task_skipper,
+                )
         except BaseException as exc:
             rollback_error = ""
             try:
@@ -8859,6 +8151,131 @@ async def _run_durable_worker_effect(
                 rollback_error = (
                     f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
                 )
+            if isinstance(exc, LLMAvailabilityBlocked):
+                pause_state = exc.pause_state()
+                # Fence and release the Worker lease *before* publishing the
+                # cross-process pause.  If the process dies immediately after
+                # the pause file is fsynced, replay already sees EffectDeferred
+                # and the claim's attempt increment has been rolled back.
+                try:
+                    with worker_workflow.store.command_lock(
+                        worker_workflow.run_id,
+                        blocking=True,
+                    ):
+                        deferred_state = (
+                            worker_workflow.availability_deferred(
+                                lease,
+                                pause_state,
+                            )
+                        )
+                except Exception as defer_exc:
+                    availability_defer_failed = True
+                    return _json_tool_result({
+                        "error": "WORKER_AVAILABILITY_DEFER_FAILED",
+                        "success": False,
+                        "failure_class": "control_plane",
+                        "action": "operator_reconcile",
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "message": (
+                            f"{type(defer_exc).__name__}: "
+                            f"{str(defer_exc)[:300]}"
+                        ),
+                        "persistence_error": "",
+                        "rollback_error": rollback_error,
+                        "directive": (
+                            "The LLM availability pause could not be fenced into "
+                            "the durable Worker journal. Do not classify or retry "
+                            "it as a Worker infrastructure failure."
+                        ),
+                    })
+                persistence_error = ""
+                try:
+                    from llm_availability_store import persist_llm_pause
+
+                    pause_state = persist_llm_pause(pause_state)
+                except Exception as pause_exc:
+                    persistence_error = (
+                        f"{type(pause_exc).__name__}: {str(pause_exc)[:300]}"
+                    )
+                    return _json_tool_result({
+                        "error": "LLM_AVAILABILITY_PAUSE_WAS_NOT_PERSISTED",
+                        "success": False,
+                        "failure_class": "control_plane",
+                        "action": "operator_reconcile",
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "effect_id": lease.effect_id,
+                        "lease_epoch": lease.lease_epoch,
+                        "claimed_attempt": lease.attempt,
+                        "restored_attempt": int(
+                            deferred_state.get("attempt") or 0
+                        ),
+                        "max_attempts": lease.max_attempts,
+                        "availability": exc.pause_state(),
+                        "persistence_error": persistence_error,
+                        "rollback_error": rollback_error,
+                        "directive": (
+                            "The Worker lease is safely deferred and attempt-neutral, "
+                            "but the global pause was not published. Reconcile the "
+                            "pause record before resuming this exact effect."
+                        ),
+                    })
+                return _json_tool_result({
+                    "error": "LLM_AVAILABILITY_BLOCKED",
+                    "success": False,
+                    "failure_class": "availability",
+                    "action": "wait_for_llm_availability",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "effect_id": lease.effect_id,
+                    "lease_epoch": lease.lease_epoch,
+                    "claimed_attempt": lease.attempt,
+                    "restored_attempt": int(
+                        deferred_state.get("attempt") or 0
+                    ),
+                    "max_attempts": lease.max_attempts,
+                    "availability": pause_state,
+                    "persistence_error": persistence_error,
+                    "rollback_error": rollback_error,
+                    "directive": (
+                        "The provider is unavailable. The Worker lease was "
+                        "released without consuming an attempt; resume only "
+                        "through the content-bound LLM availability control."
+                    ),
+                })
+
+            from system_strict_bootstrap import (
+                SystemStrictBootstrapError,
+            )
+
+            if isinstance(exc, SystemStrictBootstrapError):
+                try:
+                    with worker_workflow.store.command_lock(worker_workflow.run_id):
+                        worker_workflow.execution_failed(
+                            lease,
+                            list(exc.errors),
+                            retryable=False,
+                        )
+                    worker_workflow.abandon(
+                        "system_strict_bootstrap_execution_failed"
+                    )
+                except Exception:
+                    pass
+                return _json_tool_result({
+                    "error": "SYSTEM_STRICT_BOOTSTRAP_EXECUTION_FAILED",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "abandon_generation",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "validation_errors": list(exc.errors),
+                    "rollback_error": rollback_error,
+                    "directive": (
+                        "The checked-in blueprint failed its exact workspace or output "
+                        "identity. Abandon; never retry it as an LLM Worker."
+                    ),
+                })
             if isinstance(exc, WorkerInfrastructureError) and not rollback_error:
                 with worker_workflow.store.command_lock(worker_workflow.run_id):
                     failed_state = worker_workflow.infrastructure_failed(
@@ -8918,6 +8335,7 @@ async def _run_durable_worker_effect(
             })
 
         boundary_errors = []
+        policy_identity_refresh_receipt = None
         if success:
             changed = diff_file_snapshot(workspace, baseline)
             if not changed:
@@ -8932,6 +8350,103 @@ async def _run_durable_worker_effect(
                 candidate_dir=workspace,
             )
             success = not boundary_errors
+        if success:
+            # The model-facing boundary has now proved that only policy.py was
+            # candidate-written (the deterministic v143 bootstrap has already
+            # proved its exact three-file blueprint separately).  Only after
+            # that proof may the host rebuild the two digest-bound identities.
+            try:
+                from bot_artifact import canonical_digest
+                from bot_namespace import (
+                    SYSTEM_DERIVED_IDENTITY_FILES,
+                    refresh_policy_identity_documents,
+                    strict_lineage_parent_versions,
+                )
+
+                pre_refresh_changed = sorted(changed)
+                expected_pre_refresh = (
+                    {"policy.py", *SYSTEM_DERIVED_IDENTITY_FILES}
+                    if policy.get("executor") == "system_policy_bootstrap_v1"
+                    else {"policy.py"}
+                )
+                if set(pre_refresh_changed) != expected_pre_refresh:
+                    raise RuntimeError(
+                        "candidate change set before identity refresh mismatch: "
+                        f"expected={sorted(expected_pre_refresh)}:"
+                        f"actual={pre_refresh_changed}"
+                    )
+                lineage_parents = strict_lineage_parent_versions(
+                    next_v,
+                    source_v,
+                    checkpoint.get("parent2_v"),
+                )
+                identity = refresh_policy_identity_documents(
+                    workspace,
+                    next_v,
+                    parent_versions=lineage_parents,
+                )
+                final_changed = diff_file_snapshot(workspace, baseline)
+                expected_final = {"policy.py", *SYSTEM_DERIVED_IDENTITY_FILES}
+                if set(final_changed) != expected_final:
+                    raise RuntimeError(
+                        "final strict artifact delta mismatch: "
+                        f"expected={sorted(expected_final)}:actual={final_changed}"
+                    )
+                receipt_subject = {
+                    "schema_version": 1,
+                    "kind": "strict-policy-identity-refresh-v1",
+                    "version": next_v,
+                    "parent_versions": list(lineage_parents),
+                    "candidate_changed_files": ["policy.py"],
+                    "system_derived_files": sorted(SYSTEM_DERIVED_IDENTITY_FILES),
+                    "final_changed_files": final_changed,
+                    "runtime_manifest_digest": identity[
+                        "runtime_manifest_digest"
+                    ],
+                    "epoch_receipt_digest": identity["epoch_receipt_digest"],
+                    "envelope_digest": envelope.get("envelope_digest"),
+                    "effect_id": lease.effect_id,
+                    "lease_epoch": lease.lease_epoch,
+                }
+                policy_identity_refresh_receipt = {
+                    **receipt_subject,
+                    "receipt_digest": canonical_digest(receipt_subject),
+                }
+            except Exception as exc:
+                rollback_error = ""
+                try:
+                    restore_complete_artifact_snapshot(workspace, baseline)
+                except Exception as rollback_exc:
+                    rollback_error = (
+                        f"{type(rollback_exc).__name__}: "
+                        f"{str(rollback_exc)[:300]}"
+                    )
+                issue = (
+                    "system policy identity refresh failed: "
+                    f"{type(exc).__name__}: {str(exc)[:500]}"
+                )
+                with worker_workflow.store.command_lock(worker_workflow.run_id):
+                    failed_state = worker_workflow.execution_failed(
+                        lease,
+                        [issue, *([f"rollback: {rollback_error}"] if rollback_error else [])],
+                        retryable=not bool(rollback_error),
+                    )
+                if rollback_error or failed_state.get("status") == "exhausted":
+                    worker_workflow.abandon("system_policy_identity_refresh_failed")
+                return _json_tool_result({
+                    "error": "SYSTEM_POLICY_IDENTITY_REFRESH_FAILED",
+                    "success": False,
+                    "failure_class": "infrastructure",
+                    "action": (
+                        "abandon_generation"
+                        if rollback_error or failed_state.get("status") == "exhausted"
+                        else "retry_same_tool"
+                    ),
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "message": issue,
+                    "rollback_error": rollback_error,
+                })
         if success:
             try:
                 _clear_compiled_task_context(workspace)
@@ -9048,6 +8563,25 @@ async def _run_durable_worker_effect(
         audit_context = deepcopy(envelope.get("audit_context") or {})
         if audit_focus_areas:
             audit_context["worker_cot_focus_areas"] = audit_focus_areas
+        if system_worker_receipt is not None:
+            audit_context["system_strict_bootstrap_worker"] = (
+                system_worker_receipt
+            )
+        if policy_identity_refresh_receipt is not None:
+            policy_identity_refresh_receipt = {
+                **policy_identity_refresh_receipt,
+                "output_artifact_hash": artifact_hash,
+            }
+            from bot_artifact import canonical_digest
+
+            policy_identity_refresh_receipt["receipt_digest"] = canonical_digest({
+                key: value
+                for key, value in policy_identity_refresh_receipt.items()
+                if key != "receipt_digest"
+            })
+            audit_context["strict_policy_identity_refresh"] = (
+                policy_identity_refresh_receipt
+            )
         projection = {
             "schema_version": 1,
             "checkpoint_contract": deepcopy(contract),
@@ -9106,7 +8640,8 @@ async def _run_durable_worker_effect(
         try:
             effect = worker_workflow.store.effect(lease.effect_id)
             if (
-                effect.get("status") == "running"
+                not availability_defer_failed
+                and effect.get("status") == "running"
                 and int(effect.get("lease_epoch") or 0) == int(lease.lease_epoch)
             ):
                 worker_workflow.execution_failed(
@@ -9121,6 +8656,60 @@ async def _run_durable_worker_effect(
                 worker_workflow.artifacts.discard_workspace(workspace)
             except Exception:
                 pass
+
+
+def _worker_availability_resume_receipt_errors(deferred, pause_audit):
+    """Validate the global resume receipt against the deferred Worker effect.
+
+    The Worker journal is the authority for *which* provider failure suspended
+    this effect.  Absence of an active global pause is therefore necessary but
+    not sufficient to resume: the inactive audit record must prove that the
+    same evidence was reconciled through the allowed manual/cooldown path.
+    """
+    errors = []
+    if not isinstance(deferred, dict) or not deferred:
+        return ["worker_deferred_availability_missing"]
+
+    digest = str(deferred.get("evidence_digest") or "")
+    category = str(deferred.get("category") or "")
+    manual = bool(deferred.get("requires_manual_resume"))
+    if len(digest) != 64 or any(
+        ch not in "0123456789abcdef" for ch in digest.lower()
+    ):
+        errors.append("worker_deferred_evidence_digest_invalid")
+    if not category:
+        errors.append("worker_deferred_category_missing")
+    if not isinstance(pause_audit, dict) or not pause_audit:
+        errors.append("global_pause_resume_receipt_missing")
+        return errors
+
+    if pause_audit.get("active") is not False:
+        errors.append("global_pause_resume_receipt_not_inactive")
+    if str(pause_audit.get("source") or "") != "llm_availability":
+        errors.append("global_pause_resume_receipt_source_invalid")
+    for key in ("category", "evidence_digest", "retry_policy", "http_status"):
+        if pause_audit.get(key) != deferred.get(key):
+            errors.append(f"global_pause_resume_receipt_{key}_mismatch")
+    if bool(pause_audit.get("requires_manual_resume")) != manual:
+        errors.append("global_pause_resume_receipt_manual_policy_mismatch")
+    if not str(pause_audit.get("resumed_at") or ""):
+        errors.append("global_pause_resume_receipt_timestamp_missing")
+
+    resume_source = str(pause_audit.get("resume_source") or "")
+    resume_digest = str(pause_audit.get("resume_evidence_digest") or "")
+    if manual:
+        if resume_source != "operator_evidence_digest":
+            errors.append("manual_pause_operator_receipt_missing")
+        if resume_digest != digest:
+            errors.append("manual_pause_resume_evidence_digest_mismatch")
+    else:
+        if resume_source != "bounded_cooldown_elapsed":
+            errors.append("transient_pause_cooldown_receipt_missing")
+        if resume_digest:
+            errors.append("transient_pause_unexpected_operator_digest")
+        if not str(pause_audit.get("auto_resume_at") or ""):
+            errors.append("transient_pause_auto_resume_deadline_missing")
+    return errors
 
 
 @dataclass(frozen=True)
@@ -9161,12 +8750,59 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             next_v,
             source_v,
         )
+    _system_bootstrap_executor = False
+    from system_strict_bootstrap import is_declared_native_bootstrap
+
+    _declared_system_bootstrap = is_declared_native_bootstrap(ckpt)
+    _system_initial_worker_stage = bool(
+        ckpt.get("stage") == "master_planned" and not reviewer_feedback
+    )
+    if _declared_system_bootstrap and not _system_initial_worker_stage:
+        return _json_tool_result({
+            "error": "SYSTEM_STRICT_BOOTSTRAP_REWORK_FORBIDDEN",
+            "success": False,
+            "action": "abandon_generation",
+            "failure_class": "control_plane",
+            "next_v": next_v,
+            "source_v": source_v,
+            "stage": ckpt.get("stage"),
+            "directive": (
+                "A content-bound first-migration blueprint may run only once from "
+                "master_planned. If quality, Review, Critic, or precommit rejects "
+                "it, abandon and change the checked-in blueprint/control contract "
+                "in a fresh generation; never fall back to an LLM repair Worker."
+            ),
+        })
+
+    if _declared_system_bootstrap:
+        from system_strict_bootstrap import validate_master_receipt
+
+        _system_worker_errors = validate_master_receipt(
+            ckpt,
+            candidate_dir=next_dir,
+            require_prepared_content=True,
+        )
+        if _system_worker_errors:
+            return _json_tool_result({
+                "error": "SYSTEM_STRICT_BOOTSTRAP_WORKER_AUTHORITY_INVALID",
+                "success": False,
+                "action": "abandon_generation",
+                "failure_class": "control_plane",
+                "next_v": next_v,
+                "source_v": source_v,
+                "validation_errors": _system_worker_errors,
+                "directive": (
+                    "The fresh-bootstrap system receipt or prepared artifact drifted. "
+                    "Abandon this generation; never fall back to an LLM Worker."
+                ),
+            })
+        _system_bootstrap_executor = True
     if (
         not str(ckpt.get("workflow_run_id") or "").strip()
         or int(ckpt.get("checkpoint_revision") or 0) < 1
     ):
         return _json_tool_result({
-            "error": "LEGACY_WORKFLOW_ID_UNSUPPORTED",
+            "error": "STALE_WORKFLOW_ID_UNSUPPORTED",
             "failure_class": "state_migration",
             "action": "abandon_generation",
             "next_v": next_v,
@@ -9198,7 +8834,7 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
     worker_workflow = WorkerWorkflow.for_checkpoint(ckpt)
     if _worker_infra is not None:
         return _json_tool_result({
-            "error": "LEGACY_WORKER_INFRASTRUCTURE_STATE_UNSUPPORTED",
+            "error": "STALE_WORKER_INFRASTRUCTURE_STATE_UNSUPPORTED",
             "failure_class": "state_migration",
             "action": "abandon_generation",
             "next_v": next_v,
@@ -9305,7 +8941,10 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             durable_worker_envelope.get("worker_template_hash")
             != current_template_hash
             or durable_worker_envelope.get("backend_contract")
-            != _worker_backend_contract()
+            != _expected_worker_backend_contract(
+                ckpt,
+                durable_worker_envelope,
+            )
         ):
             worker_workflow.abandon("durable_worker_definition_drift")
             return _json_tool_result({
@@ -9314,6 +8953,156 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 "source_v": source_v,
                 "action": "abandon_generation",
             })
+    _worker_uses_llm = bool(
+        (durable_worker_envelope.get("execution_policy") or {}).get(
+            "executor"
+        )
+        != "system_policy_bootstrap_v1"
+    )
+    if (
+        _worker_uses_llm
+        and command_name in {
+            "request_or_claim_worker",
+            "claim_worker",
+            "wait_for_llm_availability",
+        }
+    ):
+        try:
+            from llm_availability_store import active_llm_pause, load_llm_pause
+
+            _active_pause = active_llm_pause()
+            _pause_audit = load_llm_pause()
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "LLM_AVAILABILITY_STATE_INVALID",
+                "success": False,
+                "failure_class": "control_plane",
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_status": durable_worker_status,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "directive": (
+                    "The durable provider pause record could not be validated. "
+                    "Do not claim or fail the Worker effect until that control "
+                    "record is reconciled."
+                ),
+            })
+        if _active_pause is not None:
+            return _json_tool_result({
+                "error": "LLM_AVAILABILITY_BLOCKED",
+                "success": False,
+                "failure_class": "availability",
+                "action": "wait_for_llm_availability",
+                "next_v": next_v,
+                "source_v": source_v,
+                "worker_status": durable_worker_status,
+                "attempt": int(durable_worker_state.get("attempt") or 0),
+                "max_attempts": int(
+                    durable_worker_state.get("max_attempts") or 0
+                ),
+                "effect_id": durable_worker_state.get("effect_id"),
+                "availability": _active_pause,
+                "directive": (
+                    "The provider pause is still active. No Worker effect was "
+                    "claimed and no attempt was consumed."
+                ),
+            })
+        if command_name == "wait_for_llm_availability":
+            _deferred_availability = (
+                durable_worker_state.get("availability") or {}
+            )
+            if _deferred_availability.get("persistence_error"):
+                return _json_tool_result({
+                    "error": "LLM_AVAILABILITY_PAUSE_WAS_NOT_PERSISTED",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_status": durable_worker_status,
+                    "attempt": int(
+                        durable_worker_state.get("attempt") or 0
+                    ),
+                    "effect_id": durable_worker_state.get("effect_id"),
+                    "availability": _deferred_availability,
+                    "directive": (
+                        "The Worker lease was safely deferred, but the global "
+                        "pause write failed. Preserve the attempt-neutral effect "
+                        "and reconcile the pause record before resuming."
+                    ),
+                })
+            _resume_receipt_errors = _worker_availability_resume_receipt_errors(
+                _deferred_availability,
+                _pause_audit,
+            )
+            if _resume_receipt_errors:
+                return _json_tool_result({
+                    "error": "WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_status": durable_worker_status,
+                    "attempt": int(
+                        durable_worker_state.get("attempt") or 0
+                    ),
+                    "effect_id": durable_worker_state.get("effect_id"),
+                    "receipt_errors": _resume_receipt_errors,
+                    "availability": _deferred_availability,
+                    "directive": (
+                        "The global pause is not active, but no matching durable "
+                        "resume receipt authorizes this deferred Worker effect. "
+                        "Preserve the attempt-neutral journal and reconcile the "
+                        "exact evidence digest before resuming."
+                    ),
+                })
+            try:
+                if actor_lock_owned:
+                    durable_worker_state = (
+                        worker_workflow.resume_availability_deferred()
+                    )
+                else:
+                    with worker_workflow.store.command_lock(
+                        worker_workflow.run_id
+                    ):
+                        durable_worker_state = (
+                            worker_workflow.resume_availability_deferred()
+                        )
+            except Exception as exc:
+                return _json_tool_result({
+                    "error": "WORKER_AVAILABILITY_RESUME_FAILED",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "directive": (
+                        "The provider pause cleared, but its fenced Worker effect "
+                        "could not transition back to requested. Do not recreate "
+                        "or fail the effect."
+                    ),
+                })
+            durable_worker_status = str(
+                durable_worker_state.get("status") or "requested"
+            )
+            worker_command = next_worker_command(durable_worker_state)
+            command_name = str(
+                worker_command.get("command") or "recover"
+            )
+            if command_name != "claim_worker":
+                return _json_tool_result({
+                    "error": "WORKER_AVAILABILITY_RESUME_INVARIANT_FAILED",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_status": durable_worker_status,
+                    "next_command": command_name,
+                })
     if command_name == "project_output":
         if actor_lock_owned:
             return await _project_durable_worker_output(
@@ -10103,83 +9892,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             "source_v": source_v,
         })
 
-    # H6 (2026-06-29): CROSS-GENERATION circuit breaker. The single-gen breaker
-    # above limits failures within one generation; this one catches a different
-    # failure mode — workers failing across >= N DISTINCT nearby generations
-    # (v214-from-v212 retried workers on the exhausted commitment/defense/gate
-    # axis across gens 213/214 without converging). When this trips, direct
-    # master to pivot axis/parent rather than spawning more identical workers.
-    # Only counts category="worker" exec failures (not reviewer/critic gates).
-    # Uses a dynamic path from evolution_infra.RESULTS_DIR so tests that
-    # monkeypatch RESULTS_DIR also isolate this check (the module-level
-    # WORKER_FAILURES_FILE in agent_workers would otherwise read the real file).
-    #
-    # NOTE (P1 root-cause analysis, 2026-06-29): this breaker only guards the
-    # execute_workers MCP tool. The v218 logs showed that after the breaker
-    # tripped and execute_workers returned an error, the orchestrator LLM used
-    # its BUILT-IN Bash/Edit tools to write bot code directly into active bot dirs,
-    # completely bypassing execute_workers (and thus this breaker, boundary
-    # validation, CoT audit, etc.). The breaker is therefore necessary but NOT
-    # sufficient. The real fix is a PreToolUse hook that blocks the orchestrator's
-    # Bash/Edit/Write from touching active bot dirs — see _make_bot_dir_guard_hook
-    # in orchestrator_context.py. The breaker here stays as defense-in-depth.
-    try:
-        from evolution_infra import RESULTS_DIR as _h6_results
-        _h6_wf_file = _h6_results / "worker_failures.jsonl"
-        _recent = []
-        # A published preparation receipt proves this breaker already passed
-        # for the frozen work item. Reopening live cross-generation evidence on
-        # recovery would let an unrelated later failure rewrite the same
-        # activity input.
-        if not checkpoint_has_frozen_preparation and _h6_wf_file.exists():
-            try:
-                from evolution_infra import locked_file
-                with locked_file(_h6_wf_file, "r", encoding="utf-8") as f:
-                    for _line in f:
-                        _line = _line.strip()
-                        if _line:
-                            try:
-                                _recent.append(json.loads(_line))
-                            except (json.JSONDecodeError, TypeError):
-                                pass
-            except Exception:
-                pass
-        _distinct_gens_failed = _recent_prior_worker_failure_gens(
-            _recent,
-            next_v=next_v,
-            generation_window=H6_RECENT_GENERATION_WINDOW,
-        )
-        if len(_distinct_gens_failed) >= H6_CROSS_GEN_THRESHOLD:
-            try:
-                log_system_event(
-                    "pipeline.worker_circuit_breaker_cross_gen", "error",
-                    f"Cross-gen worker circuit breaker tripped for v{next_v}: workers "
-                    f"failed across {len(_distinct_gens_failed)} distinct nearby gens "
-                    f"{_distinct_gens_failed[:3]}. Directing master to pivot axis/parent.",
-                    {"next_v": next_v, "source_v": source_v,
-                     "failed_gens": _distinct_gens_failed[:5],
-                     "generation_window": H6_RECENT_GENERATION_WINDOW},
-                )
-            except Exception:
-                pass
-            return {"content": [{"type": "text", "text": json.dumps({
-                "error": "WORKER_CIRCUIT_BREAKER_CROSS_GEN",
-                "failed_gens": _distinct_gens_failed[:5],
-                "generation_window": H6_RECENT_GENERATION_WINDOW,
-                "directive": (
-                    f"Workers failed across {len(_distinct_gens_failed)} distinct nearby "
-                    f"generations ({_distinct_gens_failed[:3]}). The current strategic "
-                    f"axis (source v{source_v}) is unlikely to converge via more worker "
-                    f"retries. Produce a FUNDAMENTALLY different plan: new structural "
-                    f"mechanism, different strategic axis, or pivot to a different "
-                    f"parent via run_crossover. Do NOT repeat the same worker tasks, "
-                    f"and do NOT edit bot files directly with Bash/Edit."
-                ),
-                "logs": _get_ui().get_output() if _get_ui() else "",
-            })}]}
-    except Exception as _ce:
-        _log.debug("H6 cross-gen circuit breaker check failed (non-fatal): %s", _ce)
-
     # Critic is a hard strategic gate. generation_attempt can be incremented by a
     # critic rejection and preserved through this worker rework path; run_master
     # remains the explicit reset point for a fresh plan.
@@ -10241,6 +9953,18 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             frozen_worker_input_digest = str(
                 rework_plan_metadata.get("frozen_worker_input_digest") or ""
             )
+            projection_preimage_artifact_hash = str(
+                rework_plan_metadata.get(
+                    "projection_preimage_artifact_hash"
+                )
+                or ""
+            )
+            projection_preimage_snapshot_hash = str(
+                rework_plan_metadata.get(
+                    "projection_preimage_snapshot_hash"
+                )
+                or ""
+            )
             if not isinstance(frozen_worker_input, dict):
                 raise RuntimeError("frozen Worker preparation input missing")
             actual_frozen_input_digest = hashlib.sha256(
@@ -10255,7 +9979,7 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             if actual_frozen_input_digest != frozen_worker_input_digest:
                 raise RuntimeError("frozen Worker preparation input digest mismatch")
             if (
-                frozen_worker_input.get("schema_version") != 1
+                frozen_worker_input.get("schema_version") != 4
                 or frozen_worker_input.get("tasks") != tasks
                 or str(frozen_worker_input.get("reviewer_feedback") or "")
                 != reviewer_feedback
@@ -10263,14 +9987,32 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 != hashlib.sha256(worker_template.encode("utf-8")).hexdigest()
                 or frozen_worker_input.get("backend_contract")
                 != _worker_backend_contract()
-                or not isinstance(
-                    frozen_worker_input.get("worker_execution_context"), dict
+                or "worker_execution_context" in frozen_worker_input
+                or not projection_preimage_artifact_hash
+                or not projection_preimage_snapshot_hash
+                or frozen_worker_input.get(
+                    "projection_preimage_artifact_hash"
                 )
-                or not isinstance(
-                    frozen_worker_input.get("exhausted_keywords"), list
+                != projection_preimage_artifact_hash
+                or frozen_worker_input.get(
+                    "projection_preimage_snapshot_hash"
                 )
+                != projection_preimage_snapshot_hash
             ):
                 raise RuntimeError("frozen Worker preparation input contract drift")
+            projection_preimage_dir = worker_workflow.artifacts.path_for(
+                projection_preimage_snapshot_hash
+            )
+            if (
+                _complete_artifact_fingerprint(projection_preimage_dir)
+                != projection_preimage_artifact_hash
+            ):
+                raise RuntimeError("frozen Worker projection preimage mismatch")
+            if (
+                _complete_artifact_fingerprint(next_dir)
+                != projection_preimage_artifact_hash
+            ):
+                raise RuntimeError("canonical Worker projection preimage drift")
             precommit_rework_count_for_write = int(
                 ckpt.get("precommit_rework_count") or 0
             )
@@ -10469,6 +10211,14 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         source_dir_r = get_bot_dir(source_v)
         try:
             preparation_base = worker_workflow.artifacts.capture(next_dir)
+            projection_preimage_artifact_hash = (
+                _complete_artifact_fingerprint(next_dir)
+            )
+            projection_preimage_snapshot_hash = preparation_base
+            if projection_preimage_artifact_hash != preparation_base:
+                raise RuntimeError(
+                    "canonical repair preimage snapshot mismatch"
+                )
             preparation_digest = hashlib.sha256(
                 json.dumps(
                     {
@@ -10596,37 +10346,20 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
                 )
 
-        # Re-apply known fixes after resetting from source (source may be older/unfixed)
-        from fix_injection import apply_known_fixes, log_fix_application
-        try:
-            applied, skipped = apply_known_fixes(prepared_candidate_dir)
-            if applied or skipped:
-                log_fix_application(
-                    applied,
-                    skipped,
-                    prepared_candidate_dir,
-                    source_v,
-                )
-        except Exception as exc:
-            rollback_error = rollback_rework_preparation()
-            return _json_tool_result({
-                "error": (
-                    "REWORK_PREPARATION_ROLLBACK_FAILED"
-                    if rollback_error else "REWORK_KNOWN_FIXES_FAILED"
-                ),
-                "next_v": next_v,
-                "source_v": source_v,
-                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
-                "rollback_error": rollback_error,
-                "next_tool": "abandon_generation" if rollback_error else "execute_workers",
-            })
         try:
             from candidate_hygiene import sanitize_candidate_dir
             from workflow_profiles import get_workflow_profile
-            native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
+            execution_mode = getattr(
+                get_workflow_profile(), "national_execution_mode", "native_tcp"
+            )
+            if execution_mode != "native_tcp":
+                raise RuntimeError(
+                    "active candidate hygiene requires the official native_tcp "
+                    f"execution mode, got {execution_mode!r}"
+                )
             sanitize_candidate_dir(
                 prepared_candidate_dir,
-                require_native_tcp=native_tcp,
+                require_native_tcp=True,
             )
         except Exception as exc:
             rollback_error = rollback_rework_preparation()
@@ -10804,20 +10537,20 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 "source_v": source_v,
                 "rollback_error": rollback_error,
             })
-        from agent_workers import build_worker_execution_context
-
-        frozen_worker_execution_context = build_worker_execution_context()
-        frozen_exhausted_keywords = _extract_exhausted_keywords()
         frozen_preparation_input = {
-            "schema_version": 1,
+            "schema_version": 4,
             "tasks": deepcopy(tasks),
             "reviewer_feedback": reviewer_feedback,
             "worker_template_hash": hashlib.sha256(
                 worker_template.encode("utf-8")
             ).hexdigest(),
             "backend_contract": _worker_backend_contract(),
-            "worker_execution_context": frozen_worker_execution_context,
-            "exhausted_keywords": list(frozen_exhausted_keywords),
+            "projection_preimage_artifact_hash": (
+                projection_preimage_artifact_hash
+            ),
+            "projection_preimage_snapshot_hash": (
+                projection_preimage_snapshot_hash
+            ),
         }
         frozen_preparation_input_digest = hashlib.sha256(
             json.dumps(
@@ -10830,6 +10563,12 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         ).hexdigest()
         rework_plan_metadata = {
             **rework_plan_metadata,
+            "projection_preimage_artifact_hash": (
+                projection_preimage_artifact_hash
+            ),
+            "projection_preimage_snapshot_hash": (
+                projection_preimage_snapshot_hash
+            ),
             "repair_baseline_artifact_hash": repair_baseline_artifact_hash,
             "prepared_snapshot_hash": prepared_repair_snapshot_hash,
             "frozen_worker_input": frozen_preparation_input,
@@ -10878,122 +10617,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     "content receipt. Do not execute Workers or claim repair authority."
                 ),
             })
-
-    # P2: Validate positive worker intent against EXHAUSTED directions from the
-    # experience pool. Negative guardrail prose is ignored to prevent warnings
-    # from firing merely because the prompt quotes a forbidden axis.
-    frozen_worker_input = (
-        rework_plan_metadata.get("frozen_worker_input")
-        if isinstance(rework_plan_metadata, dict)
-        else None
-    )
-    exhausted_keywords = (
-        list(frozen_worker_input.get("exhausted_keywords") or [])
-        if isinstance(frozen_worker_input, dict)
-        else _extract_exhausted_keywords()
-    )
-    exhausted_violations = _exhausted_plan_violations(
-        {"tasks": tasks},
-        next_v=next_v,
-        precomputed_exhausted_keywords=exhausted_keywords,
-    )
-    if exhausted_violations and ckpt.get("stage") == "master_planned" and not reviewer_feedback:
-        audit_attempt = int(ckpt.get("audit_attempt") or 0) + 1
-        ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
-        audit_context = {
-            "worker_exhausted_plan_blocked": {
-                "validation_errors": exhausted_violations,
-                "source_stage": ckpt.get("stage"),
-                "runtime_contract_ledger_reset": True,
-                "previous_runtime_contract_ledger_digest": ledger_digest,
-            }
-        }
-        written = write_pipeline_checkpoint(
-            next_v,
-            source_v,
-            "direction_audited",
-            master_plan={},
-            direction_audit=ckpt.get("direction_audit"),
-            worker_failure_count=ckpt.get("worker_failure_count", 0),
-            audit_attempt=audit_attempt,
-            audit_context=audit_context,
-            touch_stage_timestamp=True,
-            reset_runtime_contract_ledger=True,
-            expected_runtime_contract_ledger_digest=ledger_digest,
-            runtime_contract_ledger_reset_reason="master_plan_rejected_replan",
-            expected_checkpoint_revision=int(
-                ckpt.get("checkpoint_revision") or 0
-            ),
-            expected_checkpoint_stage=str(ckpt.get("stage") or ""),
-            expected_workflow_run_id=str(
-                ckpt.get("workflow_run_id") or ""
-            ),
-        )
-        if not written:
-            log_system_event(
-                "pipeline.worker_exhausted_plan_recovery_failed",
-                "error",
-                f"Could not persist exhausted-plan rollback for v{next_v}",
-                {
-                    "next_v": next_v,
-                    "source_v": source_v,
-                    "source_stage": ckpt.get("stage"),
-                    "runtime_contract_ledger_digest": ledger_digest,
-                },
-            )
-            return _json_tool_result({
-                "error": "WORKER_EXHAUSTED_PLAN_RECOVERY_FAILED",
-                "next_v": next_v,
-                "source_v": source_v,
-                "validation_errors": exhausted_violations,
-                "message": (
-                    "The invalid exhausted plan was blocked, but its checkpoint "
-                    "rollback could not be persisted. No re-planning transition "
-                    "has been recorded."
-                ),
-                "directive": (
-                    "Do not run workers or report a new Master-plan route; repair "
-                    "checkpoint persistence/state synchronization first."
-                ),
-            })
-        log_system_event(
-            "pipeline.worker_exhausted_plan_blocked",
-            "error",
-            f"Blocked worker execution for v{next_v}: saved Master plan repeats EXHAUSTED direction",
-            {
-                "next_v": next_v,
-                "source_v": source_v,
-                "validation_errors": exhausted_violations,
-                "audit_attempt": audit_attempt,
-            },
-        )
-        return _json_tool_result({
-            "error": "WORKER_EXHAUSTED_PLAN_BLOCKED",
-            "next_v": next_v,
-            "source_v": source_v,
-            "validation_errors": exhausted_violations,
-            "next_tool": "run_master",
-            "directive": (
-                "The saved Master plan repeats an EXHAUSTED direction and was "
-                "not allowed to reach workers. The checkpoint has been rolled "
-                "back to direction_audited with the invalid master_plan cleared. "
-                "Call run_master to produce a fundamentally different execution "
-                "axis before execute_workers."
-            ),
-        })
-    if exhausted_keywords:
-        for task in tasks:
-            prompt_text = _positive_execution_text_from_task(task)
-            if _fuzzy_match_exhausted(prompt_text, exhausted_keywords, require_direction_token=True):
-                log_system_event(
-                    "pipeline.worker_exhausted_warning", "warn",
-                    (
-                        f"Worker {task.get('worker_id', '?')} plan matches an "
-                        "EXHAUSTED direction; prompt remains checkpoint-frozen"
-                    ),
-                    {"next_v": next_v, "prompt_mutated": False},
-                )
-                break  # One warning per task is sufficient
 
     if reviewer_feedback and rework_plan_metadata:
         expected_rework_hash = str(
@@ -11112,31 +10735,16 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 ),
             })
 
-    from agent_workers import build_worker_execution_context
-
-    if durable_worker_resume:
-        worker_execution_context = deepcopy(
-            durable_worker_envelope.get("worker_execution_context")
-        )
-    elif isinstance(frozen_worker_input, dict):
-        worker_execution_context = deepcopy(
-            frozen_worker_input.get("worker_execution_context") or {}
-        )
-    else:
-        worker_execution_context = build_worker_execution_context()
-
     task_digest = _worker_execution_task_digest(
         tasks,
         reviewer_feedback,
         worker_template,
-        worker_execution_context,
     )
     if durable_worker_resume:
         durable_input_digest = _worker_execution_task_digest(
             durable_worker_envelope.get("tasks") or [],
             str(durable_worker_envelope.get("reviewer_feedback") or ""),
             worker_template,
-            durable_worker_envelope.get("worker_execution_context") or {},
         )
         if task_digest != durable_input_digest:
             abandon_result = await _force_abandon_frozen_worker_generation(
@@ -11202,6 +10810,33 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 tasks,
                 next_v,
             )
+        projection_preimage_artifact_hash = str(
+            active_work_item.get("projection_preimage_artifact_hash")
+            or prepared_artifact_hash
+        )
+        projection_preimage_snapshot_hash = (
+            str(
+                active_work_item.get("projection_preimage_snapshot_hash")
+                or ""
+            )
+            or prepared_snapshot_hash
+        )
+        try:
+            worker_workflow.artifacts.path_for(
+                projection_preimage_snapshot_hash
+            )
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "DURABLE_WORKER_PROJECTION_PREIMAGE_UNAVAILABLE",
+                "success": False,
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "projection_preimage_artifact_hash": (
+                    projection_preimage_artifact_hash
+                ),
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+            })
         checkpoint_contract = {
             "workflow_run_id": str(
                 projection_ckpt.get("workflow_run_id")
@@ -11213,6 +10848,24 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 projection_ckpt.get("checkpoint_revision") or 0
             ),
             "checkpoint_stage": str(projection_ckpt.get("stage") or ""),
+        }
+        execution_policy = {
+            "force_sequential": bool(force_sequential_rework),
+            "quality_skipper": quality_skipper_config is not None,
+            "expected_architecture_policy": (
+                deepcopy(
+                    quality_skipper_config.get(
+                        "expected_architecture_policy"
+                    )
+                )
+                if isinstance(quality_skipper_config, dict)
+                else None
+            ),
+            **(
+                {"executor": "system_policy_bootstrap_v1"}
+                if _system_bootstrap_executor
+                else {}
+            ),
         }
         envelope = build_worker_envelope(
             checkpoint=projection_ckpt,
@@ -11228,9 +10881,11 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             worker_template_hash=hashlib.sha256(
                 worker_template.encode("utf-8")
             ).hexdigest(),
-            worker_execution_context=worker_execution_context,
             work_item=active_work_item,
-            backend_contract=_worker_backend_contract(),
+            backend_contract=_expected_worker_backend_contract(
+                projection_ckpt,
+                {"execution_policy": execution_policy},
+            ),
             precommit_rework_count=(
                 int(precommit_rework_count_for_write)
                 if precommit_rework_count_for_write is not None
@@ -11243,31 +10898,70 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             ),
             projection_plan=projection_plan,
             audit_context=deepcopy(projection_ckpt.get("audit_context") or {}),
-            execution_policy={
-                "force_sequential": bool(force_sequential_rework),
-                "quality_skipper": quality_skipper_config is not None,
-                "expected_architecture_policy": (
-                    deepcopy(
-                        quality_skipper_config.get(
-                            "expected_architecture_policy"
-                        )
-                    )
-                    if isinstance(quality_skipper_config, dict)
-                    else None
-                ),
-            },
+            execution_policy=execution_policy,
             checkpoint_contract=checkpoint_contract,
             worker_failure_count=int(
                 projection_ckpt.get("worker_failure_count") or 0
             ),
+            projection_preimage_artifact_hash=(
+                projection_preimage_artifact_hash
+            ),
+            projection_preimage_snapshot_hash=(
+                projection_preimage_snapshot_hash
+            ),
         )
-        durable_worker_state = worker_workflow.prepare(envelope)
+        durable_worker_state = worker_workflow.prepare(
+            envelope,
+            max_attempts=1 if _system_bootstrap_executor else 3,
+        )
         durable_worker_envelope = durable_worker_state["envelope"]
         durable_worker_status = durable_worker_state["status"]
         if rework_preparation_dir is not None:
             worker_workflow.artifacts.discard_workspace(
                 rework_preparation_dir
             )
+        if not _system_bootstrap_executor:
+            try:
+                from llm_availability_store import active_llm_pause
+
+                _active_pause = active_llm_pause()
+            except Exception as exc:
+                return _json_tool_result({
+                    "error": "LLM_AVAILABILITY_STATE_INVALID",
+                    "success": False,
+                    "failure_class": "control_plane",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_status": durable_worker_status,
+                    "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                    "directive": (
+                        "Worker preparation is durable, but the provider pause "
+                        "record is invalid. No effect was claimed."
+                    ),
+                })
+            if _active_pause is not None:
+                return _json_tool_result({
+                    "error": "LLM_AVAILABILITY_BLOCKED",
+                    "success": False,
+                    "failure_class": "availability",
+                    "action": "wait_for_llm_availability",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "worker_status": durable_worker_status,
+                    "attempt": int(
+                        durable_worker_state.get("attempt") or 0
+                    ),
+                    "max_attempts": int(
+                        durable_worker_state.get("max_attempts") or 0
+                    ),
+                    "effect_id": durable_worker_state.get("effect_id"),
+                    "availability": _active_pause,
+                    "directive": (
+                        "Worker input was frozen, but the provider pause is "
+                        "active. No effect was claimed and no attempt was consumed."
+                    ),
+                })
         if actor_lock_owned:
             return _DeferredWorkerActivity(
                 workflow=worker_workflow,

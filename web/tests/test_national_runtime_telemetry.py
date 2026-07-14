@@ -63,6 +63,28 @@ def test_baseline_only_worker_done_is_not_counted_as_refinement():
     assert refinement["termination_reasons"] == {}
 
 
+def test_typed_policy_decisions_are_parsed_without_integer_action_abi():
+    report = parse_native_bot_log(
+        "\n".join((
+            "DECIDE start name=Native hand=3 stage=turn act_cnt=0",
+            "DECIDE refinement decision_id=4 sequence=2 "
+            "decision={'kind': 'raise', 'raise_to': 400} elapsed=0.050s "
+            "trusted_step=1 trusted_cpu_ms=2.0 reported_samples=32 "
+            "reported_confidence=0.75",
+            "DECIDE worker_done decision_id=4 sequence=2 "
+            "latest_safe={'kind': 'raise', 'raise_to': 400} elapsed=0.060s "
+            "trusted_steps=1 trusted_cpu_ms=2.0 iterator_exhausted=True "
+            "termination=iterator_exhausted",
+            "DECIDE done decision={'kind': 'raise', 'raise_to': 400} "
+            "source=incremental_refinement elapsed=0.070s",
+        ))
+    )
+
+    assert report["decision_latency"]["count"] == 1
+    assert report["refinement"]["message_count"] == 1
+    assert report["refinement"]["trusted_steps_sum"] == 1
+
+
 def test_opponent_tracker_uses_last_valid_snapshot_and_ignores_malformed_rows():
     first = {
         "schema_version": 4,

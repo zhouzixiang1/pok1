@@ -41,34 +41,34 @@ def test_new_file_requires_nonempty_dst():
 
 
 def test_worker_change_check_uses_pre_run_snapshot_for_crossover_candidate(tmp_path):
-    bot = tmp_path / "claude_v11"
+    bot = tmp_path / "national_v144"
     bot.mkdir()
-    (bot / "strategy.py").write_text("crossover already differs from source\n", encoding="utf-8")
-    task = {"target_files": ["strategy.py"]}
-    snapshots = {(0, "strategy.py"): "crossover already differs from source\n"}
+    (bot / "policy.py").write_text("prepared candidate policy\n", encoding="utf-8")
+    task = {"target_files": ["policy.py"]}
+    snapshots = {(0, "policy.py"): "prepared candidate policy\n"}
 
     assert (
         _classify_target_change_for_worker(
-            task, 0, "strategy.py", bot, 11, source_v=None, baseline_snapshots=snapshots
+            task, 0, "policy.py", bot, 144, source_v=None, baseline_snapshots=snapshots
         )
         == "unchanged"
     )
 
-    (bot / "strategy.py").write_text("repair changed the candidate\n", encoding="utf-8")
+    (bot / "policy.py").write_text("worker changed the candidate policy\n", encoding="utf-8")
     assert (
         _classify_target_change_for_worker(
-            task, 0, "strategy.py", bot, 11, source_v=None, baseline_snapshots=snapshots
+            task, 0, "policy.py", bot, 144, source_v=None, baseline_snapshots=snapshots
         )
         == "modified"
     )
 
 
-def test_must_change_files_narrows_target_files_contract():
+def test_must_change_files_retains_strict_policy_contract():
     task = {
-        "target_files": ["strategy.py", "opponent.py"],
-        "must_change_files": ["opponent.py"],
+        "target_files": ["policy.py"],
+        "must_change_files": ["policy.py"],
     }
-    assert _must_change_rels_for_task(task, 268) == ["opponent.py"]
+    assert _must_change_rels_for_task(task, 268) == ["policy.py"]
 
 
 def test_cot_inconsistency_blocks_repair_tasks_only():
@@ -96,22 +96,22 @@ def test_cot_inconsistency_blocks_undisclosed_runtime_side_effects_for_any_task(
 def test_file_scoped_quality_repair_omits_global_feedback():
     task = {
         "task_kind": "quality_repair",
-        "repair_blocker": "position_semantics",
-        "target_files": ["opponent.py"],
-        "must_change_files": ["opponent.py"],
-        "worker_prompt": "Repair only opponent.py position contract.",
+        "repair_blocker": "quality_gate",
+        "target_files": ["policy.py"],
+        "must_change_files": ["policy.py"],
+        "worker_prompt": "Repair only policy.py typed-action-intent contract.",
         "repair_contract": {
-            "blocker": "position_semantics",
-            "file": "opponent.py",
+            "blocker": "quality_gate",
+            "file": "policy.py",
         },
     }
-    feedback = "Quality gates failed: position_semantics(state.py:223); protected_contract"
+    feedback = "Quality gates failed: typed_action_intent(national_bot.py:223); protected_contract"
 
     prompt = _compose_worker_task_prompt(task, feedback)
 
-    assert "Repair only opponent.py position contract." in prompt
+    assert "Repair only policy.py typed-action-intent contract." in prompt
     assert "Scope Isolation" in prompt
-    assert "state.py:223" not in prompt
+    assert "national_bot.py:223" not in prompt
     assert "protected_contract" not in prompt
     assert "CRITICAL REVISION NEEDED" not in prompt
 
@@ -119,10 +119,10 @@ def test_file_scoped_quality_repair_omits_global_feedback():
 def test_non_file_scoped_repair_keeps_reviewer_feedback():
     task = {
         "task_kind": "precommit_repair",
-        "target_files": ["strategy.py"],
+        "target_files": ["policy.py"],
         "worker_prompt": "Fix regression.",
     }
-    feedback = "Precommit failed vs claude_v241"
+    feedback = "Native precommit failed vs national_v143"
 
     prompt = _compose_worker_task_prompt(task, feedback)
 
@@ -135,15 +135,15 @@ def test_file_scoped_precommit_repair_omits_duplicate_global_feedback():
     task = {
         "task_kind": "precommit_repair",
         "repair_blocker": "precommit_regression",
-        "target_files": ["opponent.py"],
-        "must_change_files": ["opponent.py"],
+        "target_files": ["policy.py"],
+        "must_change_files": ["policy.py"],
         "worker_prompt": "Exact precommit feedback: already embedded here.",
         "repair_contract": {
             "blocker": "precommit_regression",
-            "file": "opponent.py",
+            "file": "policy.py",
         },
     }
-    feedback = "National precommit failed vs claude_v274"
+    feedback = "National-native precommit failed vs national_v145"
 
     prompt = _compose_worker_task_prompt(task, feedback)
 

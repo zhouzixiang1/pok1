@@ -76,11 +76,23 @@ class ScriptedClient:
         self.log(f"SEND msg={message!r} reason={reason} hand={self.hand} stage={self.stage}")
 
     def dispatch_raw(self, sock: socket.socket, raw: bytes) -> None:
-        text = raw.decode("utf-8", "replace")
+        text = raw.decode("ascii")
         self.buffer += text
-        messages, self.buffer = split_server_messages(self.buffer)
+        messages, self.buffer = split_server_messages(
+            self.buffer,
+            flush_numeric=False,
+        )
         if self.buffer:
             self.log(f"BUFFER remaining={self.buffer!r}")
+        for message in messages:
+            self.dispatch(sock, message)
+
+    def flush_idle(self, sock: socket.socket) -> None:
+        """Commit a complete numeric token only at a proven idle boundary."""
+        messages, self.buffer = split_server_messages(
+            self.buffer,
+            flush_numeric=True,
+        )
         for message in messages:
             self.dispatch(sock, message)
 
@@ -187,6 +199,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--log")
     parser.add_argument("--scenario", choices=sorted(SCENARIOS), default=os.environ.get("POK_SCENARIO", CHECK_CALL_DOWN))
     parser.add_argument("--action-delay", type=float, default=float(os.environ.get("POK_SCRIPTED_ACTION_DELAY", "0")))
+    parser.add_argument("--stream-idle", type=float, default=0.10)
     parser.add_argument("--idle-timeout", type=float, default=120.0)
     return parser.parse_args(argv)
 
@@ -201,14 +214,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     try:
         with socket.create_connection((args.host, args.port), timeout=20.0) as sock:
-            sock.settimeout(1.0)
+            sock.settimeout(max(0.01, min(float(args.stream_idle), 0.5)))
             last_rx = time.time()
             while time.time() - last_rx <= args.idle_timeout:
                 try:
                     raw = sock.recv(4096)
                 except socket.timeout:
+                    client.flush_idle(sock)
                     continue
                 if not raw:
+                    client.flush_idle(sock)
                     break
                 last_rx = time.time()
                 client.dispatch_raw(sock, raw)

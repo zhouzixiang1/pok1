@@ -686,6 +686,11 @@ class WorkflowStore:
                 raise WorkflowConflict(
                     f"effect {effect_id} is terminal: {row['status']}"
                 )
+            if row["status"] == "deferred":
+                connection.rollback()
+                raise WorkflowConflict(
+                    f"effect {effect_id} is deferred pending explicit resume"
+                )
             lease_until = row["lease_until"]
             if (
                 row["status"] == "running"
@@ -825,6 +830,148 @@ class WorkflowStore:
             connection.commit()
         return self.effect(effect_id)
 
+    def defer_effect(
+        self,
+        effect_id: str,
+        *,
+        lease_epoch: int,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+        causation_id: str,
+    ) -> dict[str, Any]:
+        """Release a fenced lease without consuming its attempt budget.
+
+        A provider-wide availability pause is not an execution attempt by the
+        Worker.  Recording it as ``EffectFailed`` would both misclassify the
+        outcome and eventually exhaust a generation while no model could run.
+        Deferral therefore rolls back the claim's attempt increment, retains
+        the monotonically increasing lease epoch (so late completions remain
+        fenced), and removes the effect from the dispatchable outbox until an
+        explicit ``resume_effect`` transition occurs.
+        """
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("effect deferral metadata must be an object")
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise WorkflowConflict(f"unknown effect: {effect_id}")
+            if (
+                row["status"] != "running"
+                or int(row["lease_epoch"]) != int(lease_epoch)
+            ):
+                connection.rollback()
+                raise InvalidCompletion(
+                    f"stale effect deferral for {effect_id} epoch={lease_epoch}"
+                )
+            claimed_attempt = int(row["attempt"])
+            restored_attempt = max(0, claimed_attempt - 1)
+            payload = {
+                "effect_id": effect_id,
+                "claimed_attempt": claimed_attempt,
+                "restored_attempt": restored_attempt,
+                "lease_epoch": int(lease_epoch),
+                "reason": str(reason)[:2000],
+                "metadata": json.loads(canonical_json(metadata or {})),
+            }
+            try:
+                self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectDeferred",
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET status = 'deferred', attempt = ?, lease_owner = NULL,
+                        lease_until = NULL, last_error = ?, updated_at = ?
+                    WHERE effect_id = ?
+                    """,
+                    (restored_attempt, str(reason)[:4000], now, effect_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET dispatched_at = COALESCE(dispatched_at, ?)
+                    WHERE effect_id = ?
+                    """,
+                    (now, effect_id),
+                )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+        return self.effect(effect_id)
+
+    def resume_effect(
+        self,
+        effect_id: str,
+        *,
+        causation_id: str,
+    ) -> dict[str, Any]:
+        """Make an explicitly deferred effect dispatchable again."""
+        now = time.time()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise WorkflowConflict(f"unknown effect: {effect_id}")
+            if row["status"] != "deferred":
+                connection.rollback()
+                raise WorkflowConflict(
+                    f"effect {effect_id} cannot resume from {row['status']}"
+                )
+            payload = {
+                "effect_id": effect_id,
+                "attempt": int(row["attempt"]),
+                "lease_epoch": int(row["lease_epoch"]),
+            }
+            try:
+                self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectResumed",
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET status = 'retry', lease_owner = NULL,
+                        lease_until = NULL, last_error = NULL, updated_at = ?
+                    WHERE effect_id = ?
+                    """,
+                    (now, effect_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET dispatched_at = NULL, available_at = ?
+                    WHERE effect_id = ?
+                    """,
+                    (now, effect_id),
+                )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+        return self.effect(effect_id)
+
     def complete_effect(
         self,
         effect_id: str,
@@ -834,6 +981,8 @@ class WorkflowStore:
         result_payload: dict[str, Any],
         causation_id: str,
         followup_events: Iterable[dict[str, Any]] | None = None,
+        require_live_lease: bool = False,
+        now: float | None = None,
     ) -> dict[str, Any]:
         """Accept a fenced completion and its domain events atomically.
 
@@ -845,7 +994,7 @@ class WorkflowStore:
         """
         encoded = canonical_json(result_payload)
         digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        now = time.time()
+        completion_time = float(now if now is not None else time.time())
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             duplicate = connection.execute(
@@ -871,9 +1020,17 @@ class WorkflowStore:
             if row is None:
                 connection.rollback()
                 raise WorkflowConflict(f"unknown effect: {effect_id}")
-            accepted = bool(
+            current_lease = bool(
                 row["status"] == "running"
                 and int(row["lease_epoch"]) == int(lease_epoch)
+            )
+            live_lease = bool(
+                row["lease_until"] is not None
+                and float(row["lease_until"]) > completion_time
+            )
+            accepted = bool(
+                current_lease
+                and (not require_live_lease or live_lease)
             )
             connection.execute(
                 """
@@ -888,7 +1045,7 @@ class WorkflowStore:
                     int(lease_epoch),
                     digest,
                     1 if accepted else 0,
-                    now,
+                    completion_time,
                 ),
             )
             if not accepted:
@@ -896,7 +1053,11 @@ class WorkflowStore:
                 return {
                     "accepted": False,
                     "duplicate": False,
-                    "reason": "stale_lease_epoch",
+                    "reason": (
+                        "expired_lease"
+                        if current_lease and require_live_lease and not live_lease
+                        else "stale_lease_epoch"
+                    ),
                     "effect": self.effect(effect_id),
                 }
             try:
@@ -949,7 +1110,7 @@ class WorkflowStore:
                         lease_until = NULL, updated_at = ?
                     WHERE effect_id = ?
                     """,
-                    (encoded, digest, now, effect_id),
+                    (encoded, digest, completion_time, effect_id),
                 )
             except Exception:
                 connection.rollback()

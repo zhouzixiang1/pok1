@@ -500,6 +500,71 @@ def load_published_evaluation_bundle(
         return _load_published_evaluation_bundle_locked(root, path)
 
 
+def load_current_strict_evaluation_bundle(
+    results_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    """Bind the immutable cycle to the live strict epoch and published pool.
+
+    This is the single read-only authority for dashboards and operator UI
+    projections.  Missing reset proof, an empty/unavailable published pool, or
+    a cycle produced for another pool all fail closed without consulting the
+    mutable top-level compatibility aliases.
+    """
+
+    root = Path(results_dir) if results_dir is not None else _infra().RESULTS_DIR
+    try:
+        from system_strict_bootstrap import load_policy_epoch_reset_receipt
+
+        reset_receipt, reset_errors = load_policy_epoch_reset_receipt(root)
+    except Exception:
+        return {"available": False, "reason": "policy_epoch_reset_unavailable"}
+    if reset_errors or not isinstance(reset_receipt, dict):
+        return {"available": False, "reason": "policy_epoch_reset_unavailable"}
+    try:
+        from bot_namespace import (
+            FIRST_STRICT_POLICY_VERSION,
+            parse_bot_version,
+            version_sort_key,
+        )
+        from evolution_infra import get_published_active_bots_read_only
+
+        active_bots = list(get_published_active_bots_read_only())
+        if len(active_bots) != len(set(active_bots)):
+            raise ValueError("duplicate active bot")
+        for name in active_bots:
+            version = parse_bot_version(name)
+            if version is None or version < FIRST_STRICT_POLICY_VERSION:
+                raise ValueError("non-strict active bot")
+        active_bots = sorted(active_bots, key=version_sort_key)
+    except Exception:
+        return {"available": False, "reason": "active_pool_unavailable"}
+    if not active_bots:
+        return {
+            "available": False,
+            "reason": "strict_published_active_pool_empty",
+            "active_bots": [],
+        }
+
+    try:
+        bundle = load_published_evaluation_bundle(root)
+    except Exception:
+        return {"available": False, "reason": "evaluation_bundle_unavailable"}
+    if not isinstance(bundle, dict):
+        return {"available": False, "reason": "evaluation_bundle_unavailable"}
+    if bundle.get("available") is not True:
+        return bundle
+    manifest = bundle.get("manifest")
+    if not isinstance(manifest, dict) or sorted(
+        str(name) for name in (manifest.get("active_bots") or [])
+    ) != sorted(active_bots):
+        return {"available": False, "reason": "evaluation_active_pool_mismatch"}
+    return {
+        **bundle,
+        "active_bots": active_bots,
+        "epoch_reset_receipt": reset_receipt,
+    }
+
+
 def _load_published_evaluation_bundle_locked(
     root: Path,
     path: Path,

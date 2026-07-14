@@ -9,7 +9,7 @@ compatibility. Tools are organized into:
     tool_bot_management.py — Bot cleanup, reaping, and generation abandonment
 
 Tools split into two groups:
-    - MCP tools: registered for the LLM Orchestrator session (17 tools)
+    - MCP tools: registered for the LLM Orchestrator session
     - Code-layer tools: called directly by generation_scheduler.py (not in MCP)
 """
 
@@ -44,27 +44,19 @@ from tool_status import (  # noqa: F401
     get_status,
     get_bot_info,
     get_match_history,
-    run_match_analysis,
-    run_performance_verification,
     start_eval_daemon,
     stop_eval_daemon,
     wait_for_eval,
-    analyze_stagnation,
     get_h2h,
     get_bot_stats,
-    diagnose_environment,
 )
 
 from tool_bot_management import (  # noqa: F401
     reap_weakest,
-    trim_experience,
-    seed_initial_bots_tool,
-    consolidate_experience,
-    cleanup_incomplete,
     abandon_generation,
 )
 
-# ── MCP tools — available to the LLM Orchestrator session (17 tools) ──
+# ── MCP tools available to the LLM Orchestrator session ──
 
 mcp_tools = [
     # Pipeline tools
@@ -88,11 +80,6 @@ mcp_tools = [
     # Orchestrator session, causing stuck-loops that burned tokens until the
     # 3600s cycle timeout. Exposing it here lets the LLM self-resolve.
     abandon_generation,
-    # Query tools
-    get_bot_info,
-    get_match_history,
-    get_h2h,
-    get_bot_stats,
 ]
 
 evolution_server = create_sdk_mcp_server(
@@ -101,20 +88,17 @@ evolution_server = create_sdk_mcp_server(
     tools=mcp_tools,
 )
 
-# all_tools includes MCP tools + code-layer tools (used by /api/control/tool/* HTTP endpoints)
+# Internal compatibility catalog for direct Python callers.  The HTTP control
+# plane has an explicit capability registry and never executes this list.
 all_tools = mcp_tools + [
     get_status,
-    run_match_analysis,
-    run_performance_verification,
+    get_bot_info,
+    get_match_history,
+    get_h2h,
+    get_bot_stats,
     start_eval_daemon,
     stop_eval_daemon,
     wait_for_eval,
     run_inline_eval,
     reap_weakest,
-    trim_experience,
-    seed_initial_bots_tool,
-    consolidate_experience,
-    analyze_stagnation,
-    cleanup_incomplete,
-    diagnose_environment,
 ]

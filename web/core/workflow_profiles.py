@@ -11,32 +11,11 @@ from skill_library import describe_skill_layers
 _PROFILES = {
     "default": WorkflowProfile(
         profile_id="default",
-        description="Balanced evolution profile with national acceptance enabled.",
-    ),
-    "national_primary": WorkflowProfile(
-        profile_id="national_primary",
-        description=(
-            "Legacy adapter-backed national regression profile. It cannot produce "
-            "or commit formal national-bot versions."
-        ),
-        evaluation_protocol="national",
-        rating_protocol="national",
-        national_execution_mode="adapter",
-        national_acceptance_hands=70,
-        national_acceptance_hard=True,
-        national_acceptance_timeout_sec=420,
-        national_precommit_hands=70,
-        national_precommit_matches=1,
-        national_rating_hands=70,
-        national_rating_matches=1,
-        eval_wait_min_games=24,
-        eval_wait_rd_threshold=110.0,
-        eval_wait_rd_min_games=12,
-        focus_skill_layers=["protocol", "adapter", "action_sanitizer", "opponent_model"],
+        description="Balanced native national-TCP evolution profile.",
     ),
     "national_native": WorkflowProfile(
         profile_id="national_native",
-        description="Make generated bots TCP-native national clients; adapter is legacy regression only.",
+        description="Generate and evaluate only native national-TCP clients.",
         evaluation_protocol="national",
         rating_protocol="national",
         national_execution_mode="native_tcp",
@@ -53,20 +32,12 @@ _PROFILES = {
         focus_skill_layers=[
             "protocol",
             "native_tcp",
-            "action_sanitizer",
+            "action_intent",
             "runtime_architecture",
             "precompute",
             "match_memory",
             "opponent_model",
         ],
-    ),
-    "national_strict": WorkflowProfile(
-        profile_id="national_strict",
-        description="Prioritize national TCP legality and adapter transparency.",
-        evaluation_protocol="local_json",
-        national_acceptance_hands=20,
-        national_acceptance_hard=True,
-        focus_skill_layers=["protocol", "adapter", "action_sanitizer"],
     ),
     "postflop_skill": WorkflowProfile(
         profile_id="postflop_skill",
@@ -80,16 +51,29 @@ _PROFILES = {
     ),
     "exploration_diversity": WorkflowProfile(
         profile_id="exploration_diversity",
-        description="Prefer novel behavior niches while keeping hard protocol gates.",
+        description=(
+            "Explore one frozen, falsifiable typed-policy mechanism with a live "
+            "consumer trace while keeping native TCP gates."
+        ),
         hidden_scenarios_enabled=True,
-        focus_skill_layers=["novelty", "map_elites"],
+        focus_skill_layers=["novelty", "opponent_model", "runtime_architecture"],
     ),
 }
 
 
+class WorkflowProfileConfigurationError(ValueError):
+    """The requested workflow profile is not a registered execution contract."""
+
+
 def get_workflow_profile(profile_id: str | None = None) -> WorkflowProfile:
     selected = profile_id or os.environ.get("POK_WORKFLOW_PROFILE") or "national_native"
-    return _PROFILES.get(selected, _PROFILES["default"])
+    try:
+        return _PROFILES[selected]
+    except KeyError as exc:
+        available = ", ".join(sorted(_PROFILES))
+        raise WorkflowProfileConfigurationError(
+            f"unknown workflow profile {selected!r}; expected one of: {available}"
+        ) from exc
 
 
 def profile_summary(profile: WorkflowProfile | None = None) -> str:

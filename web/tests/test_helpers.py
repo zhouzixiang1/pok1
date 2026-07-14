@@ -4,7 +4,28 @@ import json
 import time
 from pathlib import Path
 
-import pytest
+
+def _strict_artifact(root: Path, version: int) -> Path:
+    from bot_namespace import refresh_policy_identity_documents
+
+    root.mkdir(parents=True)
+    (root / "national_bot.py").write_text(
+        "from policy import decide\n",
+        encoding="utf-8",
+    )
+    (root / "policy.py").write_text(
+        "def decide(_context):\n    return {'kind': 'pass'}\n",
+        encoding="utf-8",
+    )
+    (root / "precompute.py").write_text("TABLE = ()\n", encoding="utf-8")
+    (root / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
+    refresh_policy_identity_documents(
+        root,
+        version,
+        parent_versions=() if version == 143 else (version - 1,),
+    )
+    return root
 
 
 # ── _helpers.py ──
@@ -43,14 +64,21 @@ class TestBuildMatchMatrix:
     def test_empty(self):
         from server.routes._helpers import build_match_matrix
         result = build_match_matrix(None, None, None)
-        assert result == {"bots": [], "matrix": []}
+        assert result == {
+            "bots": [],
+            "matrix": [],
+            "source": "h2h",
+            "evidence_available": False,
+        }
 
-    def test_legacy_fallback(self):
+    def test_pair_counts_are_not_used_when_h2h_is_missing(self):
         from server.routes._helpers import build_match_matrix
-        stats = {"pairs": {"claude_v1 vs claude_v2": 10}}
-        ratings = {"claude_v1": {"r": 1500}, "claude_v2": {"r": 1500}}
+        stats = {"pairs": {"national_v143 vs national_v144": 10}}
+        ratings = {"national_v143": {"r": 1500}, "national_v144": {"r": 1500}}
         result = build_match_matrix(None, ratings, stats)
-        assert len(result["bots"]) == 2
+        assert result["bots"] == []
+        assert result["matrix"] == []
+        assert result["evidence_available"] is False
 
 
 class TestBuildMatchStats:
@@ -169,81 +197,65 @@ class TestUpdateH2H:
         assert entry["win_rate"] == round((3 + 0.5 * 2) / 6, 4)
 
 
-class TestBotMain:
-    @pytest.mark.requires_active_bot
-    def test_valid_version(self, active_bot_version):
-        from tool_helpers import _bot_main
-        path = _bot_main(f"national_v{active_bot_version}")
-        assert path.name == "main.py"
-        assert f"national_v{active_bot_version}" in str(path)
+class TestBotEntry:
+    def test_strict_version_uses_policy_runtime_entrypoint(self):
+        from tool_helpers import _bot_entry
+        path = _bot_entry("national_v143")
+        assert path == (
+            Path(__file__).resolve().parents[2]
+            / "bots"
+            / "national_v143"
+            / "national_bot.py"
+        )
 
-    @pytest.mark.requires_graveyard_bot
-    def test_graveyard_fallback(self, graveyard_bot_version):
-        from tool_helpers import _bot_main
-        path = _bot_main(f"national_v{graveyard_bot_version}")
-        assert path.name == "main.py"
-        assert path.exists()
+    def test_archived_version_is_not_an_entrypoint_fallback(self):
+        from tool_helpers import _bot_entry
+        path = _bot_entry("national_v142")
+        expected = (
+            Path(__file__).resolve().parents[2]
+            / "bots"
+            / "national_v142"
+            / "national_bot.py"
+        )
+        assert path == expected
+        assert "archive" not in path.parts
 
     def test_non_numeric(self):
-        from tool_helpers import _bot_main
-        path = _bot_main("unknown_bot")
-        assert path == Path(__file__).resolve().parents[2] / "bots" / "unknown_bot" / "main.py"
+        from tool_helpers import _bot_entry
+        path = _bot_entry("unknown_bot")
+        assert path == (
+            Path(__file__).resolve().parents[2]
+            / "bots"
+            / "unknown_bot"
+            / "national_bot.py"
+        )
 
 
 class TestSelectPrecommitOpponents:
-    @pytest.mark.requires_active_bot
-    def test_basic(self, active_bot_version):
+    def test_missing_frozen_selection_evidence_fails_closed(self, monkeypatch):
+        import evidence_snapshot
         from tool_helpers import _select_precommit_opponents
-        opponents = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
-        assert isinstance(opponents, list)
-        for opp in opponents:
-            assert "name" in opp
-            assert "reason" in opp
+
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: {"available": False, "reason": "missing"},
+        )
+
+        assert _select_precommit_opponents(144, 143) == []
 
 
 class TestValidateWorkerBoundaries:
-    @pytest.mark.requires_active_bot
-    def test_no_changes(self, monkeypatch, active_bot_version):
+    def test_no_changes(self, tmp_path, monkeypatch):
         from tool_helpers import _validate_worker_boundaries
-        from evolution_infra import get_bot_dir
-        monkeypatch.setattr("tool_helpers.get_bot_dir", lambda v: get_bot_dir(active_bot_version))
+
+        artifact = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
+        monkeypatch.setattr("tool_helpers.get_bot_dir", lambda _version: artifact)
         errors = _validate_worker_boundaries(
-            [{"target_files": ["main.py"], "role": "Algorithmic Logic Architect"}],
-            source_v=active_bot_version, next_v=active_bot_version,
+            [{"target_files": ["policy.py"], "role": "Algorithmic Logic Architect"}],
+            source_v=143, next_v=143,
         )
         assert errors == []
-
-    def test_worker_snapshots_do_not_blame_prior_in_place_repairs(self, tmp_path, monkeypatch):
-        from tool_helpers import _validate_worker_boundaries
-
-        source_dir = tmp_path / "claude_v10"
-        next_dir = tmp_path / "claude_v11"
-        source_dir.mkdir()
-        next_dir.mkdir()
-        for name in ("opponent.py", "strategy_helpers.py"):
-            (source_dir / name).write_text(f"# source {name}\n", encoding="utf-8")
-        (next_dir / "opponent.py").write_text("# prior sibling repair\n", encoding="utf-8")
-        before_helper = "# helper before this worker\n# extra line\n"
-        after_helper = "# helper before this worker\n"
-        (next_dir / "strategy_helpers.py").write_text(after_helper, encoding="utf-8")
-
-        monkeypatch.setattr(
-            "tool_helpers.get_bot_dir",
-            lambda v: source_dir if v == 10 else next_dir,
-        )
-
-        task = {"target_files": ["strategy_helpers.py"], "role": "Algorithmic Logic Architect"}
-        without_snapshots = _validate_worker_boundaries([task], source_v=10, next_v=11)
-        assert any(err["file"] == "opponent.py" for err in without_snapshots)
-
-        with_snapshots = _validate_worker_boundaries(
-            [task],
-            source_v=10,
-            next_v=11,
-            worker_snapshots={(0, "strategy_helpers.py"): before_helper},
-        )
-        assert with_snapshots == []
-
 
 # ── evolution_infra.py ──
 
@@ -256,19 +268,20 @@ class TestFindCurrentV:
 
 
 class TestGetBotDir:
-    @pytest.mark.requires_active_bot
-    def test_primary(self, active_bot_version):
-        from evolution_infra import get_bot_dir
-        d = get_bot_dir(active_bot_version)
-        assert d.exists()
-        assert f"national_v{active_bot_version}" in str(d)
+    def test_primary(self, tmp_path, monkeypatch):
+        import evolution_infra
 
-    @pytest.mark.requires_graveyard_bot
-    def test_graveyard_fallback(self, graveyard_bot_version):
-        from evolution_infra import get_bot_dir
-        d = get_bot_dir(graveyard_bot_version)
-        assert d.exists()
-        assert "graveyard" in str(d), f"Expected graveyard path, got: {d}"
+        bots_dir = tmp_path / "bots"
+        expected = _strict_artifact(bots_dir / "national_v143", 143)
+        monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
+
+        assert evolution_infra.get_bot_dir(143) == expected
+
+    def test_archived_version_has_no_transparent_directory_fallback(self):
+        from evolution_infra import BOTS_DIR, get_bot_dir
+        d = get_bot_dir(142)
+        assert d == BOTS_DIR / "national_v142"
+        assert "archive" not in d.parts
 
     def test_nonexistent(self):
         from evolution_infra import get_bot_dir

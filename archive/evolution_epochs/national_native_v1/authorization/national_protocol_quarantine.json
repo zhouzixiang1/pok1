@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "kind": "archived-national-native-protocol-quarantine",
+  "policy_id": "national-native-current-runtime-quarantine-v1",
+  "purpose": "Keep published legacy strategy artifacts auditable while excluding their obsolete protocol runtimes from every executable pool.",
+  "quarantined_artifacts": [
+    {
+      "bot": "national_v111",
+      "version": 111,
+      "artifact_hash": "ce981fd06835f5109d6c5dd2ab784ea651d260dfa67aa6cbaff0752d8d1dd8ad",
+      "tag": "national-bot-v111",
+      "tag_object": "aeca77f87c777df3f1c201b4e69ac42a8eb04522",
+      "completion_tree_oid": "cde81b97240fb7a477750b0b973676e30c9031fc",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v112",
+      "version": 112,
+      "artifact_hash": "4d159a06a8ad377873e784d982f4bc7fd782e8c2233f89c7d306cd21148eea20",
+      "tag": "national-bot-v112",
+      "tag_object": "4c7689813640da46c7514ea894acaa7dbcd8d95e",
+      "completion_tree_oid": "37f479a874feb592d1cd361f67161a90987842b7",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v114",
+      "version": 114,
+      "artifact_hash": "baa02a179ab0a5e94e21eeb784569dc1c114597cd6ac22cfaddb33bd0ed79a8d",
+      "tag": "national-bot-v114",
+      "tag_object": "cf6a8c2e5ec35da0c1e70a9477fd346a480488dc",
+      "completion_tree_oid": "18088d1db6473d93e2357b37adc663bbbb42b629",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v119",
+      "version": 119,
+      "artifact_hash": "84ddb54b562b156272a18a8490a6c84525ede387534165ec84af70dd0465e134",
+      "tag": "national-bot-v119",
+      "tag_object": "d9874ddc8eb58f9e92b729f1fcc431c3da798155",
+      "completion_tree_oid": "602ebe80e9d0faf03d4d9c6a1f92aea3d49ba798",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v120",
+      "version": 120,
+      "artifact_hash": "bad994bcb05338632e4ad8417a80cf4a3ca2118718c20868b66707f3ef870d38",
+      "tag": "national-bot-v120",
+      "tag_object": "09edb9be50a9369a696a935de1c3cc8dcd84bd50",
+      "completion_tree_oid": "7f8b45a75626e6bd82fd1e49758e534e15bd00d0",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v121",
+      "version": 121,
+      "artifact_hash": "557f5c4be891bf8e0fecbebf543057b466d83cde1a92c253146f46520e2665a2",
+      "tag": "national-bot-v121",
+      "tag_object": "84d8dda280a5ee6694ad3a3cc74ff22629c075dd",
+      "completion_tree_oid": "08b4dd498aa787de5ca50c7b7a901edf7d311c73",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v122",
+      "version": 122,
+      "artifact_hash": "d5a5a6e02446aeff227dcaf9c8bb9a9819ac080f02ec38b1c1acc5d3226abe08",
+      "tag": "national-bot-v122",
+      "tag_object": "95c9be53c37558d9bb5769e8c7e91e50170ffa82",
+      "completion_tree_oid": "bfe657a89d653c648e9b6d61c5b323d29e268d6d",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v123",
+      "version": 123,
+      "artifact_hash": "57c942f88dc32159f5fd2d208ad28f266f5b2b0ade93c38b601fa10eafcac820",
+      "tag": "national-bot-v123",
+      "tag_object": "6edc13195ec18ba0976f6cad302c4ed82e1560d5",
+      "completion_tree_oid": "64ebec2a2c75635a95b8a3d9a3fad2a439e4c549",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v135",
+      "version": 135,
+      "artifact_hash": "c107986788bb6319dc4c727e48abb182be572f4f5116cd15689a9c2ae98dfe28",
+      "tag": "national-bot-v135",
+      "tag_object": "4aaf3493e52740feb6cb96b551c889d7adde6f4e",
+      "completion_tree_oid": "78f6bdd565c0cf3297fd0d74aa5c99f9b4844753",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v141",
+      "version": 141,
+      "artifact_hash": "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796",
+      "tag": "national-bot-v141",
+      "tag_object": "b5105699c24cdbce8afc8e137b4a55f074b8b5e5",
+      "completion_tree_oid": "e8b01c77a3173038f50772a2c9c64b7710401c83",
+      "disposition": "historical_non_executable"
+    },
+    {
+      "bot": "national_v142",
+      "version": 142,
+      "artifact_hash": "3c00fb7fa6bb963d35925d350c71dc9cdc228c1a31c557eeb3b0a634a99f1517",
+      "tag": "national-bot-v142",
+      "tag_object": "e0cdf8c655e3f5c700f248f2354b55a01ee0469d",
+      "completion_tree_oid": "45bbc9fa6e7d361010ec4cf0bbf9f66902dfad75",
+      "disposition": "migration_strategy_seed_only"
+    }
+  ],
+  "migration_seed": {
+    "bot": "national_v142",
+    "version": 142,
+    "closes_when": "first_strict_published_bot_exists",
+    "required_prepare_action": "replace_system_owned_national_bot_before_snapshot"
+  }
+}

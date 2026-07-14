@@ -1,5 +1,12 @@
 import json
 
+from bot_namespace import (
+    STRICT_ARTIFACT_FILES,
+    parse_bot_version,
+    refresh_policy_identity_documents,
+    strict_artifact_layout_errors,
+)
+
 
 def _write_jsonl(path, rows):
     path.write_text(
@@ -8,10 +15,51 @@ def _write_jsonl(path, rows):
     )
 
 
+def _write_strict_bot(root):
+    root.mkdir(parents=True)
+    payloads = {
+        "national_bot.py": "from policy import decide\n",
+        "precompute.py": "FACT = 1\n",
+        "policy.py": "def decide(_context): return {'kind': 'pass'}\n",
+        "national_runtime_manifest.json": "{}\n",
+        "policy_epoch_receipt.json": "{}\n",
+    }
+    assert frozenset(payloads) == STRICT_ARTIFACT_FILES
+    for relative, payload in payloads.items():
+        (root / relative).write_text(payload, encoding="utf-8")
+    version = parse_bot_version(root.name)
+    assert version is not None
+    refresh_policy_identity_documents(
+        root,
+        version,
+        parent_versions=() if version == 143 else (version - 1,),
+    )
+    assert strict_artifact_layout_errors(root) == []
+
+
+def _artifact_execution(*bots):
+    from bot_artifact import hash_path
+    from national_native import NativeBotSpec
+
+    identities = {}
+    for root in bots:
+        identities[root.name] = NativeBotSpec(
+            label=root.name,
+            path=root,
+            entry=root / "national_bot.py",
+            artifact_hash=hash_path(root),
+        ).execution_identity()
+    return {
+        "schema_version": 1,
+        "mode": "direct_content_bound_policy_artifact",
+        "by_player": identities,
+    }
+
+
 def _admitted_history_row(**overrides):
     row = {
-        "bot0": "national_v1",
-        "bot1": "national_v2",
+        "bot0": "national_v143",
+        "bot1": "national_v144",
         "bot0_wins": 1,
         "bot1_wins": 1,
         "draws": 0,
@@ -52,15 +100,15 @@ def test_equal_primary_strength_is_broken_by_70_hand_chip_amount(tmp_path):
     from rating_snapshot import build_strength_rows
 
     ratings = {
-        "national_v1": {"r": 1500, "rd": 80, "sigma": 0.06},
-        "national_v2": {"r": 1500, "rd": 80, "sigma": 0.06},
+        "national_v143": {"r": 1500, "rd": 80, "sigma": 0.06},
+        "national_v144": {"r": 1500, "rd": 80, "sigma": 0.06},
     }
     stats = {
-        "national_v1": {"games": 2, "win_rate": 0.5},
-        "national_v2": {"games": 2, "win_rate": 0.5},
+        "national_v143": {"games": 2, "win_rate": 0.5},
+        "national_v144": {"games": 2, "win_rate": 0.5},
     }
     h2h = {
-        "national_v1 vs national_v2": {
+        "national_v143 vs national_v144": {
             "games": 2,
             "a_wins": 1,
             "b_wins": 1,
@@ -78,7 +126,7 @@ def test_equal_primary_strength_is_broken_by_70_hand_chip_amount(tmp_path):
         match_history_path=history,
     )
 
-    assert rows[0]["name"] == "national_v1"
+    assert rows[0]["name"] == "national_v143"
     assert rows[0]["selection_score"] == rows[1]["selection_score"]
     assert rows[0]["secondary_net_chips_mean"] == 200.0
     assert rows[1]["secondary_net_chips_mean"] == -200.0
@@ -100,7 +148,7 @@ def test_corrupt_chip_samples_do_not_enter_secondary_strength(tmp_path):
     )])
 
     assert national_chip_metrics_from_match_history(
-        ["national_v1", "national_v2"],
+        ["national_v143", "national_v144"],
         history,
     ) == {}
 
@@ -111,10 +159,18 @@ def test_match_replay_persists_primary_and_secondary_contract(tmp_path, monkeypa
 
     replay_dir = tmp_path / "replays"
     results_dir = tmp_path / "results"
+    bots_dir = tmp_path / "bots"
     history = results_dir / "match_history.jsonl"
+    _write_strict_bot(bots_dir / "national_v143")
+    _write_strict_bot(bots_dir / "national_v144")
+    artifact_execution = _artifact_execution(
+        bots_dir / "national_v143",
+        bots_dir / "national_v144",
+    )
     monkeypatch.setattr(elo_daemon, "REPLAY_DIR", replay_dir)
     monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(elo_daemon, "MATCH_HISTORY_FILE", history)
+    monkeypatch.setattr(elo_daemon, "BOTS_DIR", bots_dir)
     monkeypatch.setattr(
         evaluation_data_identity,
         "current_evaluation_digest",
@@ -122,14 +178,22 @@ def test_match_replay_persists_primary_and_secondary_contract(tmp_path, monkeypa
     )
 
     name = elo_daemon.save_match_replay(
-        "national_v1",
-        "national_v2",
+        "national_v143",
+        "national_v144",
         1,
         1,
         0,
         [
-            {"hands_played": 70, "passed_compliance": True},
-            {"hands_played": 70, "passed_compliance": True},
+            {
+                "hands_played": 70,
+                "passed_compliance": True,
+                "artifact_execution": artifact_execution,
+            },
+            {
+                "hands_played": 70,
+                "passed_compliance": True,
+                "artifact_execution": artifact_execution,
+            },
         ],
         [500, -100],
         "70_hand_match",
@@ -148,12 +212,12 @@ def test_precommit_outcome_gate_rejects_tiny_0w_8l_collapse():
     from strength_order import precommit_outcome_blockers
 
     blockers, summary = precommit_outcome_blockers([{
-        "opponent": "national_v1",
+        "opponent": "national_v143",
         "wins": 0,
         "losses": 8,
         "draws": 0,
         "net_chips": [-1] * 8,
-    }], parent_label="national_v1")
+    }], parent_label="national_v143")
 
     assert summary["primary_match_score"] == 0.0
     assert {row["reason"] for row in blockers} == {
@@ -166,50 +230,50 @@ def test_precommit_outcome_gate_keeps_9w_7l_despite_huge_negative_chips():
     from strength_order import precommit_outcome_blockers
 
     blockers, summary = precommit_outcome_blockers([{
-        "opponent": "national_v1",
+        "opponent": "national_v143",
         "wins": 9,
         "losses": 7,
         "draws": 0,
         "net_chips": [1] * 9 + [-100_000] * 7,
-    }], parent_label="national_v1")
+    }], parent_label="national_v143")
 
     assert summary["primary_match_score"] == 9 / 16
     assert blockers == []
 
 
-def test_non_strength_nemesis_probe_cannot_change_primary_outcome_gate():
+def test_legacy_magic_reason_cannot_bypass_primary_outcome_gate():
     from strength_order import precommit_outcome_blockers
 
     blockers, summary = precommit_outcome_blockers([
         {
-            "opponent": "national_v1",
+            "opponent": "national_v143",
             "reason": "parent",
             "wins": 8,
             "losses": 0,
             "draws": 0,
         },
         {
-            "opponent": "national_v2",
+            "opponent": "national_v144",
             "reason": "nemesis_probe",
             "wins": 0,
             "losses": 100,
             "draws": 0,
         },
-    ], parent_label="national_v1")
+    ], parent_label="national_v143")
 
-    assert blockers == []
+    assert {row["reason"] for row in blockers} == {"aggregate_native_regression"}
     assert summary["wins"] == 8
-    assert summary["losses"] == 0
-    assert summary["samples"] == 8
+    assert summary["losses"] == 100
+    assert summary["samples"] == 108
 
 
 def test_draws_score_half_in_bot_stats():
     from evolution_infra import update_bot_stats
 
     stats = {}
-    update_bot_stats(stats, "national_v1", wins=1, losses=1, draws=2)
+    update_bot_stats(stats, "national_v143", wins=1, losses=1, draws=2)
 
-    assert stats["national_v1"] == {
+    assert stats["national_v143"] == {
         "wins": 1,
         "losses": 1,
         "draws": 2,
@@ -231,47 +295,16 @@ def test_history_reconstruction_rejects_unproven_incomplete_or_failed_rows(tmp_p
     ])
 
     rebuilt = reconstruct_h2h_from_match_history(
-        ["national_v1", "national_v2"],
+        ["national_v143", "national_v144"],
         history,
     )
-    assert rebuilt["national_v1 vs national_v2"] == {
+    assert rebuilt["national_v143 vs national_v144"] == {
         "games": 2,
         "a_wins": 1,
         "b_wins": 1,
         "draws": 0,
         "win_rate": 0.5,
     }
-
-
-def test_exploitability_probe_treats_all_draws_as_neutral(tmp_path, monkeypatch):
-    import exploitability_prober
-
-    monkeypatch.setattr(
-        exploitability_prober,
-        "PROBES",
-        [("draw_probe", "draw.py", "min_bet_defense")],
-    )
-    monkeypatch.setattr(
-        exploitability_prober,
-        "_run_probe_battle_import",
-        lambda *_args: (0, 0, 10, 10),
-    )
-    monkeypatch.setattr(exploitability_prober, "_select_adaptive_opponents", lambda *_: [])
-    monkeypatch.setattr(exploitability_prober, "RESULTS_DIR", tmp_path)
-    monkeypatch.setattr(
-        exploitability_prober,
-        "EXPLOITABILITY_FILE",
-        tmp_path / "exploitability.json",
-    )
-
-    result = exploitability_prober.run_exploitability_probes(
-        tmp_path / "national_v1" / "main.py",
-        num_hands=10,
-        workers=1,
-    )
-
-    assert result["min_bet_defense"]["win_rate"] == 0.5
-    assert result["min_bet_defense"]["exploitable"] is False
 
 
 def test_status_h2h_treats_all_draws_as_neutral(tmp_path, monkeypatch):
@@ -281,7 +314,7 @@ def test_status_h2h_treats_all_draws_as_neutral(tmp_path, monkeypatch):
 
     h2h_file = tmp_path / "head_to_head.json"
     h2h_file.write_text(json.dumps({
-        "national_v1 vs national_v2": {
+        "national_v143 vs national_v144": {
             "games": 10,
             "a_wins": 0,
             "b_wins": 0,
@@ -292,9 +325,9 @@ def test_status_h2h_treats_all_draws_as_neutral(tmp_path, monkeypatch):
     monkeypatch.setattr(tool_status, "_infra_path", lambda _name: h2h_file)
     monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: {})
 
-    wrapped = asyncio.run(tool_status.get_h2h.handler({"bot_name": "national_v1"}))
+    wrapped = asyncio.run(tool_status.get_h2h.handler({"bot_name": "national_v143"}))
     result = json.loads(wrapped["content"][0]["text"])
 
-    assert result["opponents"]["national_v2"]["win_rate"] == 0.5
-    assert result["opponents"]["national_v2"]["draws"] == 10
-    assert result["opponents"]["national_v2"]["tag"] == "neutral"
+    assert result["opponents"]["national_v144"]["win_rate"] == 0.5
+    assert result["opponents"]["national_v144"]["draws"] == 10
+    assert result["opponents"]["national_v144"]["tag"] == "neutral"

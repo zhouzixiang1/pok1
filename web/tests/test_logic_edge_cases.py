@@ -62,9 +62,24 @@ class TestTailNegativeRejected:
         resp = client.get("/api/logs/orchestrator/orchestrator_20260531_153855.txt?tail=-1")
         assert resp.status_code == 422
 
-    def test_zero_tail_accepted(self, client):
-        resp = client.get("/api/logs/generations/v30/master_io.txt?tail=0")
+    def test_zero_tail_accepted_for_current_epoch_generation(
+        self, client, tmp_path, monkeypatch
+    ):
+        from server.routes import _helpers, logs
+
+        log_dir = tmp_path / "v143" / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / "master_io.txt").write_text("current epoch\n", encoding="utf-8")
+        monkeypatch.setattr(logs, "RESULTS_DIR", tmp_path)
+        monkeypatch.setattr(
+            _helpers,
+            "strict_observable_generation_versions",
+            lambda *_args, **_kwargs: {143},
+        )
+
+        resp = client.get("/api/logs/generations/v143/master_io.txt?tail=0")
         assert resp.status_code == 200
+        assert resp.json()["content"] == "current epoch\n"
 
 
 # ── Bug Fix A4: _helpers.py — downsample ZeroDivisionError ──

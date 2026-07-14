@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -22,6 +24,35 @@ def test_cli_has_no_legacy_default_opponent():
     args = module.parse_args(["full", "bots/national_v143"])
 
     assert args.opponent is None
+
+
+def test_cli_exposes_only_durable_job_commands():
+    module = _module()
+
+    assert module.parse_args(["jobs-status"]).cmd == "jobs-status"
+    reconcile = module.parse_args(["reconcile-jobs", "--limit", "4"])
+    assert reconcile.cmd == "reconcile-jobs"
+    assert reconcile.limit == 4
+    with pytest.raises(SystemExit):
+        module.parse_args(["queue-status"])
+    with pytest.raises(SystemExit):
+        module.parse_args(["process-queue"])
+
+
+def test_cli_help_describes_start_or_poll_durable_jobs(capsys):
+    module = _module()
+
+    with pytest.raises(SystemExit) as exc_info:
+        module.parse_args(["--help"])
+    assert exc_info.value.code == 0
+    output = " ".join(capsys.readouterr().out.split()).replace("- ", "-")
+    assert "Start or poll a durable short official quality-gate smoke job" in output
+    assert "Start or poll a durable short official protocol-compliance job" in output
+    assert "Start or poll a durable manual 5+3, 70-hand" in output
+    assert "jobs-status" in output
+    assert "reconcile-jobs" in output
+    assert "queue-status" not in output
+    assert "process-queue" not in output
 
 
 def test_cli_fails_without_eligible_opponent(monkeypatch, capsys):
@@ -227,35 +258,33 @@ def test_cli_returns_nonzero_for_terminal_job_infrastructure_failure(monkeypatch
     assert module.main(["full", "bots/national_v143"]) == 2
 
 
-def test_cli_bootstrap_full_requires_explicit_one_time_acknowledgement(monkeypatch, capsys):
+def test_cli_first_strict_requires_explicit_one_time_acknowledgement(monkeypatch, capsys):
     module = _module()
     monkeypatch.setattr(
         module,
-        "select_signed_v5_ledger_bootstrap_root",
+        "select_first_strict_control",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("bootstrap root must not be selected before acknowledgement")
+            AssertionError("control must not be selected before acknowledgement")
         ),
     )
 
     exit_code = module.main([
-        "bootstrap-full",
+        "bootstrap-first-strict",
         "bots/national_v143",
-        "--root-id",
-        "national-v141-official-full-v5-signed-ledger-root",
     ])
 
     assert exit_code == 2
     assert "bootstrap-acknowledgement-required" in capsys.readouterr().out
 
 
-def test_cli_bootstrap_full_binds_the_explicit_root_to_full_spec(monkeypatch):
+def test_cli_first_strict_binds_current_control_to_full_spec(monkeypatch):
     module = _module()
-    root_id = "national-v141-official-full-v5-signed-ledger-root"
+    control_id = "first_strict_control_v1"
     selection = {
         "selected": True,
-        "root_id": root_id,
+        "bootstrap_control_id": control_id,
         "candidate": "bots/national_v143",
-        "opponent": {"path": "bots/national_v141", "eligible": True},
+        "opponent": {"path": "controls/first_strict_control_v1", "eligible": True},
     }
     seen = {}
     monkeypatch.setattr(
@@ -265,8 +294,8 @@ def test_cli_bootstrap_full_binds_the_explicit_root_to_full_spec(monkeypatch):
     )
     monkeypatch.setattr(
         module,
-        "select_signed_v5_ledger_bootstrap_root",
-        lambda root, *, candidate_path: seen.update({"root": root, "candidate": candidate_path}) or selection,
+        "select_first_strict_control",
+        lambda control, candidate: seen.update({"control": control, "candidate": candidate}) or selection,
     )
     monkeypatch.setattr(
         module,
@@ -298,14 +327,14 @@ def test_cli_bootstrap_full_binds_the_explicit_root_to_full_spec(monkeypatch):
     )
 
     exit_code = module.main([
-        "bootstrap-full",
+        "bootstrap-first-strict",
         "bots/national_v143",
-        "--root-id",
-        root_id,
-        "--acknowledge-one-time-ledger-bootstrap",
+        "--control-id",
+        control_id,
+        "--acknowledge-one-time-first-strict-control",
     ])
 
     assert exit_code == 2
-    assert seen["root"] == root_id
+    assert seen["control"] == control_id
     assert seen["mode"] == "full"
-    assert seen["bootstrap_root_id"] == root_id
+    assert seen["bootstrap_control_id"] == control_id

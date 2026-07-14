@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Migrate the runtime reaped ledger into durable annotated Git tags."""
+"""One-time identity-only migration of a retired reaped ledger into Git tags.
+
+This tool can preserve tombstone/high-water identity only. It never migrates a
+bot, rating, H2H row, replay, experience, certificate role, or policy evidence
+into national_tcp_policy_v1.
+"""
 
 from __future__ import annotations
 
@@ -24,13 +29,19 @@ from national_epoch_registry import (  # noqa: E402
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Migrate national reaped state to annotated Git tags (dry-run by default)."
+        description=(
+            "Identity-only migration of retired reaped state to annotated Git "
+            "tombstone/high-water tags (dry-run by default; no bot/evidence migration)"
+        )
     )
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
     parser.add_argument(
         "--ledger",
         type=Path,
-        help="legacy JSONL path (default: <repo>/web/core/results/reaped_bots.jsonl)",
+        help=(
+            "retired JSONL identity source (default: "
+            "<repo>/web/core/results/reaped_bots.jsonl)"
+        ),
     )
     parser.add_argument("--apply", action="store_true", help="atomically create planned tags")
     parser.add_argument("--push", action="store_true", help="explicitly push registry tags")

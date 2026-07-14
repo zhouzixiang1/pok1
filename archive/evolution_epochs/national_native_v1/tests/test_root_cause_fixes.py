@@ -1,0 +1,737 @@
+"""Integration tests for P0-P6 root cause fixes.
+
+P0: Idempotency guards on MCP pipeline tools (tool_gates.py)
+P1: Broadened SDK exception catch (llm_query.py)
+P2: State machine transition guards (evolution_infra.py)
+P3: AST-based dead code detection (code_verification.py)
+P4: Exhausted direction enforcement in plan validation (tool_planning.py)
+P5: replay_spotlight reads my_cards instead of history (replay_spotlight.py)
+P6: Fix injection logging cleanup (fix_injection.py)
+"""
+
+import inspect
+import json
+import os
+import tempfile
+from pathlib import Path
+
+import pytest
+
+
+# ── P0: Idempotency Guards ──────────────────────────────────────────
+
+class TestP0IdempotencyGuards:
+    """P0: Pipeline tools return cached results on repeat calls."""
+
+    def _read_tool_gates_source(self):
+        p = Path(__file__).resolve().parent.parent / "core" / "tool_gates.py"
+        return p.read_text()
+
+    def test_quality_gates_has_guard(self):
+        source = self._read_tool_gates_source()
+        assert "idempotent_cache" in source
+
+    def test_review_has_guard(self):
+        source = self._read_tool_gates_source()
+        # After refactoring, guards are consolidated in _idempotency_check helper;
+        # verify run_review calls the helper with gate_name="review"
+        assert '_idempotency_check(' in source
+        assert 'gate_name="review"' in source
+
+    def test_critic_has_guard(self):
+        source = self._read_tool_gates_source()
+        # After refactoring, guards are consolidated in _idempotency_check helper;
+        # verify run_critic calls the helper with gate_name="critic"
+        assert '_idempotency_check(' in source
+        assert 'gate_name="critic"' in source
+
+
+# ── P1: SDK Exception Handling ───────────────────────────────────────
+
+class TestP1BroadExceptionCatch:
+    """P1: ClaudeSDKError base class catches all SDK errors."""
+
+    def test_imports_base_class(self):
+        from core import llm_query
+        source = inspect.getsource(llm_query)
+        assert "ClaudeSDKError" in source
+
+    def test_process_stream_uses_base(self):
+        from core.llm_query import _process_stream
+        source = inspect.getsource(_process_stream)
+        assert "ClaudeSDKError" in source
+
+    def test_cancelled_still_propagates(self):
+        from core.llm_query import _process_stream
+        source = inspect.getsource(_process_stream)
+        # CancelledError must still be re-raised
+        assert "CancelledError" in source
+        assert "raise" in source
+
+
+# ── P2: Stage Transition Guards ─────────────────────────────────────
+
+class TestP2StageTransition:
+    """P2: State transition validation in evolution_infra.py."""
+
+    def test_forward_transitions_allowed(self):
+        from core.evolution_infra import validate_stage_transition, STAGE_ORDER
+        for i in range(len(STAGE_ORDER) - 1):
+            current, proposed = STAGE_ORDER[i], STAGE_ORDER[i + 1]
+            ok, reason = validate_stage_transition(current, proposed)
+            if current == "official_bootstrap_required":
+                assert ok is False
+                assert reason == "operator_bootstrap_pause_is_durable"
+                continue
+            if current == "publishing":
+                assert ok is False
+                assert reason == "publication_transaction_is_durable"
+                continue
+            if (current, proposed) in {
+                ("prepared", "crossover_running"),
+                ("crossover_running", "direction_audited"),
+            }:
+                assert ok is False
+                assert "early_generation_transition_not_allowed" in reason
+                continue
+            assert ok, f"Forward {current} -> {proposed} should be valid: {reason}"
+
+    def test_backward_transition_blocked(self):
+        from core.evolution_infra import validate_stage_transition
+        ok, reason = validate_stage_transition("reviewed", "quality_passed")
+        assert not ok
+        assert "backward" in reason
+
+    def test_retry_to_master_planned_allowed(self):
+        from core.evolution_infra import validate_stage_transition
+        for src in ["workers_done", "quality_passed", "reviewed", "critic_checked", "precommit_failed"]:
+            ok, reason = validate_stage_transition(src, "master_planned")
+            assert ok, f"{src} -> master_planned should be valid"
+            assert "retry" in reason
+
+    def test_review_rework_to_workers_done_allowed(self):
+        from core.evolution_infra import validate_stage_transition
+        ok, reason = validate_stage_transition("quality_passed", "workers_done")
+        assert ok
+        assert reason == "review_rework_done"
+
+    def test_timeout_override_allowed(self):
+        from core.evolution_infra import validate_stage_transition
+        for src in ["reviewed", "critic_checked", "verified"]:
+            ok, _ = validate_stage_transition(src, "timed_out")
+            assert ok
+
+    def test_none_to_any_allowed(self):
+        from core.evolution_infra import validate_stage_transition
+        ok, _ = validate_stage_transition(None, "reviewed")
+        assert ok
+
+    def test_same_stage_allowed(self):
+        from core.evolution_infra import validate_stage_transition
+        ok, _ = validate_stage_transition("reviewed", "reviewed")
+        assert ok
+
+    def test_late_stage_cannot_forge_fresh_prepared_baseline(self):
+        from core.evolution_infra import validate_stage_transition
+        ok, reason = validate_stage_transition("critic_checked", "prepared")
+        assert not ok
+        assert "early_generation_transition_not_allowed" in reason
+
+    def test_prepare_owners_can_complete_prepared_baseline(self):
+        from core.evolution_infra import validate_stage_transition
+
+        for stage in ("preparing", "crossover_running"):
+            ok, reason = validate_stage_transition(stage, "prepared")
+            assert ok
+            assert reason == "prepare_baseline_completed"
+
+    def test_timed_out_generation_can_restart_materialization_only(self):
+        from core.evolution_infra import validate_stage_transition
+
+        ok, reason = validate_stage_transition("timed_out", "preparing")
+        assert ok
+        assert reason == "prepare_started"
+        prepared_ok, _ = validate_stage_transition("timed_out", "prepared")
+        assert not prepared_ok
+
+    def test_infra_timeout_only_recovers_to_precommit_owner_stage(self):
+        from core.evolution_infra import validate_stage_transition
+
+        ok, reason = validate_stage_transition("infra_timed_out", "critic_checked")
+        assert ok
+        assert reason == "infra_precommit_retry_recovery"
+        preparing_ok, _ = validate_stage_transition("infra_timed_out", "preparing")
+        assert not preparing_ok
+
+
+# ── P3: AST Dead Code Detection ─────────────────────────────────────
+
+class TestP3ASTDeadCode:
+    """P3: AST-based dead code detection in code_verification.py."""
+
+    def test_detects_empty_function_stub(self, tmp_path):
+        from core.code_verification import _detect_dead_code_ast
+        f = tmp_path / "bot.py"
+        f.write_text("def placeholder():\n    pass\n")
+        errors = _detect_dead_code_ast(str(tmp_path))
+        assert len(errors) == 1
+        assert "placeholder" in errors[0]
+
+    def test_no_false_positive_on_dunder(self, tmp_path):
+        from core.code_verification import _detect_dead_code_ast
+        f = tmp_path / "bot.py"
+        f.write_text("class Foo:\n    def __init__(self):\n        pass\n")
+        errors = _detect_dead_code_ast(str(tmp_path))
+        assert len(errors) == 0
+
+    def test_valid_code_no_errors(self, tmp_path):
+        from core.code_verification import _detect_dead_code_ast
+        f = tmp_path / "bot.py"
+        f.write_text("def compute(x):\n    return x + 1\n")
+        errors = _detect_dead_code_ast(str(tmp_path))
+        assert len(errors) == 0
+
+    def test_detects_unreachable_after_return(self, tmp_path):
+        from core.code_verification import _detect_dead_code_ast
+        f = tmp_path / "bot.py"
+        f.write_text("def early_exit():\n    return 42\n    x = 1\n")
+        errors = _detect_dead_code_ast(str(tmp_path))
+        assert any("unreachable" in e for e in errors)
+
+    def test_new_function_without_call_is_reachability_warning(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "postflop.py").write_text("def existing():\n    return 1\n")
+        (child / "postflop.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _new_helper():\n    return 2\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["postflop.py"]
+        )
+        assert len(warnings) == 1
+        assert "_new_helper" in warnings[0]
+
+    def test_new_self_test_helper_without_main_call_is_reachability_warning(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "opponent.py").write_text("def existing():\n    return 1\n")
+        (child / "opponent.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _self_test_bb_defense_pressure():\n"
+            "    assert existing() == 1\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["opponent.py"]
+        )
+        assert len(warnings) == 1
+        assert "_self_test_bb_defense_pressure" in warnings[0]
+
+    def test_new_self_test_helper_called_from_main_is_reachable(self, tmp_path):
+        from core import code_verification
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "postflop.py").write_text("def existing():\n    return 1\n")
+        (child / "postflop.py").write_text(
+            "def existing():\n"
+            "    return 1\n\n"
+            "def _self_test_live_defaults():\n"
+            "    assert existing() == 1\n\n"
+            "if __name__ == '__main__':\n"
+            "    # self-test\n"
+            "    _self_test_live_defaults()\n"
+        )
+        warnings = code_verification.detect_new_function_reachability_warnings(
+            source, child, ["postflop.py"]
+        )
+        assert warnings == []
+        assert code_verification.run_bot_embedded_self_tests(child) == []
+
+    def test_verify_helper_is_exempt_from_reachability_warning(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "state.py").write_text("def existing():\n    return 1\n")
+        (child / "state.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _verify_preflop_shove_defense():\n"
+            "    assert existing() == 1\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["state.py"]
+        )
+        assert warnings == []
+
+    def test_new_function_with_dispatch_call_is_reachable(self, tmp_path):
+        from core.code_verification import detect_new_function_reachability_warnings
+        source = tmp_path / "source"
+        child = tmp_path / "child"
+        source.mkdir()
+        child.mkdir()
+        (source / "postflop.py").write_text("def existing():\n    return 1\n")
+        (source / "strategy.py").write_text("def choose():\n    return 0\n")
+        (child / "postflop.py").write_text(
+            "def existing():\n    return 1\n\n"
+            "def _new_helper():\n    return 2\n"
+        )
+        (child / "strategy.py").write_text(
+            "from postflop import _new_helper\n\n"
+            "def choose():\n    return _new_helper()\n"
+        )
+        warnings = detect_new_function_reachability_warnings(
+            source, child, ["postflop.py", "strategy.py"]
+        )
+        assert warnings == []
+
+
+# ── P4: Exhausted Direction Enforcement ─────────────────────────────
+
+class TestP4ExhaustedDirection:
+    """P4: _validate_master_plan blocks plans matching EXHAUSTED directions."""
+
+    def test_function_exists(self):
+        from core.tool_planning import _validate_master_plan
+        assert callable(_validate_master_plan)
+
+    def test_exhausted_check_in_source(self):
+        from core.tool_planning import _exhausted_plan_violations, _validate_master_plan
+        source = inspect.getsource(_validate_master_plan)
+        helper_source = inspect.getsource(_exhausted_plan_violations)
+        assert "_exhausted_plan_violations" in source
+        assert "_extract_exhausted_keywords" in helper_source
+        assert "_fuzzy_match_exhausted" in helper_source
+
+
+# ── P5: Replay Spotlight Card Fix ───────────────────────────────────
+
+class TestP5ReplayCards:
+    """P5: replay_spotlight reads my_cards instead of history."""
+
+    def test_uses_my_cards_field(self):
+        from core.replay_spotlight import _extract_hand_swing
+        source = inspect.getsource(_extract_hand_swing)
+        assert "my_cards" in source
+
+    def test_no_history_slice_as_cards(self):
+        from core.replay_spotlight import _extract_hand_swing
+        source = inspect.getsource(_extract_hand_swing)
+        # The old bug was hist[:2] treating action dicts as cards
+        assert "hist[:2]" not in source
+
+
+# ── P5b: replay_spotlight per-hand granularity ──────────────────────
+
+# A games[i] entry is a 70-hand MIRROR HALF-GAME, not a single hand. The
+# fixture below mirrors the EXACT real replay schema (verified against
+# web/core/results/match_replay/*.json): request entries carry
+# display.matchdata.{hand,total_win_chips}, display.{public_cards,last_action,pot}
+# and content[str(player_id)]["my_cards"]; response entries have output=None.
+#
+# Fixture: 3 hands. hand0 checks down (delta 0), hand1 bot0 raises all-in
+# (delta +500), hand2 bot0 folds preflop (delta -50, LAST hand).
+
+def _p5_req(hand, twc, content_key, my_cards, public_cards, last_action, pot):
+    return {"output": {
+        "command": "req",
+        "content": {content_key: {
+            "my_cards": my_cards, "public_cards": public_cards,
+            "hand": hand, "total_win_chips": twc,
+        }},
+        "display": {
+            "matchdata": {"hand": hand, "max_hand": 3,
+                          "total_win_chips": twc, "total_win_games": [0, 0]},
+            "public_cards": public_cards,
+            "last_action": last_action,
+            "pot": pot,
+        },
+    }}
+
+
+def _p5_resp(pid):
+    return {str(pid): {"response": 0, "verdict": "ok"}, "output": None}
+
+
+def _p5_build_half_game():
+    logs0 = [
+        _p5_req(0, [0, 0], "1", [10, 11], [], None, 150),
+        _p5_resp(1),
+        _p5_req(0, [0, 0], "0", [20, 21], [],
+                {"player_id": 1, "action": 0, "action_type": "call"}, 200),
+        _p5_resp(0),
+        _p5_req(0, [0, 0], "0", [20, 21], [1, 2, 3],
+                {"player_id": 0, "action": 0, "action_type": "check"}, 200),
+        _p5_resp(0),
+        _p5_req(0, [0, 0], "0", [20, 21], [1, 2, 3, 4],
+                {"player_id": 1, "action": 0, "action_type": "check"}, 200),
+        _p5_resp(0),
+        _p5_req(0, [0, 0], "0", [20, 21], [1, 2, 3, 4, 5],
+                {"player_id": 0, "action": 0, "action_type": "check"}, 200),
+    ]
+    logs1 = [
+        _p5_req(1, [0.0, 0.0], "0", [40, 41], [],
+                {"player_id": 0, "action": 19999, "action_type": "raise"}, 200),
+        _p5_resp(0),
+        _p5_req(1, [0.0, 0.0], "1", [30, 31], [],
+                {"player_id": 1, "action": -2, "action_type": "allin"}, 40000),
+        _p5_resp(1),
+    ]
+    logs2 = [
+        _p5_req(2, [500.0, -500.0], "0", [50, 51], [],
+                {"player_id": 1, "action": 0, "action_type": "call"}, 200),
+        _p5_resp(0),
+        _p5_req(2, [500.0, -500.0], "0", None, [],
+                {"player_id": 0, "action": -1, "action_type": "fold"}, 200),
+        # trailing summary entry (twc updated to final cumulative)
+        _p5_req(2, [450.0, -450.0], "0", None, [], None, 0),
+    ]
+    return {
+        "game": 0, "mirror": False, "winner": 0,
+        "bot0_chips": 450.0, "bot1_chips": -450.0,
+        "logs": logs0 + logs1 + logs2,
+    }
+
+
+class TestP5bReplayPerHand:
+    """P5b: replay_spotlight splits each 70-hand half-game into real hands."""
+
+    def test_iter_hands_splits_per_hand_count(self):
+        from core.replay_spotlight import _iter_hands
+        game = _p5_build_half_game()
+        hands = list(_iter_hands(game, 0, 1))
+        # 3 distinct hands, one per matchdata.hand value — NOT a single
+        # fictional half-game entry.
+        assert len(hands) == 3
+        assert {h["hand_num"] for h in hands} == {0, 1, 2}
+
+    def test_iter_hands_final_hand_delta_uses_bot_chips(self):
+        from core.replay_spotlight import _iter_hands
+        game = _p5_build_half_game()
+        hands = list(_iter_hands(game, 0, 1))
+        last = hands[-1]
+        # Last hand has no successor: delta must use bot0_chips (450) minus
+        # the start-of-hand cumulative (500) = -50, NOT the full-game 450.
+        assert last["hand_num"] == 2
+        assert last["chip_delta"] == -50.0
+
+    def test_iter_hands_per_hand_board_isolation(self):
+        from core.replay_spotlight import _iter_hands
+        game = _p5_build_half_game()
+        hands = {h["hand_num"]: h for h in _iter_hands(game, 0, 1)}
+        # Each hand's board/cards are isolated to that hand, not the
+        # max-len board across all 70 hands of the half-game.
+        assert hands[0]["public_cards"] == [1, 2, 3, 4, 5]
+        assert hands[1]["public_cards"] == []
+        assert hands[0]["bot_cards"] == [20, 21]
+        assert hands[1]["bot_cards"] == [40, 41]
+
+    def test_iter_hands_chip_delta_is_per_hand_not_cumulative(self):
+        from core.replay_spotlight import _iter_hands
+        game = _p5_build_half_game()
+        hands = {h["hand_num"]: h for h in _iter_hands(game, 0, 1)}
+        # Per-hand delta is the single-hand swing, not the 70-hand cumulative
+        # (the old bug returned game["bot0_chips"] = 450 as the swing).
+        assert hands[0]["chip_delta"] == 0
+        assert hands[1]["chip_delta"] == 500.0
+        assert hands[1]["swing"] == 500.0
+        assert hands[1]["swing"] != game["bot0_chips"]
+
+    def test_extract_hand_swing_wraps_iter_hands(self):
+        from core.replay_spotlight import _extract_hand_swing
+        game = _p5_build_half_game()
+        summary = _extract_hand_swing(game, 0, 1)
+        # Thin wrapper returns the largest single-hand swing (hand 1, +500),
+        # not the half-game cumulative (450).
+        assert summary is not None
+        assert summary["hand_num"] == 1
+        assert summary["swing"] == 500.0
+
+    def test_find_critical_hands_ranks_single_hand_swing(self):
+        from core.replay_spotlight import find_critical_hands
+        replay = {"bot0": "test_bot", "bot1": "opp",
+                  "games": [_p5_build_half_game()]}
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "r.json"), "w") as f:
+                json.dump(replay, f)
+            out = find_critical_hands("test_bot", tmp, max_hands=5)
+        assert isinstance(out, str)
+        assert "H1" in out            # biggest swing hand appears
+        assert "delta=+500" in out     # per-hand delta, not cumulative
+        # hand 0 (delta 0) is excluded; full-game 450 is never reported as a swing
+        assert "H0" not in out
+
+    def test_native_spotlight_ranks_largest_hand_and_uses_decision_pot(self):
+        from core.replay_spotlight import find_critical_hands
+
+        replay = {
+            "bot0": "national_v_source",
+            "bot1": "national_v_opp",
+            "games": [{
+                "game": 4,
+                "execution_mode": "native_tcp",
+                "hand_records": [
+                    {
+                        "hand": 1,
+                        "starting_pot": 150,
+                        "hole_cards": [["As", "Kd"], ["Qc", "Jh"]],
+                        "board": ["2s", "7d", "Tc"],
+                        "actions": [{
+                            "player_idx": 0,
+                            "stage": "flop",
+                            "action": "raise",
+                            "amount": 600,
+                            "pot_before": 400,
+                            "pot_after": 900,
+                        }],
+                        "settlement": {
+                            "earnings": [750, -750],
+                            "pot": 900,
+                            "is_showdown": False,
+                            "reason": "fold",
+                        },
+                    },
+                    {
+                        "hand": 2,
+                        "starting_pot": 150,
+                        "hole_cards": [["9s", "9d"], ["Ac", "Kh"]],
+                        "board": ["2c", "5h", "Ts", "Jd", "Qc"],
+                        "actions": [{
+                            "player_idx": 0,
+                            "stage": "river",
+                            "action": "call",
+                            "amount": 2400,
+                            "pot_before": 2400,
+                            "pot_after": 5000,
+                        }],
+                        "settlement": {
+                            "earnings": [-2500, 2500],
+                            "pot": 5000,
+                            "is_showdown": True,
+                        },
+                    },
+                ],
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "native.json"), "w") as handle:
+                json.dump(replay, handle)
+            out = find_critical_hands(
+                "national_v_source",
+                tmp,
+                max_hands=1,
+            )
+
+        assert "G4H2" in out
+        assert "G4H1" not in out
+        assert "delta=-2500" in out
+        assert "pot=2400->5000" in out
+        assert "pot=150->5000" not in out
+
+    def test_find_critical_hands_real_replay(self):
+        # Integration test against the real match_replay directory. Skips
+        # gracefully when the daemon has rotated all replays away.
+        from core.replay_spotlight import _iter_hands, find_critical_hands
+        try:
+            from core.evolution_infra import RESULTS_DIR
+        except Exception:
+            pytest.skip("evolution_infra not importable")
+        replays_dir = str(RESULTS_DIR / "match_replay")
+        files = sorted(
+            [p for p in __import__("glob").glob(os.path.join(replays_dir, "*.json"))],
+            key=os.path.getmtime, reverse=True,
+        )
+        if not files:
+            pytest.skip("no real replay files available")
+
+        replay = None
+        recent_files = files[:min(20, len(files))]
+        for path in recent_files:
+            try:
+                with open(path) as f:
+                    candidate = json.load(f)
+            except json.JSONDecodeError:
+                continue
+            games = candidate.get("games", [])
+            if not games:
+                continue
+            if any(isinstance(g, dict) and g.get("logs") for g in games):
+                replay = candidate
+                break
+        if replay is None:
+            pytest.skip("no Botzone-style replay files with per-hand logs available")
+
+        bot_name = replay.get("bot0") or replay.get("bot1")
+        games = replay.get("games", [])
+        assert games, "real replay has no games"
+        # Each half-game must split into many real hands (70 per game),
+        # proving the granularity fix on real data.
+        total_hands = sum(len(list(_iter_hands(g, 0, 1))) for g in games)
+        assert total_hands > len(games), (
+            f"expected per-hand split, got {total_hands} hands / {len(games)} games"
+        )
+        out = find_critical_hands(
+            bot_name, replays_dir, max_hands=3, recent_n_files=min(20, len(files))
+        )
+        assert isinstance(out, str)
+        # Accept either a populated summary or the empty-result message (a thin
+        # replay with no positive swings for the chosen bot yields the latter).
+        assert "Critical hands" in out or "No hands with chip swings" in out
+
+
+# ── P6: Fix Injection Logging ───────────────────────────────────────
+
+class TestP6FixInjection:
+    """P6: Fix injection logging uses appropriate severity."""
+
+    def test_bot_002b_inactive(self):
+        from core.fix_injection import MANDATORY_FIXES
+        bot002b = [f for f in MANDATORY_FIXES if f.fix_id == "BOT-002b"]
+        assert len(bot002b) == 1
+        assert bot002b[0].active is False
+
+    def test_severity_logic(self):
+        from core.fix_injection import log_fix_application
+        source = inspect.getsource(log_fix_application)
+        # Changed from "warn" if skipped and not applied to "warn" if skipped and applied
+        assert "skipped and applied" in source
+
+    def test_active_fixes_still_functional(self):
+        from core.fix_injection import MANDATORY_FIXES
+        active_ids = [f.fix_id for f in MANDATORY_FIXES if f.active]
+        assert "BOT-001a" in active_ids
+        assert "BOT-002a" in active_ids
+        assert "BOT-004" in active_ids
+
+
+# ── Exploitability probe: observability + reliability gate ──────────
+#
+# Historical bug: the probe block in generation_scheduler.post_generation_cleanup
+# silently never ran for 8 generations (zero pipeline.exploitability_probe
+# events). Root cause: (1) a bare `if is_shutting_down: return` swallowed the
+# block with no log; (2) the probe call had no timeout, so a nested
+# ProcessPoolExecutor hang froze the loop with no trace. The fix makes every
+# exit observable, bounds the call with asyncio.wait_for, and forces workers=1.
+# The consumer (tool_planning) gains a num_hands reliability gate + basename
+# identity match + logged read failures. These tests are mechanical canaries:
+# if any guard is removed, the 8-generation blackout can return silently.
+
+
+class TestExploitabilityProbeFix:
+    """Probe block: timeout guard, serial execution, fully-observable exits."""
+
+    def _read_scheduler_source(self):
+        p = Path(__file__).resolve().parent.parent / "core" / "generation_scheduler.py"
+        return p.read_text()
+
+    def _read_planning_source(self):
+        p = Path(__file__).resolve().parent.parent / "core" / "tool_planning.py"
+        return p.read_text()
+
+    def test_probe_uses_background_thread(self):
+        # Fire-and-forget: the probe runs on a background daemon thread so
+        # post_generation_cleanup returns immediately (never blocks the loop for
+        # ~15min). workers=1 still forces the serial branch (no nested fork).
+        src = self._read_scheduler_source()
+        assert "threading.Thread(" in src
+        assert "daemon=True" in src
+        assert "workers=1" in src
+
+    def test_probe_does_not_block_loop(self):
+        # The probe must NOT await run_exploitability_probes_async (which would
+        # block the orchestrator loop for ~920s under load). It calls the sync
+        # run_exploitability_probes on a background thread instead.
+        src = self._read_scheduler_source()
+        assert "run_exploitability_probes_async" not in src
+        assert "run_exploitability_probes(" in src
+
+    def test_probe_uses_workers_one(self):
+        # workers=1 forces the serial branch, avoiding a nested ProcessPoolExecutor
+        # forked inside the asyncio executor thread (the deadlock root cause).
+        src = self._read_scheduler_source()
+        assert "workers=1" in src
+
+    def test_probe_writes_starting_event(self):
+        # Entry nail: a 'probe starting' event every successful generation. Its
+        # absence proves the block was never reached.
+        src = self._read_scheduler_source()
+        assert "probe starting" in src
+
+    def test_probe_writes_failure_event(self):
+        src = self._read_scheduler_source()
+        assert "pipeline.exploitability_probe_failed" in src
+
+    def test_probe_writes_skip_event(self):
+        src = self._read_scheduler_source()
+        assert "pipeline.exploitability_probe_skipped" in src
+
+    def test_probe_has_single_flight_guard(self):
+        # Overlapping cleanups (fast crossover gens) must not pile up probe
+        # threads or race on exploitability.json. The _probe_running Event
+        # skips a new probe while the previous one is still running.
+        src = self._read_scheduler_source()
+        assert "_probe_running" in src
+        assert "_probe_running.is_set()" in src
+        assert "single_flight_skip" in src
+
+    def test_probe_clears_single_flight_on_exit(self):
+        # The _probe_running Event MUST be cleared in a finally block, so a
+        # failed/exception probe doesn't permanently block all future probes.
+        src = self._read_scheduler_source()
+        assert "_probe_running.clear()" in src
+        assert "finally:" in src
+
+    def test_probe_requires_committed_tag_before_bot_dir_probe(self):
+        # post_generation_cleanup also runs after abandoned/unclean cycles. A
+        # generated candidate directory is not authoritative; only the annotated
+        # bot-vN tag proves commit_bot completed and the probe data is safe for
+        # the next generation to consume.
+        src = self._read_scheduler_source()
+        probe_idx = src.find("Exploitability probe scheduled for")
+        tag_idx = src.find("git_has_tag(ctx.next_v)", probe_idx)
+        bot_missing_idx = src.find("bot_main_missing", probe_idx)
+        start_idx = src.find("probe starting", probe_idx)
+        assert probe_idx != -1, "probe entry nail missing"
+        assert tag_idx != -1, "probe must gate on bot-vN tag"
+        assert bot_missing_idx != -1, "committed-but-broken bot dir warning missing"
+        assert start_idx != -1, "probe start event missing"
+        assert tag_idx < bot_missing_idx
+        assert tag_idx < start_idx
+        assert "uncommitted_or_abandoned" in src
+
+    def test_probe_shutdown_is_observable(self):
+        # The old bug was a bare `if is_shutting_down: return`. The fix must log
+        # before returning. Locate the probe block and assert the shutdown branch
+        # emits a log_system_event (never silent).
+        src = self._read_scheduler_source()
+        idx = src.find("Exploitability probe scheduled for")
+        assert idx != -1, "probe entry nail missing"
+        block = src[idx:idx + 1400]
+        assert "is_shutting_down" in block
+        assert "log_system_event" in block  # observed, not silent
+
+    def test_consumer_has_reliability_gate(self):
+        # A 2-hand diagnostic run yields near-random win_rates and must NOT be
+        # injected as real weaknesses. The consumer gates on num_hands.
+        src = self._read_planning_source()
+        assert "_MIN_RELIABLE_PROBE_GAMES" in src
+        assert "unreliable" in src
+
+    def test_consumer_uses_basename_match(self):
+        # Substring match (claude_v80 in claude_v800) would mis-fire. The fix
+        # compares the cached bot_path's parent dir name exactly.
+        src = self._read_planning_source()
+        assert "parent.name" in src
+
+    def test_consumer_logs_read_failure(self):
+        # The old bare `except Exception: pass` swallowed parse/read failures.
+        src = self._read_planning_source()
+        assert "Exploitability probe read failed" in src

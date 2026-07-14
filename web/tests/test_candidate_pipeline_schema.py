@@ -65,14 +65,14 @@ def test_candidate_store_records_artifacts_and_children(tmp_path, monkeypatch):
         source_v=249,
         parent_ids=["national_v249"],
         skill_layers=["spr"],
-        changed_files=["postflop.py"],
+        changed_files=["policy.py"],
         artifact_refs=[ArtifactRef(kind="report", path="reports/v250.json", label="quality")],
     )
 
     summary = get_candidate_summary("national_v250_from_national_v249", path=ledger)
     assert summary is not None
     assert summary["skill_layers"] == ["spr"]
-    assert summary["changed_files"] == ["postflop.py"]
+    assert summary["changed_files"] == ["policy.py"]
     assert count_candidate_children("national_v249", path=ledger) == 1
     artifacts = read_candidate_artifacts("national_v250_from_national_v249", path=ledger)
     assert artifacts[0]["kind"] == "report"

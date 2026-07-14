@@ -14,11 +14,11 @@ class _UI:
 
 def _write_source(root):
     root.mkdir(parents=True, exist_ok=True)
-    (root / "strategy.py").write_text(
-        "def get_action(state):\n"
-        "    return choose_action(state)\n\n"
-        "def choose_action(state):\n"
-        "    return 'check'\n",
+    (root / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n",
         encoding="utf-8",
     )
 
@@ -31,10 +31,16 @@ def _proposal(direction: str, *, shared_claims: bool = False) -> str:
         "counterfactual": f"{label} changes one input while holding cards, seed, and legality fixed.",
         "measurement": f"{label} requires a positive/control decision test and paired native result.",
         "why_not_threshold_tuning": f"{label} changes state flow and a reachable consumer, not one number.",
-        "expected_diff": f"{label} changes get_action through the existing choose_action call edge.",
-        "target_files": ["strategy.py"],
-        "source_symbols": ["strategy.py:get_action", "strategy.py:choose_action"],
-        "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "expected_diff": f"{label} changes get_baseline_decision through the existing _choose_intent call edge.",
+        "target_files": ["policy.py"],
+        "source_symbols": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
+        "reachable_chain": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
         "falsifier": {
             "test_name": f"test_{label}_decision_path",
             "control": "Run the frozen parent on the same state, cards, and deterministic seed.",
@@ -42,8 +48,8 @@ def _proposal(direction: str, *, shared_claims: bool = False) -> str:
             "expected_observation": "The target action changes while the paired control remains unchanged.",
         },
         "evidence_refs": [
-            "source:strategy.py:get_action",
-            "source:strategy.py:choose_action",
+            "source:policy.py:get_baseline_decision",
+            "source:policy.py:_choose_intent",
         ],
         "risks": "The mechanism may overfit sparse evidence and must remain bounded.",
     }
@@ -74,7 +80,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
 ):
     import agent_master
 
-    source_dir = tmp_path / "national_v142"
+    source_dir = tmp_path / "national_v143"
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
     snapshot_dir.mkdir()
@@ -104,7 +110,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     packet_text = await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=142,
+        source_v=143,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -118,13 +124,27 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     assert packet["valid_critic_count"] == 2
     assert len(packet["allowed_proposal_ids"]) == 3
     assert len(packet["ordered_proposals"]) == 3
+    assert set(packet["proposal_invocations"]) == set(
+        packet["allowed_proposal_ids"]
+    )
+    invocation_ids = [
+        evidence["invocation_id"]
+        for evidence in packet["proposal_invocations"].values()
+    ] + [
+        review["invocation_evidence"]["invocation_id"]
+        for review in packet["critic_reviews"]
+    ]
+    assert len(invocation_ids) == len(set(invocation_ids)) == 5
+    parsed, errors = agent_master._parse_valid_proposal_packet(packet_text)
+    assert parsed == packet
+    assert errors == []
     assert len(calls) == 5
     scout_calls = calls[:3]
     assert all(call[2] == ["Read"] for call in scout_calls)
     assert all("allowed_evidence_snapshot_dir" in call[3] for call in scout_calls)
     assert all("SYSTEM-VERIFIED SOURCE CALL INDEX" in call[1] for call in scout_calls)
     assert all(
-        "strategy.py:get_action -> strategy.py:choose_action" in call[1]
+        "policy.py:get_baseline_decision -> policy.py:_choose_intent" in call[1]
         for call in scout_calls
     )
     critic_calls = calls[3:]
@@ -133,6 +153,49 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     assert all("evidence_traceability" in call[1] for call in critic_calls)
     assert all("Planning context digest:" in call[1] for call in critic_calls)
     assert packet["authority"].startswith("advisory_only")
+
+
+@pytest.mark.asyncio
+async def test_protocol_bootstrap_scout_indexes_only_prepared_baseline(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+
+    prepared = tmp_path / "national_v149"
+    snapshot = tmp_path / "snapshot"
+    _write_source(prepared)
+    snapshot.mkdir()
+    graph_calls = []
+
+    def source_graph(path):
+        graph_calls.append(path)
+        return {
+            "policy.py:get_baseline_decision": {"_choose_intent"},
+            "policy.py:_choose_intent": set(),
+        }, "b" * 64
+
+    async def invalid_query(*_args, **_kwargs):
+        return "{}", 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: prepared)
+    monkeypatch.setattr(agent_master, "_source_symbol_graph", source_graph)
+    monkeypatch.setattr(agent_master, "run_claude_query", invalid_query)
+
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "strict migration context",
+        source_v=142,
+        next_v=149,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot),
+        baseline_v=149,
+        protocol_bootstrap_prepared_only=True,
+    ))
+
+    assert packet["valid"] is False
+    assert graph_calls == [prepared]
+    assert packet["source_code_digest"] == "b" * 64
 
 
 def test_source_symbol_prompt_index_is_deterministic_and_line_bounded(tmp_path):
@@ -147,8 +210,52 @@ def test_source_symbol_prompt_index_is_deterministic_and_line_bounded(tmp_path):
     bounded = agent_master._source_symbol_prompt_index(graph, maximum_chars=130)
 
     assert first == second
-    assert "strategy.py:get_action -> strategy.py:choose_action" in first
+    assert "policy.py:get_baseline_decision -> policy.py:_choose_intent" in first
     assert all(len(line) <= 130 for line in bounded.splitlines())
+
+
+def test_same_leaf_in_two_files_is_not_accepted_as_reachability(tmp_path):
+    import agent_master
+    import system_strict_bootstrap
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "class AlternatePolicy:\n"
+        "    def _choose_intent(self, context):\n"
+        "        return {'kind': 'fold'}\n",
+        encoding="utf-8",
+    )
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    prompt_index = agent_master._source_symbol_prompt_index(graph)
+    assert "policy.py:get_baseline_decision ->" not in prompt_index
+
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload["source_symbols"] = [
+        "policy.py:get_baseline_decision",
+        "policy.py:AlternatePolicy._choose_intent",
+    ]
+    payload["reachable_chain"] = list(payload["source_symbols"])
+    payload["evidence_refs"] = [
+        "source:policy.py:get_baseline_decision",
+        "source:policy.py:AlternatePolicy._choose_intent",
+    ]
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+    ) is None
+    assert system_strict_bootstrap._chain_errors(
+        graph,
+        payload["reachable_chain"],
+    ) == ["system_bootstrap_selected_chain_unreachable"]
 
 
 @pytest.mark.asyncio
@@ -174,7 +281,7 @@ async def test_critic_proposal_order_is_context_digest_deterministic(monkeypatch
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
     kwargs = dict(
         planning_context="same frozen planning context",
-        source_v=142,
+        source_v=143,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -228,7 +335,7 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
 
     packet = json.loads(await agent_master._run_master_proposal_ensemble(
         "frozen planning context",
-        source_v=142,
+        source_v=143,
         next_v=149,
         ui=_UI(),
         log_dir=tmp_path,
@@ -266,6 +373,23 @@ def test_proposal_id_is_stable_and_not_scout_identity(monkeypatch, tmp_path):
     assert first["proposal_id"] == second["proposal_id"]
     assert first["direction"] != second["direction"]
 
+    risks_only = json.loads(
+        _proposal("counterfactual", shared_claims=True)
+        .split("```json\n", 1)[1]
+        .rsplit("\n```", 1)[0]
+    )
+    risks_only["risks"] = (
+        "Different advisory risk prose cannot manufacture an independent mechanism."
+    )
+    third = agent_master._validated_master_proposal(
+        json.dumps(risks_only),
+        "compute_memory",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+    )
+    assert third is not None
+    assert third["proposal_id"] == first["proposal_id"]
+
 
 def test_master_proposal_validation_rejects_override_and_fake_call_edge(tmp_path):
     import agent_master
@@ -274,15 +398,15 @@ def test_master_proposal_validation_rejects_override_and_fake_call_edge(tmp_path
     _write_source(source_dir)
     graph, _digest = agent_master._source_symbol_graph(source_dir)
     payload = json.loads(_proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0])
-    payload["branch_from"] = "v120"
+    payload["branch_from"] = "v143"
     assert agent_master._validated_master_proposal(
         json.dumps(payload), "mechanism", source_graph=graph, snapshot_dir=tmp_path
     ) is None
 
     payload.pop("branch_from")
     payload["reachable_chain"] = [
-        "strategy.py:choose_action",
-        "strategy.py:get_action",
+        "policy.py:_choose_intent",
+        "policy.py:get_baseline_decision",
     ]
     assert agent_master._validated_master_proposal(
         json.dumps(payload), "mechanism", source_graph=graph, snapshot_dir=tmp_path
@@ -302,6 +426,18 @@ def test_critic_validation_requires_complete_integer_criterion_ballots():
         json.dumps(malformed), proposal_ids
     ) is None
 
+    for mutate in (
+        lambda value: value.update({"unexpected": True}),
+        lambda value: value["ballots"][0].update({"unexpected": True}),
+        lambda value: value["ballots"][0].update({"reject": 1}),
+        lambda value: value["ballots"][0].update({"reason": ["not", "text"]}),
+    ):
+        malformed = json.loads(valid)
+        mutate(malformed)
+        assert agent_master._validated_proposal_critique(
+            json.dumps(malformed), proposal_ids
+        ) is None
+
 
 def test_final_master_binding_rejects_missing_id_and_unbound_files():
     import agent_master
@@ -309,10 +445,13 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
     proposal = {
         "proposal_id": "a" * 16,
         "targeted_failure": "One exact evidence-bound reachable failure.",
-        "target_files": ["strategy.py"],
+        "target_files": ["policy.py"],
         "structural_change": "Replace one reachable branch with a bounded state mechanism.",
         "expected_diff": "Wire that mechanism through the existing sanitized action path.",
-        "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "reachable_chain": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
         "falsifier": {
             "test_name": "test_bound_mechanism",
             "control": "Keep the parent state and deterministic seed fixed for comparison.",
@@ -333,7 +472,7 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
         "targeted_failure": proposal["targeted_failure"],
         "tasks": [{"target_files": ["opponent.py"]}],
     }, packet)
-    assert errors == ["selected_proposal_target_files_not_writable:['strategy.py']"]
+    assert errors == ["selected_proposal_target_files_not_writable:['policy.py']"]
 
 
 def test_selected_proposal_is_compiled_into_worker_prompt(tmp_path):
@@ -352,8 +491,8 @@ def test_selected_proposal_is_compiled_into_worker_prompt(tmp_path):
     plan = {
         "tasks": [{
             "worker_id": 1,
-            "target_files": ["strategy.py"],
-            "files_allowed": ["strategy.py"],
+            "target_files": ["policy.py"],
+            "files_allowed": ["policy.py"],
             "worker_prompt": "Implement the selected structural mechanism.",
         }]
     }
@@ -376,22 +515,25 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
     source_dir = tmp_path / "source"
     _write_source(source_dir)
     graph, source_digest = agent_master._source_symbol_graph(source_dir)
-    proposal = agent_master._validated_master_proposal(
-        _proposal("mechanism"),
-        "mechanism",
-        source_graph=graph,
-        snapshot_dir=tmp_path,
-    )
-    assert proposal is not None
+    proposals = [
+        agent_master._validated_master_proposal(
+            _proposal(direction),
+            direction,
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+        )
+        for direction in ("mechanism", "counterfactual", "compute_memory")
+    ]
+    assert all(proposal is not None for proposal in proposals)
     packet = {
         "schema_version": "master-proposal-packet-v2",
         "valid": True,
         "context_digest": "c" * 64,
         "source_code_digest": source_digest,
-        "proposal_count": 1,
+        "proposal_count": 3,
         "valid_critic_count": 2,
-        "allowed_proposal_ids": [proposal["proposal_id"]],
-        "ordered_proposals": [proposal],
+        "allowed_proposal_ids": [proposal["proposal_id"] for proposal in proposals],
+        "ordered_proposals": proposals,
         "critic_reviews": [],
     }
     packet["ordered_proposals"][0]["structural_change"] += " tampered"

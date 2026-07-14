@@ -151,11 +151,11 @@ def _validate_request(payload: dict[str, Any]) -> list[str]:
 
 
 def _bootstrap_authorization_issues(request: dict[str, Any]) -> list[str]:
-    """Revalidate the operator-only parked transition before a worker launch."""
+    """Revalidate the parked first-strict control before a worker launch."""
 
     spec = request.get("spec") or {}
-    root_id = spec.get("bootstrap_root_id")
-    if not root_id:
+    control_id = spec.get("bootstrap_control_id")
+    if not control_id:
         return []
     selection = request.get("opponent_selection")
     candidate = spec.get("candidate")
@@ -166,7 +166,7 @@ def _bootstrap_authorization_issues(request: dict[str, Any]) -> list[str]:
 
         validation = validate_operator_bootstrap_authorized_selection(
             selection,
-            str(root_id),
+            str(control_id),
             str(candidate or ""),
         )
     except Exception as exc:

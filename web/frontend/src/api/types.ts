@@ -30,7 +30,11 @@ export interface BotRating {
 }
 
 export interface MatchStats {
+  /** Compatibility alias; one unit is a complete 70-hand native TCP match. */
   total_games: number;
+  total_strength_samples: number;
+  strength_sample_unit: "70_hand_match";
+  hands_per_strength_sample: 70;
   total_pairs: number;
   total_periods: number;
   most_active_pair: string;
@@ -40,7 +44,8 @@ export interface MatchStats {
 export interface MatchMatrix {
   bots: string[];
   matrix: (number | null)[][];
-  source?: string;
+  source: "h2h";
+  evidence_available: boolean;
 }
 
 export interface H2HEntry {
@@ -78,9 +83,18 @@ export interface LogContent {
 }
 
 export interface DaemonStatus {
-  status: string;
+  status: "blocked" | "active" | "degraded" | "stopped" | "disabled";
+  reason?: string | null;
+  epoch_state?: string;
+  /** Age of the currently published strength cycle, not process liveness. */
   last_update_age_seconds: number;
   daemon_enabled: boolean;
+  daemon_configured: boolean;
+  process_alive?: boolean;
+  heartbeat_stale?: boolean;
+  heartbeat_age_seconds?: number | null;
+  strength_evidence_available?: boolean;
+  strength_evidence_status?: "current_evaluation_cycle" | "awaiting_first_rating_cycle";
 }
 
 export interface RateLimitStatus {
@@ -92,45 +106,94 @@ export interface RateLimitStatus {
 export interface MatchSummary {
   id: string;
   timestamp: string;
+  execution_mode: "native_tcp";
+  evaluation_epoch: "national_tcp_policy_v1";
+  evaluation_identity_digest: string;
   bot0: string;
   bot1: string;
   bot0_wins: number;
   bot1_wins: number;
   draws: number;
+  strength_sample_unit: "70_hand_match";
+  hands_per_strength_sample: 70;
+  strength_admitted: true;
+  strength_complete: true;
+  strength_compliance_passed: true;
+  strength_sample_count: number;
+  net_chips_bot0: number[];
 }
 
-export interface DisplayFrame {
-  round: number;
-  round_idx: number;
-  round_bet: number;
-  round_raise: number;
-  round_player_bet: [number, number];
-  pot: number;
-  player_chips: [number, number];
-  public_cards: number[];
-  player_cards: [[number, number], [number, number]];
-  last_action?: { player_id: number; action: number; action_type: string };
-  matchdata: {
-    hand: number;
-    max_hand: number;
-    total_win_chips: [number, number];
-    total_win_games: [number, number];
+export type NativeStreet = "preflop" | "flop" | "turn" | "river";
+export type NativeActionName = "fold" | "call" | "check" | "raise" | "allin";
+
+export interface NativeReplayAction {
+  player_idx: 0 | 1;
+  stage: NativeStreet;
+  action: NativeActionName;
+  amount: number | null;
+  pot_before: number | null;
+  pot_after: number | null;
+  player_bets_before: [number, number] | null;
+  decision_wait_sec?: number;
+  timeout_budget_sec?: number;
+}
+
+export interface NativeHandSettlement {
+  earnings: [number, number];
+  pot?: number;
+  is_showdown: boolean;
+  winner_idx: 0 | 1 | null;
+  reason: string;
+}
+
+export interface NativeHandRecord {
+  hand: number;
+  sb_idx: 0 | 1;
+  bb_idx: 0 | 1;
+  hole_cards: [[string, string], [string, string]];
+  board: string[];
+  actions: NativeReplayAction[];
+  starting_pot: number;
+  settlement: NativeHandSettlement;
+}
+
+export interface NativeExecutionIdentity {
+  schema_version: 1;
+  mode: "direct_content_bound_policy_artifact";
+  label: string;
+  artifact_hash: string;
+  entrypoint: string;
+  entry_digest: string;
+  policy_digest: string;
+  precompute_digest: string;
+  runtime_manifest_digest: string;
+  artifact_contract_digest: string;
+  epoch_receipt_digest: string;
+  identity_digest: string;
+}
+
+export interface NativeGameReplay {
+  bot_a: string;
+  bot_b: string;
+  hands_requested: 70;
+  hands_played: 70;
+  net_chips_a: number;
+  net_chips_b: number;
+  execution_mode: "native_tcp";
+  artifact_execution: {
+    schema_version: 1;
+    mode: "direct_content_bound_policy_artifact";
+    by_player: Record<string, NativeExecutionIdentity>;
   };
-  temp_result?: Array<{ win_chips: number; max_hand_type?: number; max_cards?: number[] }>;
-  final_result?: Array<{ win_chips: number; win_games: number }>;
-}
-
-export interface GameReplay {
-  game: number;
-  winner: number;
-  bot0_chips: number;
-  bot1_chips: number;
-  mirror?: boolean;
-  logs: Array<Record<string, unknown>>;
+  hand_records: NativeHandRecord[];
+  settlements: Array<NativeHandSettlement & { hand: number }>;
+  passed_compliance: true;
+  issues: [];
 }
 
 export interface MatchReplayData extends MatchSummary {
-  games: GameReplay[];
+  replay_schema_version: 1;
+  games: NativeGameReplay[];
 }
 
 // Bot management
@@ -150,6 +213,7 @@ export interface OfficialCertification {
   status: OfficialCertificationState;
   status_label?: string;
   mode?: "smoke" | "compliance" | "full" | null;
+  policy_id?: string | null;
   updated_at?: string | null;
   cache_hit?: boolean;
   queued?: boolean;
@@ -160,6 +224,82 @@ export interface OfficialCertification {
   compliance_verdict?: Record<string, unknown>;
   result?: Record<string, unknown>;
   certification_root?: string;
+  certificate_schema_version?: number;
+  certificate_digest?: string;
+  certificate_signature_sha256?: string;
+  published_attestation_digest?: string;
+  official_verdict_ledger_entry?: Record<string, unknown>;
+  /** Backend-validated publication authority; the UI must not reconstruct it. */
+  formal_certified?: boolean;
+  formal_authority?: "signed_full_v5" | "none" | "pipeline_attached_full_v5_job";
+  formal_summary?: {
+    self_play_rounds: number;
+    opponent_rounds: number;
+    target_hands: number;
+    rounds_requested: number;
+    rounds_run: number;
+    passed_rounds: number;
+    failed_rounds: number;
+  } | null;
+  subject_kind?: "strict_published" | "active_candidate";
+  evaluation_epoch?: "national_tcp_policy_v1";
+  epoch_state?: string;
+  epoch_initialized?: boolean;
+  workflow_run_id?: string | null;
+  candidate_version?: number | null;
+}
+
+export interface OfficialCertificationProgressRound {
+  kind: "self_play" | "opponent";
+  index: number;
+  passed: boolean;
+  hands_started: number;
+  settlements: number;
+  observed_bytes: number;
+  duration_sec: number | null;
+  issue_count: number;
+}
+
+export interface OfficialCertificationJob {
+  job_id: string;
+  state: "created" | "queued" | "starting" | "running" | "finalizing" | "cancel_requested" | "completed" | "failed" | "cancelled";
+  phase?: string;
+  pending?: boolean;
+  attempt?: number;
+  revision?: number;
+  candidate?: string;
+  workflow_run_id: string;
+  candidate_version: number;
+  evaluation_epoch: "national_tcp_policy_v1";
+  epoch_initialized: true;
+  formal_policy_id: "official-full-v5";
+  formal_mode: "full";
+  formal_authority: "pipeline_attached_full_v5_job" | "operator_bootstrap_full_v5_job";
+  bootstrap_control_id?: string | null;
+  read_only?: boolean;
+  cancel_allowed?: false;
+  progress?: {
+    suite_attempt: number;
+    rounds_requested: number;
+    rounds_completed: number;
+    rounds_passed: number;
+    active_round: OfficialCertificationProgressRound | null;
+    rounds: OfficialCertificationProgressRound[];
+  };
+}
+
+export interface OfficialCertificationJobsProjection {
+  schema_version: 1;
+  evaluation_epoch: "national_tcp_policy_v1";
+  epoch_state: string;
+  epoch_initialized: boolean;
+  workflow_run_id: string | null;
+  candidate_version: number | null;
+  formal_policy_id: "official-full-v5";
+  formal_mode: "full";
+  pending: number;
+  running: number;
+  jobs: OfficialCertificationJob[];
 }
 
 export interface BotSummary {
@@ -189,13 +329,14 @@ export interface BotSummary {
   rank_basis?: string;
   strength_confidence?: string;
   strength_note?: string;
-  graveyard?: boolean;
-  active?: boolean;
-  tagged?: boolean;
-  reaped?: boolean;
-  protocol_eligible?: boolean;
-  protocol_errors?: string[];
-  lifecycle_status?: "active" | "candidate" | "reaped" | "protocol_ineligible" | "untagged" | "incomplete" | "graveyard" | "inactive";
+  strength_evidence_available?: boolean;
+  strength_evidence_status?: "current_evaluation_cycle" | "awaiting_first_rating_cycle";
+  active?: true;
+  tagged?: true;
+  reaped?: false;
+  protocol_eligible?: true;
+  protocol_errors?: [];
+  lifecycle_status?: "active";
   status_label?: string;
   status_reasons?: string[];
   official_certification?: OfficialCertification;
@@ -216,17 +357,21 @@ export interface DirectionAudit {
 }
 
 export interface PipelineCheckpoint {
-  next_v: number;
-  source_v: number;
-  stage: string;
-  master_plan: unknown;
-  reviewer_feedback: string;
-  generation_attempt: number;
+  checkpoint_schema_version?: number;
+  evaluation_epoch?: "national_tcp_policy_v1";
+  workflow_run_id?: string;
+  run_id?: string;
+  next_v?: number;
+  source_v?: number | null;
+  stage?: string;
+  master_plan?: unknown;
+  reviewer_feedback?: string;
+  generation_attempt?: number;
   gate_results?: Record<string, unknown>;
   direction_audit?: DirectionAudit;
   worker_failure_count?: number;
   parent2_v?: number | null;
-  timestamp: string;
+  timestamp?: string;
   audit_context?: Record<string, unknown>;
   last_stage_change_ts?: number;
 }
@@ -237,9 +382,11 @@ export interface WorkerFailure {
   role: string;
   error: string;
   timestamp?: number;
-  // Phase 2+3 log redesign: category/failure_type emitted by the unified event bus.
-  // Old records are backfilled by the backend reader, so these are optional.
-  category?: string;
+  // Current rows are shown only when these identities match the active strict
+  // workflow. The backend never backfills them onto old JSONL records.
+  evaluation_epoch: "national_tcp_policy_v1";
+  workflow_run_id: string;
+  category: "worker" | "gate";
   failure_type?: string;
 }
 
@@ -252,12 +399,17 @@ export interface PromptInfo {
   mtime: number | null;
   mtime_str?: string;
   role: string;
+  editable: false;
+  mutation_authority: "source_control_only";
 }
 
 // Orchestrator session
 export interface OrchestratorSession {
   session_id: string | null;
   active: boolean;
+  blocked?: boolean;
+  epoch_state?: string;
+  operator_action?: string | null;
 }
 
 // Orchestrator log file
@@ -289,6 +441,9 @@ export interface SystemEvent {
 export interface SystemEventsResponse {
   events: SystemEvent[];
   total: number;
+  authority_status?: "policy_epoch_not_initialized" | "current_epoch_empty" | "current_epoch";
+  evaluation_epoch?: "national_tcp_policy_v1";
+  epoch_reset_receipt_digest?: string;
 }
 
 export interface WorkerFailuresResponse {
@@ -296,19 +451,12 @@ export interface WorkerFailuresResponse {
   total: number;
 }
 
-// Scheduler
-export interface SchedulerStatus {
-  pending_jobs: number;
-  claimed_jobs: number;
-  recent_results: number;
-  pending_details?: Record<string, unknown>[];
-}
-
 // National Web Arena (local diagnostics/presentation; official EXE remains authoritative)
 export type ArenaMode = "external_tcp" | "managed_bots";
 export type ArenaStatus =
   | "created"
   | "starting"
+  | "listening"
   | "waiting_for_players"
   | "ready"
   | "running"
@@ -316,7 +464,8 @@ export type ArenaStatus =
   | "finalizing"
   | "finished"
   | "failed"
-  | "stopped";
+  | "stopped"
+  | "quarantined";
 
 export interface ArenaCertificationSnapshot {
   status?: string | null;
@@ -324,7 +473,7 @@ export interface ArenaCertificationSnapshot {
   official_full_certified?: boolean;
   official_exe_passed?: boolean;
   arena_launch_eligible?: boolean;
-  eligibility_basis?: "official_full" | "content_bound_grandfather" | "ineligible" | string;
+  eligibility_basis?: "official_full" | "ineligible";
   authority: "windows_exe";
   error?: string;
 }
@@ -366,6 +515,9 @@ export interface ArenaSession {
   started_at: string | null;
   finished_at: string | null;
   failure_reason: string | null;
+  cleanup_completed: boolean;
+  resource_fence_held: boolean;
+  quarantine_reason: string | null;
   artifacts: Record<string, string>;
   managed_bot_identities: Record<string, Record<string, string | null>>;
   official_certification: Record<string, ArenaCertificationSnapshot | string>;
@@ -374,6 +526,14 @@ export interface ArenaSession {
   official_exe_certification: false;
   compliance_oracle: "official_windows_exe";
   wire_log_complete: boolean;
+  schema_version: 3;
+  requested_port: number | null;
+  capacity_wait_seconds: number;
+  evaluation_epoch: "national_tcp_policy_v1";
+  epoch_authority_identity: string;
+  epoch_reset_receipt_digest: string;
+  epoch_authority_state: string;
+  workflow_run_id: string | null;
 }
 
 export interface ArenaEvent {
@@ -407,4 +567,53 @@ export interface ArenaCreatePayload {
   official_action_delay: number;
   top_bot?: string | null;
   bottom_bot?: string | null;
+}
+
+export interface ArenaEpochAuthority {
+  evaluation_epoch: "national_tcp_policy_v1";
+  state: string;
+  initialized: boolean;
+  reset_receipt_valid?: boolean;
+  reset_receipt_digest?: string | null;
+  workflow_run_id?: string | null;
+}
+
+export interface ArenaEpochMetadata {
+  evaluation_epoch: "national_tcp_policy_v1";
+  epoch_state: string;
+  epoch_reset_receipt_digest?: string | null;
+  epoch_initialized: boolean;
+  epoch_authority: ArenaEpochAuthority;
+  result_authority: "diagnostic_only";
+  affects_glicko: false;
+  official_exe_certification: false;
+  can_certify: false;
+}
+
+export interface ArenaBotsResponse extends ArenaEpochMetadata {
+  bots: ArenaBot[];
+  selection_contract: "strict_epoch_unavailable" | "active_tagged_native_and_official_eligible";
+  selection_authority: "official_windows_exe";
+}
+
+export interface ArenaSessionsResponse extends ArenaEpochMetadata {
+  sessions: ArenaSession[];
+}
+
+export interface ArenaSessionUnavailable extends ArenaEpochMetadata {
+  session: null;
+  requested_session_id: string;
+}
+
+export interface ArenaEventHistoryResponse extends ArenaEpochMetadata {
+  events: ArenaEvent[];
+  after_event_id: number;
+  high_watermark: number;
+  next_after_event_id: number;
+}
+
+export interface ArenaWireHistoryResponse extends ArenaEpochMetadata {
+  records: ArenaWireRecord[];
+  after_sequence: number;
+  complete: boolean;
 }

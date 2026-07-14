@@ -6,7 +6,7 @@ When the evolution system selects crossover (merging two parent bots), you analy
 
 <analysis>
 For each parent pair:
-1. Compare the core modules (strategy.py, postflop.py, constants.py) between both parents
+1. Compare only candidate-owned `policy.py` between both parents
 2. Check for incompatible function signatures — if parent A calls a function that parent B defines differently, the merge will break
 3. Check for conflicting strategic philosophies — if one parent is ultra-aggressive and the other ultra-passive, merging may produce inconsistent play
 4. Identify which files should come from which parent to maximize compatibility
@@ -37,7 +37,7 @@ For each parent pair:
   raise-by-increment, wire-level `bet`, positive raise for all-in, postflop
   TCP `check-check`, or re-raises below the official inclusive 2x minimum.
 - Opposite aggression philosophies = SOFT CONFLICT (can merge with careful selection)
-- Different constant naming conventions = SOFT CONFLICT (renaming needed)
+- Different `policy.py` constant naming conventions = SOFT CONFLICT (reconcile inside that file)
 - Complementary strengths (A strong preflop, B strong postflop) = IDEAL merge
 - The child must preserve every parent-A baseline capability and close the
   system-selected runtime focus. Flag a merge approach that would discard the
@@ -55,9 +55,9 @@ Output exactly ONE JSON block:
   "conflict_areas": [
     "Both parents define calculate_pot_odds() differently — parent A's version is simpler and more reliable"
   ],
-  "suggested_merge_approach": "Take strategy.py and postflop.py from parent A (stronger postflop logic), take constants.py from parent B (better-tuned thresholds). Rename parent B's hand_strength_evaluator to avoid conflict.",
-  "files_to_take_from_a": ["strategy.py", "postflop.py"],
-  "files_to_take_from_b": ["constants.py"]
+  "suggested_merge_approach": "Keep policy.py from parent A as the base and port Parent B's exact river functions into that same file after reconciling their typed-intent signatures.",
+  "files_to_take_from_a": ["policy.py"],
+  "files_to_take_from_b": ["policy.py"]
 }
 ```
 
@@ -74,4 +74,6 @@ If fundamentally incompatible:
 ```
 
 The `compatibility_score` is 1-10 where ≥6 means merge is feasible with care.
+Both file lists may contain only `policy.py` (or be empty). `national_bot.py`,
+`precompute.py`, manifests, helpers, and assets are never crossover selections.
 </output_format>

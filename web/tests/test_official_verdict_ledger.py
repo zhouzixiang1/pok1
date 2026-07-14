@@ -77,10 +77,10 @@ def _status(outcome: str, candidate_hash: str, *, certificate_digest: str = ""):
 
 
 def _bootstrap_status(outcome: str, candidate_hash: str, *, bot: str):
-    root_id = "national-v141-official-full-v5-signed-ledger-root"
+    control_id = "first_strict_control_v1"
     receipt_payload = {
-        "kind": "signed-v5-ledger-bootstrap-root-receipt",
-        "root_id": root_id,
+        "kind": "official-first-strict-control-authorization-receipt",
+        "bootstrap_control_id": control_id,
     }
     receipt = {
         **receipt_payload,
@@ -92,10 +92,12 @@ def _bootstrap_status(outcome: str, candidate_hash: str, *, bot: str):
         certificate_digest="d" * 64 if outcome == "official-certified" else "",
     )
     status["bot"] = bot
-    status["certification_identity"]["spec"] = {"bootstrap_root_id": root_id}
+    status["certification_identity"]["spec"] = {
+        "bootstrap_control_id": control_id
+    }
     status["opponent_selection"] = {
-        "bootstrap_root_id": root_id,
-        "bootstrap_root_receipt": receipt,
+        "bootstrap_control_id": control_id,
+        "bootstrap_control_receipt": receipt,
         "opponent": {"eligibility_receipt": receipt},
     }
     return status
@@ -269,7 +271,7 @@ def test_append_does_not_reinitialize_missing_history(tmp_path, monkeypatch):
     assert not ledger_path().exists()
 
 
-def test_concurrent_bootstrap_append_consumes_root_exactly_once(
+def test_concurrent_bootstrap_append_consumes_control_exactly_once(
     tmp_path, monkeypatch
 ):
     _signing_material(tmp_path, monkeypatch)
@@ -298,7 +300,7 @@ def test_concurrent_bootstrap_append_consumes_root_exactly_once(
     assert health["entry_count"] == 1
 
 
-def test_failed_bootstrap_append_does_not_consume_root(tmp_path, monkeypatch):
+def test_failed_bootstrap_append_does_not_consume_control(tmp_path, monkeypatch):
     _signing_material(tmp_path, monkeypatch)
     _allow_synthetic_status(monkeypatch)
 
@@ -309,8 +311,8 @@ def test_failed_bootstrap_append_does_not_consume_root(tmp_path, monkeypatch):
         _bootstrap_status("official-certified", "b" * 64, bot="national_v201")
     )
 
-    assert "bootstrap_root_id" not in failed
-    assert certified["bootstrap_root_id"].endswith("signed-ledger-root")
+    assert "bootstrap_control_id" not in failed
+    assert certified["bootstrap_control_id"] == "first_strict_control_v1"
     assert ledger_integrity()["entry_count"] == 2
 
 

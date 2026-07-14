@@ -28,12 +28,15 @@ PRECOMPUTE_CONSUMER_PATTERN = (
 )
 
 MatchMemoryResetBoundary = Literal["tcp_connection"]
-MatchMemorySnapshotField = Literal["opponent_runtime"]
+MatchMemorySnapshotField = Literal["opponent"]
 MatchMemoryPriorRule = Literal["beta_prior_weight_8"]
 MatchMemoryConfidenceRule = Literal[
     "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
 ]
-MatchMemoryConsumer = Literal["strategy.get_baseline_action", "strategy.get_action"]
+MatchMemoryConsumer = Literal[
+    "policy.get_baseline_decision",
+    "policy.iter_decisions",
+]
 MatchMemoryUpdateEvent = Literal[
     "hand_start",
     "street_start",
@@ -59,7 +62,6 @@ MATCH_MEMORY_MAX_UPDATE_EVENTS = 6
 
 StateLearningWorkPrimitive = Literal[
     "sample_counted_candidate_batch",
-    "bounded_precompute_lookup",
 ]
 StateLearningProfileDimension = Literal[
     "action_profile",
@@ -75,37 +77,32 @@ STATE_LEARNING_WORK_PRIMITIVES = tuple(get_args(StateLearningWorkPrimitive))
 STATE_LEARNING_PROFILE_DIMENSIONS = tuple(get_args(StateLearningProfileDimension))
 STATE_LEARNING_LINE_CONTROLS = tuple(get_args(StateLearningLineControl))
 STATE_LEARNING_ORACLE_REFS = tuple(get_args(StateLearningOracleRef))
-LEGACY_CONSUMER_MIGRATION_FOCUS_ID = "national_runtime_v4_legacy_consumer_migration"
-LegacyConsumerMigrationCheck = Literal[
-    "terminal_response_adaptation",
-    "showdown_range_adaptation",
-    "donk_line_reachability",
-    "delayed_probe_line_reachability",
-]
-LegacyConsumerMigrationFile = Literal[
-    "strategy.py",
-    "opponent.py",
-    "simulation.py",
-    "donk_probe.py",
-]
-LEGACY_CONSUMER_MIGRATION_CHECKS = tuple(
-    get_args(LegacyConsumerMigrationCheck)
+NATIONAL_POLICY_FOCUS_ID = "national_policy_v1_state_learning"
+POLICY_CONTEXT_SCHEMA_VERSION = 1
+PolicyIntentKind = Literal["pass", "fold", "allin", "raise"]
+POLICY_INTENT_KINDS = tuple(get_args(PolicyIntentKind))
+POLICY_ENTRYPOINTS = (
+    "get_baseline_decision",
+    "iter_decisions",
 )
-LEGACY_CONSUMER_MIGRATION_FILES = tuple(get_args(LegacyConsumerMigrationFile))
-LEGACY_CONSUMER_MIGRATION_BUNDLE_ID = "legacy-consumer-migration-v1"
+POLICY_CONTEXT_TOP_LEVEL_FIELDS = (
+    "schema_version",
+    "runtime_version",
+    "decision_id",
+    "cards",
+    "hand",
+    "betting",
+    "history",
+    "line",
+    "legal",
+    "opponent",
+    "deadline",
+)
 STATE_LEARNING_PRIMARY_CHECKS = {
     "sample_counted_candidate_batch": (
-        "fast_strategy_baseline",
+        "fast_policy_baseline",
         "incremental_refinement_protocol",
         "budget_scaled_refinement",
-    ),
-    # Reading a mapping is an acceleration capability, not a strategy
-    # innovation.  A selected lookup primary must additionally prove that a
-    # same-shaped, different-valued mapping changes a final sanitized wire
-    # action in the trusted runtime probe.
-    "bounded_precompute_lookup": (
-        "precompute_lookup_path",
-        "precompute_runtime_influence",
     ),
     "action_profile": ("incremental_opponent_model",),
     "terminal_response": ("terminal_response_adaptation",),
@@ -113,19 +110,9 @@ STATE_LEARNING_PRIMARY_CHECKS = {
     "donk": ("donk_line_reachability",),
     "delayed_probe": ("delayed_probe_line_reachability",),
 }
-LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS = frozenset(
-    {
-        check_id
-        for checks in STATE_LEARNING_PRIMARY_CHECKS.values()
-        for check_id in checks
-    }.difference(LEGACY_CONSUMER_MIGRATION_CHECKS)
-    .difference({"fast_strategy_baseline"})
-    | {"semantic_line_reachability"}
-)
 STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
     "sample_counted_candidate_batch": ("sample_count", "deadline"),
-    "bounded_precompute_lookup": ("precompute", "fallback"),
-    "action_profile": ("action_profile", "opponent_runtime"),
+    "action_profile": ("action_profile", "context", "opponent"),
     "terminal_response": ("terminal_response", "confidence"),
     "showdown_range": ("showdown_range", "confidence"),
     "donk": ("can_donk", "positive/control"),
@@ -133,32 +120,25 @@ STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
 }
 
 RUNTIME_CONTRACT_WORKER_PROMPT_TERMS = {
+    "policy_abi": ("decision_context", "typed intent", "raise_to", "pass"),
     "decision": ("budget", "fallback", "baseline", "deadline"),
     "precompute_artifacts": ("precompute",),
-    "match_memory": ("memory", "confidence", "opponent_runtime"),
+    "match_memory": ("memory", "confidence", "context", "opponent"),
     "official_feedback_refs": ("official",),
-    "legacy_consumer_migration": (
-        "terminal_response",
-        "showdown_range",
-        "can_donk",
-        "can_delayed_probe",
-        "sanitized wire action",
-    ),
 }
 
 
 RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_LAYER = {
-    "runtime_architecture": ("decision",),
-    "precompute": ("precompute_artifacts",),
-    "match_memory": ("match_memory",),
-    "opponent_model": ("match_memory",),
-    "native_tcp": ("decision",),
+    "runtime_architecture": ("policy_abi", "decision"),
+    "precompute": ("policy_abi", "precompute_artifacts"),
+    "match_memory": ("policy_abi", "match_memory"),
+    "opponent_model": ("policy_abi", "match_memory"),
+    "native_tcp": ("policy_abi", "decision"),
+    "action_intent": ("policy_abi",),
 }
 RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS = {
-    LEGACY_CONSUMER_MIGRATION_FOCUS_ID: ("legacy_consumer_migration",),
-    "national_runtime_v4_state_learning": ("state_learning",),
+    NATIONAL_POLICY_FOCUS_ID: ("policy_abi", "state_learning"),
     "incremental_match_model": ("match_memory",),
-    "reusable_precompute": ("precompute_artifacts",),
     "deadline_refinement": ("decision",),
     "bounded_runtime_enumeration": ("precompute_artifacts",),
     "decision_path_purity": ("decision",),
@@ -214,8 +194,8 @@ class DecisionRuntimeContract(BaseModel):
         ge=1,
         le=5_000,
         description=(
-            "Target latency for publishing a strategy-derived legal baseline; an always-legal "
-            "socket fallback must already exist before strategy code starts."
+            "Target latency for publishing a policy-derived typed baseline; an always-legal "
+            "socket fallback must already exist before candidate policy code starts."
         ),
     )
     refinement_budget_ms: int = Field(
@@ -300,7 +280,7 @@ class MatchMemoryRuntimeContract(BaseModel):
 
 
 class StateLearningRuntimeContract(BaseModel):
-    """One mechanically selected strategy innovation for a v4 generation.
+    """One mechanically selected policy innovation for a generation.
 
     The official oracle references and candidate dimension are closed literals,
     not reviewer prose. Exactly one work primitive, opponent-profile dimension,
@@ -363,60 +343,70 @@ class StateLearningRuntimeContract(BaseModel):
         return STATE_LEARNING_PRIMARY_CHECKS[self.primary_innovation()]
 
 
-class LegacyConsumerMigrationContract(BaseModel):
-    """System-owned all-or-nothing migration from wrapper state to strategy.
-
-    These four checks close the user-observed legacy state-consumer defects. They
-    are deliberately separate from ``state_learning``: a weak planner may choose
-    one later innovation, but it may not choose which migration obligations exist.
-    """
+class PolicyABIContract(BaseModel):
+    """Closed candidate/system boundary for national raw-TCP decisions."""
 
     model_config = ConfigDict(extra="forbid")
 
-    bundle_id: Literal["legacy-consumer-migration-v1"] = (
-        LEGACY_CONSUMER_MIGRATION_BUNDLE_ID
+    module: Literal["policy.py"] = "policy.py"
+    context_schema_version: Literal[1] = POLICY_CONTEXT_SCHEMA_VERSION
+    context_fields: list[Literal[
+        "schema_version",
+        "runtime_version",
+        "decision_id",
+        "cards",
+        "hand",
+        "betting",
+        "history",
+        "line",
+        "legal",
+        "opponent",
+        "deadline",
+    ]] = Field(
+        default_factory=lambda: list(POLICY_CONTEXT_TOP_LEVEL_FIELDS),
+        min_length=len(POLICY_CONTEXT_TOP_LEVEL_FIELDS),
+        max_length=len(POLICY_CONTEXT_TOP_LEVEL_FIELDS),
     )
-    required_checks: list[LegacyConsumerMigrationCheck] = Field(
-        min_length=len(LEGACY_CONSUMER_MIGRATION_CHECKS),
-        max_length=len(LEGACY_CONSUMER_MIGRATION_CHECKS),
+    entrypoints: list[Literal[
+        "get_baseline_decision",
+        "iter_decisions",
+    ]] = Field(
+        default_factory=lambda: list(POLICY_ENTRYPOINTS),
+        min_length=len(POLICY_ENTRYPOINTS),
+        max_length=len(POLICY_ENTRYPOINTS),
     )
-    consumer_files: list[LegacyConsumerMigrationFile] = Field(
-        min_length=len(LEGACY_CONSUMER_MIGRATION_FILES),
-        max_length=len(LEGACY_CONSUMER_MIGRATION_FILES),
+    intent_kinds: list[PolicyIntentKind] = Field(
+        default_factory=lambda: list(POLICY_INTENT_KINDS),
+        min_length=len(POLICY_INTENT_KINDS),
+        max_length=len(POLICY_INTENT_KINDS),
     )
-    oracle_refs: list[StateLearningOracleRef] = Field(min_length=2, max_length=2)
+    raise_field: Literal["raise_to"] = "raise_to"
+    pass_mapping: Literal["socket_owner_call_or_check"] = (
+        "socket_owner_call_or_check"
+    )
 
-    @field_validator("required_checks")
+    @field_validator("context_fields")
     @classmethod
-    def _complete_migration_checks(
-        cls, value: list[str]
-    ) -> list[str]:
-        if set(value) != set(LEGACY_CONSUMER_MIGRATION_CHECKS):
+    def _complete_context_fields(cls, value: list[str]) -> list[str]:
+        if tuple(value) != POLICY_CONTEXT_TOP_LEVEL_FIELDS:
             raise ValueError(
-                "legacy consumer migration required_checks must contain the exact "
-                f"system-owned bundle {list(LEGACY_CONSUMER_MIGRATION_CHECKS)}"
+                "context_fields must equal the ordered national decision_context v1 ABI"
             )
-        return list(LEGACY_CONSUMER_MIGRATION_CHECKS)
+        return list(POLICY_CONTEXT_TOP_LEVEL_FIELDS)
 
-    @field_validator("consumer_files")
+    @field_validator("entrypoints")
     @classmethod
-    def _complete_consumer_files(cls, value: list[str]) -> list[str]:
-        if set(value) != set(LEGACY_CONSUMER_MIGRATION_FILES):
-            raise ValueError(
-                "legacy consumer migration consumer_files must contain the exact "
-                f"writable bundle {list(LEGACY_CONSUMER_MIGRATION_FILES)}"
-            )
-        return list(LEGACY_CONSUMER_MIGRATION_FILES)
+    def _complete_entrypoints(cls, value: list[str]) -> list[str]:
+        if tuple(value) != POLICY_ENTRYPOINTS:
+            raise ValueError("entrypoints must equal the ordered policy ABI")
+        return list(POLICY_ENTRYPOINTS)
 
-    @field_validator("oracle_refs")
+    @field_validator("intent_kinds")
     @classmethod
-    def _complete_oracle_pair(cls, value: list[str]) -> list[str]:
-        if set(value) != set(STATE_LEARNING_ORACLE_REFS):
-            raise ValueError(
-                "legacy consumer migration oracle_refs must contain the exact "
-                "raise-boundary and terminal-settlement oracle documents"
-            )
-        return list(STATE_LEARNING_ORACLE_REFS)
+    def _complete_intent_kinds(cls, value: list[str]) -> list[str]:
+        if tuple(value) != POLICY_INTENT_KINDS:
+            raise ValueError("intent_kinds must equal pass/fold/allin/raise")
+        return list(POLICY_INTENT_KINDS)
 
 
 class RuntimeContract(BaseModel):
@@ -424,11 +414,11 @@ class RuntimeContract(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    policy_abi: Optional[PolicyABIContract] = None
     decision: Optional[DecisionRuntimeContract] = None
     precompute_artifacts: list[PrecomputeArtifactContract] = Field(default_factory=list, max_length=4)
     match_memory: Optional[MatchMemoryRuntimeContract] = None
     state_learning: Optional[StateLearningRuntimeContract] = None
-    legacy_consumer_migration: Optional[LegacyConsumerMigrationContract] = None
     reference_pack_id: str = Field(default="", max_length=128)
     official_feedback_refs: list[str] = Field(default_factory=list, max_length=8)
     forbidden_runtime_work: list[str] = Field(default_factory=list, max_length=8)
@@ -453,11 +443,6 @@ class RuntimeContract(BaseModel):
             if state_learning is not None
             else ""
         )
-        if self.legacy_consumer_migration is not None and state_learning is not None:
-            raise ValueError(
-                "legacy_consumer_migration and state_learning are mutually exclusive; "
-                "finish universal migration before selecting an ordinary innovation"
-            )
         if state_learning is not None and state_learning.work_primitive is not None:
             from strategy_reference_pack import validate_reference_selection
 
@@ -475,6 +460,8 @@ class RuntimeContract(BaseModel):
 def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str, ...]:
     """Return the literal execution terms a worker prompt must mirror."""
     populated_sections: list[str] = []
+    if contract.policy_abi is not None:
+        populated_sections.append("policy_abi")
     if contract.decision is not None:
         populated_sections.append("decision")
     if contract.precompute_artifacts:
@@ -483,8 +470,6 @@ def runtime_contract_worker_prompt_terms(contract: RuntimeContract) -> tuple[str
         populated_sections.append("match_memory")
     if contract.official_feedback_refs:
         populated_sections.append("official_feedback_refs")
-    if contract.legacy_consumer_migration is not None:
-        populated_sections.append("legacy_consumer_migration")
 
     terms: list[str] = []
     for section in populated_sections:
@@ -532,9 +517,8 @@ def master_plan_executable_contract_text() -> str:
             "worker_id values must be unique."
         ),
         (
-            f"- each task.target_files: {WORKER_TASK_MIN_TARGET_FILES}.."
-            f"{WORKER_TASK_MAX_TARGET_FILES} files (never more than "
-            f"{WORKER_TASK_MAX_TARGET_FILES}); every runtime artifact owner_file must "
+            "- each task writable scope is exactly [\"policy.py\"]; candidate helper "
+            "modules/assets are forbidden. Every system runtime artifact owner_file must "
             "also appear in target_files/files_allowed (writable) or "
             "read_only_dependencies (context only; never writable)."
         ),
@@ -577,12 +561,12 @@ def master_plan_executable_contract_text() -> str:
             "tables never satisfy this requirement by themselves."
         ),
         (
-            f'- architecture_focus_id="{LEGACY_CONSUMER_MIGRATION_FOCUS_ID}" '
-            "is a system-owned migration, not a selectable innovation: its "
-            f"required_checks must equal {list(LEGACY_CONSUMER_MIGRATION_CHECKS)} "
-            f"and its writable scope must include {list(LEGACY_CONSUMER_MIGRATION_FILES)}. "
-            "It is the generation's only task and forbids state_learning or any "
-            "parallel strategy/support task in the same generation."
+            "- policy_abi is closed: module=policy.py; entrypoints="
+            f"{list(POLICY_ENTRYPOINTS)}; context schema version="
+            f"{POLICY_CONTEXT_SCHEMA_VERSION}; ordered fields="
+            f"{list(POLICY_CONTEXT_TOP_LEVEL_FIELDS)}; intents="
+            f"{list(POLICY_INTENT_KINDS)} with raise.raise_to. The socket owner alone "
+            "maps pass to call/check and serializes raw TCP."
         ),
     ]
     for primary, terms in STATE_LEARNING_PRIMARY_PROMPT_TERMS.items():
@@ -615,7 +599,7 @@ class WorkerTask(BaseModel):
         max_length=WORKER_TASK_MAX_TARGET_FILES,
     )
     difficulty: str = "medium"
-    skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, adapter, native_tcp, telemetry, etc.")
+    skill_layer: str = Field(min_length=1, description="Primary strategy/protocol layer: preflop_range, texture, spr, blocker, line_template, protocol, native_tcp, telemetry, etc.")
     files_allowed: list[str] = Field(default_factory=list)
     read_only_dependencies: list[str] = Field(
         default_factory=list,
@@ -658,11 +642,10 @@ class WorkerTask(BaseModel):
             for item in [*self.target_files, *self.files_allowed]
             if str(item).strip()
         }
-        if "national_bot.py" in writable_scope:
+        if writable_scope != {"policy.py"}:
             raise ValueError(
-                "system-provided national_bot.py is read-only in Master worker tasks; "
-                "only the deterministic official_repair/official_full protocol-repair "
-                "route may create a narrowly scoped writable entrypoint task"
+                "national_tcp_policy_v1 writable scope must be exactly ['policy.py']; "
+                f"got {sorted(writable_scope)}. System files, helpers, and assets are read-only/forbidden."
             )
 
         required_sections = runtime_contract_required_sections(
@@ -692,6 +675,25 @@ class WorkerTask(BaseModel):
                 f"{', '.join(missing)}"
             )
 
+        invalid_precompute_owners = sorted({
+            item.owner_file
+            for item in contract.precompute_artifacts
+            if item.owner_file != "precompute.py"
+        })
+        if invalid_precompute_owners:
+            raise ValueError(
+                "precompute artifacts must be existing system-owned precompute.py "
+                f"objects, got owners {invalid_precompute_owners}"
+            )
+        if (
+            contract.match_memory is not None
+            and contract.match_memory.owner_file != "national_bot.py"
+        ):
+            raise ValueError(
+                "match memory is reducer-owned in system national_bot.py; "
+                f"got {contract.match_memory.owner_file!r}"
+            )
+
         state_learning = contract.state_learning
         if state_learning is not None:
             missing_checks = sorted(
@@ -701,14 +703,6 @@ class WorkerTask(BaseModel):
                 raise ValueError(
                     "state_learning primary innovation requires checks_required "
                     f"to include {missing_checks}"
-                )
-            if (
-                state_learning.work_primitive == "bounded_precompute_lookup"
-                and not contract.precompute_artifacts
-            ):
-                raise ValueError(
-                    "bounded_precompute_lookup requires at least one concrete "
-                    "precompute_artifacts declaration"
                 )
             if (
                 state_learning.work_primitive == "sample_counted_candidate_batch"
@@ -728,50 +722,6 @@ class WorkerTask(BaseModel):
                 )
                 if reference_errors:
                     raise ValueError("; ".join(reference_errors))
-
-        migration = contract.legacy_consumer_migration
-        if migration is not None:
-            if focus_id != LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-                raise ValueError(
-                    "legacy_consumer_migration may appear only on the system-owned "
-                    f"{LEGACY_CONSUMER_MIGRATION_FOCUS_ID!r} focus task"
-                )
-            missing_checks = sorted(
-                set(LEGACY_CONSUMER_MIGRATION_CHECKS).difference(
-                    self.checks_required
-                )
-            )
-            if missing_checks:
-                raise ValueError(
-                    "legacy_consumer_migration requires checks_required to include "
-                    f"the complete system-owned bundle; missing {missing_checks}"
-                )
-            missing_files = sorted(
-                set(LEGACY_CONSUMER_MIGRATION_FILES).difference(writable_scope)
-            )
-            if missing_files:
-                raise ValueError(
-                    "legacy_consumer_migration requires writable target_files/"
-                    f"files_allowed for {missing_files}"
-                )
-            unexpected_files = sorted(
-                writable_scope.difference(LEGACY_CONSUMER_MIGRATION_FILES)
-            )
-            if unexpected_files:
-                raise ValueError(
-                    "legacy_consumer_migration writable scope is system-owned; "
-                    f"unexpected files {unexpected_files}"
-                )
-            forbidden_extra_checks = sorted(
-                set(self.checks_required).intersection(
-                    LEGACY_CONSUMER_MIGRATION_FORBIDDEN_EXTRA_CHECKS
-                )
-            )
-            if forbidden_extra_checks:
-                raise ValueError(
-                    "legacy_consumer_migration may not carry ordinary innovation "
-                    f"or aggregate checks {forbidden_extra_checks}"
-                )
 
         read_only_scope = {
             str(item).replace("\\", "/").rsplit("/", 1)[-1]
@@ -841,7 +791,7 @@ class MasterPlan(BaseModel):
             task
             for task in self.tasks
             if task.architecture_focus_id.strip()
-            == "national_runtime_v4_state_learning"
+            == NATIONAL_POLICY_FOCUS_ID
         ]
         primary_tasks = [
             task
@@ -849,51 +799,19 @@ class MasterPlan(BaseModel):
             if task.runtime_contract is not None
             and task.runtime_contract.state_learning is not None
         ]
-        migration_focus_tasks = [
-            task
-            for task in self.tasks
-            if task.architecture_focus_id.strip()
-            == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
-        ]
-        migration_contract_tasks = [
-            task
-            for task in self.tasks
-            if task.runtime_contract is not None
-            and task.runtime_contract.legacy_consumer_migration is not None
-        ]
-        if migration_focus_tasks or migration_contract_tasks:
-            if len(self.tasks) != 1:
-                raise ValueError(
-                    "legacy consumer migration is a generation-wide isolation "
-                    "boundary and requires exactly one total worker task"
-                )
-            if len(migration_focus_tasks) != 1 or len(migration_contract_tasks) != 1:
-                raise ValueError(
-                    "legacy consumer migration requires exactly one system-owned "
-                    "focus task carrying the complete migration bundle"
-                )
-            if migration_contract_tasks[0] not in migration_focus_tasks:
-                raise ValueError(
-                    "legacy consumer migration bundle must belong to its focus task"
-                )
-            if primary_tasks:
-                raise ValueError(
-                    "state_learning is forbidden until the universal legacy consumer "
-                    "migration bundle is complete"
-                )
         if len(primary_tasks) > 1:
             raise ValueError(
                 "exactly one state_learning primary is allowed across the entire generation"
             )
         if focus_tasks and len(primary_tasks) != 1:
             raise ValueError(
-                "national_runtime_v4_state_learning requires exactly one "
+                f"{NATIONAL_POLICY_FOCUS_ID} requires exactly one "
                 "state_learning primary across the entire generation"
             )
         if focus_tasks and primary_tasks[0] not in focus_tasks:
             raise ValueError(
                 "the generation-level state_learning primary must belong to the "
-                "national_runtime_v4_state_learning focus task"
+                f"{NATIONAL_POLICY_FOCUS_ID} focus task"
             )
         return self
 
@@ -908,7 +826,6 @@ class ReviewResult(BaseModel):
 
 class Evidence(BaseModel):
     h2h_weaknesses: list[str] = []
-    experience_pool_refs: list[str] = []
     diff_refs: list[str] = []
 
 
@@ -941,8 +858,6 @@ class DirectionAuditResult(BaseModel):
 class ArchivistResult(BaseModel):
     generation_assessment: str = Field(description="improvement, neutral, regression, or mixed")
     archive_notes: str = ""
-    experience_updates: list[str] = Field(default_factory=list, max_length=2)
-    strategic_advice: str = ""
 
 
 class StagnationResult(BaseModel):
@@ -951,15 +866,6 @@ class StagnationResult(BaseModel):
     recommendation: str = "continue"
     branch_from: Optional[str] = None
     reason: str = ""
-
-
-class PerformanceResult(BaseModel):
-    trend: str = Field(description="improving, stagnant, or declining")
-    verified_improvements: list[str] = []
-    persistent_weaknesses: list[str] = []
-    diversity_needed: bool = False
-    diversity_reason: Optional[str] = None
-    suggestion: str = ""
 
 
 class CombinedAnalystResult(BaseModel):
@@ -993,7 +899,7 @@ class MasterPlanAuditResult(BaseModel):
     plan_coherent: bool = True
     contradiction_found: bool = False
     contradictions: list[str] = []
-    experience_alignment: str = "aligned"  # aligned, misaligned, unrelated
+    evidence_alignment: str = "aligned"  # aligned, misaligned, unrelated
     direction_novelty: str = "novel"       # novel, incremental, repetitive
     overall_pass: bool = True
     feedback: str = ""
@@ -1008,47 +914,6 @@ class WorkerCoTCheckResult(BaseModel):
     logical_contradictions: list[str] = []
     boundary_violations: list[str] = []
     focus_areas: list[str] = []  # Injected into reviewer if issues found
-
-
-class DynamicTestScenario(BaseModel):
-    """P0-3: Single LLM-generated test scenario."""
-    id: str
-    description: str
-    input: dict
-    expected_actions: list[str] = []
-    forbidden_actions: list[str] = []
-    zero_action: Optional[str] = None
-    legal_actions: list[str] = []
-    raise_min: Optional[int] = None
-    raise_max: Optional[int] = None
-    allin_requires_minus2: bool = False
-    national_legal_expected: bool = False
-    rationale: str = ""
-
-    @field_validator("input")
-    @classmethod
-    def _input_is_single_request(cls, value: dict) -> dict:
-        if not isinstance(value, dict):
-            raise ValueError("input must be a single request dict")
-        if "requests" in value or "responses" in value:
-            raise ValueError("input must be a single request dict, not a full bot payload")
-        return value
-
-
-class DynamicTestSuite(BaseModel):
-    """P0-3: Collection of LLM-generated test scenarios."""
-    scenarios: list[DynamicTestScenario] = Field(max_length=10)
-
-
-class PrecommitSemanticResult(BaseModel):
-    """P0-4: Semantic interpretation of precommit eval battle results."""
-    win_pattern_analysis: str = ""
-    top_opponent_assessment: str = ""
-    regression_semantics: str = "safe"  # clear_regression, marginal, safe, improvement
-    recommended_action: str = "proceed"  # proceed, caution, block
-    confidence: str = "medium"
-    data_quality: dict[str, object] = Field(default_factory=dict)
-    block_evidence: list[str] = Field(default_factory=list, max_length=5)
 
 
 class DegenerationDiagnosis(BaseModel):
@@ -1070,15 +935,15 @@ class CrossoverCompatibilityResult(BaseModel):
     files_to_take_from_a: list[str] = []
     files_to_take_from_b: list[str] = []
 
-
-class ExperiencePoolAuditResult(BaseModel):
-    """P1-4: Experience pool quality audit."""
-    stale_entries: list[str] = []
-    contradictions: list[str] = []
-    relevance_issues: list[str] = []
-    recommended_removals: list[str] = []
-    recommended_additions: list[str] = []
-    overall_health: str = "healthy"  # healthy, needs_cleanup, stale
+    @field_validator("files_to_take_from_a", "files_to_take_from_b")
+    @classmethod
+    def _policy_only_crossover_files(cls, value: list[str]) -> list[str]:
+        normalized = [str(item).strip() for item in value]
+        if any(item != "policy.py" for item in normalized):
+            raise ValueError(
+                "national_tcp_policy_v1 crossover may select only policy.py"
+            )
+        return list(dict.fromkeys(normalized))
 
 
 # ──────────────────────────────────────────────
@@ -1093,16 +958,12 @@ AGENT_SCHEMAS = {
     "direction_auditor": DirectionAuditResult,
     "archivist": ArchivistResult,
     "stagnation_analyst": StagnationResult,
-    "performance_analyst": PerformanceResult,
     "combined_analyst": CombinedAnalystResult,
     # Audit agents
     "master_plan_auditor": MasterPlanAuditResult,
     "worker_cot_checker": WorkerCoTCheckResult,
-    "dynamic_test_generator": DynamicTestSuite,
-    "precommit_semantic": PrecommitSemanticResult,
     "degeneration_diagnosis": DegenerationDiagnosis,
     "crossover_compatibility": CrossoverCompatibilityResult,
-    "experience_pool_audit": ExperiencePoolAuditResult,
 }
 
 

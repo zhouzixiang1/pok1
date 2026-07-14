@@ -1,83 +1,64 @@
+"""Official repair planning at the strict candidate/system boundary."""
+
 from tool_planning import _synthesize_rework_tasks_from_checkpoint
 
 
-def test_official_failed_checkpoint_synthesizes_official_repair_task():
-    ckpt = {
+def _checkpoint(issue, *, classification="obvious_decision_error", version=144):
+    return {
         "stage": "official_failed",
-        "next_v": 134,
-        "source_v": 120,
+        "next_v": version,
+        "source_v": 143,
         "gate_results": {
             "official_full": {
                 "passed": False,
-                "issues": [
-                    "official_full_round_incomplete_after_progress: hands_started=33 settlements=32 target=70 max_abs_net_chips=19466",
-                ],
+                "issues": [issue],
                 "official_evidence_summary": {
-                    "classification": "obvious_decision_error",
+                    "classification": classification,
                     "blocking": True,
                 },
             }
         },
     }
 
-    tasks = _synthesize_rework_tasks_from_checkpoint(ckpt)
+
+def test_policy_proven_official_failure_synthesizes_policy_only_repair():
+    checkpoint = _checkpoint(
+        "obvious_decision_error: policy exception during a pending river action"
+    )
+    tasks = _synthesize_rework_tasks_from_checkpoint(checkpoint)
 
     assert len(tasks) == 1
-    assert tasks[0]["task_kind"] == "official_repair"
-    assert tasks[0]["worker_id"] == "auto_official_full_repair"
-    assert "official EXE full-certification repair" in tasks[0]["worker_prompt"]
-    assert "not a strength-rating tweak" in tasks[0]["worker_prompt"]
-    assert tasks[0]["target_files"]
+    task = tasks[0]
+    assert task["task_kind"] == "official_repair"
+    assert task["target_files"] == ["policy.py"]
+    assert "official EXE full-certification repair" in task["worker_prompt"]
+    assert "not a strength-rating tweak" in task["worker_prompt"]
+    assert "Candidate scope is policy.py only" in task["worker_prompt"]
+    assert "never edit national_bot.py or precompute.py" in task["worker_prompt"]
 
 
-def test_official_protocol_failure_targets_native_entrypoint():
-    ckpt = {
-        "stage": "official_failed",
-        "next_v": 134,
-        "source_v": 120,
-        "gate_results": {
-            "official_full": {
-                "passed": False,
-                "issues": ["protocol_raise_format: msg='raise  200'"],
-                "official_evidence_summary": {"classification": "protocol", "blocking": True},
-            }
-        },
+def test_protocol_failure_is_system_owned_and_has_no_worker_repair_task():
+    checkpoint = _checkpoint(
+        "protocol_raise_format: msg='raise  200'",
+        classification="protocol",
+    )
+    assert _synthesize_rework_tasks_from_checkpoint(checkpoint) == []
+
+
+def test_advisory_llm_protocol_words_cannot_redirect_policy_repair():
+    checkpoint = _checkpoint(
+        "obvious_decision_error: repeated river overcall",
+        version=145,
+    )
+    checkpoint["gate_results"]["official_full"]["status"] = {
+        "official_llm_repair_guidance": "Consider wire protocol serialization",
+        "official_llm_prompt_feedback": "protocol protocol protocol",
     }
+    checkpoint["reviewer_feedback"] = "wire format may be worth checking"
 
-    tasks = _synthesize_rework_tasks_from_checkpoint(ckpt)
+    tasks = _synthesize_rework_tasks_from_checkpoint(checkpoint)
 
-    assert tasks[0]["task_kind"] == "official_repair"
-    assert tasks[0]["target_files"] == ["national_bot.py"]
-    assert "Protocol-focused" in tasks[0]["worker_prompt"]
-
-
-def test_official_llm_words_cannot_redirect_repair_to_native_entrypoint():
-    ckpt = {
-        "stage": "official_failed",
-        "next_v": 135,
-        "source_v": 120,
-        "gate_results": {
-            "official_full": {
-                "passed": False,
-                "issues": ["obvious_decision_error: repeated river overcall"],
-                "official_evidence_summary": {
-                    "classification": "obvious_decision_error",
-                    "blocking": True,
-                },
-                "status": {
-                    "official_llm_repair_guidance": (
-                        "Consider wire protocol serialization even though the "
-                        "deterministic verdict did not report it"
-                    ),
-                    "official_llm_prompt_feedback": "protocol protocol protocol",
-                },
-            }
-        },
-        "reviewer_feedback": "wire format may be worth checking",
-    }
-
-    tasks = _synthesize_rework_tasks_from_checkpoint(ckpt)
-
-    assert tasks[0]["target_files"] != ["national_bot.py"]
+    assert len(tasks) == 1
+    assert tasks[0]["target_files"] == ["policy.py"]
     assert "national_bot.py" not in tasks[0]["target_files"]
-    assert "Decision/state-focused" in tasks[0]["worker_prompt"]
+    assert "system-owned" in tasks[0]["worker_prompt"]

@@ -1,204 +1,114 @@
-# TailAdmin React - Free React Tailwind Admin Dashboard Template
+# National TCP Poker Evolution Dashboard
 
-TailAdmin is a free and open-source admin dashboard template built on **React and Tailwind CSS**, providing developers
-with everything they need to create a comprehensive, data-driven back-end,
-dashboard, or admin panel solution for upcoming web projects.
+This React 19 application is the operator dashboard for the repository's
+`national_tcp_policy_v1` evolution runtime. It is a read-mostly projection of
+the FastAPI contracts under `web/server/routes/`; it is not an independent
+source of bot, version, rating, certification, or protocol authority.
 
-With TailAdmin, you get access to all the necessary dashboard UI components, elements, and pages required to build a
-feature-rich and complete dashboard or admin panel. Whether you're building dashboard or admin panel for a complex web
-application or a simple website, TailAdmin is the perfect solution to help you get up and running quickly.
+## Development and build
 
-![TailAdmin React.js Dashboard Preview](./banner.png)
-
-## Overview
-
-TailAdmin provides essential UI components and layouts for building feature-rich, data-driven admin dashboards and
-control panels. It's built on:
-
-- React 19
-- TypeScript
-- Tailwind CSS v4
-
-### Quick Links
-
-- [✨ Visit Website](https://tailadmin.com)
-- [📄 Documentation](https://tailadmin.com/docs)
-- [⬇️ Download](https://tailadmin.com/download)
-- [🖌️ Figma Design File (Community Edition)](https://www.figma.com/community/file/1214477970819985778)
-- [⚡ Get PRO Version](https://tailadmin.com/pricing)
-
-### Demos
-
-- [Free Version](https://free-react-demo.tailadmin.com/)
-- [Pro Version](https://react-demo.tailadmin.com)
-
-### Other Versions
-
-- [HTML Version](https://github.com/TailAdmin/tailadmin-free-tailwind-dashboard-template)
-- [Next.js Version](https://github.com/TailAdmin/free-nextjs-admin-dashboard)
-- [Vue.js Version](https://github.com/TailAdmin/vue-tailwind-admin-dashboard)
-- [Angular Version](https://github.com/TailAdmin/free-angular-tailwind-dashboard)
-- [Laravel Version](https://github.com/TailAdmin/tailadmin-laravel)
-
-## Installation
-
-### Prerequisites
-
-To get started with TailAdmin, ensure you have the following prerequisites installed and set up:
-
-- Node.js 18.x or later (recommended to use Node.js 20.x or later)
-
-### Cloning the Repository
-
-Clone the repository using the following command:
+Use the repository-pinned lockfile:
 
 ```bash
-git clone https://github.com/TailAdmin/free-react-tailwind-admin-dashboard.git
+cd web/frontend
+npm ci
+npm run lint
+npm run build
 ```
 
-> Windows Users: place the repository near the root of your drive if you face issues while cloning.
+`npm run dev` starts the Vite development server. `npm run build` writes
+`web/frontend/dist/` and copies the generated application to
+`web/server/static/`. Both locations are generated outputs. The production
+launcher is `python web/main.py`; on a fresh checkout, run it once without
+`--no-build`.
 
-1. Install dependencies:
+The application uses React, TypeScript, Tailwind CSS, ApexCharts, and
+`react-router` v7. The package name retains historical template provenance,
+but this source tree is the poker evolution dashboard and should be documented
+and tested as such.
 
-   ```bash
-   npm install
-   # or
-   yarn install
-   ```
+## Authority model
 
-2. Start the development server:
-   ```bash
-   npm run dev
-   # or
-   yarn dev
-   ```
+Every page fails closed against `/api/control/status`:
 
-## Components
+- The only canonical epoch is `national_tcp_policy_v1`.
+- Before the signed reset receipt is valid, API evidence is shown as empty and
+  old ratings, matches, logs, checkpoints, and in-memory SSE events are not
+  reused.
+- `v142` is only the immutable pre-policy numeric high-water. In the explicit
+  `reset_required` state, the first strict target is `v143`.
+- Recovery and unavailable states do not claim a next version.
+- Directories such as an uncommitted/untagged `national_v155` are debris, not a
+  published bot, candidate, generation result, or version authority.
+- The current published pool comes from strict epoch projection. The first
+  published bot may legitimately appear before its first matching evaluation
+  cycle; during that interval the UI shows “awaiting first rating cycle” and
+  never invents a zero/default selection score.
 
-TailAdmin is a pre-designed starting point for building a web-based dashboard using React.js and Tailwind CSS. The
-template includes:
+One strength sample is one complete, compliant 70-hand local native TCP match.
+Selection score and Glicko/H2H rows come only from the immutable evaluation
+cycle whose identity matches the exact current published pool. Net-chip
+magnitude is secondary evidence, not a replacement score.
 
-- Sophisticated and accessible sidebar
-- Data visualization components
-- Prebuilt profile management and 404 page
-- Tables and Charts(Line and Bar)
-- Authentication forms and input elements
-- Alerts, Dropdowns, Modals, Buttons and more
-- FAQ & Accordion, Testimonials, and Carousels
-- Can't forget Dark Mode 🕶️
+## Certification and Arena
 
-All components are built with React and styled using Tailwind CSS for easy customization.
+Formal publication authority is a backend-validated, content-bound
+`official-full-v5` certificate: five 70-hand self-play rounds plus three
+70-hand rounds against an eligible opponent, signed and bound to the official
+verdict ledger. The browser consumes `formal_certified` and
+`formal_authority=signed_full_v5`; it does not reconstruct certificate validity
+from a loose summary.
 
-## Feature Comparison
+The retired HTTP certification enqueue endpoint is intentionally absent from
+the client. Normal certification is advanced by the checkpointed orchestrator;
+the first strict bootstrap uses the explicit acknowledged operator CLI path.
+While `official_bootstrap_required` is active, `/api/certification/jobs` may
+expose exactly one request-bound v143 job as
+`formal_authority=operator_bootstrap_full_v5_job`, `read_only=true`, and
+`cancel_allowed=false`. The dashboard may display its 5+3×70 progress and the
+operator command, but cannot start or cancel it. Unrelated bootstrap jobs,
+v155 debris, and old-epoch jobs remain invisible.
 
-### Free Version
+National Arena sessions are presentation and protocol diagnostics only:
 
-- 1 Unique Dashboard
-- 35+ dashboard components
-- 50+ UI elements
-- Basic Figma design files
-- Community support
+- `result_authority=diagnostic_only`
+- `affects_glicko=false`
+- `official_exe_certification=false`
+- `can_certify=false`
 
-### Pro Version
+Arena results, wire logs, and local THP files never update strength ratings or
+grant publication eligibility.
 
-- 7 Unique Dashboards: Analytics, Ecommerce, Marketing, CRM, SaaS, Stocks, Logistics (more coming soon)
-- 500+ dashboard components and UI elements
-- Complete Figma design file
-- Email support
+## Read and mutation boundaries
 
-To learn more about pro version features and pricing, visit our [pricing page](https://tailadmin.com/pricing).
+Ratings, replay, bot inventory/source, prompt contracts, pipeline state, logs,
+and certification progress are read-only dashboard surfaces. Prompt changes
+must be reviewed in source control and synchronized through the repository's
+dual-checkout policy; the browser cannot hot-edit them. There is no generic MCP
+tool runner or arbitrary certification launcher in the UI.
 
-## Changelog
+The limited operator mutations (orchestrator start/stop/config, session clear,
+and Arena lifecycle) use the shared `POK_CONTROL_TOKEN` backend authority and
+the `X-Control-Token` request header. The token entered in the control panel is
+held only in the current JavaScript process memory and is cleared by a page
+reload. It is never written to local storage.
 
-### Version 2.3.0 - [April 28, 2026]
-- Added **AI Dashboard** with token usage and revenue tracking.
-- Added **Sales Dashboard** with retention and multi-channel analytics.
-- Added **Finance Dashboard** with cashflow and balance management.
-- Introduced **6 New Layout variations** for improved UI flexibility.
-- Integrated **Advanced Data Visualization** with 7+ new chart types.
+## Primary data contracts
 
-### Version 2.1.0 - [Dec 30, 2025]
+- `/api/control/status`: epoch, version, published-pool, and active-generation
+  authority.
+- `/api/ratings`, `/api/history`, `/api/matches/*`: current immutable strength
+  bundle only.
+- `/api/bots`: current strict published inventory; unpublished and historical
+  directories are excluded.
+- `/api/certification/*`: formal full-v5 status and exact current durable-job
+  progress; enqueue is retired and v143 bootstrap is read-only.
+- `/api/evolution/state` and `/api/evolution/stream`: current initialized epoch
+  only. The server closes a pre-reset stream without replaying its memory ring.
+- `/api/national-arena/*`: epoch-bound diagnostic sessions with explicit
+  non-authority metadata.
+- `/api/prompts`: source-controlled, read-only prompt contracts.
 
-- Resolved Date Picker positioning and input issues in Charts.
-
-### Version 2.0.2 - [March 25, 2025]
-
-- Upgraded to React 19
-- Included overrides for packages to prevent peer dependency errors.
-- Migrated from react-flatpickr to flatpickr package for React 19 support
-
-### Version 2.0.1 - [February 27, 2025]
-
-#### Update Overview
-
-- Upgraded to Tailwind CSS v4 for better performance and efficiency.
-- Updated class usage to match the latest syntax and features.
-- Replaced deprecated class and optimized styles.
-
-#### Next Steps
-
-- Run npm install or yarn install to update dependencies.
-- Check for any style changes or compatibility issues.
-- Refer to the Tailwind CSS v4 [Migration Guide](https://tailwindcss.com/docs/upgrade-guide) on this release. if needed.
-- This update keeps the project up to date with the latest Tailwind improvements. 🚀
-
-### Version 2.0.0 - [February 2025]
-
-A major update with comprehensive redesign and modern React patterns implementation.
-
-#### Major Improvements
-
-- Complete UI redesign with modern React patterns
-- New features: collapsible sidebar, chat, and calendar
-- Improved performance and accessibility
-- Updated data visualization using ApexCharts
-
-#### Key Features
-
-- Redesigned dashboards (Ecommerce, Analytics, Marketing, CRM)
-- Enhanced navigation with React Router integration
-- Advanced tables with sorting and filtering
-- Calendar with drag-and-drop support
-- New UI components and improved existing ones
-
-#### Breaking Changes
-
-- Updated sidebar component API
-- Migrated charts to ApexCharts
-- Revised authentication system
-
-[Read more](https://tailadmin.com/docs/update-logs/react) on this release.
-
-### Version 1.3.7 - [June 20, 2024]
-
-#### Enhancements
-
-1. Remove Repetition of DefaultLayout in every Pages
-2. Add ClickOutside Component for reduce repeated functionality in Header Message, Notification and User Dropdowns.
-
-### Version 1.3.6 - [Jan 31, 2024]
-
-#### Enhancements
-
-1. Integrate flatpickr in [Date Picker/Form Elements]
-2. Change color after select an option [Select Element/Form Elements].
-3. Make it functional [Multiselect Dropdown/Form Elements].
-4. Make best value editable [Pricing Table One/Pricing Table].
-5. Rearrange Folder structure.
-
-### Version 1.2.0 - [Apr 28, 2023]
-
-- Add Typescript in TailAdmin React.
-
-### Version 1.0.0 - Initial Release - [Mar 13, 2023]
-
-- Initial release of TailAdmin React.
-
-## License
-
-TailAdmin React.js Free Version is released under the MIT License.
-
-## Support
-
-If you find this project helpful, please consider giving it a star on GitHub. Your support helps us continue developing
-and maintaining this template.
+When a route returns 404, 409, 410, or 503 because identity or authority moved,
+the page should clear the affected projection and explain the rejection. It
+must not retain stale data, synthesize a fallback, or retry a retired mutation.

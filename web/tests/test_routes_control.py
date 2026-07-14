@@ -3,7 +3,6 @@
 import asyncio
 import json
 import sys
-from types import SimpleNamespace
 
 
 class TestConfig:
@@ -63,91 +62,179 @@ class TestStatus:
         assert "daemon_enabled" in data
 
     def test_status_uses_active_checkpoint_target(self, client, monkeypatch):
+        import epoch_authority
         import server.routes.control as control
         from server.state import app_state
 
-        app_state.bootstrap(224)
-        control._last_status_sync_correction = None
-        fake_evolution_core = SimpleNamespace(
-            compute_next_generation_v=lambda current_v, max_committed_v, abandoned_floor: max(
-                current_v, max_committed_v, abandoned_floor
-            ) + 1,
-            find_abandoned_version_floor=lambda: 230,
-            find_current_v=lambda: 224,
-            find_max_committed_v=lambda: 230,
-            read_pipeline_checkpoint=lambda: {
-                "next_v": 231,
-                "source_v": 224,
-                "stage": "prepared",
-                "run_id": "231#0",
+        app_state.bootstrap(142)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda: {
+                "current_v": 143,
+                "next_v": 144,
+                "strict_generation_count": 1,
+                "active_generation": {
+                    "next_v": 144,
+                    "source_v": 143,
+                    "stage": "prepared",
+                    "run_id": "generation:144:strict",
+                    "workflow_run_id": "generation:144:strict",
+                    "attempt": {"generation": 0, "audit": 0, "precommit": 0},
+                },
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "strict_published",
+                "initialized": True,
+                "version_authority_high_water": 143,
+                "strict_published_versions": [143],
+                "active_bots": ["national_v143"],
+                "reset_receipt_valid": True,
+                "reset_receipt_issues": [],
+                "operator_action": None,
+                "operator_command": None,
+                "ignored_checkpoint": None,
+                "max_committed_v": 143,
             },
         )
-        monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
+        monkeypatch.setattr(
+            epoch_authority,
+            "unpublished_candidate_versions",
+            lambda: [],
+        )
 
         resp = client.get("/api/control/status")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_v"] == 224
-        assert data["next_v"] == 231
-        assert data["generation_count"] == 224
+        assert data["current_v"] == 143
+        assert data["next_v"] == 144
+        assert data["generation_count"] == 1
         assert data["active_generation"]["stage"] == "prepared"
+        assert data["evaluation_epoch"] == "national_tcp_policy_v1"
 
-    def test_status_derives_run_id_and_attempt_when_checkpoint_is_legacy(self, client, monkeypatch):
+    def test_status_never_promotes_legacy_checkpoint(self, client, monkeypatch):
+        import epoch_authority
         import server.routes.control as control
         from server.state import app_state
 
-        app_state.bootstrap(224)
-        control._last_status_sync_correction = None
-        fake_evolution_core = SimpleNamespace(
-            compute_next_generation_v=lambda current_v, max_committed_v, abandoned_floor: max(
-                current_v, max_committed_v, abandoned_floor
-            ) + 1,
-            find_abandoned_version_floor=lambda: 230,
-            find_current_v=lambda: 224,
-            find_max_committed_v=lambda: 230,
-            read_pipeline_checkpoint=lambda: {
-                "next_v": 231,
-                "source_v": 224,
-                "stage": "direction_audited",
-                "generation_attempt": 2,
-                "audit_attempt": None,
-                "precommit_attempt": 1,
+        app_state.bootstrap(155)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda: {
+                "current_v": 142,
+                "next_v": 143,
+                "strict_generation_count": 0,
+                "active_generation": None,
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "reset_required",
+                "initialized": False,
+                "version_authority_high_water": 142,
+                "strict_published_versions": [],
+                "active_bots": [],
+                "reset_receipt_valid": False,
+                "reset_receipt_issues": ["policy_epoch_reset_receipt_missing_or_unsafe"],
+                "operator_action": "execute_policy_epoch_reset",
+                "operator_command": "python scripts/reset_national_tcp_policy_epoch.py --execute --acknowledge-runtime-checkout",
+                "ignored_checkpoint": {
+                    "next_v": 155,
+                    "source_v": 142,
+                    "stage": "direction_audited",
+                    "reason": "checkpoint_not_bound_to_strict_epoch",
+                    "issues": ["checkpoint_schema_version_missing_or_mismatch"],
+                },
+                "max_committed_v": 142,
             },
         )
-        monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
-
-        resp = client.get("/api/control/status")
-
-        assert resp.status_code == 200
-        active = resp.json()["active_generation"]
-        assert active["run_id"] == "231#2"
-        assert active["attempt"] == {"generation": 2, "audit": 0, "precommit": 1}
-
-    def test_status_uses_abandoned_floor_without_checkpoint(self, client, monkeypatch):
-        import server.routes.control as control
-        from server.state import app_state
-
-        app_state.bootstrap(254)
-        control._last_status_sync_correction = None
-        fake_evolution_core = SimpleNamespace(
-            compute_next_generation_v=lambda current_v, max_committed_v, abandoned_floor: max(
-                current_v, max_committed_v, abandoned_floor
-            ) + 1,
-            find_abandoned_version_floor=lambda: 255,
-            find_current_v=lambda: 254,
-            find_max_committed_v=lambda: 254,
-            read_pipeline_checkpoint=lambda: {},
+        monkeypatch.setattr(
+            epoch_authority,
+            "unpublished_candidate_versions",
+            lambda: [155],
         )
-        monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
 
         resp = client.get("/api/control/status")
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_v"] == 254
-        assert data["next_v"] == 256
-        assert data["generation_count"] == 254
+        assert data["current_v"] == 142
+        assert data["next_v"] == 143
+        assert data["generation_count"] == 0
+        assert data["active_generation"] is None
+        assert data["ignored_checkpoint"]["next_v"] == 155
+        assert data["unpublished_candidate_versions"] == [155]
+        assert data["epoch_initialized"] is False
+
+    def test_status_projection_failure_is_complete_and_never_leaks_app_state(self, client, monkeypatch):
+        import epoch_authority
+        from server.state import app_state
+
+        app_state.bootstrap(155)
+
+        def unavailable():
+            raise RuntimeError("projection evidence unreadable")
+
+        monkeypatch.setattr(epoch_authority, "strict_epoch_projection", unavailable)
+
+        resp = client.get("/api/control/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["epoch_state"] == "epoch_authority_unavailable"
+        assert data["epoch_initialized"] is False
+        assert data["current_v"] == 0
+        assert data["next_v"] == 0
+        assert data["version_authority_high_water"] == 0
+        assert data["strict_generation_count"] == 0
+        assert data["strict_published_versions"] == []
+        assert data["active_bots"] == []
+        assert data["active_generation"] is None
+        assert data["unpublished_candidate_versions"] == []
+        assert data["reset_receipt_issues"] == [
+            "canonical_epoch_projection_unavailable"
+        ]
+        assert "projection evidence unreadable" in data["status_sync_error"]
+
+    def test_status_uses_current_epoch_abandoned_floor_without_checkpoint(self, client, monkeypatch):
+        import epoch_authority
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.bootstrap(143)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda: {
+                "current_v": 143,
+                "next_v": 145,
+                "strict_generation_count": 1,
+                "active_generation": None,
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "strict_published",
+                "initialized": True,
+                "version_authority_high_water": 143,
+                "strict_published_versions": [143],
+                "active_bots": ["national_v143"],
+                "reset_receipt_valid": True,
+                "reset_receipt_issues": [],
+                "operator_action": None,
+                "operator_command": None,
+                "ignored_checkpoint": None,
+                "max_committed_v": 143,
+            },
+        )
+        monkeypatch.setattr(
+            epoch_authority,
+            "unpublished_candidate_versions",
+            lambda: [],
+        )
+
+        resp = client.get("/api/control/status")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["current_v"] == 143
+        assert data["next_v"] == 145
+        assert data["generation_count"] == 1
         assert data["active_generation"] is None
 
     def test_view_only_lifespan_does_not_start_orchestrator(self, monkeypatch):
@@ -163,6 +250,7 @@ class TestStatus:
         app_state.stop_running()
         monkeypatch.setenv("POK_WEB_VIEW_ONLY", "1")
         monkeypatch.setitem(sys.modules, "orchestrator", TrapOrchestrator())
+        monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
         monkeypatch.setattr(app_module.web_ui, "log_history", lambda *args: events.append(args))
 
         async def run_lifespan():
@@ -187,7 +275,7 @@ class TestStatus:
         monkeypatch.setattr(
             control,
             "_read_pipeline_health",
-            lambda: {"exists": False, "stage": None},
+            lambda _status: {"exists": False, "stage": None},
         )
 
         resp = client.get("/api/control/health")
@@ -221,14 +309,13 @@ class TestStatus:
                 "exists": True,
                 "pid": 123,
                 "alive": True,
-                "scheduler_capable": True,
                 "heartbeat_stale": False,
             },
         )
         monkeypatch.setattr(
             control,
             "_read_pipeline_health",
-            lambda: {"exists": False, "stage": None},
+            lambda _status: {"exists": False, "stage": None},
         )
 
         resp = client.get("/api/control/health")
@@ -262,7 +349,6 @@ class TestStatus:
                 "exists": True,
                 "pid": 123,
                 "alive": True,
-                "scheduler_capable": False,
                 "heartbeat_stale": True,
                 "heartbeat_age_sec": 999,
             },
@@ -270,7 +356,7 @@ class TestStatus:
         monkeypatch.setattr(
             control,
             "_read_pipeline_health",
-            lambda: {"exists": True, "stage": "direction_audited"},
+            lambda _status: {"exists": True, "stage": "direction_audited"},
         )
 
         resp = client.get("/api/control/health")
@@ -303,14 +389,13 @@ class TestStatus:
                 "exists": True,
                 "pid": 123,
                 "alive": True,
-                "scheduler_capable": True,
                 "heartbeat_stale": False,
             },
         )
         monkeypatch.setattr(
             control,
             "_read_pipeline_health",
-            lambda: {
+            lambda _status: {
                 "exists": True,
                 "stage": "workers_done",
                 "recovery": {
@@ -337,39 +422,57 @@ class TestDecisions:
 
 
 class TestTools:
-    def test_list(self, client):
+    def test_catalog_is_explicit_http_capabilities_only(self, client):
         resp = client.get("/api/control/tools")
         assert resp.status_code == 200
         data = resp.json()
-        assert "tools" in data
-        assert len(data["tools"]) > 0
-
-    def test_call_unknown(self, client):
-        resp = client.post("/api/control/tool/nonexistent_tool_xyz", json={"args": {}})
-        assert resp.status_code == 404
-
-    def test_call_tool_logs_request_success_and_redacts_args(self, client, monkeypatch):
-        import server.routes.control as control
-
-        events = []
-
-        async def fake_tool(args):
-            assert args["token"] == "secret-value"
-            return {"content": [{"type": "text", "text": "ok"}]}
-
-        monkeypatch.setattr(control, "_tool_map", {"fake_tool": fake_tool})
-        monkeypatch.setattr(control, "_control_log", lambda *event: events.append(event))
-
-        resp = client.post(
-            "/api/control/tool/fake_tool",
-            json={"args": {"token": "secret-value", "limit": 3, "payload": {"a": 1}}},
+        capabilities = data["capabilities"]
+        assert capabilities
+        assert {item["id"] for item in capabilities} == set(data["tools"])
+        assert all(
+            set(item) == {
+                "id", "method", "path", "mutation", "enabled", "blocked_reason"
+            }
+            for item in capabilities
         )
+        assert {
+            "prepare_next_gen", "execute_workers", "run_quality_gates",
+            "run_precommit_eval", "commit_bot", "abandon_generation",
+            "cleanup_incomplete", "reap_incomplete", "start_daemon",
+            "stop_daemon",
+        }.isdisjoint(data["tools"])
+        assert data["operator_auth_required"] is True
+        assert data["operator_token_header"] == "X-Control-Token"
+        assert "operator-secret" not in resp.text
 
-        assert resp.status_code == 200
-        assert [e[0] for e in events] == ["control.tool_requested", "control.tool_succeeded"]
-        assert events[0][3]["tool"] == "fake_tool"
-        assert events[0][3]["args"]["token"] == "<redacted>"
-        assert events[0][3]["args"]["payload"] == {"type": "dict", "keys": ["a"]}
+    def test_old_executor_is_gone_for_unknown_name(self, client):
+        resp = client.post("/api/control/tool/nonexistent_tool_xyz", json={"args": {}})
+        assert resp.status_code == 410
+        assert resp.json()["detail"]["code"] == "control_tool_executor_retired"
+
+    def test_old_executor_never_calls_mcp_handler(self, client, monkeypatch):
+        import tools
+
+        class TrapTool:
+            name = "prepare_next_gen"
+
+            @staticmethod
+            async def handler(_args):
+                raise AssertionError("retired HTTP executor invoked MCP handler")
+
+        monkeypatch.setattr(tools, "all_tools", [TrapTool()])
+
+        for name in (
+            "get_status", "prepare_next_gen", "execute_workers",
+            "run_quality_gates", "run_precommit_eval", "commit_bot",
+            "abandon_generation", "cleanup_incomplete", "reap_incomplete",
+            "start_daemon", "stop_daemon",
+        ):
+            response = client.post(
+                f"/api/control/tool/{name}",
+                json={"args": {"dangerous": True}},
+            )
+            assert response.status_code == 410
 
 
 class TestOrchestratorSession:
@@ -394,47 +497,14 @@ class TestStop:
         assert resp.json()["status"] == "stopped"
 
 
-class TestReset:
-    def test_reset_does_not_auto_stage_or_commit(self, client, monkeypatch):
-        import server.routes.control as control
-        import orchestrator
+class TestRetiredEvolutionReset:
+    def test_destructive_reset_endpoint_is_not_registered(self):
+        from server.app import app
 
-        client.post("/api/control/stop")
-        calls = []
-        events = []
-
-        def fake_run(cmd, **_kwargs):
-            calls.append(tuple(cmd))
-            if tuple(cmd) == ("git", "status", "--short"):
-                return SimpleNamespace(
-                    returncode=0,
-                    stdout=" M web/core/experience_pool.md\n?? web/core/results/tmp.json\n",
-                    stderr="",
-                )
-            raise AssertionError(f"unexpected subprocess call: {cmd}")
-
-        async def fake_loop(*_args, **_kwargs):
-            return None
-
-        fake_reset_module = SimpleNamespace(
-            reset_evolution=lambda: {"reset_files": ["experience_pool.md"], "deleted_bot_dirs": []}
+        assert not any(
+            route.path == "/api/control/reset"
+            for route in app.routes
         )
-        monkeypatch.setitem(sys.modules, "reset", fake_reset_module)
-        monkeypatch.setattr(orchestrator, "orchestrator_loop", fake_loop)
-        monkeypatch.setattr(control.subprocess, "run", fake_run)
-        monkeypatch.setattr(control, "_control_log", lambda *event: events.append(event))
-
-        resp = client.post("/api/control/reset")
-        data = resp.json()
-
-        assert resp.status_code == 200
-        assert data["status"] == "reset_complete"
-        assert data["git_status"]["entry_count"] == 2
-        assert ("git", "status", "--short") in calls
-        assert not any(call[:2] == ("git", "add") for call in calls)
-        assert not any(call[:2] == ("git", "commit") for call in calls)
-        assert any(event[0] == "control.reset_git_status" for event in events)
-        client.post("/api/control/stop")
 
 
 class TestStartConflict:

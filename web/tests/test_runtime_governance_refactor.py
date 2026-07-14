@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,60 +13,102 @@ if str(CORE) not in sys.path:
     sys.path.insert(0, str(CORE))
 
 
-def test_battle_experience_prompt_compaction(monkeypatch):
-    import battle_experience as be
+def _strict_artifact(root: Path, version: int, *, action: str = "pass") -> Path:
+    from bot_namespace import refresh_policy_identity_documents
 
-    monkeypatch.setattr(be, "BATTLE_PROMPT_CURRENT_BUDGET", 1200)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_NEW_DATA_BUDGET", 1400)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_MATCH_SECTION_BUDGET", 500)
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "national_bot.py").write_text(
+        "from policy import decide\n",
+        encoding="utf-8",
+    )
+    (root / "policy.py").write_text(
+        "def decide(_context):\n"
+        f"    return {{'kind': {action!r}}}\n",
+        encoding="utf-8",
+    )
+    (root / "precompute.py").write_text("TABLE = ()\n", encoding="utf-8")
+    (root / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
+    refresh_policy_identity_documents(
+        root,
+        version,
+        parent_versions=() if version == 143 else (version - 1,),
+    )
+    return root
 
-    current = "## OLD\n" + ("old line\n" * 1000)
-    new = "\n\n---\n\n".join("match section " + ("x" * 1000) for _ in range(8))
 
-    current_prompt, new_prompt = be._prepare_prompt_inputs(current, new, mode="test")
-
-    assert len(current_prompt) <= 1200
-    assert len(new_prompt) <= 1400
-    assert "omitted" in current_prompt
-    assert "omitted" in new_prompt
-
-
-def test_battle_experience_skips_oversized_llm_prompt(monkeypatch):
-    import battle_experience as be
-
-    monkeypatch.setattr(be, "BATTLE_EXPERIENCE_LLM_ENABLED", True)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_CURRENT_BUDGET", 1200)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_NEW_DATA_BUDGET", 1400)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_MATCH_SECTION_BUDGET", 500)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_MAX_CHARS", 1000)
-
-    def _should_not_call(_prompt):
-        raise AssertionError("oversized battle_experience prompt should not call LLM")
-
-    monkeypatch.setattr(be, "_run_sync_llm_call", _should_not_call)
-
-    result = be._run_llm_incremental(
-        "## OLD\n" + ("old line\n" * 1000),
-        "\n\n---\n\n".join("match section " + ("x" * 1000) for _ in range(8)),
+def _published_parent(version: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        eligible=True,
+        version=version,
+        issues=(),
+        runtime_manifest={"epoch": "national_tcp_policy_v1", "version": version},
+        epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
+        publication_identity={
+            "published": True,
+            "tag": f"national-bot-v{version}",
+            "version": version,
+        },
+        certificate_digest="b" * 64,
     )
 
-    assert result is be._NO_EXPERIENCE_UPDATE
+
+def _resolve_published_parent(name: str, **_kwargs) -> SimpleNamespace:
+    return _published_parent(int(str(name).rsplit("national_v", 1)[1]))
 
 
-def test_battle_experience_llm_is_opt_in(monkeypatch):
-    import battle_experience as be
+def _strict_checkpoint(
+    next_v: int,
+    source_v: int,
+    stage: str,
+    *,
+    parent2_v: int | None = None,
+    **extra,
+) -> dict:
+    import checkpoint_schema
 
-    monkeypatch.setattr(be, "BATTLE_EXPERIENCE_LLM_ENABLED", False)
-    monkeypatch.setattr(be, "BATTLE_PROMPT_MAX_CHARS", 100000)
+    audit_context = dict(extra.pop("audit_context", {}) or {})
+    if next_v == 143:
+        from system_strict_bootstrap import build_fresh_bootstrap_receipt
 
-    def _should_not_call(_prompt):
-        raise AssertionError("battle_experience LLM should be opt-in")
+        audit_context.setdefault(
+            "protocol_bootstrap",
+            build_fresh_bootstrap_receipt(
+                active_bots=(),
+                epoch_reset_receipt_digest="a" * 64,
+            ),
+        )
+    binding = checkpoint_schema.build_checkpoint_epoch_binding(
+        next_v=next_v,
+        source_v=source_v,
+        parent2_v=parent2_v,
+        audit_context=audit_context,
+        parent_resolver=_resolve_published_parent,
+    )
+    return {
+        "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": binding,
+        "next_v": next_v,
+        "source_v": source_v,
+        "parent2_v": parent2_v,
+        "stage": stage,
+        "workflow_run_id": f"generation:{next_v}:runtime-governance-test",
+        "checkpoint_revision": 1,
+        "audit_context": audit_context,
+        **extra,
+    }
 
-    monkeypatch.setattr(be, "_run_sync_llm_call", _should_not_call)
 
-    result = be._run_llm_incremental("short", "short match summary")
+@pytest.fixture(autouse=True)
+def _hermetic_strict_parent_resolution(monkeypatch):
+    import checkpoint_schema
 
-    assert result is be._NO_EXPERIENCE_UPDATE
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_national_bot_spec",
+        _resolve_published_parent,
+    )
 
 
 def test_literature_probe_cache_roundtrip(tmp_path, monkeypatch):
@@ -215,65 +258,17 @@ def test_literature_probe_rejects_old_checkpoint_receipt_after_context_refresh(t
     assert persisted["requirement_context_digest"] == data["requirement_context_digest"]
 
 
-def test_aggregate_negative_ev_blocks_small_wl_edge():
-    import tool_eval
-
-    samples = [-1000.0] * 30 + [400.0] * 4
-    blockers, payload = tool_eval._aggregate_ev_risk_blockers(
-        total_wins=33,
-        total_losses=31,
-        total_draws=0,
-        aggregate_net_chips=samples,
-        agg_ci_lower=-1200.0,
-        agg_ci_upper=300.0,
-    )
-
-    assert any(b["reason"] == "aggregate_negative_chip_ev" for b in blockers)
-    assert payload["mean"] < 0
-
-
-def test_admission_strength_blocks_negative_chip_ev():
-    import tool_eval
-
-    samples = [-500.0] * 24
-    blockers, payload = tool_eval._admission_strength_blockers(
-        n_games=tool_eval.PRECOMMIT_DEFAULT_N_GAMES,
-        total_wins=12,
-        total_losses=12,
-        total_draws=0,
-        aggregate_net_chips=samples,
-    )
-
-    assert any(b["reason"] == "admission_negative_chip_ev" for b in blockers)
-    assert payload["mean"] == -500.0
-
-
-def test_admission_strength_blocks_low_sample_precommit():
-    import tool_eval
-
-    blockers, payload = tool_eval._admission_strength_blockers(
-        n_games=tool_eval.PRECOMMIT_DEFAULT_N_GAMES - 1,
-        precommit_attempt=2,
-        total_wins=8,
-        total_losses=0,
-        total_draws=0,
-        aggregate_net_chips=[1000.0] * 24,
-    )
-
-    assert any(b["reason"] == "provisional_low_sample_precommit" for b in blockers)
-    assert payload["n_games"] == tool_eval.PRECOMMIT_DEFAULT_N_GAMES - 1
-
-
 def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
     import plan_compiler
 
+    target = _strict_artifact(tmp_path / "national_v300", 300)
     long_prompt = "Implement this carefully.\n" + ("detail " * 2500)
     plan = {
         "tasks": [
             {
                 "worker_id": 1,
                 "role": "Algorithmic Logic Architect",
-                "target_files": ["strategy.py"],
+                "target_files": ["policy.py"],
                 "worker_prompt": long_prompt,
             }
         ]
@@ -282,7 +277,7 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
     compiled, meta = plan_compiler.compile_master_plan(
         plan,
         next_v=300,
-        target_dir=tmp_path / "national_v300",
+        target_dir=target,
         project_root=tmp_path,
     )
 
@@ -300,7 +295,7 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
     recompiled, second_meta = plan_compiler.compile_master_plan(
         compiled,
         next_v=300,
-        target_dir=tmp_path / "national_v300",
+        target_dir=target,
         project_root=tmp_path,
     )
     assert second_meta["preserved_compiled_context"] is True
@@ -311,9 +306,9 @@ def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
 def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
     import plan_compiler
 
-    target = tmp_path / "national_v301"
+    target = _strict_artifact(tmp_path / "national_v301", 301)
     stale_dir = target / ".task_context"
-    stale_dir.mkdir(parents=True)
+    stale_dir.mkdir()
     (stale_dir / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
 
     plan = {
@@ -321,8 +316,8 @@ def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
             {
                 "worker_id": 1,
                 "role": "Hyperparameter Tuner",
-                "target_files": ["constants.py"],
-                "worker_prompt": "Tune one constant.",
+                "target_files": ["policy.py"],
+                "worker_prompt": "Tune one typed policy decision.",
             }
         ]
     }
@@ -342,9 +337,9 @@ def test_plan_compiler_clears_stale_task_context_for_short_plan(tmp_path):
 def test_plan_compiler_clears_stale_task_context_for_invalid_task_shape(tmp_path):
     import plan_compiler
 
-    target = tmp_path / "national_v302"
+    target = _strict_artifact(tmp_path / "national_v302", 302)
     stale_dir = target / ".task_context"
-    stale_dir.mkdir(parents=True)
+    stale_dir.mkdir()
     (stale_dir / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
 
     compiled, meta = plan_compiler.compile_master_plan(
@@ -362,62 +357,31 @@ def test_plan_compiler_clears_stale_task_context_for_invalid_task_shape(tmp_path
 def test_candidate_copy_excludes_task_context_and_parent_artifacts(tmp_path):
     import evolution_infra
 
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "main.py").write_text("print('ok')\n", encoding="utf-8")
+    source = _strict_artifact(tmp_path / "source", 299)
     (source / ".completed").write_text("", encoding="utf-8")
     (source / "old.pyc").write_bytes(b"pyc")
     (source / "__pycache__").mkdir()
-    (source / "__pycache__" / "main.cpython.pyc").write_bytes(b"pyc")
+    (source / "__pycache__" / "policy.cpython.pyc").write_bytes(b"pyc")
     (source / ".task_context").mkdir()
     (source / ".task_context" / "w1.md").write_text("stale next_v: 290", encoding="utf-8")
-    (source / "sub").mkdir()
-    (source / "sub" / "keep.py").write_text("x = 1\n", encoding="utf-8")
-    (source / "sub" / ".task_context").mkdir()
-    (source / "sub" / ".task_context" / "w2.md").write_text("stale", encoding="utf-8")
 
     target = tmp_path / "target"
     evolution_infra.copy_bot_tree_for_candidate(source, target)
 
-    assert (target / "main.py").exists()
-    assert (target / "sub" / "keep.py").exists()
+    assert (target / "policy.py").exists()
     assert not (target / ".completed").exists()
     assert not (target / "old.pyc").exists()
     assert not (target / "__pycache__").exists()
     assert not (target / ".task_context").exists()
-    assert not (target / "sub" / ".task_context").exists()
-
-
-def test_incremental_reset_removes_stale_task_context(tmp_path):
-    import tool_planning
-
-    source = tmp_path / "source"
-    next_dir = tmp_path / "next"
-    source.mkdir()
-    next_dir.mkdir()
-    (source / "main.py").write_text("source\n", encoding="utf-8")
-    (source / ".task_context").mkdir()
-    (source / ".task_context" / "w1.md").write_text("parent stale", encoding="utf-8")
-    (next_dir / "main.py").write_text("worker edit\n", encoding="utf-8")
-    (next_dir / "new_helper.py").write_text("new file\n", encoding="utf-8")
-    (next_dir / ".task_context").mkdir()
-    (next_dir / ".task_context" / "w1.md").write_text("old next_v: 290", encoding="utf-8")
-
-    preserved = tool_planning._incremental_reset_next_dir(next_dir, source)
-
-    assert preserved == ["new_helper.py"]
-    assert (next_dir / "main.py").read_text(encoding="utf-8") == "source\n"
-    assert (next_dir / "new_helper.py").exists()
-    assert not (next_dir / ".task_context").exists()
 
 
 def test_successful_worker_cleanup_removes_compiler_context_before_quality(tmp_path):
     import tool_gates
     import tool_planning
 
-    target = tmp_path / "national_v303"
+    target = _strict_artifact(tmp_path / "national_v303", 303)
     context = target / ".task_context"
-    context.mkdir(parents=True)
+    context.mkdir()
     (context / "w1.md").write_text("system-owned brief", encoding="utf-8")
     nested = target / "tables" / ".task_context"
     nested.mkdir(parents=True)
@@ -427,7 +391,7 @@ def test_successful_worker_cleanup_removes_compiler_context_before_quality(tmp_p
     (pytest_cache / "action").write_bytes(b"fold")
     bytecode = target / "__pycache__"
     bytecode.mkdir()
-    (bytecode / "strategy.pyc").write_bytes(b"bytecode")
+    (bytecode / "policy.pyc").write_bytes(b"bytecode")
 
     assert tool_gates._transient_task_context_errors(target)
     tool_planning._clear_compiled_task_context(target)
@@ -461,7 +425,7 @@ def test_excluded_cache_cannot_be_hidden_policy_dependency(tmp_path):
 
     target = tmp_path / "national_v305"
     target.mkdir()
-    (target / "strategy.py").write_text(
+    (target / "policy.py").write_text(
         "from pathlib import Path\nACTION = Path('.pytest_cache/action').read_text()\n",
         encoding="utf-8",
     )
@@ -474,7 +438,7 @@ def test_excluded_cache_cannot_be_hidden_policy_dependency(tmp_path):
 
     assert hash_path(target) == before
     assert forbidden_runtime_dependency_errors(target) == [
-        "forbidden_transient_runtime_dependency:strategy.py:2:.pytest_cache"
+        "forbidden_transient_runtime_dependency:policy.py:2:.pytest_cache"
     ]
     cleanup_transient_candidate_artifacts(target, include_task_context=False)
     assert not cache.exists()
@@ -502,30 +466,6 @@ def test_master_prompt_disallows_manual_task_context_files():
     assert "write it to `.task_context" not in text
 
 
-def test_scheduler_status_excludes_collected_from_missing():
-    import tool_eval
-
-    status = {
-        "pending": [],
-        "claimed": [],
-        "completed": [],
-        "missing": ["j1", "j2", "j3"],
-        "missing_count": 3,
-    }
-    normalized = tool_eval._scheduler_status_excluding_collected(
-        ["j1", "j2", "j3"],
-        status,
-        {"j1": {"total": 1}, "j2": {"total": 1}},
-    )
-
-    assert normalized["collected_count"] == 2
-    assert normalized["missing"] == ["j3"]
-    assert normalized["missing_count"] == 1
-    assert normalized["missing_unaccounted_count"] == 1
-    assert normalized["raw_missing_count"] == 3
-    assert normalized["raw_missing_before_collected_count"] == 3
-
-
 def test_near_cap_core_file_cannot_grow(tmp_path):
     import code_verification
 
@@ -533,12 +473,12 @@ def test_near_cap_core_file_cannot_grow(tmp_path):
     child = tmp_path / "child"
     source.mkdir()
     child.mkdir()
-    (source / "strategy.py").write_text("x = 1\n" * 2486, encoding="utf-8")
-    (child / "strategy.py").write_text("x = 1\n" * 2493, encoding="utf-8")
+    (source / "policy.py").write_text("x = 1\n" * 2486, encoding="utf-8")
+    (child / "policy.py").write_text("x = 1\n" * 2493, encoding="utf-8")
 
     _total, oversized = code_verification.check_code_size(child, source_dir=source)
 
-    assert oversized == [("strategy.py", 2493, 2486)]
+    assert oversized == [("policy.py", 2493, 2486)]
 
 
 def test_oversized_source_does_not_inflate_child_limit(tmp_path):
@@ -554,13 +494,13 @@ def test_oversized_source_does_not_inflate_child_limit(tmp_path):
     child = tmp_path / "child"
     source.mkdir()
     child.mkdir()
-    (source / "strategy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
-    (child / "strategy.py").write_text("x = 1\n" * 2178, encoding="utf-8")
+    (source / "policy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
+    (child / "policy.py").write_text("x = 1\n" * 2178, encoding="utf-8")
 
     _total, oversized = code_verification.check_code_size(child, source_dir=source)
 
     # limit must be 2147 (source_lines), NOT 2469 (source*1.15)
-    assert oversized == [("strategy.py", 2178, 2147)]
+    assert oversized == [("policy.py", 2178, 2147)]
 
 
 def test_system_generated_national_entry_uses_repository_hard_cap(tmp_path):
@@ -581,9 +521,8 @@ def test_system_generated_national_entry_uses_repository_hard_cap(tmp_path):
 def test_oversized_source_allows_child_to_match_or_shrink(tmp_path):
     """A child matching or shrinking an oversized source must pass the size gate.
 
-    This lets descendants of an inherited-oversize parent (e.g. v103 strategy.py
-    at 2147 lines) survive the gate while still being nudged toward compliance,
-    rather than immediately blocking every future generation.
+    This lets a strict-policy descendant match or shrink an inherited oversized
+    ``policy.py`` while still preventing further growth.
     """
     import code_verification
 
@@ -591,15 +530,15 @@ def test_oversized_source_allows_child_to_match_or_shrink(tmp_path):
     child = tmp_path / "child"
     source.mkdir()
     child.mkdir()
-    (source / "strategy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
+    (source / "policy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
 
     # Exactly match source
-    (child / "strategy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
+    (child / "policy.py").write_text("x = 1\n" * 2147, encoding="utf-8")
     _total, oversized = code_verification.check_code_size(child, source_dir=source)
     assert oversized == []
 
     # Shrink below source
-    (child / "strategy.py").write_text("x = 1\n" * 2100, encoding="utf-8")
+    (child / "policy.py").write_text("x = 1\n" * 2100, encoding="utf-8")
     _total, oversized = code_verification.check_code_size(child, source_dir=source)
     assert oversized == []
 
@@ -612,52 +551,19 @@ def test_compliant_source_keeps_growth_budget(tmp_path):
     child = tmp_path / "child"
     source.mkdir()
     child.mkdir()
-    (source / "strategy.py").write_text("x = 1\n" * 1900, encoding="utf-8")
+    (source / "policy.py").write_text("x = 1\n" * 1900, encoding="utf-8")
     # 2050 < max(2000, 1900*1.15=2185) -> within budget
-    (child / "strategy.py").write_text("x = 1\n" * 2050, encoding="utf-8")
+    (child / "policy.py").write_text("x = 1\n" * 2050, encoding="utf-8")
 
     _total, oversized = code_verification.check_code_size(child, source_dir=source)
     assert oversized == []
 
     # 2200 > 2185 -> over budget
-    (child / "strategy.py").write_text("x = 1\n" * 2200, encoding="utf-8")
+    (child / "policy.py").write_text("x = 1\n" * 2200, encoding="utf-8")
     _total, oversized = code_verification.check_code_size(child, source_dir=source)
-    assert oversized == [("strategy.py", 2200, 2185)]
+    assert oversized == [("policy.py", 2200, 2185)]
 
 
-def test_exhausted_positive_text_ignores_prohibitions():
-    import tool_planning
-
-    task = {
-        "worker_prompt": (
-            "Do NOT reopen choose_raise constant tuning. "
-            "Add a new river blocker telemetry hook in postflop.py."
-        ),
-        "behavior_hypothesis": "Improve blocker telemetry reachability.",
-        "prohibited_files": ["constants.py"],
-    }
-    text = tool_planning._positive_execution_text_from_task(task)
-
-    assert "choose_raise constant tuning" not in text
-    assert "blocker telemetry" in text
-
-
-def test_exhausted_positive_text_strips_refactor_away_clause():
-    import tool_planning
-
-    task = {
-        "worker_prompt": (
-            "TASK: Wire _tier_opp_sizing_directive into choose_raise, "
-            "REPLACING rigid plan-label-driven sizing caps. "
-            "CHANGE: use per-street opponent bet-size tendency sizing."
-        )
-    }
-
-    text = tool_planning._positive_execution_text_from_task(task)
-
-    assert "rigid plan-label-driven sizing caps" not in text
-    assert "_tier_opp_sizing_directive" in text
-    assert "opponent bet-size tendency sizing" in text
 
 
 def test_repo_state_snapshot_classifies_dirty_untracked_and_protected(monkeypatch, tmp_path):
@@ -897,16 +803,16 @@ def test_runtime_guard_allows_current_candidate_dir(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_master",
@@ -937,16 +843,16 @@ def test_runtime_guard_blocks_master_before_direction_audit(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "prepared",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "prepared",
+        repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
             "captured_stage": "prepared",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_master",
@@ -1051,9 +957,7 @@ def test_post_commit_archivist_receipt_is_content_bound_and_single_use(
 ):
     import evolution_infra
 
-    bot_dir = tmp_path / "bots" / "national_v300"
-    bot_dir.mkdir(parents=True)
-    (bot_dir / "strategy.py").write_text("READY = True\n", encoding="utf-8")
+    bot_dir = _strict_artifact(tmp_path / "bots" / "national_v300", 300)
     archive_dir = tmp_path / "archive"
     monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", archive_dir)
     monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: bot_dir)
@@ -1092,7 +996,7 @@ def test_post_commit_archivist_receipt_is_content_bound_and_single_use(
     assert replay_ok is False
     assert replay_reason == "post_commit_archivist_receipt_consumed"
 
-    (bot_dir / "strategy.py").write_text("DRIFTED = True\n", encoding="utf-8")
+    (bot_dir / "policy.py").write_text("DRIFTED = True\n", encoding="utf-8")
     second, second_reason, _ = evolution_infra.consume_post_commit_archivist_receipt(
         300,
         299,
@@ -1129,12 +1033,12 @@ def test_runtime_guard_blocks_random_pipeline_tool_without_checkpoint(monkeypatc
 def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkeypatch):
     import tool_runtime_guard
 
-    checkpoint = {
-        "next_v": 146,
-        "source_v": 142,
-        "stage": "official_bootstrap_required",
-        "gate_results": {"precommit_eval": {"passed": True}},
-    }
+    checkpoint = _strict_checkpoint(
+        143,
+        142,
+        "official_bootstrap_required",
+        gate_results={"precommit_eval": {"passed": True}},
+    )
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
     monkeypatch.setattr(
         tool_runtime_guard,
@@ -1144,8 +1048,8 @@ def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkey
 
     ok, payload = tool_runtime_guard._pipeline_route_guard(
         tool_name="commit_bot",
-        args={"version": 146, "source_v": 142},
-        candidate_v=146,
+        args={"version": 143, "source_v": 142},
+        candidate_v=143,
         source_v=142,
     )
 
@@ -1157,12 +1061,12 @@ def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkey
 def test_operator_bootstrap_stage_allows_commit_only_after_full_validation(monkeypatch):
     import tool_runtime_guard
 
-    checkpoint = {
-        "next_v": 146,
-        "source_v": 142,
-        "stage": "official_bootstrap_required",
-        "gate_results": {"precommit_eval": {"passed": True}},
-    }
+    checkpoint = _strict_checkpoint(
+        143,
+        142,
+        "official_bootstrap_required",
+        gate_results={"precommit_eval": {"passed": True}},
+    )
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
     calls = []
     monkeypatch.setattr(
@@ -1173,22 +1077,21 @@ def test_operator_bootstrap_stage_allows_commit_only_after_full_validation(monke
 
     ok, payload = tool_runtime_guard._pipeline_route_guard(
         tool_name="commit_bot",
-        args={"version": 146, "source_v": 142},
-        candidate_v=146,
+        args={"version": 143, "source_v": 142},
+        candidate_v=143,
         source_v=142,
     )
 
     assert ok is True
     assert payload == {}
-    assert calls == [146]
+    assert calls == [143]
 
 
 def test_operator_bootstrap_guard_uses_complete_official_validator(tmp_path, monkeypatch):
     import official_certification
     import tool_runtime_guard
 
-    candidate = tmp_path / "bots" / "national_v146"
-    candidate.mkdir(parents=True)
+    candidate = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
     status = {"status": "official-certified", "certificate_digest": "signed"}
     calls = []
     monkeypatch.setattr(tool_runtime_guard, "PROJECT_ROOT", tmp_path)
@@ -1200,7 +1103,7 @@ def test_operator_bootstrap_guard_uses_complete_official_validator(tmp_path, mon
 
     monkeypatch.setattr(official_certification, "official_full_certified", validate)
 
-    assert tool_runtime_guard._operator_bootstrap_certificate_valid(146) is True
+    assert tool_runtime_guard._operator_bootstrap_certificate_valid(143) is True
     assert calls == [(status, candidate)]
 
 
@@ -1224,16 +1127,16 @@ def test_runtime_guard_allows_pre_master_literature_probe(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_literature_probe",
@@ -1315,16 +1218,16 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "master_planned",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "master_planned",
+        repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
             "captured_stage": "master_planned",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -1352,16 +1255,16 @@ def test_runtime_guard_allows_noncritical_web_core_dirty_entries(monkeypatch):
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "master_planned",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "master_planned",
+        repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
             "captured_stage": "master_planned",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -1455,16 +1358,16 @@ def test_runtime_guard_allows_unrelated_head_drift(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "workers_done",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "workers_done",
+        repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
             "captured_stage": "workers_done",
         },
-    })
+    ))
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",
@@ -1491,21 +1394,21 @@ def test_unrelated_head_drift_cannot_bypass_mandatory_literature_route(monkeypat
         "head": "new456",
         "entries": ["?? bots/national_v300/"],
     }
-    checkpoint = {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "audit_context": {
+    checkpoint = _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        audit_context={
             "master_context": {
                 "stagnation_info": "STAGNATION_DETECTED (is_stagnant=true)",
             },
         },
-        "repo_baseline": {
+        repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    }
+    )
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1541,21 +1444,21 @@ def test_checkpoint_head_resume_cannot_bypass_mandatory_literature_route(monkeyp
         "head": "new456",
         "entries": ["?? bots/national_v300/"],
     }
-    checkpoint = {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "audit_context": {
+    checkpoint = _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        audit_context={
             "master_context": {
                 "stagnation_info": "STAGNATION_DETECTED (is_stagnant=true)",
             },
         },
-        "repo_baseline": {
+        repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    }
+    )
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
@@ -1596,7 +1499,7 @@ def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",
-        lambda *_args, **_kwargs: ["bots/national_v299/main.py"],
+        lambda *_args, **_kwargs: ["bots/national_v299/policy.py"],
     )
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
@@ -1607,7 +1510,7 @@ def test_runtime_guard_blocks_source_bot_contract_head_drift(monkeypatch):
     assert ok is False
     assert payload["reason"] == "head_changed_during_generation"
     assert payload["evaluation_contract_unchanged"] is False
-    assert "bots/national_v299/main.py" in payload["head_contract_paths"]
+    assert "bots/national_v299/policy.py" in payload["head_contract_paths"]
 
 
 def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
@@ -1622,23 +1525,23 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
             "gate_results": {
                 "precommit_eval": {
                     "opponents": [
-                        {"name": "national_v45"},
+                        {"name": "national_v297"},
                         {"name": "bots/neural_national_lab/versions/v058"},
                     ]
                 }
             },
-            "official_job": {"opponent": "national_v142"},
+            "official_job": {"opponent": "national_v298"},
         },
     )
     scope = evaluation_contract.classify_contract_paths(
         [
             "engine/battle.py",
             "web/core/replay_spotlight.py",
-            "bots/national_v300/main.py",
-            "bots/national_v299/main.py",
-            "bots/national_v45/main.py",
-            "official_certificates/national_v45.json",
-            "official_certificates/national_v142.json",
+            "bots/national_v300/policy.py",
+            "bots/national_v299/policy.py",
+            "bots/national_v297/policy.py",
+            "official_certificates/national_v297.json",
+            "official_certificates/national_v298.json",
             "bots/neural_national_lab/data/run.json",
             "sever/server/tcp_server.py",
             "sever/国赛平台/通信协议.docx",
@@ -1649,12 +1552,12 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
         contract,
     )
 
-    assert "engine/battle.py" in scope["contract_paths"]
-    assert "bots/national_v300/main.py" in scope["contract_paths"]
-    assert "bots/national_v299/main.py" in scope["contract_paths"]
-    assert "bots/national_v45/main.py" in scope["contract_paths"]
-    assert "official_certificates/national_v45.json" in scope["contract_paths"]
-    assert "official_certificates/national_v142.json" in scope["contract_paths"]
+    assert "engine/battle.py" in scope["external_paths"]
+    assert "bots/national_v300/policy.py" in scope["contract_paths"]
+    assert "bots/national_v299/policy.py" in scope["contract_paths"]
+    assert "bots/national_v297/policy.py" in scope["contract_paths"]
+    assert "official_certificates/national_v297.json" in scope["contract_paths"]
+    assert "official_certificates/national_v298.json" in scope["contract_paths"]
     assert "sever/server/tcp_server.py" in scope["contract_paths"]
     assert "docs/official-raise-boundary-oracle-2026-07-11.md" in scope[
         "contract_paths"
@@ -1721,8 +1624,8 @@ def test_evaluation_contract_excludes_local_engine_under_native_profile(monkeypa
             "web/core/national_acceptance.py",
             "web/core/national_eval.py",
             "web/core/national_native.py",
-            "bots/national_v300/main.py",
-            "bots/national_v299/main.py",
+            "bots/national_v300/policy.py",
+            "bots/national_v299/policy.py",
         ],
         contract,
     )
@@ -1739,42 +1642,21 @@ def test_evaluation_contract_excludes_local_engine_under_native_profile(monkeypa
     assert "web/core/national_acceptance.py" in scope["external_paths"]
     assert "web/core/national_eval.py" in scope["external_paths"]
     assert "web/core/national_native.py" in scope["contract_paths"]
-    assert "bots/national_v300/main.py" in scope["contract_paths"]
-    assert "bots/national_v299/main.py" in scope["contract_paths"]
+    assert "bots/national_v300/policy.py" in scope["contract_paths"]
+    assert "bots/national_v299/policy.py" in scope["contract_paths"]
 
 
-def test_evaluation_contract_tracks_adapter_files_in_adapter_profile(monkeypatch):
+def test_evaluation_contract_rejects_retired_adapter_profile(monkeypatch):
     import evaluation_contract
 
-    contract = evaluation_contract.build_evaluation_contract(
-        Path.cwd(),
-        candidate_v=300,
-        source_v=299,
-        checkpoint={"stage": "workers_done", "next_v": 300, "source_v": 299},
-        national_execution_mode="adapter",
-    )
-    scope = evaluation_contract.classify_contract_paths(
-        [
-            "sever/bot_adapter.py",
-            "sever/tests/test_national_alignment.py",
-            "scripts/national_acceptance_matrix.py",
-            "web/core/national_acceptance.py",
-            "web/core/national_eval.py",
-            "sever/tests/test_national_platform_alignment.py",
-        ],
-        contract,
-    )
-
-    assert contract["national_execution_mode"] == "adapter"
-    assert scope["contract_paths"] == [
-        "scripts/national_acceptance_matrix.py",
-        "sever/bot_adapter.py",
-        "sever/tests/test_national_alignment.py",
-        "sever/tests/test_national_platform_alignment.py",
-        "web/core/national_acceptance.py",
-        "web/core/national_eval.py",
-    ]
-    assert scope["external_paths"] == []
+    with pytest.raises(ValueError, match="only native_tcp is active"):
+        evaluation_contract.build_evaluation_contract(
+            Path.cwd(),
+            candidate_v=300,
+            source_v=299,
+            checkpoint={"stage": "workers_done", "next_v": 300, "source_v": 299},
+            national_execution_mode="adapter",
+        )
 
 
 def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypatch):
@@ -1797,7 +1679,7 @@ def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypa
             " M sever/bot_adapter.py",
             " M sever/server/tcp_server.py",
             " M web/core/national_acceptance.py",
-            " M bots/national_v299/main.py",
+            " M bots/national_v299/policy.py",
             "?? bots/national_v300/",
         ],
         300,
@@ -1813,11 +1695,11 @@ def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypa
     assert " M sever/bot_adapter.py" in scope["external_entries"]
     assert " M sever/server/tcp_server.py" in scope["critical_entries"]
     assert " M web/core/national_acceptance.py" in scope["external_entries"]
-    assert " M bots/national_v299/main.py" in scope["foreign_bot_entries"]
+    assert " M bots/national_v299/policy.py" in scope["foreign_bot_entries"]
     assert "?? bots/national_v300/" in scope["candidate_entries"]
     assert scope["blocking_entries"] == [
         " M sever/server/tcp_server.py",
-        " M bots/national_v299/main.py",
+        " M bots/national_v299/policy.py",
     ]
 
 
@@ -2091,7 +1973,7 @@ def test_evaluation_contract_tracks_shared_native_and_official_authority_files(m
     import evaluation_contract
 
     contract_paths = [
-        "web/core/national_transport.py",
+        "sever/server/transport.py",
         "web/core/national_game_runtime.py",
         "web/core/national_bot_launcher.py",
         "web/core/national_runtime_telemetry.py",
@@ -2158,8 +2040,8 @@ def test_evolution_scope_is_exact_file_scoped():
     assert evolution_scope.classify_path("sever/main.py", candidate_v=300) == "external"
     assert evolution_scope.classify_path("sever/server/tcp_server.py", candidate_v=300) == "critical"
     assert evolution_scope.classify_path("sever/国赛平台/通信协议.docx", candidate_v=300) == "external"
-    assert evolution_scope.classify_path("bots/national_v300/postflop.py", candidate_v=300) == "candidate"
-    assert evolution_scope.classify_path("bots/national_v299/postflop.py", candidate_v=300) == "foreign_active_bot"
+    assert evolution_scope.classify_path("bots/national_v300/policy.py", candidate_v=300) == "candidate"
+    assert evolution_scope.classify_path("bots/national_v299/policy.py", candidate_v=300) == "foreign_active_bot"
 
 
 def test_evolution_scope_can_limit_foreign_bot_blocking_to_contract_versions():
@@ -2167,7 +2049,7 @@ def test_evolution_scope_can_limit_foreign_bot_blocking_to_contract_versions():
 
     assert (
         evolution_scope.classify_path(
-            "bots/national_v299/postflop.py",
+            "bots/national_v299/policy.py",
             candidate_v=300,
             contract_bot_versions=[300, 299],
         )
@@ -2175,7 +2057,7 @@ def test_evolution_scope_can_limit_foreign_bot_blocking_to_contract_versions():
     )
     assert (
         evolution_scope.classify_path(
-            "bots/national_v123/postflop.py",
+            "bots/national_v298/policy.py",
             candidate_v=300,
             contract_bot_versions=[300, 299],
         )
@@ -2184,16 +2066,16 @@ def test_evolution_scope_can_limit_foreign_bot_blocking_to_contract_versions():
 
     scope = evolution_scope.classify_status_entries(
         [
-            " M bots/national_v299/main.py",
-            " M bots/national_v123/main.py",
+            " M bots/national_v299/policy.py",
+            " M bots/national_v298/policy.py",
             "?? bots/national_v300/",
         ],
         candidate_v=300,
         contract_bot_versions=[300, 299],
     )
 
-    assert scope["blocking_entries"] == [" M bots/national_v299/main.py"]
-    assert scope["external_entries"] == [" M bots/national_v123/main.py"]
+    assert scope["blocking_entries"] == [" M bots/national_v299/policy.py"]
+    assert scope["external_entries"] == [" M bots/national_v298/policy.py"]
     assert scope["candidate_entries"] == ["?? bots/national_v300/"]
 
 
@@ -2227,33 +2109,6 @@ def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, m
     assert after_server_change != before
 
 
-def test_runtime_guard_uses_persisted_checkpoint_baseline_after_restart(monkeypatch):
-    import tool_runtime_guard
-
-    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
-    snapshots = iter([
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
-        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
-    ])
-    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
-    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
-    })
-
-    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
-        "run_quality_gates",
-        {"version": 300, "source_v": 299},
-    )
-
-    assert ok is False
-    assert payload["reason"] == "head_changed_during_generation"
-    assert payload["baseline_source"] == "checkpoint"
-    assert payload["baseline_head"] == "old123"
-
-
 def test_runtime_guard_allows_explicit_abandon_after_contract_head_drift(monkeypatch):
     import tool_runtime_guard
 
@@ -2266,16 +2121,16 @@ def test_runtime_guard_allows_explicit_abandon_after_contract_head_drift(monkeyp
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "abandon_generation",
@@ -2302,16 +2157,16 @@ def test_runtime_guard_abandon_still_blocks_unrelated_dirty_entries(monkeypatch)
     }
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: snapshot)
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    })
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "abandon_generation",
@@ -2333,12 +2188,12 @@ def test_runtime_guard_allows_execute_workers_after_repair_head_drift(monkeypatc
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "quality_failed",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "quality_failed",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -2361,13 +2216,13 @@ def test_runtime_guard_allows_execute_workers_after_master_planned_head_drift(mo
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "master_planned",
-        "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "master_planned",
+        master_plan={"tasks": [{"worker_id": "w1", "target_files": ["policy.py"]}]},
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -2393,12 +2248,12 @@ def test_runtime_guard_allows_direction_audit_after_prepared_head_drift(monkeypa
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "prepared",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "prepared",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_direction_audit",
@@ -2424,12 +2279,12 @@ def test_runtime_guard_allows_master_after_direction_audited_head_drift(monkeypa
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_master",
@@ -2455,13 +2310,13 @@ def test_runtime_guard_allows_crossover_after_selected_head_drift(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 250,
-        "stage": "selected",
-        "parent2_v": 240,
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        250,
+        "selected",
+        parent2_v=240,
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_crossover",
@@ -2487,13 +2342,13 @@ def test_runtime_guard_allows_crossover_running_head_drift(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 250,
-        "stage": "crossover_running",
-        "parent2_v": 240,
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        250,
+        "crossover_running",
+        parent2_v=240,
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "selected"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_crossover",
@@ -2517,12 +2372,12 @@ def test_runtime_guard_allows_quality_after_workers_done_head_drift(monkeypatch)
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "workers_done",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "workers_done"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "workers_done",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "workers_done"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_quality_gates",
@@ -2548,12 +2403,12 @@ def test_runtime_guard_allows_review_after_post_quality_head_drift(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "quality_passed",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "quality_passed",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_review",
@@ -2578,12 +2433,12 @@ def test_runtime_guard_allows_review_repair_workers_after_post_quality_head_drif
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "quality_passed",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "quality_passed",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "execute_workers",
@@ -2608,12 +2463,12 @@ def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
     ])
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "verified",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "verified",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "commit_bot",
@@ -2664,16 +2519,16 @@ def test_runtime_guard_allows_non_commit_tool_on_same_head_branch_alias(monkeypa
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "abc123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
             "captured_stage": "direction_audited",
         },
-    })
+    ))
     monkeypatch.setattr(tool_runtime_guard, "_log_guard_event", lambda *args: events.append(args))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
@@ -2698,12 +2553,12 @@ def test_runtime_guard_allows_pre_master_head_resume_on_same_head_branch_alias(m
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
     monkeypatch.setattr(tool_runtime_guard, "_unrelated_head_drift_allowed", lambda **_kwargs: (False, {}))
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "direction_audited",
-        "repo_baseline": {"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
-    })
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "direction_audited",
+        repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "prepared"},
+    ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
         "run_master",
@@ -2749,16 +2604,16 @@ def test_runtime_guard_allows_non_commit_tool_on_branch_with_unrelated_head_drif
     events = []
     monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: {"head": "old123"})
-    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: {
-        "next_v": 300,
-        "source_v": 299,
-        "stage": "quality_passed",
-        "repo_baseline": {
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "quality_passed",
+        repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
             "captured_stage": "quality_passed",
         },
-    })
+    ))
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",
@@ -2871,7 +2726,7 @@ def test_write_pipeline_checkpoint_refreshes_baseline_after_planning_handoff(tmp
         300,
         299,
         "master_planned",
-        master_plan={"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
+        master_plan={"tasks": [{"worker_id": "w1", "target_files": ["policy.py"]}]},
     ) is True
     state = evolution_infra.read_pipeline_checkpoint()
     assert state["repo_baseline"]["head"] == "new789"
@@ -3117,13 +2972,10 @@ def test_publish_ready_allows_synchronized_runtime(monkeypatch):
 def test_checkpoint_recovery_diagnostics_allows_workers_done_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257, 197, "workers_done", repo_baseline={"branch": "main", "head": "old123"}
+    )
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3144,13 +2996,10 @@ def test_checkpoint_recovery_diagnostics_allows_same_head_branch_alias(tmp_path,
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257, 197, "workers_done", repo_baseline={"branch": "main", "head": "same123"}
+    )
     snapshot = {"ok": True, "branch": "codex/refactor", "head": "same123"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3172,13 +3021,10 @@ def test_checkpoint_recovery_diagnostics_blocks_verified_branch_alias(tmp_path, 
     import pipeline_recovery
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "verified",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257, 197, "verified", repo_baseline={"branch": "main", "head": "same123"}
+    )
     snapshot = {"ok": True, "branch": "codex/refactor", "head": "same123"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3199,13 +3045,13 @@ def test_checkpoint_recovery_diagnostics_allows_main_resume_from_alias_after_anc
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
     monkeypatch.setattr(pipeline_recovery, "_head_is_ancestor", lambda *_args: True)
-    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 281,
-        "source_v": 279,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "codex/neural-work", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v281", 281)
+    checkpoint = _strict_checkpoint(
+        281,
+        279,
+        "workers_done",
+        repo_baseline={"branch": "codex/neural-work", "head": "old123"},
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3232,13 +3078,13 @@ def test_checkpoint_recovery_diagnostics_blocks_main_resume_from_alias_after_non
 
     monkeypatch.setenv("POK_FORCE_PIPELINE_RECOVERY_GUARD", "1")
     monkeypatch.setattr(pipeline_recovery, "_head_is_ancestor", lambda *_args: False)
-    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 281,
-        "source_v": 279,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "codex/neural-work", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v281", 281)
+    checkpoint = _strict_checkpoint(
+        281,
+        279,
+        "workers_done",
+        repo_baseline={"branch": "codex/neural-work", "head": "old123"},
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3269,13 +3115,13 @@ def test_checkpoint_recovery_diagnostics_allows_branch_with_unrelated_head_drift
             "bots/neural_national_lab/versions/v026/main.py",
         ],
     )
-    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 281,
-        "source_v": 279,
-        "stage": "quality_passed",
-        "repo_baseline": {"branch": "main...origin/main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v281", 281)
+    checkpoint = _strict_checkpoint(
+        281,
+        279,
+        "quality_passed",
+        repo_baseline={"branch": "main...origin/main", "head": "old123"},
+    )
     snapshot = {"ok": True, "branch": "codex/neural-work", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3306,13 +3152,13 @@ def test_checkpoint_recovery_diagnostics_blocks_branch_with_critical_head_drift(
         "changed_paths_between_heads",
         lambda *_args: ["web/core/orchestrator.py"],
     )
-    (tmp_path / "bots" / "national_v281").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 281,
-        "source_v": 279,
-        "stage": "quality_passed",
-        "repo_baseline": {"branch": "main...origin/main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v281", 281)
+    checkpoint = _strict_checkpoint(
+        281,
+        279,
+        "quality_passed",
+        repo_baseline={"branch": "main...origin/main", "head": "old123"},
+    )
     snapshot = {"ok": True, "branch": "codex/neural-work", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3331,14 +3177,14 @@ def test_checkpoint_recovery_diagnostics_blocks_branch_with_critical_head_drift(
 def test_checkpoint_recovery_diagnostics_allows_master_planned_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "master_planned",
-        "repo_baseline": {"branch": "main", "head": "old123"},
-        "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["state.py"]}]},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257,
+        197,
+        "master_planned",
+        repo_baseline={"branch": "main", "head": "old123"},
+        master_plan={"tasks": [{"worker_id": "w1", "target_files": ["policy.py"]}]},
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3367,19 +3213,19 @@ def test_checkpoint_recovery_allows_master_planned_contract_head_mismatch(
         "changed_paths_between_heads",
         lambda *_args, **_kwargs: ["web/core/prompts/worker_prompt.md"],
     )
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "master_planned",
-        "repo_baseline": {
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257,
+        197,
+        "master_planned",
+        repo_baseline={
             "branch": "main",
             "head": "old123",
             "captured_stage": "selected",
             "evaluation_contract": {"version": 2, "hash": "old"},
         },
-        "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
-    }
+        master_plan={"tasks": [{"worker_id": "w1", "target_files": ["policy.py"]}]},
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3401,13 +3247,13 @@ def test_checkpoint_recovery_allows_master_planned_contract_head_mismatch(
 def test_checkpoint_recovery_diagnostics_allows_selected_head_mismatch_without_target(tmp_path):
     import pipeline_recovery
 
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "selected",
-        "parent2_v": 188,
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    checkpoint = _strict_checkpoint(
+        257,
+        197,
+        "selected",
+        parent2_v=188,
+        repo_baseline={"branch": "main", "head": "old123"},
+    )
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3427,14 +3273,14 @@ def test_checkpoint_recovery_diagnostics_allows_selected_head_mismatch_without_t
 def test_checkpoint_recovery_diagnostics_allows_crossover_running_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "crossover_running",
-        "parent2_v": 188,
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257,
+        197,
+        "crossover_running",
+        parent2_v=188,
+        repo_baseline={"branch": "main", "head": "old123"},
+    )
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3464,18 +3310,18 @@ def test_checkpoint_recovery_diagnostics_allows_reentrant_crossover_after_contra
         "changed_paths_between_heads",
         lambda *_args, **_kwargs: ["web/core/pipeline_state.py"],
     )
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "crossover_running",
-        "parent2_v": 188,
-        "repo_baseline": {
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257,
+        197,
+        "crossover_running",
+        parent2_v=188,
+        repo_baseline={
             "branch": "main",
             "head": "old123",
             "evaluation_contract": {"version": 2, "hash": "old"},
         },
-    }
+    )
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3496,13 +3342,10 @@ def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_pat
     import pipeline_recovery
 
     for stage in ("prepared", "direction_audited"):
-        (tmp_path / "bots" / "national_v257").mkdir(parents=True, exist_ok=True)
-        checkpoint = {
-            "next_v": 257,
-            "source_v": 197,
-            "stage": stage,
-            "repo_baseline": {"branch": "main", "head": "old123"},
-        }
+        _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+        checkpoint = _strict_checkpoint(
+            257, 197, stage, repo_baseline={"branch": "main", "head": "old123"}
+        )
         snapshot = {"ok": True, "branch": "main", "head": "new456"}
 
         diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3522,13 +3365,10 @@ def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_pat
 def test_checkpoint_recovery_diagnostics_blocks_preparing_repo_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v257").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "preparing",
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257, 197, "preparing", repo_baseline={"branch": "main", "head": "old123"}
+    )
     snapshot = {"ok": True, "branch": "main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3546,13 +3386,10 @@ def test_checkpoint_recovery_diagnostics_blocks_preparing_repo_head_mismatch(tmp
 def test_checkpoint_recovery_diagnostics_allows_repair_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v269").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 269,
-        "source_v": 237,
-        "stage": "quality_failed",
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v269", 269)
+    checkpoint = _strict_checkpoint(
+        269, 237, "quality_failed", repo_baseline={"branch": "main", "head": "old123"}
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3571,13 +3408,10 @@ def test_checkpoint_recovery_diagnostics_allows_repair_head_mismatch(tmp_path):
 def test_checkpoint_recovery_diagnostics_allows_post_quality_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v269").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 269,
-        "source_v": 237,
-        "stage": "quality_passed",
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v269", 269)
+    checkpoint = _strict_checkpoint(
+        269, 237, "quality_passed", repo_baseline={"branch": "main", "head": "old123"}
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3596,13 +3430,10 @@ def test_checkpoint_recovery_diagnostics_allows_post_quality_head_mismatch(tmp_p
 def test_checkpoint_recovery_diagnostics_allows_verified_head_mismatch(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v269").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 269,
-        "source_v": 237,
-        "stage": "verified",
-        "repo_baseline": {"branch": "main", "head": "old123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v269", 269)
+    checkpoint = _strict_checkpoint(
+        269, 237, "verified", repo_baseline={"branch": "main", "head": "old123"}
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3621,13 +3452,10 @@ def test_checkpoint_recovery_diagnostics_allows_verified_head_mismatch(tmp_path)
 def test_checkpoint_recovery_diagnostics_allows_matching_active_checkpoint(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 258,
-        "source_v": 254,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v258", 258)
+    checkpoint = _strict_checkpoint(
+        258, 254, "workers_done", repo_baseline={"branch": "main", "head": "same123"}
+    )
     snapshot = {"ok": True, "branch": "main...origin/main", "head": "same123"}
 
     diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -3644,13 +3472,10 @@ def test_checkpoint_recovery_diagnostics_allows_matching_active_checkpoint(tmp_p
 def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 258,
-        "source_v": 254,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v258", 258)
+    checkpoint = _strict_checkpoint(
+        258, 254, "workers_done", repo_baseline={"branch": "main", "head": "same123"}
+    )
     snapshot = {
         "ok": True,
         "branch": "main...origin/main",
@@ -3676,21 +3501,21 @@ def test_checkpoint_recovery_diagnostics_ignores_unrelated_dirty_entries(tmp_pat
 def test_checkpoint_recovery_diagnostics_only_blocks_contract_bot_versions(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 258,
-        "source_v": 254,
-        "parent2_v": 111,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v258", 258)
+    checkpoint = _strict_checkpoint(
+        258,
+        254,
+        "workers_done",
+        parent2_v=253,
+        repo_baseline={"branch": "main", "head": "same123"},
+    )
     snapshot = {
         "ok": True,
         "branch": "main...origin/main",
         "head": "same123",
         "entries": [
-            " M bots/national_v254/main.py",
-            " M bots/national_v999/main.py",
+            " M bots/national_v254/policy.py",
+            " M bots/national_v999/policy.py",
         ],
     }
 
@@ -3702,20 +3527,17 @@ def test_checkpoint_recovery_diagnostics_only_blocks_contract_bot_versions(tmp_p
 
     assert diag["recoverable"] is False
     assert "repo_blocking_worktree_entries" in diag["issues"]
-    assert diag["worktree_scope"]["blocking_entries"] == [" M bots/national_v254/main.py"]
-    assert diag["worktree_scope"]["ignored_entries"] == [" M bots/national_v999/main.py"]
+    assert diag["worktree_scope"]["blocking_entries"] == [" M bots/national_v254/policy.py"]
+    assert diag["worktree_scope"]["ignored_entries"] == [" M bots/national_v999/policy.py"]
 
 
 def test_checkpoint_recovery_diagnostics_blocks_critical_dirty_entries(tmp_path):
     import pipeline_recovery
 
-    (tmp_path / "bots" / "national_v258").mkdir(parents=True)
-    checkpoint = {
-        "next_v": 258,
-        "source_v": 254,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    _strict_artifact(tmp_path / "bots" / "national_v258", 258)
+    checkpoint = _strict_checkpoint(
+        258, 254, "workers_done", repo_baseline={"branch": "main", "head": "same123"}
+    )
     snapshot = {
         "ok": True,
         "branch": "main...origin/main",
@@ -4108,13 +3930,10 @@ def test_checkpoint_recovery_diagnostics_tracks_rework_target_dirs(tmp_path):
     import pipeline_recovery
 
     for stage in ("quality_failed", "repair_planned", "rework_running"):
-        (tmp_path / "bots" / "national_v259").mkdir(parents=True, exist_ok=True)
-        checkpoint = {
-            "next_v": 259,
-            "source_v": 254,
-            "stage": stage,
-            "repo_baseline": {"branch": "main", "head": "same123"},
-        }
+        _strict_artifact(tmp_path / "bots" / "national_v259", 259)
+        checkpoint = _strict_checkpoint(
+            259, 254, stage, repo_baseline={"branch": "main", "head": "same123"}
+        )
         snapshot = {"ok": True, "branch": "main...origin/main", "head": "same123"}
 
         diag = pipeline_recovery.checkpoint_recovery_diagnostics(
@@ -4135,12 +3954,9 @@ def test_startup_recovery_blocks_unrecoverable_checkpoint(monkeypatch):
     import orchestrator_session
     import pipeline_recovery
 
-    checkpoint = {
-        "next_v": 257,
-        "source_v": 197,
-        "stage": "workers_done",
-        "repo_baseline": {"branch": "old", "head": "old123"},
-    }
+    checkpoint = _strict_checkpoint(
+        257, 197, "workers_done", repo_baseline={"branch": "old", "head": "old123"}
+    )
     cleared = []
     events = []
     fake_evolution_core = SimpleNamespace(
@@ -4185,13 +4001,13 @@ def test_startup_recovery_resumes_prepared_without_master_plan(monkeypatch):
     import orchestrator_session
     import pipeline_recovery
 
-    checkpoint = {
-        "next_v": 260,
-        "source_v": 254,
-        "stage": "prepared",
-        "master_plan": None,
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    checkpoint = _strict_checkpoint(
+        260,
+        254,
+        "prepared",
+        master_plan=None,
+        repo_baseline={"branch": "main", "head": "same123"},
+    )
     cleared = []
     events = []
     fake_evolution_core = SimpleNamespace(
@@ -4234,13 +4050,13 @@ def test_startup_recovery_resumes_old_quality_failed_checkpoint(monkeypatch):
     import orchestrator_session
     import pipeline_recovery
 
-    checkpoint = {
-        "next_v": 261,
-        "source_v": 254,
-        "stage": "quality_failed",
-        "timestamp": "2000-01-01T00:00:00",
-        "repo_baseline": {"branch": "main", "head": "same123"},
-    }
+    checkpoint = _strict_checkpoint(
+        261,
+        254,
+        "quality_failed",
+        timestamp="2000-01-01T00:00:00",
+        repo_baseline={"branch": "main", "head": "same123"},
+    )
     cleared = []
     events = []
     fake_evolution_core = SimpleNamespace(

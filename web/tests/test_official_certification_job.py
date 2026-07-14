@@ -139,17 +139,17 @@ def test_bootstrap_job_delayed_state_drift_fails_before_worker_spawn(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(tmp_path / "jobs"))
-    candidate = _bot(tmp_path / "bots" / "national_v200")
-    opponent = _bot(tmp_path / "bots" / "national_v141")
+    candidate = _bot(tmp_path / "bots" / "national_v143")
+    opponent = _bot(tmp_path / "controls" / "first_strict_control_v1")
     spec = build_spec(
         "full",
         candidate,
         opponent=opponent,
-        bootstrap_root_id="national-v141-official-full-v5-signed-ledger-root",
+        bootstrap_control_id="first_strict_control_v1",
     )
     selection = {
         "selected": True,
-        "bootstrap_root_id": spec.bootstrap_root_id,
+        "bootstrap_control_id": spec.bootstrap_control_id,
         "candidate": str(candidate),
         "opponent": {"path": str(opponent), "eligible": True},
         "operator_bootstrap_authorization": {

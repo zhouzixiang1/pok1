@@ -22,13 +22,32 @@ import json
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import checkpoint_schema
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
+
+
+@pytest.fixture(autouse=True)
+def _strict_parent_authority(monkeypatch):
+    def resolve(label, **_kwargs):
+        version = int(str(label).rsplit("_v", 1)[1])
+        return SimpleNamespace(
+            eligible=True,
+            version=version,
+            issues=(),
+            runtime_manifest={"epoch": "national_tcp_policy_v1"},
+            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
+            publication_identity={"published": True, "version": version},
+            certificate_digest="a" * 64,
+        )
+
+    monkeypatch.setattr(checkpoint_schema, "resolve_national_bot_spec", resolve)
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +74,7 @@ def _write_checkpoint(tmp_path, stage, timeout_extensions=0):
     evolution_infra.PIPELINE_STATE_FILE = pipe_file
     evolution_core.PIPELINE_STATE_FILE = pipe_file
 
-    write_pipeline_checkpoint(102, 100, stage, master_plan={"workers": []})
+    write_pipeline_checkpoint(202, 200, stage, master_plan={"workers": []})
     # Overlay timeout_extensions directly (preserve other fields)
     raw = pipe_file.read_text()
     data = json.loads(raw)
@@ -545,8 +564,8 @@ def test_main_loop_infra_error_resumes_checkpoint_without_prepare(tmp_path, monk
     assert len(run_contexts) == 2
     assert prepare_calls == [], "active checkpoint recovery must not run prepare_generation"
     for resumed in run_contexts:
-        assert resumed.next_v == 102
-        assert resumed.source_v == 100
+        assert resumed.next_v == 202
+        assert resumed.source_v == 200
         assert resumed.strategy == "master"
 
 
@@ -618,7 +637,7 @@ def test_main_loop_success_with_active_checkpoint_skips_cleanup_and_resumes(tmp_
 
     assert len(run_contexts) == 2
     assert cleanup_calls == []
-    assert all(ctx.next_v == 102 and ctx.source_v == 100 for ctx in run_contexts)
+    assert all(ctx.next_v == 202 and ctx.source_v == 200 for ctx in run_contexts)
 
 
 def test_main_loop_routes_fresh_selected_checkpoint_without_llm_cycle(monkeypatch):
@@ -817,14 +836,14 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     async def _stalls_after_first_message():
         yield AssistantMessage(content=[TextBlock(text="seen")], model="sonnet")
         evolution_core.write_pipeline_checkpoint(
-            102,
-            100,
+            202,
+            200,
             "quality_failed",
             master_plan={"strategy": "master", "tasks": []},
             gate_results={
                 "quality": {
                     "all_passed": False,
-                    "failed_gates": ["position_semantics(state.py:1)"],
+                    "failed_gates": ["position_semantics(policy.py:1)"],
                 }
             },
         )
@@ -935,6 +954,7 @@ def test_external_progress_filters_to_current_generation(monkeypatch):
     checkpoint = {
         "next_v": 136,
         "run_id": "136#0",
+        "workflow_run_id": "wf-current",
         "stage": "direction_audited",
         "last_update_ts": 10.0,
         "last_stage_change_ts": 10.0,
@@ -944,19 +964,19 @@ def test_external_progress_filters_to_current_generation(monkeypatch):
             "ts": 20.0,
             "type": "pipeline.llm_role_progress",
             "message": "old generation progress",
-            "data": {"version": 135, "run_id": "135#0", "emitter_proc": "web"},
+            "data": {"version": 135, "run_id": "135#0", "workflow_run_id": "wf-old", "emitter_proc": "web"},
         },
         {
             "ts": 21.0,
             "type": "pipeline.llm_role_progress",
             "message": "daemon progress",
-            "data": {"version": 136, "run_id": "136#0", "emitter_proc": "daemon"},
+            "data": {"version": 136, "run_id": "136#0", "workflow_run_id": "wf-current", "emitter_proc": "daemon"},
         },
         {
             "ts": 22.0,
             "type": "pipeline.llm_role_stream_silent",
             "message": "warning, not progress",
-            "data": {"version": 136, "run_id": "136#0", "emitter_proc": "web"},
+            "data": {"version": 136, "run_id": "136#0", "workflow_run_id": "wf-current", "emitter_proc": "web"},
         },
         {
             "ts": 23.0,
@@ -965,14 +985,27 @@ def test_external_progress_filters_to_current_generation(monkeypatch):
             "data": {
                 "version": 136,
                 "run_id": "136#0",
+                "workflow_run_id": "wf-current",
                 "emitter_proc": "web",
                 "role": "MASTER (Try 1)",
                 "stage": "direction_audited",
             },
         },
+        {
+            "ts": 24.0,
+            "type": "pipeline.llm_role_progress",
+            "message": "same version but stale workflow",
+            "data": {
+                "version": 136,
+                "run_id": "136#0",
+                "workflow_run_id": "wf-stale",
+                "emitter_proc": "web",
+                "role": "STALE",
+            },
+        },
     ]
     monkeypatch.setattr(orchestrator, "_read_active_pipeline_checkpoint", lambda: checkpoint)
-    monkeypatch.setattr(orchestrator, "_read_system_events_tail", lambda max_bytes=None: [
+    monkeypatch.setattr(orchestrator, "_read_structured_events_tail", lambda max_bytes=None: [
         json.dumps(event) for event in raw_events
     ])
 
@@ -1249,7 +1282,7 @@ def test_master_planned_deterministic_route_clears_stale_session(monkeypatch):
             "stage": "master_planned",
             "next_v": 280,
             "source_v": 279,
-            "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["strategy.py"]}]},
+            "master_plan": {"tasks": [{"worker_id": "w1", "target_files": ["policy.py"]}]},
         },
     }
 
@@ -1811,7 +1844,7 @@ def test_reviewed_deterministic_route_passes_saved_plan_to_critic(monkeypatch):
 
     import orchestrator
 
-    master_plan = {"strategy": "crossover", "tasks": [{"target_files": ["strategy.py"]}]}
+    master_plan = {"strategy": "crossover", "tasks": [{"target_files": ["policy.py"]}]}
     fake_critic = SimpleNamespace(
         handler=AsyncMock(
             return_value={
@@ -1873,15 +1906,14 @@ def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch
 
     async def _quality_failed_after_message():
         evolution_core.write_pipeline_checkpoint(
-            102,
-            100,
-            "quality_failed",
-            master_plan={"strategy": "crossover", "tasks": []},
-            parent2_v=99,
-            gate_results={
+            202,
+            200,
+                "quality_failed",
+                master_plan={"strategy": "crossover", "tasks": []},
+                gate_results={
                 "quality": {
                     "all_passed": False,
-                    "failed_gates": ["position_semantics(state.py:1)"],
+                    "failed_gates": ["position_semantics(policy.py:1)"],
                 }
             },
         )
@@ -1935,8 +1967,8 @@ def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, mo
 
     async def _park_after_message():
         evolution_core.write_pipeline_checkpoint(
-            102,
-            100,
+            202,
+            200,
             "official_bootstrap_required",
             master_plan={"strategy": "master", "tasks": []},
             gate_results={

@@ -639,21 +639,6 @@ def verify_certificate_signature(
     }
 
 
-def historical_bootstrap_root_binding(
-    root_id: str, *, trust_policy: str | Path | None = None
-) -> dict[str, Any] | None:
-    """Return the unique retired-signer chain that authorizes ``root_id``."""
-    policy = load_signer_trust_policy(trust_policy)
-    matches = [
-        deepcopy(item["historical_chain"])
-        for item in policy["historical_signers"]
-        if item["historical_chain"].get("bootstrap_root_id") == root_id
-    ]
-    if len(matches) != 1:
-        return None
-    return matches[0]
-
-
 def signing_environment_report(
     *,
     allowed_signers: str | Path | None = None,

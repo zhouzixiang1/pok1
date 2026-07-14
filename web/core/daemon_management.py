@@ -15,17 +15,32 @@ import time
 import threading
 
 from evolution_infra import RESULTS_DIR
-from system_log import log_system_event
+from system_log import log_system_event as _persist_system_event
 
 log = logging.getLogger("pok.infra")
+
+
+def log_system_event(event_type, severity, message, data=None):
+    """Persist daemon lifecycle events only inside an initialized epoch.
+
+    Stopping a stale process remains allowed before reset, but that safety path
+    must not append lifecycle rows to the retired event ledger.  Existing tests
+    and callers can still monkeypatch this module-local compatibility name.
+    """
+
+    try:
+        from epoch_authority import require_policy_epoch_initialized
+
+        require_policy_epoch_initialized("daemon_management.event")
+    except Exception:
+        return
+    _persist_system_event(event_type, severity, message, data)
 
 # Global daemon process handle
 daemon_proc = None
 _daemon_lock = threading.Lock()
 _atexit_registered = False
 _daemon_shutting_down = False
-_last_scheduler_capability_log: dict[str, object] = {"key": None, "ts": 0.0}
-_SCHEDULER_CAPABILITY_LOG_INTERVAL = 60.0
 
 
 def _daemon_exit_metadata(returncode):
@@ -44,29 +59,6 @@ def _daemon_exit_metadata(returncode):
     return {"exit_cause": "process_error", "signal": None, "killer_known": False}
 
 
-def _log_scheduler_capability_false(reason: str, **fields) -> None:
-    """Log daemon scheduler unavailability without flooding hot polling paths."""
-    now = time.time()
-    daemon_pid = fields.get("daemon_pid")
-    key = (reason, daemon_pid)
-    if (
-        _last_scheduler_capability_log.get("key") == key
-        and now - float(_last_scheduler_capability_log.get("ts") or 0.0)
-        < _SCHEDULER_CAPABILITY_LOG_INTERVAL
-    ):
-        return
-    _last_scheduler_capability_log["key"] = key
-    _last_scheduler_capability_log["ts"] = now
-    try:
-        log_system_event(
-            "daemon.scheduler_capability_false", "warn",
-            f"Daemon scheduler unavailable: {reason}",
-            {"reason": reason, **fields},
-        )
-    except Exception:
-        pass
-
-
 def _drain_stdout(proc):
     """Drain daemon stdout to prevent pipe buffer deadlock."""
     try:
@@ -79,26 +71,28 @@ def _drain_stdout(proc):
         pass  # Pipe closed
 
 
-# Upper bound on daemon workers. Each worker runs mirror battles, which each
-# spawn two bot subprocesses, so peak RSS scales ~3x per worker. On a 32-core
-# box the old default (28 workers) was repeatedly OOM-killed (rc=-9 storm,
-# 2026-06-16), which took down the Battle Scheduler and stranded precommit_eval.
-# 12 workers still saturates a big machine for this I/O-bound bot workload but
-# keeps peak memory well under the OOM threshold.
+# Upper bound on daemon workers. Each worker runs one complete 70-hand native
+# TCP match with two managed bot subprocesses, so peak RSS scales with worker
+# count. Twelve workers use the machine without recreating the old OOM storm.
 MAX_SAFE_DAEMON_WORKERS = 12
 
 
 def _default_daemon_workers() -> int:
     """Default daemon workers = CPU cores * 7/8, clamped to [1, MAX_SAFE_DAEMON_WORKERS].
 
-    The hard cap prevents OOM-kills on high-core machines (each mirror battle
-    forks two bot subprocesses, so memory scales 3x per worker)."""
+    The hard cap prevents OOM-kills on high-core machines."""
     return max(1, min(MAX_SAFE_DAEMON_WORKERS, int(os.cpu_count() * 28 / 32)))
 
 
-def start_daemon(workers=None, pairs=5, scheduler_capable=True):
+def start_daemon(workers=None, pairs=5):
     """Start elo_daemon.py as a background subprocess in its own process group."""
     global daemon_proc, _atexit_registered, _daemon_shutting_down
+    # This check must precede the daemon lock, stale-PID cleanup, unlink, Popen,
+    # and event emission.  Until the one-time reset is valid, all of those
+    # would mutate or reconstruct the retired rating epoch.
+    from epoch_authority import require_policy_epoch_initialized
+
+    require_policy_epoch_initialized("daemon_management.start_daemon")
     if workers is None:
         workers = _default_daemon_workers()
 
@@ -163,12 +157,16 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
             env={**os.environ, "POK_PROC": "daemon"},
         )
         tmp_pid = daemon_pid_file.with_suffix(".tmp")
-        # C3: fsync before atomic replace so a crash/power loss can't leave an
-        # empty/torn PID file (which would make is_daemon_scheduler_capable()
-        # hit JSONDecodeError and strand precommit jobs).
+        # Fsync before atomic replace so a crash/power loss cannot leave a
+        # torn process-health record.
         _pid_fd = os.open(str(tmp_pid), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
         try:
-            os.write(_pid_fd, json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid(), "scheduler_capable": scheduler_capable}).encode("utf-8"))
+            os.write(
+                _pid_fd,
+                json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}).encode(
+                    "utf-8"
+                ),
+            )
             os.fsync(_pid_fd)
         finally:
             os.close(_pid_fd)
@@ -177,8 +175,7 @@ def start_daemon(workers=None, pairs=5, scheduler_capable=True):
             "daemon.pid_written", "info",
             f"Daemon PID file written for pid={daemon_proc.pid}",
             {"pid": daemon_proc.pid, "ppid": os.getpid(),
-             "workers": workers, "pairs": pairs,
-             "scheduler_capable": scheduler_capable},
+             "workers": workers, "pairs": pairs},
         )
     # Drain daemon stdout to prevent pipe buffer deadlock
     threading.Thread(target=_drain_stdout, args=(daemon_proc,), daemon=True).start()
@@ -228,8 +225,8 @@ def stop_daemon():
             except (ProcessLookupError, PermissionError):
                 daemon_proc.terminate()
             try:
-                # RC3: graceful shutdown (cancel in-flight mirror battles + fcntl
-                # save_cycle of ratings/h2h/stats) takes ~2-3s under load; the old
+                # Graceful shutdown (cancel in-flight native matches + fcntl
+                # save_cycle of ratings/H2H/stats) takes ~2-3s under load; the old
                 # 3s was right at the edge, so daemon frequently hit SIGKILL (rc=-9)
                 # on stop/restart — monitor then logged it as "daemon.crashed" and
                 # auto-restarted (benign but noisy + wastes in-flight battles).
@@ -312,107 +309,22 @@ def is_daemon_alive():
     return proc is not None and proc.poll() is None
 
 
-def is_daemon_scheduler_capable():
-    """Check if the running daemon is alive, was started with scheduler capability,
-    AND its main loop is recently active.
-
-    The liveness check (is_daemon_alive) is essential: the .daemon_pid file
-    outlives an OOM-killed daemon (rc=-9 storm, 2026-06-16), and without it the
-    stale scheduler_capable=true flag convinced precommit_eval the scheduler
-    was usable — jobs were submitted to a dead daemon and never completed,
-    stranding v107's precommit forever. A capability flag on a dead process
-    is meaningless.
-
-    v193 root-cause-audit (2026-06-26): the static `scheduler_capable` flag alone
-    could NOT detect a HALF-DEAD daemon — process alive (poll()==None) but main
-    loop stalled (not draining jobs). v193's precommit jobs were submitted to such
-    a half-dead daemon and never executed, stranding the whole generation for 70min
-    until CYCLE_TIMEOUT. The daemon now writes a `last_heartbeat` into .daemon_pid
-    each main-loop iteration; require it to be fresher than HEARTBEAT_STALE_SEC so
-    a stalled loop (regardless of cause) is treated as incapable and precommit
-    falls back to the parallel path instead of waiting on a dead scheduler.
-    """
-    with _daemon_lock:
-        proc = daemon_proc
-    if proc is None or proc.poll() is not None:
-        _log_scheduler_capability_false(
-            "not_alive",
-            daemon_pid=getattr(proc, "pid", None),
-            returncode=(proc.poll() if proc is not None else None),
-        )
-        return False
-    from evolution_infra import RESULTS_DIR
-    daemon_pid_file = RESULTS_DIR / ".daemon_pid"
-    if not daemon_pid_file.exists():
-        _log_scheduler_capability_false(
-            "pid_file_missing",
-            daemon_pid=getattr(proc, "pid", None),
-            pid_file=str(daemon_pid_file),
-        )
-        return False
-    try:
-        raw = daemon_pid_file.read_text().strip()
-        if raw.isdigit():
-            _log_scheduler_capability_false(
-                "legacy_pid_file",
-                daemon_pid=int(raw),
-                pid_file=str(daemon_pid_file),
-                raw_format="plain_pid",
-            )
-            return False
-        info = json.loads(raw)
-        if not info.get("scheduler_capable", False):
-            _log_scheduler_capability_false(
-                "flag_false",
-                daemon_pid=info.get("pid", getattr(proc, "pid", None)),
-                pid_file=str(daemon_pid_file),
-                scheduler_capable=info.get("scheduler_capable", False),
-            )
-            return False
-        # Heartbeat freshness: a daemon whose main loop has stalled (but process
-        # still alive) must not be reported as capable. Tolerate a missing
-        # heartbeat for older daemons that predate the heartbeat field, but once
-        # a heartbeat exists, enforce freshness.
-        hb = info.get("last_heartbeat")
-        if hb is not None:
-            try:
-                from elo_daemon import HEARTBEAT_STALE_SEC
-            except Exception:
-                HEARTBEAT_STALE_SEC = 120
-            try:
-                heartbeat_age = time.time() - float(hb)
-                if heartbeat_age > HEARTBEAT_STALE_SEC:
-                    _log_scheduler_capability_false(
-                        "heartbeat_stale",
-                        daemon_pid=info.get("pid", getattr(proc, "pid", None)),
-                        pid_file=str(daemon_pid_file),
-                        heartbeat_age_sec=round(heartbeat_age, 2),
-                        heartbeat_stale_sec=HEARTBEAT_STALE_SEC,
-                    )
-                    return False
-            except (TypeError, ValueError):
-                _log_scheduler_capability_false(
-                    "heartbeat_invalid",
-                    daemon_pid=info.get("pid", getattr(proc, "pid", None)),
-                    pid_file=str(daemon_pid_file),
-                    heartbeat=hb,
-                )
-                return False
-        return True
-    except (json.JSONDecodeError, KeyError, TypeError, OSError) as exc:
-        _log_scheduler_capability_false(
-            "pid_file_unreadable",
-            daemon_pid=getattr(proc, "pid", None),
-            pid_file=str(daemon_pid_file),
-            error_type=type(exc).__name__,
-            error=str(exc)[:200],
-        )
-        return False
-
-
 def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
     """Background thread: reads daemon stats, updates UI, auto-restarts dead daemon."""
     global daemon_proc  # written below (daemon_proc = None); must be declared global
+    try:
+        from epoch_authority import require_policy_epoch_initialized
+
+        require_policy_epoch_initialized("daemon_management.monitor")
+    except Exception as exc:
+        if ui:
+            state = getattr(exc, "state", {})
+            ui.log_history(
+                "Daemon monitor not started: policy epoch initialization is "
+                f"{state.get('state', 'unavailable')}",
+                "warn",
+            )
+        return
     if not ui:
         return
     if daemon_workers is None:
@@ -454,15 +366,9 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                     )
                     break
                 elif rc == 0:
-                    # v193 root-cause-audit (2026-06-26): a clean rc=0 exit is NOT a
-                    # crash. With the keep-alive main loop, the daemon now exits rc=0
-                    # when it has been idle (no in_flight / external jobs) for
-                    # DAEMON_IDLE_MAX_SEC, OR when orphaned (parent died), OR on a
-                    # graceful SIGTERM. None of these consume the crash-restart
-                    # budget — treat them like an intentional stop so repeated
-                    # idle-exit→restart cycles don't trip the "failed 5x" guard and
-                    # permanently stop auto-restart. Only non-zero rc (OOM/SIGKILL/
-                    # BrokenProcessPool) counts as a crash.
+                    # A clean exit is not a crash. Orphan detection and graceful
+                    # shutdown both use rc=0; only non-zero exits consume the
+                    # bounded crash-restart budget.
                     restart_count = 0
                     with _daemon_lock:
                         if daemon_proc is proc:
@@ -496,17 +402,7 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                         break
                     if _daemon_shutting_down:
                         break
-                    # restart 时实际检测 battle_scheduler 可用性,而非读
-                    # is_daemon_scheduler_capable()——该函数第一步 is_daemon_alive()
-                    # 在 restart 上下文里 daemon 已死 → 必返回 False,导致
-                    # scheduler_capable 被 stale 值锁死 false(daemon crash 一次后
-                    # 永久 false,precommit 永走慢路径 parallel mirror battle)。
-                    try:
-                        import battle_scheduler  # noqa: F401 — 实际 import 测试可用性
-                        _restart_scheduler_capable = True
-                    except Exception:
-                        _restart_scheduler_capable = False
-                    start_daemon(workers=daemon_workers, pairs=daemon_pairs, scheduler_capable=_restart_scheduler_capable)
+                    start_daemon(workers=daemon_workers, pairs=daemon_pairs)
             else:
                 restart_count = 0
             stats = load_daemon_stats()

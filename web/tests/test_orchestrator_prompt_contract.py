@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 
@@ -27,10 +28,11 @@ def test_orchestrator_prompt_keeps_critic_advisory_before_native_precommit():
 
 def test_orchestrator_prompt_treats_master_error_as_blocking():
     prompt = (PROMPTS / "orchestrator.md").read_text(encoding="utf-8")
+    normalized = " ".join(prompt.split())
 
     assert 'If the result contains `"error"` → Master FAILED' in prompt
     assert 'contains `"plan"` key and NO `"error"` key' in prompt
-    assert "worker_prompt` hard-size\nviolations are BLOCKING" in prompt
+    assert "`worker_prompt` hard-size violations are BLOCKING" in normalized
     assert 'If the result contains `"plan"` key → Master SUCCEEDED' not in prompt
     assert "worker_prompt size warnings are ADVISORY" not in prompt
 
@@ -45,25 +47,46 @@ def test_orchestrator_prompt_crossover_commit_contract_is_consistent():
     assert "checkpoint is at `workers_done`" not in prompt
 
 
-def test_llm_stages_documents_current_mcp_tool_contract():
-    stages = (ROOT / "docs" / "llm-stages.md").read_text(encoding="utf-8")
-    tools_source = (ROOT / "web" / "core" / "tools.py").read_text(encoding="utf-8")
-
-    assert "17 个工具" in stages
-    assert "15 个工具" not in stages
-    assert "(17 tools)" in tools_source
-    assert "~15 tools" not in tools_source
-    for tool_name in ("run_literature_probe", "abandon_generation"):
-        assert tool_name in stages
-        assert tool_name in tools_source
-
-
-def test_llm_stages_documents_checkpoint_directed_retries():
+def test_llm_stages_documents_active_strict_control_contract():
     stages = (ROOT / "docs" / "llm-stages.md").read_text(encoding="utf-8")
 
-    assert "代内重试循环（Checkpoint/工具指令驱动）" in stages
-    assert "不要让 LLM 自己维护私有计数器" in stages
-    assert "Critic 低分:" in stages
-    assert "作为硬门拒绝" in stages
-    assert "不允许 unchanged code 进入 run_precommit_eval" in stages
-    assert "intra_gen_attempts = 0" not in stages
+    assert "## One active protocol" in stages
+    assert "Candidate code may edit only `policy.py`" in stages
+    assert "typed-intent validator" in stages
+    assert "Master proposal ensemble" in stages
+    assert "Precommit evaluation" in stages
+    assert "Official certification" in stages
+
+
+def test_llm_stages_documents_checkpoint_and_evaluation_authority():
+    stages = (ROOT / "docs" / "llm-stages.md").read_text(encoding="utf-8")
+    normalized = " ".join(stages.split())
+
+    assert "immutable workflow run ID and monotonic CAS revision" in normalized
+    assert "replays frozen inputs" in normalized
+    assert "Critic" in normalized and "score is not an acceptance threshold" in normalized
+    assert "five 70-hand self-play rounds and three 70-hand rounds" in normalized
+    assert "Official chip results have zero strength weight" in normalized
+
+
+def test_main_orchestrator_has_mcp_tools_but_no_builtin_tools_on_all_dispatches():
+    source = (ROOT / "web" / "core" / "orchestrator.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    options_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "ClaudeAgentOptions"
+    ]
+    # Initial dispatch and the 529 retry must have identical tool authority.
+    assert len(options_calls) == 2
+    for call in options_calls:
+        keywords = {item.arg: item.value for item in call.keywords if item.arg}
+        assert isinstance(keywords.get("tools"), ast.List)
+        assert keywords["tools"].elts == []
+        servers = keywords.get("mcp_servers")
+        assert isinstance(servers, ast.Dict)
+        assert [key.value for key in servers.keys] == ["evolution"]

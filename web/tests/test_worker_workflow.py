@@ -1,9 +1,13 @@
 import hashlib
 import json
+from pathlib import Path
+import shutil
 
 import pytest
 
+from bot_artifact import hash_path
 from worker_workflow import (
+    WORKER_WORKFLOW_DEFINITION_VERSION,
     WorkerArtifactStore,
     WorkerWorkflow,
     build_worker_envelope,
@@ -41,16 +45,11 @@ def _envelope(snapshot_hash):
         tasks=[{
             "worker_id": "repair",
             "role": "Algorithmic Logic Architect",
-            "target_files": ["strategy.py"],
+            "target_files": ["policy.py"],
             "worker_prompt": "repair the frozen blocker",
         }],
-        reviewer_feedback="Quality failed: compile(strategy.py)",
+        reviewer_feedback="Quality failed: compile(policy.py)",
         worker_template_hash=_sha("template"),
-        worker_execution_context={
-            "schema_version": 1,
-            "exhausted_block": "",
-            "recent_failures": [],
-        },
         work_item={"kind": "quality_repair"},
         backend_contract={"model": "weak-model"},
         precommit_rework_count=0,
@@ -60,7 +59,9 @@ def _envelope(snapshot_hash):
 
 def _workflow(tmp_path):
     store = WorkflowStore(tmp_path / "events.sqlite3")
-    store.ensure_instance("149#0", definition_version=1)
+    store.ensure_instance(
+        "149#0", definition_version=WORKER_WORKFLOW_DEFINITION_VERSION
+    )
     artifacts = WorkerArtifactStore(tmp_path / "artifacts")
     return WorkerWorkflow(store=store, artifacts=artifacts, run_id="149#0")
 
@@ -71,16 +72,51 @@ def test_envelope_is_canonical_and_tamper_evident():
     assert envelope["envelope_digest"] == content_digest({
         key: value for key, value in envelope.items() if key != "envelope_digest"
     })
+    assert envelope["projection_preimage_artifact_hash"] == _sha("candidate")
+    assert envelope["projection_preimage_snapshot_hash"] == _sha("candidate")
 
     tampered = json.loads(json.dumps(envelope))
     tampered["tasks"][0]["worker_prompt"] = "different task"
     assert "worker_envelope_digest_mismatch" in validate_worker_envelope(tampered)
 
+    poisoned_prompt_context = json.loads(json.dumps(envelope))
+    poisoned_prompt_context["worker_execution_context"] = {
+        "recent_failures": [{"error": "legacy mutable failure"}],
+    }
+    poisoned_prompt_context["envelope_digest"] = content_digest({
+        key: value
+        for key, value in poisoned_prompt_context.items()
+        if key != "envelope_digest"
+    })
+    assert (
+        "worker_envelope_legacy_prompt_context_forbidden"
+        in validate_worker_envelope(poisoned_prompt_context)
+    )
+
+    legacy = json.loads(json.dumps(envelope))
+    legacy.pop("projection_preimage_snapshot_hash")
+    assert (
+        "worker_envelope_projection_preimage_snapshot_hash_missing"
+        in validate_worker_envelope(legacy)
+    )
+
+    mismatched = json.loads(json.dumps(envelope))
+    mismatched["projection_preimage_snapshot_hash"] = _sha("wrong snapshot")
+    mismatched["envelope_digest"] = content_digest({
+        key: value
+        for key, value in mismatched.items()
+        if key != "envelope_digest"
+    })
+    assert (
+        "worker_envelope_projection_preimage_snapshot_mismatch"
+        in validate_worker_envelope(mismatched)
+    )
+
 
 def test_artifact_store_captures_identity_and_materializes_exact_tree(tmp_path):
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     (candidate / "tables").mkdir()
     (candidate / "tables" / "equity.bin").write_bytes(b"\x00\x01")
     (candidate / "__pycache__").mkdir()
@@ -90,11 +126,16 @@ def test_artifact_store_captures_identity_and_materializes_exact_tree(tmp_path):
     digest = artifacts.capture(candidate)
     assert artifacts.capture(candidate) == digest
 
-    (candidate / "strategy.py").write_text("poisoned = True\n")
+    (candidate / "policy.py").write_text("poisoned = True\n")
     (candidate / "partial.bin").write_bytes(b"partial")
-    artifacts.materialize(digest, candidate)
+    poisoned = hash_path(candidate)
+    artifacts.materialize(
+        digest,
+        candidate,
+        expected_destination_digest=poisoned,
+    )
 
-    assert (candidate / "strategy.py").read_text() == "value = 1\n"
+    assert (candidate / "policy.py").read_text() == "value = 1\n"
     assert (candidate / "tables" / "equity.bin").read_bytes() == b"\x00\x01"
     assert not (candidate / "partial.bin").exists()
     assert not (candidate / "__pycache__").exists()
@@ -103,7 +144,7 @@ def test_artifact_store_captures_identity_and_materializes_exact_tree(tmp_path):
 def test_artifact_store_rejects_symlink(tmp_path):
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     (candidate / "escape").symlink_to(tmp_path / "outside")
     artifacts = WorkerArtifactStore(tmp_path / "artifacts")
 
@@ -164,7 +205,7 @@ def test_infrastructure_retry_preserves_one_envelope_and_attempt_budget(tmp_path
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     snapshot = workflow.artifacts.capture(candidate)
     envelope = _envelope(snapshot)
 
@@ -180,11 +221,51 @@ def test_infrastructure_retry_preserves_one_envelope_and_attempt_budget(tmp_path
     assert workflow.state()["repair_prepared_count"] == 1
 
 
+def test_availability_deferral_is_replayable_and_attempt_neutral(tmp_path):
+    workflow = _workflow(tmp_path)
+    candidate = tmp_path / "candidate-availability"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("value = 1\n")
+    snapshot = workflow.artifacts.capture(candidate)
+    workflow.prepare(_envelope(snapshot), max_attempts=3)
+    first = workflow.request_or_claim(owner="worker-a", lease_seconds=60)
+    availability = {
+        "schema_version": 1,
+        "active": True,
+        "category": "billing_cycle_usage_limit",
+        "summary": "provider billing-cycle usage limit reached",
+        "evidence_digest": "b" * 64,
+    }
+
+    deferred = workflow.availability_deferred(first, availability)
+
+    assert deferred["status"] == "availability_deferred"
+    assert deferred["attempt"] == 0
+    assert deferred["failure_class"] == "availability"
+    assert deferred["availability"] == availability
+    assert next_worker_command(deferred) == {
+        "command": "wait_for_llm_availability",
+        "effect_id": deferred["effect_id"],
+        "attempt": 0,
+        "availability": availability,
+    }
+    assert workflow.state() == deferred
+    assert "EffectFailed" not in [
+        event.event_type for event in workflow.store.events(workflow.run_id)
+    ]
+
+    resumed = workflow.resume_availability_deferred()
+    assert resumed["status"] == "requested"
+    second = workflow.request_or_claim(owner="worker-b", lease_seconds=60)
+    assert second.attempt == 1
+    assert second.lease_epoch == first.lease_epoch + 1
+
+
 def test_semantic_failure_waits_for_projection_before_new_cycle(tmp_path):
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     snapshot = workflow.artifacts.capture(candidate)
     workflow.prepare(_envelope(snapshot))
     first = workflow.request_or_claim(owner="worker-a", lease_seconds=1)
@@ -210,11 +291,11 @@ def test_output_receipt_precedes_projection_and_is_replayable(tmp_path):
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     baseline = workflow.artifacts.capture(candidate)
     workflow.prepare(_envelope(baseline))
     lease = workflow.request_or_claim(owner="worker-a", lease_seconds=1)
-    (candidate / "strategy.py").write_text("value = 2\n")
+    (candidate / "policy.py").write_text("value = 2\n")
     output = workflow.artifacts.capture(candidate)
 
     ready = workflow.output_ready(
@@ -241,7 +322,7 @@ def test_abandoned_worker_requires_outer_checkpoint_reconciliation(tmp_path):
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate-abandoned"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     snapshot = workflow.artifacts.capture(candidate)
     workflow.prepare(_envelope(snapshot))
 
@@ -262,7 +343,7 @@ def test_invalid_projection_schema_is_rejected_before_effect_completion(
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate-invalid-projection"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     snapshot = workflow.artifacts.capture(candidate)
     workflow.prepare(_envelope(snapshot))
     lease = workflow.request_or_claim(owner="worker-a", lease_seconds=10)
@@ -305,36 +386,43 @@ def test_prepare_is_idempotent_but_rejects_different_envelope(tmp_path):
         workflow.prepare(changed)
 
 
-@pytest.mark.parametrize("journal_write_to_fail", [1, 2, 3])
-def test_materialization_journal_recovers_each_rename_boundary(
-    tmp_path, monkeypatch, journal_write_to_fail
+def test_materialization_journal_recovers_before_atomic_swap(
+    tmp_path, monkeypatch
 ):
     artifacts = WorkerArtifactStore(tmp_path / "artifacts")
     source = tmp_path / "source"
     source.mkdir()
-    (source / "strategy.py").write_text("value = 2\n")
+    (source / "policy.py").write_text("value = 2\n")
     digest = artifacts.capture(source)
     destination = tmp_path / "candidate"
     destination.mkdir()
-    (destination / "strategy.py").write_text("value = 1\n")
-    original = artifacts._write_journal
-    calls = 0
+    (destination / "policy.py").write_text("value = 1\n")
+    expected = hash_path(destination)
+    original = artifacts._complete_materialization
+    failed = False
 
-    def crash_at_boundary(journal, payload):
-        nonlocal calls
-        calls += 1
-        if calls == journal_write_to_fail:
+    def crash_at_boundary(**kwargs):
+        nonlocal failed
+        if not failed:
+            failed = True
             raise RuntimeError("simulated process death")
-        return original(journal, payload)
+        return original(**kwargs)
 
-    monkeypatch.setattr(artifacts, "_write_journal", crash_at_boundary)
+    monkeypatch.setattr(artifacts, "_complete_materialization", crash_at_boundary)
     with pytest.raises(RuntimeError, match="simulated process death"):
-        artifacts.materialize(digest, destination)
-    monkeypatch.setattr(artifacts, "_write_journal", original)
+        artifacts.materialize(
+            digest,
+            destination,
+            expected_destination_digest=expected,
+        )
+    monkeypatch.setattr(artifacts, "_complete_materialization", original)
 
-    artifacts.materialize(digest, destination)
-    assert (destination / "strategy.py").read_text() == "value = 2\n"
-    assert not list(tmp_path.glob(".candidate.workflow-*-*"))
+    artifacts.materialize(
+        digest,
+        destination,
+        expected_destination_digest=expected,
+    )
+    assert (destination / "policy.py").read_text() == "value = 2\n"
 
 
 def test_materialization_recovers_after_journal_delete_failure(
@@ -343,11 +431,12 @@ def test_materialization_recovers_after_journal_delete_failure(
     artifacts = WorkerArtifactStore(tmp_path / "artifacts")
     source = tmp_path / "source"
     source.mkdir()
-    (source / "strategy.py").write_text("value = 2\n")
+    (source / "policy.py").write_text("value = 2\n")
     digest = artifacts.capture(source)
     destination = tmp_path / "candidate"
     destination.mkdir()
-    (destination / "strategy.py").write_text("value = 1\n")
+    (destination / "policy.py").write_text("value = 1\n")
+    expected = hash_path(destination)
     original = artifacts._remove_journal
     failed = False
 
@@ -360,17 +449,173 @@ def test_materialization_recovers_after_journal_delete_failure(
 
     monkeypatch.setattr(artifacts, "_remove_journal", fail_once)
     with pytest.raises(RuntimeError, match="crash before journal unlink"):
-        artifacts.materialize(digest, destination)
+        artifacts.materialize(
+            digest,
+            destination,
+            expected_destination_digest=expected,
+        )
     monkeypatch.setattr(artifacts, "_remove_journal", original)
-    artifacts.materialize(digest, destination)
-    assert (destination / "strategy.py").read_text() == "value = 2\n"
+    artifacts.materialize(
+        digest,
+        destination,
+        expected_destination_digest=expected,
+    )
+    assert (destination / "policy.py").read_text() == "value = 2\n"
+
+
+def test_materialization_recovery_never_overwrites_rebuilt_destination(
+    tmp_path, monkeypatch
+):
+    artifacts = WorkerArtifactStore(tmp_path / "artifacts")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "policy.py").write_text("value = 'output'\n")
+    digest = artifacts.capture(source)
+    destination = tmp_path / "candidate"
+    destination.mkdir()
+    (destination / "policy.py").write_text("value = 'preimage'\n")
+    preimage = hash_path(destination)
+    original = artifacts._complete_materialization
+
+    monkeypatch.setattr(
+        artifacts,
+        "_complete_materialization",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("process death")),
+    )
+    with pytest.raises(RuntimeError, match="process death"):
+        artifacts.materialize(
+            digest,
+            destination,
+            expected_destination_digest=preimage,
+        )
+    monkeypatch.setattr(artifacts, "_complete_materialization", original)
+
+    shutil.rmtree(destination)
+    destination.mkdir()
+    (destination / "policy.py").write_text("value = 'third-party'\n")
+    third_party = hash_path(destination)
+    with pytest.raises(RuntimeError, match="destination CAS mismatch"):
+        artifacts.materialize(
+            digest,
+            destination,
+            expected_destination_digest=preimage,
+        )
+    assert hash_path(destination) == third_party
+    assert (destination / "policy.py").read_text() == "value = 'third-party'\n"
+
+
+def test_materialization_atomically_retires_preimage_and_reports_ownership(tmp_path):
+    artifacts = WorkerArtifactStore(tmp_path / "artifacts")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "policy.py").write_text("value = 'output'\n")
+    digest = artifacts.capture(source)
+    destination = tmp_path / "candidate"
+    destination.mkdir()
+    (destination / "policy.py").write_text("value = 'preimage'\n")
+    preimage = hash_path(destination)
+
+    receipt = artifacts.materialize(
+        digest,
+        destination,
+        expected_destination_digest=preimage,
+    )
+
+    assert receipt.installed is True
+    assert receipt.receipt_digest
+    retained = Path(receipt.retained_path)
+    assert retained.is_dir()
+    assert hash_path(retained) == preimage
+    assert (retained / "policy.py").read_text() == "value = 'preimage'\n"
+    assert not list((artifacts.root / ".materializations").glob("*.json"))
+
+
+def test_materialization_preexisting_output_is_durable_noop(tmp_path):
+    artifacts = WorkerArtifactStore(tmp_path / "artifacts")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "policy.py").write_text("value = 'output'\n")
+    digest = artifacts.capture(source)
+    destination = tmp_path / "candidate"
+    shutil.copytree(source, destination)
+
+    receipt = artifacts.materialize(
+        digest,
+        destination,
+        expected_destination_digest=_sha("superseded-preimage"),
+    )
+
+    assert receipt.installed is False
+    assert (destination / "policy.py").read_text() == "value = 'output'\n"
+    assert Path(receipt.retained_path).is_dir()
+
+
+def test_materialization_mismatch_preserves_concurrent_displaced_tree(
+    tmp_path, monkeypatch
+):
+    artifacts = WorkerArtifactStore(tmp_path / "artifacts")
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "policy.py").write_text("value = 'output'\n")
+    digest = artifacts.capture(source)
+    destination = tmp_path / "candidate"
+    destination.mkdir()
+    (destination / "policy.py").write_text("value = 'preimage'\n")
+    preimage = hash_path(destination)
+    original_move = artifacts._move_to_retained
+
+    def replace_displaced_before_retire(prepared, retained):
+        shutil.rmtree(prepared)
+        prepared.mkdir()
+        (prepared / "operator.dat").write_text("must survive\n")
+        return original_move(prepared, retained)
+
+    monkeypatch.setattr(
+        artifacts,
+        "_move_to_retained",
+        replace_displaced_before_retire,
+    )
+    with pytest.raises(RuntimeError, match="changed during atomic CAS"):
+        artifacts.materialize(
+            digest,
+            destination,
+            expected_destination_digest=preimage,
+        )
+
+    retained = list((artifacts.root / ".retained_projections").iterdir())
+    assert len(retained) == 1
+    assert (retained[0] / "operator.dat").read_text() == "must survive\n"
+    assert (destination / "policy.py").read_text() == "value = 'output'\n"
+    assert list((artifacts.root / ".materializations").glob("*.json"))
+
+
+def test_remove_if_matches_retires_tree_without_recursive_delete(tmp_path, monkeypatch):
+    artifacts = WorkerArtifactStore(tmp_path / "artifacts")
+    destination = tmp_path / "candidate"
+    destination.mkdir()
+    (destination / "policy.py").write_text("value = 1\n")
+    digest = hash_path(destination)
+
+    monkeypatch.setattr(
+        "worker_workflow.shutil.rmtree",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            AssertionError("projection retirement must not recursively delete")
+        ),
+    )
+    receipt = artifacts.remove_if_matches(destination, digest)
+
+    assert receipt.installed is True
+    assert not destination.exists()
+    retained = Path(receipt.retained_path)
+    assert retained.is_dir()
+    assert (retained / "policy.py").read_text() == "value = 1\n"
 
 
 def test_abandon_is_absorbing_and_rejects_late_worker_output(tmp_path):
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     snapshot = workflow.artifacts.capture(candidate)
     workflow.prepare(_envelope(snapshot))
     lease = workflow.request_or_claim(owner="worker", lease_seconds=10)
@@ -391,7 +636,7 @@ def test_same_envelope_and_artifact_can_run_in_distinct_cycles(tmp_path):
     workflow = _workflow(tmp_path)
     candidate = tmp_path / "candidate"
     candidate.mkdir()
-    (candidate / "strategy.py").write_text("value = 1\n")
+    (candidate / "policy.py").write_text("value = 1\n")
     snapshot = workflow.artifacts.capture(candidate)
     envelope = _envelope(snapshot)
 

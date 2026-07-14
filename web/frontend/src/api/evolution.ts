@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import type { BotRating } from "./types";
 
 export type StreamType = "prompt" | "claude" | "thinking" | "tool" | "tool_result" | "error" | "default";
 
@@ -30,27 +31,19 @@ export type EvolutionEventType =
   | "tool_call"
   | "log_event"
   | "system_event"
+  | "epoch_blocked"
   | "ping";
 
 export interface EvolutionState {
+  evaluation_epoch: "national_tcp_policy_v1";
+  epoch_state: string;
+  epoch_initialized: boolean;
+  epoch_reset_receipt_digest?: string | null;
   status: string;
   is_working: boolean;
   header: string;
   metrics: Record<string, number>;
-  ratings: Array<{
-    rank: number;
-    name: string;
-    rating: number;
-    rd: number;
-    conservative_rating: number;
-    sigma?: number;
-    confidence?: string;
-    h2h_avg_wr?: number;
-    h2h_coverage?: number;
-    leaderboard_score?: number;
-    rank_basis?: string;
-    strength_confidence?: string;
-  }>;
+  ratings: BotRating[];
   pipeline_stage?: string | null;
   current_v?: number;
   next_v?: number;
@@ -96,6 +89,7 @@ type EvolutionHandlers = {
   onToolCall?: (data: { tool_name: string; args: Record<string, unknown>; ts: number; role?: string }) => void;
   onLogEvent?: (data: { level: string; logger: string; msg: string; ts: number }) => void;
   onSystemEvent?: (data: { ts: number; type: string; severity: string; message: string; data?: Record<string, unknown> }) => void;
+  onEpochBlocked?: (data: { evaluation_epoch: string; epoch_state: string; epoch_initialized: boolean }) => void;
   onConnect?: () => void;
 };
 
@@ -114,6 +108,7 @@ export function useEvolutionSSE(
 
     let currentSource: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let authorityBlocked = false;
 
     const doConnect = () => {
       currentSource = new EventSource(`${BASE}/evolution/stream`);
@@ -125,6 +120,7 @@ export function useEvolutionSSE(
         "history", "status", "io", "clear_io",
         "eval_table", "daemon_stats", "header", "cost", "generation_cost_policy", "metrics", "tool_call",
         "log_event", "system_event",
+        "epoch_blocked",
       ];
 
       eventTypes.forEach((eventType) => {
@@ -172,6 +168,19 @@ export function useEvolutionSSE(
               case "system_event":
                 activeHandlers.onSystemEvent?.(data);
                 break;
+              case "epoch_blocked":
+                authorityBlocked = true;
+                activeHandlers.onEpochBlocked?.(data);
+                // The server intentionally closes without replaying its ring.
+                // Do not reconnect under a stale `enabled=true`; the control
+                // status transition will re-enable a fresh stream later.
+                currentSource?.close();
+                currentSource = null;
+                if (reconnectTimer) {
+                  clearTimeout(reconnectTimer);
+                  reconnectTimer = null;
+                }
+                break;
             }
           } catch { /* ignore parse errors */ }
         });
@@ -180,6 +189,7 @@ export function useEvolutionSSE(
       currentSource.onerror = () => {
         currentSource?.close();
         currentSource = null;
+        if (authorityBlocked) return;
         reconnectTimer = setTimeout(doConnect, 5000);
       };
     };

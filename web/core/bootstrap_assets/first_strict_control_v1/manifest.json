@@ -1,0 +1,37 @@
+{
+  "authority": "system_first_strict_control",
+  "control_id": "first_strict_control_v1",
+  "execution_scope": {
+    "epoch": "national_tcp_policy_v1",
+    "formal_bootstrap_opponent_admitted": true,
+    "formal_bootstrap_scope": "first_policy_bot_empty_pool_only",
+    "lineage_high_water": 142,
+    "official_opponent_eligible": false,
+    "policy_version": 143,
+    "precommit_gate_admitted": true,
+    "rating_eligible": false,
+    "requires_empty_strict_pool": true,
+    "source_artifact_inherited": false,
+    "strength_admitted": false
+  },
+  "expected_artifact_hash": "ee1ca7f73c60a97f834a339a1c3620e4d7b4488e0bdddbb68c1e2dca21cccbe6",
+  "files": {
+    "policy.py": "d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4"
+  },
+  "gate_contract": {
+    "draw_score": 0.5,
+    "exact_samples": 8,
+    "minimum_match_score": 0.625,
+    "minimum_samples": 8,
+    "sample_unit": "complete_70_hand_match"
+  },
+  "gate_profile_id": "first_strict_bootstrap_regression_v1",
+  "policy": "deterministic_passive_typed_pass_v1",
+  "runtime": {
+    "decision_runtime_version": 9,
+    "national_bot_sha256": "795413ecab9bbc0856a53c2d297693196e99c078ba52d020d0b0afeedf719570",
+    "precompute_sha256": "5cc33ee3e79bc90a59ecb387442d838fa8eb919620f7302328bc43dfe9c526b5",
+    "stream_decoder_version": 2
+  },
+  "schema_version": 1
+}

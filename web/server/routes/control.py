@@ -1,15 +1,14 @@
-"""Control Panel endpoints — manual orchestrator tool triggering and state management."""
+"""Read-only status plus explicit, authenticated operator controls."""
 
 import asyncio
 import json
 import os
 import sys
-import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -19,67 +18,90 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
 from server.state import app_state
+from server.operator_control import CONTROL_TOKEN_HEADER, require_operator_mutation
 
 router = APIRouter(prefix="/api/control", tags=["control"])
-_last_status_sync_correction: tuple | None = None
-_SENSITIVE_ARG_MARKERS = ("password", "token", "secret", "key", "credential", "cookie", "auth")
+
+# This is deliberately an explicit HTTP capability registry, not a projection
+# of the Orchestrator's MCP ``all_tools`` registry.  Adding an MCP tool can
+# therefore never make it remotely callable through the dashboard.
+_CONTROL_CAPABILITIES = (
+    {"id": "read_status", "method": "GET", "path": "/api/control/status", "mutation": False},
+    {"id": "read_health", "method": "GET", "path": "/api/control/health", "mutation": False},
+    {"id": "read_config", "method": "GET", "path": "/api/control/config", "mutation": False},
+    {"id": "read_decisions", "method": "GET", "path": "/api/control/decisions", "mutation": False},
+    {
+        "id": "read_orchestrator_session",
+        "method": "GET",
+        "path": "/api/control/orchestrator/session",
+        "mutation": False,
+    },
+    {
+        "id": "start_evolution",
+        "method": "POST",
+        "path": "/api/control/start",
+        "mutation": True,
+        "requires_epoch": True,
+    },
+    {
+        "id": "stop_evolution",
+        "method": "POST",
+        "path": "/api/control/stop",
+        "mutation": True,
+        "requires_epoch": False,
+    },
+    {
+        "id": "update_config",
+        "method": "PUT",
+        "path": "/api/control/config",
+        "mutation": True,
+        "requires_epoch": True,
+    },
+    {
+        "id": "clear_orchestrator_session",
+        "method": "DELETE",
+        "path": "/api/control/orchestrator/session",
+        "mutation": True,
+        "requires_epoch": True,
+    },
+)
 
 
-def _control_log(event_type: str, severity: str, message: str, data: dict | None = None) -> None:
-    """Best-effort structured logging for control-plane actions."""
+def _epoch_access_state(operation: str) -> dict:
+    """Return canonical launch state, failing closed on authority errors."""
+
     try:
-        from system_log import log_system_event
-        log_system_event(event_type, severity, message, data or {})
-    except Exception:
-        pass
+        from epoch_authority import require_policy_epoch_initialized
+
+        return require_policy_epoch_initialized(operation)
+    except Exception as exc:
+        return getattr(exc, "state", None) or {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "epoch_authority_unavailable",
+            "initialized": False,
+            "operator_action": "inspect_epoch_authority",
+            "operator_command": None,
+        }
 
 
-def _summarize_tool_args(args: dict | None) -> dict:
-    """Return a compact, non-secret argument summary for system events."""
-    if not isinstance(args, dict):
-        return {"arg_type": type(args).__name__}
-    summary = {}
-    for key, value in args.items():
-        key_s = str(key)
-        key_l = key_s.lower()
-        if any(marker in key_l for marker in _SENSITIVE_ARG_MARKERS):
-            summary[key_s] = "<redacted>"
-        elif isinstance(value, (int, float, bool)) or value is None:
-            summary[key_s] = value
-        elif isinstance(value, str):
-            summary[key_s] = value if len(value) <= 160 else value[:157] + "..."
-        elif isinstance(value, list):
-            summary[key_s] = {"type": "list", "len": len(value)}
-        elif isinstance(value, dict):
-            summary[key_s] = {"type": "dict", "keys": sorted(map(str, value.keys()))[:12]}
-        else:
-            summary[key_s] = {"type": type(value).__name__}
-    return summary
+def _require_initialized_epoch(operation: str) -> dict:
+    """Translate the canonical epoch launch guard into an HTTP 409.
 
+    This helper intentionally does not persist an event on denial because the
+    canonical event ledger still belongs to the retired epoch.
+    """
 
-def _git_status_summary(limit: int = 80) -> dict:
-    """Read-only git status summary for destructive control actions."""
-    try:
-        proc = subprocess.run(
-            ["git", "status", "--short"],
-            cwd=str(PROJECT_ROOT),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:300], "entries": [], "entry_count": 0, "truncated": False}
-
-    entries = [line for line in (proc.stdout or "").splitlines() if line.strip()]
-    return {
-        "ok": proc.returncode == 0,
-        "returncode": proc.returncode,
-        "entry_count": len(entries),
-        "entries": entries[:limit],
-        "truncated": len(entries) > limit,
-        "stderr": (proc.stderr or "").strip()[:500],
-    }
+    state = _epoch_access_state(operation)
+    if not state.get("initialized"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "policy_epoch_not_initialized",
+                "operation": operation,
+                "epoch": state,
+            },
+        ) from None
+    return state
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -129,48 +151,124 @@ def _read_pid_info(path: Path) -> dict:
     return data
 
 
-def _read_pipeline_health() -> dict:
-    path = RESULTS_DIR / "pipeline_state.json"
-    if not path.exists():
-        return {"exists": False, "stage": None}
+def _read_pipeline_health(status: dict) -> dict:
+    """Project pipeline health only from canonical strict epoch status.
+
+    The old implementation reopened ``pipeline_state.json`` and rendered raw
+    fields even when that file belonged to the retired epoch.  The status
+    projection has already validated the strict checkpoint envelope; health
+    must not invent a second checkpoint reader or expose unbound state.
+    """
+
+    authority = "strict_epoch_projection"
+    if status.get("status_sync_error"):
+        return {
+            "exists": False,
+            "stage": None,
+            "authority": authority,
+            "error": "canonical_epoch_projection_unavailable",
+        }
+
+    active = status.get("active_generation")
+    ignored = status.get("ignored_checkpoint")
+    if not isinstance(active, dict):
+        return {
+            "exists": False,
+            "stage": None,
+            "authority": authority,
+            "epoch_state": status.get("epoch_state"),
+            "blocked": not bool(status.get("epoch_initialized")),
+            "ignored_checkpoint": ignored if isinstance(ignored, dict) else None,
+        }
+
+    # Only an initialized projection with a validated active generation may
+    # reopen the live checkpoint for recovery diagnostics.  Revalidate the
+    # bytes read now so a concurrent replacement cannot inherit the earlier
+    # projection's authority.
+    if not status.get("epoch_initialized"):
+        return {
+            "exists": False,
+            "stage": None,
+            "authority": authority,
+            "epoch_state": status.get("epoch_state"),
+            "blocked": True,
+            "error": "active_generation_without_initialized_epoch",
+        }
     try:
-        from evolution_infra import locked_file
-        with locked_file(path, "r") as f:
-            state = json.load(f)
+        from checkpoint_schema import (
+            checkpoint_epoch_errors,
+            live_policy_epoch_reset_receipt_errors,
+        )
+        from evolution_infra import PROJECT_ROOT as CORE_PROJECT_ROOT
+        from evolution_infra import read_pipeline_checkpoint
+        from pipeline_recovery import checkpoint_recovery_diagnostics
+
+        checkpoint = read_pipeline_checkpoint()
+        issues = checkpoint_epoch_errors(checkpoint)
+        if not issues:
+            issues.extend(
+                live_policy_epoch_reset_receipt_errors(
+                    checkpoint,
+                    project_root=CORE_PROJECT_ROOT,
+                )
+            )
+        expected = (
+            active.get("next_v"),
+            active.get("stage"),
+            active.get("workflow_run_id"),
+        )
+        observed = (
+            checkpoint.get("next_v") if isinstance(checkpoint, dict) else None,
+            checkpoint.get("stage") if isinstance(checkpoint, dict) else None,
+            checkpoint.get("workflow_run_id") if isinstance(checkpoint, dict) else None,
+        )
+        if issues or observed != expected:
+            return {
+                "exists": True,
+                "stage": active.get("stage"),
+                "authority": authority,
+                "epoch_state": status.get("epoch_state"),
+                "error": "strict_checkpoint_revalidation_failed",
+                "issues": list(dict.fromkeys(map(str, issues))),
+                "identity_changed": observed != expected,
+            }
+        recovery = checkpoint_recovery_diagnostics(checkpoint)
     except Exception as exc:
-        return {"exists": True, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-    now = time.time()
-    stage_ts = state.get("last_stage_change_ts")
-    update_ts = state.get("last_update_ts")
+        return {
+            "exists": True,
+            "stage": active.get("stage"),
+            "authority": authority,
+            "epoch_state": status.get("epoch_state"),
+            "error": f"strict_checkpoint_diagnostic_failed:{type(exc).__name__}",
+        }
+
+    attempt = active.get("attempt") if isinstance(active.get("attempt"), dict) else {}
     snapshot = {
         "exists": True,
-        "run_id": state.get("run_id"),
-        "stage": state.get("stage"),
-        "next_v": state.get("next_v"),
-        "source_v": state.get("source_v"),
-        "generation_attempt": state.get("generation_attempt"),
-        "audit_attempt": state.get("audit_attempt"),
-        "precommit_attempt": state.get("precommit_attempt"),
+        "authority": authority,
+        "epoch_state": status.get("epoch_state"),
+        "run_id": active.get("run_id"),
+        "workflow_run_id": active.get("workflow_run_id"),
+        "stage": active.get("stage"),
+        "next_v": active.get("next_v"),
+        "source_v": active.get("source_v"),
+        "generation_attempt": attempt.get("generation"),
+        "audit_attempt": attempt.get("audit"),
+        "precommit_attempt": attempt.get("precommit"),
+        "ignored_checkpoint": None,
+        "recovery": recovery,
     }
-    try:
-        from pipeline_recovery import checkpoint_recovery_diagnostics
-        snapshot["recovery"] = checkpoint_recovery_diagnostics(state)
-    except Exception as exc:
-        snapshot["recovery"] = {
-            "recoverable": False,
-            "issues": ["checkpoint_recovery_diagnostic_failed"],
-            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
-        }
-    if stage_ts is not None:
-        try:
-            snapshot["last_stage_age_sec"] = round(now - float(stage_ts), 2)
-        except Exception:
-            snapshot["last_stage_age_sec"] = None
-    if update_ts is not None:
-        try:
-            snapshot["last_update_age_sec"] = round(now - float(update_ts), 2)
-        except Exception:
-            snapshot["last_update_age_sec"] = None
+    now = time.time()
+    for source_key, target_key in (
+        ("last_stage_change_ts", "last_stage_age_sec"),
+        ("last_update_ts", "last_update_age_sec"),
+    ):
+        value = checkpoint.get(source_key)
+        if value is not None:
+            try:
+                snapshot[target_key] = round(now - float(value), 2)
+            except (TypeError, ValueError):
+                snapshot[target_key] = None
     return snapshot
 
 
@@ -185,18 +283,13 @@ def _daemon_health_snapshot() -> dict:
     data["heartbeat_stale"] = (
         hb_age is not None and hb_age > HEARTBEAT_STALE_SEC
     )
-    data["scheduler_capable"] = bool(
-        data.get("alive")
-        and data.get("scheduler_capable")
-        and not data.get("heartbeat_stale")
-    )
     return data
 
 
 def _health_summary(status: dict) -> dict:
     task = app_state.task_snapshot()
     daemon = _daemon_health_snapshot()
-    pipeline = _read_pipeline_health()
+    pipeline = _read_pipeline_health(status)
     issues = []
     if not status.get("running"):
         issues.append("evolution_not_running")
@@ -243,75 +336,62 @@ def _sync_evolution_fields(state: dict) -> dict:
     with the files the orchestrator actually uses, without mutating AppState
     from a read-only endpoint.
     """
-    global _last_status_sync_correction
-    before = (
-        state.get("current_v"),
-        state.get("next_v"),
-        state.get("generation_count"),
-    )
     try:
-        from evolution_core import (
-            compute_next_generation_v,
-            find_abandoned_version_floor,
-            find_current_v,
-            find_max_committed_v,
-            read_pipeline_checkpoint,
+        from epoch_authority import (
+            strict_epoch_projection,
+            unpublished_candidate_versions,
         )
 
-        current_v = int(find_current_v())
-        max_committed_v = int(find_max_committed_v())
-        abandoned_floor = int(find_abandoned_version_floor())
-        checkpoint = read_pipeline_checkpoint() or {}
-        active_generation = None
-
-        if checkpoint.get("next_v") is not None and checkpoint.get("stage") not in (None, "archived"):
-            next_v = int(checkpoint["next_v"])
-            generation_attempt = int(checkpoint.get("generation_attempt") or 0)
-            audit_attempt = int(checkpoint.get("audit_attempt") or 0)
-            precommit_attempt = int(checkpoint.get("precommit_attempt") or 0)
-            active_generation = {
-                "next_v": next_v,
-                "source_v": checkpoint.get("source_v"),
-                "stage": checkpoint.get("stage"),
-                "run_id": checkpoint.get("run_id") or f"{next_v}#{generation_attempt}",
-                "attempt": {
-                    "generation": generation_attempt,
-                    "audit": audit_attempt,
-                    "precommit": precommit_attempt,
-                },
-            }
-        else:
-            next_v = compute_next_generation_v(
-                current_v=current_v,
-                max_committed_v=max_committed_v,
-                abandoned_floor=abandoned_floor,
-            )
+        epoch = strict_epoch_projection()
+        current_v = int(epoch["current_v"])
+        next_v = int(epoch["next_v"])
+        generation_count = int(epoch["strict_generation_count"])
+        active_generation = epoch["active_generation"]
 
         state["current_v"] = current_v
         state["next_v"] = next_v
-        state["generation_count"] = current_v
+        state["generation_count"] = generation_count
         state["active_generation"] = active_generation
-
-        after = (current_v, next_v, current_v)
-        if before != after:
-            key = (before, after, active_generation["stage"] if active_generation else None)
-            if key != _last_status_sync_correction:
-                _last_status_sync_correction = key
-                try:
-                    from system_log import log_system_event
-                    log_system_event(
-                        "control.status_sync_corrected", "info",
-                        f"Control status corrected from {before} to {after}",
-                        {
-                            "before": before,
-                            "after": after,
-                            "active_generation": active_generation,
-                            "max_committed_v": max_committed_v,
-                        },
-                    )
-                except Exception:
-                    pass
+        state["evaluation_epoch"] = epoch["evaluation_epoch"]
+        state["epoch_state"] = epoch["state"]
+        state["epoch_initialized"] = bool(epoch["initialized"])
+        state["version_authority_high_water"] = int(
+            epoch["version_authority_high_water"]
+        )
+        state["strict_generation_count"] = generation_count
+        state["strict_published_versions"] = epoch["strict_published_versions"]
+        state["active_bots"] = epoch["active_bots"]
+        state["reset_receipt_valid"] = bool(epoch["reset_receipt_valid"])
+        state["reset_receipt_issues"] = epoch["reset_receipt_issues"]
+        state["operator_action"] = epoch["operator_action"]
+        state["operator_command"] = epoch["operator_command"]
+        state["ignored_checkpoint"] = epoch["ignored_checkpoint"]
+        state["unpublished_candidate_versions"] = unpublished_candidate_versions()
     except Exception as exc:
+        # Never fall back to AppState's bootstrap counters: those values may
+        # have been initialized from a retired checkpoint or abandoned bot
+        # directory.  Return a complete, explicitly unavailable projection so
+        # browser clients can render a recovery state without guessing fields
+        # or accidentally presenting stale version authority.
+        state.update({
+            "current_v": 0,
+            "next_v": 0,
+            "generation_count": 0,
+            "active_generation": None,
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "epoch_state": "epoch_authority_unavailable",
+            "epoch_initialized": False,
+            "version_authority_high_water": 0,
+            "strict_generation_count": 0,
+            "strict_published_versions": [],
+            "active_bots": [],
+            "reset_receipt_valid": False,
+            "reset_receipt_issues": ["canonical_epoch_projection_unavailable"],
+            "operator_action": "inspect_epoch_authority",
+            "operator_command": None,
+            "ignored_checkpoint": None,
+            "unpublished_candidate_versions": [],
+        })
         state["status_sync_error"] = str(exc)[:200]
     return state
 
@@ -343,32 +423,18 @@ class ConfigRequest(BaseModel):
         return result
 
 
-class ToolRequest(BaseModel):
-    tool_name: str = ""
-    args: dict = {}
-
-
-_tool_map: dict[str, Any] | None = None
-
-
-def _get_tool_map() -> dict[str, Any]:
-    global _tool_map
-    if _tool_map is None:
-        from tools import all_tools
-        _tool_map = {t.name: t.handler for t in all_tools}
-    return _tool_map
-
-
 @router.get("/config")
 async def get_config():
     return app_state.get_config()
 
 
 @router.put("/config")
-async def set_config(req: ConfigRequest):
+async def set_config(req: ConfigRequest, request: Request):
+    require_operator_mutation(request, operation="control_config_update")
     updates = req.safe_updates
     if not updates:
         return app_state.get_config()
+    _require_initialized_epoch("control_config_update")
     was_enabled = app_state.daemon_enabled
     result = app_state.update_config(**updates)
     if "daemon_enabled" in updates and updates["daemon_enabled"] != was_enabled:
@@ -403,7 +469,9 @@ async def get_decisions(limit: int = 50):
 
 
 @router.post("/start")
-async def start_evolution():
+async def start_evolution(request: Request):
+    require_operator_mutation(request, operation="control_start_evolution")
+    _require_initialized_epoch("control_start_evolution")
     if not app_state.try_set_running(True):
         raise HTTPException(status_code=409, detail="Evolution is already running")
 
@@ -430,7 +498,8 @@ async def start_evolution():
 
 
 @router.post("/stop")
-async def stop_evolution():
+async def stop_evolution(request: Request):
+    require_operator_mutation(request, operation="control_stop_evolution")
     app_state.request_shutdown()
     task = app_state.stop_running()
     if task and not task.done():
@@ -451,74 +520,50 @@ async def stop_evolution():
     return {"status": "stopped"}
 
 
-@router.post("/tool/{tool_name}")
-async def call_tool(tool_name: str, req: ToolRequest = Body(default=None)):
-    tools = _get_tool_map()
-    args = (req.args if req else None) or {}
-    arg_summary = _summarize_tool_args(args)
-    if tool_name not in tools:
-        _control_log(
-            "control.tool_unknown", "warn",
-            f"Unknown control tool requested: {tool_name}",
-            {"tool": tool_name, "args": arg_summary, "available_count": len(tools)},
-        )
-        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}. Available: {list(tools.keys())}")
+@router.post("/tool/{tool_name}", status_code=410)
+async def retired_tool_executor(tool_name: str):
+    """Permanently retire the old arbitrary MCP-over-HTTP dispatcher."""
 
-    _control_log(
-        "control.tool_requested", "info",
-        f"Control tool requested: {tool_name}",
-        {"tool": tool_name, "args": arg_summary},
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "control_tool_executor_retired",
+            "tool": tool_name,
+            "message": "Use explicit read-only APIs or operator control endpoints.",
+        },
     )
-    try:
-        result = await tools[tool_name](args)
-        text = ""
-        if isinstance(result, dict):
-            content = result.get("content", [])
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text += item.get("text", "")
-
-        app_state.add_decision(tool_name, text[:200])
-
-        # Post-tool state sync
-        if tool_name == "start_daemon":
-            app_state.update_config(daemon_enabled=True)
-        elif tool_name == "stop_daemon":
-            app_state.update_config(daemon_enabled=False)
-
-        _control_log(
-            "control.tool_succeeded", "success",
-            f"Control tool succeeded: {tool_name}",
-            {"tool": tool_name, "result_chars": len(text), "decision_preview": text[:200]},
-        )
-        return {"tool": tool_name, "result": text}
-    except KeyError as e:
-        _control_log(
-            "control.tool_failed", "error",
-            f"Control tool failed: {tool_name} missing parameter {e}",
-            {"tool": tool_name, "error_type": "KeyError", "error": str(e), "args": arg_summary},
-        )
-        raise HTTPException(status_code=400, detail=f"Missing parameter: {e}")
-    except (TypeError, ValueError) as e:
-        _control_log(
-            "control.tool_failed", "error",
-            f"Control tool failed: {tool_name} invalid parameter",
-            {"tool": tool_name, "error_type": type(e).__name__, "error": str(e), "args": arg_summary},
-        )
-        raise HTTPException(status_code=400, detail=f"Invalid parameter: {e}")
-    except Exception as e:
-        _control_log(
-            "control.tool_failed", "error",
-            f"Control tool failed: {tool_name}",
-            {"tool": tool_name, "error_type": type(e).__name__, "error": str(e), "args": arg_summary},
-        )
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tools")
 async def list_tools():
-    tools = _get_tool_map()
-    return {"tools": list(tools.keys())}
+    epoch = _epoch_access_state("control_tools_catalog")
+    initialized = bool(epoch.get("initialized"))
+    capabilities = []
+    for definition in _CONTROL_CAPABILITIES:
+        capability = dict(definition)
+        requires_epoch = bool(capability.pop("requires_epoch", False))
+        enabled = not requires_epoch or initialized
+        capability["enabled"] = enabled
+        capability["blocked_reason"] = (
+            None if enabled else "policy_epoch_not_initialized"
+        )
+        capabilities.append(capability)
+    enabled = [item["id"] for item in capabilities if item["enabled"]]
+    blocked = [item["id"] for item in capabilities if not item["enabled"]]
+    return {
+        "capabilities": capabilities,
+        # Transitional aliases are capability IDs, never MCP tool names.
+        "tools": [item["id"] for item in capabilities],
+        "enabled_tools": enabled,
+        "blocked_tools": blocked,
+        "epoch_initialized": initialized,
+        "epoch_state": epoch.get("state"),
+        "operator_action": epoch.get("operator_action"),
+        "operator_auth_required": True,
+        "operator_auth_modes": ["loopback_same_origin", "control_token"],
+        "operator_token_configured": bool(os.environ.get("POK_CONTROL_TOKEN")),
+        "operator_token_header": CONTROL_TOKEN_HEADER,
+    }
 
 
 # ── Orchestrator Session Management ──
@@ -529,20 +574,40 @@ ORCHESTRATOR_SESSION_FILE = PROJECT_ROOT / "web" / "core" / "results" / "orchest
 @router.get("/orchestrator/session")
 async def get_orchestrator_session():
     """Return current Orchestrator session ID (if any)."""
+    epoch = _epoch_access_state("control_orchestrator_session_read")
+    if not epoch.get("initialized"):
+        # A retired session id is not resumable authority and must never be
+        # rendered as active before the reset archives it.
+        return {
+            "session_id": None,
+            "active": False,
+            "blocked": True,
+            "epoch_state": epoch.get("state"),
+            "operator_action": epoch.get("operator_action"),
+        }
     if not ORCHESTRATOR_SESSION_FILE.exists():
-        return {"session_id": None, "active": False}
+        return {"session_id": None, "active": False, "blocked": False}
     try:
         import json as _json
         data = _json.loads(ORCHESTRATOR_SESSION_FILE.read_text())
         session_id = data.get("session_id")
-        return {"session_id": session_id, "active": bool(session_id)}
+        return {
+            "session_id": session_id,
+            "active": bool(session_id),
+            "blocked": False,
+        }
     except Exception:
-        return {"session_id": None, "active": False}
+        return {"session_id": None, "active": False, "blocked": False}
 
 
 @router.delete("/orchestrator/session")
-async def clear_orchestrator_session():
+async def clear_orchestrator_session(request: Request):
     """Delete the Orchestrator session file — forces a fresh conversation on next startup."""
+    require_operator_mutation(
+        request,
+        operation="control_orchestrator_session_clear",
+    )
+    _require_initialized_epoch("control_orchestrator_session_clear")
     existed = ORCHESTRATOR_SESSION_FILE.exists()
     ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
     try:
@@ -555,65 +620,3 @@ async def clear_orchestrator_session():
     except Exception:
         pass
     return {"cleared": existed, "message": "Session reset. Next Orchestrator start will begin a new conversation."}
-
-
-# ── Evolution Reset ──
-
-@router.post("/reset")
-async def reset_evolution_endpoint():
-    """Reset evolution to baseline (v1-v6), then auto-restart."""
-    if app_state.running:
-        app_state.request_shutdown()
-        task = app_state.stop_running()
-        if task and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=10)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                task.cancel()
-                try:
-                    await asyncio.wait_for(task, timeout=5)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-        try:
-            from evolution_core import stop_daemon
-            stop_daemon()
-        except Exception:
-            pass
-
-    loop = asyncio.get_running_loop()
-    from reset import reset_evolution
-    result = await loop.run_in_executor(None, reset_evolution)
-
-    # Do not auto-stage or commit reset output. This endpoint mutates many
-    # runtime/generated paths, so using `git add -A` would violate repository
-    # hygiene and could capture unrelated user or daemon artifacts.
-    git_status = _git_status_summary()
-    _control_log(
-        "control.reset_git_status",
-        "warn" if git_status.get("entry_count") else "info",
-        "Evolution reset left repository changes for explicit review",
-        {"git_status": git_status},
-    )
-
-    # Auto-restart
-    config = app_state.get_config()
-
-    from server.app import web_ui
-    web_ui._broadcaster.clear()
-    from orchestrator import orchestrator_loop
-    from shutdown_manager import ShutdownManager
-
-    if not app_state.try_set_running(True):
-        return {"status": "reset_complete", "warning": "Orchestrator already running — restart skipped"}
-
-    shutdown_mgr = ShutdownManager(grace_period=15.0)
-    app_state.set_shutdown_mgr(shutdown_mgr)
-
-    task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
-        web_ui, shutdown_mgr=shutdown_mgr, no_daemon=not config["daemon_enabled"],
-        daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
-    app_state.set_task(task)
-    web_ui.log_history("Evolution reset complete. Orchestrator restarted.", "success")
-
-    return {"status": "reset_complete", "details": result, "git_status": git_status}

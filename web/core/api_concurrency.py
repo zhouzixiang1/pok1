@@ -2,12 +2,11 @@
 
 当 cc-switch gateway(127.0.0.1:15721, 聚合多供应商含 GLM)返回 503「所有供应商
 已熔断」/ 529 overloaded / 429 配额上限时，全局降低并发上限——避免 N 个 agent
-(worker + battle_exp + analyst) 同时重试放大压力导致雪崩。持续正常时逐步恢复。
+(worker + analyst) 同时重试放大压力导致雪崩。持续正常时逐步恢复。
 
-NOTE(root-cause-audit 2026-06-21): 早期 docstring 称 "battle_exp 6 并发→166×503/177
-calls≈94%失败" 是 grep 误诊断——battle_exp_llm.log 的 225 个 "503" 里真实 API 503 仅 1 次，
-224 个是筹码增量(如 -8503 chips)。真实 retry 风暴主因是 claude_agent_sdk signature 反序列化
-bug。本模块机制(防御性降级)仍合理，保留。
+NOTE(root-cause-audit 2026-06-21): 历史日志曾因把筹码增量中的数字误判为
+HTTP 状态而夸大 503；真实 retry 风暴主因是 claude_agent_sdk signature
+反序列化 bug。本模块机制（防御性降级）仍合理，保留。
 
 设计：单一全局 level(线程/asyncio 安全)。
   - 每次 rate-limited 失败：level += 1（最多 3）
@@ -17,7 +16,7 @@ bug。本模块机制(防御性降级)仍合理，保留。
 接入点：
   - llm_query.run_claude_query：检测到限速错误 → record_llm_outcome(success=False, rate_limited=True)；
     正常完成 → record_llm_outcome(success=True)。
-  - battle_experience / agent_workers：取并发上限时用 get_adaptive_limit(BASE) 而非常量。
+  - agent_workers：取并发上限时用 get_adaptive_limit(BASE) 而非常量。
 """
 import threading
 import time

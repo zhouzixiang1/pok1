@@ -1,9 +1,12 @@
+import asyncio
 from pathlib import Path
 import importlib.util
 import json
 
 from official_wire_probe import (
     OfficialWireReplay,
+    TcpWireProbe,
+    WireEventRecorder,
     replay_events,
     split_client_messages,
     split_server_messages,
@@ -48,8 +51,10 @@ def test_server_stream_split_handles_official_sticky_packets():
 def test_client_stream_split_preserves_illegal_raise_spacing_for_replay():
     messages, rest = split_client_messages("raise  200", allow_name=False)
 
-    assert messages == []
-    assert rest == "raise  200"
+    # At the idle boundary the complete malformed decision is surfaced
+    # verbatim for illegality classification; it is never normalized.
+    assert messages == ["raise  200"]
+    assert rest == ""
 
 
 def test_client_stream_split_defers_fragmented_numeric_tail_until_idle_flush():
@@ -76,6 +81,49 @@ def test_client_stream_split_defers_fragmented_numeric_tail_until_idle_flush():
     )
     assert messages == ["raise 200"]
     assert rest == ""
+
+
+def test_wire_probe_incrementally_decodes_fragmented_utf8_name(tmp_path):
+    class Reader:
+        def __init__(self, chunks):
+            self.chunks = list(chunks)
+
+        async def read(self, _size):
+            return self.chunks.pop(0) if self.chunks else b""
+
+    class Writer:
+        def __init__(self):
+            self.payload = bytearray()
+
+        def write(self, payload):
+            self.payload.extend(payload)
+
+        async def drain(self):
+            return None
+
+    encoded = "底牌码农".encode("utf-8")
+    reader = Reader([encoded[:1], encoded[1:4], encoded[4:]])
+    writer = Writer()
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    probe = TcpWireProbe(platform_host="127.0.0.1", platform_port=1, recorder=recorder)
+    try:
+        asyncio.run(probe._pipe("A", "bot_to_server", reader, writer))
+    finally:
+        recorder.close()
+
+    assert bytes(writer.payload) == encoded
+    parsed = [message for event in recorder.events for message in event["messages"]]
+    assert parsed == ["底牌码农"]
+    assert "\ufffd" not in json.dumps(recorder.events, ensure_ascii=False)
+
+
+def test_replay_rejects_newline_as_team_name_framing():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", ["name"]),
+        _event(1, "A", "bot_to_server", ["BotA\n"]),
+    ])
+
+    assert summary["issues"][0]["kind"] == "wire_name_format"
 
 
 def test_replay_flags_second_postflop_check_as_illegal():
@@ -256,15 +304,39 @@ def test_replay_rejects_duplicate_and_gapped_settlement_hands():
     assert any(item["kind"] == "settlement_hand_sequence" for item in gap["issues"])
 
 
-def test_sample_wrapper_patches_hardcoded_server_address():
-    spec = importlib.util.spec_from_file_location("run_national_sample", ROOT / "scripts" / "run_national_sample.py")
+def test_scripted_diagnostic_client_defers_fragmented_numeric_message():
+    spec = importlib.util.spec_from_file_location(
+        "official_scripted_bot_cli",
+        ROOT / "scripts" / "official_scripted_bot.py",
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
 
-    patched = module._patched_source('server_address = ("47.98.125.65", 10001)\n', host="127.0.0.1", port=23456)
+    class Wire:
+        def __init__(self):
+            self.sent = []
 
-    assert "server_address = ('127.0.0.1', 23456)" in patched
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    wire = Wire()
+    client = module.ScriptedClient(
+        scenario=module.CHECK_CALL_DOWN,
+        name="Diagnostic",
+        log_path=None,
+        action_delay=0.0,
+    )
+    try:
+        client.dispatch_raw(wire, b"raise 2")
+        client.dispatch_raw(wire, b"00")
+        assert wire.sent == []
+        assert client.buffer == "raise 200"
+        client.flush_idle(wire)
+        assert wire.sent == [b"call"]
+        assert client.buffer == ""
+    finally:
+        client.close()
 
 
 def test_wire_probe_target_reached_requires_no_pending_action():

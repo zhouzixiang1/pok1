@@ -1,9 +1,12 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { api } from "../api/client";
 import type { OrchestratorLogFile } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { useGenerations } from "../context/DataProvider";
 import { Skeleton } from "../components/shared/Skeleton";
+import { EmptyState } from "../components/shared/EmptyState";
+import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { useControlStatus } from "../hooks/useControlStatus";
 import SystemLogTab from "../components/logs/SystemLogTab";
 import WorkerFailuresTab from "../components/logs/WorkerFailuresTab";
 
@@ -234,6 +237,11 @@ export default function Logs() {
   const [tab, setTab] = useState<Tab>("generation");
 
   const generations = useGenerations();
+  const { status, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const visibleGenerations = useMemo(
+    () => status?.epoch_initialized ? generations : [],
+    [generations, status?.epoch_initialized],
+  );
   const [selectedVersion, setSelectedVersion] = useState<string>("");
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [logContent, setLogContent] = useState<string>("");
@@ -248,26 +256,41 @@ export default function Logs() {
   const [convLoading, setConvLoading] = useState(false);
 
   useEffect(() => {
-    if (generations.length > 0 && !selectedVersion) {
-      setSelectedVersion(generations[generations.length - 1].version);
+    if (visibleGenerations.length === 0) {
+      setSelectedVersion("");
+      setSelectedFile("");
+      setLogContent("");
+      return;
     }
-  }, [generations, selectedVersion]);
+    if (!visibleGenerations.some((item) => item.version === selectedVersion)) {
+      setSelectedVersion(visibleGenerations[visibleGenerations.length - 1].version);
+      setSelectedFile("");
+      setLogContent("");
+    }
+  }, [visibleGenerations, selectedVersion]);
 
   useEffect(() => {
     if (selectedVersion) {
-      const gen = generations.find((g) => g.version === selectedVersion);
+      const gen = visibleGenerations.find((g) => g.version === selectedVersion);
       if (gen && gen.files.length > 0 && !gen.files.includes(selectedFile)) {
         setSelectedFile(gen.files[0]);
       }
     }
-  }, [selectedVersion, selectedFile, generations]);
+  }, [selectedVersion, selectedFile, visibleGenerations]);
 
   useEffect(() => {
+    let cancelled = false;
+    setLogContent("");
     if (selectedVersion && selectedFile) {
       api.logContent(selectedVersion, selectedFile, 500)
-        .then((res) => setLogContent(res.content))
-        .catch(() => setLogContent("加载日志出错"));
+        .then((res) => {
+          if (!cancelled) setLogContent(res.content);
+        })
+        .catch(() => {
+          if (!cancelled) setLogContent("加载日志出错");
+        });
     }
+    return () => { cancelled = true; };
   }, [selectedVersion, selectedFile]);
 
   const loadOrchList = useCallback(async () => {
@@ -283,10 +306,24 @@ export default function Logs() {
   }, []);
 
   useEffect(() => {
-    if (tab === "orchestrator" || tab === "conversation") {
+    if (status?.epoch_initialized && (tab === "orchestrator" || tab === "conversation")) {
       loadOrchList();
     }
-  }, [tab, loadOrchList]);
+  }, [status?.epoch_initialized, tab, loadOrchList]);
+
+  useEffect(() => {
+    if (!status?.epoch_initialized) {
+      if (tab === "orchestrator" || tab === "conversation") setTab("generation");
+      setSelectedVersion("");
+      setSelectedFile("");
+      setLogContent("");
+      setOrchFiles([]);
+      setSelectedOrch("");
+      setOrchContent("");
+      setConvFile("");
+      setConvParts([]);
+    }
+  }, [status?.epoch_initialized, tab]);
 
   useEffect(() => {
     if (selectedOrch && tab === "orchestrator") {
@@ -321,15 +358,19 @@ export default function Logs() {
     }
   }, [convFile, tab, loadConversation]);
 
-  const currentGen = generations.find((g) => g.version === selectedVersion);
+  const currentGen = visibleGenerations.find((g) => g.version === selectedVersion);
+  const tabs: Tab[] = status?.epoch_initialized
+    ? ["generation", "system", "failures", "orchestrator", "conversation"]
+    : ["generation", "system", "failures"];
 
   return (
     <>
       <PageMeta title="日志 — Bot 自进化" description="迭代日志与编排器日志" />
+      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} compact className="mb-4" />
 
       {/* Tab bar */}
       <div className="mb-4 flex gap-1 flex-wrap">
-        {(["generation", "system", "failures", "orchestrator", "conversation"] as Tab[]).map((t) => (
+        {tabs.map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -350,12 +391,12 @@ export default function Logs() {
           <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
             <h3 className="text-lg font-semibold text-gray-800 dark:text-white">迭代日志</h3>
           </div>
-          {generations.length === 0 ? (
-            <div className="p-6"><Skeleton.Card count={2} /></div>
+          {visibleGenerations.length === 0 ? (
+            <EmptyState message={status?.epoch_initialized ? "当前严格 workflow 尚无代次日志；空集不是加载中。" : "epoch 未初始化；旧代次与编排器日志不属于当前权威视图。"} />
           ) : (
             <div className="flex flex-col md:flex-row">
               <div className="w-full md:w-48 shrink-0 border-b border-gray-100 dark:border-border-subtle md:border-b-0 md:border-r overflow-y-auto max-h-64 md:max-h-[600px]">
-                {generations.map((gen) => (
+                {visibleGenerations.map((gen) => (
                   <button
                     key={gen.version}
                     onClick={() => setSelectedVersion(gen.version)}

@@ -32,7 +32,7 @@ evaluation:
 ```text
 external bot / managed national_bot.py
                 |
-        national_transport.py
+      sever.server.transport
                 |
       national_game_runtime.py
                 |
@@ -43,28 +43,30 @@ external bot / managed national_bot.py
  NationalArenaManager -> FastAPI/SSE -> React /arena
 ```
 
-- `web/core/national_transport.py` owns newline-free bot-to-server framing. It
+- `sever/server/transport.py` owns the single newline-free bot-to-server framing
+  implementation shared by `sever`, native strength evaluation, and Arena. It
   preserves illegal whitespace, waits for an idle boundary before committing a
   variable-length raise, handles split UTF-8 names, rejects oversized buffers,
   and never translates illegal `bet` into `raise`.
 - `web/core/national_game_runtime.py` owns the reusable TCP-backed game engine.
   It imports `sever` as a normal package; there is no `sys.modules` replacement.
+- `sever.engine.GameEngine` mirrors the official wire surface by suppressing a
+  terminal street-closing peer `call/check` and the natural hand-70
+  `earnChips` pair. Semantic settle events and THP records remain complete, so
+  the presentation result comes from server state rather than invented wire
+  tokens.
 - `web/core/national_arena/manager.py` owns the single-active-session state
   machine, listener, managed process groups, cleanup, and SSE notifications.
 - `web/core/national_arena/storage.py` owns locked metadata, semantic events,
   wire journals, bot logs, and THP artifacts.
 - `web/core/runtime_capacity.py` provides host-shared cross-process match slots
-  under `/tmp/pok-runtime-capacity-<uid>`. Ordinary callers remain on the
-  backward-compatible default range 0 through 11. Explicit layouts are strict
-  contiguous subranges of the host maximum 0 through 27; invalid environment or
-  argument values fail closed. The schema-7 neural collector sets
-  `POK_RUNTIME_CAPACITY_FIRST_SLOT=4` and
-  `POK_RUNTIME_CAPACITY_TOTAL_SLOTS=28`, so its native probe children use slots
-  4 through 27 and leave 0 through 3 for operator services. The path is
-  independent of a checkout and can be overridden with
-  `POK_RUNTIME_CAPACITY_ROOT`. A managed Arena holds two slots; every native TCP
-  match acquires one in the shared runner, while legacy daemon matches retain a
-  single outer lease.
+  under `/tmp/pok-runtime-capacity-<uid>`. Active callers use the default range
+  0 through 11 unless the operator explicitly selects a strict contiguous
+  subrange of the host maximum 0 through 27; invalid environment or argument
+  values fail closed. The path is independent of a checkout and can be
+  overridden with `POK_RUNTIME_CAPACITY_ROOT`. A managed Arena holds two slots;
+  every native TCP match acquires one in the shared runner. Retired experiment
+  slot layouts have no active scheduling or evidence authority.
 - `web/core/official_platform_resource.py` owns the cross-process official-port
   lease. An Arena on port 10001 and the Windows EXE can never run concurrently.
   A queued formal certification has priority over a new Arena; use another
@@ -94,9 +96,10 @@ GB2312 THP record when at least one hand exists.
 ### Managed Bots
 
 Only bots from the read-only active catalog can launch. They must already be
-completed, tagged, native-contract compliant, epoch-active, and official-pool
-eligible through a full EXE certificate or a content-bound transitional grant.
-The process starts its own `national_bot.py`; no adapter or wrapper is allowed.
+completed, tagged, strict-policy compliant, epoch-active, and eligible through a
+full EXE certificate. Transitional grants from retired epochs are not active
+catalog entries. The process starts its own system-owned `national_bot.py` and
+candidate `policy.py`; no archived adapter or compatibility wrapper is allowed.
 
 Managed processes inherit a small environment allowlist. API/model keys and
 unrelated operator secrets are not passed to bot code. Stdout, stderr, decision
@@ -105,15 +108,16 @@ logs, process identity, and the complete TCP wire stream are session artifacts.
 Managed bots do not share the host network namespace. The trusted manager opens
 one TCP connection to the bot's dedicated seat listener, passes only that
 connected descriptor through Bubblewrap, and launches the bot in an otherwise
-isolated network namespace. The bootstrap consumes the descriptor through the
-historical `socket.create_connection` API exactly once. A bot cannot scan the
+isolated network namespace. The bootstrap consumes the inherited descriptor
+exactly once. A bot cannot scan the
 other seat, the host loopback namespace, or outbound network endpoints.
 
 ### External TCP
 
 The requested IP/port is bound and the first two clients become top and bottom
 players. A third client is rejected. Team names and actions need no newlines.
-The server-to-bot direction remains newline-compatible with native bots.
+Both directions are raw bounded TCP streams. Neither side depends on newlines
+or on one receive call matching one protocol token.
 
 ## Storage
 
@@ -150,7 +154,8 @@ The React page is `/arena`. The API prefix is `/api/national-arena`:
 - `GET /sessions/{id}/artifacts/{key}`
 
 Mutation endpoints require same-origin browser access. Remote automation must
-set `POK_ARENA_CONTROL_TOKEN` and send `X-Arena-Token`.
+set the shared `POK_CONTROL_TOKEN` and send `X-Control-Token`. The dashboard
+keeps an entered token only in process memory; a page reload clears it.
 
 An SSE first connection receives an absolute snapshot. A reconnect with
 `Last-Event-ID` replays every missing semantic event. Terminal streams close
@@ -164,7 +169,7 @@ The CLI talks to the same FastAPI manager:
 python scripts/national_arena.py serve --view-only
 python scripts/national_arena.py run --mode external --host 0.0.0.0 --port 10001 --wait
 python scripts/national_arena.py run --mode managed \
-  --top-bot national_v141 --bottom-bot national_v142 --hands 70 --wait
+  --top-bot national_v143 --bottom-bot national_v144 --hands 70 --wait
 python scripts/national_arena.py status <session_id>
 python scripts/national_arena.py events <session_id>
 python scripts/national_arena.py wire <session_id>
@@ -182,8 +187,8 @@ capacity leases, environment isolation, API authority labels, control security,
 SSE snapshot/replay, CLI behavior, game observer events, and standalone `sever`
 compatibility. Release verification must additionally run:
 
-1. A managed 70-hand native TCP match with no illegal action, timeout, process
-   failure, adapter, or JSON stdout.
+1. A managed 70-hand raw TCP policy match with no illegal action, timeout, or
+   process failure.
 2. An external-client match through the fixed listener.
 3. Frontend TypeScript build and lint.
 4. The full Web regression suite.

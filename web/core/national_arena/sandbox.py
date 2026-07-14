@@ -13,6 +13,11 @@ from typing import Any, IO, Mapping
 import uuid
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
+from bot_namespace import (
+    ROLE_RATING_POOL,
+    resolve_national_bot_spec,
+    runtime_manifest_errors,
+)
 from managed_bot_executor import (
     BotTiming,
     EndpointLease,
@@ -22,10 +27,7 @@ from managed_bot_executor import (
     launch_managed_bot,
     probe_managed_executor,
 )
-from national_protocol_quarantine import (
-    ProtocolQuarantineError,
-    quarantined_native_entry_sources,
-)
+from national_runtime_authority import current_system_native_runtime_errors
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -51,18 +53,33 @@ class SealedBotArtifact:
     entry_relative: str = "national_bot.py"
 
 
-def _reject_quarantined_native_entry(path: Path, *, label: str) -> None:
-    try:
-        matches = quarantined_native_entry_sources(path)
-    except ProtocolQuarantineError as exc:
+def _validate_strict_source(path: Path, *, label: str) -> None:
+    spec = resolve_national_bot_spec(
+        path,
+        ROLE_RATING_POOL,
+        repo_root=ROOT,
+    )
+    if not spec.eligible:
         raise ArenaSandboxError(
-            "protocol_quarantine_authority_unavailable:"
-            f"{label}:{type(exc).__name__}:{str(exc)[:180]}"
-        ) from exc
-    if matches:
+            "arena_requires_strict_full_certified_policy_artifact:"
+            f"{label}:{';'.join(spec.issues[:8])}"
+        )
+    runtime_errors = current_system_native_runtime_errors(path)
+    if runtime_errors:
         raise ArenaSandboxError(
-            "protocol_quarantined_native_entry_forbidden:"
-            f"{label}:matches={','.join(matches)}"
+            "non_system_owned_native_runtime_forbidden:"
+            f"{label}:{runtime_errors[0]}"
+        )
+
+
+def _validate_sealed_runtime(path: Path, *, label: str) -> None:
+    errors = [
+        *runtime_manifest_errors(path),
+        *current_system_native_runtime_errors(path),
+    ]
+    if errors:
+        raise ArenaSandboxError(
+            f"arena_sealed_policy_runtime_invalid:{label}:{errors[0]}"
         )
 
 
@@ -154,7 +171,7 @@ def seal_bot_artifact(
 
     source_path = Path(source).expanduser().absolute()
     destination_path = Path(destination).expanduser().absolute()
-    _reject_quarantined_native_entry(source_path, label=source_path.name)
+    _validate_strict_source(source_path, label=source_path.name)
     if len(expected_hash) != 64 or any(
         character not in "0123456789abcdef" for character in expected_hash.lower()
     ):
@@ -237,7 +254,7 @@ def launch_sandboxed_bot(
 
     if seat not in {"upper", "lower"}:
         raise ArenaSandboxError("arena_managed_seat_invalid")
-    _reject_quarantined_native_entry(artifact.root, label=name)
+    _validate_sealed_runtime(artifact.root, label=name)
     if hash_path(artifact.root) != artifact.artifact_hash:
         raise ArenaSandboxError("arena_sealed_artifact_changed_before_launch")
     return launch_managed_bot(

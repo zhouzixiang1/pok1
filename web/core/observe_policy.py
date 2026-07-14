@@ -37,7 +37,6 @@ PARENT_TIMEOUT_EVENTS = {
 
 LEGACY_EXPECTED_CANCELS = {
     ("DYNAMIC_TEST_GEN", "workers_done"),
-    ("battle_experience", None),
 }
 
 EXPECTED_SDK_STREAM_ERRORS = {

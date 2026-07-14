@@ -1,763 +1,396 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
-import type { BotSummary, BotDetail, H2HEntry } from "../api/types";
+import type { BotDetail, BotSummary, H2HEntry, OfficialCertification } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
-import { controlApi } from "../api/control";
+import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { useBots, useH2H, useUpdateData } from "../context/DataProvider";
+import { useControlStatus } from "../hooks/useControlStatus";
 
-// ── Inline SVG helpers ─────────────────────────────────────────────────────────
-const TombIcon = ({ className }: { className?: string }) => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M6 22V10a6 6 0 0 1 12 0v12"/><path d="M4 22h16"/></svg>
-);
-const DocIcon = ({ className }: { className?: string }) => (
-  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-);
-const CheckIcon = ({ className }: { className?: string }) => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className={className}><polyline points="20 6 9 17 4 12"/></svg>
-);
-const DownloadIcon = ({ className }: { className?: string }) => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+const CheckIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
 );
 
-const strengthConfidenceText = (value?: string) => (
-  value === "high" ? "强度高置信" : value === "medium" ? "强度中置信" : "强度低置信"
+const DownloadIcon = () => (
+  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
 );
 
-const compactBotName = (name: string) => name.replace(/^national_/, "").replace(/^claude_/, "");
-type CertificationMode = "smoke" | "compliance" | "full";
+const compactBotName = (name: string) => name.replace(/^national_/, "");
 
-const lifecycleTone = (status?: string) => {
-  if (status === "active") return "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400";
-  if (status === "candidate") return "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300";
-  if (status === "protocol_ineligible") return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
-  if (status === "reaped" || status === "graveyard") return "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400";
-  return "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300";
-};
-
-const certificationTone = (status?: string) => {
-  if (status === "local-pass") return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
-  if (status === "official-certified") return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
-  if (status === "official-compliance-pass") return "bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300";
-  if (status === "official-smoke-pass") return "bg-cyan-100 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300";
-  if (status === "official-pending") return "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300";
-  if (status === "official-inconclusive") return "bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-300";
-  if (status === "official-failed") return "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300";
-  if (status === "official-unavailable") return "bg-red-50 text-red-600 dark:bg-red-900/20 dark:text-red-300";
-  return "bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-300";
-};
-
-const certificationText = (status?: string) => (
-  status === "local-pass" ? "仅本地通过"
-    : status === "official-certified" ? "官方认证"
-      : status === "official-compliance-pass" ? "官方合规通过"
-        : status === "official-smoke-pass" ? "官方 Smoke 通过"
-          : status === "official-pending" ? "官方排队"
-            : status === "official-inconclusive" ? "官方无结论"
-              : status === "official-failed" ? "官方失败"
-                : status === "official-uncertified" ? "未认证"
-                  : status === "official-unavailable" ? "认证不可用"
-                    : "认证未知"
-);
-
-const certificationPanelTone = (status?: string) => {
-  if (status === "official-failed" || status === "official-unavailable") {
-    return "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300";
-  }
-  if (status === "official-inconclusive") {
-    return "border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-300";
-  }
-  if (status === "official-pending") {
-    return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300";
-  }
-  if (status === "official-compliance-pass" || status === "official-smoke-pass" || status === "official-certified") {
-    return "border-teal-200 bg-teal-50 text-teal-700 dark:border-teal-800 dark:bg-teal-900/20 dark:text-teal-300";
-  }
-  return "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300";
-};
-
-const certificationVerdictText = (classification?: unknown) => {
-  if (classification === "protocol_violation") return "协议违规";
-  if (classification === "inconclusive") return "官方无结论";
-  if (classification === "uncertified") return "未认证";
-  if (classification === "local_pass") return "仅本地";
-  if (classification === "passed_or_pending") return "通过/排队";
-  return typeof classification === "string" && classification ? classification : undefined;
-};
-
-const summaryNumber = (summary: Record<string, unknown>, key: string) => {
-  const value = summary[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-};
-
-const asRecord = (value: unknown): Record<string, unknown> | null => (
-  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
-);
-
-const firstString = (value: unknown): string | undefined => {
-  if (typeof value === "string" && value) return value;
-  if (Array.isArray(value)) return value.find((item): item is string => typeof item === "string" && item.length > 0);
-  return undefined;
-};
-
-const certificationEvidence = (certification?: BotSummary["official_certification"]) => {
-  const result = asRecord(certification?.result);
-  const report = asRecord(result?.report);
-  const rounds = Array.isArray(report?.rounds) ? report.rounds : [];
-  let receipt: string | undefined;
-  let thp: string | undefined;
-  let log: string | undefined;
-  let handRecords: number | undefined;
-  for (const round of rounds) {
-    const roundRecord = asRecord(round);
-    const artifacts = asRecord(roundRecord?.artifacts);
-    receipt ||= firstString(artifacts?.receipt);
-    thp ||= firstString(artifacts?.thp_files);
-    log ||= firstString(artifacts?.bot_a_log) || firstString(artifacts?.bot_b_log) || firstString(artifacts?.platform_log);
-    const summaries = Array.isArray(artifacts?.thp_summaries) ? artifacts.thp_summaries : [];
-    for (const item of summaries) {
-      const summary = asRecord(item);
-      const value = Number(summary?.hand_records ?? 0);
-      if (Number.isFinite(value)) handRecords = Math.max(handRecords ?? 0, value);
-    }
-  }
-  return { receipt, thp, log, handRecords };
-};
-
-function RatingBadge({ r, rd, h2hWr, games }: { r: number; rd: number; h2hWr?: number; games?: number }) {
-  const conf = rd < 50 ? "text-green-600" : rd < 100 ? "text-yellow-600" : "text-orange-500";
-  return (
-    <span className="text-sm">
-      <span className="font-mono font-semibold">{r.toFixed(0)}</span>
-      <span className={`ml-1 text-xs ${conf}`}>±{(2 * rd).toFixed(0)}</span>
-      {h2hWr != null && <span className="ml-2 text-xs text-gray-500">H2H {(h2hWr * 100).toFixed(1)}%{games ? ` (${games})` : ""}</span>}
-    </span>
-  );
+interface CertificationView {
+  formal: boolean;
+  label: string;
+  detail: string;
+  tone: string;
 }
 
-function BotCard({ bot, h2hData, onAction }: { bot: BotSummary; h2hData: Record<string, H2HEntry>; onAction: (msg: string) => void }) {
+function certificationView(certification?: OfficialCertification): CertificationView {
+  if (!certification) {
+    return {
+      formal: false,
+      label: "未认证",
+      detail: "没有 signed official-full-v5 证书。",
+      tone: "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300",
+    };
+  }
+
+  // The signed certificate, deterministic receipt, candidate content, and
+  // verdict ledger are validated server-side.  Browser code must not create a
+  // second, inevitably weaker certification oracle from raw JSON fields.
+  const formal = certification.formal_certified === true
+    && certification.formal_authority === "signed_full_v5";
+
+  if (formal) {
+    return {
+      formal: true,
+      label: "正式认证通过",
+      detail: "signed official-full-v5：5 轮自对弈 + 3 轮合格对手，每轮 70 手。",
+      tone: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300",
+    };
+  }
+
+  if (certification.status === "official-smoke-pass") {
+    return {
+      formal: false,
+      label: "Smoke 诊断通过（非认证）",
+      detail: "Smoke 只验证短程官方平台诊断，不能发布 Bot。",
+      tone: "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-300",
+    };
+  }
+  if (certification.status === "official-compliance-pass") {
+    return {
+      formal: false,
+      label: "Compliance 诊断通过（非认证）",
+      detail: "短程 compliance 不是 signed 5+3×70 正式证书。",
+      tone: "border-cyan-200 bg-cyan-50 text-cyan-700 dark:border-cyan-800 dark:bg-cyan-900/20 dark:text-cyan-300",
+    };
+  }
+  if (certification.status === "local-pass") {
+    return {
+      formal: false,
+      label: "本地诊断通过（非认证）",
+      detail: "本地 raw TCP 强度/合规门不能替代官方 Windows EXE。",
+      tone: "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300",
+    };
+  }
+  if (certification.status === "official-pending") {
+    const full = certification.mode === "full";
+    return {
+      formal: false,
+      label: full ? "Full 正式认证进行中" : "诊断任务进行中（非认证）",
+      detail: full ? "尚未形成签名证书，当前不能显示为通过。" : "该任务不会形成正式发布资格。",
+      tone: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300",
+    };
+  }
+  if (certification.status === "official-certified") {
+    return {
+      formal: false,
+      label: "正式权威未验证",
+      detail: "记录声称 certified，但后端未验证为当前发布物的 signed full-v5；按非认证处理。",
+      tone: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300",
+    };
+  }
+
+  const labels: Partial<Record<OfficialCertification["status"], string>> = {
+    "official-failed": "正式认证失败",
+    "official-inconclusive": "正式认证无结论",
+    "official-unavailable": "认证状态不可用",
+    "official-uncertified": "未认证",
+  };
+  return {
+    formal: false,
+    label: labels[certification.status] ?? "未认证",
+    detail: certification.reason || "没有可验证的 signed official-full-v5 证书。",
+    tone: certification.status === "official-failed"
+      ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300"
+      : "border-orange-200 bg-orange-50 text-orange-700 dark:border-orange-800 dark:bg-orange-900/20 dark:text-orange-300",
+  };
+}
+
+function RatingLine({ bot }: { bot: BotSummary }) {
+  const score = bot.selection_score ?? bot.leaderboard_score;
+  if (bot.strength_evidence_available === false) {
+    return (
+      <div className="text-xs text-amber-600 dark:text-amber-400">
+        已严格发布；等待评分守护进程生成首个同发布池 evaluation cycle。
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+      <span>选择分 <span className="font-mono font-semibold text-gray-800 dark:text-gray-200">{score != null ? score.toFixed(4) : "—"}</span></span>
+      <span>H2H {bot.h2h_avg_wr != null ? `${(bot.h2h_avg_wr * 100).toFixed(1)}%` : "—"}</span>
+      <span>70 手样本 {bot.strength_sample_count ?? bot.games ?? 0}</span>
+      {bot.secondary_net_chips_mean != null && <span>净筹码/70手 {bot.secondary_net_chips_mean >= 0 ? "+" : ""}{bot.secondary_net_chips_mean.toFixed(0)}</span>}
+      <span>{bot.total_lines} 行</span>
+    </div>
+  );
+}
+function BotCard({
+  bot,
+  h2hData,
+  onMessage,
+}: {
+  bot: BotSummary;
+  h2hData: Record<string, H2HEntry>;
+  onMessage: (message: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [detail, setDetail] = useState<BotDetail | null>(null);
   const [selectedFile, setSelectedFile] = useState("");
   const [code, setCode] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [toolLoading, setToolLoading] = useState<string | null>(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [loadingCode, setLoadingCode] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const loadDetail = useCallback(async () => {
-    if (detail) return;
+    if (detail || loadingDetail) return;
+    setLoadingDetail(true);
     try {
-      const d = await api.botDetail(bot.version);
-      setDetail(d);
-      if (d.files.length > 0) setSelectedFile(d.files[0]);
-    } catch (e) {
-      console.error("[BotManager] bot detail load failed:", e);
-    }
-  }, [bot.version, detail]);
-
-  const loadCode = useCallback(async (filename: string) => {
-    setLoading(true);
-    try {
-      const text = await api.botCode(bot.version, filename);
-      setCode(text);
-    } catch {
-      setCode("加载代码失败。");
+      const next = await api.botDetail(bot.version);
+      setDetail(next);
+      if (next.files.length > 0) setSelectedFile(next.files[0]);
+    } catch (error) {
+      onMessage(`详情加载失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setLoading(false);
+      setLoadingDetail(false);
     }
-  }, [bot.version]);
+  }, [bot.version, detail, loadingDetail, onMessage]);
 
   useEffect(() => {
-    if (expanded) {
-      loadDetail();
-    }
+    if (expanded) void loadDetail();
   }, [expanded, loadDetail]);
 
   useEffect(() => {
-    if (selectedFile && expanded) {
-      loadCode(selectedFile);
-    }
-  }, [selectedFile, expanded, loadCode]);
+    if (!expanded || !selectedFile) return;
+    setLoadingCode(true);
+    api.botCode(bot.version, selectedFile)
+      .then(setCode)
+      .catch((error) => setCode(`加载代码失败：${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => setLoadingCode(false));
+  }, [bot.version, expanded, selectedFile]);
 
-  const handleInlineEval = async () => {
-    setToolLoading("eval");
-    try {
-      const r = await controlApi.callTool("run_inline_eval", { version: bot.version, n_games: 5 });
-      onAction(r.result || r.error || "完成");
-    } catch (e) {
-      onAction(`错误: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setToolLoading(null);
+  const certification = detail?.official_certification ?? bot.official_certification;
+  const certView = certificationView(certification);
+  const formalSummary = certification?.formal_summary;
+  const opponents = useMemo(() => {
+    const rows: Array<{ name: string; wins: number; losses: number; draws: number; games: number; wr: number }> = [];
+    for (const [key, value] of Object.entries(h2hData)) {
+      const parts = key.split(" vs ");
+      if (parts.length !== 2 || !parts.includes(bot.name) || value.games <= 0) continue;
+      const isA = parts[0] === bot.name;
+      const wins = isA ? value.a_wins : value.b_wins;
+      const losses = isA ? value.b_wins : value.a_wins;
+      rows.push({
+        name: isA ? parts[1] : parts[0],
+        wins,
+        losses,
+        draws: value.draws,
+        games: value.games,
+        wr: (wins + 0.5 * value.draws) / value.games,
+      });
     }
-  };
-
-  const handleCommit = async () => {
-    if (!confirm(`确认提交 ${bot.name}？请确保已通过代码审核 (run_review)。将创建 git commit 和 tag。`)) return;
-    setToolLoading("commit");
-    try {
-      let sourceV = bot.version - 1;
-      try {
-        const ckpt = await api.pipelineCheckpoint();
-        if (ckpt && ckpt.next_v === bot.version) sourceV = ckpt.source_v;
-      } catch (e) {
-        console.error("[BotManager] pipeline checkpoint load failed:", e);
-      }
-      const r = await controlApi.callTool("commit_bot", { version: bot.version, source_v: sourceV, strategy: "", review_approved: true });
-      onAction(r.result || r.error || "完成");
-    } catch (e) {
-      onAction(`错误: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setToolLoading(null);
-    }
-  };
+    return rows.sort((a, b) => b.wr - a.wr);
+  }, [bot.name, h2hData]);
 
   const handleDownload = async () => {
-    setToolLoading("download");
+    setDownloading(true);
     try {
       await api.downloadBot(bot.version);
-      onAction(`已下载 ${bot.name}.zip`);
-    } catch (e) {
-      onAction(`下载失败: ${e instanceof Error ? e.message : String(e)}`);
+      onMessage(`已下载 ${bot.name}.zip`);
+    } catch (error) {
+      onMessage(`下载失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setToolLoading(null);
+      setDownloading(false);
     }
   };
-
-  const handleCertification = async (mode: CertificationMode) => {
-    setToolLoading(`cert-${mode}`);
-    try {
-      const r = await api.enqueueCertification(bot.version, mode);
-      setDetail((prev) => prev ? { ...prev, official_certification: r } : prev);
-      onAction(`${bot.name} ${mode} 官方验收已排队: ${r.status}`);
-    } catch (e) {
-      onAction(`官方验收排队失败: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setToolLoading(null);
-    }
-  };
-
-  const displayName = compactBotName(bot.name);
-  const conserv = bot.rating ? bot.rating.conservative.toFixed(0) : "—";
-  const fallbackStrength = bot.rating ? Math.max(0, Math.min(1, 0.5 + (bot.rating.conservative - 1500) / 800)) : null;
-  const strengthValue = bot.selection_score ?? bot.leaderboard_score ?? fallbackStrength;
-  const strength = strengthValue != null ? strengthValue.toFixed(4) : "—";
-  const canRunTools = !bot.graveyard && (!bot.lifecycle_status || bot.lifecycle_status === "active" || bot.lifecycle_status === "candidate");
-  const protocolErrors = bot.protocol_errors ?? [];
-  const statusReasons = bot.status_reasons ?? [];
-  const certification = detail?.official_certification ?? bot.official_certification;
-  const certIssues = certification?.issues ?? [];
-  const certSummary = certification?.summary ?? {};
-  const certVerdict = asRecord(certification?.compliance_verdict);
-  const certClassification = certificationVerdictText(certVerdict?.classification);
-  const certBlocking = typeof certVerdict?.blocking === "boolean" ? certVerdict.blocking : undefined;
-  const certTargetHands = summaryNumber(certSummary, "target_hands");
-  const certRoundsRun = summaryNumber(certSummary, "rounds_run");
-  const certPassedRounds = summaryNumber(certSummary, "passed_rounds");
-  const certFailedRounds = summaryNumber(certSummary, "failed_rounds");
-  const certSuiteDir = typeof certSummary.suite_dir === "string" ? certSummary.suite_dir : undefined;
-  const certEvidence = certificationEvidence(certification);
 
   return (
-    <div className={`rounded-xl border ${bot.graveyard ? "border-gray-300 opacity-60" : "border-gray-200 dark:border-border-subtle"} bg-white dark:bg-surface-1 overflow-hidden`}>
+    <article className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
       <button
-        onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 dark:hover:bg-gray-700/50 text-left"
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/40"
       >
-        <div className="flex items-center gap-3">
-          <span className={`text-base font-semibold ${bot.graveyard ? "text-gray-400" : "text-gray-800 dark:text-white"}`}>
-            {displayName}
-          </span>
-          {bot.completed
-            ? <span className="px-1.5 py-0.5 text-[10px] rounded bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 flex items-center gap-0.5"><CheckIcon /> 完成</span>
-            : <span className="px-1.5 py-0.5 text-[10px] rounded bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400">进行中</span>
-          }
-          {bot.lifecycle_status && (
-            <span className={`px-1.5 py-0.5 text-[10px] rounded ${lifecycleTone(bot.lifecycle_status)}`}>
-              {bot.status_label ?? bot.lifecycle_status}
-            </span>
-          )}
-          {certification && (
-            <span className={`px-1.5 py-0.5 text-[10px] rounded ${certificationTone(certification.status)}`}>
-              {certificationText(certification.status)}
-            </span>
-          )}
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-semibold text-gray-900 dark:text-white">{compactBotName(bot.name)}</span>
+            <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"><CheckIcon /> 严格发布</span>
+            <span className={`rounded border px-1.5 py-0.5 text-[10px] ${certView.tone}`}>{certView.label}</span>
+          </div>
+          <div className="mt-1"><RatingLine bot={bot} /></div>
         </div>
-        <div className="flex items-center gap-4 text-sm text-gray-500">
-          <span className="text-xs text-gray-500">选择分 {strength}</span>
-          {bot.secondary_net_chips_mean != null && (
-            <span className="text-xs text-gray-500 tabular-nums">
-              净筹码/70手 {bot.secondary_net_chips_mean >= 0 ? "+" : ""}{bot.secondary_net_chips_mean.toFixed(0)}
-            </span>
-          )}
-          <span className="text-xs text-gray-400">{strengthConfidenceText(bot.strength_confidence)}</span>
-          {bot.rating && <RatingBadge r={bot.rating.r} rd={bot.rating.rd} h2hWr={bot.h2h_avg_wr} games={bot.games} />}
-          <span className="text-xs text-gray-400">{bot.total_lines} 行</span>
-          <span className="text-xs text-gray-400">保守 {conserv}</span>
-          <span className="text-gray-400">{expanded ? "▲" : "▼"}</span>
-        </div>
+        <span className="shrink-0 text-xs text-gray-400">{expanded ? "▲" : "▼"}</span>
       </button>
 
       {expanded && (
-        <div className="border-t border-gray-100 dark:border-gray-700 p-4 space-y-4">
-          {detail ? (
+        <div className="space-y-4 border-t border-gray-100 p-4 dark:border-gray-800">
+          {loadingDetail && !detail ? (
+            <div className="space-y-2"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
+          ) : detail ? (
             <>
-              {detail.parent && (
-                <p className="text-xs text-gray-500">父代: <span className="font-mono">{detail.parent}</span></p>
-              )}
-              {(statusReasons.length > 0 || protocolErrors.length > 0) && (
-                <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800/40 dark:text-gray-300">
-                  {statusReasons.length > 0 && (
-                    <p>状态原因: {statusReasons.join("；")}</p>
-                  )}
-                  {protocolErrors.length > 0 && (
-                    <div className="mt-2">
-                      <p className="font-semibold text-red-600 dark:text-red-300">协议检查错误</p>
-                      <ul className="mt-1 space-y-1">
-                        {protocolErrors.slice(0, 6).map((err) => (
-                          <li key={err} className="font-mono text-[11px]">{err}</li>
-                        ))}
-                        {protocolErrors.length > 6 && (
-                          <li className="text-gray-400">还有 {protocolErrors.length - 6} 条</li>
-                        )}
-                      </ul>
-                    </div>
-                  )}
+              <div className={`rounded-lg border p-3 text-xs ${certView.tone}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{certView.label}</span>
+                  <span>{certView.detail}</span>
                 </div>
-              )}
-              {certification && (
-                <div className={`rounded-lg border p-3 text-xs ${certificationPanelTone(certification.status)}`}>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className={`px-1.5 py-0.5 rounded ${certificationTone(certification.status)}`}>
-                      {certificationText(certification.status)}
-                    </span>
-                    {certification.mode && <span>模式: <span className="font-mono">{certification.mode}</span></span>}
-                    {certification.updated_at && <span>更新时间: <span className="font-mono">{certification.updated_at}</span></span>}
-                    {certification.cache_hit && <span className="text-emerald-600 dark:text-emerald-300">cache hit</span>}
-                    {certEvidence.handRecords != null && <span>THP 手牌: <span className="font-mono">{certEvidence.handRecords}</span></span>}
-                    {certClassification && <span>分类: <span className="font-mono">{certClassification}</span></span>}
-                    {certBlocking != null && <span>阻塞: <span className="font-mono">{certBlocking ? "是" : "否"}</span></span>}
-                    {certTargetHands != null && <span>目标手数: <span className="font-mono">{certTargetHands}</span></span>}
-                    {certRoundsRun != null && (
-                      <span>轮次: <span className="font-mono">{certPassedRounds ?? "?"}/{certRoundsRun}</span></span>
-                    )}
-                    {certFailedRounds != null && certFailedRounds > 0 && (
-                      <span>失败轮: <span className="font-mono">{certFailedRounds}</span></span>
-                    )}
+                {certification && (
+                  <div className="mt-2 grid gap-1 font-mono text-[11px] sm:grid-cols-2">
+                    <span>mode: {certification.mode ?? "—"}</span>
+                    <span>policy: {certification.policy_id ?? "—"}</span>
+                    <span>schema: {certification.certificate_schema_version ?? "—"}</span>
+                    <span>rounds: {formalSummary?.self_play_rounds ?? "—"}+{formalSummary?.opponent_rounds ?? "—"} × {formalSummary?.target_hands ?? "—"} hands</span>
+                    <span className="break-all sm:col-span-2">certificate: {certification.certificate_digest ?? "—"}</span>
+                    <span className="break-all sm:col-span-2">signature sha256: {certification.certificate_signature_sha256 ?? "—"}</span>
                   </div>
-                  {certSuiteDir && (
-                    <p className="mt-2 break-all">证据目录: <span className="font-mono">{certSuiteDir}</span></p>
-                  )}
-                  {certEvidence.receipt && (
-                    <p className="mt-2 break-all">Receipt: <span className="font-mono">{certEvidence.receipt}</span></p>
-                  )}
-                  {certEvidence.thp && (
-                    <p className="mt-2 break-all">THP: <span className="font-mono">{certEvidence.thp}</span></p>
-                  )}
-                  {certification.status === "official-failed" && certEvidence.log && (
-                    <p className="mt-2 break-all">日志: <span className="font-mono">{certEvidence.log}</span></p>
-                  )}
-                  {certIssues.length > 0 && (
-                    <div className="mt-2">
-                      <p className="font-semibold">官方验收问题</p>
-                      <ul className="mt-1 space-y-1">
-                        {certIssues.slice(0, 5).map((issue) => (
-                          <li key={issue} className="font-mono text-[11px] break-all">{issue}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              )}
+                )}
+                {(certification?.issues?.length ?? 0) > 0 && (
+                  <ul className="mt-2 space-y-1 font-mono text-[11px]">
+                    {certification!.issues!.slice(0, 6).map((issue) => <li key={issue}>{issue}</li>)}
+                  </ul>
+                )}
+              </div>
 
-              {/* File picker + code viewer */}
+              {detail.parent && <p className="text-xs text-gray-500">发布父代：<span className="font-mono">{detail.parent}</span></p>}
+
               <div>
-                <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
-                  <div className="flex gap-1 flex-wrap">
-                    {detail.files.map((f) => (
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap gap-1">
+                    {detail.files.map((filename) => (
                       <button
-                        key={f}
-                        onClick={() => setSelectedFile(f)}
-                        className={`px-2 py-1 text-xs rounded ${selectedFile === f ? "bg-blue-600 text-white" : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600"}`}
+                        key={filename}
+                        onClick={() => setSelectedFile(filename)}
+                        className={`rounded px-2 py-1 text-xs ${selectedFile === filename ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"}`}
                       >
-                        {f}
+                        {filename}
                       </button>
                     ))}
                   </div>
                   <button
                     onClick={handleDownload}
-                    disabled={toolLoading === "download"}
-                    className="px-3 py-1.5 text-xs rounded bg-gray-700 text-white hover:bg-gray-800 dark:bg-gray-600 dark:hover:bg-gray-500 disabled:opacity-50 flex items-center gap-1 shrink-0"
-                    title="下载完整源码压缩包"
+                    disabled={downloading}
+                    className="flex shrink-0 items-center gap-1 rounded bg-gray-700 px-3 py-1.5 text-xs text-white hover:bg-gray-800 disabled:opacity-50 dark:bg-gray-600"
                   >
-                    <DownloadIcon /> {toolLoading === "download" ? "打包中..." : "下载 zip"}
+                    <DownloadIcon /> {downloading ? "打包中…" : "下载发布包"}
                   </button>
                 </div>
-                {loading
-                  ? <div className="p-3 space-y-2"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
-                  : (
-                    <pre className="text-[11px] font-mono bg-gray-950 text-gray-200 rounded p-3 overflow-auto max-h-80 leading-relaxed whitespace-pre">
-                      {code || "无内容"}
-                    </pre>
-                  )
-                }
+                {loadingCode ? (
+                  <div className="space-y-2 p-3"><Skeleton.Line /><Skeleton.Line className="w-1/2" /></div>
+                ) : (
+                  <pre className="max-h-80 overflow-auto whitespace-pre rounded bg-gray-950 p-3 font-mono text-[11px] leading-relaxed text-gray-200">{code || "选择文件查看代码"}</pre>
+                )}
               </div>
 
-              {/* Actions */}
-              {canRunTools && (
-                <div className="flex gap-2 flex-wrap">
-                  <button
-                    onClick={handleInlineEval}
-                    disabled={toolLoading === "eval"}
-                    className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <PlayIcon /> {toolLoading === "eval" ? "运行中..." : "快速评估 (5 局)"}
-                  </button>
-                  <button
-                    onClick={handleCommit}
-                    disabled={toolLoading === "commit"}
-                    className="px-3 py-1.5 text-xs rounded bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <CheckIcon /> {toolLoading === "commit" ? "提交中..." : "提交"}
-                  </button>
-                  <button
-                    onClick={() => handleCertification("smoke")}
-                    disabled={toolLoading === "cert-smoke"}
-                    className="px-3 py-1.5 text-xs rounded bg-cyan-600 text-white hover:bg-cyan-700 disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <CheckIcon /> {toolLoading === "cert-smoke" ? "排队中..." : "排队 Smoke"}
-                  </button>
-                  <button
-                    onClick={() => handleCertification("compliance")}
-                    disabled={toolLoading === "cert-compliance"}
-                    className="px-3 py-1.5 text-xs rounded bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <CheckIcon /> {toolLoading === "cert-compliance" ? "排队中..." : "排队 Compliance"}
-                  </button>
-                  <button
-                    onClick={() => handleCertification("full")}
-                    disabled={toolLoading === "cert-full"}
-                    className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <CheckIcon /> {toolLoading === "cert-full" ? "排队中..." : "排队 Full"}
-                  </button>
+              {opponents.length > 0 && (
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold text-gray-600 dark:text-gray-400">权威本地 70 手 H2H 样本</h3>
+                  <div className="space-y-1">
+                    {opponents.map((opponent) => (
+                      <div key={opponent.name} className="flex items-center gap-3 text-xs text-gray-500">
+                        <span className="w-24 truncate">{compactBotName(opponent.name)}</span>
+                        <span className="font-mono">{(opponent.wr * 100).toFixed(1)}%</span>
+                        <span>{opponent.games} 个70手样本</span>
+                        <span className="font-mono text-[10px]">{opponent.wins}-{opponent.draws}-{opponent.losses}</span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
-
-              {/* H2H breakdown */}
-              {(() => {
-                const opponents: Array<{ name: string; wr: number; games: number; wins: number; losses: number; draws: number }> = [];
-                for (const [key, val] of Object.entries(h2hData)) {
-                  const parts = key.split(" vs ");
-                  if (parts.length !== 2) continue;
-                  const isA = parts[0] === bot.name;
-                  const opp = isA ? parts[1] : parts[0];
-                  if (!isA && parts[1] !== bot.name) continue;
-                  const wins = isA ? val.a_wins : val.b_wins;
-                  const losses = isA ? val.b_wins : val.a_wins;
-                  const wr = (wins + 0.5 * val.draws) / val.games;
-                  if (val.games > 0 && isFinite(wr)) opponents.push({ name: opp, wr, games: val.games, wins, losses, draws: val.draws });
-                }
-                if (opponents.length === 0) return null;
-                opponents.sort((a, b) => b.wr - a.wr);
-                return (
-                  <div>
-                    <h4 className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1">H2H 对战记录</h4>
-                    <div className="space-y-1">
-                      {opponents.map((opp) => (
-                        <div key={opp.name} className="flex items-center gap-2 text-xs">
-                          <span className="w-16 text-gray-600 dark:text-gray-400 truncate">{compactBotName(opp.name)}</span>
-                          <div className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
-                            <div
-                              className={`h-full rounded-full ${opp.wr > 0.6 ? "bg-green-500" : opp.wr < 0.4 ? "bg-red-500" : "bg-gray-400"}`}
-                              style={{ width: `${opp.wr * 100}%` }}
-                            />
-                          </div>
-                          <span className={`w-12 text-right font-mono ${opp.wr > 0.6 ? "text-green-600" : opp.wr < 0.4 ? "text-red-600" : "text-gray-500"}`}>
-                            {(opp.wr * 100).toFixed(0)}%
-                          </span>
-                          <span className="w-14 text-right text-gray-400">{opp.games} 场</span>
-                          <span className="w-14 text-right text-gray-400 font-mono text-[10px]">{opp.wins}-{opp.draws}-{opp.losses}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })()}
             </>
           ) : (
-            <div className="text-xs text-gray-400">加载详情中...</div>
+            <p className="text-xs text-red-500">无法读取发布 Bot 详情。</p>
           )}
         </div>
       )}
-    </div>
+    </article>
   );
 }
 
-// Inline PlayIcon for BotCard
-const PlayIcon = ({ className }: { className?: string }) => (
-  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className={className}><polygon points="5 3 19 12 5 21 5 3"/></svg>
-);
-
-type BotSortMode = "version" | "h2h_wr" | "rating";
-type BotViewMode = "active" | "all" | "protocol_ineligible" | "reaped" | "candidate" | "graveyard";
-
-const viewLabels: Record<BotViewMode, string> = {
-  active: "活跃",
-  all: "全部历史",
-  protocol_ineligible: "协议不合规",
-  reaped: "已淘汰",
-  candidate: "候选",
-  graveyard: "归档",
-};
+type BotSortMode = "selection" | "h2h" | "version";
 
 export default function BotManager() {
-  const { active: rawBots, graveyard: rawGraveyard, history: rawHistory = [], counts } = useBots();
+  const { active: streamedBots } = useBots();
   const h2hData = useH2H();
-  const [sortMode, setSortMode] = useState<BotSortMode>("rating");
-  const [viewMode, setViewMode] = useState<BotViewMode>("active");
-
-  const sortBots = useCallback((items: BotSummary[]) => {
-    const sorted = [...items];
-    if (sortMode === "h2h_wr") {
-      sorted.sort((a, b) => (b.h2h_avg_wr ?? 0) - (a.h2h_avg_wr ?? 0));
-    } else if (sortMode === "rating") {
-      sorted.sort((a, b) => {
-        const aScore = a.selection_score ?? a.leaderboard_score ?? (a.rating ? Math.max(0, Math.min(1, 0.5 + (a.rating.conservative - 1500) / 800)) : 0);
-        const bScore = b.selection_score ?? b.leaderboard_score ?? (b.rating ? Math.max(0, Math.min(1, 0.5 + (b.rating.conservative - 1500) / 800)) : 0);
-        return bScore - aScore;
-      });
-    } else {
-      sorted.sort((a, b) => b.version - a.version);
-    }
-    return sorted;
-  }, [sortMode]);
-
-  const bots = useMemo(() => sortBots(rawBots), [rawBots, sortBots]);
-  const graveyard = useMemo(() => sortBots(rawGraveyard), [rawGraveyard, sortBots]);
-  const history = useMemo(() => sortBots(rawHistory.length ? rawHistory : rawBots), [rawBots, rawHistory, sortBots]);
-  const visibleBots = useMemo(() => {
-    if (viewMode === "active") return bots;
-    if (viewMode === "graveyard") return graveyard;
-    if (viewMode === "all") return history;
-    return history.filter((bot) => bot.lifecycle_status === viewMode);
-  }, [bots, graveyard, history, viewMode]);
-
-  const [message, setMessage] = useState("");
-  const [prepForm, setPrepForm] = useState({ source_v: "", next_v: "" });
-  const [crossForm, setCrossForm] = useState({ parent_a: "", parent_b: "", target_v: "" });
-  const [reapLoading, setReapLoading] = useState(false);
-  const [prepLoading, setPrepLoading] = useState(false);
-  const [crossLoading, setCrossLoading] = useState(false);
-
   const updateData = useUpdateData();
+  const { status, loading: statusLoading, error: statusError } = useControlStatus(5_000);
+  const [loaded, setLoaded] = useState(false);
+  const [sortMode, setSortMode] = useState<BotSortMode>("selection");
+  const [message, setMessage] = useState("");
+
   const refresh = useCallback(async () => {
     try {
-      const bots = await api.listBots(true, true);
+      const bots = await api.listBots();
       updateData({ bots });
-    } catch (e) {
-      console.error("[BotManager] bot list refresh failed:", e);
+    } catch (error) {
+      setMessage(`发布池读取失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setLoaded(true);
     }
   }, [updateData]);
 
-  const handleReapWeakest = async () => {
-    setReapLoading(true);
-    try {
-      const r = await controlApi.callTool("reap_weakest", {});
-      setMessage(r.result || r.error || "完成");
-      await refresh();
-    } finally {
-      setReapLoading(false);
-    }
-  };
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
-  const handlePrepare = async () => {
-    const sv = parseInt(prepForm.source_v);
-    const nv = parseInt(prepForm.next_v);
-    if (!sv || !nv) return;
-    setPrepLoading(true);
-    try {
-      const r = await controlApi.callTool("prepare_next_gen", { source_v: sv, next_v: nv });
-      setMessage(r.result || r.error || "完成");
-      await refresh();
-    } finally {
-      setPrepLoading(false);
-    }
-  };
-
-  const handleCrossover = async () => {
-    const pa = parseInt(crossForm.parent_a);
-    const pb = parseInt(crossForm.parent_b);
-    const tv = parseInt(crossForm.target_v);
-    if (!pa || !pb || !tv) return;
-    setCrossLoading(true);
-    try {
-      const r = await controlApi.callTool("run_crossover", { parent_a: pa, parent_b: pb, target_v: tv });
-      setMessage(r.result || r.error || "完成");
-      await refresh();
-    } finally {
-      setCrossLoading(false);
-    }
-  };
-
-  if (bots.length === 0 && graveyard.length === 0 && history.length === 0) return <div className="p-6"><Skeleton.Card count={3} /></div>;
+  const bots = useMemo(() => {
+    if (!status?.epoch_initialized) return [];
+    const allowed = new Set(status.active_bots);
+    const rows = streamedBots.filter((bot) => allowed.has(bot.name));
+    return [...rows].sort((a, b) => {
+      if (sortMode === "version") return b.version - a.version;
+      if (sortMode === "h2h") return (b.h2h_avg_wr ?? -1) - (a.h2h_avg_wr ?? -1);
+      return (b.selection_score ?? b.leaderboard_score ?? -1) - (a.selection_score ?? a.leaderboard_score ?? -1);
+    });
+  }, [sortMode, status, streamedBots]);
 
   return (
     <>
-      <PageMeta title="Bot 管理 — Bot 自进化" description="管理所有 Bot 版本" />
+      <PageMeta title="严格发布 Bot — Bot 自进化" description="查看严格国赛发布 Bot、签名证书和源码" />
 
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold text-gray-800 dark:text-white">Bot 管理</h1>
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-400">
-            <span>排序:</span>
-            {(["h2h_wr", "rating", "version"] as BotSortMode[]).map((mode) => (
-              <button
-                key={mode}
-                onClick={() => setSortMode(mode)}
-                className={`px-2 py-0.5 rounded text-xs ${
-                  sortMode === mode
-                    ? "bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 font-medium"
-                    : "hover:bg-gray-100 dark:hover:bg-gray-700"
-                }`}
-              >
-                {mode === "h2h_wr" ? "H2H 胜率" : mode === "rating" ? "进化选择分" : "版本"}
-              </button>
-            ))}
-          </div>
-          <button onClick={refresh} className="px-3 py-1.5 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600">
-            刷新
-          </button>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800 dark:text-white">严格发布 Bot</h1>
+          <p className="mt-1 text-xs text-gray-500">只读页面：仅展示当前 epoch 发布池、正式证书、代码与下载包。</p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <span>排序</span>
+          {(["selection", "h2h", "version"] as BotSortMode[]).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setSortMode(mode)}
+              className={`rounded px-2 py-1 ${sortMode === mode ? "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300" : "hover:bg-gray-100 dark:hover:bg-gray-800"}`}
+            >
+              {mode === "selection" ? "选择分" : mode === "h2h" ? "H2H" : "版本"}
+            </button>
+          ))}
+          <button onClick={refresh} className="rounded bg-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-200 dark:hover:bg-gray-600">刷新</button>
         </div>
       </div>
 
+      <EpochAuthorityStatus status={status} loading={statusLoading} error={statusError} className="mb-4" />
+
       {message && (
-        <div className="mb-4 px-4 py-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-sm text-blue-700 dark:text-blue-300 font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
+        <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-800 dark:bg-blue-900/20 dark:text-blue-300">
           {message}
-          <button onClick={() => setMessage("")} className="ml-2 text-xs underline">清空</button>
+          <button onClick={() => setMessage("")} className="ml-2 text-xs underline">清除</button>
         </div>
       )}
 
-      {/* Global actions */}
-      <div className="mb-4 rounded-xl border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4 flex flex-wrap gap-4 items-end">
-        <div>
-          <button
-            onClick={handleReapWeakest}
-            disabled={reapLoading}
-            className="px-4 py-2 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 flex items-center gap-1"
-          >
-            <TombIcon /> {reapLoading ? "淘汰中..." : "淘汰最弱 Bot"}
-          </button>
-          <p className="text-xs text-gray-400 mt-1">当 Bot 池超过 30 个时，淘汰保守评分最低的</p>
+      {!loaded || statusLoading ? (
+        <Skeleton.Card count={2} />
+      ) : bots.length === 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+          <EmptyState
+            message={status?.epoch_initialized
+              ? "当前严格发布池为空；未发布候选和历史目录不会出现在这里。"
+              : "epoch 尚未初始化；v155 等未发布目录是残骸，不是可管理候选。"}
+          />
         </div>
-
-        <div className="flex items-end gap-2">
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">源版本</label>
-            <input
-              type="number"
-              value={prepForm.source_v}
-              onChange={(e) => setPrepForm((p) => ({ ...p, source_v: e.target.value }))}
-              className="w-20 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
-              placeholder="22"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">下一版本</label>
-            <input
-              type="number"
-              value={prepForm.next_v}
-              onChange={(e) => setPrepForm((p) => ({ ...p, next_v: e.target.value }))}
-              className="w-20 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
-              placeholder="23"
-            />
-          </div>
-          <button
-            onClick={handlePrepare}
-            disabled={prepLoading || !prepForm.source_v || !prepForm.next_v}
-            className="px-4 py-2 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1"
-          >
-            <DocIcon /> {prepLoading ? "准备中..." : "准备下一代"}
-          </button>
+      ) : (
+        <div className="space-y-2">
+          {bots.map((bot) => <BotCard key={bot.name} bot={bot} h2hData={h2hData} onMessage={setMessage} />)}
         </div>
-
-        <div className="flex items-end gap-2">
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">父代 A</label>
-            <select
-              value={crossForm.parent_a}
-              onChange={(e) => setCrossForm((p) => ({ ...p, parent_a: e.target.value }))}
-              className="w-24 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
-            >
-              <option value="">选择</option>
-              {bots.filter((b) => b.completed).map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">父代 B</label>
-            <select
-              value={crossForm.parent_b}
-              onChange={(e) => setCrossForm((p) => ({ ...p, parent_b: e.target.value }))}
-              className="w-24 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
-            >
-              <option value="">选择</option>
-              {bots.filter((b) => b.completed).map((b) => <option key={b.version} value={String(b.version)}>v{b.version}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-gray-500 block mb-1">目标版本</label>
-            <input
-              type="number"
-              value={crossForm.target_v}
-              onChange={(e) => setCrossForm((p) => ({ ...p, target_v: e.target.value }))}
-              className="w-20 px-2 py-1.5 text-sm border border-gray-300 dark:border-gray-600 dark:bg-gray-700 rounded"
-              placeholder="23"
-            />
-          </div>
-          <button
-            onClick={handleCrossover}
-            disabled={crossLoading || !crossForm.parent_a || !crossForm.parent_b || !crossForm.target_v}
-            className="px-4 py-2 text-sm rounded bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
-          >
-            {crossLoading ? "杂交中..." : "杂交"}
-          </button>
-        </div>
-      </div>
-
-      <div className="mb-4 rounded-xl border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-3">
-        <div className="flex flex-wrap gap-2">
-          {(["active", "all", "protocol_ineligible", "reaped", "candidate", "graveyard"] as BotViewMode[]).map((mode) => {
-            const count = mode === "active"
-              ? bots.length
-              : mode === "graveyard"
-                ? graveyard.length
-                : mode === "all"
-                  ? history.length
-                  : counts?.[mode] ?? history.filter((bot) => bot.lifecycle_status === mode).length;
-            return (
-              <button
-                key={mode}
-                onClick={() => setViewMode(mode)}
-                className={`px-3 py-1.5 text-xs rounded-md border ${
-                  viewMode === mode
-                    ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-500 dark:bg-blue-900/30 dark:text-blue-300"
-                    : "border-gray-200 text-gray-600 hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
-                }`}
-              >
-                {viewLabels[mode]} <span className="font-mono">{count}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <h2 className="text-sm font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">
-          {viewLabels[viewMode]} Bot ({visibleBots.length})
-        </h2>
-        {visibleBots.map((bot) => (
-          <BotCard key={bot.name} bot={bot} h2hData={h2hData} onAction={setMessage} />
-        ))}
-        {visibleBots.length === 0 && <p className="text-sm text-gray-400">当前分类没有 Bot。</p>}
-      </div>
+      )}
     </>
   );
 }

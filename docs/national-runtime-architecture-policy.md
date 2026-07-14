@@ -1,9 +1,9 @@
-# National Native Runtime Architecture Policy
+# National TCP Policy Runtime Architecture
 
 This policy translates poker-AI research into constraints that are executable
 in the current stdlib-only national bot runtime. It does not claim that a rule
 bot implements Libratus, Pluribus, or ReBeL. It adopts the parts that fit the
-actual 60-second decision contract and uninterrupted 70-hand TCP process.
+actual 60-second decision contract and uninterrupted 70-hand raw TCP process.
 
 ## Research Basis
 
@@ -17,7 +17,7 @@ actual 60-second decision contract and uninterrupted 70-hand TCP process.
   unbounded Monte Carlo loop. Source: [Science](https://doi.org/10.1126/science.aay2400).
 - ReBeL represents imperfect-information search with a public belief state.
   The applicable design is a compact current public-state/range summary passed
-  into decision code instead of rescanning the complete request history.
+   into decision code instead of reconstructing a second protocol history.
   Source: [NeurIPS 2020](https://papers.nips.cc/paper_files/paper/2020/hash/c61f571dbd2fb949d3fe5ae1608dd48b-Abstract.html).
 - Student of Games combines guided search, self-play learning, and
   game-theoretic reasoning across perfect- and imperfect-information games.
@@ -33,17 +33,18 @@ actual 60-second decision contract and uninterrupted 70-hand TCP process.
 
 Every formal native bot must preserve these boundaries:
 
-1. The socket-owning thread computes a legal baseline before optional strategy
-   work and owns the only send path.
+1. The socket-owning runtime computes an always-legal fallback before candidate
+   work and owns the only send path. Candidate `policy.py` may return a typed
+   baseline and bounded refinements, but never a wire token.
 2. Decision work uses `time.monotonic()` and three ordered boundaries: a 55
-   second socket hard deadline, a 250ms strategy-baseline target, and a 54
+   second socket hard deadline, a 250ms policy-baseline target, and a 54
    second refinement budget. The gap before the official 60 second timeout and
    the gap between refinement and hard return are reserved for sanitization,
    action throttling, logging, and scheduler jitter.
 3. The socket owns an always-legal fallback before untrusted strategy starts.
    Refinement has both a finite work cap and its own deadline check. A timeout
-   or exception returns the latest sanitized baseline. A late worker result can
-   never reach the socket.
+   or exception returns the latest validated typed decision. A late worker
+   result can never reach the socket.
 4. Pure reusable poker facts counted toward the formal precompute contract are
    inspectable collections built at module import. Every artifact has a measured
    entry/recursive-byte bound and a proven consumer in the decision call graph.
@@ -52,14 +53,22 @@ Every formal native bot must preserve these boundaries:
    until the harness can prove their construction boundary.
 5. `OpponentTracker` lives for one TCP connection, resets at connection start,
    and updates on hand start, opponent/hero actions, settlement, and showdown.
-   Recent raw state is bounded to at most 70 hands; decisions consume the
-   incremental `opponent_runtime` snapshot instead of scanning full history.
+   Recent raw state is bounded to at most 70 hands; `decision_context.opponent`
+   exposes its incremental snapshot instead of candidate code scanning a raw
+   byte log.
 6. Exploit changes are multiplied by confidence/adaptation weight and capped.
    Sparse evidence therefore stays close to the baseline. Match memory is not
    a license for unconstrained opponent-specific strategy replacement.
 7. Candidate-owned modules contain no filesystem, network, or subprocess I/O,
    including import-time and nominally unreachable functions. The system-owned
    native wrapper alone owns the socket, logs, deadlines, and worker process.
+8. The only candidate action ABI is `fold`, `pass`, `allin`, or `raise` with an
+   integer `raise_to`. The runtime maps `pass` to `call`/`check` from
+   authoritative state. Strings, integer actions, and direct `call`/`check`
+   intents are contract violations and fall back safely.
+9. Active code and prompts never import, execute, retrieve, or summarize files
+   below `archive/`. Historical artifacts cannot be promoted by adding current
+   field names to an old record.
 
 ## Local References And Space-Time Tradeoff
 
@@ -71,19 +80,19 @@ the selected card into the Worker prompt, while schema and runtime gates reject
 made-up card ids or dead consumers. Token budget may be large, but authority is
 kept in these local contracts rather than model memory.
 
-The v1 pack is deliberately small. Its two cards cover a proactive sizing
-geometry and a range-weighted bounded candidate batch, with falsifiable action
-counterfactuals. New cards should be added only after replay/H2H evidence shows
-an uncovered mechanism and the capability harness can verify its live
-consumer; a large uncurated strategy encyclopedia would recreate the same weak-
-model ambiguity under a larger token budget.
+The v1 pack is deliberately small. Every registered card must name a structural
+mechanism, a bounded live consumer, and a falsifiable action counterfactual.
+New cards should be added only after replay/H2H evidence shows an uncovered
+mechanism and the capability harness can verify its live consumer; a large
+uncurated strategy encyclopedia would recreate the same weak-model ambiguity
+under a larger token budget.
 
-Every fresh native candidate also receives compact import-time poker facts from
+Every fresh policy candidate also receives compact import-time poker facts from
 `NATIVE_PRECOMPUTE_TEMPLATE`: all 1,326 hole-card combinations, all 8,192
 13-rank straight masks, and the 21 five-of-seven index combinations. This is a
 useful space-for-time foundation, but not an innovation by itself; a selected
-precompute primary must prove a state-varying lookup changes a final sanitized
-action and that its empty-table fallback remains legal.
+precompute primary must prove a state-varying lookup changes a final validated
+typed decision and that its empty-table fallback remains legal.
 
 Do not check in a multi-million-entry Python dict merely because memory is
 available. Candidate file I/O is currently forbidden, so file-backed packed or
@@ -96,14 +105,14 @@ not turn startup/object expansion into a hidden timeout.
 
 ## Evolution Enforcement
 
-- `national_capability_contract.py` proves data flow into action-affecting
+- `national_capability_contract.py` proves data flow into typed-decision
   sinks; labels, unused reads, no-op trackers, cold caches, and dead helpers do
   not pass.
 - `national_runtime_probe.py` imports candidate modules only in a resource-
   limited subprocess, measures declared table size, replays a 70-hand tracker
   lifecycle, verifies connection reset and bounded confidence, and runs
-  low/high-adaptation metamorphic decisions. Static and dynamic evidence must
-  agree.
+  low/high-adaptation metamorphic decisions through `decision_context`. Static
+  and dynamic evidence must agree.
 - `runtime_architecture_policy.py` preserves every capability already present
   in the parent and selects one complete unresolved architecture bundle for the
   generation. A candidate may not trade away an existing capability.
@@ -152,6 +161,11 @@ not turn startup/object expansion into a hidden timeout.
   digest-bound Master context.  The outer orchestrator may transport or display
   it but cannot rewrite it into planning instructions.  Persisted direction
   audit and literature-probe results likewise override caller paraphrases.
+- Standalone control tools may not rerun match, performance, stagnation, or
+  environment analysis from mutable live files. Those roles execute only in
+  the scheduler-owned frozen evidence path. Missing current H2H data is
+  reported as no evidence; daemon pair counters are scheduling telemetry and
+  never substitute for a strength matrix.
 - When canonical stagnation or repetition requires research, the state machine
   routes only to `run_literature_probe`; `run_master` refuses to run without an
   identity-bound receipt carrying the exact Master-context digest, Direction-Audit digest, and
@@ -179,7 +193,7 @@ not turn startup/object expansion into a hidden timeout.
   scope. Publication then compares worktree bytes to staged Git blobs and the
   immutable completion-tag tree. Ignored files, empty directories, nested Git
   repositories/gitlinks, and tag/worktree hash drift are rejected.
-- Candidate imports and live strategy workers run under memory/file/descriptor/
+- Candidate imports and live policy workers run under memory/file/descriptor/
   process resource limits. Import-time external I/O and module-level allocation
   bombs therefore cannot consume the long-running orchestrator even before the
   static contract reports them.
@@ -216,19 +230,23 @@ No LLM field can pass, fail, revoke, certify, rate, or tune a bot.
 The current release intentionally leaves four evidence-driven improvements for
 later rather than pretending they are solved by a larger prompt:
 
-1. The runtime capability probe now includes a reproducible sampled 2-second
-   control versus 8-second treatment on one fixed ambiguous decision and records
-   the final sanitized action plus trusted steps/CPU/elapsed work. Local strength
-   selection still runs at roughly 2.0/1.8 seconds, so add a small paired-game
+1. The strict policy now has a sub-250 ms table/evaluator baseline and a
+   deterministic finite-batch equity/EV iterator that consumes the absolute
+   monotonic deadline. The runtime capability probe includes a reproducible
+   sampled 2-second control versus 8-second treatment and records the final
+   validated typed intent plus trusted steps/CPU/elapsed work. Local strength
+   selection still runs at roughly 2.0/1.8 seconds, so add a paired-game
    long-budget value stratum before treating extra compute as poker-EV evidence;
-   the current probe proves reachability and bounded scaling, not profitability.
+   these probes prove reachability, evaluator parity, bounded scaling and live
+   table influence, not profitability.
 2. Admit large exact equity/abstraction data only through a system-owned,
    immutable packed loader with packaging and live-consumer proof.
 3. Move compiled Worker briefs out of the candidate tree. They are excluded
    from identity, do not grant scope, and are hard-cleaned today, but an external
    read-only control directory would make the ownership boundary simpler.
-4. Rebuild MAP/QD only from identity-bound, committed native replay evidence;
-   the legacy accumulator remains dashboard-only until then.
+4. Admit any future diversity archive only from identity-bound, committed raw
+   national-TCP replay evidence. Retired accumulators are not dashboard or
+   planning inputs in `national_tcp_policy_v1`.
 
 ## Non-Goals
 

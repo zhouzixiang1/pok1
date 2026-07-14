@@ -19,11 +19,33 @@ PRECOMMIT_PARENT_MIN_SAMPLES = 4
 PRECOMMIT_PARENT_MAX_SCORE = 0.40
 PRECOMMIT_AGGREGATE_MIN_SAMPLES = 8
 PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN = 2
-NON_STRENGTH_MATCHUP_REASONS = frozenset({"nemesis_probe", "psro_meta_opponent"})
+# Strict-policy precommit has no telemetry-only opponent class.  Every ordinary
+# published-bot matchup is a gate and strength sample; the first-strict control
+# uses explicit typed admission flags instead of a magic reason string.
+NON_STRENGTH_MATCHUP_REASONS = frozenset()
+
+
+def is_precommit_gate_matchup(matchup: dict[str, Any]) -> bool:
+    """Whether complete samples from this matchup may decide precommit.
+
+    The first-strict system control is a hard local regression authority but
+    deliberately not a strength/rating authority.  Telemetry probes remain
+    excluded from both channels.
+    """
+
+    if "precommit_gate_admitted" in matchup:
+        return matchup.get("precommit_gate_admitted") is True
+    return str(matchup.get("reason") or "") not in NON_STRENGTH_MATCHUP_REASONS
 
 
 def is_strength_matchup(matchup: dict[str, Any]) -> bool:
-    return str(matchup.get("reason") or "") not in NON_STRENGTH_MATCHUP_REASONS
+    if not is_precommit_gate_matchup(matchup):
+        return False
+    if "strength_admitted" in matchup:
+        return matchup.get("strength_admitted") is True
+    if matchup.get("strength_authoritative") is False:
+        return False
+    return True
 
 
 def match_score(wins: int | float, draws: int | float, games: int | float) -> float | None:
@@ -83,7 +105,7 @@ def precommit_outcome_blockers(
     total_wins = total_losses = total_draws = 0
     per_matchup: list[dict[str, Any]] = []
     for matchup in matchups:
-        if not is_strength_matchup(matchup):
+        if not is_precommit_gate_matchup(matchup):
             continue
         summary = summarize_match_outcomes(
             matchup.get("wins", 0),

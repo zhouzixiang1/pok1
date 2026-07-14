@@ -13,7 +13,6 @@ import asyncio
 import json
 import logging
 import os
-import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -21,38 +20,12 @@ from pathlib import Path
 from types import MappingProxyType
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag, parse_bot_version
 from strength_order import match_score
-from system_log import log_system_event, SYSTEM_EVENTS_FILE
+from system_log import log_system_event
 
 log = logging.getLogger("pok.scheduler")
 
 OSCILLATION_BREAKOUT_SCORE_TOLERANCE = 0.02
 OSCILLATION_BREAKOUT_MIN_MARGIN = 0.01
-POST_CLEANUP_EXPERIENCE_TIMEOUT = int(os.environ.get("POK_POST_CLEANUP_EXPERIENCE_TIMEOUT", "600"))
-
-
-# Single-flight guard for the background exploitability probe thread (see the
-# fire-and-forget block in post_generation_cleanup). post_generation_cleanup is
-# async on a single event loop, so the is_set()/set() pair is atomic within a
-# generation — overlapping cleanups (fast crossover gens) cannot pile up probe
-# threads or race on exploitability.json.
-_probe_running = threading.Event()
-
-
-def _save_committed_bot_fingerprint(committed_v: int) -> str:
-    """Compute and persist the behavior fingerprint for a committed bot."""
-    from behavior_diversity import compute_decision_fingerprint, save_fingerprint
-
-    committed_bot = bot_name(int(committed_v))
-    fp = compute_decision_fingerprint(committed_bot)
-    save_fingerprint(committed_bot, fp)
-    log.info("Behavior fingerprint saved for %s", committed_bot)
-    log_system_event(
-        "pipeline.fingerprint_saved",
-        "info",
-        f"Behavior fingerprint saved for {committed_bot}",
-        {"version": int(committed_v), "bot": committed_bot},
-    )
-    return committed_bot
 
 
 def _wilson_lower_bound(points, games, z=1.96):
@@ -86,7 +59,6 @@ class GenerationContext:
     performance_verification: str = ""
     replay_spotlight: str = ""
     gen_count: int = 0         # legacy alias for current_v; use next_v for post-generation triggers
-    battle_experience: str = ""
 
 
 def _bind_prepare_generation_cost_scope(next_v: int, ui=None) -> str:
@@ -155,10 +127,6 @@ class SelectionView:
     rating_values: MappingProxyType
     h2h: MappingProxyType
     source_history: tuple[int, ...]
-    child_counts: MappingProxyType
-    niches: MappingProxyType
-    elites: MappingProxyType
-    blocked_pairs: frozenset[tuple[int, int]]
     digest: str
 
 
@@ -213,40 +181,11 @@ def _build_selection_view(evidence: EvaluationEvidence) -> SelectionView:
             float(player.conservative_rating()),
         )
 
-    child_counts = {}
-    try:
-        from candidate_store import count_candidate_children
-
-        for name in active_bots:
-            version = parse_bot_version(name)
-            child_counts[name] = max(
-                count_candidate_children(name),
-                count_candidate_children(f"v{version}"),
-                count_candidate_children(str(version)),
-            )
-    except Exception:
-        child_counts = {name: 0 for name in active_bots}
-
-    # The historical MAP archive is built asynchronously from replay files and
-    # live H2H, so it is not part of the committed evaluation cycle. Keep it as
-    # dashboard telemetry only until a cycle-bound native behavior archive is
-    # available; it must not choose formal parents.
-    niches = {}
-    elites = {}
-
-    # Legacy crossover incompatibility rows were authored by a single advisory
-    # LLM score and have no deterministic conflict proof/expiry. They cannot
-    # remain a formal parent-selection denylist.
-    blocked_pairs = set()
-
     source_history = tuple(_read_source_v_history())
     digest_payload = {
         "active_bots": active_bots,
         "rows": rows,
         "source_history": source_history,
-        "child_counts": child_counts,
-        "niches": {name: str(value) for name, value in niches.items()},
-        "blocked_pairs": sorted(blocked_pairs),
         "evaluation_cutoffs": evidence.cutoffs,
     }
     return SelectionView(
@@ -261,10 +200,6 @@ def _build_selection_view(evidence: EvaluationEvidence) -> SelectionView:
         rating_values=MappingProxyType(rating_values),
         h2h=_deep_freeze(evidence.h2h),
         source_history=source_history,
-        child_counts=MappingProxyType(child_counts),
-        niches=MappingProxyType({name: _deep_freeze(value) for name, value in niches.items()}),
-        elites=MappingProxyType({name: _deep_freeze(value) for name, value in elites.items()}),
-        blocked_pairs=frozenset(blocked_pairs),
         digest=canonical_digest(digest_payload),
     )
 
@@ -522,47 +457,114 @@ def _prepare_protocol_bootstrap_generation(
 
     from evolution_infra import write_pipeline_checkpoint
     from master_context_contract import build_master_context
-    from national_protocol_quarantine import select_protocol_bootstrap_source
+    from bot_artifact import canonical_digest
+    from bot_namespace import (
+        ARCHIVED_VERSION_HIGH_WATER,
+        EVALUATION_EPOCH,
+        FIRST_STRICT_POLICY_VERSION,
+        ROLE_PARENT_SOURCE,
+        parse_bot_version,
+        resolve_national_bot_spec,
+    )
 
-    selection = select_protocol_bootstrap_source(active_bots, force_refresh=True)
-    if not selection.get("available"):
+    active_bots = sorted(set(map(str, active_bots)))
+    if not active_bots:
+        from system_strict_bootstrap import (
+            build_fresh_bootstrap_receipt,
+            load_policy_epoch_reset_receipt,
+        )
+
+        if int(next_v) != FIRST_STRICT_POLICY_VERSION:
+            log_system_event(
+                "pipeline.policy_bootstrap_version_mismatch",
+                "error",
+                "Fresh national policy bootstrap must create v143",
+                {"next_v": next_v, "expected": FIRST_STRICT_POLICY_VERSION},
+            )
+            return None
+        source_v = ARCHIVED_VERSION_HIGH_WATER
+        reset_receipt, reset_errors = load_policy_epoch_reset_receipt()
+        if reset_receipt is None:
+            log_system_event(
+                "pipeline.policy_epoch_reset_required",
+                "error",
+                "Fresh v143 is blocked until the one-time policy epoch reset is executed",
+                {"issues": reset_errors[:10], "next_v": int(next_v)},
+            )
+            if ui:
+                ui.log_history(
+                    "Fresh v143 requires scripts/reset_national_tcp_policy_epoch.py "
+                    "--execute --acknowledge-runtime-checkout from the stopped "
+                    ".evolution_pok checkout",
+                    "error",
+                )
+            return None
+        receipt = build_fresh_bootstrap_receipt(
+            active_bots=(),
+            epoch_reset_receipt_digest=str(reset_receipt["receipt_digest"]),
+        )
+        mode = "fresh_national_policy_bootstrap"
+    elif len(active_bots) == 1:
+        source_v = parse_bot_version(active_bots[0])
+        if source_v is None or source_v < FIRST_STRICT_POLICY_VERSION:
+            return None
+        spec = resolve_national_bot_spec(active_bots[0], role=ROLE_PARENT_SOURCE)
+        if not spec.eligible:
+            log_system_event(
+                "pipeline.singleton_policy_bootstrap_unavailable",
+                "error",
+                "The sole policy bot failed strict parent-source resolution",
+                {"bot": active_bots[0], "issues": list(spec.issues)[:10]},
+            )
+            return None
+        subject = {
+            "schema_version": 1,
+            "kind": "national-tcp-policy-singleton-bootstrap-v1",
+            "mode": "singleton_strict_bootstrap",
+            "epoch": EVALUATION_EPOCH,
+            "source_v": source_v,
+            "next_v": int(next_v),
+            "source_artifact_inherited": True,
+            "active_bots": list(active_bots),
+            "source_runtime_manifest_digest": canonical_digest(spec.runtime_manifest),
+            "source_epoch_receipt_digest": canonical_digest(spec.epoch_receipt),
+            "source_publication_identity": spec.publication_identity,
+            "source_certificate_digest": spec.certificate_digest,
+        }
+        receipt = {**subject, "receipt_digest": canonical_digest(subject)}
+        mode = "singleton_strict_bootstrap"
+    else:
         log_system_event(
             "pipeline.protocol_bootstrap_unavailable",
             "error",
-            "Protocol bootstrap source unavailable; prepare fails closed",
+            "Policy bootstrap is only valid with zero or one active bot",
             {
                 "next_v": next_v,
                 "active_bots": list(active_bots),
-                "reason": selection.get("reason"),
-                "issues": (selection.get("issues") or [])[:10],
-                "strict_published_bots": selection.get("strict_published_bots"),
+                "reason": "active_policy_pool_not_bootstrap_sized",
             },
         )
         if ui:
             ui.log_history(
-                f"协议迁移启动被拒绝: {selection.get('reason', 'unknown')}",
+                "策略 epoch 启动被拒绝：活跃池必须恰为 0 或 1 个 bot",
                 "error",
             )
         return None
-
-    source_v = int(selection["source_v"])
-    receipt = dict(selection["receipt"])
-    mode = str(receipt["mode"])
     strategy = (
-        "protocol_migration_bootstrap"
-        if mode == "legacy_strategy_migration"
+        "fresh_policy_bootstrap"
+        if mode == "fresh_national_policy_bootstrap"
         else "singleton_strict_bootstrap"
     )
     evidence_note = (
-        "No executable strict bot is published yet. Use the content-bound v142 "
-        "artifact only as historical strategy/policy input. prepare_next_gen must "
-        "replace national_bot.py with the current system-owned runtime before the "
-        "prepared artifact snapshot. Do not infer strength from legacy ratings."
-        if mode == "legacy_strategy_migration"
+        "No policy-epoch bot is published yet. v142 is version/tag/tree authority "
+        "only: do not open, copy, import, execute, or mine its archived source. "
+        "Prepare v143 from the current system runtime and a fresh typed policy. "
+        "No pre-policy rating, replay, or strategy evidence is admissible."
+        if mode == "fresh_national_policy_bootstrap"
         else
-        "Exactly one executable strict bot is published, so peer rating evidence "
-        "cannot exist. Build a distinct second strict candidate from that source; "
-        "do not schedule or compare against quarantined historical artifacts."
+        "Exactly one policy-epoch bot is published, so peer rating evidence cannot "
+        "exist. Build the second policy bot from that strict parent only; archived "
+        "pre-policy artifacts and derived evidence remain inadmissible."
     )
     master_context = build_master_context(
         next_v=next_v,
@@ -585,7 +587,7 @@ def _prepare_protocol_bootstrap_generation(
                 "current_v": current_v,
                 "max_committed_v": max_committed_v,
                 "abandoned_floor": abandoned_floor,
-                "parent_a": source_v,
+                "parent_a": None if mode == "fresh_national_policy_bootstrap" else source_v,
                 "parent_b": None,
                 "bootstrap_without_strength_evidence": True,
                 "protocol_bootstrap_receipt_digest": receipt["receipt_digest"],
@@ -627,7 +629,6 @@ def _prepare_protocol_bootstrap_generation(
         performance_verification=master_context["performance_verification"],
         replay_spotlight="",
         gen_count=current_v,
-        battle_experience="",
     )
 
 
@@ -724,7 +725,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             ui.log_history(f"Prepare publish sync check failed: {exc}", "error")
         return None
 
-    current_v = find_current_v()       # 版本编号（含 graveyard），用于 next_v
+    current_v = find_current_v()       # immutable tag/high-water authority
     # 裸 commit 对账（v117 反复重生循环根因修复, 2026-06-18）：find_max_committed_v()
     # 返回含裸 commit（绕过 commit_bot 直接 git commit、无 tag+.completed）的最大版本号。
     # 用它抬高 next_v 下界，使裸 commit 占用的版本号不会被下一代重生覆盖。
@@ -784,7 +785,7 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         )
     except Exception:
         pass
-    active_v = find_latest_active_v()  # 活跃 bot（排除 graveyard），用于 eval/分析
+    active_v = find_latest_active_v()  # strict published active pool
     active_bots = get_active_bots()
     if len(active_bots) <= 1:
         _cleanup_incomplete()
@@ -860,15 +861,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     # Wait for sufficient evaluation
     eval_kwargs = {"ui": ui, "shutdown_event": shutdown_mgr}
-    try:
-        from workflow_profiles import get_workflow_profile
-        profile = get_workflow_profile()
-        eval_kwargs["rd_threshold"] = profile.eval_wait_rd_threshold
-        eval_kwargs["rd_min_games"] = profile.eval_wait_rd_min_games
-        if min_games is None:
-            eval_kwargs["min_games"] = profile.eval_wait_min_games
-    except Exception:
-        log.warning("Workflow profile eval wait settings unavailable; using defaults")
+    eval_kwargs["rd_threshold"] = workflow_profile.eval_wait_rd_threshold
+    eval_kwargs["rd_min_games"] = workflow_profile.eval_wait_rd_min_games
+    if min_games is None:
+        eval_kwargs["min_games"] = workflow_profile.eval_wait_min_games
     if min_games is not None:
         eval_kwargs["min_games"] = min_games
     _ensure_priority_eval_signal(active_bot_name, eval_kwargs.get("min_games", MIN_GAMES_FOR_EVAL))
@@ -894,7 +890,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             load_generation_evaluation_snapshot,
         )
 
-        h2h_snapshot = ensure_generation_h2h_snapshot(_planned_next_v, force=True)
+        h2h_snapshot = ensure_generation_h2h_snapshot(
+            _planned_next_v,
+            force=True,
+            spotlight_bot=active_bot_name,
+        )
         if not h2h_snapshot.get("available"):
             log_system_event(
                 "pipeline.h2h_snapshot_unavailable",
@@ -955,58 +955,38 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         )
         return None
 
-    # Load prev critic insights from archive
-    prev_critic_info = ""
-    try:
-        from evolution_infra import RESULTS_DIR
-        archive_dir = RESULTS_DIR / "archive"
-        if archive_dir.exists():
-            archives = sorted(archive_dir.glob("v*.json"), reverse=True)
-            if archives:
-                latest = json.loads(archives[0].read_text())
-                critic_data = latest.get("critic_data", {})
-                if critic_data:
-                    sa = critic_data.get("strategic_assessment", "")
-                    lo = critic_data.get("local_optima_warning", False)
-                    if sa or lo:
-                        prev_critic_info = f"Previous Critic assessment: {sa}"
-                        if lo:
-                            prev_critic_info += "\n⚠ LOCAL OPTIMA WARNING: Critic detected potential local optimum in previous generation."
-    except Exception:
-        pass
-
-    # Combined analysis (stagnation + performance) + match analysis — run in parallel
+    # Combined analysis is compiled exclusively from the immutable generation
+    # evidence bundle. Hand-level context is already a deterministic payload in
+    # that same bundle; no second LLM may reopen live replay files here.
     from combined_analyst import _run_combined_analysis
-    from agent_master import _analyze_recent_matches
 
-    combined_result, match_result = await asyncio.gather(
+    from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
+
+    (combined_result,) = await gather_llm_fail_fast(
         _run_combined_analysis(
             active_v,
             active_bots,
             ratings,
             ui,
-            prev_critic_info,
             frozen_h2h,
             frozen_bot_stats,
             list(evidence.selection_rows),
             list(evidence.rating_history_tail),
         ),
-        _analyze_recent_matches(active_v, ui, next_v=_planned_next_v),
-        return_exceptions=True,
     )
 
     from orchestrator_cost_policy import (
         OperatorGenerationCostLimitExceeded,
         assert_operator_cost_limit_available,
     )
-    for prepare_result in (combined_result, match_result):
+    for prepare_result in (combined_result,):
         if isinstance(prepare_result, OperatorGenerationCostLimitExceeded):
             raise prepare_result
     # A role may have translated an operator stop into a structured failure.
     # Re-read the system-owned ledger before any checkpoint is selected.
     assert_operator_cost_limit_available()
 
-    if isinstance(combined_result, asyncio.CancelledError) or isinstance(match_result, asyncio.CancelledError):
+    if isinstance(combined_result, asyncio.CancelledError):
         log_system_event(
             "pipeline.prepare_llm_cancelled",
             "info",
@@ -1014,7 +994,6 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             {
                 "version": active_v,
                 "combined_cancelled": isinstance(combined_result, asyncio.CancelledError),
-                "match_cancelled": isinstance(match_result, asyncio.CancelledError),
             },
         )
         return None
@@ -1024,12 +1003,10 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
 
     # Unpack results, treating exceptions as failures
     combined = combined_result if not isinstance(combined_result, BaseException) else None
-    match_analysis = match_result if not isinstance(match_result, BaseException) else ""
+    match_analysis = ""
 
     if isinstance(combined_result, BaseException):
         log.warning("Combined analysis failed: %s", combined_result)
-    if isinstance(match_result, BaseException):
-        log.warning("Match analysis failed: %s", match_result)
 
     # Strategy decision (code-layer, deterministic)
     strategy, source_v, parents = _decide_strategy(
@@ -1111,7 +1088,15 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             )[:2000]
 
             diag = await _run_degeneration_diagnosis(
-                active_v, recent_commits_text, "See commits above", rating_curve_text, ui
+                active_v,
+                recent_commits_text,
+                (
+                    "system_mechanical_urgent_intervention="
+                    f"{str(bool(mechanical_urgent)).lower()}; "
+                    "strategy changes are limited to the supplied strict commit window"
+                ),
+                rating_curve_text,
+                ui,
             )
             if mechanical_urgent:
                 log_system_event(
@@ -1135,6 +1120,11 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 log_system_event("pipeline.degeneration_detected", "warn",
                                  f"Degeneration detected for v{active_v}: {diag.get('recommendation', '')}",
                                  {"source_v": active_v, "diagnosis": diag})
+        except LLMAvailabilityBlocked:
+            # The advisory role has already persisted the global provider
+            # pause.  Never turn it into a safe-default and then publish the
+            # selected checkpoint for a generation that was not fully prepared.
+            raise
         except OperatorGenerationCostLimitExceeded:
             raise
         except Exception as e:
@@ -1148,25 +1138,17 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     match_text = match_analysis or ""
 
     # --- Replay Spotlight Analysis ---
+    # Text and citations were derived while the evidence snapshot was created
+    # and are now covered by its file hash and manifest digest.
+    spotlight_payload = frozen_bundle.get("replay_spotlight") or {}
     spotlight_text = ""
-    try:
-        from replay_spotlight import find_critical_hands
-        from evolution_infra import RESULTS_DIR
-        replays_dir = str(RESULTS_DIR / "match_replay")
-        spotlight_text = find_critical_hands(
-            bot_name=bot_name(active_v),
-            replays_dir=replays_dir,
-            max_hands=10,
-            recent_n_files=20,
-            allowed_replay_ids=(
-                (frozen_bundle.get("match_history_index") or {}).get(
-                    "replay_ids"
-                )
-                or []
-            ),
-        )
-    except Exception as e:
-        log.warning("Replay spotlight analysis failed: %s", e)
+    if (
+        isinstance(spotlight_payload, dict)
+        and spotlight_payload.get("bot") == active_bot_name
+        and spotlight_payload.get("evaluation_identity_digest")
+        == h2h_snapshot.get("evaluation_identity_digest")
+    ):
+        spotlight_text = str(spotlight_payload.get("text") or "")
 
     # --- P1-2: H2H Anomaly Root Cause Analysis ---
     # NOTE (root-cause-audit 2026-06-17): the stored `win_rate` field is the
@@ -1252,17 +1234,6 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         except Exception as e:
             log.warning("H2H anomaly check error (skipping): %s", e)
 
-    battle_experience_text = ""
-    try:
-        from battle_experience import get_battle_experience
-        battle_experience_text = get_battle_experience(source_bot=bot_name(source_v))
-    except Exception as e:
-        log.warning("Battle experience read failed: %s", e)
-
-    # MAP-Elites/QD archive is diagnostic-only until its native behavior rows
-    # are committed in the same evaluation-cycle contract. It must not enqueue
-    # rating work or affect source/parent selection from live replay telemetry.
-
     # LOG GAP FIX (2026-06-29): record the final next_v decision with all inputs
     # so the version-number allocation is fully auditable. Previously only the
     # abnormal paths (bare commit, abandoned floor) logged; the normal case left
@@ -1288,26 +1259,12 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         from master_context_contract import build_master_context
 
         parent2_v = parents[1] if parents and len(parents) > 1 else None
-        canonical_perf_text = perf_text
-        try:
-            # Guardian insights used to reach Master only when the outer LLM
-            # copied them out of its context.  Preserve that useful evidence in
-            # the system-owned handoff while removing the lossy transcription.
-            from orchestrator_context import _load_guardian_insights
-
-            guardian_text = _load_guardian_insights(max_entries=3)
-            if guardian_text:
-                canonical_perf_text = (
-                    (canonical_perf_text + "\n\n" + guardian_text).strip()
-                )
-        except Exception:
-            pass
         master_context = build_master_context(
             next_v=_final_next_v,
             source_v=source_v,
             stagnation_info=stagnation_text,
             match_analysis=match_text,
-            performance_verification=canonical_perf_text,
+            performance_verification=perf_text,
         )
         ok = write_pipeline_checkpoint(
             _final_next_v,
@@ -1368,7 +1325,6 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         performance_verification=perf_text,
         replay_spotlight=spotlight_text,
         gen_count=current_v,
-        battle_experience=battle_experience_text,
     )
 
 
@@ -1631,17 +1587,6 @@ def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
             }:
                 combined["recommendation"] = "continue"
 
-    # Load MAP-Elites archive for niche-diverse crossover parent selection.
-    # Falls back inside _pick_crossover_parents to the older fingerprint archive
-    # if the MAP-Elites archive is unavailable.
-    _archive = None
-    if not isinstance(selection_view, SelectionView):
-        try:
-            from map_elites import read_behavior_archive
-            _archive = read_behavior_archive()
-        except Exception:
-            pass
-
     # B-class control-flow guard: if the Combined Analyst's LLM call crashed
     # (infrastructure failure, NOT a business judgement), stagnation status is
     # UNKNOWN. The combined result's safe default claims "improving / not
@@ -1649,9 +1594,8 @@ def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
     # must avoid misfiring the crossover/stagnation branches (which assume a
     # trustworthy stagnation signal) and also avoid misreading the optimistic
     # default. Fall back to a conservative master evolution from current_v with
-    # no crossover parents. The cross-gen mechanical backstop
-    # (_build_cross_gen_constraint_block in run_master) still runs and provides
-    # diversity protection independent of this LLM gate.
+    # no crossover parents. A later successful, checkpoint-bound Direction
+    # audit remains the only repetition constraint source.
     if combined.get("llm_failed"):
         log.warning(
             "Combined analyst reported LLM infrastructure failure — stagnation "
@@ -1837,7 +1781,6 @@ def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
         parents = _pick_crossover_parents(
             ratings,
             current_v,
-            archive=_archive,
             selection_view=selection_view,
         )
         if parents:
@@ -1851,13 +1794,13 @@ def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
             return "crossover", parents[0], parents
 
     # Priority 2: LLM-recommended source (only for non-stagnant systems).
-    # Validates that the recommended bot is active (not in graveyard).
+    # Validate against the strict published active pool.
     rec_source = combined.get("recommended_source", "")
     if rec_source:
         rec_v = _parse_branch_from(rec_source)
         if rec_v is not None and rec_v >= 1:
-            # Only accept active bots (not graveyard and not uncommitted
-            # directories) as an evolution source.
+            # Never accept uncommitted directories or retired epoch artifacts
+            # as an evolution source.
             eligible, eligibility_reason = _llm_source_eligibility(
                 rec_v,
                 selection_view,
@@ -1918,7 +1861,6 @@ def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
         parents = _pick_crossover_parents(
             ratings,
             current_v,
-            archive=_archive,
             selection_view=selection_view,
         )
         if parents:
@@ -1947,56 +1889,40 @@ def _decide_strategy(combined, current_v, ratings, *, selection_view=None):
 
 
 def _parse_branch_from(branch_str: str) -> int | None:
-    try:
-        return int(branch_str)
-    except ValueError:
-        pass
-    try:
-        return int(branch_str.split("_v")[1])
-    except (ValueError, IndexError):
-        pass
-    try:
-        return int(branch_str.lstrip("v"))
-    except (ValueError, IndexError):
-        return None
+    """Parse only current canonical bot labels or positive numeric versions.
+
+    Advisory LLM output used to accept arbitrary ``*_vN`` and bare ``vN``
+    aliases.  That kept retired Botzone namespaces syntactically alive in the
+    source-selection path.  Active eligibility is canonical, so parsing must be
+    canonical too; the later pool/tag checks remain the authority.
+    """
+
+    token = str(branch_str or "").strip()
+    if token.isdecimal():
+        value = int(token)
+        return value if value > 0 else None
+    return parse_bot_version(token)
 
 
 def _read_source_v_history():
-    """Read successful lineage source_v values from system_events.jsonl.
-
-    Prefer ``pipeline.committed`` because source oscillation is about the lineage
-    that actually survived gates. ``pipeline.prepare_done`` is only a fallback for
-    very old logs without commit events; prepare attempts can be duplicated by
-    restarts or abandoned before commit and should not dominate lineage analysis.
-
-    Returns a list of source_v values in chronological order.
-    """
+    """Return current-epoch lineage from strict immutable publications only."""
     try:
-        if not SYSTEM_EVENTS_FILE.exists():
-            return []
-        committed = []
-        prepared = []
-        with open(SYSTEM_EVENTS_FILE, "r") as f:
-            for line in f:
-                try:
-                    evt = json.loads(line)
-                    data = evt.get("data", {}) or {}
-                    evt_type = evt.get("type")
-                    if evt_type == "pipeline.committed":
-                        sv = data.get("source_v")
-                        if sv is not None:
-                            committed.append((evt.get("ts", 0), data.get("version", 0), int(sv)))
-                    elif evt_type == "pipeline.prepare_done":
-                        sv = data.get("source_v")
-                        if sv is not None:
-                            prepared.append((evt.get("ts", 0), data.get("next_v", 0), int(sv)))
-                except (ValueError, KeyError):
-                    continue
-        if committed:
-            committed.sort(key=lambda item: (item[0], item[1]))
-            return [sv for _ts, _version, sv in committed]
-        prepared.sort(key=lambda item: (item[0], item[1]))
-        return [sv for _ts, _version, sv in prepared]
+        from bot_namespace import FIRST_STRICT_POLICY_VERSION
+        from evolution_infra import git_get_parent
+        from national_runtime_authority import strict_published_bot_names
+
+        versions = sorted(
+            version
+            for name in strict_published_bot_names()
+            if (version := parse_bot_version(name)) is not None
+            and version >= FIRST_STRICT_POLICY_VERSION
+        )
+        sources = []
+        for version in versions:
+            source_v = git_get_parent(version)
+            if source_v is not None and int(source_v) >= FIRST_STRICT_POLICY_VERSION:
+                sources.append(int(source_v))
+        return sources
     except Exception:
         return []
 
@@ -2221,297 +2147,73 @@ def _pick_oscillation_breakout_source(
 def _pick_crossover_parents(
     ratings,
     current_v,
-    archive=None,
     selection_view=None,
 ) -> tuple | None:
-    """Select two diverse parents for crossover.
+    """Select parents solely from the immutable frozen strength order.
 
-    Parent A: highest unified strength score.
-    Parent B: highest strength score from a different MAP-Elites niche than
-    parent A (if archive is available), with version gap >= 3. Falls back to
-    the legacy fingerprint niche, then to version-gap diversity.
-
-    Args:
-        ratings: Glicko-2 ratings dict.
-        current_v: Current version number.
-        archive: Optional fingerprint archive (dict[str, np.ndarray]).
-            When provided, parent_b is chosen from a different behavioral niche
-            to maximize crossover diversity (fix-6).
+    Parent A is the strongest row in ``SelectionView``. Parent B is the
+    strongest remaining row at least three versions away; when the published
+    pool is too narrow, the strongest adjacent row is the deterministic
+    fallback. No mutable sidecar or compatibility ledger participates.
     """
-    if isinstance(selection_view, SelectionView):
-        active = list(selection_view.active_bots)
-        strength = selection_view.selection_scores
-        strength_order = selection_view.order_keys
-    else:
-        from evolution_infra import get_active_bots
-        from tool_helpers import load_selection_scores
-
-        active = get_active_bots()
-        strength = load_selection_scores()
-        try:
-            from tool_helpers import load_selection_order_keys
-            strength_order = load_selection_order_keys()
-        except Exception:
-            strength_order = {}
+    if not isinstance(selection_view, SelectionView):
+        return None
+    active = list(selection_view.active_bots)
+    strength = selection_view.selection_scores
+    strength_order = selection_view.order_keys
     if len(active) < 2:
         return None
-    if isinstance(selection_view, SelectionView):
-        def _child_count(name):
-            return int(selection_view.child_counts.get(name, 0) or 0)
-    else:
-        try:
-            from candidate_store import count_candidate_children
-
-            def _child_count(bot_name):
-                try:
-                    version = int(bot_name.split("_v")[1])
-                except (ValueError, IndexError):
-                    return 0
-                return max(
-                    count_candidate_children(bot_name),
-                    count_candidate_children(f"v{version}"),
-                    count_candidate_children(str(version)),
-                )
-        except Exception:
-            def _child_count(bot_name):
-                return 0
-
-    def _adjusted_strength(bot_name):
-        """Diagnostic parent score with only a bounded diversity nudge.
-
-        Child count used to divide strength by ``1 + children``.  One successful
-        child could therefore demote a 0.65 leader below an unused 0.40 bot.
-        Parent A must remain strength-first; child count only breaks equal
-        rounded scores and is reported here as a tiny, capped diagnostic nudge.
-        """
-        base = float(strength.get(bot_name, 0.0))
-        children = _child_count(bot_name)
-        return base - min(0.005, max(0, children) * 0.0005)
-
-    if isinstance(selection_view, SelectionView):
-        map_niches = selection_view.niches
-        map_elites = selection_view.elites
-    else:
-        map_niches = {}
-        map_elites = {}
-        try:
-            from map_elites import bot_elite_index, bot_niche_index
-            map_niches = bot_niche_index(archive)
-            map_elites = bot_elite_index(archive)
-        except Exception:
-            map_niches = {}
-            map_elites = {}
-
-    legacy_niches = {}
-    if archive and not map_niches and not isinstance(selection_view, SelectionView):
-        try:
-            from behavior_diversity import get_niche_for_bot
-            legacy_niches = {
-                bot: get_niche_for_bot(bot, archive)
-                for bot in active
-            }
-        except Exception as e:
-            log.warning("Legacy niche lookup failed (falling back): %s", e)
-
-    def _niche(bot_name):
-        return map_niches.get(bot_name) or legacy_niches.get(bot_name)
 
     ranked = sorted(
         active,
-        key=lambda b: (
-            strength.get(b, 0.0),
-            -_child_count(b),
-            *(tuple(strength_order.get(b, ()))[1:]),
-        ),
+        key=lambda name: tuple(strength_order.get(name, ())),
         reverse=True,
     )
     if len(ranked) < 2:
         return None
 
-    if isinstance(selection_view, SelectionView):
-        def is_crossover_pair_blocked(parent_a, parent_b):
-            return tuple(sorted((int(parent_a), int(parent_b)))) in selection_view.blocked_pairs
-    else:
-        try:
-            from crossover_compat import is_crossover_pair_blocked
-        except Exception:
-            def is_crossover_pair_blocked(_parent_a, _parent_b):
-                return False
-
-    skipped_blocked_pairs = []
-    skipped_seen = set()
-
-    def _bot_version(name):
-        return parse_bot_version(name)
-
-    def _pair_blocked(bot_a, bot_b):
-        va_local = _bot_version(bot_a)
-        vb_local = _bot_version(bot_b)
-        if va_local is None or vb_local is None:
-            return False
-        try:
-            blocked = is_crossover_pair_blocked(va_local, vb_local)
-        except Exception:
-            blocked = False
-        if blocked:
-            key = tuple(sorted((va_local, vb_local)))
-            if key not in skipped_seen:
-                skipped_seen.add(key)
-                skipped_blocked_pairs.append({"parent_a": va_local, "parent_b": vb_local})
-        return blocked
-
-    def _select_parent_b(parent_a_name, *, require_gap=False, require_niche=False):
-        va_local = _bot_version(parent_a_name)
-        if va_local is None:
-            return None
-        parent_a_niche = _niche(parent_a_name) if require_niche else None
-        if require_niche and parent_a_niche is None:
-            return None
-        for candidate in ranked:
-            if candidate == parent_a_name:
-                continue
-            vc = _bot_version(candidate)
-            if vc is None:
-                continue
-            if require_gap and abs(vc - va_local) < 3:
-                continue
-            if require_niche:
-                cand_niche = _niche(candidate)
-                if cand_niche is None or cand_niche == parent_a_niche:
-                    continue
-            if _pair_blocked(parent_a_name, candidate):
-                continue
-            return candidate
+    parent_a = ranked[0]
+    va = parse_bot_version(parent_a)
+    if va is None:
         return None
 
-    parent_a = None
-    parent_b = None
-    va = None
-    vb = None
-
-    selection_modes = []
-    if archive or map_niches:
-        selection_modes.append({"require_gap": True, "require_niche": True})
-    for mode in selection_modes:
-        for candidate_a in ranked:
-            candidate_b = _select_parent_b(candidate_a, **mode)
-            if candidate_b is None:
-                continue
-            candidate_va = _bot_version(candidate_a)
-            candidate_vb = _bot_version(candidate_b)
-            if candidate_va is None or candidate_vb is None:
-                continue
-            parent_a = candidate_a
-            parent_b = candidate_b
-            va = candidate_va
-            vb = candidate_vb
-            break
-        if parent_a is not None:
-            break
-
-    deferred_adjacent_fallback = []
-    if parent_a is None:
-        for candidate_a in ranked:
-            skipped_before = len(skipped_seen)
-            candidate_b = _select_parent_b(
-                candidate_a,
-                require_gap=True,
-                require_niche=False,
-            )
-            if candidate_b is not None:
-                candidate_va = _bot_version(candidate_a)
-                candidate_vb = _bot_version(candidate_b)
-                if candidate_va is not None and candidate_vb is not None:
-                    parent_a = candidate_a
-                    parent_b = candidate_b
-                    va = candidate_va
-                    vb = candidate_vb
-                    break
-
-            # Preserve the historical "strongest parent A" fallback when it has
-            # no gap candidate at all, but defer adjacent fallback if a gap
-            # candidate existed and was rejected as structurally incompatible.
-            if len(skipped_seen) > skipped_before:
-                deferred_adjacent_fallback.append(candidate_a)
-                continue
-
-            candidate_b = _select_parent_b(
-                candidate_a,
-                require_gap=False,
-                require_niche=False,
-            )
-            if candidate_b is None:
-                continue
-            candidate_va = _bot_version(candidate_a)
-            candidate_vb = _bot_version(candidate_b)
-            if candidate_va is None or candidate_vb is None:
-                continue
-            parent_a = candidate_a
-            parent_b = candidate_b
-            va = candidate_va
-            vb = candidate_vb
-            break
-
-    if parent_a is None:
-        for candidate_a in deferred_adjacent_fallback:
-            candidate_b = _select_parent_b(
-                candidate_a,
-                require_gap=False,
-                require_niche=False,
-            )
-            if candidate_b is None:
-                continue
-            candidate_va = _bot_version(candidate_a)
-            candidate_vb = _bot_version(candidate_b)
-            if candidate_va is None or candidate_vb is None:
-                continue
-            parent_a = candidate_a
-            parent_b = candidate_b
-            va = candidate_va
-            vb = candidate_vb
-            break
-
-    if parent_a is None or parent_b is None or va is None or vb is None:
-        try:
-            log_system_event(
-                "pipeline.crossover_parent_selection_exhausted",
-                "warn",
-                "No crossover parent pair available after skipping incompatible pairs",
-                {"blocked_pairs_skipped": skipped_blocked_pairs[:20]},
-            )
-        except Exception:
-            pass
+    candidates = [
+        (candidate, parse_bot_version(candidate))
+        for candidate in ranked[1:]
+    ]
+    candidates = [
+        (candidate, version)
+        for candidate, version in candidates
+        if version is not None
+    ]
+    if not candidates:
         return None
+    gap_candidates = [
+        (candidate, version)
+        for candidate, version in candidates
+        if abs(version - va) >= 3
+    ]
+    selection_mode = "version_gap" if gap_candidates else "adjacent_fallback"
+    parent_b, vb = (gap_candidates or candidates)[0]
 
     try:
-        try:
-            event = {
+        log_system_event(
+            "pipeline.crossover_parent_selection",
+            "info",
+            f"Crossover parents selected: {parent_a} x {parent_b}",
+            {
                 "parent_a": parent_a,
                 "parent_b": parent_b,
-                "parent_a_niche": str(_niche(parent_a)),
-                "parent_b_niche": str(_niche(parent_b)),
                 "parent_a_strength": round(float(strength.get(parent_a, 0.0)), 4),
                 "parent_b_strength": round(float(strength.get(parent_b, 0.0)), 4),
-                "parent_a_adjusted_strength": round(_adjusted_strength(parent_a), 4),
-                "parent_b_adjusted_strength": round(_adjusted_strength(parent_b), 4),
-                "parent_a_children": _child_count(parent_a),
-                "parent_b_children": _child_count(parent_b),
-                "parent_a_elite": map_elites.get(parent_a, {}),
-                "parent_b_elite": map_elites.get(parent_b, {}),
-                "archive_source": "map_elites" if map_niches else ("fingerprints" if legacy_niches else "none"),
-                "blocked_pairs_skipped": skipped_blocked_pairs[:20],
-            }
-            log_system_event(
-                "pipeline.crossover_parent_selection",
-                "info",
-                f"Crossover parents selected: {parent_a} x {parent_b}",
-                event,
-            )
-        except Exception:
-            pass
-        return (va, vb)
-    except (ValueError, IndexError):
-        return None
+                "version_gap": abs(vb - va),
+                "selection_mode": selection_mode,
+                "selection_view_digest": selection_view.digest,
+            },
+        )
+    except Exception:
+        pass
+    return (va, vb)
 
 
 def _bare_commit_gate_ledger_ok(v, ckpt):
@@ -2559,89 +2261,59 @@ def _bare_commit_gate_ledger_ok(v, ckpt):
 
 
 def _finalize_bare_commit(v, ckpt=None):
-    """H3 (2026-06-29): finalize a bare-committed generation.
+    """Resume only a content-bound durable publication transaction.
 
-    A bare commit (code landed via `git commit` but no active-epoch tag and no
-    .completed sentinel) happens when CYCLE_TIMEOUT/503 interrupts commit_bot
-    mid-way (e.g. crossover's git_commit_bot ran the commit but not the tag).
-    Previously `_cleanup_incomplete` would rmtree such a dir on the next restart,
-    silently destroying committed code. This helper re-runs the idempotent
-    git_commit_bot to retroactively tag + mark .completed, so the generation is
-    recovered instead of lost.
-
-    Returns True if finalized (or already finalized), False if it could not be
-    finalized (caller should leave the dir intact — git history still holds it).
+    Historical "bare commit" inference is intentionally retired.  A tracked bot
+    without an intent does not prove which certificate/gates authorized that
+    commit.  New publication always records ``publishing`` before Git mutation,
+    so restart recovery can invoke the same idempotent transaction without
+    inventing authority from repository shape.
     """
     try:
-        from evolution_infra import git_has_tag, git_commit_bot
-        from tool_commit import get_bot_dir, RESULTS_DIR
+        from evolution_infra import git_has_tag
+        from tool_commit import _resume_publication_transaction, get_bot_dir
     except Exception as e:
         log.warning("_finalize_bare_commit imports failed for v%d: %s", v, e)
         return False
-    if git_has_tag(v):
-        return True  # already tagged by a prior finalize or normal commit
     bot_dir = get_bot_dir(v)
     if not bot_dir.exists():
         return False
-    gate_ok, gate_reason = _bare_commit_gate_ledger_ok(v, ckpt)
-    if not gate_ok:
+    if (
+        not isinstance(ckpt, dict)
+        or ckpt.get("stage") != "publishing"
+        or not isinstance(ckpt.get("publication_intent"), dict)
+        or int(ckpt.get("next_v") or -1) != int(v)
+    ):
         log.warning(
-            "bare-commit v%d is not eligible for finalize: %s — leaving dir intact.",
-            v, gate_reason,
+            "bare-commit v%d has no durable publication intent — leaving dir intact.",
+            v,
         )
         try:
             log_system_event(
                 "pipeline.bare_commit_finalize_blocked",
                 "warn",
-                f"Bare-commit recovery blocked for v{v}: {gate_reason}",
-                {"version": v, "reason": gate_reason, "checkpoint_stage": (ckpt or {}).get("stage")},
+                f"Bare-commit recovery blocked for v{v}: missing publication intent",
+                {"version": v, "reason": "missing_publication_intent", "checkpoint_stage": (ckpt or {}).get("stage")},
             )
         except Exception:
             pass
         return False
-    source_v = (ckpt or {}).get("source_v")
-    parent2_v = (ckpt or {}).get("parent2_v")
-    if source_v is None:
-        log.warning(
-            "bare-commit v%d has no source_v in checkpoint — leaving dir intact "
-            "(git history preserves it), not finalizing.", v)
-        return False
-    strategy = ((ckpt or {}).get("master_plan") or {}).get("strategy_summary") \
-        or ((ckpt or {}).get("master_plan") or {}).get("strategy") \
-        or f"bare-commit recovery for v{v}"
+    source_v = ckpt.get("source_v")
     try:
-        official_status = (
-            ((ckpt or {}).get("gate_results") or {})
-            .get("official_full", {})
-            .get("status", {})
-        )
-        identity = official_status.get("certification_identity") or {}
-        official_certificate = None
-        if official_status:
-            official_certificate = {
-                "certificate_digest": official_status.get("certificate_digest"),
-                "candidate_hash": identity.get("candidate_hash"),
-                "policy_id": official_status.get("policy_id"),
-                "certificate_path": official_status.get("certificate_path"),
-                "certification_identity": identity,
-            }
-        git_commit_bot(
-            v,
-            source_v,
-            strategy,
-            rating_info="",
-            parent2_v=parent2_v,
-            official_certificate=official_certificate,
-        )
-        if not git_has_tag(v):
-            log.warning("finalize for v%d ran git_commit_bot but tag still absent — leaving dir.", v)
+        result = _resume_publication_transaction(v, source_v, ckpt)
+        if result.get("committed") is not True:
+            log.warning(
+                "publication recovery for v%d remains pending: %s",
+                v,
+                result.get("error") or result,
+            )
             return False
-        (bot_dir / ".completed").touch()
-        log.info("H3: finalized bare-commit v%d (source v%d, parent2=%s)", v, source_v, parent2_v)
+        log.info("Recovered durable publication v%d (source v%d)", v, source_v)
         try:
             log_system_event("pipeline.bare_commit_finalized", "success",
-                             f"Recovered bare-commit v{v} via finalize (source v{source_v})",
-                             {"version": v, "source_v": source_v, "parent2_v": parent2_v})
+                             f"Recovered durable publication v{v} (source v{source_v})",
+                             {"version": v, "source_v": source_v,
+                              "publication_id": result.get("publication_id")})
         except Exception:
             pass
         return True
@@ -2696,116 +2368,6 @@ def _cleanup_incomplete():
                         except Exception:
                             pass
                     shutil.rmtree(d, ignore_errors=True)
-
-
-def _cleanup_dirty_paths() -> set[str]:
-    """Return porcelain dirty paths before cleanup writes."""
-    try:
-        from evolution_infra import _git
-
-        out = _git("status", "--porcelain", check=False)
-    except Exception:
-        return set()
-
-    paths: set[str] = set()
-    for line in out.splitlines():
-        if not line:
-            continue
-        path = line[3:] if len(line) > 3 else line
-        if " -> " in path:
-            old, new = path.split(" -> ", 1)
-            paths.add(old.strip())
-            paths.add(new.strip())
-        else:
-            paths.add(path.strip())
-    return paths
-
-
-def _commit_post_cleanup_experience_change(version: int, preexisting_dirty: set[str]) -> dict:
-    """Commit post-cleanup experience_pool consolidation as scoped housekeeping."""
-    from evolution_infra import (
-        EXPERIENCE_FILE,
-        PROJECT_ROOT,
-        _git,
-        _git_ensure_main_branch,
-        evolution_git_push_enabled,
-        git_push_refs,
-        publish_runtime_expected_head,
-    )
-
-    try:
-        rel = str(EXPERIENCE_FILE.relative_to(PROJECT_ROOT))
-    except ValueError:
-        rel = str(EXPERIENCE_FILE)
-
-    if preexisting_dirty:
-        log_system_event(
-            "pipeline.post_cleanup_experience_commit_skipped",
-            "warn",
-            f"v{version}: skipped experience consolidation commit because worktree was already dirty",
-            {"version": version, "preexisting_dirty": sorted(preexisting_dirty)[:40], "path": rel},
-        )
-        return {"committed": False, "reason": "preexisting_dirty", "path": rel}
-
-    dirty_now = _git("status", "--porcelain", "--", rel, check=False).strip()
-    if not dirty_now:
-        return {"committed": False, "reason": "no_change", "path": rel}
-
-    preexisting_staged = [
-        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
-        if p
-    ]
-    if preexisting_staged:
-        log_system_event(
-            "pipeline.post_cleanup_experience_commit_skipped",
-            "warn",
-            f"v{version}: skipped experience consolidation commit because staged files already exist",
-            {"version": version, "staged_files": preexisting_staged[:40], "path": rel},
-        )
-        return {"committed": False, "reason": "preexisting_staged", "path": rel}
-
-    _git_ensure_main_branch()
-    _git("add", "--", rel, check=False)
-    staged = [
-        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
-        if p
-    ]
-    unexpected = sorted(set(staged) - {rel})
-    if unexpected:
-        _git("restore", "--staged", "--", rel, check=False)
-        log_system_event(
-            "pipeline.post_cleanup_experience_commit_skipped",
-            "warn",
-            f"v{version}: skipped experience consolidation commit because unrelated staged files appeared",
-            {"version": version, "unexpected_staged": unexpected[:40], "path": rel},
-        )
-        return {"committed": False, "reason": "unexpected_staged", "path": rel}
-
-    log_system_event(
-        "pipeline.post_cleanup_experience_commit_staged",
-        "info",
-        f"v{version}: staging post-cleanup experience consolidation",
-        {"version": version, "staged_files": [rel]},
-    )
-    _git("commit", "-m", f"chore: consolidate v{version} experience pool", "--", rel)
-    commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
-    publish_runtime_expected_head("post_cleanup_experience_commit", version=version)
-    push_ok = False
-    push_enabled = evolution_git_push_enabled()
-    if push_enabled:
-        push_ok = git_push_refs("main")
-        publish_runtime_expected_head("post_cleanup_experience_push", version=version)
-    log_system_event(
-        "pipeline.post_cleanup_experience_commit_done",
-        "success" if push_ok or not push_enabled else "warn",
-        (
-            f"v{version}: committed post-cleanup experience consolidation {commit_hash}"
-            if not push_enabled or push_ok
-            else f"v{version}: committed post-cleanup experience consolidation {commit_hash}, push failed"
-        ),
-        {"version": version, "commit": commit_hash, "path": rel, "push_ok": push_ok},
-    )
-    return {"committed": True, "commit": commit_hash, "path": rel, "push_ok": push_ok}
 
 
 async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
@@ -2899,359 +2461,5 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         _finish("skipped", "shutdown_after_reap")
         return
-
-    # Experience pool consolidation (every 3 generations, or when too many unconsolidated entries)
-    should_consolidate = ctx.next_v > 0 and ctx.next_v % 3 == 0
-    consolidation_reason = "multiple_of_3" if should_consolidate else ""
-    if not should_consolidate:
-        # Also trigger when RECENT_LESSONS has too many entries (prevents stale/contradictory data)
-        from evolution_infra import EXPERIENCE_FILE
-        if EXPERIENCE_FILE.exists():
-            try:
-                content = EXPERIENCE_FILE.read_text()
-                recent_section = content.split("## RECENT_LESSONS")[-1] if "## RECENT_LESSONS" in content else ""
-                recent_entries = [line for line in recent_section.split("\n")
-                                  if line.strip().startswith("- **")]
-                if len(recent_entries) >= 4:
-                    should_consolidate = True
-                    consolidation_reason = "recent_lessons_threshold"
-                    log.info("Triggering experience consolidation: %d RECENT_LESSONS entries (threshold: 4)",
-                             len(recent_entries))
-            except Exception:
-                pass
-
-    if should_consolidate:
-        try:
-            from evolution_infra import git_has_tag
-            if not git_has_tag(ctx.next_v):
-                try:
-                    log_system_event(
-                        "pipeline.experience_write_blocked_uncommitted", "warn",
-                        f"Skipped experience consolidation for uncommitted v{ctx.next_v}",
-                        {"version": ctx.next_v, "writer": "post_generation_cleanup"},
-                    )
-                except Exception:
-                    pass
-                _finish("skipped", "experience_uncommitted")
-                return
-            from experience_archivist import _consolidate_experience_pool
-            preexisting_dirty = _cleanup_dirty_paths()
-            # Extract exhausted_directions from pipeline checkpoint
-            exhausted_dirs = ""
-            try:
-                from evolution_infra import read_pipeline_checkpoint
-                ckpt = read_pipeline_checkpoint()
-                if ckpt:
-                    da = ckpt.get("direction_audit", {})
-                    ed = da.get("exhausted_directions", [])
-                    if ed:
-                        exhausted_dirs = ", ".join(ed)
-            except Exception:
-                pass
-            exp_started = time.time()
-            log_system_event(
-                "pipeline.post_cleanup_experience_start",
-                "info",
-                f"v{ctx.next_v}: experience consolidation starting",
-                {
-                    "version": ctx.next_v,
-                    "source_v": ctx.source_v,
-                    "reason": consolidation_reason or "unknown",
-                    "timeout_s": POST_CLEANUP_EXPERIENCE_TIMEOUT,
-                    "preexisting_dirty_count": len(preexisting_dirty),
-                    "exhausted_directions": exhausted_dirs,
-                },
-            )
-            await asyncio.wait_for(
-                _consolidate_experience_pool(ui, exhausted_directions=exhausted_dirs),
-                timeout=POST_CLEANUP_EXPERIENCE_TIMEOUT,
-            )
-            log_system_event(
-                "pipeline.post_cleanup_experience_done",
-                "info",
-                f"v{ctx.next_v}: experience consolidation finished in {time.time() - exp_started:.1f}s",
-                {
-                    "version": ctx.next_v,
-                    "source_v": ctx.source_v,
-                    "elapsed_sec": round(time.time() - exp_started, 2),
-                },
-            )
-            try:
-                _commit_post_cleanup_experience_change(ctx.next_v, preexisting_dirty)
-            except Exception as e:
-                log_system_event(
-                    "pipeline.post_cleanup_experience_commit_failed",
-                    "error",
-                    f"v{ctx.next_v}: experience consolidation commit failed: {str(e)[:180]}",
-                    {"version": ctx.next_v, "error": str(e)[:500]},
-                )
-        except asyncio.TimeoutError:
-            log_system_event(
-                "pipeline.post_cleanup_experience_timeout",
-                "warn",
-                f"v{ctx.next_v}: experience consolidation exceeded {POST_CLEANUP_EXPERIENCE_TIMEOUT}s; continuing",
-                {
-                    "version": ctx.next_v,
-                    "source_v": ctx.source_v,
-                    "timeout_s": POST_CLEANUP_EXPERIENCE_TIMEOUT,
-                    "reason": consolidation_reason or "unknown",
-                },
-            )
-            if ui:
-                ui.log_history(
-                    f"Experience consolidation timed out after {POST_CLEANUP_EXPERIENCE_TIMEOUT}s; continuing.",
-                    "warn",
-                )
-        except Exception as e:
-            log_system_event(
-                "pipeline.post_cleanup_experience_failed",
-                "warn",
-                f"v{ctx.next_v}: experience consolidation failed: {str(e)[:180]}",
-                {"version": ctx.next_v, "source_v": ctx.source_v, "error": str(e)[:500]},
-            )
-            if ui:
-                ui.log_history(f"Experience consolidation failed: {e}", "warn")
-    else:
-        log_system_event(
-            "pipeline.post_cleanup_experience_skipped",
-            "info",
-            f"v{ctx.next_v}: experience consolidation skipped",
-            {"version": ctx.next_v, "source_v": ctx.source_v, "reason": "threshold_not_met"},
-        )
-
-    # Exploitability probes against the new committed bot (FIRE-AND-FORGET background).
-    #
-    # This block is a post-commit side-effect (bot must already be committed/tagged),
-    # code-layer housekeeping driven by post_generation_cleanup — NOT an MCP
-    # tool and NOT a commit gate. Result feeds the NEXT generation's Master
-    # prompt via exploitability.json (consumed in tool_planning.run_master).
-    # It MUST stay a direct code-layer call: making it an MCP tool would hand
-    # the trigger to the Orchestrator LLM, which is not forced to call any tool
-    # (create_sdk_mcp_server only exposes the list) — exactly the structural
-    # cause of the original "probe never ran" bug.
-    #
-    # HISTORY of this block:
-    #  (1) Original bug — 8 generations of ZERO pipeline.exploitability_probe
-    #      events. A bare `if is_shutting_down: return` swallowed the block with
-    #      no log/event, AND the probe call had no timeout, so a hang in the
-    #      nested ProcessPoolExecutor (run_exploitability_probes with workers>1
-    #      forks a subprocess pool INSIDE this asyncio executor thread — a known
-    #      deadlock mode) froze the orchestrator loop with no trace.
-    #  (2) First fix (ae6c17e) — made every exit observable + asyncio.wait_for
-    #      + workers=1 (serial, no nested fork). Smoke testing later revealed
-    #      the 180s budget was FAR below real wall-clock: num_hands=50 needs
-    #      ~920s under daemon load (even num_hands=5 took 247s). So the probe
-    #      ALWAYS hit the wait_for ceiling and was recorded as failed — never
-    #      producing usable data, just trading "silent useless" for "loud
-    #      useless". Blocking the orchestrator loop for ~15min to raise the
-    #      timeout was unacceptable (halves generation throughput).
-    #  (3) THIS fix — probe runs on a background DAEMON thread (fire-and-forget).
-    #      post_generation_cleanup returns immediately (does NOT block the loop),
-    #      the thread runs the serial probe (workers=1, no nested fork) to
-    #      completion and writes exploitability.json. Result is available to the
-    #      NEXT generation's Master (~1 generation latency — acceptable for a
-    #      lagging adversarial health signal). Every exit still emits a
-    #      log_system_event: the canary in the main thread before launch, and
-    #      complete/failed in the worker thread. The worker uses ONLY logging +
-    #      log_system_event (both thread-safe: fcntl-locked file write, and SSE
-    #      via EventBroadcaster.call_soon_threadsafe) — it deliberately does NOT
-    #      call ui.log_history, to avoid asyncio-Queue races from a non-loop
-    #      thread.
-    log.info("Exploitability probe scheduled for v%s", ctx.next_v)
-
-    # Respect an in-progress shutdown, but OBSERVE it (never silent).
-    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-        log.info("Exploitability probe skipped for v%s (shutting down)", ctx.next_v)
-        log_system_event(
-            "pipeline.exploitability_probe_skipped", "info",
-            f"v{ctx.next_v} probe skipped: shutting down",
-            {"version": ctx.next_v, "reason": "shutdown"},
-        )
-        _finish("skipped", "shutdown_before_exploitability")
-        return
-
-    try:
-        from exploitability_prober import run_exploitability_probes
-        from evolution_infra import get_bot_dir, git_has_tag
-        if ctx.next_v <= 0 or not git_has_tag(ctx.next_v):
-            log.info(
-                "Exploitability probe skipped for v%s (not committed/tagged)",
-                ctx.next_v,
-            )
-            log_system_event(
-                "pipeline.exploitability_probe_skipped", "info",
-                f"v{ctx.next_v} probe skipped: bot not committed/tagged",
-                {
-                    "version": ctx.next_v,
-                    "source_v": ctx.source_v,
-                    "reason": "uncommitted_or_abandoned",
-                },
-            )
-            _finish("skipped", "uncommitted_or_abandoned_before_exploitability")
-            return
-        new_bot_dir = get_bot_dir(ctx.next_v)
-        new_bot_main = new_bot_dir / "main.py"
-        if not new_bot_main.exists():
-            log.warning("Exploitability probe skipped: %s missing", new_bot_main)
-            log_system_event(
-                "pipeline.exploitability_probe_skipped", "warn",
-                f"v{ctx.next_v} probe skipped: bot main.py missing",
-                {"version": ctx.next_v, "reason": "bot_main_missing",
-                 "path": str(new_bot_main)},
-            )
-        else:
-            # Entry nail (canary): emitted in the MAIN thread, synchronously,
-            # before launching the background worker. If this is ever absent for
-            # a committed generation, the block was not reached — a mechanical
-            # canary so the 8-generation blackout can never repeat silently.
-            log_system_event(
-                "pipeline.exploitability_probe", "info",
-                f"probe starting v{ctx.next_v}",
-                {"version": ctx.next_v, "num_hands": 50, "workers": 1,
-                 "mode": "background"},
-            )
-
-            # Single-flight: skip if a previous probe is still running, so
-            # overlapping cleanups (fast crossover gens) cannot pile up probe
-            # threads or race on exploitability.json. The check+set is atomic
-            # because post_generation_cleanup runs on one event loop (no await
-            # between is_set() and set()).
-            if _probe_running.is_set():
-                log.info(
-                    "Exploitability probe skipped for v%s (previous still running)",
-                    ctx.next_v,
-                )
-                log_system_event(
-                    "pipeline.exploitability_probe_skipped", "info",
-                    f"v{ctx.next_v} probe skipped: previous probe still running",
-                    {"version": ctx.next_v, "reason": "single_flight_skip"},
-                )
-            else:
-                _probe_running.set()
-                _bot_main = str(new_bot_main)
-                _next_v = ctx.next_v
-
-                def _probe_worker():
-                    """Run the serial probe off the event loop, then record result.
-
-                    Runs on a daemon thread. Uses run_exploitability_probes (sync,
-                    workers=1 -> serial branch -> no nested ProcessPoolExecutor
-                    fork). Logs ONLY via logging + log_system_event (thread-safe);
-                    deliberately does NOT touch ui (asyncio-Queue races from a
-                    non-loop thread).
-                    """
-                    try:
-                        result = run_exploitability_probes(
-                            _bot_main, num_hands=50, workers=1
-                        )
-                        overall = result.get("overall_score", 0.5)
-                        weaknesses = result.get("weaknesses", [])
-                        log_system_event(
-                            "pipeline.exploitability_probe", "info",
-                            f"v{_next_v} exploitability: {overall:.2f}/1.0, "
-                            f"{len(weaknesses)} weaknesses",
-                            {"version": _next_v, "overall_score": overall,
-                             "weaknesses": weaknesses, "num_hands": 50},
-                        )
-                    except Exception as e:
-                        log.warning(
-                            "Exploitability probe failed for v%s: %s\n%s",
-                            _next_v, e, traceback.format_exc(),
-                        )
-                        log_system_event(
-                            "pipeline.exploitability_probe_failed", "error",
-                            f"v{_next_v} probe failed: {e}",
-                            {"version": _next_v, "error": str(e)[:300],
-                             "traceback": traceback.format_exc()[:2000]},
-                        )
-                    finally:
-                        _probe_running.clear()
-
-                threading.Thread(
-                    target=_probe_worker, daemon=True,
-                    name=f"exploitability-probe-v{ctx.next_v}",
-                ).start()
-                log.info(
-                    "Exploitability probe launched in background for v%s "
-                    "(serial, num_hands=50, ~10-15min)", ctx.next_v,
-                )
-                if ui:
-                    ui.log_history(
-                        f"Exploitability probe launched for v{ctx.next_v} "
-                        f"(background, ~10-15min)", "info",
-                    )
-    except Exception as e:
-        # Launch/import/get_bot_dir failure: observe it (never silent).
-        log.warning(
-            "Exploitability probe launch failed: %s\n%s", e, traceback.format_exc()
-        )
-        log_system_event(
-            "pipeline.exploitability_probe_failed", "error",
-            f"v{ctx.next_v} probe launch failed: {e}",
-            {"version": ctx.next_v, "error": str(e)[:300]},
-        )
-
-    # Phase 4: Async QD k=3 fitness evaluation (FIRE-AND-FORGET background).
-    #
-    # Re-evaluates the just-committed candidate v{k} against a few opponents k=3
-    # times and merges the median fitness into behavior_archive.json. Same
-    # fire-and-forget discipline as the exploitability probe above: direct
-    # code-layer call (NOT an MCP tool), single-flight guard, daemon thread,
-    # thread-safe logging only. Result feeds the NEXT generation's Master via
-    # the archive (~1 generation latency, acceptable for a lagging diversity
-    # signal). Failure here MUST NOT abort post_generation_cleanup — every exit
-    # in launch_qd_eval is observed via a system_event.
-    try:
-        # Committed gate (root-cause fix for qd_eval_failed bot_main_missing, 2026-06-19):
-        # post_generation_cleanup runs on abandoned cycles too: orchestrator.py:968
-        # `if cost >= 0:` triggers cleanup whenever _run_one_cycle returns accumulated
-        # cost (always >=0, even after abandon — abandon has no special return value).
-        # An abandoned generation's bot dir is deleted (abandon_generation rmtree, or the
-        # LLM's own Bash `rm -rf`), but ctx.next_v still holds the planned version, so
-        # launch_qd_eval would fire against a missing main.py and emit qd_eval_failed.
-        # Measured: 100% of the 5 post-restart qd_eval_failed events were preceded by the
-        # dir being deleted. Gate on git_has_tag (authoritative commit proof) so QD eval
-        # only runs for genuinely-committed candidates; symmetric to the exploitability
-        # probe block's main.py guard (generation_scheduler.py:797).
-        from evolution_infra import git_has_tag
-        if ctx.next_v > 0 and git_has_tag(ctx.next_v):
-            from qd_async_eval import launch_qd_eval
-            launch_qd_eval(ctx.next_v, ctx.source_v, k=3, n_games=8,
-                           ui=ui, shutdown_mgr=shutdown_mgr)
-        elif ctx.next_v > 0:
-            log_system_event(
-                "pipeline.qd_eval_skipped", "info",
-                f"v{ctx.next_v} QD eval skipped: not committed "
-                f"(no {bot_tag(ctx.next_v)} tag - abandoned/uncleaned cycle)",
-                {"version": ctx.next_v, "reason": "not_committed",
-                 "source_v": ctx.source_v},
-            )
-    except Exception as e:
-        log.warning("QD async eval launch failed: %s\n%s", e, traceback.format_exc())
-        log_system_event(
-            "pipeline.qd_eval_failed", "error",
-            f"v{ctx.next_v} QD eval launch failed: {e}",
-            {"version": ctx.next_v, "error": str(e)[:300]},
-        )
-
-    # fix-6: Compute and store decision fingerprint for the just-committed bot.
-    # This feeds behavior_diversity fingerprints.jsonl consumed by crossover
-    # parent selection and the novelty gate in commit_bot.
-    try:
-        log_system_event(
-            "pipeline.post_cleanup_fingerprint_start",
-            "info",
-            f"Behavior fingerprint starting for {bot_name(ctx.next_v)}",
-            {"version": ctx.next_v, "source_v": ctx.source_v},
-        )
-        _save_committed_bot_fingerprint(ctx.next_v)
-    except Exception as e:
-        log.warning("Fingerprint computation failed (non-fatal): %s", e)
-        log_system_event(
-            "pipeline.post_cleanup_fingerprint_failed",
-            "warn",
-            f"Behavior fingerprint failed for {bot_name(ctx.next_v)}: {str(e)[:180]}",
-            {"version": ctx.next_v, "source_v": ctx.source_v, "error": str(e)[:500]},
-        )
 
     _finish("done")

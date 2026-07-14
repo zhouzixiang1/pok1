@@ -327,6 +327,11 @@ def test_low_authority_bot_launch_still_uses_central_executor(
     )
     process = SimpleNamespace()
     calls = {}
+    monkeypatch.setattr(
+        harness,
+        "current_system_native_runtime_errors",
+        lambda _path: [],
+    )
 
     class FakeEndpoint:
         consumed = True
@@ -472,40 +477,42 @@ def test_official_round_rejects_non_symmetric_formal_launch_contract(
 
 
 def _bootstrap_authorization_case(tmp_path):
-    candidate = tmp_path / "national_v200"
-    opponent = tmp_path / "national_v141"
+    candidate = tmp_path / "national_v143"
+    opponent = tmp_path / "first_strict_control_v1"
     candidate.mkdir()
     opponent.mkdir()
     (candidate / "national_bot.py").write_text("candidate\n", encoding="utf-8")
-    (opponent / "national_bot.py").write_text("legacy\n", encoding="utf-8")
+    (opponent / "national_bot.py").write_text("control\n", encoding="utf-8")
     candidate_hash = hash_path(candidate)
     opponent_hash = hash_path(opponent)
-    receipt = {"kind": "signed-v5-ledger-bootstrap-root-receipt"}
+    receipt = {
+        "kind": "official-first-strict-control-authorization-receipt",
+        "bootstrap_control_id": "first_strict_control_v1",
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt)
     selection = {
         "selected": True,
         "eligible": True,
-        "reason": "signed_v5_ledger_bootstrap_root",
-        "bootstrap_root_id": "national-v141-official-full-v5-signed-ledger-root",
+        "reason": "first_strict_control_bootstrap",
+        "kind": "official-first-strict-control-selection",
+        "bootstrap_control_id": "first_strict_control_v1",
         "candidate": str(candidate),
         "candidate_binding": {"candidate_hash": candidate_hash},
-        "bootstrap_root_receipt": receipt,
+        "bootstrap_control_receipt": receipt,
         "operator_bootstrap_authorization": {
             "authorization_digest": "d" * 64,
         },
         "opponent": {
-            "bot": "national_v141",
+            "bot": "first_strict_control_v1",
             "path": str(opponent),
             "artifact_hash": opponent_hash,
-            "tag": "national-bot-v141",
-            "tag_object": "a" * 40,
-            "completion_tree_oid": "b" * 40,
             "eligible": True,
-            "reason": "signed_v5_ledger_bootstrap_root",
+            "reason": "first_strict_control_bootstrap",
             "eligibility_receipt": receipt,
         },
     }
     envelope = {
-        "bootstrap_root_id": "national-v141-official-full-v5-signed-ledger-root",
+        "bootstrap_control_id": "first_strict_control_v1",
         "candidate_hash": candidate_hash,
         "opponent_hash": opponent_hash,
         "opponent_selection": selection,
@@ -528,7 +535,7 @@ def _bootstrap_authorization_case(tmp_path):
     return candidate_launch, opponent_launch, envelope
 
 
-def test_job_envelope_v3_binds_full_bootstrap_selection_and_detects_tamper(
+def test_job_envelope_v4_binds_first_strict_selection_and_detects_tamper(
     tmp_path
 ):
     candidate, opponent, _ = _bootstrap_authorization_case(tmp_path)
@@ -551,16 +558,14 @@ def test_job_envelope_v3_binds_full_bootstrap_selection_and_detects_tamper(
         suite_dir=tmp_path / "suite",
     )
 
-    assert envelope["schema_version"] == 3
+    assert envelope["schema_version"] == 4
     assert envelope["opponent_selection"] == selection
-    assert envelope["bootstrap_root_id"] == (
-        "national-v141-official-full-v5-signed-ledger-root"
-    )
+    assert envelope["bootstrap_control_id"] == "first_strict_control_v1"
     assert envelope["operator_bootstrap_authorization_digest"] == "d" * 64
     assert job_envelope_issues(envelope) == []
 
     tampered = json.loads(json.dumps(envelope))
-    tampered["opponent_selection"]["opponent"]["completion_tree_oid"] = "f" * 40
+    tampered["opponent_selection"]["opponent"]["artifact_hash"] = "f" * 64
     issues = job_envelope_issues(tampered)
     assert "official_job_envelope_digest_mismatch" in issues
     assert "official_job_envelope_opponent_selection_digest_mismatch" in issues
@@ -568,7 +573,7 @@ def test_job_envelope_v3_binds_full_bootstrap_selection_and_detects_tamper(
     arbitrary_v1 = {
         key: value
         for key, value in envelope.items()
-        if key not in {"opponent_selection", "bootstrap_root_id", "envelope_digest"}
+        if key not in {"opponent_selection", "bootstrap_control_id", "envelope_digest"}
     }
     arbitrary_v1["schema_version"] = 1
     arbitrary_v1["envelope_digest"] = canonical_digest(arbitrary_v1)
@@ -577,120 +582,18 @@ def test_job_envelope_v3_binds_full_bootstrap_selection_and_detects_tamper(
     )
 
 
-def test_bootstrap_quarantine_exception_is_exact_and_preconsumption_only(
+def test_harness_exposes_no_archived_runtime_bootstrap_waiver():
+    assert not hasattr(harness, "_official_quarantine_authorization")
+    parameters = __import__("inspect").signature(harness._launch_bot).parameters
+    assert "quarantine_authorization" not in parameters
+
+
+def test_manual_official_round_rejects_archived_runtime_before_process_start(
     tmp_path, monkeypatch
 ):
-    candidate, opponent, envelope = _bootstrap_authorization_case(tmp_path)
-    monkeypatch.setattr(
-        harness,
-        "quarantined_native_entry_sources",
-        lambda _path: ("national_v141",),
-    )
-    observed = {}
-
-    def valid(selection, root_id, candidate_path, *, allow_consumed):
-        observed.update({
-            "selection": selection,
-            "root_id": root_id,
-            "candidate_path": candidate_path,
-            "allow_consumed": allow_consumed,
-        })
-        return {"valid": True, "issues": []}
-
-    monkeypatch.setattr(
-        "official_bootstrap.validate_signed_v5_ledger_bootstrap_selection",
-        valid,
-    )
-    monkeypatch.setattr(
-        "official_bootstrap.validate_operator_bootstrap_authorized_selection",
-        lambda *_args, **_kwargs: {"valid": True, "issues": []},
-    )
-
-    authorization, issues = harness._official_quarantine_authorization(
-        opponent,
-        candidate,
-        envelope,
-    )
-
-    assert authorization is not None
-    assert issues == []
-    assert observed["root_id"] == envelope["bootstrap_root_id"]
-    assert observed["candidate_path"] == candidate.path
-    assert observed["allow_consumed"] is False
-
-    def consumed(*_args, **kwargs):
-        assert kwargs["allow_consumed"] is False
-        return {"valid": False, "issues": ["bootstrap_root_already_consumed"]}
-
-    monkeypatch.setattr(
-        "official_bootstrap.validate_signed_v5_ledger_bootstrap_selection",
-        consumed,
-    )
-    authorization, issues = harness._official_quarantine_authorization(
-        opponent,
-        candidate,
-        envelope,
-    )
-    assert authorization is None
-    assert any("bootstrap_root_already_consumed" in issue for issue in issues)
-
-
-@pytest.mark.parametrize("mutation", ["wrong_role", "v142", "tampered_selection"])
-def test_bootstrap_quarantine_exception_rejects_wrong_authority(
-    tmp_path, monkeypatch, mutation
-):
-    candidate, opponent, envelope = _bootstrap_authorization_case(tmp_path)
-    monkeypatch.setattr(
-        harness,
-        "quarantined_native_entry_sources",
-        lambda _path: ("national_v141", "national_v142"),
-    )
-    monkeypatch.setattr(
-        "official_bootstrap.validate_signed_v5_ledger_bootstrap_selection",
-        lambda *_args, **_kwargs: {"valid": True, "issues": []},
-    )
-    if mutation == "wrong_role":
-        opponent = BotLaunchConfig(
-            opponent.path,
-            name=opponent.name,
-            role="candidate",
-            sealed_artifact=opponent.sealed_artifact,
-        )
-    elif mutation == "v142":
-        v142 = tmp_path / "national_v142"
-        v142.mkdir()
-        (v142 / "national_bot.py").write_text("legacy\n", encoding="utf-8")
-        opponent = BotLaunchConfig(
-            v142,
-            name="Opponent",
-            role="opponent",
-            sealed_artifact=harness.SealedBotArtifact(
-                source=v142,
-                root=v142,
-                entry_relative="national_bot.py",
-                artifact_hash=hash_path(v142),
-                manifest_digest="d" * 64,
-            ),
-        )
-    else:
-        envelope = json.loads(json.dumps(envelope))
-        envelope["opponent_selection"]["opponent"]["completion_tree_oid"] = "f" * 40
-
-    authorization, issues = harness._official_quarantine_authorization(
-        opponent,
-        candidate,
-        envelope,
-    )
-
-    assert authorization is None
-    assert any("protocol_quarantined_native_entry_forbidden" in issue for issue in issues)
-
-
-def test_manual_official_round_rejects_v142_raw_before_process_start(
-    tmp_path, monkeypatch
-):
-    repository_root = Path(__file__).resolve().parents[2]
-    v142 = repository_root / "bots" / "national_v142"
+    archived = tmp_path / "archived-runtime"
+    archived.mkdir()
+    (archived / "national_bot.py").write_text("legacy\n", encoding="utf-8")
     peer = tmp_path / "peer"
     peer.mkdir()
     (peer / "national_bot.py").write_text("pass\n", encoding="utf-8")
@@ -713,19 +616,26 @@ def test_manual_official_round_rejects_v142_raw_before_process_start(
     monkeypatch.setattr(
         harness,
         "_popen",
-        lambda *_args, **_kwargs: pytest.fail("v142 raw process was started"),
+        lambda *_args, **_kwargs: pytest.fail("archived raw process was started"),
+    )
+    monkeypatch.setattr(
+        harness,
+        "current_system_native_runtime_errors",
+        lambda path: ["system_owned_native_runtime_identity_mismatch"]
+        if Path(path) == archived
+        else [],
     )
 
     receipt = harness.run_official_round(
-        BotLaunchConfig(v142, name="Legacy", role="opponent"),
+        BotLaunchConfig(archived, name="Legacy", role="opponent"),
         BotLaunchConfig(peer, name="Peer", role="candidate"),
         config=config,
-        out_dir=tmp_path / "round-v142",
+        out_dir=tmp_path / "round-archived",
     )
 
     assert receipt["passed"] is False
     assert any(
-        "protocol_quarantined_native_entry_forbidden" in issue
+        "non_system_owned_native_runtime_forbidden" in issue
         for issue in receipt["issues"]
     )
 

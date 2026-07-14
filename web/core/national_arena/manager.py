@@ -13,20 +13,29 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import partial
+import hashlib
 import ipaddress
+import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import time
 import uuid
 from typing import Any, Awaitable, Callable, TextIO, TypeVar
 
-from bot_namespace import parse_bot_version, version_sort_key
-from bot_artifact import published_bot_identity
+from bot_namespace import (
+    FIRST_STRICT_POLICY_VERSION,
+    ROLE_RATING_POOL,
+    parse_bot_version,
+    resolve_national_bot_spec,
+    version_sort_key,
+)
 from evolution_infra import get_published_active_bots_read_only
 from national_arena.models import (
     ACTIVE_ARENA_STATES,
+    ARENA_SCHEMA_VERSION,
     ArenaSession,
     utc_now,
 )
@@ -43,7 +52,8 @@ from national_arena.sandbox import (
 from managed_bot_executor import EndpointLease
 from national_game_runtime import NationalTCPGameEngine
 from national_native import check_native_contract, resolve_bot
-from national_transport import NationalProtocolError, NationalTCPClient
+from national_runtime_authority import current_system_native_runtime_errors
+from sever.server.transport import NationalProtocolError, NationalTCPClient
 from runtime_capacity import RuntimeCapacityLease, try_acquire_match_slots
 from official_platform_harness import DEFAULT_PORT, OfficialPlatformConfig
 from official_platform_resource import (
@@ -129,7 +139,12 @@ class _ArenaRuntime:
 
 
 class NationalArenaManager:
-    def __init__(self, store: ArenaStore | None = None) -> None:
+    def __init__(
+        self,
+        store: ArenaStore | None = None,
+        *,
+        epoch_authority: dict[str, Any] | None = None,
+    ) -> None:
         self.store = store or ArenaStore()
         self._sessions: dict[str, ArenaSession] = {}
         self._runtimes: dict[str, _ArenaRuntime] = {}
@@ -140,10 +155,148 @@ class NationalArenaManager:
         self._storage_executor: ThreadPoolExecutor | None = None
         self._bot_catalog_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
         self._unstarted_stop_tasks: dict[str, asyncio.Task] = {}
+        self._epoch_binding = (
+            self.build_epoch_binding(epoch_authority)
+            if epoch_authority is not None
+            else None
+        )
 
-    async def startup(self) -> None:
+    @staticmethod
+    def build_epoch_binding(authority: dict[str, Any]) -> dict[str, Any]:
+        """Compile a stable identity for the strict epoch authority root.
+
+        The reset receipt is the preferred root.  A clean clone may instead be
+        initialized solely by an eligible strict publication, in which case
+        the immutable strict namespace root is used.  Workflow ID is retained
+        as diagnostic provenance but deliberately excluded from the
+        epoch-root digest so historical sessions remain visible across normal
+        generation transitions in the same strict epoch.
+        """
+
+        if not isinstance(authority, dict) or not authority.get("initialized"):
+            raise ArenaConflict("national Arena requires an initialized policy epoch")
+        evaluation_epoch = str(authority.get("evaluation_epoch") or "")
+        if not evaluation_epoch:
+            raise ArenaConflict("national Arena epoch authority is missing evaluation_epoch")
+
+        reset_digest = str(authority.get("reset_receipt_digest") or "")
+        if reset_digest and not re.fullmatch(r"[0-9a-f]{64}", reset_digest):
+            raise ArenaConflict(
+                "national Arena reset receipt identity is malformed"
+            )
+        strict_bots = sorted(
+            {
+                str(name)
+                for name in (authority.get("strict_published_bots") or [])
+                if str(name)
+            },
+            key=version_sort_key,
+        )
+        if reset_digest:
+            root_kind = "policy_epoch_reset_receipt"
+            root_value = reset_digest
+        elif strict_bots:
+            # The eligible publication set can be pruned as the active pool
+            # advances.  Bind to the immutable strict epoch namespace rather
+            # than whichever eligible directory happens to be oldest today.
+            root_kind = "strict_publication_epoch_root"
+            root_value = (
+                f"{evaluation_epoch}:national_v{FIRST_STRICT_POLICY_VERSION}"
+            )
+        else:
+            raise ArenaConflict("national Arena epoch authority has no durable root")
+
+        identity_payload = {
+            "evaluation_epoch": evaluation_epoch,
+            "root_kind": root_kind,
+            "root_value": root_value,
+        }
+        identity = hashlib.sha256(
+            json.dumps(
+                identity_payload,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        active_generation = authority.get("active_generation") or {}
+        workflow_run_id = (
+            str(active_generation.get("workflow_run_id"))
+            if isinstance(active_generation, dict)
+            and active_generation.get("workflow_run_id")
+            else None
+        )
+        return {
+            **identity_payload,
+            "epoch_authority_identity": identity,
+            "reset_receipt_digest": reset_digest or None,
+            "epoch_authority_state": str(authority.get("state") or ""),
+            "workflow_run_id": workflow_run_id,
+        }
+
+    @classmethod
+    def session_epoch_fields(cls, authority: dict[str, Any]) -> dict[str, Any]:
+        binding = cls.build_epoch_binding(authority)
+        return {
+            "evaluation_epoch": binding["evaluation_epoch"],
+            "epoch_authority_identity": binding["epoch_authority_identity"],
+            "epoch_reset_receipt_digest": binding["reset_receipt_digest"],
+            "epoch_authority_state": binding["epoch_authority_state"],
+            "workflow_run_id": binding["workflow_run_id"],
+        }
+
+    def accepts_epoch_authority(self, authority: dict[str, Any]) -> bool:
+        if self._epoch_binding is None:
+            return False
+        try:
+            current = self.build_epoch_binding(authority)
+        except ArenaError:
+            return False
+        return (
+            current["epoch_authority_identity"]
+            == self._epoch_binding["epoch_authority_identity"]
+            and current["reset_receipt_digest"]
+            == self._epoch_binding["reset_receipt_digest"]
+        )
+
+    @property
+    def started(self) -> bool:
+        return self._started
+
+    def _session_matches_epoch(self, session: ArenaSession) -> bool:
+        binding = self._epoch_binding
+        return bool(
+            binding
+            and session.schema_version == ARENA_SCHEMA_VERSION
+            and session.evaluation_epoch == binding["evaluation_epoch"]
+            and session.epoch_authority_identity
+            == binding["epoch_authority_identity"]
+            and session.epoch_reset_receipt_digest
+            == binding["reset_receipt_digest"]
+        )
+
+    async def startup(
+        self,
+        *,
+        epoch_authority: dict[str, Any] | None = None,
+    ) -> None:
         if self._started:
             return
+        if epoch_authority is None:
+            from epoch_authority import require_policy_epoch_initialized
+
+            epoch_authority = require_policy_epoch_initialized(
+                "national_arena.startup"
+            )
+        binding = self.build_epoch_binding(epoch_authority)
+        if self._epoch_binding is not None and (
+            self._epoch_binding["epoch_authority_identity"]
+            != binding["epoch_authority_identity"]
+            or self._epoch_binding["reset_receipt_digest"]
+            != binding["reset_receipt_digest"]
+        ):
+            raise ArenaConflict("national Arena manager epoch authority changed")
+        self._epoch_binding = binding
         try:
             self.store.acquire_owner()
         except RuntimeError as exc:
@@ -153,7 +306,14 @@ class NationalArenaManager:
             thread_name_prefix="arena-storage",
         )
         try:
-            sessions = await self._run_storage(self.store.list_sessions)
+            discovered = await self._run_storage(self.store.list_sessions)
+            # Discovery itself is read-only.  Only sessions with an exact
+            # strict epoch-root binding may proceed to event locks, high-water
+            # recovery, process cleanup, or any other per-session write.
+            sessions = [
+                session for session in discovered
+                if self._session_matches_epoch(session)
+            ]
             self._sessions = {session.session_id: session for session in sessions}
             self._started = True
             for session in sessions:
@@ -349,6 +509,17 @@ class NationalArenaManager:
             bottom_bot=bottom_bot,
             official_certification=certification,
             managed_bot_identities=managed_bot_identities,
+            evaluation_epoch=str(self._epoch_binding["evaluation_epoch"]),
+            epoch_authority_identity=str(
+                self._epoch_binding["epoch_authority_identity"]
+            ),
+            epoch_reset_receipt_digest=self._epoch_binding[
+                "reset_receipt_digest"
+            ],
+            epoch_authority_state=str(
+                self._epoch_binding["epoch_authority_state"]
+            ),
+            workflow_run_id=self._epoch_binding["workflow_run_id"],
         )
         async with self._manager_lock:
             await self._run_storage(self.store.create_session, session)
@@ -552,7 +723,10 @@ class NationalArenaManager:
         for name in get_published_active_bots_read_only():
             try:
                 label, path = resolve_bot(name)
-                errors = check_native_contract(path)
+                errors = [
+                    *current_system_native_runtime_errors(path),
+                    *check_native_contract(path),
+                ]
             except Exception:
                 continue
             if errors:
@@ -582,14 +756,18 @@ class NationalArenaManager:
                 official_full_certified,
                 read_status,
             )
-            from official_eligibility import grandfather_eligibility
 
-            artifact = published_bot_identity(path)
-            if not artifact.get("published"):
+            spec = resolve_national_bot_spec(
+                path,
+                ROLE_RATING_POOL,
+                repo_root=Path(__file__).resolve().parents[3],
+            )
+            if not spec.eligible:
                 raise ArenaError(
-                    "bot publication identity is invalid: "
-                    + ", ".join(artifact.get("issues") or ["not_published"])
+                    "bot is not a strict full-certified policy artifact: "
+                    + ", ".join(spec.issues or ["ineligible"])
                 )
+            artifact = spec.publication_identity
             artifact_identity = {
                 key: artifact.get(key)
                 for key in (
@@ -603,24 +781,13 @@ class NationalArenaManager:
             }
             status = read_status(path)
             full = official_full_certified(status, path, require_published=True)
-            parent_grant = grandfather_eligibility(path, "parent_source")
-            rating_grant = grandfather_eligibility(path, "rating_pool")
-            grandfathered = bool(
-                parent_grant.get("eligible") and rating_grant.get("eligible")
-            )
             return {
                 "status": status.get("status"),
                 "mode": status.get("mode"),
                 "official_full_certified": bool(full),
                 "official_exe_passed": bool(full),
-                "arena_launch_eligible": bool(full or grandfathered),
-                "eligibility_basis": (
-                    "official_full"
-                    if full
-                    else "content_bound_grandfather"
-                    if grandfathered
-                    else "ineligible"
-                ),
+                "arena_launch_eligible": bool(full),
+                "eligibility_basis": "official_full" if full else "ineligible",
                 "authority": "windows_exe",
                 "artifact_identity": artifact_identity,
             }
@@ -1243,7 +1410,7 @@ class NationalArenaManager:
             ]
         except KeyError as exc:
             raise ArenaError("both seat-bound clients are required before handshake") from exc
-        await asyncio.gather(*(client.send_line("name") for client in ordered_clients))
+        await asyncio.gather(*(client.send_message("name") for client in ordered_clients))
         try:
             raw_names = await asyncio.gather(*(
                 client.recv_name(max(1.0, min(30.0, session.action_timeout_seconds)))
@@ -1308,7 +1475,10 @@ class NationalArenaManager:
             ("top", "bottom"), bot_names, labels
         )):
             _resolved_label, bot_dir = resolve_bot(bot_name)
-            errors = check_native_contract(bot_dir)
+            errors = [
+                *current_system_native_runtime_errors(bot_dir),
+                *check_native_contract(bot_dir),
+            ]
             if errors:
                 raise ArenaError(f"{bot_name} native contract failed: {errors[0]}")
             expected_identity = session.managed_bot_identities.get(seat) or {}
@@ -1343,10 +1513,14 @@ class NationalArenaManager:
             endpoint_host = str(endpoint.get("host") or "")
             endpoint_port = int(endpoint.get("port") or 0)
             stdout_path = self.store.artifact_path(
-                session.session_id, f"{seat}.stdout.log"
+                session.session_id,
+                f"{seat}.stdout.log",
+                create_parent=True,
             )
             stderr_path = self.store.artifact_path(
-                session.session_id, f"{seat}.stderr.log"
+                session.session_id,
+                f"{seat}.stderr.log",
+                create_parent=True,
             )
             session.artifacts[f"{seat}_stdout"] = stdout_path.name
             session.artifacts[f"{seat}_stderr"] = stderr_path.name
@@ -1777,7 +1951,11 @@ class NationalArenaManager:
     ) -> None:
         filename = "partial.thp.txt" if partial else "match.thp.txt"
         artifact_key = "partial_thp" if partial else "thp"
-        path = self.store.artifact_path(session.session_id, filename)
+        path = self.store.artifact_path(
+            session.session_id,
+            filename,
+            create_parent=True,
+        )
         await self._run_storage(
             engine.recorder.export_file,
             str(path),

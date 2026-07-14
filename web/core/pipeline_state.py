@@ -7,8 +7,190 @@ prompt, MCP tools, and recovery code from drifting into contradictory rules.
 
 import hashlib
 import json
+import math
+import os
+from pathlib import Path
+import time
+import uuid
 
 from failure_classification import classify_precommit_gate
+
+
+PIPELINE_RUNTIME_HEARTBEAT_SCHEMA = 1
+# Runtime-only liveness belongs outside results/evidence identity.  ``web/logs``
+# is gitignored and never copied into an evaluation snapshot.
+PIPELINE_RUNTIME_HEARTBEAT_FILE = (
+    Path(__file__).resolve().parents[1] / "logs" / "pipeline_runtime_heartbeat.json"
+)
+
+
+def _checkpoint_runtime_identity(checkpoint):
+    return hashlib.sha256(
+        json.dumps(
+            checkpoint or {},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _process_start_token(pid):
+    """Return Linux PID start ticks so PID reuse cannot validate stale state."""
+    try:
+        raw = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+        closing = raw.rfind(")")
+        if closing < 0:
+            return ""
+        # Fields following ``comm`` begin at proc-stat field 3; starttime is 22.
+        fields = raw[closing + 2:].split()
+        return str(fields[19]) if len(fields) > 19 else ""
+    except Exception:
+        return ""
+
+
+def write_pipeline_runtime_heartbeat(
+    checkpoint,
+    *,
+    phase,
+    audit_attempt=None,
+    audit_context=None,
+):
+    """Atomically publish non-semantic in-process liveness for one checkpoint."""
+    if not isinstance(checkpoint, dict) or not checkpoint:
+        return False
+    pid = os.getpid()
+    process_start_token = _process_start_token(pid)
+    if not process_start_token:
+        return False
+    now = time.time()
+    payload = {
+        "schema_version": PIPELINE_RUNTIME_HEARTBEAT_SCHEMA,
+        "checkpoint_identity": _checkpoint_runtime_identity(checkpoint),
+        "workflow_run_id": str(
+            checkpoint.get("workflow_run_id")
+            or checkpoint.get("run_id")
+            or ""
+        ),
+        "checkpoint_revision": int(checkpoint.get("checkpoint_revision") or 0),
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "stage": str(checkpoint.get("stage") or ""),
+        "phase": str(phase),
+        "audit_attempt": (
+            int(audit_attempt) if audit_attempt is not None else None
+        ),
+        "audit_context_digest": (
+            hashlib.sha256(
+                json.dumps(
+                    audit_context,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            if audit_context is not None
+            else ""
+        ),
+        "pid": pid,
+        "process_start_token": process_start_token,
+        "written_at": now,
+    }
+    path = PIPELINE_RUNTIME_HEARTBEAT_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{pid}.{uuid.uuid4().hex}.tmp")
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    try:
+        with open(temporary, "x", encoding="utf-8") as writer:
+            writer.write(encoded)
+            writer.flush()
+            os.fsync(writer.fileno())
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_pipeline_runtime_heartbeat(checkpoint, *, now=None, max_age=None):
+    """Read a live, identity-bound heartbeat; reject restart/PID/stage debris."""
+    if not isinstance(checkpoint, dict) or not checkpoint:
+        return None
+    try:
+        payload = json.loads(
+            PIPELINE_RUNTIME_HEARTBEAT_FILE.read_text(encoding="utf-8")
+        )
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("schema_version") != PIPELINE_RUNTIME_HEARTBEAT_SCHEMA:
+            return None
+        if payload.get("checkpoint_identity") != _checkpoint_runtime_identity(checkpoint):
+            return None
+        if int(payload.get("checkpoint_revision") or 0) != int(
+            checkpoint.get("checkpoint_revision") or 0
+        ):
+            return None
+        if str(payload.get("stage") or "") != str(checkpoint.get("stage") or ""):
+            return None
+        pid = int(payload.get("pid") or 0)
+        if not pid or payload.get("process_start_token") != _process_start_token(pid):
+            return None
+        written_at = float(payload.get("written_at") or 0.0)
+        current = time.time() if now is None else float(now)
+        if (
+            not math.isfinite(written_at)
+            or written_at <= 0
+            or written_at > current + 5.0
+        ):
+            return None
+        if max_age is not None and current - written_at > float(max_age):
+            return None
+        return payload
+    except Exception:
+        return None
+
+
+def pipeline_runtime_activity_ts(checkpoint, *, now=None, max_age=None):
+    heartbeat = read_pipeline_runtime_heartbeat(
+        checkpoint,
+        now=now,
+        max_age=max_age,
+    )
+    return float((heartbeat or {}).get("written_at") or 0.0)
+
+
+def clear_pipeline_runtime_heartbeat(checkpoint=None):
+    """Clear only this checkpoint's sidecar, never another generation's."""
+    path = PIPELINE_RUNTIME_HEARTBEAT_FILE
+    if checkpoint is not None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True
+        except Exception:
+            payload = None
+        if (
+            not isinstance(payload, dict)
+            or payload.get("checkpoint_identity")
+            != _checkpoint_runtime_identity(checkpoint)
+        ):
+            return False
+    try:
+        path.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
 
 
 STAGE_ORDER = [
@@ -31,6 +213,7 @@ STAGE_ORDER = [
     "official_certifying",
     "official_failed",
     "official_inconclusive",
+    "publishing",
     "archived",
 ]
 
@@ -64,6 +247,7 @@ STAGE_GATE_ALLOWLIST = {
     "official_certifying": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_failed": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "official_inconclusive": {"quality", "review", "critic", "precommit_eval", "official_full"},
+    "publishing": {"quality", "review", "critic", "precommit_eval", "official_full"},
     "archived": {"quality", "review", "critic", "precommit_eval", "official_full"},
 }
 
@@ -87,6 +271,7 @@ NEXT_TOOL_BY_STAGE = {
     "official_certifying": "commit_bot",
     "official_failed": "execute_workers",
     "official_inconclusive": None,
+    "publishing": "commit_bot",
     "archived": "run_archivist",
     "timed_out": "prepare_next_gen",
     "infra_timed_out": "run_precommit_eval",
@@ -240,6 +425,14 @@ HEAD_DRIFT_RESUME_POLICY = {
         "allowed_tools": ("commit_bot",),
         "resume_kind": "official_certifying",
         "warning_suffix": "official_certifying",
+        "requires_target": True,
+        "requires_contract_unchanged": True,
+        "branch_alias_allowed": False,
+    },
+    "publishing": {
+        "allowed_tools": ("commit_bot",),
+        "resume_kind": "publishing",
+        "warning_suffix": "publishing",
         "requires_target": True,
         "requires_contract_unchanged": True,
         "branch_alias_allowed": False,
@@ -443,15 +636,13 @@ def literature_probe_receipt_present(checkpoint: dict | None) -> bool:
 
 
 def _active_workflow_profile_info() -> tuple[str, str]:
-    try:
-        from workflow_profiles import get_workflow_profile
-        profile = get_workflow_profile()
-        return (
-            getattr(profile, "profile_id", ""),
-            getattr(profile, "national_execution_mode", "adapter"),
-        )
-    except Exception:
-        return "", "adapter"
+    from workflow_profiles import get_workflow_profile
+
+    profile = get_workflow_profile()
+    return (
+        getattr(profile, "profile_id", ""),
+        getattr(profile, "national_execution_mode", "native_tcp"),
+    )
 
 
 def _gate_matches_active_workflow(gate: dict | None, *, require_native_contract: bool = False) -> bool:
@@ -499,7 +690,12 @@ def _critic_gate_passed(gate_results: dict) -> bool:
         return False
     if critic.get("llm_failed") or critic.get("parse_failed"):
         return False
-    return critic.get("approved") is True
+    return (
+        critic.get("approved") is True
+        and critic.get("llm_invoked") is True
+        and critic.get("critic_llm_executed") is True
+        and critic.get("schema_valid") is True
+    )
 
 
 def validate_stage_transition(current_stage, proposed_stage):
@@ -513,6 +709,8 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "no_guard"
     if proposed_stage == current_stage:
         return True, "same_stage"
+    if current_stage == "publishing":
+        return False, "publication_transaction_is_durable"
     if current_stage == "official_bootstrap_required":
         if proposed_stage == "verified":
             return True, "official_bootstrap_certificate_validated"
@@ -678,6 +876,19 @@ def route_policy(checkpoint: dict | None) -> dict:
             "directive": "No active checkpoint. Start or select a generation before calling pipeline tools.",
         }
 
+    # Stage names survived the policy-epoch reset, but their old payloads did
+    # not.  Validate the system-owned epoch envelope before infrastructure
+    # normalization or any stage lookup so a legacy ``direction_audited``
+    # checkpoint can never route into the current Master.
+    from checkpoint_schema import (
+        checkpoint_epoch_errors,
+        checkpoint_epoch_reset_route,
+    )
+
+    epoch_errors = checkpoint_epoch_errors(checkpoint)
+    if epoch_errors:
+        return checkpoint_epoch_reset_route(checkpoint, epoch_errors)
+
     from pipeline_infrastructure import (
         infrastructure_route,
         normalize_checkpoint_infrastructure,
@@ -701,8 +912,24 @@ def route_policy(checkpoint: dict | None) -> dict:
     gate_results = checkpoint.get("gate_results") or {}
     failure_class = None
     profile_refresh_needed = False
+    precommit_gate = gate_results.get("precommit_eval") or {}
+    try:
+        from system_strict_bootstrap import is_declared_native_bootstrap
 
-    if (
+        system_bootstrap_precommit_terminal = bool(
+            stage == "precommit_failed"
+            and is_declared_native_bootstrap(checkpoint)
+            and precommit_gate.get("failure_class")
+            == "system_bootstrap_regression"
+        )
+    except Exception:
+        system_bootstrap_precommit_terminal = False
+
+    if system_bootstrap_precommit_terminal:
+        next_tool = "abandon_generation"
+        intent = "system_bootstrap_abandon"
+        failure_class = "system_bootstrap_regression"
+    elif (
         stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified", "official_certifying", "official_failed"}
         and "quality" in gate_results
         and not _quality_gate_matches_active_workflow(gate_results)
@@ -755,6 +982,8 @@ def route_policy(checkpoint: dict | None) -> dict:
             intent = "operator_bootstrap"
         elif stage == "official_certifying":
             intent = "official_poll"
+        elif stage == "publishing":
+            intent = "publication_resume"
         elif stage in {"quality_passed", "reviewed"}:
             intent = "gate"
         elif stage == "master_planned":
@@ -775,11 +1004,18 @@ def route_policy(checkpoint: dict | None) -> dict:
         "run_review": "Call run_review. Do not rerun workers unless the reviewer returns a code rejection.",
         "run_critic": "Call run_critic; its score is advisory and native-TCP precommit is the final strategy gate.",
         "run_precommit_eval": "Call run_precommit_eval unless the precommit gate already recorded a regression.",
+        "abandon_generation": "Abandon the rejected deterministic first-migration generation.",
         "commit_bot": "Call commit_bot only after all gates are passed.",
         "run_archivist": "Call run_archivist to finish post-commit cleanup.",
     }
     directive = directive_map.get(next_tool, "Inspect checkpoint context and continue with the matching MCP pipeline tool.")
-    if stage == "quality_failed":
+    if system_bootstrap_precommit_terminal:
+        directive = (
+            "The content-bound first-migration control rejected this candidate. "
+            "Call abandon_generation; ordinary Worker rework and unchanged "
+            "precommit retries are forbidden."
+        )
+    elif stage == "quality_failed":
         directive = (
             "Quality failed. Call execute_workers using the exact quality-gate failures; "
             "do not call run_master. The rework will be tracked as repair_planned/rework_running."
@@ -798,9 +1034,9 @@ def route_policy(checkpoint: dict | None) -> dict:
     elif stage == "official_bootstrap_required":
         directive = (
             "No published full-v5 opponent exists. The candidate is parked for the explicit "
-            "one-time operator bootstrap; the orchestrator must stop and must never select or "
-            "consume the bootstrap root. After bootstrap-full succeeds, an operator may call "
-            "commit_bot manually; the runtime guard requires a completely valid existing certificate."
+            "one-time first-strict control bootstrap; the orchestrator must stop and must "
+            "never authorize or consume it. After bootstrap-first-strict succeeds, an "
+            "operator may call commit_bot manually; the complete signed certificate remains mandatory."
         )
     elif stage == "official_certifying":
         directive = (
@@ -812,6 +1048,12 @@ def route_policy(checkpoint: dict | None) -> dict:
             "Official EXE full certification is inconclusive because the platform/harness "
             "evidence is insufficient. Do not call commit_bot or edit bot code; fix the "
             "official harness/runtime evidence path, then rerun certification."
+        )
+    elif stage == "publishing":
+        directive = (
+            "A content-bound publication transaction is in progress. Call "
+            "commit_bot to reconcile the existing intent; do not rerun official "
+            "certification, edit the candidate, or enter a Worker/rework path."
         )
     elif intent == "critic_rework":
         directive = (
@@ -855,7 +1097,7 @@ def route_policy(checkpoint: dict | None) -> dict:
         # guard additionally requires a fully content-validated existing
         # certificate before it lets commit_bot enter its body.
         allowed_tools.append("commit_bot")
-    if intent != "mandatory_literature_probe":
+    if intent not in {"mandatory_literature_probe", "system_bootstrap_abandon"}:
         for tool_name in sorted(head_drift_allowed_tools(stage)):
             if tool_name not in allowed_tools:
                 allowed_tools.append(tool_name)
@@ -900,10 +1142,38 @@ def generic_abandon_block(checkpoint: dict | None, *,
     block = False
     route = route_policy(checkpoint)
     next_tool = route.get("next_tool")
+    if route.get("intent") == "operator_archive_reset":
+        return {
+            "abandoned": False,
+            "blocked": True,
+            "reason": "checkpoint_epoch_requires_operator_archive_reset",
+            "stage": stage,
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "next_tool": None,
+            "operator_action": route.get("operator_action"),
+            "operator_command": route.get("operator_command"),
+            "epoch_issues": route.get("epoch_issues") or [],
+            "directive": route.get("directive"),
+        }
+    if route.get("intent") == "system_bootstrap_abandon":
+        return None
     explanation = "This generation has passed earlier gates; continue the state machine"
 
-    if stage in {"quality_passed", "reviewed", "repair_planned", "rework_running", "verified"}:
+    if stage in {
+        "quality_passed",
+        "reviewed",
+        "repair_planned",
+        "rework_running",
+        "verified",
+        "publishing",
+    }:
         block = True
+        if stage == "publishing":
+            explanation = (
+                "Publication has crossed its durable intent boundary; reconcile "
+                "the same transaction"
+            )
     elif stage == "critic_checked":
         block = True
         if "critic" in (checkpoint.get("gate_results") or {}) and not _critic_gate_passed(checkpoint.get("gate_results") or {}):

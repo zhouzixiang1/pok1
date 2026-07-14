@@ -1,9 +1,11 @@
 from pathlib import Path
 import socket
+from types import SimpleNamespace
 
 import pytest
 
 from bot_artifact import hash_path
+from bot_namespace import STRICT_ARTIFACT_FILES, strict_artifact_layout_errors
 from managed_bot_executor import EndpointLease, EndpointLeaseError
 from national_arena import sandbox as arena_sandbox
 
@@ -16,17 +18,43 @@ def _listener() -> socket.socket:
 
 
 def _bot_source(tmp_path: Path) -> Path:
-    source = tmp_path / "national_v1"
+    source = tmp_path / "national_v143"
     source.mkdir()
-    (source / "national_bot.py").write_text(
-        "from helper import value\nprint(value)\n",
-        encoding="utf-8",
-    )
-    (source / "helper.py").write_text("value = 7\n", encoding="utf-8")
+    payloads = {
+        "national_bot.py": "print('strict arena fixture')\n",
+        "precompute.py": "FACT = 1\n",
+        "policy.py": (
+            "def get_baseline_decision(context):\n"
+            "    return {'kind': 'pass'}\n"
+            "def iter_decisions(context, baseline, deadline):\n"
+            "    return iter(())\n"
+        ),
+        "national_runtime_manifest.json": "{}\n",
+        "policy_epoch_receipt.json": "{}\n",
+    }
+    assert frozenset(payloads) == STRICT_ARTIFACT_FILES
+    for relative, payload in payloads.items():
+        (source / relative).write_text(payload, encoding="utf-8")
+    assert strict_artifact_layout_errors(source) == []
     return source
 
 
-def test_arena_seal_is_content_bound_and_read_only(tmp_path):
+def _allow_strict_fixture(monkeypatch):
+    monkeypatch.setattr(
+        arena_sandbox,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(eligible=True, issues=()),
+    )
+    monkeypatch.setattr(
+        arena_sandbox,
+        "current_system_native_runtime_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(arena_sandbox, "runtime_manifest_errors", lambda _path: [])
+
+
+def test_arena_seal_is_content_bound_and_read_only(tmp_path, monkeypatch):
+    _allow_strict_fixture(monkeypatch)
     source = _bot_source(tmp_path)
     expected_hash = hash_path(source)
 
@@ -41,7 +69,7 @@ def test_arena_seal_is_content_bound_and_read_only(tmp_path):
     assert (sealed.root / "national_bot.py").stat().st_mode & 0o222 == 0
     assert sealed.root.stat().st_mode & 0o222 == 0
 
-    (source / "helper.py").write_text("value = 8\n", encoding="utf-8")
+    (source / "policy.py").write_text("# changed policy\n", encoding="utf-8")
     with pytest.raises(arena_sandbox.ArenaSandboxError, match="identity_mismatch"):
         arena_sandbox.seal_bot_artifact(
             source,
@@ -50,7 +78,8 @@ def test_arena_seal_is_content_bound_and_read_only(tmp_path):
         )
 
 
-def test_arena_launch_uses_central_managed_executor(tmp_path):
+def test_arena_launch_uses_central_managed_executor(tmp_path, monkeypatch):
+    _allow_strict_fixture(monkeypatch)
     source = _bot_source(tmp_path)
     sealed = arena_sandbox.seal_bot_artifact(
         source,
@@ -112,45 +141,72 @@ def test_arena_sandbox_rejects_non_loopback_endpoint():
         EndpointLease.connect("0.0.0.0", 12345, timeout=0.1)
 
 
-def test_arena_never_seals_or_launches_quarantined_raw_entry(
-    tmp_path, monkeypatch
-):
-    repository_root = Path(__file__).resolve().parents[2]
-    quarantined = repository_root / "bots" / "national_v142"
+def test_arena_seal_rejects_ineligible_strict_artifact(tmp_path, monkeypatch):
+    source = _bot_source(tmp_path)
+    monkeypatch.setattr(
+        arena_sandbox,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            eligible=False,
+            issues=("full_certificate_missing",),
+        ),
+    )
+
     with pytest.raises(
         arena_sandbox.ArenaSandboxError,
-        match="protocol_quarantined_native_entry_forbidden",
+        match="arena_requires_strict_full_certified_policy_artifact",
     ):
         arena_sandbox.seal_bot_artifact(
-            quarantined,
-            tmp_path / "sealed" / "v142",
-            expected_hash=hash_path(quarantined),
+            source,
+            tmp_path / "sealed" / "ineligible",
+            expected_hash=hash_path(source),
         )
 
-    ordinary_root = tmp_path / "ordinary"
-    ordinary_root.mkdir()
-    source = _bot_source(ordinary_root)
+
+def test_arena_seal_rejects_noncurrent_system_runtime(tmp_path, monkeypatch):
+    source = _bot_source(tmp_path)
+    monkeypatch.setattr(
+        arena_sandbox,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(eligible=True, issues=()),
+    )
+
+    with pytest.raises(
+        arena_sandbox.ArenaSandboxError,
+        match="non_system_owned_native_runtime_forbidden",
+    ):
+        arena_sandbox.seal_bot_artifact(
+            source,
+            tmp_path / "sealed" / "runtime-drift",
+            expected_hash=hash_path(source),
+        )
+
+
+def test_arena_launch_revalidates_sealed_system_runtime(tmp_path, monkeypatch):
+    _allow_strict_fixture(monkeypatch)
+    source = _bot_source(tmp_path)
     sealed = arena_sandbox.seal_bot_artifact(
         source,
-        tmp_path / "sealed" / "ordinary",
+        tmp_path / "sealed" / "bot",
         expected_hash=hash_path(source),
     )
     monkeypatch.setattr(
         arena_sandbox,
-        "quarantined_native_entry_sources",
-        lambda _path: ("national_v142",),
+        "current_system_native_runtime_errors",
+        lambda _path: ["system_owned_native_runtime_identity_mismatch"],
     )
+
     with pytest.raises(
         arena_sandbox.ArenaSandboxError,
-        match="protocol_quarantined_native_entry_forbidden",
+        match="arena_sealed_policy_runtime_invalid",
     ):
         arena_sandbox.launch_sandboxed_bot(
             sealed,
             object(),
             object(),
-            name="v142-copy",
+            name="runtime-drift",
             seat="upper",
-            session_id="arena_20260711_deadbeef",
+            session_id="arena_20260714_deadbeef",
             action_delay=0.3,
             hard_deadline=55.0,
             refinement_budget=54.0,

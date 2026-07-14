@@ -14,6 +14,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
+def _strict_artifact(root, version):
+    from bot_namespace import refresh_policy_identity_documents
+
+    root.mkdir(parents=True)
+    (root / "national_bot.py").write_text("def run():\n    return None\n", encoding="utf-8")
+    (root / "policy.py").write_text(
+        "def decide(_context):\n    return {'kind': 'pass'}\n",
+        encoding="utf-8",
+    )
+    (root / "precompute.py").write_text("TABLE = ()\n", encoding="utf-8")
+    (root / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
+    refresh_policy_identity_documents(root, version, parent_versions=(version - 1,))
+    return root
+
+
 class TestDebugAgentCalledOnCompileFailure:
     """Debug agent should be invoked when a compile_error occurs."""
 
@@ -59,7 +75,7 @@ class TestDebugAgentFailureDoesNotBlockRetry:
                 error_output="SyntaxError",
                 changed_diff="some diff",
                 target_file="nonexistent.py",
-                next_v=99,
+                next_v=143,
                 ui=mock_ui,
             )
         assert result == {}
@@ -88,8 +104,8 @@ class TestDebugAgentFailureDoesNotBlockRetry:
             result = await _run_debug_agent(
                 error_output="compile error",
                 changed_diff="diff",
-                target_file="strategy.py",
-                next_v=100,
+                target_file="policy.py",
+                next_v=144,
                 ui=mock_ui,
             )
         assert result == {}
@@ -100,14 +116,15 @@ class TestDebugAgentFailureDoesNotBlockRetry:
         from core.agent_workers import _run_debug_agent
 
         mock_ui = MagicMock()
-        bot_dir = tmp_path / "repo" / "bots" / "claude_v282"
+        bot_dir = tmp_path / "repo" / "bots" / "national_v282"
         logs_dir = tmp_path / "logs"
-        bot_dir.mkdir(parents=True)
+        _strict_artifact(bot_dir, 282)
         logs_dir.mkdir()
         captured = {}
 
         async def fake_run_claude_query(prompt, *args, **kwargs):
             captured["prompt"] = prompt
+            captured["kwargs"] = kwargs
             payload = {"diagnosis": "ok", "confidence": "high"}
             return f"```json\n{json.dumps(payload)}\n```", None, None
 
@@ -117,18 +134,19 @@ class TestDebugAgentFailureDoesNotBlockRetry:
             patch("core.agent_workers.get_logs_dir", return_value=logs_dir),
         ):
             result = await _run_debug_agent(
-                error_output="worker timed out while editing strategy.py",
-                changed_diff="diff --git a/bots/claude_v282/strategy.py b/bots/claude_v282/strategy.py",
-                target_file="strategy.py",
+                error_output="worker timed out while editing policy.py",
+                changed_diff="diff --git a/bots/national_v282/policy.py b/bots/national_v282/policy.py",
+                target_file="policy.py",
                 next_v=282,
                 ui=mock_ui,
             )
 
         prompt = captured["prompt"]
         assert result["confidence"] == "high"
-        assert "bots/claude_v282/strategy.py" in prompt
-        assert str(bot_dir / "strategy.py") in prompt
+        assert "bots/national_v282/policy.py" in prompt
+        assert str(bot_dir / "policy.py") in prompt
         assert "Do not inspect or infer from any other bot version" in prompt
+        assert captured["kwargs"]["allowed_read_dirs"] == [bot_dir]
 
 
 class TestDebugDiagnosisInjectedIntoAttemptNote:
@@ -237,8 +255,8 @@ class TestDebugAgentParseJson:
             result = await _run_debug_agent(
                 error_output="SyntaxError",
                 changed_diff="diff",
-                target_file="strategy.py",
-                next_v=100,
+                target_file="policy.py",
+                next_v=144,
                 ui=mock_ui,
             )
 
@@ -275,8 +293,8 @@ class TestDebugAgentParseJson:
             result = await _run_debug_agent(
                 error_output="Error",
                 changed_diff="diff",
-                target_file="strategy.py",
-                next_v=100,
+                target_file="policy.py",
+                next_v=144,
                 ui=mock_ui,
             )
 

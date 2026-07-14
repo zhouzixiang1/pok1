@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-ARENA_SCHEMA_VERSION = 2
+ARENA_SCHEMA_VERSION = 3
 ARENA_MODES = frozenset({"external_tcp", "managed_bots"})
 ARENA_RESULT_AUTHORITY = "diagnostic_only"
 ARENA_COMPLIANCE_ORACLE = "official_windows_exe"
@@ -71,6 +71,15 @@ class ArenaSession:
     resource_fence_held: bool = False
     quarantine_reason: str | None = None
     sandbox_profile: str | None = None
+    # Arena artifacts are diagnostic-only, but they are still mutable runtime
+    # data.  Bind every session to the strict epoch root that authorized its
+    # creation so retired/mismatched sessions can never be recovered into a
+    # later policy epoch.
+    evaluation_epoch: str = ""
+    epoch_authority_identity: str = ""
+    epoch_reset_receipt_digest: str | None = None
+    epoch_authority_state: str = ""
+    workflow_run_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in ARENA_MODES:

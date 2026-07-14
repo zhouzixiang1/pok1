@@ -1,7 +1,10 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
+import checkpoint_schema
 import evolution_infra
+import pytest
 from pipeline_infrastructure import (
     build_infrastructure_failure,
     infrastructure_attempt_key,
@@ -10,6 +13,35 @@ from pipeline_infrastructure import (
     normalize_checkpoint_infrastructure,
     validate_infrastructure_failure,
 )
+from workflow_profiles import WorkflowProfileConfigurationError
+
+
+@pytest.fixture(autouse=True)
+def _strict_checkpoint_numbers(monkeypatch):
+    real_write = evolution_infra.write_pipeline_checkpoint
+
+    def write(next_v, source_v, *args, **kwargs):
+        return real_write(
+            144 if next_v == 2 else next_v,
+            143 if source_v == 1 else source_v,
+            *args,
+            **kwargs,
+        )
+
+    monkeypatch.setattr(evolution_infra, "write_pipeline_checkpoint", write)
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            eligible=True,
+            version=143,
+            issues=(),
+            runtime_manifest={"epoch": "national_tcp_policy_v1"},
+            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": 143},
+            publication_identity={"published": True, "version": 143},
+            certificate_digest="a" * 64,
+        ),
+    )
 
 
 def _overlay(*, attempt_key="identity", max_attempts=3):
@@ -109,50 +141,15 @@ def test_official_job_attachment_uses_cas_and_clears_on_rework(tmp_path, monkeyp
     assert json.loads(state_file.read_text())["official_job"] is None
 
 
-def test_profile_refresh_clears_official_job_and_old_full_gate(tmp_path, monkeypatch):
+def test_retired_workflow_profile_fails_closed_without_checkpoint_upgrade(
+    tmp_path, monkeypatch
+):
     state_file = tmp_path / "pipeline_state.json"
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_primary")
-    assert evolution_infra.write_pipeline_checkpoint(
-        2,
-        1,
-        "verified",
-        gate_results={
-            "quality": {"all_passed": True},
-            "official_full": {"passed": True},
-        },
-    )
-    job = {
-        "schema_version": 1,
-        "job_id": "job-a",
-        "identity_digest": "identity-a",
-        "candidate_hash": "candidate-a",
-        "policy_id": "official-full-v5",
-        "state": "running",
-        "revision": 1,
-    }
-    assert evolution_infra.write_pipeline_checkpoint(
-        2,
-        1,
-        "official_certifying",
-        official_job=job,
-        expected_official_job_id="",
-    )
-
-    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
-    assert evolution_infra.write_pipeline_checkpoint(
-        2,
-        1,
-        "quality_passed",
-        gate_results={"quality": {
-            "all_passed": True,
-            "workflow_profile_id": "national_native",
-            "national_execution_mode": "native_tcp",
-        }},
-    )
-    stored = json.loads(state_file.read_text())
-    assert stored["official_job"] is None
-    assert "official_full" not in stored["gate_results"]
+    with pytest.raises(WorkflowProfileConfigurationError):
+        evolution_infra.write_pipeline_checkpoint(144, 143, "verified")
+    assert not state_file.exists()
 
 
 def test_legacy_quality_infrastructure_stage_normalizes_to_overlay():

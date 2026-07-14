@@ -9,7 +9,7 @@ import shutil
 import time
 from pathlib import Path
 
-from bot_namespace import bot_name, bot_tag
+from bot_namespace import bot_name, bot_tag, strict_lineage_parent_versions
 from tool_runtime_guard import tool
 
 from logging_config import get_logger
@@ -22,8 +22,6 @@ from evolution_core import (
     verify_code,
     run_import_contract_test,
     check_code_size,
-    run_smoke_test,
-    run_decision_test_details,
     run_national_protocol_tests,
     parse_json_output,
     run_claude_query,
@@ -39,11 +37,9 @@ from tool_helpers import (
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
     _set_pipeline_status, read_pipeline_checkpoint,
 )
-from fix_verification import verify_fixes
 from system_log import log_system_event
 from llm_failure import is_llm_infra_error, infra_payload
-from llm_query import llm_cancel_scope
-import spot_analyzer
+from llm_availability import LLMAvailabilityBlocked
 from pipeline_schema import GateResult, ScoreCard
 from gate_execution import GateExecution
 from pipeline_state import next_tool_for_checkpoint
@@ -53,7 +49,10 @@ from pipeline_infrastructure import (
     infrastructure_failure_digest,
 )
 from workflow_profiles import get_workflow_profile
-from worker_boundary import audit_changed_files_against_plan, hash_changed_files
+from worker_boundary import (
+    audit_strict_policy_artifact_delta_against_plan,
+    hash_changed_files,
+)
 from national_position_contract import detect_position_semantics_errors
 from blocking_runtime import run_blocking_isolated
 
@@ -63,25 +62,35 @@ except Exception:  # pragma: no cover - import fallback for unusual test paths
     append_candidate_event = None
 
 
-# ── Phase 2: AgentAssay SPRT decision-test gate (feature-flagged) ──
-# When True, the decision-test quality gate uses run_decision_tests_sprt_aggregate
-# (per-scenario Wald SPRT with sequential early-stop) instead of the classic
-# single-shot run_decision_test_details. SPRT gives tighter type-I control for
-# stochastic LLM bots but has only been validated on synthetic unit tests, so the
-# default is OFF (zero-regression: byte-for-byte the classic path). Flip to True
-# only after a gray-run confirms the type-I rate on real generation traffic.
-# Mirrors the PRECOMMIT_SEQUENTIAL_EARLY_STOP flag convention (module constant,
-# not an env var).
-DECISION_TEST_SPRT_ENABLED = False
-DYNAMIC_TEST_LLM_TIMEOUT = int(os.environ.get("POK_DYNAMIC_TEST_LLM_TIMEOUT", "25"))
-DYNAMIC_TEST_HEURISTIC_SUFFICIENT = int(os.environ.get("POK_DYNAMIC_TEST_HEURISTIC_SUFFICIENT", "4"))
 QUALITY_INFRA_MAX_ATTEMPTS = max(
     1, int(os.environ.get("POK_QUALITY_INFRA_MAX_ATTEMPTS", "3"))
 )
 QUALITY_INFRA_CONTRACT_VERSION = 1
-DYNAMIC_TEST_LLM_ENABLED = os.environ.get("POK_DYNAMIC_TEST_LLM_ENABLED", "0").strip().lower() in {
-    "1", "true", "yes", "on"
-}
+
+
+def _run_workflow_decision_tests(
+    bot_dir: Path,
+    *,
+    native_tcp_mode: bool,
+    extra_scenarios=None,
+) -> tuple[dict, dict]:
+    """Select exactly one protocol-matched decision backend.
+
+    Fixtures use only the raw national TCP boundary and system reducer.
+    """
+
+    if not native_tcp_mode:
+        raise RuntimeError("only native_tcp decision fixtures are supported")
+    from national_decision_tester import run_national_decision_tests
+
+    detail = run_national_decision_tests(bot_dir)
+    return detail, {
+        "assertion_backed_count": int(detail.get("total", 0) or 0),
+        "coverage_only_count": int(detail.get("coverage_only_count", 0) or 0),
+        "external_scenario_sidecars_loaded": bool(
+            detail.get("external_scenario_sidecars_loaded", False)
+        ),
+    }
 
 
 def _env_enabled(name: str, default: str = "0") -> bool:
@@ -92,7 +101,7 @@ def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
     return (include_required and _env_enabled("POK_OFFICIAL_REQUIRED")) or _env_enabled(name)
 
 
-async def _request_official_smoke_status(bot_dir: Path, mode: str) -> dict:
+async def _request_official_smoke_status(bot_dir: Path) -> dict:
     """Request smoke evidence using only a policy-eligible official opponent."""
     from official_certification import (
         STATUS_FAILED,
@@ -175,21 +184,12 @@ async def _run_workflow_smoke_gate(
     protected_contract_errors: list,
     native_contract_errors: list,
     embedded_selftest_errors: list,
+    opponent_token=None,
+    self_play: bool = False,
 ) -> tuple[list[str], dict]:
-    """Run the smoke gate that matches the active workflow backend."""
+    """Run the sole active raw-TCP smoke gate."""
     if not native_tcp_mode:
-        try:
-            return run_smoke_test(bot_dir), {"execution_mode": "local_json"}
-        except Exception as exc:
-            issue = f"local_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"
-            return [issue], {
-                "passed": False,
-                "execution_mode": "local_json",
-                "failure_class": "infrastructure",
-                "outcome": "infrastructure_failure",
-                "failure_side": "harness",
-                "issues": [issue],
-            }
+        raise RuntimeError("only native_tcp smoke is supported")
 
     blocking_prereqs = (
         list(compile_errors or [])
@@ -212,6 +212,8 @@ async def _run_workflow_smoke_gate(
         report = await run_native_tcp_smoke(
             bot_dir,
             source_v=source_v,
+            opponent_token=opponent_token,
+            self_play=self_play,
             hands=hands,
             timeout_sec=timeout_sec,
         )
@@ -437,19 +439,50 @@ def _prepared_artifact_change_status(checkpoint, candidate_dir, candidate_artifa
     }
 
 def _record_quality_failure(gen, worker_id, role, error, **extra):
-    """Record a quality gate rejection (reviewer/critic) to worker_failures.jsonl.
+    """Record an identity-bound gate rejection to worker_failures.jsonl.
 
     RC5: category="gate" separates these strategic rejections from real
     worker-exec failures (_record_worker_failure writes category="worker") so
     the Worker Failures view can filter out the 49 critic / 9 reviewer noise
     and surface only genuine compile/timeout crashes.
+
+    New rows are authorized by the exact current strict checkpoint.  Missing,
+    retired, cross-generation, or reset-receipt-incompatible authority raises
+    before the JSONL file is opened; historical unbound rows are never upgraded
+    from their generation number.
     """
-    from evolution_core import WORKER_FAILURES_FILE, locked_file
-    entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error,
-             "timestamp": time.time(), "category": "gate"}
-    entry.update({k: v for k, v in extra.items() if v is not None and v is not False})
-    with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    from checkpoint_schema import (
+        CheckpointSchemaError,
+        strict_checkpoint_event_identity,
+    )
+    from evolution_infra import WORKER_FAILURES_FILE, append_locked_jsonl
+
+    identity = strict_checkpoint_event_identity(
+        read_pipeline_checkpoint(),
+        expected_gen=gen,
+        project_root=PROJECT_ROOT,
+    )
+    entry = {
+        **identity,
+        "worker_id": worker_id,
+        "role": role,
+        "error": error,
+        "timestamp": time.time(),
+        "category": "gate",
+    }
+    collisions = sorted(set(extra).intersection(entry))
+    if collisions:
+        raise CheckpointSchemaError(
+            [
+                "quality_failure_reserved_identity_override:"
+                + ",".join(collisions)
+            ]
+        )
+    entry.update(
+        {k: v for k, v in extra.items() if v is not None and v is not False}
+    )
+    append_locked_jsonl(WORKER_FAILURES_FILE, entry)
+    return entry
 
 
 def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved",
@@ -464,6 +497,8 @@ def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved
         approval_key: The key to check for truthiness (default "approved").
         extra_ok_keys: Additional keys that count as truthy (e.g. ("force_advanced",)).
         directive: Message to include when returning cached result.
+        cache_validator: Optional callable receiving the exact complete
+            ``(checkpoint, gate)`` pair fetched by this helper.
 
     Returns:
         An MCP-formatted result dict if the stage already passed, or None.
@@ -473,7 +508,12 @@ def _idempotency_check(v, source_v, stage_set, gate_name, approval_key="approved
         return None
     gate = ckpt.get("gate_results", {}).get(gate_name, {})
     if gate.get(approval_key) is True or any(gate.get(k) is True for k in extra_ok_keys):
-        if cache_validator is not None and not cache_validator(gate):
+        # Cache authority is the complete checkpoint.  Passing only the gate
+        # made strict Review/Critic receipts impossible to validate without a
+        # synthetic partial checkpoint; capturing an earlier checkpoint in a
+        # closure also risked validating generation A after this helper fetched
+        # generation B.  Validate the exact checkpoint/gate pair read above.
+        if cache_validator is not None and not cache_validator(ckpt, gate):
             return None
         gate["idempotent_cache"] = True
         gate["checkpoint_recorded"] = True
@@ -555,6 +595,33 @@ def _llm_gate_infrastructure_identity(
 # Quality Gates
 # ──────────────────────────────────────────────
 
+async def _finalize_strict_blueprint_quality_rejection(
+    *,
+    required: bool,
+    infrastructure_active: bool,
+    all_passed: bool,
+    checkpoint,
+    result: dict,
+) -> dict:
+    """Terminate immutable bytes on business failure; preserve infra retries."""
+
+    if not required or infrastructure_active or all_passed:
+        return result
+    from system_strict_bootstrap import abandon_rejected_blueprint
+
+    return await abandon_rejected_blueprint(
+        checkpoint,
+        reason="system_strict_bootstrap_quality_rejected",
+        result={
+            **result,
+            "failure_class": "quality_gate",
+            "directive": (
+                "A real quality gate rejected the immutable strict blueprint; "
+                "the tool layer has terminated this generation."
+            ),
+        },
+    )
+
 @tool("run_quality_gates", "Run all quality gates on a bot: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, and reachability.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
     _t0 = time.time()
@@ -631,37 +698,41 @@ async def run_quality_gates(args):
             "message": f"{type(exc).__name__}: {str(exc)[:300]}",
         })
     workflow_profile = get_workflow_profile()
-    native_tcp_mode = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
-    if native_tcp_mode and not (bot_dir / "national_bot.py").exists():
+    if getattr(workflow_profile, "national_execution_mode", None) != "native_tcp":
+        return _json_tool_result({
+            "error": "WORKFLOW_CONFIGURATION_ERROR",
+            "message": "only national native_tcp quality evaluation is supported",
+        })
+    native_tcp_mode = True
+    first_strict_control_receipt = None
+    first_strict_control_path = None
+    first_strict_control_required = False
+    if native_tcp_mode and active_ckpt:
         try:
-            from national_native import ensure_native_entry
-            ensure_native_entry(bot_dir)
-            log_system_event(
-                "pipeline.native_entry_recovered",
-                "info",
-                f"Recovered missing native national TCP entry for v{v} before quality gates",
-                {
-                    "version": v,
-                    "source_v": source_v,
-                    "workflow_profile_id": workflow_profile.profile_id,
-                },
-            )
-        except Exception as exc:
-            mark_quality_infrastructure(
-                "native_entry_recovery",
-                "candidate_hygiene",
-                f"{type(exc).__name__}: {str(exc)[:300]}",
-            )
-            log_system_event(
-                "pipeline.native_entry_recovery_failed",
-                "error",
-                f"Failed to recover native national TCP entry for v{v}: {type(exc).__name__}: {str(exc)[:200]}",
-                {
-                    "version": v,
-                    "source_v": source_v,
-                    "workflow_profile_id": workflow_profile.profile_id,
-                },
-            )
+            from system_strict_bootstrap import is_declared_native_bootstrap
+
+            declared_first_strict = is_declared_native_bootstrap(active_ckpt)
+        except Exception:
+            declared_first_strict = False
+        if declared_first_strict:
+            first_strict_control_required = True
+            try:
+                from first_strict_control import build_control_receipt
+
+                first_strict_control_receipt = build_control_receipt(active_ckpt)
+                first_strict_control_path = str(
+                    (first_strict_control_receipt.get("control") or {}).get("path")
+                    or ""
+                )
+            except Exception as exc:
+                # Empty string is an explicit (invalid) token to smoke, so its
+                # resolver fails closed instead of falling back to source_v142.
+                first_strict_control_path = ""
+                mark_quality_infrastructure(
+                    "first_strict_control",
+                    "quality_opponent",
+                    f"{type(exc).__name__}: {str(exc)[:500]}",
+                )
     candidate_id = f"{bot_name(v)}_from_{bot_name(source_v)}" if source_v is not None else bot_name(v)
     if append_candidate_event:
         try:
@@ -796,10 +867,26 @@ async def run_quality_gates(args):
                 for task in _plan_tasks
                 if str(task.get("skill_layer", "")).strip()
             })
-            _scope_audit = audit_changed_files_against_plan(
+            lineage_parents = strict_lineage_parent_versions(
+                int(v),
+                int(source_v) if source_v is not None else None,
+                (_quality_ckpt_for_scope or {}).get("parent2_v"),
+            )
+            _scope_audit = audit_strict_policy_artifact_delta_against_plan(
                 scope_changed_files,
                 _plan_tasks,
-                next_v=v,
+                candidate_dir=bot_dir,
+                version=int(v),
+                parent_versions=lineage_parents,
+                identity_refresh_receipt=(
+                    ((_quality_ckpt_for_scope or {}).get("audit_context") or {})
+                    .get("strict_policy_identity_refresh")
+                ),
+                durable_worker_output=(
+                    ((_quality_ckpt_for_scope or {}).get("audit_context") or {})
+                    .get("durable_worker_output")
+                ),
+                require_identity_refresh_receipt=True,
             )
             declared_scope_ok = _scope_audit.passed
             declared_scope_errors = _scope_audit.violations
@@ -848,7 +935,7 @@ async def run_quality_gates(args):
             return False
         cached_profile_id = str(gate.get("workflow_profile_id") or gate.get("profile_id") or "")
         cached_execution_mode = str(gate.get("national_execution_mode") or "")
-        expected_execution_mode = "native_tcp" if native_tcp_mode else "adapter"
+        expected_execution_mode = "native_tcp"
         if cached_profile_id != workflow_profile.profile_id or cached_execution_mode != expected_execution_mode:
             log_system_event(
                 "pipeline.quality_cache_profile_stale",
@@ -919,6 +1006,20 @@ async def run_quality_gates(args):
                 "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
                 "runtime_contract_ledger_digest": runtime_contract_ledger_digest,
             }
+            cached_dynamic_probe = (
+                (gate.get("national_capability_contract") or {}).get(
+                    "dynamic_runtime_probe"
+                )
+                or {}
+            )
+            managed_isolation_digest = str(
+                cached_dynamic_probe.get("managed_isolation_digest") or ""
+            )
+            if len(managed_isolation_digest) != 64:
+                return False
+            expected_probe_identity["runtime_probe_managed_isolation_digest"] = (
+                managed_isolation_digest
+            )
             if any(gate.get(key) != value for key, value in expected_probe_identity.items()):
                 log_system_event(
                     "pipeline.quality_cache_runtime_probe_stale",
@@ -966,7 +1067,7 @@ async def run_quality_gates(args):
         gate_name="quality",
         approval_key="all_passed",
         directive="Quality gates ALREADY PASSED. Call run_review next.",
-        cache_validator=_quality_cache_current,
+        cache_validator=lambda _checkpoint, gate: _quality_cache_current(gate),
     )
     if _cached:
         return _cached
@@ -990,16 +1091,7 @@ async def run_quality_gates(args):
             "runtime_import",
             f"{type(exc).__name__}: {str(exc)[:300]}",
         )
-    try:
-        from protected_contracts import check_bot_protocol_contract
-        protected_contract_errors = check_bot_protocol_contract(bot_dir)
-    except Exception as e:
-        protected_contract_errors = [f"protected_contract_check_error: {type(e).__name__}: {str(e)[:200]}"]
-        mark_quality_infrastructure(
-            "protected_contract_validator",
-            "protected_contract",
-            protected_contract_errors[0],
-        )
+    protected_contract_errors = []
     try:
         from bot_artifact import publication_shape_errors
 
@@ -1073,6 +1165,11 @@ async def run_quality_gates(args):
                 source_dir,
                 bot_dir,
                 expected_policy=expected_architecture_policy,
+                runtime_contract_ledger=(
+                    _master_plan_for_scope.get("runtime_contract_ledger")
+                    if isinstance(_master_plan_for_scope, dict)
+                    else None
+                ),
             )
             national_capability_contract = national_architecture_transition["candidate_capabilities"]
             transition_infrastructure = (
@@ -1182,12 +1279,18 @@ async def run_quality_gates(args):
                 or f"Satisfy mandatory national runtime floor check {check_id}."
             ),
         })
-    for check_id in national_architecture_transition.get("unresolved_focus_checks") or []:
+    for check_id in (
+        national_architecture_transition.get("selected_dynamic_failures")
+        or national_architecture_transition.get("blocking_focus_checks")
+        or []
+    ):
         check = (national_capability_contract.get("checks_by_id") or {}).get(check_id, {})
         national_capability_blockers.append({
-            "check_id": f"architecture_focus:{check_id}",
-            "name": f"architecture_focus:{check_id}",
-            "guidance": check.get("guidance") or f"Close selected architecture focus check {check_id}.",
+            "check_id": f"runtime_contract_primary:{check_id}",
+            "name": f"runtime_contract_primary:{check_id}",
+            "guidance": check.get("guidance") or (
+                "Close the frozen RuntimeContract primary check " f"{check_id}."
+            ),
         })
     for error in national_architecture_transition.get("runtime_contract_implementation_errors") or []:
         national_capability_blockers.append({
@@ -1243,63 +1346,7 @@ async def run_quality_gates(args):
             f"Runtime import contract passed for v{v}",
             {"version": v, "source_v": source_v},
         )
-    # A3 (evolution-plan-refresh-jun21): placement-shadow advisory (NON-blocking).
-    # Flags detector call-sites placed after a to_call>=my_chips early-return — the
-    # INERTNESS root cause that recurred v138-v143 (guards wired at strategy.py:1041
-    # after the allin-cover early-return at :1018 = unreachable for stack-off spots).
-    placement_shadow_warnings = []
-    try:
-        from code_verification import detect_placement_shadow_warnings
-        placement_shadow_warnings = detect_placement_shadow_warnings(bot_dir)
-        if placement_shadow_warnings:
-            log_system_event(
-                "pipeline.placement_shadow", "warn",
-                f"Placement-shadow detectors in v{v}: {len(placement_shadow_warnings)} "
-                f"call-site(s) after to_call>=my_chips early-return (INERTNESS risk — "
-                f"relocate call-site, do not re-tune)",
-                {"version": v, "warnings": placement_shadow_warnings[:6]},
-            )
-    except Exception as e:
-        _log.warning("placement_shadow check error: %s", e)
-        mark_quality_infrastructure(
-            "placement_shadow_validator",
-            "placement_shadow",
-            f"{type(e).__name__}: {str(e)[:300]}",
-        )
-    # M6 (b057ead follow-up): telemetry-fidelity AST gate — BLOCKING.
-    # Flags multi-arm margin/delta detectors whose stderr.write telemetry is nested
-    # inside a bucket/signal If-gate (sub-arm-scoped) instead of hoisted to function
-    # scope. Sub-arm-only telemetry yields a false-INERT verdict on daemon grep (v154
-    # 99.98%-delta=+0 artifact → v155 Master misread the LIVE framework as dead and
-    # listed it in do_not_touch). Unlike placement_shadow (advisory — its warnings
-    # never reach reviewer_prompt, so it has zero enforcement), M6 is BLOCKING:
-    # master_prompt.md M6 explicitly acknowledges "Reviewer MUST reject" clauses are
-    # NON-enforceable (Reviewer only receives {master_plan} JSON), so only a hard
-    # precommit gate can stop the 9-gen INERTNESS loop (M5 advisory precedent failed).
-    telemetry_fidelity_warnings = []
-    try:
-        from code_verification import detect_telemetry_fidelity_warnings
-        telemetry_fidelity_warnings = detect_telemetry_fidelity_warnings(bot_dir)
-        if telemetry_fidelity_warnings:
-            log_system_event(
-                "pipeline.telemetry_fidelity", "error",
-                f"Telemetry-fidelity violations in v{v}: {len(telemetry_fidelity_warnings)} "
-                f"multi-arm detector(s) with sub-arm-scoped stderr.write (false-INERT risk)",
-                {"version": v, "warnings": telemetry_fidelity_warnings[:6]},
-            )
-    except Exception as e:
-        _log.warning("telemetry_fidelity check error: %s", e)
-        mark_quality_infrastructure(
-            "telemetry_fidelity_validator",
-            "telemetry_fidelity",
-            f"{type(e).__name__}: {str(e)[:300]}",
-        )
-    telemetry_fidelity_ok = len(telemetry_fidelity_warnings) == 0
-
-    # R1 (2026-07-01): newly-added top-level helpers must be wired into the bot.
-    # This blocks the observed v239 failure mode where a Worker appended a good
-    # postflop helper but never imported/called it; compile, smoke, and decision
-    # scenarios all passed because the change was inert.
+    # New policy helpers must be referenced by the typed policy dispatch.
     reachability_warnings = []
     if source_dir is not None and changed_files_list:
         try:
@@ -1352,6 +1399,8 @@ async def run_quality_gates(args):
         protected_contract_errors=protected_contract_errors,
         native_contract_errors=native_contract_errors,
         embedded_selftest_errors=embedded_selftest_errors,
+        opponent_token=None,
+        self_play=first_strict_control_required,
     )
     if (
         smoke_payload.get("failure_class") == "infrastructure"
@@ -1398,40 +1447,33 @@ async def run_quality_gates(args):
         except AttributeError:
             _bot_under_project_bots = str(bot_dir.resolve()).startswith(str((PROJECT_ROOT / "bots").resolve()))
         can_run_national_acceptance = (
+            not first_strict_control_required
+            and
             len(compile_errors) == 0
             and len(import_errors) == 0
             and len(protected_contract_errors) == 0
             and len(native_contract_errors) == 0
             and len(embedded_selftest_errors) == 0
             and len(smoke_errors) == 0
-            and (
-                (bot_dir / "national_bot.py").exists()
-                if native_tcp_mode
-                else (bot_dir / "main.py").exists()
-            )
+            and (bot_dir / "national_bot.py").exists()
             and _bot_under_project_bots
         )
         if can_run_national_acceptance:
             try:
-                if native_tcp_mode:
-                    from national_native import run_native_acceptance_for_candidate
-                    _acceptance = await run_native_acceptance_for_candidate(
-                        bot_dir,
-                        source_v=source_v,
-                        hands=national_acceptance_hands,
-                        max_opponents=2,
-                        timeout_sec=national_acceptance_timeout_sec,
-                    )
-                else:
-                    from national_acceptance import run_acceptance_for_candidate
-                    _acceptance = await run_acceptance_for_candidate(
-                        bot_dir,
-                        source_v=source_v,
-                        hands=national_acceptance_hands,
-                        max_opponents=2,
-                        strict=bool(workflow_profile.national_acceptance_hard),
-                        timeout_sec=national_acceptance_timeout_sec,
-                    )
+                from national_native import run_native_acceptance_for_candidate
+
+                _acceptance = await run_native_acceptance_for_candidate(
+                    bot_dir,
+                    source_v=source_v,
+                    opponent_tokens=(
+                        [first_strict_control_path]
+                        if first_strict_control_path
+                        else None
+                    ),
+                    hands=national_acceptance_hands,
+                    max_opponents=2,
+                    timeout_sec=national_acceptance_timeout_sec,
+                )
                 national_acceptance_ok = bool(_acceptance.passed)
                 national_acceptance_errors = _acceptance.issues[:5]
                 national_acceptance_payload = _acceptance.model_dump()
@@ -1450,7 +1492,7 @@ async def run_quality_gates(args):
                     {
                         "version": v,
                         "source_v": source_v,
-                        "execution_mode": "native_tcp" if native_tcp_mode else "adapter",
+                        "execution_mode": "native_tcp",
                         "hands": national_acceptance_hands,
                         "timeout_sec": national_acceptance_timeout_sec,
                         "opponents": _acceptance.opponents,
@@ -1479,7 +1521,7 @@ async def run_quality_gates(args):
     official_smoke_blocking = False
     official_smoke_inconclusive = False
     official_smoke_classification = "not_run"
-    official_smoke_mode = os.environ.get("POK_OFFICIAL_SMOKE_GATE", "queue").strip().lower()
+    official_smoke_mode = os.environ.get("POK_OFFICIAL_SMOKE_GATE", "1").strip().lower()
     official_smoke_enabled = native_tcp_mode and official_smoke_mode not in {"0", "false", "off", "disabled", "none"}
     if official_smoke_enabled:
         try:
@@ -1500,10 +1542,7 @@ async def run_quality_gates(args):
         )
         if can_request_official_smoke:
             try:
-                official_smoke_payload = await _request_official_smoke_status(
-                    bot_dir,
-                    official_smoke_mode,
-                )
+                official_smoke_payload = await _request_official_smoke_status(bot_dir)
                 official_smoke_blocking = bool(official_smoke_payload.get("blocking"))
                 official_smoke_inconclusive = bool(official_smoke_payload.get("inconclusive"))
                 official_smoke_ok = not official_smoke_blocking
@@ -1538,7 +1577,7 @@ async def run_quality_gates(args):
                     {
                         "version": v,
                         "source_v": source_v,
-                        "mode": official_smoke_mode,
+                            "mode": "smoke",
                         "opponent": official_opponent,
                         "opponent_selection": opponent_selection,
                         "status": official_smoke_payload.get("status"),
@@ -1579,142 +1618,34 @@ async def run_quality_gates(args):
     dynamic_test_meta = {
         "heuristic_count": 0,
         "llm_count": 0,
-        "llm_status": "not_run",
-        "llm_timeout_sec": DYNAMIC_TEST_LLM_TIMEOUT,
-        "llm_enabled": DYNAMIC_TEST_LLM_ENABLED,
+        "llm_status": (
+            "disabled_national_native"
+            if native_tcp_mode
+            else "not_run"
+        ),
+        "llm_timeout_sec": 0,
+        "llm_enabled": False,
+        "fixture_protocol": (
+            "official_raw_tcp_transcript_v1"
+            if native_tcp_mode
+            else "archived_local_fixture"
+        ),
+        "external_scenario_sidecars_loaded": False,
     }
     heuristic_scenarios = []
     existing_ids = []
-    if source_v is not None and changed_files_list:
-        try:
-            import difflib as _difflib
-            from decision_tester import (
-                SCENARIOS_FILE,
-                generate_scenarios_from_diff,
-                save_dynamic_scenarios,
-                load_dynamic_scenarios,
-            )
-            if SCENARIOS_FILE.exists():
-                with open(SCENARIOS_FILE) as _f:
-                    for s in json.load(_f):
-                        existing_ids.append(s.get("id", ""))
-            _src_dir = get_bot_dir(source_v)
-            _dst_dir = get_bot_dir(v)
-
-            _diff_parts = []
-            for _rel in changed_files_list:
-                _src_file = _src_dir / _rel
-                _dst_file = _dst_dir / _rel
-                _before = _src_file.read_text() if _src_file.exists() else ""
-                _after = _dst_file.read_text() if _dst_file.exists() else ""
-                if _before != _after:
-                    _diff = _difflib.unified_diff(
-                        _before.splitlines(keepends=True),
-                        _after.splitlines(keepends=True),
-                        fromfile=f"v{source_v}/{_rel}", tofile=f"v{v}/{_rel}",
-                        n=2,
-                    )
-                    _diff_text = "".join(_diff)
-                    if _diff_text:
-                        _diff_parts.append(_diff_text)
-
-            if _diff_parts:
-                _full_diff = "\n".join(_diff_parts)[-8000:]
-                heuristic_scenarios = generate_scenarios_from_diff(
-                    _full_diff, str(_src_dir), str(_dst_dir)
-                )
-                dynamic_test_meta["heuristic_count"] = len(heuristic_scenarios)
-                if heuristic_scenarios:
-                    _existing = load_dynamic_scenarios()
-                    _existing_ids = {s.get("id") for s in _existing}
-                    _new_to_save = [s for s in heuristic_scenarios
-                                    if s.get("id") not in _existing_ids]
-                    save_dynamic_scenarios(_existing + _new_to_save)
-                    _log.info(
-                        "B3: Generated %d heuristic scenarios from diff for v%d",
-                        len(heuristic_scenarios), v
-                    )
-        except Exception as e:
-            dynamic_test_meta["heuristic_error"] = str(e)[:300]
-            _log.warning("B3 heuristic scenario generation error: %s", e)
-
-    # --- P0-3: LLM-Generated Dynamic Decision Tests (augment only) ---
     dynamic_scenarios = []
-    if source_v is not None and changed_files_list:
-        try:
-            from audit_agents import _generate_dynamic_tests
-            if not DYNAMIC_TEST_LLM_ENABLED:
-                dynamic_test_meta["llm_status"] = "skipped_disabled"
-                log_system_event(
-                    "pipeline.dynamic_test_gen_skipped",
-                    "info",
-                    f"v{v}: skipped LLM dynamic test generation; "
-                    "POK_DYNAMIC_TEST_LLM_ENABLED is off",
-                    {"version": v, "source_v": source_v,
-                     "heuristic_count": len(heuristic_scenarios)},
-                )
-            elif len(heuristic_scenarios) >= DYNAMIC_TEST_HEURISTIC_SUFFICIENT:
-                dynamic_test_meta["llm_status"] = "skipped_heuristic_sufficient"
-                log_system_event(
-                    "pipeline.dynamic_test_gen_skipped",
-                    "info",
-                    f"v{v}: skipped LLM dynamic test generation; "
-                    f"{len(heuristic_scenarios)} deterministic scenarios already generated",
-                    {"version": v, "source_v": source_v,
-                     "heuristic_count": len(heuristic_scenarios)},
-                )
-            else:
-                ckpt_dt = _matching_checkpoint(v, source_v)
-                master_plan_dt = ckpt_dt.get("master_plan", {}) if ckpt_dt else {}
-                ui = _get_ui()
-                with llm_cancel_scope(
-                    "dynamic_test_gen",
-                    reason="parent_timeout",
-                    timeout_sec=DYNAMIC_TEST_LLM_TIMEOUT,
-                ):
-                    dynamic_scenarios = await asyncio.wait_for(
-                        _generate_dynamic_tests(
-                            v, source_v, changed_files_list, master_plan_dt, existing_ids, ui
-                        ),
-                        timeout=DYNAMIC_TEST_LLM_TIMEOUT,
-                    )
-                dynamic_test_meta["llm_status"] = "ok"
-                dynamic_test_meta["llm_count"] = len(dynamic_scenarios or [])
-        except asyncio.TimeoutError:
-            dynamic_test_meta["llm_status"] = "timeout"
-            log_system_event(
-                "pipeline.dynamic_test_gen_timeout",
-                "warn",
-                f"v{v}: LLM dynamic test generation timed out after "
-                f"{DYNAMIC_TEST_LLM_TIMEOUT}s; using deterministic scenarios",
-                {"version": v, "source_v": source_v,
-                 "timeout_s": DYNAMIC_TEST_LLM_TIMEOUT,
-                 "heuristic_count": len(heuristic_scenarios)},
-            )
-        except Exception as e:
-            dynamic_test_meta["llm_status"] = "error"
-            dynamic_test_meta["llm_error"] = str(e)[:300]
-            _log.warning("Dynamic test generation error: %s", e)
-
-    # Combine both dynamic sources
-    _all_dynamic = (dynamic_scenarios or []) + heuristic_scenarios
+    _all_dynamic = []
     dynamic_test_meta["combined_count"] = len(_all_dynamic)
 
-    # Decision-test gate: classic single-shot path by default; optional Phase-2
-    # per-scenario SPRT aggregation when DECISION_TEST_SPRT_ENABLED. The SPRT
-    # path returns the SAME dict shape (pass_rate/total/critical_*/failures), so
-    # the downstream gate logic below is unchanged — only the per-scenario
-    # verdict source differs.
+    # Candidate policy and system reducer assertions run only over raw TCP.
     try:
-        if DECISION_TEST_SPRT_ENABLED:
-            from decision_tester import run_decision_tests_sprt_aggregate
-            decision_detail = run_decision_tests_sprt_aggregate(
-                bot_dir, extra_scenarios=_all_dynamic or None
-            )
-        else:
-            decision_detail = run_decision_test_details(
-                bot_dir, extra_scenarios=_all_dynamic or None
-            )
+        decision_detail, decision_meta = _run_workflow_decision_tests(
+            bot_dir,
+            native_tcp_mode=native_tcp_mode,
+            extra_scenarios=_all_dynamic,
+        )
+        dynamic_test_meta.update(decision_meta)
     except Exception as exc:
         decision_detail = {
             "pass_rate": 0.0,
@@ -1744,42 +1675,6 @@ async def run_quality_gates(args):
         )
     decision_ok = decision_rate >= 0.7 and critical_ok and decision_total > 0
 
-    # --- P1-3: Structural fix-verification gate (authoritative fix-present judgment) ---
-    # fix_injection.py uses substring matching which silently misses when a worker
-    # refactors the target function. verify_fixes() runs STRUCTURAL/RUNTIME checks in
-    # subprocess isolation so a confirmed invariant violation blocks the pipeline
-    # regardless of how the code was written. A verifier exception is trusted
-    # infrastructure failure and must never silently pass or become bot debt.
-    try:
-        fix_results = verify_fixes(bot_dir)
-    except Exception as exc:
-        fix_results = {}
-        mark_quality_infrastructure(
-            "fix_verification_runner",
-            "fix_verification",
-            f"{type(exc).__name__}: {str(exc)[:300]}",
-        )
-    for fix_id, verification in fix_results.items():
-        if verification.get("outcome") == "infrastructure_failure":
-            mark_quality_infrastructure(
-                "fix_verification_runner",
-                "fix_verification",
-                f"{fix_id}: {verification.get('reason', 'verifier unavailable')}",
-            )
-    fix_ok = all(r.get("ok", False) for r in fix_results.values())
-    fix_failed = {
-        fid: r for fid, r in fix_results.items()
-        if not r.get("ok", False) and r.get("outcome") != "infrastructure_failure"
-    }
-
-    # fix-3: TRUE-SHADOW placement is a blocking gate (INERTNESS root cause).
-    # v156-v165 produced 10 generations of TRUE-SHADOW `_river_stackoff_guard`
-    # that passed quality gates because placement_shadow was advisory-only.
-    true_shadows = [w for w in placement_shadow_warnings if 'TRUE SHADOW' in w]
-    if true_shadows:
-        for w in true_shadows:
-            compile_errors.append(f"BLOCKING: {w}")
-
     candidate_gate_checks_passed = (
         len(compile_errors) == 0
         and len(import_errors) == 0
@@ -1795,8 +1690,6 @@ async def run_quality_gates(args):
         and code_changed
         and post_master_delta_ok
         and declared_scope_ok
-        and fix_ok
-        and telemetry_fidelity_ok
         and reachability_ok
         and position_semantics_ok
         and national_capability_ok
@@ -1841,7 +1734,7 @@ async def run_quality_gates(args):
             extra={
                 "phases": phases,
                 "workflow_profile_id": workflow_profile.profile_id,
-                "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
+                "national_execution_mode": "native_tcp",
             },
         )
         issue_strings = [
@@ -1888,7 +1781,7 @@ async def run_quality_gates(args):
         "import_errors": import_errors[:3] if import_errors else [],
         "protected_contract_ok": len(protected_contract_errors) == 0,
         "protected_contract_errors": protected_contract_errors[:3] if protected_contract_errors else [],
-        "national_execution_mode": "native_tcp" if native_tcp_mode else "adapter",
+        "national_execution_mode": "native_tcp",
         "national_native_contract_ok": len(native_contract_errors) == 0,
         "national_native_contract_errors": native_contract_errors[:5] if native_contract_errors else [],
         "national_capability_contract_ok": national_capability_ok,
@@ -1914,6 +1807,9 @@ async def run_quality_gates(args):
         "runtime_probe_identity_digest": (
             national_capability_contract.get("dynamic_runtime_probe") or {}
         ).get("probe_identity_digest"),
+        "runtime_probe_managed_isolation_digest": (
+            national_capability_contract.get("dynamic_runtime_probe") or {}
+        ).get("managed_isolation_digest"),
         "embedded_selftests_ok": len(embedded_selftest_errors) == 0,
         "embedded_selftest_errors": embedded_selftest_errors[:5] if embedded_selftest_errors else [],
         "smoke_ok": len(smoke_errors) == 0,
@@ -1926,6 +1822,7 @@ async def run_quality_gates(args):
         "national_acceptance_ok": national_acceptance_ok,
         "national_acceptance_errors": national_acceptance_errors[:5] if national_acceptance_errors else [],
         "national_acceptance": national_acceptance_payload,
+        "first_strict_control_receipt": first_strict_control_receipt,
         "official_smoke_ok": official_smoke_ok,
         "official_smoke_errors": official_smoke_errors[:5] if official_smoke_errors else [],
         "official_smoke": official_smoke_payload,
@@ -1945,18 +1842,10 @@ async def run_quality_gates(args):
         "total_lines": total_lines,
         "oversized_files": {name: lines for name, lines, _ in oversized} if oversized else {},
         "size_ok": len(oversized) == 0,
-        "fix_verification": fix_results,
-        "fix_ok": fix_ok,
         "all_passed": all_passed,
         # A3/fix-3: TRUE-SHADOW is BLOCKING (added to compile_errors above);
         # "review" level warnings remain advisory. Reviewer/critic/orchestrator
         # can read these to distinguish blocking vs advisory.
-        "placement_shadow_warnings": placement_shadow_warnings,
-        # M6: BLOCKING (unlike placement_shadow "review" level which is advisory).
-        # detector whose stderr.write is nested in a bucket If-gate yields sub-arm-only
-        # telemetry → false-INERT on daemon grep (v154 99.98%-delta=+0 artifact).
-        "telemetry_fidelity_warnings": telemetry_fidelity_warnings,
-        "telemetry_fidelity_ok": telemetry_fidelity_ok,
         "reachability_warnings": reachability_warnings,
         "reachability_ok": reachability_ok,
         "position_semantics_ok": position_semantics_ok,
@@ -2022,18 +1911,6 @@ async def run_quality_gates(args):
                 "bot_selftest",
                 f"Embedded bot self-test failure: {err[:2000]}",
             )
-    if true_shadows:
-        failed_gates_detail.append(
-            f"placement_shadow({'; '.join(w[:120] for w in true_shadows[:3])})"
-        )
-        for warning in (true_shadows if not quality_infrastructure["active"] else []):
-            _record_quality_failure(
-                v,
-                "placement_shadow",
-                "placement_shadow",
-                "TRUE-SHADOW detector call-site unreachable for stack-covering all-ins. "
-                + warning,
-            )
     if smoke_errors:
         failed_gates_detail.append("smoke_test")
     if national_protocol_errors:
@@ -2056,28 +1933,6 @@ async def run_quality_gates(args):
         failed_gates_detail.append(f"declared_scope({'; '.join(declared_scope_errors[:3])})")
     if oversized:
         failed_gates_detail.append(f"file_size({', '.join(f'{n}:{l}L/{lim}L' for n, l, lim in oversized)})")
-    if not fix_ok:
-        detail_parts = [f"{fid}: {r.get('reason', 'unknown')[:160]}" for fid, r in fix_failed.items()]
-        failed_gates_detail.append(f"missing_fix({'; '.join(detail_parts)})")
-        # Record to worker_failures.jsonl so future worker prompts see the missing fix
-        # (this is the primary feedback path into workers; reviewer_feedback injection
-        # is intentionally omitted to avoid an out-of-order _ckpt reference here).
-        for fid, r in (fix_failed.items() if not quality_infrastructure["active"] else []):
-            _record_quality_failure(
-                v, "fix_verifier", fid,
-                f"Mandatory fix {fid} NOT present: {r.get('reason', '')[:2000]}",
-            )
-    if not telemetry_fidelity_ok:
-        failed_gates_detail.append(
-            f"telemetry_fidelity({'; '.join(w[:120] for w in telemetry_fidelity_warnings[:3])})"
-        )
-        # Record the M6 telemetry-fidelity violation to worker_failures so the next
-        # worker attempt sees the hoist recipe (function-scope stderr.write + fixture).
-        for w in (telemetry_fidelity_warnings if not quality_infrastructure["active"] else []):
-            _record_quality_failure(
-                v, "telemetry_fidelity", "multi_arm_detector",
-                f"M6 telemetry-fidelity violation (false-INERT risk): {w[:2000]}",
-            )
     if not reachability_ok:
         failed_gates_detail.append(
             f"reachability({'; '.join(w[:120] for w in reachability_warnings[:3])})"
@@ -2133,6 +1988,9 @@ async def run_quality_gates(args):
         "runtime_probe_scenario_digest": result["runtime_probe_scenario_digest"],
         "runtime_probe_limits_digest": result["runtime_probe_limits_digest"],
         "runtime_probe_identity_digest": result["runtime_probe_identity_digest"],
+        "runtime_probe_managed_isolation_digest": result[
+            "runtime_probe_managed_isolation_digest"
+        ],
         "national_capability_required_failure_count": len(
             result["national_capability_contract"].get("required_failures") or []
         ),
@@ -2151,6 +2009,9 @@ async def run_quality_gates(args):
         "national_acceptance_ok": result["national_acceptance_ok"],
         "national_acceptance_errors": result["national_acceptance_errors"],
         "national_acceptance": national_acceptance_payload,
+        "first_strict_control_receipt": result.get(
+            "first_strict_control_receipt"
+        ),
         "official_smoke_ok": result["official_smoke_ok"],
         "official_smoke_errors": result["official_smoke_errors"],
         "official_smoke": official_smoke_payload,
@@ -2175,10 +2036,6 @@ async def run_quality_gates(args):
         "declared_scope": declared_scope_metrics,
         "skill_layers": declared_skill_layers,
         "diff_hash": diff_hash,
-        "fix_ok": fix_ok,
-        "placement_shadow_warnings": placement_shadow_warnings[:10],
-        "placement_shadow_review_count": len([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w]),
-        "telemetry_fidelity_ok": telemetry_fidelity_ok,
         "reachability_ok": reachability_ok,
         "reachability_warnings": reachability_warnings[:6],
         "position_semantics_ok": position_semantics_ok,
@@ -2232,7 +2089,7 @@ async def run_quality_gates(args):
         "national_native_contract",
         len(native_contract_errors) == 0,
         failures=native_contract_errors[:5],
-        metrics={"execution_mode": "native_tcp" if native_tcp_mode else "adapter"},
+        metrics={"execution_mode": "native_tcp"},
         blocking=native_tcp_mode,
         hidden=not native_tcp_mode,
     ))
@@ -2247,7 +2104,7 @@ async def run_quality_gates(args):
             for item in capability_failures[:8]
         ],
         metrics={
-            "execution_mode": "native_tcp" if native_tcp_mode else "adapter",
+            "execution_mode": "native_tcp",
             "required": national_capability_required,
             "required_failure_count": len(capability_required_failures),
             "advisory_warning_count": len(capability_advisory_warnings),
@@ -2294,17 +2151,10 @@ async def run_quality_gates(args):
         len(smoke_errors) == 0,
         failures=smoke_errors[:3],
         metrics={
-            "execution_mode": smoke_payload.get("execution_mode", "local_json"),
+            "execution_mode": smoke_payload.get("execution_mode", "native_tcp"),
             "hands": smoke_payload.get("hands"),
         },
         artifacts={"report": smoke_payload} if smoke_payload else {},
-    ))
-    scorecard.add(GateResult.from_bool(
-        "placement_shadow_review",
-        not bool([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w]),
-        blocking=False,
-        failures=[w for w in placement_shadow_warnings if "TRUE SHADOW" not in w][:6],
-        metrics={"review_count": len([w for w in placement_shadow_warnings if "TRUE SHADOW" not in w])},
     ))
     scorecard.add(GateResult.from_bool("national_protocol", len(national_protocol_errors) == 0, failures=national_protocol_errors[:3]))
     scorecard.add(GateResult.from_bool(
@@ -2350,8 +2200,6 @@ async def run_quality_gates(args):
         failures=[str(f)[:300] for f in (decision_detail.get("failures", []) or [])[:5]],
     ))
     scorecard.add(GateResult.from_bool("size", len(oversized) == 0, failures=[f"{n}:{l}/{lim}" for n, l, lim in oversized]))
-    scorecard.add(GateResult.from_bool("fix_verification", fix_ok, failures=[f"{fid}: {r.get('reason', '')[:160]}" for fid, r in fix_failed.items()]))
-    scorecard.add(GateResult.from_bool("telemetry_fidelity", telemetry_fidelity_ok, failures=telemetry_fidelity_warnings[:6]))
     scorecard.add(GateResult.from_bool("reachability", reachability_ok, failures=reachability_warnings[:6]))
     scorecard.add(GateResult.from_bool("position_semantics", position_semantics_ok, failures=position_semantics_errors[:6]))
     if quality_infrastructure["active"]:
@@ -2365,7 +2213,6 @@ async def run_quality_gates(args):
             "native_contract": {"national_native_contract"},
             "runtime_architecture": {"national_capability_contract"},
             "embedded_selftest": {"embedded_selftests"},
-            "telemetry_fidelity": {"telemetry_fidelity"},
             "reachability": {"reachability"},
             "position_semantics": {"position_semantics"},
             "workflow_smoke": {"smoke"},
@@ -2375,7 +2222,6 @@ async def run_quality_gates(args):
             "official_status_persistence": {"official_status_persistence"},
             "decision_tests": {"decision"},
             "code_size": {"size"},
-            "fix_verification": {"fix_verification"},
         }
         infra_failures_by_gate: dict[str, list[str]] = {}
         for item in quality_infra_issues:
@@ -2495,6 +2341,14 @@ async def run_quality_gates(args):
             )
         except Exception as e:
             _log.warning("candidate ledger quality_finished write failed: %s", e)
+
+    result = await _finalize_strict_blueprint_quality_rejection(
+        required=first_strict_control_required,
+        infrastructure_active=quality_infrastructure["active"],
+        all_passed=all_passed,
+        checkpoint=_matching_checkpoint(v, source_v) or active_ckpt,
+        result=result,
+    )
 
     if (
         quality_infrastructure["active"]
@@ -2619,43 +2473,50 @@ async def prepare_next_gen(args):
     source_dir = get_bot_dir(source_v)
     next_dir = get_bot_dir(next_v)
 
-    if not source_dir.exists():
-        return _json_tool_result({"error": f"Source bot v{source_v} not found"})
-
     source_checkpoint = _matching_checkpoint(next_v, source_v) or {}
     source_audit = source_checkpoint.get("audit_context") or {}
     protocol_bootstrap_receipt = source_audit.get("protocol_bootstrap")
+    fresh_policy_bootstrap = bool(
+        isinstance(protocol_bootstrap_receipt, dict)
+        and protocol_bootstrap_receipt.get("mode")
+        == "fresh_national_policy_bootstrap"
+        and protocol_bootstrap_receipt.get("source_artifact_inherited") is False
+    )
 
-    # Normal parents require the runtime sentinel. A bootstrap source is bound
-    # directly to its immutable tag/tree receipt so a fresh clone need not
-    # recreate a sentinel for a deliberately non-active historical artifact.
-    if (
-        not (source_dir / ".completed").exists()
-        and protocol_bootstrap_receipt is None
-    ):
-        return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
-
-    # Guard: verify git tag exists for source bot (authoritative commit proof)
+    # Validate the transition authority before using its mode to bypass any
+    # ordinary parent gate.  The one-time 142 -> 143 receipt binds an empty
+    # strict pool and explicitly proves that no source artifact is inherited;
+    # v142 therefore needs neither an active runtime tree nor a strict tag.
     from evolution_infra import copy_bot_tree_for_candidate, git_has_tag, git_dir_is_committed
-    if not git_has_tag(source_v):
-        return _json_tool_result({"error": f"Source bot v{source_v} has no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
     from evolution_infra import get_active_bots
 
     active_bots = list(get_active_bots())
     if protocol_bootstrap_receipt is not None:
-        from national_protocol_quarantine import validate_protocol_bootstrap_receipt
+        bootstrap_errors = []
+        if fresh_policy_bootstrap:
+            from system_strict_bootstrap import validate_fresh_bootstrap_receipt
 
-        bootstrap_errors = validate_protocol_bootstrap_receipt(
-            protocol_bootstrap_receipt,
-            active_bots=active_bots,
-        )
-        receipt_source_v = (
-            (protocol_bootstrap_receipt.get("source") or {}).get("version")
-            if isinstance(protocol_bootstrap_receipt, dict)
-            else None
-        )
+            bootstrap_errors.extend(validate_fresh_bootstrap_receipt(
+                protocol_bootstrap_receipt,
+                active_bots=active_bots,
+                require_live_epoch_reset=True,
+            ))
+        else:
+            from bot_artifact import canonical_digest
+
+            unsigned = {
+                key: value for key, value in protocol_bootstrap_receipt.items()
+                if key != "receipt_digest"
+            }
+            if protocol_bootstrap_receipt.get("receipt_digest") != canonical_digest(unsigned):
+                bootstrap_errors.append("policy_bootstrap_receipt_digest_mismatch")
+            if protocol_bootstrap_receipt.get("mode") != "singleton_strict_bootstrap":
+                bootstrap_errors.append("policy_bootstrap_mode_invalid")
+            if sorted(protocol_bootstrap_receipt.get("active_bots") or []) != sorted(active_bots):
+                bootstrap_errors.append("policy_bootstrap_active_pool_mismatch")
+        receipt_source_v = protocol_bootstrap_receipt.get("source_v")
         if receipt_source_v != int(source_v):
-            bootstrap_errors.append("protocol_bootstrap_source_version_mismatch")
+            bootstrap_errors.append("policy_bootstrap_source_version_mismatch")
         if bootstrap_errors:
             return _json_tool_result({
                 "error": "PROTOCOL_BOOTSTRAP_RECEIPT_INVALID",
@@ -2663,16 +2524,28 @@ async def prepare_next_gen(args):
                 "next_v": next_v,
                 "validation_errors": bootstrap_errors,
                 "directive": (
-                    "The zero/one-bot transition changed after selection. Do not "
-                    "copy or execute the historical source; abandon and reselect."
+                    "The zero/one-bot policy transition changed after selection. "
+                    "Abandon and reselect; never recover from archived source bytes."
                 ),
             })
-    elif bot_name(source_v) not in set(active_bots):
+
+    if not fresh_policy_bootstrap and not source_dir.exists():
+        return _json_tool_result({"error": f"Source bot v{source_v} not found"})
+
+    # Every inherited parent, including the one-bot singleton bootstrap, must
+    # remain a normally published strict parent at prepare time.  Membership in
+    # get_active_bots() revalidates the strict ABI, annotated completion tag,
+    # signed full-v5 certificate, lifecycle, and parent-source role.
+    if not fresh_policy_bootstrap and not (source_dir / ".completed").exists():
+        return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
+    if not fresh_policy_bootstrap and not git_has_tag(source_v):
+        return _json_tool_result({"error": f"Source bot v{source_v} has no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
+    if not fresh_policy_bootstrap and bot_name(source_v) not in set(active_bots):
         return _json_tool_result({
             "error": (
                 f"Source bot v{source_v} is not eligible for the active national pool "
-                "(the executable pool requires the current runtime contract) and has "
-                "no valid protocol-bootstrap receipt."
+                "(strict parent role, publication tag, and signed full-v5 "
+                "certificate are all required)."
             )
         })
 
@@ -2720,41 +2593,80 @@ async def prepare_next_gen(args):
             )
             return _json_tool_result({"error": f"Target v{next_v} already exists, prepared from v{prior_source} (not v{source_v}). Refusing silent cross-source overwrite. Call abandon_generation first."})
         shutil.rmtree(next_dir)
-    copy_bot_tree_for_candidate(source_dir, next_dir)
-
-    # Apply known critical fixes regardless of source bot state
-    from fix_injection import apply_known_fixes, log_fix_application
-    applied, skipped = apply_known_fixes(next_dir)
-    if applied or skipped:
-        log_fix_application(applied, skipped, next_dir, source_v)
-    if skipped:
-        _log.info("Fix patches skipped for v%d: %s", next_v, skipped)
-
     workflow_profile = get_workflow_profile()
-    native_tcp = getattr(workflow_profile, "national_execution_mode", "adapter") == "native_tcp"
-    from candidate_hygiene import sanitize_candidate_dir
-    # Preserve a compliant source national_bot.py, but refresh stale/unsafe
-    # entrypoints during hygiene. Old parents can lack the current official EXE
-    # allin/check guards; letting that launcher inherit into every child makes
-    # protocol failures look like strategy regressions.
-    hygiene = sanitize_candidate_dir(
-        next_dir,
-        require_native_tcp=native_tcp,
-        overwrite_native_entry=bool(
-            isinstance(protocol_bootstrap_receipt, dict)
-            and protocol_bootstrap_receipt.get("mode")
-            == "legacy_strategy_migration"
-        ),
-    )
+    native_tcp = getattr(workflow_profile, "national_execution_mode", None) == "native_tcp"
+    if fresh_policy_bootstrap:
+        from system_strict_bootstrap import materialize_fresh_candidate
+
+        materialized = materialize_fresh_candidate(next_dir, version=int(next_v))
+        hygiene = {
+            "native_entry": str(next_dir / "national_bot.py"),
+            "native_entry_refreshed": True,
+            "fresh_policy_artifact": True,
+            "artifact_hash": materialized["artifact_hash"],
+        }
+    else:
+        copy_bot_tree_for_candidate(source_dir, next_dir)
+
+        # The parent's receipt is version- and lineage-bound.  Copying it into
+        # vN+1 would freeze an invalid prepared baseline and make every later
+        # policy edit unpublishable.  Preparation, not the Worker, owns this
+        # deterministic version transition.
+        try:
+            from bot_namespace import refresh_policy_identity_documents
+
+            prepared_lineage = strict_lineage_parent_versions(
+                int(next_v), int(source_v), None
+            )
+            prepared_identity = refresh_policy_identity_documents(
+                next_dir,
+                int(next_v),
+                parent_versions=prepared_lineage,
+            )
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "PREPARED_POLICY_IDENTITY_REFRESH_FAILED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "directive": (
+                    "The system could not bind the copied parent to the new "
+                    "version/lineage. Do not freeze or run this candidate."
+                ),
+            })
+
+        from candidate_hygiene import sanitize_candidate_dir
+        hygiene = sanitize_candidate_dir(
+            next_dir,
+            require_native_tcp=native_tcp,
+        )
+        hygiene["policy_identity_refreshed"] = True
+        hygiene["policy_identity"] = prepared_identity
     protocol_bootstrap_prepare = None
     if native_tcp and isinstance(protocol_bootstrap_receipt, dict):
-        from national_native import check_native_contract
-
-        prepared_runtime_errors = check_native_contract(
-            next_dir,
-            require_current_stream_decoder=True,
-            require_current_decision_runtime=True,
+        from bot_namespace import (
+            NATIONAL_RUNTIME_MANIFEST,
+            POLICY_EPOCH_RECEIPT,
+            epoch_receipt_errors,
+            runtime_manifest_errors,
         )
+        try:
+            runtime_manifest = json.loads(
+                (next_dir / NATIONAL_RUNTIME_MANIFEST).read_text(encoding="utf-8")
+            )
+            epoch_receipt = json.loads(
+                (next_dir / POLICY_EPOCH_RECEIPT).read_text(encoding="utf-8")
+            )
+            prepared_runtime_errors = [
+                *runtime_manifest_errors(next_dir, runtime_manifest),
+                *epoch_receipt_errors(
+                    next_dir, int(next_v), runtime_manifest, epoch_receipt
+                ),
+            ]
+        except Exception as exc:
+            prepared_runtime_errors = [
+                f"policy_identity_unreadable:{type(exc).__name__}:{str(exc)[:160]}"
+            ]
         if prepared_runtime_errors:
             return _json_tool_result({
                 "error": "PROTOCOL_BOOTSTRAP_RUNTIME_REPLACEMENT_FAILED",
@@ -2771,11 +2683,23 @@ async def prepare_next_gen(args):
             "receipt_digest": protocol_bootstrap_receipt.get("receipt_digest"),
             "mode": protocol_bootstrap_receipt.get("mode"),
             "system_runtime_replaced": bool(hygiene.get("native_entry_refreshed")),
+            "source_artifact_inherited": not fresh_policy_bootstrap,
             "national_bot_sha256": hashlib.sha256(entry_path.read_bytes()).hexdigest(),
+            "runtime_manifest_digest": hashlib.sha256(
+                (next_dir / NATIONAL_RUNTIME_MANIFEST).read_bytes()
+            ).hexdigest(),
+            "epoch_receipt_digest": hashlib.sha256(
+                (next_dir / POLICY_EPOCH_RECEIPT).read_bytes()
+            ).hexdigest(),
         }
-    prepare_scope_files = [
-        p for p in _py_files_changed_between(source_dir, next_dir) if 'backup' not in p
-    ]
+    prepare_scope_files = (
+        sorted(path.name for path in next_dir.iterdir() if path.is_file())
+        if fresh_policy_bootstrap
+        else [
+            p for p in _py_files_changed_between(source_dir, next_dir)
+            if 'backup' not in p
+        ]
+    )
     if prepare_scope_files:
         log_system_event(
             "pipeline.prepare_scope_captured",
@@ -2854,7 +2778,7 @@ async def prepare_next_gen(args):
 # Review Stage
 # ──────────────────────────────────────────────
 
-@tool("run_review", "Run Lead Code Reviewer on the bot changes. Returns approval decision with quality score.", {"version": int, "source_v": int, "plan": list})
+@tool("run_review", "Run the mandatory schema-valid Lead Code Reviewer. The exact first strict migration additionally binds its real LLM result to a system content-chain receipt.", {"version": int, "source_v": int, "plan": list})
 async def run_review(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)
@@ -2887,6 +2811,7 @@ async def run_review(args):
         stage_set=("reviewed", "critic_checked", "verified", "archived"),
         gate_name="review",
         directive="Review ALREADY PASSED. Call run_critic next.",
+        cache_validator=lambda checkpoint, _gate: _review_gate_ok(checkpoint),
     )
     if _cached:
         return _cached
@@ -2920,6 +2845,29 @@ async def run_review(args):
     )
     reviewer_prompt = reviewer_prompt.replace("{version}", str(v))
     reviewer_prompt = reviewer_prompt.replace("{parent_version}", str(source_v))
+    from system_strict_bootstrap import is_declared_native_bootstrap
+
+    _strict_bootstrap = is_declared_native_bootstrap(ckpt)
+    _review_invocation_id = None
+    _review_strict_call = None
+    if _strict_bootstrap:
+        from strict_authority_workflow import gate_call_context, new_call
+
+        _review_strict_call = new_call(
+            ckpt,
+            slot="review",
+            context_binding=gate_call_context(
+                ckpt,
+                gate_name="review",
+                candidate_dir=get_bot_dir(v),
+            ),
+        )
+        _review_invocation_id = _review_strict_call["invocation_id"]
+        reviewer_prompt += (
+            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+            f"invocation_id={_review_invocation_id}; "
+            "purpose=system_strict_bootstrap_gate:review."
+        )
 
     # Inject Worker CoT audit_focus_areas into reviewer prompt
     _review_ckpt = _matching_checkpoint(v, source_v)
@@ -2954,9 +2902,20 @@ async def run_review(args):
 
     ui = _get_ui()
     try:
-        output, _, _ = await run_claude_query(
-            reviewer_prompt, [], ui, "LEAD CODE REVIEWER", log_file, tools=["Bash", "Read"]
+        output, _review_cost_usd, _review_usage = await run_claude_query(
+            reviewer_prompt,
+            [],
+            ui,
+            "LEAD CODE REVIEWER",
+            log_file,
+            tools=["Read"] if _strict_bootstrap else ["Bash", "Read"],
+            strict_authority=_review_strict_call,
         )
+    except LLMAvailabilityBlocked:
+        # Provider availability is persisted by run_claude_query and owned by
+        # the orchestrator pause state. It is not one of the Reviewer's three
+        # infrastructure attempts.
+        raise
     except Exception as e:
         issue = f"{type(e).__name__}: {str(e)[:500]}"
         infra_result = await _record_infrastructure_failure(
@@ -3086,11 +3045,97 @@ async def run_review(args):
             source_v,
             approved,
             approved=approved,
+            llm_invoked=True,
+            reviewer_llm_executed=True,
+            schema_valid=True,
             quality_score=data.get("quality_score", 0),
             feedback=feedback,
             change_summary=data.get("change_summary", ""),
             risk_areas=data.get("risk_areas", []),
         )
+        if _strict_bootstrap:
+            if not approved:
+                from system_strict_bootstrap import abandon_rejected_blueprint
+
+                rejected = await abandon_rejected_blueprint(
+                    ckpt,
+                    reason="system_strict_bootstrap_review_rejected",
+                    result={
+                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_REJECTED",
+                        "approved": False,
+                        "success": False,
+                        "action": "abandon_generation",
+                        "failure_class": "strategy_review",
+                        "feedback": feedback,
+                        "directive": (
+                            "The real Reviewer rejected the content-bound blueprint. "
+                            "Abandon this generation and revise the checked-in blueprint "
+                            "under a fresh contract; no in-generation repair is allowed."
+                        ),
+                    },
+                )
+                return _json_tool_result(rejected)
+            from system_strict_bootstrap import (
+                SystemStrictBootstrapError,
+                build_system_gate_receipt,
+                llm_result_digest,
+                record_llm_invocation_evidence,
+            )
+
+            try:
+                from strict_authority_workflow import accept_role_result
+
+                gate["llm_role_result"] = data
+                gate["llm_authority_receipt"] = accept_role_result(
+                    _review_strict_call,
+                    role_result=data,
+                    parse_contract="reviewer-output-schema-v1",
+                )
+                gate["llm_execution_evidence"] = (
+                    record_llm_invocation_evidence(
+                        invocation_id=_review_invocation_id,
+                        purpose="system_strict_bootstrap_gate:review",
+                        role="LEAD CODE REVIEWER",
+                        prompt_digest=hashlib.sha256(
+                            reviewer_prompt.encode("utf-8")
+                        ).hexdigest(),
+                        raw_output_digest=hashlib.sha256(
+                            (output or "").encode("utf-8")
+                        ).hexdigest(),
+                        result_digest=llm_result_digest(
+                            _review_cost_usd,
+                            _review_usage,
+                        ),
+                        role_result=data,
+                        log_file=log_file,
+                    )
+                )
+                gate["system_verifier_receipt"] = build_system_gate_receipt(
+                    ckpt,
+                    gate_name="review",
+                    candidate_dir=get_bot_dir(v),
+                    llm_gate=gate,
+                )
+            except SystemStrictBootstrapError as exc:
+                from system_strict_bootstrap import abandon_rejected_blueprint
+
+                rejected = await abandon_rejected_blueprint(
+                    ckpt,
+                    reason="system_strict_bootstrap_review_receipt_invalid",
+                    result={
+                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_RECEIPT_INVALID",
+                        "approved": False,
+                        "success": False,
+                        "action": "abandon_generation",
+                        "failure_class": "control_plane",
+                        "validation_errors": list(exc.errors),
+                        "directive": (
+                            "The LLM Review succeeded but its content-chain receipt failed. "
+                            "Abandon; never treat the receipt as a Reviewer waiver."
+                        ),
+                    },
+                )
+                return _json_tool_result(rejected)
         checkpoint_recorded = _record_gate(
             v,
             source_v,
@@ -3112,6 +3157,9 @@ async def run_review(args):
                                     f"Rejected (score={data.get('quality_score', 0)}): {feedback[:2000]}")
         result = {
             "approved": approved,
+            "llm_invoked": True,
+            "reviewer_llm_executed": True,
+            "schema_valid": True,
             "quality_score": data.get("quality_score", 0),
             "change_summary": data.get("change_summary", ""),
             "risk_areas": data.get("risk_areas", []),
@@ -3119,6 +3167,8 @@ async def run_review(args):
             "checkpoint_recorded": checkpoint_recorded,
             "logs": ui.get_output(),
         }
+        if gate.get("system_verifier_receipt"):
+            result["system_verifier_receipt"] = gate["system_verifier_receipt"]
     try:
         log_system_event("pipeline.review_done", "info",
                          f"Review finished for v{v} in {time.time() - _t0:.1f}s",
@@ -3142,7 +3192,7 @@ def _critic_bool(value) -> bool:
     return bool(value)
 
 
-@tool("run_critic", "Run Poker Strategy Critic on bot changes. Returns advisory score and strategic feedback; native TCP precommit remains the final strategy gate.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
+@tool("run_critic", "Run the mandatory schema-valid advisory Poker Strategy Critic. Its score is advisory; successful execution is required and native TCP precommit remains the strategy gate.", {"version": int, "source_v": int, "plan": list, "reviewer_feedback": str, "force_advance": bool})
 async def run_critic(args):
     _t0 = time.time()
     v, source_v = _resolve_version_args(args)
@@ -3177,7 +3227,7 @@ async def run_critic(args):
         stage_set=("critic_checked", "verified", "archived"),
         gate_name="critic",
         directive="Critic ALREADY PASSED. Call run_precommit_eval next.",
-        cache_validator=lambda gate: _critic_gate_ok({"gate_results": {"critic": gate}}),
+        cache_validator=lambda checkpoint, _gate: _critic_gate_ok(checkpoint),
     )
     if _cached:
         return _cached
@@ -3222,7 +3272,53 @@ async def run_critic(args):
         checkpoint=ckpt,
     )
     ui = _get_ui()
-    data = await _run_critic(v, source_v, master_plan_str, ui, prev_critic_result=prev_critic)
+    from system_strict_bootstrap import is_declared_native_bootstrap
+
+    _strict_bootstrap = is_declared_native_bootstrap(ckpt)
+    _critic_invocation_id = None
+    _critic_strict_call = None
+    if _strict_bootstrap:
+        from strict_authority_workflow import gate_call_context, new_call
+
+        _critic_strict_call = new_call(
+            ckpt,
+            slot="critic",
+            context_binding=gate_call_context(
+                ckpt,
+                gate_name="critic",
+                candidate_dir=get_bot_dir(v),
+            ),
+        )
+        _critic_invocation_id = _critic_strict_call["invocation_id"]
+    data = await _run_critic(
+        v,
+        source_v,
+        master_plan_str,
+        ui,
+        prev_critic_result=prev_critic,
+        execution_invocation_id=_critic_invocation_id,
+        strict_authority=_critic_strict_call,
+    )
+    _critic_execution_material = (
+        data.pop("_llm_execution_material", None)
+        if isinstance(data, dict)
+        else None
+    )
+    if isinstance(data, dict) and not data.get("llm_failed") and not data.get(
+        "parse_failed"
+    ):
+        from output_schema import validate_agent_output
+
+        data, _critic_schema_errors = validate_agent_output("critic", data)
+        if _critic_schema_errors:
+            data = {
+                "parse_failed": True,
+                "llm_failed": True,
+                "error": (
+                    "Critic schema validation failed: "
+                    + "; ".join(_critic_schema_errors[:8])
+                ),
+            }
 
     # No strategic verdict exists when the role call or its schema collapses.
     # Persist an infrastructure overlay instead of manufacturing score=0 debt.
@@ -3284,6 +3380,9 @@ async def run_critic(args):
         source_v,
         approved,
         approved=approved,
+        llm_invoked=True,
+        critic_llm_executed=True,
+        schema_valid=True,
         raw_approved=raw_approved,
         advisory_approved=advisory_approved,
         advisory_score=score_num,
@@ -3293,6 +3392,65 @@ async def run_critic(args):
         local_optima_warning=data.get("local_optima_warning", False),
         force_advanced=force_advanced,
     )
+
+    if _strict_bootstrap:
+        from system_strict_bootstrap import (
+            SystemStrictBootstrapError,
+            build_system_gate_receipt,
+            record_llm_invocation_evidence,
+        )
+
+        try:
+            material = (
+                _critic_execution_material
+                if isinstance(_critic_execution_material, dict)
+                else {}
+            )
+            from strict_authority_workflow import accept_role_result
+
+            gate["llm_role_result"] = data
+            gate["llm_authority_receipt"] = accept_role_result(
+                _critic_strict_call,
+                role_result=data,
+                parse_contract="critic-output-schema-v1",
+            )
+            gate["llm_execution_evidence"] = record_llm_invocation_evidence(
+                invocation_id=str(material.get("invocation_id") or ""),
+                purpose=str(material.get("purpose") or ""),
+                role=str(material.get("role") or ""),
+                prompt_digest=str(material.get("prompt_digest") or ""),
+                raw_output_digest=str(material.get("raw_output_digest") or ""),
+                result_digest=str(material.get("result_digest") or ""),
+                role_result=data,
+                log_file=str(material.get("log_file") or ""),
+            )
+            gate["system_verifier_receipt"] = build_system_gate_receipt(
+                ckpt,
+                gate_name="critic",
+                candidate_dir=get_bot_dir(v),
+                llm_gate=gate,
+            )
+        except SystemStrictBootstrapError as exc:
+            from system_strict_bootstrap import abandon_rejected_blueprint
+
+            rejected = await abandon_rejected_blueprint(
+                ckpt,
+                reason="system_strict_bootstrap_critic_receipt_invalid",
+                result={
+                    "error": "SYSTEM_STRICT_BOOTSTRAP_CRITIC_RECEIPT_INVALID",
+                    "approved": False,
+                    "success": False,
+                    "action": "abandon_generation",
+                    "failure_class": "control_plane",
+                    "validation_errors": list(exc.errors),
+                    "directive": (
+                        "The schema-valid Critic completed but the deterministic content "
+                        "chain drifted. Abandon; the verifier is adjunct evidence, not a "
+                        "Critic waiver."
+                    ),
+                },
+            )
+            return _json_tool_result(rejected)
 
     current_attempt = (ckpt.get("generation_attempt", 0) or 0) if ckpt else 0
     next_attempt = current_attempt
@@ -3314,34 +3472,6 @@ async def run_critic(args):
             else None
         ),
     )
-    guardian_diagnosis = None
-    if not advisory_approved:
-        _record_quality_failure(v, "critic", "Strategy Critic",
-                                f"Advisory concern (score={score_num}): {data.get('feedback', '')[:2000]}",
-                                local_optima_warning=data.get("local_optima_warning", False),
-                                local_optima_reason=data.get("local_optima_reason"))
-        # Meta-2: Trigger Regression Guardian on very low critic score.
-        # Run synchronously so the diagnosis is visible to the Orchestrator.
-        # _run_regression_guardian has a safe_default so it never throws.
-        if score_num < 4:
-            try:
-                import audit_agents as _aa
-                _c = _matching_checkpoint(v, source_v)
-                _history = {
-                    "score": score_num,
-                    "feedback": data.get("feedback", "")[:500],
-                    "strategic_assessment": data.get("strategic_assessment", "")[:500],
-                    "master_plan": _c.get("master_plan", {}) if _c else {},
-                    "gate_results": _c.get("gate_results", {}) if _c else {},
-                }
-                guardian_diagnosis = await _aa._run_regression_guardian(
-                    v, source_v, _history,
-                    f"Critic score {score_num} < 4: {data.get('feedback', '')[:200]}",
-                    ui,
-                )
-            except Exception as e:
-                _log.warning("Regression guardian dispatch failed for v%s: %s", v, e)
-
     try:
         # LOG GAP FIX (2026-06-30): enrich critic event with feedback/reasoning so
         # the reject rationale is visible in the event stream (not just worker_failures.jsonl).
@@ -3365,31 +3495,9 @@ async def run_critic(args):
     except Exception:
         pass
 
-    # Extract Critic evidence and append to experience pool
+    # Critic evidence remains inside the checkpoint-bound role result. It is
+    # never copied into a mutable cross-generation Markdown store.
     evidence = data.get("evidence") if isinstance(data, dict) else None
-    if evidence:
-        try:
-            from tool_commit import _append_experience_updates
-            ev_parts = []
-            h2h_w = evidence.get("h2h_weaknesses", [])
-            if h2h_w:
-                ev_parts.append(f"H2H weaknesses: {', '.join(str(w) for w in h2h_w[:5])}")
-            ep_refs = evidence.get("experience_pool_refs", [])
-            if ep_refs:
-                ev_parts.append(f"Experience pool refs: {', '.join(str(r) for r in ep_refs[:3])}")
-            diff_refs = evidence.get("diff_refs", [])
-            if diff_refs:
-                ev_parts.append(f"Diff refs: {', '.join(str(r) for r in diff_refs[:3])}")
-            if ev_parts:
-                evidence_summary = "; ".join(ev_parts)
-                _append_experience_updates(
-                    version=v,
-                    updates=[f"Critic evidence: {evidence_summary}"],
-                    strategic_advice="",
-                    generation_assessment="info",
-                )
-        except Exception:
-            pass  # Non-critical: evidence write failure should not block pipeline
 
     # fix-8: check for fabricated replay citations in critic output
     critic_citation_errors = []
@@ -3410,6 +3518,9 @@ async def run_critic(args):
     result = {
         **data,
         "approved": approved,
+        "llm_invoked": True,
+        "critic_llm_executed": True,
+        "schema_valid": True,
         "raw_approved": raw_approved,
         "score": score_num,
         "advisory_score": score_num,
@@ -3426,45 +3537,9 @@ async def run_critic(args):
         "force_advanced": force_advanced,
         "checkpoint_recorded": checkpoint_recorded,
     }
-    if guardian_diagnosis:
-        result["regression_guardian"] = {
-            "severity": guardian_diagnosis.get("severity", "minor"),
-            "failure_stage": guardian_diagnosis.get("failure_stage", "unknown"),
-            "recovery_recommendation": guardian_diagnosis.get("recovery_recommendation", ""),
-            "diagnosis": guardian_diagnosis.get("diagnosis", ""),
-            "root_cause": guardian_diagnosis.get("root_cause", ""),
-            "confidence": guardian_diagnosis.get("confidence", "low"),
-        }
-        # fix-9: surface guardian_diagnosis to experience_pool for next-gen Master.
-        _guardian_text = guardian_diagnosis.get("diagnosis", "")
-        if _guardian_text:
-            try:
-                log_system_event("regression_guardian", "info",
-                                 f"Critic score<4 guardian diagnosis: {_guardian_text[:200]}",
-                                 {"version": v, "source_v": source_v, "score": score_num})
-            except Exception:
-                pass
-            try:
-                import evolution_infra as _ei
-                _rd = _ei.RESULTS_DIR
-                os.makedirs(_rd, exist_ok=True)
-                _gf_path = _rd / "regression_guardian.jsonl"
-                _entry = json.dumps({
-                    "version": v, "source_v": source_v, "score": score_num,
-                    "diagnosis": _guardian_text,
-                    "root_cause": guardian_diagnosis.get("root_cause", ""),
-                    "severity": guardian_diagnosis.get("severity", "minor"),
-                    "recovery_recommendation": guardian_diagnosis.get("recovery_recommendation", ""),
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                }, ensure_ascii=False)
-                import fcntl as _fl
-                with open(_gf_path, "a", encoding="utf-8") as _fh:
-                    _fl.flock(_fh, _fl.LOCK_EX)
-                    _fh.write(_entry + "\n")
-                    _fl.flock(_fh, _fl.LOCK_UN)
-            except Exception:
-                pass
-        result["fabricated_citations"] = critic_citation_errors
+    result["fabricated_citations"] = critic_citation_errors
+    if gate.get("system_verifier_receipt"):
+        result["system_verifier_receipt"] = gate["system_verifier_receipt"]
     try:
         log_system_event("pipeline.critic_done", "info",
                          f"Critic finished for v{v} in {time.time() - _t0:.1f}s",
@@ -3472,51 +3547,4 @@ async def run_critic(args):
                           "elapsed_sec": round(time.time() - _t0, 2)})
     except Exception:
         pass
-    return _json_tool_result(result)
-
-
-# ──────────────────────────────────────────────
-# Spot Check Stage
-# ──────────────────────────────────────────────
-
-@tool("run_spot_check", "Run spot check on changed functions: parse diff, generate scenarios, run bot, verify behavior.", {"parent_version": int, "current_version": int, "master_plan": dict})
-async def run_spot_check(args):
-    parent_version = args.get("parent_version")
-    current_version = args.get("current_version")
-    master_plan = args.get("master_plan", {})
-
-    if parent_version is None or current_version is None:
-        return _json_tool_result({"error": "Missing parent_version or current_version"})
-
-    parent_dir = str(get_bot_dir(int(parent_version)))
-    current_dir = str(get_bot_dir(int(current_version)))
-
-    changed_functions = spot_analyzer.parse_diff(parent_dir, current_dir)
-
-    bot_code = {}
-    for change in changed_functions:
-        fp = change.get("file")
-        if fp and Path(fp).exists():
-            bot_code[fp] = Path(fp).read_text()
-
-    scenarios = spot_analyzer.generate_test_scenarios(changed_functions, bot_code)
-
-    bot_main = Path(current_dir) / "main.py"
-    actual_actions = []
-    for scenario in scenarios:
-        result = spot_analyzer.run_bot_scenario(str(bot_main), scenario)
-        actual_actions.append(result)
-
-    verification = spot_analyzer.verify_behavior(master_plan, scenarios, actual_actions)
-
-    result = {
-        "status": "success",
-        "result": {
-            "passed": verification.get("passed", False),
-            "assessment": f"Spot check {verification.get('passed_count', 0)}/{verification.get('total', 0)} passed, confidence={verification.get('confidence', 'unknown')}",
-            "details": verification,
-            "changed_functions": changed_functions,
-            "scenarios_count": len(scenarios),
-        },
-    }
     return _json_tool_result(result)

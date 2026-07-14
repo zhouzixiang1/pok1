@@ -445,6 +445,9 @@ usage() {
     cat <<EOF
 Pok Web 服务管理工具
 
+管理 national_tcp_policy_v1 Web/API 控制面的进程生命周期。本工具不会
+将归档结果、Arena 诊断或官方 EXE 筹码提升为强度/评级证据。
+
 用法: $0 <command> [options]
 
 Commands:

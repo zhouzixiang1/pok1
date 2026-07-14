@@ -1,4 +1,4 @@
-# National Native Runtime Telemetry
+# National TCP Policy Runtime Telemetry
 
 The national TCP path records two independent timing sources for every bot
 action:
@@ -6,12 +6,12 @@ action:
 - `server_action_latency`: elapsed time from the local server requesting an
   action until it receives a wire action. This includes scheduling, transport,
   strategy work, and any wire-layer delay.
-- `bot_decision_latency`: elapsed strategy time reported by the generated
+- `bot_decision_latency`: elapsed policy time reported by the generated
   native entrypoint between `DECIDE start` and `DECIDE done`.
 
 The clocks must remain separate. Their difference is useful for diagnosing
 transport and harness overhead; combining them would hide whether a timeout
-was caused by strategy code or communication.
+was caused by policy code or communication.
 
 ## Data Flow
 
@@ -24,9 +24,10 @@ was caused by strategy code or communication.
    worker CPU, exhaustion, and termination fields.
 4. `web/core/national_native.py` puts the compact summary into the national
    acceptance report and quality scorecard.
-5. Temporary local bot logs are deleted after parsing. Full raw communication
-   and decision logs are retained only by the official EXE evidence bundle,
-   where they are needed for protocol forensics.
+5. Temporary logs from local strength runs are deleted after parsing. A Web
+   Arena session separately retains its own wire/decision logs with permanent
+   `diagnostic_only` authority, while the official EXE evidence bundle retains
+   the formal compliance logs. Neither store is rating evidence.
 
 The local path disables the official action delay, so local strength runs do
 not spend 0.30 seconds per action. The official EXE path keeps that delay and
@@ -57,16 +58,18 @@ A strategy should finish cheap/obvious decisions early and reserve long formal
 refinement for uncertainty-sensitive high-EV decisions; spending the maximum
 on every action is a throughput defect.
 
-## Event-State And Anytime Contract
+## Decision Context And Anytime Contract
 
-Generated runtime v7 separates two authoritative snapshots:
+Generated runtime v9 publishes one schema-versioned authoritative
+`decision_context`:
 
-- `hand_runtime` is rebuilt by the socket owner from the current hand event
-  stream. It carries the repaired pot/stacks/street contributions, stable
+- `decision_context.hand`, `.betting`, `.history`, and `.line` are built by the
+  socket owner from the current raw event stream. They carry the repaired
+  pot/stacks/street contributions, stable
   preflop aggressor and spot, semantic checked-through street summaries,
-  `can_donk`, `can_delayed_probe`, SPR, and pot odds. Strategy modules must not
-  reconstruct these facts from archived requests.
-- `opponent_runtime` is connection-level bounded memory. It records relayed and
+  `can_donk`, `can_delayed_probe`, SPR, pot odds, and legal intent bounds.
+  Candidate modules do not reconstruct these facts from another request model.
+- `decision_context.opponent` is connection-level bounded memory. It records relayed and
   boundary-inferred terminal responses, per-street raise/all-in responses,
   real river overcall samples, and a prior-smoothed `showdown_range`. The latter
   is explicitly labelled `reached_showdown_only`. Its prior is pinned to the
@@ -83,18 +86,18 @@ zero-chip `call` that closes a postflop check-through.
 Refinement telemetry distinguishes candidate-reported metadata from trusted
 runtime evidence. `reported_sample_count`, confidence, and completion are
 diagnostic only. The system worker owns iterator `next()` counts, process CPU,
-elapsed time, true `StopIteration`, termination reason, and every sanitized
-action in the trajectory. A valid strategy publishes a legal baseline within
+elapsed time, true `StopIteration`, termination reason, and every validated
+typed intent in the trajectory. A valid policy publishes a legal baseline within
 250 ms, performs at least eight system-observed refinement steps or exhausts a
 finite batch of that size, scales under a longer budget (unless both tiers
-prove the same finite exhaustion), and changes the sanitized baseline in at
+prove the same finite exhaustion), and changes the validated baseline in at
 least one deterministic scenario. A single `complete=True` yield cannot pass.
 For action-profile, terminal-response, showdown-range, donk, and delayed-probe
 influence, at least one completed counterfactual tier must change the final
-sanitized wire action. A transient intermediate yield is diagnostic evidence,
+validated typed intent. A transient intermediate yield is diagnostic evidence,
 not proof that live behavior changed.
 
-The strategy worker is non-daemon so a candidate may use a bounded fixed CPU
+The policy worker is non-daemon so a candidate may use a bounded fixed CPU
 pool. On POSIX it owns a process group; on Windows the owner uses tree-aware
 termination. The socket owner kills the whole compute tree at the action
 deadline and marks termination successful only after the worker has exited and
@@ -109,4 +112,4 @@ is legal, and `docs/official-terminal-settlement-oracle-2026-07-11.md` proves a
 natural hand-70 finish may have 70 starts but only 69 paired TCP settlements.
 That terminal form passes only through the strict, hash-bound THP cross-proof
 for `STATE:0..69`. Official/THP outcomes retain zero weight in ratings, H2H,
-source selection, precommit strength, and experience.
+source selection, precommit strength, and prompt evidence.

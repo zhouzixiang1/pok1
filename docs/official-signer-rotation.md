@@ -1,9 +1,10 @@
 # Official certifier signer rotation
 
-The epoch-1 official-certifier private key must be treated as exposed.  Its
+The epoch-1 official-certifier private key must be treated as exposed. Its
 public key remains in `web/core/official_certifier_allowed_signers` solely so
-the application can validate the exact, policy-pinned national_v141 bootstrap
-chain.  Application policy rejects every other epoch-1 record even when its
+the application can validate the exact historical national_v141 certificate
+and ledger chain. That chain has no executable bootstrap authority. Application
+policy rejects every other epoch-1 record even when its
 OpenSSH signature is cryptographically valid.
 
 Epoch 2 was activated on the trusted host on 2026-07-12.  The tracked policy is
@@ -57,7 +58,7 @@ implemented and tested, the operator account itself remains trusted.
 The active trust boundary therefore has the following behavior:
 
 - existing pinned v141 certificate, archive receipt, ledger sequence 1, signed
-  head, and bootstrap root remain readable;
+  head, and historical validation metadata remain readable but non-executable;
 - only the exact policy-pinned epoch-1 records validate under the retired key;
 - all new certificate, ledger-entry, and ledger-head payloads must bind epoch 2,
   its fingerprint, and the tracked policy digest; and
@@ -84,11 +85,11 @@ raise SystemExit(0 if signing.get("ok") and ledger.get("valid") else 1)
 PY
 ```
 
-Activation is not permission to bypass the normal official workflow.  The
-first frozen strict candidate still uses the explicit, one-time
-`bootstrap-full` command and the repository-pinned v141 root.  Normal candidates
-continue to use `full`; neither path may be invoked merely to test signer
-readiness.
+Activation is not permission to bypass the normal official workflow. The first
+strict candidate uses the explicit, one-time `bootstrap-first-strict` command
+and the current system-owned `first_strict_control_v1`; archived v141 bytes are
+never an input. Normal candidates continue to use `full`; neither path may be
+invoked merely to test signer readiness.
 
 ## Rotation procedure for a future epoch
 

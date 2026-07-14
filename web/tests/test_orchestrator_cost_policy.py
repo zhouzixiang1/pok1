@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -267,12 +268,26 @@ def test_prepare_scope_is_stable_and_checkpoint_adopts_exact_identity(
     monkeypatch,
 ):
     policy, _ledger = isolated_cost_policy
+    import checkpoint_schema
     import evolution_infra
     import generation_scheduler
 
     checkpoint_path = tmp_path / "pipeline_state.json"
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", checkpoint_path)
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            eligible=True,
+            version=143,
+            issues=(),
+            runtime_manifest={"epoch": "national_tcp_policy_v1"},
+            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": 143},
+            publication_identity={"published": True, "version": 143},
+            certificate_digest="a" * 64,
+        ),
+    )
 
     first = generation_scheduler._bind_prepare_generation_cost_scope(151)
     rebound = generation_scheduler._bind_prepare_generation_cost_scope(151)
@@ -281,7 +296,7 @@ def test_prepare_scope_is_stable_and_checkpoint_adopts_exact_identity(
 
     assert evolution_infra.write_pipeline_checkpoint(
         151,
-        142,
+        143,
         "selected",
         workflow_run_id=first,
     )

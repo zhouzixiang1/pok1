@@ -12,7 +12,11 @@ from pathlib import Path
 
 log = logging.getLogger("pok.tools")
 
-from bot_namespace import bot_name as active_bot_name, parse_bot_version
+from bot_namespace import (
+    NATIONAL_ENTRYPOINT,
+    bot_name as active_bot_name,
+    parse_bot_version,
+)
 from evolution_core import (
     BaseUI,
     get_active_bots,
@@ -24,58 +28,6 @@ from evolution_core import (
 from evolution_infra import _target_rel, read_locked_json
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-
-
-# ──────────────────────────────────────────────
-# Phase 3: FAMOU nemesis slot (advisory probe opponent)
-# ──────────────────────────────────────────────
-# When True, _select_precommit_opponents appends a single "nemesis_probe"
-# opponent (the parent's worst H2H matchup among active bots, win_rate < 0.40
-# with games >= PRECOMMIT_NEMESIS_MIN_GAMES) to the parent/top/weak list. The
-# nemesis matchup is run for TELEMETRY ONLY: run_precommit_eval excludes it
-# from both the blockers list and the aggregate-net-chips regression gate
-# (tool_eval.py checks reason == "nemesis_probe" at both accumulate points).
-# So flipping this flag ON cannot change the commit verdict — it only adds an
-# observation about a probable inherited weakness. Default ON because it is
-# non-blocking.
-PRECOMMIT_NEMESIS_SLOT = True
-PRECOMMIT_NEMESIS_MIN_GAMES = 15         # raised from 4: filter low-sample h2h noise
-PRECOMMIT_NEMESIS_WINRATE_THRESHOLD = 0.40  # only probe a real weakness
-
-
-def _find_nemesis_opponent(subject_name, active_list, h2h, min_games=PRECOMMIT_NEMESIS_MIN_GAMES,
-                           exclude=None):
-    """Return (opponent_name, win_rate) of subject_name's toughest active opponent.
-
-    Scans the on-disk head_to_head for the subject's lowest win-rate opponent
-    among `active_list` with at least `min_games` played. Used by the nemesis
-    probe to surface an inherited weakness: the candidate (just committed) has
-    no h2h yet, so we probe the PARENT's nemesis instead (weakness inheritance
-    is the FAMOU co-evolution pressure we want to measure).
-
-    `exclude` (optional set) skips opponents already chosen for other slots
-    (parent/top/weak). This keeps the nemesis a DISTINCT opponent from the
-    blocking weak-slot pick — the weak slot already covers the single worst
-    matchup as a regression gate, so the nemesis probe adds value by surfacing
-    the NEXT-worst opponent as telemetry.
-
-    Returns None when no qualifying opponent exists (all remaining opponents
-    above the noise floor, insufficient games, or every candidate excluded).
-    """
-    excluded = exclude or set()
-    best = None  # (win_rate, opp)
-    for opp in active_list:
-        if opp == subject_name or opp in excluded:
-            continue
-        stats = _h2h_stats(subject_name, opp, h2h)
-        if not stats or stats["games"] < min_games:
-            continue
-        wr = stats["win_rate"]
-        if best is None or wr < best[0]:
-            best = (wr, opp)
-    if best is None:
-        return None
-    return (best[1], best[0])
 
 
 # ──────────────────────────────────────────────
@@ -530,15 +482,13 @@ def _checkpoint_gate(checkpoint, gate_name):
 
 
 def _active_workflow_profile_info():
-    try:
-        from workflow_profiles import get_workflow_profile
-        profile = get_workflow_profile()
-        return (
-            getattr(profile, "profile_id", ""),
-            getattr(profile, "national_execution_mode", "adapter"),
-        )
-    except Exception:
-        return "", "adapter"
+    from workflow_profiles import get_workflow_profile
+
+    profile = get_workflow_profile()
+    return (
+        getattr(profile, "profile_id", ""),
+        getattr(profile, "national_execution_mode", "native_tcp"),
+    )
 
 
 def _gate_matches_active_workflow(checkpoint, gate):
@@ -583,22 +533,72 @@ def _quality_gate_ok(checkpoint):
 
 
 def _review_gate_ok(checkpoint):
-    return _checkpoint_gate(checkpoint, "review").get("approved") is True
+    review = _checkpoint_gate(checkpoint, "review")
+    if (
+        review.get("approved") is not True
+        or review.get("llm_failed")
+        or review.get("parse_failed")
+        or review.get("llm_invoked") is not True
+        or review.get("reviewer_llm_executed") is not True
+        or review.get("schema_valid") is not True
+    ):
+        return False
+    try:
+        from system_strict_bootstrap import is_declared_native_bootstrap
+
+        declared = is_declared_native_bootstrap(checkpoint)
+    except Exception:
+        declared = False
+    if declared:
+        try:
+            from system_strict_bootstrap import validate_system_gate_receipt
+
+            return not validate_system_gate_receipt(
+                checkpoint,
+                gate_name="review",
+            )
+        except Exception:
+            return False
+    return True
 
 
 def _critic_gate_ok(checkpoint):
     critic = _checkpoint_gate(checkpoint, "critic")
-    # The Critic is an advisory LLM role. Requiring its successful execution
-    # prevents silent skipping, while strategy acceptance remains owned by the
-    # reproducible native-TCP precommit gate.
-    return critic.get("approved") is True
+    if (
+        critic.get("approved") is not True
+        or critic.get("llm_failed")
+        or critic.get("parse_failed")
+        or critic.get("llm_invoked") is not True
+        or critic.get("critic_llm_executed") is not True
+        or critic.get("schema_valid") is not True
+    ):
+        return False
+    try:
+        from system_strict_bootstrap import is_declared_native_bootstrap
+
+        declared = is_declared_native_bootstrap(checkpoint)
+    except Exception:
+        declared = False
+    if declared:
+        try:
+            from system_strict_bootstrap import validate_system_gate_receipt
+
+            return not validate_system_gate_receipt(
+                checkpoint,
+                gate_name="critic",
+            )
+        except Exception:
+            return False
+    # The verdict remains advisory; successful schema-valid execution does not.
+    return True
 
 
-def _bot_main(bot_name):
+def _bot_entry(bot_name):
+    """Return only the strict national TCP policy-artifact entrypoint."""
     version = parse_bot_version(str(bot_name))
     if version is None:
-        return PROJECT_ROOT / "bots" / str(bot_name) / "main.py"
-    return get_bot_dir(version) / "main.py"
+        return PROJECT_ROOT / "bots" / str(bot_name) / NATIONAL_ENTRYPOINT
+    return PROJECT_ROOT / "bots" / active_bot_name(version) / NATIONAL_ENTRYPOINT
 
 
 def _load_h2h_data():
@@ -792,42 +792,102 @@ def load_h2h_avg_winrates_with_coverage():
 
 
 def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
-    """Select opponents for precommit eval. Default: 1 parent + 2 top + 1 weak = 4 opponents max.
+    """Select 1 parent + up to 2 leaders + 1 weakness from one frozen cutoff.
 
-    With mirror_battle taking ~10-15 min per opponent and a 3600s cycle timeout,
-    4 opponents ≈ 40-60 min which fits within the limit.
+    Generation preparation owns the evaluation cutoff.  Precommit may run much
+    later, so this function must not reopen live ratings, H2H, match history, or
+    rolling advisory archives.  Missing or invalid generation evidence fails
+    closed by returning no opponents; ``run_precommit_eval`` then records the
+    explicit ``no_opponents`` blocker.
     """
     candidate = active_bot_name(version)
     parent = active_bot_name(source_v)
-    active = [b for b in get_active_bots() if b != candidate and _bot_main(b).exists()]
-    ratings = load_ratings()
-    h2h = _load_h2h_data()
     try:
-        from rating_snapshot import choose_h2h_source
-        h2h_selection = choose_h2h_source(active, h2h, _match_history_file())
-        h2h = h2h_selection["h2h"]
-    except Exception:
-        h2h_selection = {"source": "head_to_head"}
+        from evidence_snapshot import load_generation_evaluation_snapshot
+
+        snapshot = load_generation_evaluation_snapshot(version)
+    except Exception as exc:
+        snapshot = {
+            "available": False,
+            "reason": f"snapshot_load_failed:{type(exc).__name__}",
+        }
+    if not snapshot.get("available"):
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.precommit_opponent_snapshot_unavailable",
+                "error",
+                f"Frozen opponent evidence unavailable for {candidate}",
+                {
+                    "candidate": candidate,
+                    "parent": parent,
+                    "reason": snapshot.get("reason"),
+                    "issues": list(snapshot.get("issues") or [])[:10],
+                },
+            )
+        except Exception:
+            pass
+        return []
+
+    selection = snapshot.get("selection") or {}
+    rows = selection.get("rows") or []
+    if not isinstance(rows, list):
+        return []
+    row_by_name = {
+        str(row.get("name")): dict(row)
+        for row in rows
+        if isinstance(row, dict) and str(row.get("name") or "")
+    }
+    frozen_active = [str(name) for name in selection.get("active_bots") or []]
+    if not frozen_active or set(frozen_active) != set(row_by_name):
+        return []
+    active = [
+        name
+        for name in frozen_active
+        if name != candidate and _bot_entry(name).exists()
+    ]
+    active_set = set(active)
+    h2h = snapshot.get("h2h") or {}
+    snapshot_manifest = snapshot.get("manifest") or {}
 
     selected = []
     reasons = {}
 
     def add(name, reason):
-        if name == candidate or name in selected or not _bot_main(name).exists():
+        # A source may remain usable as immutable migration input after it has
+        # been quarantined from execution.  Precommit opponents must come from
+        # the current executable active pool; the first-strict transition adds
+        # its typed system control in tool_eval instead.
+        if (
+            name == candidate
+            or name not in active_set
+            or name in selected
+            or not _bot_entry(name).exists()
+        ):
             return
         selected.append(name)
         reasons[name] = reason
 
     add(parent, "parent")
+    if parent not in selected:
+        return []
 
-    strength_scores = load_strength_scores()
-    selection_scores = load_selection_scores()
-    selection_order_keys = load_selection_order_keys()
+    from strength_order import strength_order_key
+
+    strength_scores = {
+        name: float(row.get("leaderboard_score", 0.0) or 0.0)
+        for name, row in row_by_name.items()
+    }
+    selection_scores = {
+        name: float(row.get("selection_score", strength_scores.get(name, 0.0)) or 0.0)
+        for name, row in row_by_name.items()
+    }
     top = sorted(
         active,
-        key=lambda name: selection_order_keys.get(
-            name,
-            (selection_scores.get(name, strength_scores.get(name, 0.0)),),
+        key=lambda name: (
+            strength_order_key(row_by_name.get(name, {})),
+            parse_bot_version(name) or -1,
         ),
         reverse=True,
     )
@@ -843,48 +903,11 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
     for _, name in sorted(weak)[:max_weak]:
         add(name, "source_h2h_weakness")
 
-    # ── Phase 3: FAMOU nemesis probe (advisory, non-blocking) ──
-    # Append ONE opponent that most reliably beats the parent (the candidate's
-    # likely inherited weakness). The matchup is tagged reason="nemesis_probe"
-    # and run_precommit_eval treats that reason as telemetry-only: it is
-    # excluded from the blockers list and from aggregate_net_chips, so a nemesis
-    # loss cannot trip the commit gate (see tool_eval.py). Subject = parent
-    # (not the candidate) because the candidate has no h2h history yet.
-    # Fallback signal: if the live h2h scan finds no qualifying nemesis, consult
-    # the nemesis_archive.json snapshot (written on commit_bot) for the parent's
-    # recorded nemesis. Live h2h wins on freshness.
-    if PRECOMMIT_NEMESIS_SLOT and len(selected) >= 2:
-        # Exclude already-selected opponents (parent/top/weak) so the nemesis is
-        # a DISTINCT matchup — the weak slot already gates the single worst one;
-        # the nemesis adds the NEXT-worst opponent as non-blocking telemetry.
-        nemesis = _find_nemesis_opponent(parent, active, h2h, exclude=set(selected))
-        if nemesis is None:
-            # Archive fallback.
-            try:
-                archive = _read_json(
-                    PROJECT_ROOT / "web" / "core" / "results" / "nemesis_archive.json",
-                    {},
-                )
-                rec = (archive.get("nemesis_of") or {}).get(parent)
-                if rec and rec.get("nemesis") and rec["nemesis"] not in selected:
-                    nemesis = (rec["nemesis"], float(rec.get("win_rate", 1.0)))
-            except Exception:
-                nemesis = None
-        if nemesis is not None:
-            nemesis_opp, nemesis_wr = nemesis
-            # Only probe when the signal is a genuine weakness (below the same
-            # threshold the weak-slot uses) and the opponent is not already
-            # selected (add() dedups, but we check wr so a wr>=0.40 archive
-            # entry from a stale snapshot does not inject a non-weakness probe).
-            if nemesis_wr < PRECOMMIT_NEMESIS_WINRATE_THRESHOLD:
-                add(nemesis_opp, "nemesis_probe")
-
     try:
         from system_log import log_system_event
-        coverage = load_h2h_avg_winrates_with_coverage()
         details = []
         for name in selected:
-            cov = coverage.get(name, {})
+            cov = strength_row_to_analysis_view(row_by_name.get(name, {}))
             pair_stats = _h2h_stats(parent, name, h2h) if name != parent else None
             details.append({
                 "name": name,
@@ -895,7 +918,7 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
                 "h2h_coverage": round(cov.get("opponent_coverage", 0.0), 4),
                 "h2h_games": cov.get("h2h_games", 0),
                 "strength_confidence": cov.get("strength_confidence", "low"),
-                "h2h_source": cov.get("h2h_source", h2h_selection.get("source", "head_to_head")),
+                "h2h_source": cov.get("h2h_source", "generation_evidence_snapshot"),
                 "pair_vs_parent": pair_stats,
             })
         log_system_event(
@@ -905,7 +928,11 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
             {
                 "candidate": candidate,
                 "parent": parent,
-                "h2h_source": h2h_selection.get("source", "head_to_head"),
+                "h2h_source": "generation_evidence_snapshot",
+                "evidence_manifest_digest": snapshot_manifest.get("manifest_digest"),
+                "evaluation_identity_digest": snapshot_manifest.get(
+                    "evaluation_identity_digest"
+                ),
                 "opponents": details,
             },
         )

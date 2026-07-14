@@ -34,6 +34,7 @@ TARGET_DIR_STAGES = {
     "official_certifying",
     "official_failed",
     "official_inconclusive",
+    "publishing",
     "infra_timed_out",
 }
 HEAD_DRIFT_REPAIR_STAGES = {
@@ -49,6 +50,7 @@ HEAD_DRIFT_POST_QUALITY_STAGES = {
     "critic_checked",
     "verified",
     "official_certifying",
+    "publishing",
 }
 HEAD_DRIFT_GATE_STAGES = {
     "master_planned",
@@ -271,9 +273,53 @@ def checkpoint_recovery_diagnostics(
     if not active:
         return diag
 
+    # Epoch identity is a prerequisite for interpreting every later field.
+    # Short-circuit before repository/target diagnostics: applying current
+    # path contracts to a retired checkpoint would make it look repairable and
+    # could route an old ``direction_audited`` payload into run_master.
+    from checkpoint_schema import (
+        checkpoint_epoch_errors,
+        checkpoint_epoch_reset_route,
+        live_policy_epoch_reset_receipt_errors,
+    )
+
+    epoch_issues = checkpoint_epoch_errors(checkpoint)
+    if not epoch_issues:
+        epoch_issues.extend(
+            live_policy_epoch_reset_receipt_errors(
+                checkpoint,
+                project_root=root,
+            )
+        )
+    if epoch_issues:
+        route = checkpoint_epoch_reset_route(checkpoint, epoch_issues)
+        issues.extend(epoch_issues)
+        diag.update(
+            {
+                "recoverable": False,
+                "epoch": {
+                    "valid": False,
+                    "issues": list(epoch_issues),
+                },
+                "operator_action": route["operator_action"],
+                "operator_command": route["operator_command"],
+                "directive": route["directive"],
+                "route": route,
+            }
+        )
+        return diag
+    diag["epoch"] = {
+        "valid": True,
+        "evaluation_epoch": checkpoint.get("evaluation_epoch"),
+        "mode": (checkpoint.get("epoch_binding") or {}).get("mode"),
+        "binding_digest": (checkpoint.get("epoch_binding") or {}).get(
+            "binding_digest"
+        ),
+    }
+
     if stage == "official_bootstrap_required":
         issues.append("official_bootstrap_requires_operator_action")
-        warnings.append("automatic_bootstrap_root_consumption_forbidden")
+        warnings.append("automatic_first_strict_control_consumption_forbidden")
     elif stage == "official_inconclusive":
         issues.append("official_inconclusive_requires_infra_intervention")
         warnings.append("official_full_gate_not_recoverable_by_bot_rework")

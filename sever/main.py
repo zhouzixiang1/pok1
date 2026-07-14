@@ -1,4 +1,4 @@
-"""德州扑克对弈平台 — 统一入口。
+"""国赛 raw-TCP 本地对弈平台入口。
 
 并发启动：
   - TCP 服务器 (:10001) — 接受引擎客户端连接
@@ -33,7 +33,14 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="德州扑克对弈平台")
+    parser = argparse.ArgumentParser(
+        description="国赛 raw-TCP 本地平台（消息无换行分隔）",
+        epilog=(
+            "客户端发送原始 raise/fold/call/check/allin token；禁止追加换行，"
+            "也不能把一次 recv 当作一条完整消息。正式合规仍以 Windows EXE "
+            "official-full-v5 为准。"
+        ),
+    )
     parser.add_argument("--host", default="0.0.0.0", help="监听地址 (默认 0.0.0.0)")
     parser.add_argument("--tcp-port", type=int, default=10001, help="TCP 端口 (默认 10001)")
     parser.add_argument("--web-port", type=int, default=18080, help="Web 端口 (默认 18080)")

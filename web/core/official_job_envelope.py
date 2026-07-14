@@ -8,7 +8,7 @@ from typing import Any
 from bot_artifact import canonical_digest
 
 
-JOB_ENVELOPE_SCHEMA_VERSION = 3
+JOB_ENVELOPE_SCHEMA_VERSION = 4
 JOB_ENVELOPE_KIND = "official-exe-durable-job-envelope"
 
 
@@ -51,10 +51,10 @@ def build_job_envelope(
             if operator_authorization is not None
             else None
         ),
-        "bootstrap_root_id": (
-            str(selection.get("bootstrap_root_id") or selection.get("root_id") or "")
+        "bootstrap_control_id": (
+            str(selection.get("bootstrap_control_id") or "")
             if selection is not None
-            and (selection.get("bootstrap_root_id") or selection.get("root_id"))
+            and selection.get("bootstrap_control_id")
             else None
         ),
         "source_v": request.get("source_v"),
@@ -115,14 +115,14 @@ def job_envelope_issues(
         issues.append(
             "official_job_envelope_operator_bootstrap_authorization_digest_mismatch"
         )
-    expected_bootstrap_root_id = (
-        str(selection.get("bootstrap_root_id") or selection.get("root_id") or "")
+    expected_bootstrap_control_id = (
+        str(selection.get("bootstrap_control_id") or "")
         if selection is not None
-        and (selection.get("bootstrap_root_id") or selection.get("root_id"))
+        and selection.get("bootstrap_control_id")
         else None
     )
-    if envelope.get("bootstrap_root_id") != expected_bootstrap_root_id:
-        issues.append("official_job_envelope_bootstrap_root_id_mismatch")
+    if envelope.get("bootstrap_control_id") != expected_bootstrap_control_id:
+        issues.append("official_job_envelope_bootstrap_control_id_mismatch")
     for key in (
         "job_id",
         "request_digest",

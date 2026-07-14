@@ -3,10 +3,10 @@ import socket
 
 import pytest
 
-from bot_artifact import canonical_digest, hash_path
+from bot_artifact import hash_path
 from managed_bot_executor import EndpointLease
+import official_bot_sandbox
 from official_bot_sandbox import (
-    OfficialBootstrapLaunchAuthorization,
     SealedBotArtifact,
     launch_sandboxed_bot,
     seal_bot_artifact,
@@ -54,7 +54,13 @@ def test_sealed_bot_contains_only_content_bound_artifact(tmp_path):
     assert (sealed.root / "national_bot.py").stat().st_mode & 0o222 == 0
 
 
-def test_formal_sandbox_launch_uses_central_executor_and_single_log(tmp_path):
+def test_formal_sandbox_launch_uses_central_executor_and_single_log(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "official_bot_sandbox.current_system_native_runtime_errors",
+        lambda _path: [],
+    )
     source = _bot(tmp_path / "national_v1")
     sealed = seal_bot_artifact(
         source,
@@ -134,62 +140,66 @@ def test_formal_environment_fails_closed_when_sandbox_probe_fails(tmp_path, monk
     assert "official_sandbox_probe_failed" in report["issues"]
 
 
-def test_direct_official_launch_rejects_v142_raw_entry():
-    repository_root = Path(__file__).resolve().parents[2]
-    v142 = repository_root / "bots" / "national_v142"
-    artifact_hash = hash_path(v142)
+def test_direct_official_launch_rejects_archived_raw_entry(tmp_path, monkeypatch):
+    archived = _bot(tmp_path / "archived_runtime")
+    artifact_hash = hash_path(archived)
     artifact = SealedBotArtifact(
-        source=v142,
-        root=v142,
+        source=archived,
+        root=archived,
         entry_relative="national_bot.py",
         artifact_hash=artifact_hash,
         manifest_digest="a" * 64,
     )
+    monkeypatch.setattr(
+        "official_bot_sandbox.current_system_native_runtime_errors",
+        lambda _path: ["system_owned_native_runtime_identity_mismatch"],
+    )
 
     with pytest.raises(
         RuntimeError,
-        match="protocol_quarantined_native_entry_forbidden",
+        match="non_system_owned_native_runtime_forbidden",
     ):
         launch_sandboxed_bot(
             artifact,
             object(),
-            name="v142",
+            name="archived",
             seat="lower",
             log_path=None,
             supports_log=False,
         )
 
 
-def test_direct_v141_launch_rejects_forged_bearer_authorization():
-    repository_root = Path(__file__).resolve().parents[2]
-    v141 = repository_root / "bots" / "national_v141"
-    artifact_hash = hash_path(v141)
+def test_formal_sandbox_exposes_no_archived_runtime_bearer_waiver():
+    assert not hasattr(
+        official_bot_sandbox,
+        "OfficialBootstrapLaunchAuthorization",
+    )
+    assert "quarantine_authorization" not in (
+        __import__("inspect").signature(launch_sandboxed_bot).parameters
+    )
+
+
+def test_direct_official_launch_rejects_noncurrent_runtime_without_lineage(
+    tmp_path, monkeypatch
+):
+    source = _bot(tmp_path / "renamed_legacy")
+    artifact_hash = hash_path(source)
     artifact = SealedBotArtifact(
-        source=v141,
-        root=v141,
+        source=source,
+        root=source,
         entry_relative="national_bot.py",
         artifact_hash=artifact_hash,
         manifest_digest="a" * 64,
     )
-    forged_selection = {}
-    authorization = OfficialBootstrapLaunchAuthorization(
-        root_id="national-v141-official-full-v5-signed-ledger-root",
-        artifact_hash=artifact_hash,
-        selection_digest=canonical_digest(forged_selection),
-        selection_json="{}",
-        candidate_path=str(v141),
-    )
-
     with pytest.raises(
         RuntimeError,
-        match="protocol_quarantined_native_entry_forbidden",
+        match="non_system_owned_native_runtime_forbidden",
     ):
         launch_sandboxed_bot(
             artifact,
             object(),
-            name="v141",
+            name="renamed-legacy",
             seat="lower",
             log_path=None,
             supports_log=False,
-            quarantine_authorization=authorization,
         )

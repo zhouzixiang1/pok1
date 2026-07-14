@@ -1,4 +1,3 @@
-import fcntl
 from copy import deepcopy
 import hashlib
 import inspect
@@ -13,14 +12,12 @@ from bot_artifact import canonical_digest, hash_path
 from official_platform_harness import OfficialPlatformConfig
 from official_certification import (
     _log_target_reached,
-    _process_certification_queue_with_runner_for_test,
     _run_certification_impl,
     _run_certification_with_runner_for_test,
     STATUS_COMPLIANCE_PASS,
     STATUS_CERTIFIED,
     STATUS_FAILED,
     STATUS_INCONCLUSIVE,
-    STATUS_PENDING,
     STATUS_SMOKE_PASS,
     STATUS_UNCERTIFIED,
     TEST_ONLY_RUNNER_PROVENANCE,
@@ -28,16 +25,12 @@ from official_certification import (
     cache_key,
     certification_identity,
     certificate_validation,
-    enqueue_certification,
     official_feedback_summary,
     official_full_certified,
     official_compliance_verdict,
     official_failure_blocks_parent,
     official_opponent_eligibility,
-    process_certification_queue,
     publish_certificate_attestation,
-    queue_snapshot,
-    record_grandfathered,
     record_local_pass,
     report_validation_issues,
     report_valid_for_spec,
@@ -149,7 +142,6 @@ def _run_official_certificate_fixture(
         spec,
         config=config,
         force=True,
-        queue_on_busy=False,
         runner=runner,
         opponent_selection=opponent_selection,
         job_envelope=envelope,
@@ -452,19 +444,16 @@ def test_formal_execution_validator_binds_both_managed_processes(
     assert expected_issue in _formal_execution_issues(tampered)
 
 
-def test_queued_smoke_result_cannot_downgrade_newer_full_certificate(
+def test_stale_smoke_status_cannot_downgrade_newer_full_certificate(
     tmp_path,
     monkeypatch,
 ):
-    import official_certification
-
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     candidate = _bot(tmp_path / "bots" / "national_v200")
     opponent = _bot(tmp_path / "bots" / "national_v199")
     config = _config(tmp_path)
     smoke = build_spec("smoke", candidate, opponent=opponent)
-    pending = enqueue_certification(smoke, config=config)
-    identity = pending["certification_identity"]
+    identity = certification_identity(smoke, config)
     certified = write_status(
         candidate,
         STATUS_CERTIFIED,
@@ -476,26 +465,15 @@ def test_queued_smoke_result_cannot_downgrade_newer_full_certificate(
     )
     assert certified["status"] == STATUS_CERTIFIED
 
-    def stale_smoke_result(spec, **_kwargs):
-        return write_status(
-            spec.candidate,
-            STATUS_SMOKE_PASS,
-            mode="smoke",
-            policy_id=spec.policy_id,
-            certification_identity=identity,
-            issues=[],
-        )
-
-    monkeypatch.setattr(
-        official_certification,
-        "_run_production_certification",
-        stale_smoke_result,
+    stale = write_status(
+        smoke.candidate,
+        STATUS_SMOKE_PASS,
+        mode="smoke",
+        policy_id=smoke.policy_id,
+        certification_identity=identity,
+        issues=[],
     )
-
-    result = process_certification_queue(config=config)
-
-    assert result["processed"] == 1
-    assert result["results"][0]["status"] == STATUS_CERTIFIED
+    assert stale["status"] == STATUS_CERTIFIED
     current = read_status(candidate)
     assert current["status"] == STATUS_INCONCLUSIVE
     assert current["mode"] == "full"
@@ -672,27 +650,6 @@ def test_cache_identity_binds_all_deterministic_platform_dependencies(
     assert first != second
 
 
-def test_enqueue_does_not_reuse_stronger_status_for_changed_candidate(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v1")
-    opponent = _bot(tmp_path / "national_v2")
-    spec = build_spec("smoke", candidate, opponent=opponent)
-    write_status(
-        candidate,
-        STATUS_CERTIFIED,
-        mode="full",
-        policy_id="official-full-v5",
-        cache_key="stale-full",
-        certification_identity={"candidate_hash": "stale-hash"},
-        issues=[],
-    )
-
-    queued = enqueue_certification(spec, reason="changed_candidate")
-
-    assert queued["status"] == STATUS_PENDING
-    assert queued["cache_key"] != "stale-full"
-
-
 def test_full_profile_cannot_be_downgraded_or_run_without_opponent(tmp_path):
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
@@ -703,6 +660,35 @@ def test_full_profile_cannot_be_downgraded_or_run_without_opponent(tmp_path):
         build_spec("full", candidate, opponent=opponent, target_hands=1)
     with pytest.raises(ValueError, match="requires an opponent"):
         build_spec("full", candidate)
+
+
+def test_first_strict_control_spec_is_limited_to_v143(tmp_path):
+    candidate = _bot(tmp_path / "national_v144")
+    opponent = _bot(tmp_path / "first_strict_control_v1")
+
+    with pytest.raises(ValueError, match="only for national_v143"):
+        build_spec(
+            "full",
+            candidate,
+            opponent=opponent,
+            bootstrap_control_id="first_strict_control_v1",
+        )
+
+
+def test_retired_bootstrap_root_spec_cannot_resume_as_normal_full_job(tmp_path):
+    import official_certification as certification
+
+    candidate = _bot(tmp_path / "national_v143")
+    opponent = _bot(tmp_path / "first_strict_control_v1")
+    record = certification.spec_record(
+        build_spec("full", candidate, opponent=opponent)
+    )
+    record["bootstrap_root_id"] = (
+        "national-v141-official-full-v5-signed-ledger-root"
+    )
+
+    with pytest.raises(ValueError, match="retired signed-ledger bootstrap"):
+        certification._spec_from_mapping(record)
 
 
 def test_full_certification_checks_signer_before_starting_exe(tmp_path, monkeypatch):
@@ -724,7 +710,6 @@ def test_full_certification_checks_signer_before_starting_exe(tmp_path, monkeypa
             runner=lambda *_a, **_k: (_ for _ in ()).throw(
                 AssertionError("EXE must not start without a trusted signer")
             ),
-            queue_on_busy=False,
         )
 
 
@@ -993,7 +978,6 @@ def test_candidate_change_during_certification_is_inconclusive(tmp_path, monkeyp
         spec,
         config=cfg,
         runner=mutating_runner,
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_INCONCLUSIVE
@@ -1214,12 +1198,11 @@ def test_run_certification_uses_valid_cache(tmp_path, monkeypatch):
     def runner(*_args, **_kwargs):
         return FakeResult(_report(target_hands=10, rounds=2))
 
-    first = _run_certification_with_runner_for_test(spec, config=cfg, runner=runner, queue_on_busy=False)
+    first = _run_certification_with_runner_for_test(spec, config=cfg, runner=runner)
     second = _run_certification_with_runner_for_test(
         spec,
         config=cfg,
         runner=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("cache miss")),
-        queue_on_busy=False,
     )
 
     assert first["status"] == STATUS_SMOKE_PASS
@@ -1238,7 +1221,6 @@ def test_full_certification_does_not_delegate_verdict_to_llm(tmp_path, monkeypat
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
-        queue_on_busy=False,
         opponent_selection=_selection(candidate, opponent),
     )
 
@@ -1265,7 +1247,6 @@ def test_full_certification_survives_llm_transport_failure(tmp_path, monkeypatch
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
-        queue_on_busy=False,
         opponent_selection=_selection(candidate, opponent),
     )
 
@@ -1290,7 +1271,6 @@ def test_full_certificate_is_not_signed_without_opponent_authorization_receipt(t
         runner=lambda *_args, **_kwargs: FakeResult(
             _full_report(tmp_path, candidate, opponent)
         ),
-        queue_on_busy=False,
         opponent_selection=selection,
     )
 
@@ -1421,7 +1401,6 @@ def test_failed_certification_persists_evidence_grounded_llm_feedback(tmp_path, 
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_smoke_report_with_wire_replay_blocker(tmp_path)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_FAILED
@@ -1463,7 +1442,6 @@ def test_certificate_cannot_be_reused_for_same_artifact_under_new_version(tmp_pa
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
-        queue_on_busy=False,
         opponent_selection=_selection(candidate, opponent),
     )
     shutil.copytree(candidate, clone)
@@ -1486,7 +1464,6 @@ def test_malformed_nested_certificate_fails_closed_instead_of_raising(tmp_path, 
         build_spec("full", candidate, opponent=opponent),
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
-        queue_on_busy=False,
         opponent_selection=_selection(candidate, opponent),
     )
     record_path = Path(result["certificate_path"])
@@ -1528,7 +1505,6 @@ def test_bound_deterministic_failure_survives_rejected_test_only_pass(tmp_path, 
         runner=lambda *_args, **_kwargs: FakeResult(
             _smoke_report_with_wire_replay_blocker(tmp_path)
         ),
-        queue_on_busy=False,
     )
 
     restored = read_status(candidate)
@@ -1639,7 +1615,6 @@ def test_compliance_certification_has_distinct_status(tmp_path, monkeypatch):
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_COMPLIANCE_PASS
@@ -1657,7 +1632,6 @@ def test_run_certification_writes_official_evidence_summary(tmp_path, monkeypatc
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
-        queue_on_busy=False,
     )
 
     evidence_path = Path(result["official_evidence_path"])
@@ -1705,7 +1679,6 @@ def test_run_certification_evidence_blocking_overrides_raw_pass(tmp_path, monkey
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_smoke_report_with_wire_replay_blocker(tmp_path)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_FAILED
@@ -1731,7 +1704,6 @@ def test_run_certification_evidence_error_is_inconclusive_not_certified(tmp_path
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=70, rounds=8)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_INCONCLUSIVE
@@ -1754,7 +1726,6 @@ def test_evidence_archive_failure_is_inconclusive_and_preserves_analysis(tmp_pat
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_INCONCLUSIVE
@@ -1792,7 +1763,6 @@ def test_run_certification_optional_llm_analysis_is_advisory(tmp_path, monkeypat
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_SMOKE_PASS
@@ -1833,7 +1803,6 @@ def test_run_certification_runs_llm_analysis_by_default(tmp_path, monkeypatch):
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
-        queue_on_busy=False,
     )
 
     assert calls["count"] == 1
@@ -1853,7 +1822,6 @@ def test_inconclusive_status_includes_non_violation_validation_issues(tmp_path, 
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_smoke_report_without_thp(target_hands=70, rounds=8)),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_INCONCLUSIVE
@@ -1895,7 +1863,6 @@ def test_full_round_incomplete_without_actor_evidence_is_inconclusive(tmp_path, 
         spec,
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(report),
-        queue_on_busy=False,
     )
     verdict = official_compliance_verdict(result)
 
@@ -1925,7 +1892,6 @@ def test_unattributed_protocol_string_is_inconclusive(tmp_path, monkeypatch):
                 issues=["self_play_1: protocol_raise_format: msg='raise  200'"],
             )
         ),
-        queue_on_busy=False,
     )
 
     assert result["status"] == STATUS_INCONCLUSIVE
@@ -1969,22 +1935,24 @@ def test_record_local_pass_writes_local_status_for_uncertified(tmp_path, monkeyp
     assert verdict["classification"] == "local_pass"
 
 
-def test_mutable_grandfather_status_is_rejected(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v70")
-
-    with pytest.raises(RuntimeError, match="official_grandfathering.json"):
-        record_grandfathered(candidate, reason="bootstrap active pool", source="test")
-
-
 def test_official_opponent_eligibility_requires_full_certificate_and_blocks_failure(tmp_path, monkeypatch):
+    import official_certification as certification
+
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
     monkeypatch.setattr(
         "official_certification.epoch_lifecycle_eligibility",
-        lambda version: {"eligible": True, "reason": "national_epoch_active", "version": version},
+        lambda version: {"eligible": True, "reason": "national_tcp_policy_epoch_active", "version": version},
     )
-    historical = _bot(tmp_path / "national_v70")
-    opponent = _bot(tmp_path / "national_v71")
+    monkeypatch.setattr(
+        certification,
+        "strict_role_eligibility",
+        lambda *_args, **_kwargs: {
+            "eligible": False,
+            "issues": ["signed_full_official_certificate_required"],
+        },
+    )
+    historical = _bot(tmp_path / "national_v143")
+    opponent = _bot(tmp_path / "national_v144")
 
     bootstrap = official_opponent_eligibility(
         historical,
@@ -2000,31 +1968,31 @@ def test_official_opponent_eligibility_requires_full_certificate_and_blocks_fail
         runner=lambda *_args, **_kwargs: FakeResult(
             _smoke_report_with_wire_replay_blocker(tmp_path)
         ),
-        queue_on_busy=False,
     )
     failed = official_opponent_eligibility(historical)
     assert failed["eligible"] is False
     assert failed["reason"] == "blocking_official_failure"
 
 
-def test_official_opponent_eligibility_never_evaluates_grandfather_grant(tmp_path, monkeypatch):
+def test_official_opponent_eligibility_uses_strict_role_resolver(tmp_path, monkeypatch):
     import official_certification as certification
 
-    historical = _bot(tmp_path / "national_v70")
+    historical = _bot(tmp_path / "national_v143")
+    calls = []
     monkeypatch.setattr(
         certification,
         "epoch_lifecycle_eligibility",
-        lambda version: {"eligible": True, "reason": "national_epoch_active", "version": version},
+        lambda version: {"eligible": True, "reason": "national_tcp_policy_epoch_active", "version": version},
     )
     monkeypatch.setattr(certification, "read_status", lambda _path: {})
     monkeypatch.setattr(certification, "official_full_certified", lambda *_a, **_k: False)
-    monkeypatch.setattr(certification, "_grandfather_ledger_issues", lambda: [])
     monkeypatch.setattr(
         certification,
-        "grandfather_eligibility",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("formal opponent eligibility must not evaluate grandfather grants")
-        ),
+        "strict_role_eligibility",
+        lambda candidate, role: calls.append((candidate, role)) or {
+            "eligible": False,
+            "issues": ["signed_full_official_certificate_required"],
+        },
     )
 
     result = official_opponent_eligibility(
@@ -2036,6 +2004,7 @@ def test_official_opponent_eligibility_never_evaluates_grandfather_grant(tmp_pat
     assert result["eligible"] is False
     assert result["reason"] == "official_full_certificate_required"
     assert result["bootstrap_requested_but_disabled"] is True
+    assert calls == [(historical, "official_opponent")]
 
 
 def test_select_official_opponent_rejects_grandfather_result_even_when_requested(
@@ -2045,12 +2014,18 @@ def test_select_official_opponent_rejects_grandfather_result_even_when_requested
     import official_certification as certification
     import evolution_infra
     import national_native
+    import national_runtime_authority
 
     candidate = _bot(tmp_path / "national_v143")
     historical = _bot(tmp_path / "national_v70")
     (historical / ".completed").touch()
     monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(national_native, "check_native_contract", lambda _path, **_kwargs: [])
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "current_system_native_runtime_errors",
+        lambda _path: [],
+    )
     monkeypatch.setattr(
         certification,
         "published_bot_identity",
@@ -2088,6 +2063,7 @@ def test_select_official_opponent_rejects_grandfather_result_even_when_requested
 def test_select_official_opponent_uses_certified_candidate_only(tmp_path, monkeypatch):
     import evolution_infra
     import national_native
+    import national_runtime_authority
     import official_certification
 
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
@@ -2098,6 +2074,11 @@ def test_select_official_opponent_uses_certified_candidate_only(tmp_path, monkey
     (certified / ".completed").touch()
     monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(national_native, "check_native_contract", lambda _path, **_kwargs: [])
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "current_system_native_runtime_errors",
+        lambda _path: [],
+    )
     monkeypatch.setattr(
         official_certification,
         "published_bot_identity",
@@ -2154,6 +2135,7 @@ def test_full_certificate_rejects_grandfathered_opponent_receipt(tmp_path):
 def test_readiness_counts_unique_certified_artifacts_not_version_copies(tmp_path, monkeypatch):
     import evolution_infra
     import national_native
+    import national_runtime_authority
     import official_certification as certification
 
     candidate = _bot(tmp_path / "national_v145")
@@ -2168,6 +2150,11 @@ def test_readiness_counts_unique_certified_artifacts_not_version_copies(tmp_path
 
     monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
     monkeypatch.setattr(national_native, "check_native_contract", lambda _path: [])
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "current_system_native_runtime_errors",
+        lambda _path: [],
+    )
     monkeypatch.setattr(certification, "read_status", lambda _path: {
         "status": STATUS_CERTIFIED,
         "mode": "full",
@@ -2236,32 +2223,17 @@ def test_managed_certification_blocks_before_runner_without_eligible_opponent(tm
     })
 
     with pytest.raises(RuntimeError, match="official_certification_job"):
-        run_certification(spec, queue_on_busy=False)
+        run_certification(spec)
     assert not (tmp_path / "cert" / "status" / "national_v1.json").exists()
 
 
-def test_queue_revalidates_opponent_and_drops_stale_request(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v1")
-    opponent = _bot(tmp_path / "national_v2")
-    spec = build_spec("compliance", candidate, opponent=opponent)
-    enqueue_certification(spec, reason="queued_before_reap")
-    monkeypatch.setattr("official_certification.select_official_opponent", lambda *_a, **_k: {
-        "selected": False,
-        "reason": "reaped_or_invalid_version",
-        "considered": [],
-    })
-
-    result = process_certification_queue(limit=1)
-
-    assert result["processed"] == 1
-    assert result["remaining"] == 0
-    assert result["results"][0]["status"] == "opponent-selection-blocked"
-
-
 def test_production_certification_apis_do_not_expose_runner_injection():
+    import official_certification as certification
+
     assert "runner" not in inspect.signature(run_certification).parameters
-    assert "runner" not in inspect.signature(process_certification_queue).parameters
+    assert not hasattr(certification, "enqueue_certification")
+    assert not hasattr(certification, "process_certification_queue")
+    assert not hasattr(certification, "queue_snapshot")
 
 
 def test_internal_full_impl_rejects_spoofed_official_runner(tmp_path):
@@ -2273,7 +2245,6 @@ def test_internal_full_impl_rejects_spoofed_official_runner(tmp_path):
         _run_certification_impl(
             spec,
             config=_config(tmp_path),
-            queue_on_busy=False,
             runner=lambda *_a, **_k: FakeResult(
                 _full_report(tmp_path, candidate, opponent)
             ),
@@ -2292,7 +2263,6 @@ def test_full_injected_runner_artifact_is_explicitly_test_only(tmp_path, monkeyp
     result = _run_certification_with_runner_for_test(
         build_spec("full", candidate, opponent=opponent),
         config=cfg,
-        queue_on_busy=False,
         runner=lambda *_a, **_k: FakeResult(
             _full_report(tmp_path, candidate, opponent)
         ),
@@ -2324,7 +2294,6 @@ def test_test_runner_cache_cannot_satisfy_production_certification(tmp_path, mon
     injected = _run_certification_with_runner_for_test(
         spec,
         config=cfg,
-        queue_on_busy=False,
         runner=lambda *_a, **_k: FakeResult(report),
     )
 
@@ -2340,7 +2309,7 @@ def test_test_runner_cache_cannot_satisfy_production_certification(tmp_path, mon
         return FakeResult(report)
 
     monkeypatch.setattr("official_certification.run_official_acceptance_sync", official_runner)
-    production = run_certification(spec, config=cfg, queue_on_busy=False)
+    production = run_certification(spec, config=cfg)
 
     assert official_calls == [True]
     assert production["cache_hit"] is False
@@ -2382,92 +2351,3 @@ def test_unbound_failure_strings_never_block_parent_selection():
     assert official_compliance_verdict(legacy_infra_failure)["classification"] == "inconclusive"
     assert not official_failure_blocks_parent(empty_failure)
     assert official_compliance_verdict(empty_failure)["inconclusive"] is True
-
-
-def test_smoke_enqueue_does_not_downgrade_certified_status(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v1")
-    opponent = _bot(tmp_path / "national_v2")
-
-    write_status(
-        candidate,
-        STATUS_CERTIFIED,
-        mode="full",
-        cache_key="full-key",
-        certification_identity={"candidate_hash": hash_path(candidate)},
-        issues=[],
-    )
-    result = enqueue_certification(build_spec("smoke", candidate, opponent=opponent), reason="manual_smoke")
-
-    assert result["status"] == STATUS_CERTIFIED
-    assert queue_snapshot()["pending"] == 1
-
-
-def test_process_certification_queue_consumes_pending_entry(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v1")
-    opponent = _bot(tmp_path / "national_v2")
-    cfg = _config(tmp_path)
-    spec = build_spec("smoke", candidate, opponent=opponent)
-
-    enqueue_certification(spec, reason="test")
-    assert queue_snapshot()["pending"] == 1
-
-    result = _process_certification_queue_with_runner_for_test(
-        config=cfg,
-        runner=lambda *_args, **_kwargs: FakeResult(_report(target_hands=10, rounds=2)),
-    )
-
-    assert result["processed"] == 1
-    assert result["remaining"] == 0
-    assert result["results"][0]["status"] == STATUS_SMOKE_PASS
-    assert queue_snapshot()["pending"] == 0
-
-
-def test_process_certification_queue_respects_official_lock(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v1")
-    opponent = _bot(tmp_path / "national_v2")
-    cfg = _config(tmp_path)
-    spec = build_spec("smoke", candidate, opponent=opponent)
-    enqueue_certification(spec, reason="test")
-    cfg.lock_path.touch()
-
-    with cfg.lock_path.open("r+", encoding="utf-8") as lock_fp:
-        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            result = _process_certification_queue_with_runner_for_test(
-                config=cfg,
-                runner=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not run")),
-            )
-        finally:
-            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
-
-    assert result["processed"] == 0
-    assert result["lock_busy"] is True
-    assert queue_snapshot()["pending"] == 1
-
-
-def test_official_lock_busy_queues_without_running(tmp_path, monkeypatch):
-    monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
-    candidate = _bot(tmp_path / "national_v1")
-    opponent = _bot(tmp_path / "national_v2")
-    cfg = _config(tmp_path)
-    spec = build_spec("smoke", candidate, opponent=opponent)
-    cfg.lock_path.touch()
-
-    with cfg.lock_path.open("r+", encoding="utf-8") as lock_fp:
-        fcntl.flock(lock_fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            result = _run_certification_with_runner_for_test(
-                spec,
-                config=cfg,
-                runner=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("should not run")),
-                queue_on_busy=True,
-            )
-        finally:
-            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
-
-    assert result["status"] == STATUS_PENDING
-    assert result["queued"] is True
-    assert (tmp_path / "cert" / "queue.jsonl").exists()

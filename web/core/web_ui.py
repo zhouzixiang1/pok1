@@ -222,23 +222,47 @@ class WebUI(BaseUI):
         self._emit("clear_io", {})
 
     def update_eval_table(self, ratings, active_bots):
-        from tool_helpers import _load_h2h_data
-        from rating_snapshot import build_strength_rows
-        h2h_raw = _load_h2h_data()
-        from evolution_infra import BOT_STATS_FILE, MATCH_HISTORY_FILE, read_locked_json
-        bot_stats = read_locked_json(BOT_STATS_FILE, default={})
-        rows = build_strength_rows(
-            ratings,
-            bot_stats,
-            h2h_raw,
-            active_bots=list(active_bots),
-            match_history_path=MATCH_HISTORY_FILE,
-        )
+        # The daemon arguments are an update signal, not display authority.
+        # Reopen only the immutable cycle bound to the live reset receipt and
+        # strict published pool; never derive a second table from live aliases.
+        try:
+            from evaluation_bundle import load_current_strict_evaluation_bundle
+
+            bundle = load_current_strict_evaluation_bundle()
+        except Exception:
+            bundle = {"available": False}
+        if not isinstance(bundle, dict):
+            bundle = {"available": False}
+        if bundle.get("available") is True:
+            selection = bundle.get("selection") or {}
+            rows = [
+                dict(row)
+                for row in (selection.get("rows") or [])
+                if isinstance(row, dict)
+            ]
+            current_active = list(bundle.get("active_bots") or [])
+        else:
+            rows = []
+            current_active = []
         self._state["ratings"] = rows
-        self._state["active_bots"] = list(active_bots)
+        self._state["active_bots"] = current_active
         self._emit("eval_table", {"rows": rows})
 
     def update_daemon_status(self, stats, ratings):
+        try:
+            from evaluation_bundle import load_current_strict_evaluation_bundle
+
+            bundle = load_current_strict_evaluation_bundle()
+        except Exception:
+            bundle = {"available": False}
+        if not isinstance(bundle, dict):
+            bundle = {"available": False}
+        if bundle.get("available") is True:
+            stats = bundle.get("daemon_stats") or {}
+            ratings = bundle.get("ratings") or {}
+        else:
+            stats = {}
+            ratings = {}
         pairs = stats.get("pairs", {})
         self._emit("daemon_stats", {
             "total_matches": sum(pairs.values()),

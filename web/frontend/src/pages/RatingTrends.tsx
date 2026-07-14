@@ -4,7 +4,9 @@ import type { ApexOptions } from "apexcharts";
 import { useHistory } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { SegmentedControl } from "../components/shared/SegmentedControl";
-import { Skeleton } from "../components/shared/Skeleton";
+import { EmptyState } from "../components/shared/EmptyState";
+import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { useControlStatus } from "../hooks/useControlStatus";
 import { compactBotName } from "../lib/utils";
 
 const COLORS = [
@@ -18,6 +20,7 @@ type MetricMode = "glicko" | "h2h_wr";
 
 export default function RatingTrends() {
   const history = useHistory();
+  const { status, loading, error } = useControlStatus(5_000);
   const [showConfidence, setShowConfidence] = useState(false);
   const [metric, setMetric] = useState<MetricMode>("h2h_wr");
 
@@ -138,13 +141,27 @@ export default function RatingTrends() {
     [categories, showConfidence, metric, yTitle, names]
   );
 
-  if (history.length === 0) {
-    return <div className="p-6 space-y-4"><Skeleton className="h-8 w-48" /><Skeleton className="h-[500px] rounded-2xl" /></div>;
+  if (!status?.epoch_initialized || history.length === 0) {
+    const emptyMessage = !status?.epoch_initialized
+      ? "epoch 尚未初始化；旧评分趋势已从权威视图移除。"
+      : status.active_bots.length === 0
+        ? "当前严格发布池为空；尚无评分历史。"
+        : "等待首个同发布池 evaluation cycle；不会显示旧 epoch 或默认评分趋势。";
+    return (
+      <>
+        <PageMeta title="评分趋势 — Bot 自进化" description="严格 epoch 历史评分趋势" />
+        <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+          <EmptyState message={emptyMessage} />
+        </div>
+      </>
+    );
   }
 
   return (
     <>
       <PageMeta title="评分趋势 — Bot 自进化" description="历史评分趋势" />
+      <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
           <h3 className="text-lg font-semibold text-gray-800 dark:text-white">评分趋势</h3>
@@ -170,7 +187,7 @@ export default function RatingTrends() {
         <div className="p-5">
           {metric === "h2h_wr" && !hasWrData ? (
             <div className="text-center py-20 text-gray-500 dark:text-gray-400">
-              暂无 H2H 胜率历史数据，需等待 daemon 写入新数据周期
+              当前周期尚无 H2H 胜率历史；等待同发布池 evaluation cycle 写入权威数据。
             </div>
           ) : (
             <Chart options={options} series={series} type="line" height={500} />

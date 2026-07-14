@@ -32,14 +32,13 @@ class TestParse429:
 
     def test_request_rejected_429_no_reset_time(self, rl):
         error = "Request rejected (429)"
-        assert rl.parse_429(error) is True
-        # Should default to ~300s wait
-        assert rl.wait_seconds() > 250
+        assert rl.parse_429(error) is False
+        assert rl.wait_seconds() == 0
 
     def test_chinese_pattern_no_reset_time(self, rl):
         error = "已达到5小时的使用上限。"
-        assert rl.parse_429(error) is True
-        assert rl.wait_seconds() > 250
+        assert rl.parse_429(error) is False
+        assert rl.wait_seconds() == 0
 
     def test_past_reset_time_ignored(self, rl):
         error = "限额将在2020-01-01 00:00:00重置"

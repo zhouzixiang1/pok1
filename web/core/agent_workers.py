@@ -24,7 +24,6 @@ from evolution_infra import (
     locked_file, get_bot_dir, get_logs_dir,
     _target_rel, _get_worker_semaphore,
     WORKER_FAILURES_FILE, MAX_WORKER_RETRIES, WORKER_TIMEOUT,
-    EXPERIENCE_FILE, find_current_v,
 )
 from worker_boundary import (
     ArtifactSnapshotError,
@@ -36,6 +35,7 @@ from worker_boundary import (
     restore_python_files,
     snapshot_python_files,
 )
+from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
 # Maximum number of LLM turns for the debug sub-agent (budget cap).
 _DEBUG_AGENT_MAX_TURNS = 5
@@ -215,6 +215,39 @@ def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
     """
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error,
              "failure_type": failure_type, "category": "worker"}
+    # Bind new rows at write time.  Readers deliberately do not infer these
+    # fields from a generation number because doing so would make pre-policy
+    # failure rows look current after an epoch reset.
+    try:
+        from bot_namespace import EVALUATION_EPOCH
+        from checkpoint_schema import FRESH_BOOTSTRAP_MODE, checkpoint_epoch_errors
+        from evolution_infra import read_pipeline_checkpoint
+        from system_strict_bootstrap import load_policy_epoch_reset_receipt
+
+        checkpoint = read_pipeline_checkpoint() or {}
+        receipt, receipt_errors = load_policy_epoch_reset_receipt()
+        workflow_run_id = checkpoint.get("workflow_run_id")
+        binding = checkpoint.get("epoch_binding") or {}
+        live_reset_matches = (
+            binding.get("mode") != FRESH_BOOTSTRAP_MODE
+            or binding.get("policy_epoch_reset_receipt_digest")
+            == receipt.get("receipt_digest")
+        ) if isinstance(receipt, dict) else False
+        if (
+            not receipt_errors
+            and isinstance(receipt, dict)
+            and live_reset_matches
+            and not checkpoint_epoch_errors(checkpoint)
+            and checkpoint.get("next_v") == gen
+            and isinstance(workflow_run_id, str)
+            and workflow_run_id.strip()
+        ):
+            entry.update({
+                "evaluation_epoch": EVALUATION_EPOCH,
+                "workflow_run_id": workflow_run_id,
+            })
+    except Exception:
+        pass
     with locked_file(WORKER_FAILURES_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     try:
@@ -227,151 +260,13 @@ def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
         log.warning("Failed to log worker failure event: %s", e)
 
 
-def _load_recent_failures(n=5):
-    """Load the n most recent worker failure records."""
-    if not WORKER_FAILURES_FILE.exists():
-        return []
-    entries = []
-    with locked_file(WORKER_FAILURES_FILE, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                try:
-                    entries.append(json.loads(line))
-                except json.JSONDecodeError as e:
-                    log.debug("Malformed worker failure entry: %s", line[:80])
-    return entries[-n:]
-
-
-def _infer_current_generation():
-    """Best-effort current generation lookup for EXHAUSTED tiering."""
-    try:
-        current = find_current_v()
-        return current if isinstance(current, int) and current > 0 else None
-    except Exception as e:
-        log.debug("Could not infer current generation for EXHAUSTED tiering: %s", e)
-        return None
-
-
-def _version_refs(entry):
-    """Return unique generation numbers referenced by active or legacy version tokens."""
-    versions = set()
-    for match in re.finditer(r"\b(?:v|claude_v|national_v|bot-v|national-bot-v)(\d+)\b", entry, re.IGNORECASE):
-        try:
-            versions.add(int(match.group(1)))
-        except ValueError:
-            pass
-    return versions
-
-
-def _extract_exhausted_block():
-    """Read experience_pool.md and extract [POSSIBLY EXHAUSTED] entries as constraint blocks.
-
-    Returns tiered constraint blocks:
-    - <forbidden_directions>: RECENT (## RECENT_LESSONS section) EXHAUSTED entries
-      that are safe to treat as hard "Do NOT implement" bans.
-    - <advisory_directions>: older EXHAUSTED entries, plus single-generation RECENT
-      entries from the current/previous generation. These are surfaced as historical
-      cautions, NOT hard bans — they expire naturally instead of permanently
-      blacklisting directions.
-
-    The two blocks (when present) are joined with "\n\n"; returns "" if neither.
-    RECENT_LESSONS can contain a just-created single-generation mechanism marked
-    [POSSIBLY EXHAUSTED] before the consolidator has 3+ consecutive-generation
-    evidence. Such single-generation recent entries are advisory only.
-    """
-    if not EXPERIENCE_FILE.exists():
-        return ""
-
-    try:
-        text = EXPERIENCE_FILE.read_text(encoding="utf-8")
-    except Exception:
-        return ""
-
-    current_gen = _infer_current_generation()
-
-    # Tolerant marker: matches [POSSIBLY EXHAUSTED] AND [EXHAUSTED — hard gate]
-    # (any bracketed tag containing EXHAUSTED). The old .replace() cleanup only
-    # stripped "[POSSIBLY EXHAUSTED]" / "[EXHAUSTED]", leaving the "— hard gate]"
-    # suffix from LLM-escalated markers as residue in the constraint block.
-    marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
-    hard_lines = []        # RECENT_LESSONS section (hard ban)
-    advisory_lines = []    # other sections and uncertain recent entries
-    in_recent = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## RECENT_LESSONS"):
-            in_recent = True
-        elif stripped.startswith("## "):
-            in_recent = False
-        if marker_re.search(line):
-            # Strip the leading markdown header markers and the marker itself
-            cleaned = marker_re.sub("", line).strip(" -•")
-            if cleaned:
-                version_refs = _version_refs(cleaned)
-                downgrade_recent = False
-                if in_recent:
-                    if current_gen is None:
-                        # If recency cannot be judged reliably, do not create a hard ban.
-                        downgrade_recent = True
-                    elif len(version_refs) == 1:
-                        only_gen = next(iter(version_refs))
-                        downgrade_recent = only_gen >= current_gen - 1
-                (advisory_lines if downgrade_recent or not in_recent else hard_lines).append(cleaned)
-
-    blocks = []
-    if hard_lines:
-        hard_items = "\n".join(f"  - {entry}" for entry in hard_lines)
-        blocks.append(
-            "<forbidden_directions>\n"
-            "These RECENT directions have enough evidence to be treated as EXHAUSTED. Do NOT implement:\n"
-            f"{hard_items}\n"
-            "Violating these constraints will result in automatic rejection.\n"
-            "</forbidden_directions>"
-        )
-    if advisory_lines:
-        advisory_items = "\n".join(f"  - {entry}" for entry in advisory_lines)
-        blocks.append(
-            "<advisory_directions>\n"
-            "These directions are historical cautions or single-generation recent warnings, "
-            "NOT hard bans. Revisit ONLY if combined with a NEW independent mechanism AND "
-            ">=30g paired net-chips H2H evidence:\n"
-            f"{advisory_items}\n"
-            "</advisory_directions>"
-        )
-    return "\n\n".join(blocks) + "\n\n" if blocks else ""
-
-
-def build_worker_execution_context():
-    """Freeze live prompt additions for one outer Worker transaction.
-
-    Infrastructure retries must replay the prompt that actually reached the
-    Worker, not re-read mutable cross-generation guidance between attempts.
-    The caller persists this bounded object inside the identity-bound
-    infrastructure overlay when transport fails.
-    """
-    return {
-        "schema_version": 1,
-        "exhausted_block": _extract_exhausted_block(),
-        "recent_failures": deepcopy_jsonable(_load_recent_failures(5)),
-    }
-
-
-def deepcopy_jsonable(value):
-    """Return a detached JSON-compatible copy of bounded prompt context."""
-    try:
-        return json.loads(json.dumps(value, ensure_ascii=False, default=str))
-    except Exception:
-        return []
-
-
 def _target_rel_set(task, next_v):
     """Extract the task's complete normalized writable file set.
 
     Returns a set of strings (relative paths within the bot directory) that
     the worker may modify. Both ``target_files`` and ``files_allowed`` must take
-    part in parallel disjointness: a helper allowed to one worker may be a
-    required target of another, which makes concurrent execution unsafe.
+    part in parallel disjointness.  In national_tcp_policy_v1 every valid task
+    resolves to policy.py, so multiple implementation workers are serialized.
     """
     return set(allowed_files_for_task(task, next_v))
 
@@ -846,7 +741,9 @@ async def _run_debug_agent(
     It examines the error output and changed diff to produce a minimal diagnosis.
 
     Returns a dict with 'diagnosis', 'fix', 'confidence' keys on success,
-    or an empty dict on failure. Never raises — caller relies on dict emptiness.
+    or an empty dict on ordinary diagnostic failure.  A typed provider-wide
+    ``LLMAvailabilityBlocked`` is deliberately propagated so the enclosing
+    durable Worker activity can pause without consuming an attempt.
     """
     from llm_query import parse_json_output
 
@@ -887,6 +784,7 @@ async def _run_debug_agent(
             debug_prompt, [], ui,
             f"DEBUG AGENT (v{next_v})", debug_log,
             tools=["Read"],
+            allowed_read_dirs=[candidate_root],
         )
 
         if not output or not output.strip():
@@ -906,6 +804,8 @@ async def _run_debug_agent(
 
         return result
 
+    except LLMAvailabilityBlocked:
+        raise
     except Exception as e:
         log.warning("Debug agent failed: %s", e)
         return {}
@@ -1012,8 +912,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False, worker_snapshots=None,
                               boundary_allowed_files=None, task_skipper=None,
-                              boundary_snapshot=None,
-                              worker_execution_context=None):
+                              boundary_snapshot=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
@@ -1026,34 +925,6 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         "compile, and probe only this tree; publication is owned by the harness.\n\n"
         + base_worker_prompt
     )
-
-    # Inject EXHAUSTED constraint block from experience pool.
-    # Prepended (not appended) so it appears before the worker's task instructions
-    # and cannot be missed or dismissed as a footnote.
-    frozen_context = (
-        worker_execution_context
-        if isinstance(worker_execution_context, dict)
-        else None
-    )
-    exhausted_block = (
-        str(frozen_context.get("exhausted_block") or "")
-        if frozen_context is not None
-        else _extract_exhausted_block()
-    )
-    if exhausted_block:
-        base_worker_prompt = exhausted_block + base_worker_prompt
-
-    # Inject recent worker failure memory
-    recent_failures = (
-        deepcopy_jsonable(frozen_context.get("recent_failures") or [])
-        if frozen_context is not None
-        else _load_recent_failures(5)
-    )
-    if recent_failures:
-        failure_lines = ["# Recent Worker Failures (avoid repeating these mistakes):"]
-        for f in recent_failures:
-            failure_lines.append(f"- Gen {f['gen']} Worker {f['worker_id']} ({f.get('role', 'unknown')}): {f['error'][:300]}")
-        base_worker_prompt += "\n\n" + "\n".join(failure_lines)
 
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
     worker_timeout = _worker_timeout_for_task(task, reviewer_feedback)
@@ -1142,6 +1013,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                             f"Worker {w_id} debug agent diagnosed: {debug_result['diagnosis'][:120]}",
                             "info",
                         )
+                except LLMAvailabilityBlocked:
+                    raise
                 except Exception:
                     pass  # Debug agent failure must not block worker retry
 
@@ -1160,8 +1033,21 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 f"WORKER {w_id} ({role})", worker_log_file,
                 tools=["Bash", "Read", "Edit"],
                 allowed_write_dir=allowed_write_scope,
+                allowed_read_dirs=[next_dir],
             ))
             await asyncio.wait_for(llm_task, timeout=worker_timeout)
+        except LLMAvailabilityBlocked:
+            # A provider-wide pause is not a Worker implementation attempt.
+            # Remove any partial edits and let the durable activity boundary
+            # release the lease without entering the retry/failure path.
+            try:
+                _restore_worker_changes(
+                    next_dir,
+                    _boundary_snapshot,
+                    ignored_files=sibling_files,
+                )
+            finally:
+                raise
         except (asyncio.TimeoutError, Exception) as exc:
             if isinstance(exc, asyncio.TimeoutError):
                 _last_reason = f"timed out after {worker_timeout}s (attempt {attempt+1}/{MAX_WORKER_RETRIES})"
@@ -1223,7 +1109,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 base_worker_prompt += (
                     f"\n\nCRITICAL: These target paths do NOT exist on disk: {', '.join(invalid_targets)}. "
                     f"You likely wrote to a bogus path (e.g. an unstripped \"(NEW)\" suffix). "
-                    f"Write each file to its PLAIN relative path, e.g. 'postflop.py' — no annotations. "
+                    f"Write the candidate-owned file to its plain relative path `policy.py` — no annotations. "
                     f"Use the Edit tool to create/edit the file at the correct path."
                 )
                 ui.log_history(
@@ -1343,8 +1229,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None, force_sequential=False,
-                            task_skipper=None,
-                            worker_execution_context=None):
+                            task_skipper=None):
     """Execute worker tasks, capturing per-worker file snapshots.
 
     When all workers have disjoint target_files, executes in parallel via
@@ -1398,7 +1283,6 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
             task_skipper=task_skipper,
-            worker_execution_context=worker_execution_context,
         )
         # P0-2: Worker CoT consistency check
         if ok:
@@ -1422,13 +1306,14 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             ok = False
                     else:
                         audit_focus_areas.extend(cot.get("focus_areas", []))
+            except LLMAvailabilityBlocked:
+                raise
             except Exception as e:
                 log.warning("CoT audit failed for worker 0: %s", e)
         return ok, worker_snapshots, audit_focus_areas
 
     # ── Disjointness check: can we safely run workers in parallel? ──
-    # Compute complete per-task writable sets (targets + allowed helpers) and
-    # check for intersections.
+    # Compute complete per-task writable sets and check for intersections.
     task_file_sets = [_target_rel_set(task, next_v) for task in tasks]
     all_disjoint = True
     seen = set()
@@ -1445,8 +1330,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
 
     if all_disjoint and not force_sequential:
         # ── Parallel path: all writable file sets are disjoint ──
-        # Pre-snapshot all required targets at once; helpers participate in the
-        # disjointness proof even though only required targets need snapshots.
+        # Pre-snapshot all required targets at once.
         ui.log_history(
             f"Running {len(tasks)} workers in PARALLEL (disjoint target files)...", "info"
         )
@@ -1471,12 +1355,10 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     worker_snapshots=worker_snapshots,
                     boundary_allowed_files=parallel_allowed_files,
                     boundary_snapshot=parallel_boundary_snapshot,
-                    worker_execution_context=worker_execution_context,
                 )
 
-        results = await asyncio.gather(
+        results = await gather_llm_fail_fast(
             *[_gated_worker(task, i) for i, task in enumerate(tasks)],
-            return_exceptions=True,
         )
 
         # H2 (2026-06-29): CancelledError must propagate, not be swallowed.
@@ -1551,6 +1433,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             any_failed = True
                     else:
                         audit_focus_areas.extend(cot.get("focus_areas", []))
+            except LLMAvailabilityBlocked:
+                raise
             except Exception as e:
                 log.warning("CoT audit failed for worker %d: %s", i, e)
 
@@ -1601,7 +1485,6 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
             task_skipper=task_skipper,
-            worker_execution_context=worker_execution_context,
         )
         if not ok:
             return False, worker_snapshots, audit_focus_areas
@@ -1626,6 +1509,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                         return False, worker_snapshots, audit_focus_areas
                 else:
                     audit_focus_areas.extend(cot.get("focus_areas", []))
+        except LLMAvailabilityBlocked:
+            raise
         except Exception as e:
             log.warning("CoT audit failed for worker %d (sequential): %s", i, e)
     return True, worker_snapshots, audit_focus_areas

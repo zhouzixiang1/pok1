@@ -1,13 +1,14 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useBots, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
 import { api } from "../api/client";
-import { controlApi, type ControlStatus } from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
-import { Skeleton } from "../components/shared/Skeleton";
+import { EmptyState } from "../components/shared/EmptyState";
 import { PipelineStepper } from "../components/evolution/PipelineStatus";
+import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 
 const strengthConfidenceLabel: Record<string, string> = {
@@ -21,43 +22,6 @@ type StrengthBadgeVariant = "success" | "warning" | "error";
 const strengthConfidenceVariant = (value?: string): StrengthBadgeVariant => (
   value === "high" ? "success" : value === "medium" ? "warning" : "error"
 );
-
-function DaemonToggle() {
-  const daemon = useDaemonStatus();
-  const [toggling, setToggling] = useState(false);
-
-  if (!daemon) return null;
-
-  const handleToggle = async () => {
-    setToggling(true);
-    try {
-      await controlApi.setConfig({ daemon_enabled: !daemon.daemon_enabled });
-    } catch (e) {
-      console.error("[Overview] daemon toggle failed:", e);
-    } finally {
-      setToggling(false);
-    }
-  };
-
-  return (
-    <button
-      onClick={handleToggle}
-      disabled={toggling}
-      role="switch"
-      aria-checked={daemon.daemon_enabled}
-      aria-label={daemon.daemon_enabled ? "停止评分守护进程" : "启动评分守护进程"}
-      className={cn(
-        "relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:opacity-50 dark:focus-visible:ring-offset-surface-1",
-        daemon.daemon_enabled ? "bg-success-500" : "bg-gray-300 dark:bg-gray-600",
-      )}
-    >
-      <span className={cn(
-        "inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform",
-        daemon.daemon_enabled ? "translate-x-[18px]" : "translate-x-[3px]",
-      )} />
-    </button>
-  );
-}
 
 function RecentActivityCard() {
   const matches = useRecentMatches();
@@ -108,7 +72,7 @@ function RecentActivityCard() {
           <p className="text-sm text-gray-700 dark:text-gray-300 font-medium">
             {topRivalry.key.split(" vs ").map(compactBotName).join(" vs ")}
           </p>
-          <p className="text-xs text-gray-500 mt-1">胜率 {(topRivalry.wr * 100).toFixed(0)}% · {topRivalry.games} 场</p>
+          <p className="text-xs text-gray-500 mt-1">胜率 {(topRivalry.wr * 100).toFixed(0)}% · {topRivalry.games} 个完整 70 手样本</p>
         </div>
       )}
 
@@ -143,40 +107,47 @@ function Sparkline({ data, color }: { data: number[]; color: string }) {
 export default function Overview() {
   const ratings = useRatings();
   const stats = useMatchStats();
-  const bots = useBots();
   const daemon = useDaemonStatus();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
-  const [controlStatus, setControlStatus] = useState<ControlStatus | null>(null);
+  const { status: controlStatus, loading: controlLoading, error: controlError } = useControlStatus(5_000);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
   const rateLimit = useRateLimit();
 
   useEffect(() => {
+    if (!controlStatus?.epoch_initialized) {
+      setSummary({});
+      return;
+    }
     api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
     const id = setInterval(() => {
       api.historySummary().then(setSummary).catch((e) => console.error("[Overview] API error:", e));
     }, 15000);
     return () => clearInterval(id);
-  }, []);
+  }, [controlStatus?.epoch_initialized]);
 
   useEffect(() => {
+    if (!controlStatus?.epoch_initialized) {
+      setCheckpoint(null);
+      return;
+    }
     const refresh = () => {
-      controlApi.status().then(setControlStatus).catch((e) => console.error("[Overview] API error:", e));
       api.pipelineCheckpoint().then(setCheckpoint).catch((e) => console.error("[Overview] API error:", e));
     };
     refresh();
     const id = setInterval(refresh, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [controlStatus?.epoch_initialized]);
 
-  // Reset local timer when SSE pushes a new daemon age value
+  // Reset the local timer when SSE pushes a new daemon heartbeat age. Strength
+  // cycle age is a separate evidence field and must not masquerade as liveness.
   useEffect(() => {
-    if (daemon?.last_update_age_seconds !== lastDaemonAgeRef.current) {
-      lastDaemonAgeRef.current = daemon?.last_update_age_seconds;
+    if (daemon?.heartbeat_age_seconds !== lastDaemonAgeRef.current) {
+      lastDaemonAgeRef.current = daemon?.heartbeat_age_seconds ?? undefined;
       setLocalElapsed(0);
     }
-  }, [daemon?.last_update_age_seconds]);
+  }, [daemon?.heartbeat_age_seconds]);
 
   // Local 1s tick so "X秒前" increments between SSE pushes
   useEffect(() => {
@@ -184,29 +155,30 @@ export default function Overview() {
     return () => clearInterval(timer);
   }, []);
 
-  if (ratings.length === 0) {
-    return (
-      <div className="space-y-4">
-        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <Skeleton className="h-20 rounded-xl" />
-          <Skeleton className="h-20 rounded-xl" />
-          <Skeleton className="h-20 rounded-xl" />
-          <Skeleton className="h-20 rounded-xl" />
-        </div>
-        <Skeleton className="h-64 rounded-2xl" />
-      </div>
-    );
-  }
+  const visibleRatings = controlStatus?.epoch_initialized
+    ? ratings.filter((bot) => Number.isFinite(bot.selection_score ?? bot.leaderboard_score))
+    : [];
 
-  const scoreOf = (b: (typeof ratings)[number]) => (
-    b.selection_score ?? b.leaderboard_score ?? Math.max(0, Math.min(1, 0.5 + (b.conservative_rating - 1500) / 800))
+  const scoreOf = (b: (typeof visibleRatings)[number]) => (
+    (b.selection_score ?? b.leaderboard_score) as number
   );
-  const maxScore = Math.max(...ratings.map(scoreOf));
-  const minScore = Math.min(...ratings.map(scoreOf));
+  const maxScore = visibleRatings.length > 0 ? Math.max(...visibleRatings.map(scoreOf)) : 0;
+  const minScore = visibleRatings.length > 0 ? Math.min(...visibleRatings.map(scoreOf)) : 0;
   const scoreRange = maxScore - minScore || 1;
-  const top5 = ratings.slice(0, 5);
-  const rest = ratings.slice(5);
-  const daemonAge = daemon?.last_update_age_seconds;
+  const top5 = visibleRatings.slice(0, 5);
+  const rest = visibleRatings.slice(5);
+  const nextAuthorityVersion = authorityNextVersion(controlStatus);
+  const strengthEmptyMessage = controlStatus?.epoch_initialized
+    ? controlStatus.active_bots.length === 0
+      ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
+      : "严格发布池正在等待首个同发布池 evaluation cycle；不会用 Glicko 默认值伪造选择分。"
+    : nextAuthorityVersion != null
+      ? `严格国赛 epoch 尚未初始化；v${controlStatus?.version_authority_high_water ?? 142} 仅为数字高水位，reset 后首目标为 v${nextAuthorityVersion}。`
+      : "epoch 权威当前不可用或需要恢复；在权威恢复前不声明下一版本或强度结果。";
+  const strengthSampleDisplay = controlStatus?.epoch_initialized && visibleRatings.length > 0
+    ? (stats?.total_strength_samples ?? stats?.total_games ?? 0).toLocaleString()
+    : "—";
+  const daemonAge = daemon?.heartbeat_age_seconds;
   const effectiveAge = daemonAge != null ? daemonAge + localElapsed : null;
   const daemonAgeStr = effectiveAge != null
     ? effectiveAge < 0 ? "从未" : effectiveAge < 60 ? `${Math.round(effectiveAge)}秒前` : `${Math.round(effectiveAge / 60)}分钟前`
@@ -216,8 +188,15 @@ export default function Overview() {
     <>
       <PageMeta title="总览 — Bot 自进化" description="Bot 种群概览" />
 
+      <EpochAuthorityStatus
+        status={controlStatus}
+        loading={controlLoading}
+        error={controlError}
+        className="mb-4"
+      />
+
       {/* 429 rate-limit warning banner */}
-      {rateLimit?.blocked && (
+      {controlStatus?.epoch_initialized && rateLimit?.blocked && (
         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5 mb-4 flex items-center gap-3">
           <span className="text-amber-400 text-lg">⏳</span>
           <div>
@@ -227,33 +206,54 @@ export default function Overview() {
               {rateLimit.wait_seconds != null && `（剩余 ${Math.ceil(rateLimit.wait_seconds / 60)} 分钟）`}
             </p>
           </div>
-          <span className="text-amber-400/50 text-xs ml-auto">Daemon 继续运行中</span>
+          <span className="text-amber-400/50 text-xs ml-auto">
+            {daemon?.status === "active" ? "评分进程继续运行" : "评分进程当前不可确认运行"}
+          </span>
         </div>
       )}
 
       {/* Compact metric strip */}
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{bots.active.length}</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">活跃 Bot</span>
+          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{controlStatus?.active_bots.length ?? 0}</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">严格发布 Bot</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{(stats?.total_games ?? 0).toLocaleString()}</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">总对局</span>
+          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{strengthSampleDisplay}</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">权威强度样本</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">第 {controlStatus?.generation_count ?? 0} 代</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">进化</span>
+          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{controlStatus?.strict_generation_count ?? 0}</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">严格代次</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-center gap-2">
-          <Badge variant={daemon?.status === "active" ? "success" : "error"} size="sm" pulse={daemon?.status === "active"}>
-            {daemon?.status === "active" ? "活跃" : daemon?.status === "idle" ? "空闲" : "未知"}
+          <Badge
+            variant={!controlStatus?.epoch_initialized || daemon?.status === "blocked" || daemon?.status === "disabled" || daemon?.status === "stopped"
+              ? "error"
+              : daemon?.status === "active" ? "success" : "warning"}
+            size="sm"
+            pulse={Boolean(controlStatus?.epoch_initialized && daemon?.status === "active")}
+          >
+            {!controlStatus?.epoch_initialized
+              ? "未初始化"
+              : daemon?.status === "active" ? "评分进程活跃"
+              : daemon?.status === "degraded" ? "评分进程心跳过期"
+              : daemon?.status === "stopped" ? "评分进程已停止"
+              : daemon?.status === "disabled" ? "评分进程未启用"
+              : "评分进程受阻"}
           </Badge>
-          <DaemonToggle />
-          <span className="text-[10px] text-gray-400">{daemonAgeStr}</span>
+          {controlStatus?.epoch_initialized && (
+            <span className="text-[10px] text-gray-400">控制操作请前往控制面板</span>
+          )}
+          <span className="text-[10px] text-gray-400">心跳 {daemonAgeStr}</span>
+          {controlStatus?.epoch_initialized && (
+            <span className="text-[10px] text-gray-400">
+              {daemon?.strength_evidence_available ? "强度周期已发布" : "等待首个同发布池强度周期"}
+            </span>
+          )}
         </div>
       </div>
 
@@ -262,6 +262,13 @@ export default function Overview() {
         {/* Top 5 podium */}
         <div className="lg:col-span-2">
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {top5.length === 0 && (
+              <div className="sm:col-span-2 lg:col-span-3 rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+                <EmptyState
+                  message={strengthEmptyMessage}
+                />
+              </div>
+            )}
             {/* #1 — large featured card */}
             {top5[0] && (() => {
               const bot = top5[0];
@@ -354,7 +361,7 @@ export default function Overview() {
           </div>
 
           {/* Pipeline status bar */}
-          {checkpoint && (
+          {controlStatus?.active_generation && checkpoint && (
             <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
@@ -362,7 +369,7 @@ export default function Overview() {
                     {controlStatus?.running ? "运行中" : "已停止"}
                   </Badge>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
-                    v{controlStatus?.current_v ?? 0} → v{controlStatus?.next_v ?? 0}
+                    v{controlStatus.active_generation.source_v ?? "—"} → v{controlStatus.active_generation.next_v}
                   </span>
                 </div>
               </div>
@@ -372,14 +379,20 @@ export default function Overview() {
         </div>
 
         {/* Right: Activity */}
-        <RecentActivityCard />
+        {controlStatus?.epoch_initialized ? (
+          <RecentActivityCard />
+        ) : (
+          <div className="rounded-2xl border border-gray-200 bg-white p-4 text-xs text-gray-500 dark:border-border-subtle dark:bg-surface-1 dark:text-gray-400">
+            旧对局、旧 H2H 和旧代次日志已退出当前权威视图；完成一次性 reset 后才会展示新 epoch 证据。
+          </div>
+        )}
       </div>
 
       {/* Full leaderboard table */}
       {rest.length > 0 && (
         <div className="mt-6 rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1 overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 dark:border-border-subtle">
-            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">排行榜 · #{top5.length + 1}–#{ratings.length}</h3>
+            <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">排行榜 · #{top5.length + 1}–#{visibleRatings.length}</h3>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

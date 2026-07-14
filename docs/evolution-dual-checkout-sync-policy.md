@@ -2,7 +2,7 @@
 
 This repository intentionally uses two local checkouts under `/home/zzx/project/pok`:
 
-- `/home/zzx/project/pok` is the operator and infrastructure checkout. Human and agent changes to `engine/`, `web/`, `sever/`, `rl/`, prompts, tests, docs, and project scripts should be developed from this side, or from a temporary worktree created under this directory.
+- `/home/zzx/project/pok` is the operator and infrastructure checkout. Human and agent changes to `web/`, `sever/`, prompts, tests, docs, and project scripts should be developed from this side, or from a temporary worktree created under this directory.
 - `/home/zzx/project/pok/.evolution_pok` is the autonomous evolution runtime clone. The running web/orchestrator/daemon process, candidate bot directories, live ratings, and generation checkpoints live here.
 
 The two checkouts must stay synchronized through `origin/main`. Do not copy files between them by hand.
@@ -26,13 +26,14 @@ Committed infrastructure state is synchronized only by git:
 
 Infrastructure edits belong in the outer project checkout:
 
-- `engine/`
 - `sever/`
 - `web/`
-- `rl/`
 - `scripts/`
 - `docs/`
 - root project guidance such as `AGENTS.md`, `CLAUDE.md`, and `.gitignore`
+
+Retired engines, experiments, bots, and evidence under `archive/` are historical
+records. They are never copied into the runtime checkout as active inputs.
 
 Autonomous evolution runtime state belongs only in `.evolution_pok`:
 
@@ -44,12 +45,29 @@ Autonomous evolution runtime state belongs only in `.evolution_pok`:
 
 Do not run the long-lived evolution process from the outer checkout. Do not use `.evolution_pok` as a normal development worktree while a generation is running.
 
+The one-time `national_tcp_policy_v1` reset is runtime authority, not ordinary
+repository cleanup. After infrastructure is merged/pushed and the autonomous
+checkout is stopped, clean, on `main`, and exactly synchronized to
+`origin/main`, execute it only there:
+
+```bash
+cd /home/zzx/project/pok/.evolution_pok
+python3 scripts/reset_national_tcp_policy_epoch.py \
+  --execute --acknowledge-runtime-checkout
+```
+
+The script rejects execution from the outer checkout and refuses any existing
+completed or interrupted reset claim. Old ignored output in the outer checkout
+has no runtime authority and must never be copied to `.evolution_pok`; use a
+non-executing dry run there for inspection, then clean/archive it separately
+only after the authoritative runtime reset is verified.
+
 ## How The Current Guard Works
 
 The current implementation uses an evaluation-contract guard rather than a blanket "any remote change blocks evolution" rule:
 
-- `web/core/evolution_scope.py` defines file-scoped evaluation-sensitive paths. `CRITICAL_PREFIXES` must stay empty unless a future change has a specific path-pattern reason; do not lock all of `engine/`, `sever/`, `web/core/`, or `web/tests/`.
-- The hard contract is the union of named exact-file groups for local engine semantics, national TCP/platform rule semantics, legacy adapter semantics, gate/precommit logic, generation/recovery/publish logic, and active prompt templates. The legacy adapter group is excluded when the active workflow is native TCP. Runtime observability files such as `web/core/event_bus.py`, `web/core/system_log.py`, `web/core/web_ui.py`, launcher files such as `web/main.py` and `sever/main.py`, docs, frontend assets, and unrelated experiments are contract-neutral unless they are promoted into a named exact-file group with tests.
+- `web/core/evolution_scope.py` defines file-scoped evaluation-sensitive paths. `CRITICAL_PREFIXES` must stay empty unless a future change has a specific path-pattern reason; do not lock all of `sever/`, `web/core/`, or `web/tests/`.
+- The hard contract is the union of named exact-file groups for raw national-TCP parsing and legality, the system-owned bot runtime, typed policy ABI, gates/precommit, generation/recovery/publication, and active prompt templates. There is no active local-engine or adapter contract. Runtime observability files such as `web/core/event_bus.py`, `web/core/system_log.py`, `web/core/web_ui.py`, launcher files such as `web/main.py` and `sever/main.py`, docs, and frontend assets are contract-neutral unless they are promoted into a named exact-file group with tests.
 - `web/core/evaluation_contract.py` builds the active contract from those exact files plus only the active candidate/source/parent/opponent bot versions recorded in the checkpoint. The contract is stage-sensitive at the level of pipeline logic, not directories: selected/preparing/crossover stages track prepare+crossover files, `prepared` tracks direction-audit files, `direction_audited` tracks master-planning files, `master_planned` and repair stages track worker/repair files, and post-worker stages track only hard evaluation/runtime files. Guard files such as `evaluation_contract.py`, `evolution_scope.py`, `tool_runtime_guard.py`, `orchestrator.py`, and `pipeline_recovery.py` stay critical at every active stage. Dirty worktree checks use the same checkpoint bot-version set: an unrelated historical `bots/national_v*/` directory is not a stop condition unless that version is part of the current contract.
 - `web/core/evolution_infra.py` writes that contract into `web/core/results/pipeline_state.json` as `repo_baseline.evaluation_contract`.
 - `web/core/tool_runtime_guard.py`, `web/core/orchestrator.py`, and `web/core/pipeline_recovery.py` allow unrelated HEAD drift only when the changed paths do not touch the active evaluation contract.
@@ -119,4 +137,8 @@ Merge or rebase `origin/main` into the outer branch before editing bots or evalu
 - Do not stage `.evolution_pok/` from the outer checkout.
 - Do not run evolution from both checkouts at the same time.
 - Do not make infrastructure edits directly in `.evolution_pok` while a generation is active unless the edit is an emergency repair and the generation is restarted afterward.
-- Do not assume a highest-numbered `bots/national_v*` directory is complete. The annotated `national-bot-v{N}` tag is the completion proof.
+- Do not assume a highest-numbered `bots/national_v*` directory is complete.
+  Current publication requires the `national_tcp_policy_v1` five-file artifact,
+  current completion metadata, annotated `national-bot-v{N}` tag, and
+  role-appropriate signed full-v5 certificate. A retired tag or untagged higher
+  directory is not active completion proof.

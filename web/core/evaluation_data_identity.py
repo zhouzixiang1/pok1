@@ -21,8 +21,8 @@ from workflow_profiles import get_workflow_profile
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_NAME = "evaluation_data_manifest.json"
-IDENTITY_SCHEMA_VERSION = 3
-PROFILE_ID = "national-native-rating-authority-v3-managed-executor-strict-pool"
+IDENTITY_SCHEMA_VERSION = 4
+PROFILE_ID = "national-tcp-policy-rating-authority-v4-direct-artifact"
 SEMANTIC_PATHS = (
     "sever/engine/deck.py",
     "sever/engine/evaluator.py",
@@ -38,9 +38,8 @@ SEMANTIC_PATHS = (
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_native.py",
-    "web/core/national_protocol_quarantine.py",
-    "web/core/national_protocol_quarantine.json",
-    "web/core/national_transport.py",
+    "web/core/national_runtime_authority.py",
+    "sever/server/transport.py",
     "web/core/rating_snapshot.py",
     "web/core/strength_order.py",
 )
@@ -79,11 +78,26 @@ def _sha256(path: Path) -> str:
 
 def base_evaluation_identity() -> dict[str, Any]:
     profile = get_workflow_profile()
-    native_strength_runtime_overlay: dict[str, Any] = {}
-    if str(getattr(profile, "national_execution_mode", "")) == "native_tcp":
-        from national_native import current_strength_runtime_overlay_identity
+    from bot_namespace import (
+        NATIONAL_ARTIFACT_CONTRACT_SCHEMA_VERSION,
+        NATIONAL_ENTRYPOINT,
+        NATIONAL_RUNTIME_CONTRACT_ID,
+        NATIONAL_RUNTIME_MANIFEST,
+        POLICY_ENTRYPOINT,
+        POLICY_EPOCH_RECEIPT,
+        PRECOMPUTE_ENTRYPOINT,
+    )
 
-        native_strength_runtime_overlay = current_strength_runtime_overlay_identity()
+    artifact_execution_contract = {
+        "schema_version": NATIONAL_ARTIFACT_CONTRACT_SCHEMA_VERSION,
+        "mode": "direct_content_bound_policy_artifact",
+        "runtime_contract_id": NATIONAL_RUNTIME_CONTRACT_ID,
+        "entrypoint": NATIONAL_ENTRYPOINT,
+        "policy_entrypoint": POLICY_ENTRYPOINT,
+        "precompute_entrypoint": PRECOMPUTE_ENTRYPOINT,
+        "runtime_manifest": NATIONAL_RUNTIME_MANIFEST,
+        "epoch_receipt": POLICY_EPOCH_RECEIPT,
+    }
     payload = {
         "schema_version": IDENTITY_SCHEMA_VERSION,
         "profile_id": PROFILE_ID,
@@ -95,7 +109,7 @@ def base_evaluation_identity() -> dict[str, Any]:
         ),
         "national_hands": int(getattr(profile, "national_rating_hands", 70)),
         "official_exe_strength_weight": 0,
-        "native_strength_runtime_overlay": native_strength_runtime_overlay,
+        "artifact_execution_contract": artifact_execution_contract,
         "semantic_files": {
             path: _sha256(ROOT / path) if (ROOT / path).is_file() else "missing"
             for path in SEMANTIC_PATHS

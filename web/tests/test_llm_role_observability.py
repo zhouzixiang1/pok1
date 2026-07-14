@@ -114,7 +114,7 @@ def test_run_claude_query_injects_runtime_path_contract(monkeypatch, tmp_path):
 
     log_file = tmp_path / "v282" / "logs" / "worker_io.txt"
     log_file.parent.mkdir(parents=True)
-    target = evolution_infra.PROJECT_ROOT / "bots" / "claude_v282" / "opponent.py"
+    target = evolution_infra.PROJECT_ROOT / "bots" / "national_v282" / "policy.py"
 
     output, _cost, _usage = asyncio.run(
         llm_query.run_claude_query(
@@ -673,6 +673,55 @@ def test_process_stream_system_thinking_messages_are_observed_but_not_substantiv
     assert "[SYSTEM_MESSAGE subtype=thinking_tokens" in role_log
 
 
+def test_process_stream_binds_real_result_to_strict_call_context(tmp_path):
+    import strict_authority_workflow
+
+    result = ResultMessage(
+        subtype="success",
+        duration_ms=10,
+        duration_api_ms=10,
+        is_error=False,
+        num_turns=1,
+        session_id="strict-observed-session",
+        total_cost_usd=0.0,
+        usage={},
+    )
+
+    async def stream():
+        yield result
+
+    capture = {
+        "invocation_id": "strict-invocation",
+        "effect_id": "strict-effect",
+        "results": [],
+    }
+    token = llm_query._STRICT_PROVIDER_RESULTS.set(capture)
+    try:
+        asyncio.run(llm_query._process_stream(
+            stream(),
+            str(tmp_path / "strict-role-io.txt"),
+            _DummyUI(),
+            "LEAD CODE REVIEWER",
+        ))
+    finally:
+        llm_query._STRICT_PROVIDER_RESULTS.reset(token)
+
+    assert capture["results"] == [result]
+    assert strict_authority_workflow._provider_results_were_observed(
+        capture["results"],
+        invocation_id="strict-invocation",
+        effect_id="strict-effect",
+    )
+    assert not strict_authority_workflow._provider_results_were_observed(
+        capture["results"],
+        invocation_id="different-invocation",
+        effect_id="strict-effect",
+    )
+    strict_authority_workflow._consume_observed_provider_results(
+        capture["results"]
+    )
+
+
 def test_process_stream_system_only_stall_times_out_at_first_activity(
     monkeypatch, tmp_path
 ):
@@ -903,7 +952,7 @@ def test_subagent_cost_guard_blocks_unbounded_git_history():
         == "git_log_all_history"
     )
     assert (
-        llm_query._subagent_bash_cost_detector("git log -Sfoo -- strategy.py")
+        llm_query._subagent_bash_cost_detector("git log -Sfoo -- policy.py")
         == "git_log_pickaxe_full_history"
     )
     assert (
@@ -914,7 +963,7 @@ def test_subagent_cost_guard_blocks_unbounded_git_history():
         "git log --oneline --max-count 20"
     ) is None
     assert llm_query._subagent_bash_cost_detector(
-        "git log --oneline bot-v250..HEAD"
+        "git log --oneline national-bot-v250..HEAD"
     ) is None
 
 
@@ -936,7 +985,7 @@ def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
         handler(
             {
                 "tool_name": "Bash",
-                "tool_input": {"command": "git log --oneline --all national-bot-v1..HEAD"},
+                "tool_input": {"command": "git log --oneline --all national-bot-v143..HEAD"},
             },
             "tool-use-1",
             {},
@@ -975,10 +1024,10 @@ def test_critic_and_reviewer_prompts_require_bounded_git_history():
 
 
 def test_subagent_mutation_guard_allows_dev_null_in_command_substitution():
-    command = """cd bots && for f in main.py strategy.py; do
-  diff_lines=$(diff claude_v239/$f claude_v248/$f 2>/dev/null | wc -l)
-  v239_lines=$(wc -l < claude_v239/$f 2>/dev/null)
-  echo "$f: v239=${v239_lines}L diff=${diff_lines}"
+    command = """cd bots && for f in national_bot.py policy.py; do
+  diff_lines=$(diff national_v243/$f national_v248/$f 2>/dev/null | wc -l)
+  v243_lines=$(wc -l < national_v243/$f 2>/dev/null)
+  echo "$f: v243=${v243_lines}L diff=${diff_lines}"
 done"""
 
     assert llm_query._subagent_bash_mutation_detector(command) is None
@@ -989,11 +1038,11 @@ done"""
 
 
 def test_subagent_mutation_guard_ignores_redirect_operators_inside_comments():
-    command = """# Get the full strategy.py diff for the to_call>0 block
-diff bots/claude_v200/strategy.py bots/claude_v249/strategy.py | wc -l
+    command = """# Get the full policy.py diff for the to_call>0 block
+diff bots/national_v243/policy.py bots/national_v249/policy.py | wc -l
 echo "---"
 # Check the choose_raise changes more carefully
-diff bots/claude_v200/strategy.py bots/claude_v249/strategy.py | tail -200
+diff bots/national_v243/policy.py bots/national_v249/policy.py | tail -200
 """
 
     assert llm_query._subagent_bash_mutation_detector(command) is None
@@ -1014,7 +1063,7 @@ def test_subagent_mutation_guard_still_blocks_real_redirect():
 
 
 def test_runtime_path_contract_warns_against_tmp_probe_logs(tmp_path):
-    target_dir = tmp_path / "bots" / "national_v21"
+    target_dir = tmp_path / "bots" / "national_v243"
     target_dir.mkdir(parents=True)
 
     contract = llm_query._format_runtime_path_contract(tmp_path, target_dir)
@@ -1087,7 +1136,7 @@ def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, t
     )
     monkeypatch.setattr(llm_query.asyncio, "sleep", _no_wait)
 
-    log_file = tmp_path / "battle_exp_llm.txt"
+    log_file = tmp_path / "match_analyst_llm.txt"
 
     with pytest.raises(Exception):
         asyncio.run(
@@ -1095,7 +1144,7 @@ def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, t
                 "prompt",
                 [],
                 _DummyUI(),
-                "battle_experience",
+                "MATCH ANALYST",
                 str(log_file),
             )
         )
@@ -1104,7 +1153,7 @@ def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, t
     assert len(failed) == 1
     _category, severity, _message, fields = failed[0]
     assert severity == "info"
-    assert fields["role"] == "battle_experience"
+    assert fields["role"] == "MATCH ANALYST"
     assert "error result: success" in fields["error"]
 
 

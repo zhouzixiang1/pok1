@@ -5,6 +5,7 @@ import threading
 
 import pytest
 
+import epoch_authority
 import national_bot_launcher
 from national_arena.manager import ArenaConflict, NationalArenaManager, _ArenaRuntime
 from national_arena.models import ArenaSession
@@ -444,6 +445,11 @@ def test_startup_reaps_process_ledger_even_when_session_was_terminal(tmp_path, m
             status="finished",
             finished_at="2026-07-11T00:00:00+00:00",
             managed_processes=[{"pid": 43210, "pgid": 43210}],
+            **NationalArenaManager.session_epoch_fields(
+                epoch_authority.require_policy_epoch_initialized(
+                    "test.national_arena.persisted_process_fixture"
+                )
+            ),
         )
         store.create_session(session)
         manager = NationalArenaManager(store)

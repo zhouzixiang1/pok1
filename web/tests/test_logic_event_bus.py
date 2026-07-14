@@ -1,7 +1,7 @@
 """Tests for event_bus.py — the Phase-0 log-system-redesign backbone.
 
 Covers the structural guarantees the redesign relies on:
-  - dual-write (new events.jsonl + legacy system_events.jsonl)
+  - one canonical events.jsonl write, with the same event broadcast over SSE
   - mandatory correlation schema (run_id/stage/attempt/pid/proc/category)
   - severity normalisation to the frontend's canonical 4 values
   - _resolve_context() fallback chain (contextvar → last-known → checkpoint)
@@ -14,7 +14,9 @@ Covers the structural guarantees the redesign relies on:
 import json
 import os
 import threading
+from types import SimpleNamespace
 
+import checkpoint_schema
 import pytest
 
 import event_bus
@@ -27,7 +29,20 @@ def _read_jsonl(path):
 
 
 @pytest.fixture(autouse=True)
-def _reset_event_bus():
+def _reset_event_bus(monkeypatch):
+    def resolve(label, **_kwargs):
+        version = int(str(label).rsplit("_v", 1)[1])
+        return SimpleNamespace(
+            eligible=True,
+            version=version,
+            issues=(),
+            runtime_manifest={"epoch": "national_tcp_policy_v1"},
+            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
+            publication_identity={"published": True, "version": version},
+            certificate_digest="a" * 64,
+        )
+
+    monkeypatch.setattr(checkpoint_schema, "resolve_national_bot_spec", resolve)
     event_bus.reset_for_test()
     yield
     event_bus.reset_for_test()
@@ -35,10 +50,8 @@ def _reset_event_bus():
 
 @pytest.fixture
 def isolated_files(tmp_path, monkeypatch):
-    """Point both the new and legacy sinks at tmp_path so emit() is hermetic."""
-    import system_log
+    """Point the canonical sink at tmp_path so emit() is hermetic."""
     monkeypatch.setattr(event_bus, "EVENTS_FILE", tmp_path / "events.jsonl")
-    monkeypatch.setattr(system_log, "SYSTEM_EVENTS_FILE", tmp_path / "system_events.jsonl")
     return tmp_path
 
 
@@ -48,13 +61,11 @@ def _ckpt(**kw):
 
 # ── dual-write + schema ──────────────────────────────────────────────────────
 
-def test_emit_dual_writes_new_and_legacy(isolated_files):
-    import system_log
+def test_emit_writes_exactly_one_canonical_row(isolated_files):
     event_bus.emit("pipeline.test", "info", "hello", next_v=127)
-    new = _read_jsonl(isolated_files / "events.jsonl")
-    legacy = _read_jsonl(system_log.SYSTEM_EVENTS_FILE)
-    assert len(new) == 1 and new[0]["type"] == "pipeline.test"
-    assert len(legacy) == 1 and legacy[0]["type"] == "pipeline.test"
+    rows = _read_jsonl(isolated_files / "events.jsonl")
+    assert len(rows) == 1 and rows[0]["type"] == "pipeline.test"
+    assert not (isolated_files / "system_events.jsonl").exists()
 
 
 def test_emit_schema_has_correlation_fields(isolated_files):
@@ -66,6 +77,20 @@ def test_emit_schema_has_correlation_fields(isolated_files):
     assert data["category"] == "pipeline.x"
     assert data["pid"] == os.getpid()
     assert data["emitter_pid"] == os.getpid()
+
+
+def test_emit_stamps_current_policy_epoch_identity(isolated_files, monkeypatch):
+    monkeypatch.setattr(
+        event_bus,
+        "_current_epoch_identity",
+        lambda: ("national_tcp_policy_v1", "a" * 64),
+    )
+
+    event_bus.emit("pipeline.identity", "info", "m")
+
+    data = _read_jsonl(isolated_files / "events.jsonl")[0]["data"]
+    assert data["evaluation_epoch"] == "national_tcp_policy_v1"
+    assert data["epoch_reset_receipt_digest"] == "a" * 64
 
 
 def test_emit_preserves_business_pid_and_records_emitter(isolated_files):
@@ -279,7 +304,7 @@ def test_semantic_family_and_failure_mode(isolated_files):
 # ── legacy shim compatibility ────────────────────────────────────────────────
 
 def test_log_system_event_shim_forwards(isolated_files):
-    """log_system_event keeps its 4-arg signature and forwards to emit (dual-write)."""
+    """log_system_event keeps its 4-arg signature and forwards to emit."""
     import system_log
     system_log.log_system_event("pipeline.legacy", "info", "msg", {"next_v": 10})
     ev = _read_jsonl(isolated_files / "events.jsonl")[0]
@@ -327,12 +352,12 @@ def test_emit_does_not_deadlock_when_checkpoint_locked(isolated_files):
     import fcntl
     import evolution_infra
     evolution_infra.write_pipeline_checkpoint(
-        next_v=7, source_v=6, stage="master_planned")
+        next_v=207, source_v=206, stage="master_planned")
     with evolution_infra.locked_file(
             evolution_infra.PIPELINE_STATE_FILE, "r", lock_type=fcntl.LOCK_EX):
         event_bus.emit("pipeline.under_lock", "info", "inside EX scope")
     ev = _read_jsonl(isolated_files / "events.jsonl")[-1]
-    assert ev["data"]["run_id"] == "7#0"
+    assert ev["data"]["run_id"] == "207#0"
     assert ev["data"]["stage"] == "master_planned"
 
 
@@ -355,13 +380,26 @@ def test_worker_failure_recorded_with_worker_category(isolated_files, monkeypatc
 def test_quality_failure_recorded_with_gate_category(isolated_files, monkeypatch):
     """RC5: _record_quality_failure (reviewer/critic) tags category='gate',
     separable from real worker crashes."""
-    import evolution_core
+    import checkpoint_schema
+    import evolution_infra
     import tool_gates
     wf = isolated_files / "worker_failures.jsonl"
-    monkeypatch.setattr(evolution_core, "WORKER_FAILURES_FILE", wf)
+    monkeypatch.setattr(evolution_infra, "WORKER_FAILURES_FILE", wf)
+    monkeypatch.setattr(tool_gates, "read_pipeline_checkpoint", lambda: {"strict": True})
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "strict_checkpoint_event_identity",
+        lambda *_args, **_kwargs: {
+            "gen": 127,
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "workflow_run_id": "generation:127:test",
+        },
+    )
     tool_gates._record_quality_failure(127, "critic", "Strategy Critic", "rejected")
     line = json.loads(wf.read_text().strip())
     assert line["category"] == "gate"
+    assert line["evaluation_epoch"] == "national_tcp_policy_v1"
+    assert line["workflow_run_id"] == "generation:127:test"
 
 
 # ── Phase 1: checkpoint → last-known auto-correlation (RC2) ──────────────────
@@ -375,11 +413,11 @@ def test_write_checkpoint_updates_last_known(isolated_files, monkeypatch):
                         isolated_files / "pipeline_state.json")
     event_bus.reset_for_test()
     evolution_infra.write_pipeline_checkpoint(
-        next_v=42, source_v=41, stage="master_planned",
+        next_v=242, source_v=241, stage="master_planned",
         generation_attempt=1, audit_attempt=2, precommit_attempt=3)
     event_bus.emit("pipeline.after_checkpoint_write", "info", "m")
     data = _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]
-    assert data["run_id"] == "42#1"                  # composite key from checkpoint
+    assert data["run_id"] == "242#1"                 # composite key from checkpoint
     assert data["stage"] == "master_planned"
     assert data["attempt"]["generation"] == 1
     assert data["attempt"]["audit"] == 2
@@ -394,8 +432,8 @@ def test_last_known_survives_clear_via_write_checkpoint(isolated_files, monkeypa
     monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", ckpt)
     event_bus.reset_for_test()
     evolution_infra.write_pipeline_checkpoint(
-        next_v=50, source_v=49, stage="archived", generation_attempt=0)
+        next_v=250, source_v=249, stage="archived", generation_attempt=0)
     evolution_infra.clear_pipeline_checkpoint()      # post-commit
     event_bus.emit("pipeline.post_commit_archivist", "info", "m")
     data = _read_jsonl(isolated_files / "events.jsonl")[-1]["data"]
-    assert data["run_id"] == "50#0"                  # last-known, not lost
+    assert data["run_id"] == "250#0"                 # last-known, not lost

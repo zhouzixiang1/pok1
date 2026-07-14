@@ -1,76 +1,19 @@
-"""Combined Evolution Analyst: merges stagnation detection and performance verification.
-
-Replaces two separate LLM calls (_analyze_stagnation + _run_performance_verification)
-with a single call that produces a unified JSON output.
-
-Includes optional statistical pre-check to skip LLM for clear-cut cases.
-"""
+"""Generation analyst over one immutable national-native evidence snapshot."""
 
 import json
 import logging
-from pathlib import Path
 
 log = logging.getLogger('pok.analyst')
 
-from bot_namespace import bot_name, bot_tag_glob, parse_tag_version
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, parse_bot_version
+from llm_availability import LLMAvailabilityBlocked
 from strength_order import match_score
 from evolution_infra import (
     run_claude_query, parse_json_output, substitute_template,
-    locked_file, get_logs_dir, load_ratings, get_active_bots,
-    WORKER_FAILURES_FILE, PROMPTS_DIR,
+    get_logs_dir,
+    PROMPTS_DIR,
     Glicko2Player,
 )
-
-
-def _results_dir():
-    import evolution_infra
-    return evolution_infra.RESULTS_DIR
-
-
-def _isolated_recent_snaps(max_n=10):
-    """Read rating_history.jsonl, returning only the trailing contiguous block
-    of snapshots sharing the latest daemon_run_id.
-
-    E1: rating_history.jsonl is append-only and historically accumulated
-    concatenated runs (period jumps + backwards timestamps) that corrupted trend
-    analysis. Each snapshot carries daemon_run_id; we keep only the tail
-    contiguous block sharing the latest run id before applying [-max_n:]. Falls
-    back to the last max_n lines verbatim for legacy data without run ids.
-    Returns a list of parsed snapshot dicts (most-recent-last), possibly empty.
-    """
-    history_file = _results_dir() / "rating_history.jsonl"
-    if not history_file.exists():
-        return []
-    try:
-        with locked_file(history_file, "r") as f:
-            lines = f.readlines()
-    except Exception:
-        return []
-    parsed = []
-    latest_run_id = None
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            snap = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        rid = snap.get("daemon_run_id") if isinstance(snap, dict) else None
-        parsed.append((rid, snap))
-        if rid is not None:
-            latest_run_id = rid
-    if latest_run_id is not None:
-        # Walk backward from the end while run id matches; older entries with a
-        # different/None id belong to prior runs and are excluded.
-        i = len(parsed)
-        while i > 0 and parsed[i - 1][0] == latest_run_id:
-            i -= 1
-        recent = parsed[i:]
-    else:
-        # Legacy data without run ids: fall back to the last lines as-is.
-        recent = parsed[-max_n:]
-    return [snap for _rid, snap in recent[-max_n:]]
 
 
 def _statistical_stagnation_check(source_v, ratings, history_snaps=None):
@@ -81,18 +24,13 @@ def _statistical_stagnation_check(source_v, ratings, history_snaps=None):
     - trend_delta > 20: improving (high confidence)
     - trend_delta in [5, 20]: ambiguous — needs LLM analysis
     """
-    history_file = _results_dir() / "rating_history.jsonl"
-    if history_snaps is None and not history_file.exists():
+    if history_snaps is None:
         return None
 
     source_bot_name = bot_name(source_v)
     # E1: use daemon_run_id-isolated snapshots (cross-run period jumps would
     # otherwise corrupt the recent-vs-previous delta).
-    snaps = (
-        list(history_snaps)[-10:]
-        if history_snaps is not None
-        else _isolated_recent_snaps(max_n=10)
-    )
+    snaps = list(history_snaps)[-10:]
 
     # Extract bot's rating from last 10 periods
     recent_ratings = []
@@ -134,7 +72,6 @@ async def _run_combined_analysis(
     active_bots,
     ratings,
     ui,
-    prev_critic_info: str = "",
     h2h_data: dict | None = None,
     bot_stats_data: dict | None = None,
     selection_rows_data: list[dict] | None = None,
@@ -147,13 +84,7 @@ async def _run_combined_analysis(
       branch_from, verified_improvements, persistent_weaknesses, reason, suggestion
     Returns a safe default on failure.
     """
-    from tool_helpers import (
-        load_h2h_avg_winrates,
-        load_h2h_avg_winrates_with_coverage,
-        load_selection_order_keys,
-        load_selection_scores,
-        strength_row_to_analysis_view,
-    )
+    from tool_helpers import strength_row_to_analysis_view
 
     safe_default = {
         "is_stagnant": False,
@@ -177,48 +108,43 @@ async def _run_combined_analysis(
         "llm_failed": False,
     }
 
-    if h2h_data is None:
-        h2h_winrates = load_h2h_avg_winrates()
-        strength_scores = load_selection_scores()
-        selection_order_keys = load_selection_order_keys()
-        coverage_data = load_h2h_avg_winrates_with_coverage()
-        frozen_h2h_data = None
-    else:
-        # Planning receives the generation-scoped immutable matrix. Rebuilding
-        # from a later match_history file here would silently defeat the freeze.
-        from rating_snapshot import build_strength_rows
-
-        frozen_h2h_data = dict(h2h_data)
-        rows = (
-            [dict(row) for row in selection_rows_data]
-            if selection_rows_data is not None
-            else build_strength_rows(
-                ratings,
-                bot_stats_data or {},
-                frozen_h2h_data,
-                active_bots,
-                match_history_path=Path("/dev/null"),
-            )
+    if any(
+        value is None
+        for value in (
+            h2h_data,
+            bot_stats_data,
+            selection_rows_data,
+            rating_history_data,
         )
-        h2h_winrates = {
-            row["name"]: (
-                row.get("h2h_avg_wr")
-                if row.get("h2h_avg_wr") is not None
-                else row.get("win_rate")
-                if row.get("win_rate") is not None
-                else row.get("leaderboard_score", 0.5)
-            )
-            for row in rows
-        }
-        strength_scores = {
-            row["name"]: row.get("selection_score", row.get("leaderboard_score", 0.5))
-            for row in rows
-        }
-        from strength_order import strength_order_key
-        selection_order_keys = {row["name"]: strength_order_key(row) for row in rows}
-        coverage_data = {
-            row["name"]: strength_row_to_analysis_view(row) for row in rows
-        }
+    ):
+        safe_default["reason"] = (
+            "Missing generation-scoped frozen evidence; live result files are "
+            "not an allowed fallback."
+        )
+        safe_default["evidence_status"] = "missing_frozen_evidence"
+        return safe_default
+
+    frozen_h2h_data = dict(h2h_data)
+    rows = [dict(row) for row in selection_rows_data]
+    h2h_winrates = {
+        row["name"]: (
+            row.get("h2h_avg_wr")
+            if row.get("h2h_avg_wr") is not None
+            else row.get("win_rate")
+            if row.get("win_rate") is not None
+            else row.get("leaderboard_score", 0.5)
+        )
+        for row in rows
+    }
+    strength_scores = {
+        row["name"]: row.get("selection_score", row.get("leaderboard_score", 0.5))
+        for row in rows
+    }
+    from strength_order import strength_order_key
+    selection_order_keys = {row["name"]: strength_order_key(row) for row in rows}
+    coverage_data = {
+        row["name"]: strength_row_to_analysis_view(row) for row in rows
+    }
 
     # ── Data sufficiency check ──
     source_bot_name = bot_name(source_v)
@@ -293,23 +219,20 @@ async def _run_combined_analysis(
     lineage_lines = []
     try:
         from evolution_infra import git_get_parent
-        for check_v in range(max(1, source_v - 5), source_v + 1):
+        strict_versions = sorted({
+            version
+            for name in active_bots
+            if (version := parse_bot_version(str(name))) is not None
+            and version >= FIRST_STRICT_POLICY_VERSION
+        })
+        for check_v in strict_versions[-6:]:
             parent = git_get_parent(check_v)
-            if parent is not None:
+            if parent is not None and int(parent) >= FIRST_STRICT_POLICY_VERSION:
                 lineage_lines.append(f"  v{check_v} ← parent: v{parent}")
     except Exception as e:
         log.debug('Lineage analysis failed: %s', e)
-    history_file = _results_dir() / "rating_history.jsonl"
     history_ctx = ""
-    if rating_history_data is not None:
-        recent_history = list(rating_history_data)[-10:]
-    elif history_file.exists():
-        # E1: use daemon_run_id-isolated snapshots so the LLM history context
-        # only reflects the current continuous run (cross-run period jumps /
-        # backwards timestamps would otherwise mislead the analyst).
-        recent_history = _isolated_recent_snaps(max_n=10)
-    else:
-        recent_history = []
+    recent_history = list(rating_history_data)[-10:]
     if recent_history:
         for snap in recent_history:
             try:
@@ -325,19 +248,6 @@ async def _run_combined_analysis(
             except (AttributeError, KeyError, ValueError):
                 continue
 
-    # Worker failures
-    failure_ctx = ""
-    try:
-        if WORKER_FAILURES_FILE.exists():
-            with locked_file(WORKER_FAILURES_FILE, "r") as f:
-                flines = f.readlines()
-            recent = [json.loads(l.strip()) for l in flines[-5:] if l.strip()]
-            if recent:
-                failure_ctx = "Recent critic/worker rejections:\n"
-                for e in recent:
-                    failure_ctx += f"  - v{e.get('gen','?')} {e.get('role','?')}: {e.get('error','')[:120]}\n"
-    except Exception as e:
-        log.debug('Worker failure context load failed: %s', e)
     sorted_bots = sorted(
         active_bots,
         key=lambda b: selection_order_keys.get(b, (strength_scores.get(b, 0.0),)),
@@ -355,36 +265,18 @@ async def _run_combined_analysis(
 
     # Bot stats
     bot_stats_line = "  No stats available"
-    bot_stats_file = _results_dir() / "bot_stats.json"
-    if bot_stats_data is not None:
-        bs = bot_stats_data.get(source_bot_name, {})
-        g = bs.get("games", 0)
-        wr = bs.get("win_rate", 0.0)
-        if g > 0:
-            bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
-    elif bot_stats_file.exists():
-        try:
-            with locked_file(bot_stats_file, "r") as f:
-                bs_data = json.load(f)
-            bs = bs_data.get(source_bot_name, {})
-            g = bs.get("games", 0)
-            wr = bs.get("win_rate", 0.0)
-            if g > 0:
-                bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
-        except Exception as e:
-            log.debug('Bot stats computation failed: %s', e)
+    bs = bot_stats_data.get(source_bot_name, {})
+    g = bs.get("games", 0)
+    wr = bs.get("win_rate", 0.0)
+    if g > 0:
+        bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
 
     # H2H per-opponent
     h2h_lines = []
     active_bot_set = set(active_bots)
-    h2h_file = _results_dir() / "head_to_head.json"
-    if frozen_h2h_data is not None or h2h_file.exists():
+    if frozen_h2h_data:
         try:
-            if frozen_h2h_data is None:
-                with locked_file(h2h_file, "r") as f:
-                    analyzed_h2h = json.load(f)
-            else:
-                analyzed_h2h = frozen_h2h_data
+            analyzed_h2h = frozen_h2h_data
             for k, v in analyzed_h2h.items():
                 parts = k.split(" vs ")
                 if len(parts) != 2:
@@ -434,13 +326,11 @@ async def _run_combined_analysis(
         "opp_coverage": f"{opp_coverage:.0%}",
         "rd_warning": rd_warning,
         "top_bots": "\n".join(top_bots_lines),
-        "critic_insights": prev_critic_info,
         "generation_trend": "\n".join(gen_trend_lines) if gen_trend_lines else "  No generation trend data",
         "lineage": "\n".join(lineage_lines) if lineage_lines else "  No lineage data",
         "daemon_history": history_ctx if history_ctx else "  No daemon history",
         "bot_stats": bot_stats_line,
         "h2h_results": "\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data",
-        "failure_context": failure_ctx if failure_ctx else "  No recent failures",
     })
 
     log_file = get_logs_dir(source_v) / "combined_analysis.txt"
@@ -474,6 +364,10 @@ async def _run_combined_analysis(
                 result["evidence_status"] = "sufficient_llm_analysis"
                 return result
             ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")
+        except LLMAvailabilityBlocked:
+            # Provider availability is attempt-neutral.  Do not burn the three
+            # analysis retries or synthesize an optimistic control verdict.
+            raise
         except Exception as e:
             from llm_failure import is_llm_infra_error
             if is_llm_infra_error(e):

@@ -1,21 +1,46 @@
 import { useState } from "react";
 import type { PipelineCheckpoint } from "../../api/types";
-import { PIPELINE_STAGES, STAGE_LABELS } from "../../constants/pipeline";
+import type { ActiveGeneration } from "../../api/control";
+import {
+  PIPELINE_STAGE_CONTRACT,
+  PIPELINE_STAGES,
+  STAGE_LABELS,
+  STAGE_TO_MILESTONE,
+  type PipelineStage,
+} from "../../constants/pipeline";
 import { cn } from "../../lib/utils";
 import { CheckIcon, CrossIcon } from "./icons";
 
 export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
   if (!checkpoint) return null;
 
-  const currentIdx = PIPELINE_STAGES.indexOf(checkpoint.stage as typeof PIPELINE_STAGES[number]);
+  const rawStage = checkpoint.stage ?? "";
+  if (!PIPELINE_STAGE_CONTRACT.includes(rawStage as PipelineStage)) {
+    return (
+      <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">
+        未知后端流水线阶段：<span className="font-mono">{rawStage || "(missing)"}</span>。进度按不可用处理，未伪装为全未完成。
+      </div>
+    );
+  }
+  const stage = rawStage as PipelineStage;
+  const milestone = STAGE_TO_MILESTONE[stage];
+  const currentIdx = PIPELINE_STAGES.indexOf(milestone);
+  const isFailure = stage.endsWith("_failed") || stage === "official_inconclusive";
 
   return (
-    <div className="flex items-center gap-0 overflow-x-auto py-2">
-      {PIPELINE_STAGES.map((stage, i) => {
+    <div>
+      <div className={cn(
+        "mb-1 text-[10px] font-medium",
+        isFailure ? "text-red-600 dark:text-red-400" : stage === "official_bootstrap_required" ? "text-amber-600 dark:text-amber-400" : "text-gray-500",
+      )}>
+        当前阶段：{STAGE_LABELS[stage]} <span className="font-mono text-gray-400">({stage})</span>
+      </div>
+      <div className="flex items-center gap-0 overflow-x-auto py-2">
+      {PIPELINE_STAGES.map((pipelineStage, i) => {
         const done = i < currentIdx;
         const active = i === currentIdx;
         return (
-          <div key={stage} className="flex items-center shrink-0">
+          <div key={pipelineStage} className="flex items-center shrink-0">
             {/* Node */}
             <div className="flex flex-col items-center">
               <div className={cn(
@@ -30,7 +55,7 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
                 )}
               </div>
               <span className="mt-1 text-[9px] text-center max-w-[48px] leading-tight text-gray-500 dark:text-gray-400">
-                {STAGE_LABELS[stage]}
+                {STAGE_LABELS[pipelineStage]}
               </span>
             </div>
             {/* Connector */}
@@ -43,18 +68,39 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
 
-export function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
+export function PipelineStatus({
+  checkpoint,
+  activeGeneration = null,
+}: {
+  checkpoint: PipelineCheckpoint | null;
+  activeGeneration?: ActiveGeneration | null;
+}) {
   const [expanded, setExpanded] = useState(false);
+
+  if (!activeGeneration) {
+    return (
+      <div className="p-3">
+        <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线</h3>
+        <p className="text-xs text-gray-400">权威状态中没有活跃代次</p>
+      </div>
+    );
+  }
 
   if (!checkpoint) {
     return (
       <div className="p-3">
-        <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线</h3>
-        <p className="text-xs text-gray-400">无活跃代次</p>
+        <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">
+          流水线 v{activeGeneration.next_v}
+          {activeGeneration.source_v != null ? ` ← v${activeGeneration.source_v}` : ""}
+        </h3>
+        <p className="text-xs text-amber-600 dark:text-amber-300">
+          权威活动阶段为 {activeGeneration.stage}，详细 checkpoint 暂不可用。
+        </p>
       </div>
     );
   }
@@ -65,8 +111,9 @@ export function PipelineStatus({ checkpoint }: { checkpoint: PipelineCheckpoint 
     <div className="p-3">
       <button onClick={() => setExpanded(!expanded)} className="w-full text-left flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold uppercase text-gray-500">
-          流水线 v{checkpoint.next_v} ← v{checkpoint.source_v}
-          {checkpoint.generation_attempt ? ` (尝试 ${checkpoint.generation_attempt})` : ""}
+          流水线 v{activeGeneration.next_v}
+          {activeGeneration.source_v != null ? ` ← v${activeGeneration.source_v}` : ""}
+          {activeGeneration.attempt.generation ? ` (尝试 ${activeGeneration.attempt.generation})` : ""}
         </h3>
         <span className="text-[10px] text-gray-400">{expanded ? "▲" : "▼"}</span>
       </button>

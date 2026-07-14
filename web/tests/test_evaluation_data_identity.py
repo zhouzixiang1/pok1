@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import evaluation_data_identity as identity
+from bot_namespace import STRICT_ARTIFACT_FILES, strict_artifact_layout_errors
 
 
 def test_empty_results_initialize_content_bound_manifest(tmp_path):
@@ -17,7 +18,7 @@ def test_empty_results_initialize_content_bound_manifest(tmp_path):
     loaded = json.loads((results / identity.MANIFEST_NAME).read_text(encoding="utf-8"))
 
     assert manifest == loaded
-    assert manifest["schema_version"] == identity.IDENTITY_SCHEMA_VERSION == 3
+    assert manifest["schema_version"] == identity.IDENTITY_SCHEMA_VERSION == 4
     assert manifest["base_identity"]["schema_version"] == identity.IDENTITY_SCHEMA_VERSION
     assert manifest["base_identity"]["profile_id"] == identity.PROFILE_ID
     assert manifest["base_identity"]["authority"] == "rating_daemon_only"
@@ -246,7 +247,7 @@ def test_evaluation_identity_cli_imports_repo_packages_from_any_cwd(tmp_path):
     assert completed.returncode == 0, completed.stderr
     payload = json.loads(completed.stdout)
     assert payload["base_identity"]["profile_id"].startswith(
-        "national-native-rating-authority-v3"
+        "national-tcp-policy-rating-authority-v4"
     )
     assert (results / identity.MANIFEST_NAME).is_file()
 
@@ -257,17 +258,35 @@ def test_inline_native_eval_is_diagnostic_only(tmp_path, monkeypatch):
     import national_native
     import tool_eval
 
-    candidate = tmp_path / "bots" / "national_v143"
-    opponent = tmp_path / "bots" / "national_v142"
+    candidate = tmp_path / "bots" / "national_v144"
+    opponent = tmp_path / "bots" / "national_v143"
+    payloads = {
+        "national_bot.py": "# system runtime\n",
+        "precompute.py": "FACT = 1\n",
+        "policy.py": "def get_baseline_decision(context): return {'kind': 'pass'}\n",
+        "national_runtime_manifest.json": "{}\n",
+        "policy_epoch_receipt.json": "{}\n",
+    }
+    assert frozenset(payloads) == STRICT_ARTIFACT_FILES
     for path in (candidate, opponent):
         path.mkdir(parents=True)
-        (path / "national_bot.py").write_text("pass\n", encoding="utf-8")
-    monkeypatch.setattr(tool_eval, "get_bot_dir", lambda version: candidate if version == 143 else opponent)
-    monkeypatch.setattr(tool_eval, "get_active_bots", lambda: ["national_v143", "national_v142"])
-    monkeypatch.setattr(tool_eval, "load_ratings", lambda: {})
+        for relative, payload in payloads.items():
+            (path / relative).write_text(payload, encoding="utf-8")
+        assert strict_artifact_layout_errors(path) == []
+    monkeypatch.setattr(
+        tool_eval,
+        "get_bot_dir",
+        lambda version: candidate if int(version) == 144 else opponent,
+    )
+    monkeypatch.setattr(
+        tool_eval,
+        "get_active_bots",
+        lambda: ["national_v143", "national_v144"],
+    )
     monkeypatch.setattr(daemon_management, "daemon_proc", None)
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path / "results")
     monkeypatch.setattr(identity, "ROOT", Path(__file__).resolve().parents[2])
+    monkeypatch.setattr(identity, "current_evaluation_digest", lambda _root: "d" * 64)
 
     class Result:
         def model_dump(self):
@@ -282,11 +301,12 @@ def test_inline_native_eval_is_diagnostic_only(tmp_path, monkeypatch):
         lambda: SimpleNamespace(national_execution_mode="native_tcp"),
     )
 
-    response = asyncio.run(tool_eval.run_inline_eval.handler({"version": 143, "n_games": 5}))
+    response = asyncio.run(tool_eval.run_inline_eval.handler({"version": 144, "n_games": 5}))
     payload = json.loads(response["content"][0]["text"])
 
     assert payload["authoritative"] is False
     assert payload["ratings_updated"] is False
     assert payload["h2h_updated"] is False
+    assert payload["evaluation_identity_digest"] == "d" * 64
     assert not (evolution_infra.RESULTS_DIR / "glicko_ratings.json").exists()
     assert not (evolution_infra.RESULTS_DIR / "head_to_head.json").exists()

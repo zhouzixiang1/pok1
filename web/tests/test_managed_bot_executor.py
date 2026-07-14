@@ -583,6 +583,31 @@ def test_managed_bot_explicit_seed_and_environment_policy(tmp_path):
         listener.close()
 
 
+def test_managed_bot_rejects_stdlib_shadow_before_consuming_endpoint(tmp_path):
+    listener = _listener()
+    port = int(listener.getsockname()[1])
+    lease = EndpointLease.connect("127.0.0.1", port, timeout=2.0)
+    accepted, _peer = listener.accept()
+    artifact = tmp_path / "bot-shadow"
+    artifact.mkdir()
+    (artifact / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    (artifact / "argparse.py").write_text(
+        "raise SystemExit('candidate stdlib shadow executed')\n",
+        encoding="utf-8",
+    )
+    try:
+        with pytest.raises(
+            ManagedExecutorError,
+            match="managed_bot_stdlib_shadow_forbidden:argparse.py:argparse",
+        ):
+            launch_managed_bot(artifact, lease, name="shadowed")
+        assert lease.consumed is False
+    finally:
+        lease.close()
+        accepted.close()
+        listener.close()
+
+
 def test_executor_identity_and_real_probe_bind_the_executable_policy():
     identity = managed_executor_identity()
     assert identity["schema"] == "pok-managed-executor-identity-v1"

@@ -228,8 +228,18 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
             },
-            "review": {"approved": True},
-            "critic": {"approved": True},
+            "review": {
+                "approved": True,
+                "llm_invoked": True,
+                "reviewer_llm_executed": True,
+                "schema_valid": True,
+            },
+            "critic": {
+                "approved": True,
+                "llm_invoked": True,
+                "critic_llm_executed": True,
+                "schema_valid": True,
+            },
         },
     }
     profile = SimpleNamespace(

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -18,21 +20,84 @@ def _patch_checkpoint(monkeypatch, checkpoint):
     return orchestrator
 
 
-def test_repeated_run_master_after_validation_failure_is_corrective(monkeypatch):
+def _strict_checkpoint(checkpoint):
+    """Bind compact route fixtures to a synthetic strict published parent."""
+
+    target = checkpoint["next_v"]
+    source = checkpoint["source_v"]
+    identity = {
+        "version": source,
+        "bot": f"national_v{source}",
+        "role": "parent_source",
+        "epoch": "national_tcp_policy_v1",
+        "runtime_manifest_digest": "1" * 64,
+        "epoch_receipt_digest": "2" * 64,
+        "publication_identity_digest": "3" * 64,
+        "certificate_digest": "4" * 64,
+    }
+    binding = {
+        "schema_version": 1,
+        "epoch": "national_tcp_policy_v1",
+        "mode": "published_strict_parent",
+        "next_v": target,
+        "source_v": source,
+        "parent2_v": None,
+        "parent_versions": [source],
+        "source_artifact_inherited": True,
+        "parent_authority": "strict_published_parent_resolution",
+        "published_parent_identities": [identity],
+        "protocol_bootstrap_receipt_digest": None,
+        "policy_epoch_reset_receipt_digest": None,
+    }
+    encoded = json.dumps(
+        binding,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **checkpoint,
+        "checkpoint_schema_version": 1,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": {
+            **binding,
+            "binding_digest": hashlib.sha256(encoded).hexdigest(),
+        },
+        "workflow_run_id": f"generation:{target}:repeated-tool-test",
+        "checkpoint_revision": 1,
+    }
+
+
+def test_legacy_checkpoint_cannot_authorize_repeated_pipeline_tool(monkeypatch):
     orchestrator = _patch_checkpoint(
         monkeypatch,
         {
-            "next_v": 64,
-            "source_v": 63,
+            "next_v": 155,
+            "source_v": 142,
+            "stage": "direction_audited",
+            "master_plan": None,
+            "audit_attempt": 1,
+        },
+    )
+
+    assert orchestrator._classify_allowed_repeated_pipeline_tool("run_master", {}) is None
+
+
+def test_repeated_run_master_after_validation_failure_is_corrective(monkeypatch):
+    orchestrator = _patch_checkpoint(
+        monkeypatch,
+        _strict_checkpoint({
+            "next_v": 164,
+            "source_v": 163,
             "stage": "direction_audited",
             "master_plan": None,
             "audit_attempt": 1,
             "audit_context": {
                 "master_validation": {
-                    "errors": ["EXHAUSTED_DIRECTION_REPEATED"],
+                    "errors": ["RUNTIME_CONTRACT_INVALID"],
                 },
             },
-        },
+        }),
     )
 
     result = orchestrator._classify_allowed_repeated_pipeline_tool("run_master", {})
@@ -44,13 +109,13 @@ def test_repeated_run_master_after_validation_failure_is_corrective(monkeypatch)
 def test_repeated_run_master_without_failure_context_stays_redundant(monkeypatch):
     orchestrator = _patch_checkpoint(
         monkeypatch,
-        {
-            "next_v": 64,
-            "source_v": 63,
+        _strict_checkpoint({
+            "next_v": 164,
+            "source_v": 163,
             "stage": "direction_audited",
             "master_plan": None,
             "audit_attempt": 0,
-        },
+        }),
     )
 
     assert orchestrator._classify_allowed_repeated_pipeline_tool("run_master", {}) is None
@@ -59,13 +124,13 @@ def test_repeated_run_master_without_failure_context_stays_redundant(monkeypatch
 def test_repeated_execute_workers_on_quality_failed_route_is_corrective(monkeypatch):
     orchestrator = _patch_checkpoint(
         monkeypatch,
-        {
-            "next_v": 65,
-            "source_v": 64,
+        _strict_checkpoint({
+            "next_v": 165,
+            "source_v": 164,
             "stage": "quality_failed",
             "master_plan": {"tasks": []},
             "gate_results": {"quality": {"passed": False}},
-        },
+        }),
     )
 
     result = orchestrator._classify_allowed_repeated_pipeline_tool("execute_workers", {})
@@ -77,13 +142,13 @@ def test_repeated_execute_workers_on_quality_failed_route_is_corrective(monkeypa
 def test_second_quality_gate_without_repair_history_stays_redundant(monkeypatch):
     orchestrator = _patch_checkpoint(
         monkeypatch,
-        {
-            "next_v": 65,
-            "source_v": 64,
+        _strict_checkpoint({
+            "next_v": 165,
+            "source_v": 164,
             "stage": "workers_done",
             "master_plan": {"tasks": []},
             "gate_results": {},
-        },
+        }),
     )
 
     assert orchestrator._classify_allowed_repeated_pipeline_tool("run_quality_gates", {}) is None
@@ -92,14 +157,14 @@ def test_second_quality_gate_without_repair_history_stays_redundant(monkeypatch)
 def test_second_quality_gate_after_repair_is_corrective(monkeypatch):
     orchestrator = _patch_checkpoint(
         monkeypatch,
-        {
-            "next_v": 65,
-            "source_v": 64,
+        _strict_checkpoint({
+            "next_v": 165,
+            "source_v": 164,
             "stage": "workers_done",
             "master_plan": {"tasks": []},
             "reviewer_feedback": "quality failed: fix exact blocker",
             "gate_results": {"quality": {"passed": False}},
-        },
+        }),
     )
 
     result = orchestrator._classify_allowed_repeated_pipeline_tool("run_quality_gates", {})

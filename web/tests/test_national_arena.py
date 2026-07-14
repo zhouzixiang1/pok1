@@ -15,6 +15,29 @@ from national_arena.sandbox import ArenaSandboxUnavailable
 from national_arena.storage import ArenaStore
 
 
+def _session_epoch_fields():
+    from epoch_authority import require_policy_epoch_initialized
+
+    return NationalArenaManager.session_epoch_fields(
+        require_policy_epoch_initialized("test.national_arena.session_fixture")
+    )
+
+
+def _strict_epoch_authority(*, workflow_run_id="workflow-test-1"):
+    return {
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "state": "fresh_bootstrap_ready",
+        "initialized": True,
+        "strict_published": False,
+        "strict_published_bots": [],
+        "reset_receipt_valid": True,
+        "reset_receipt_digest": "a" * 64,
+        "active_generation": {
+            "workflow_run_id": workflow_run_id,
+        } if workflow_run_id else None,
+    }
+
+
 def test_arena_store_round_trips_session_and_monotonic_events(tmp_path):
     store = ArenaStore(tmp_path / "arena")
     session = ArenaSession(session_id="arena_20260711_abcd1234", mode="external_tcp")
@@ -70,6 +93,74 @@ def test_arena_authority_fields_are_model_invariants():
     }).to_dict()
     assert quarantined["cleanup_completed"] is False
     assert quarantined["resource_fence_held"] is True
+
+
+def test_manager_startup_guard_precedes_every_store_write(tmp_path, monkeypatch):
+    from epoch_authority import PolicyEpochInitializationRequired
+    import epoch_authority
+
+    root = tmp_path / "must_not_exist"
+    state = {
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "state": "reset_required",
+        "initialized": False,
+        "reset_receipt_valid": False,
+        "reset_receipt_digest": None,
+        "operator_action": "execute_policy_epoch_reset",
+    }
+
+    def blocked(operation):
+        raise PolicyEpochInitializationRequired(operation, state)
+
+    monkeypatch.setattr(epoch_authority, "require_policy_epoch_initialized", blocked)
+
+    async def scenario():
+        manager = NationalArenaManager(ArenaStore(root))
+        with pytest.raises(PolicyEpochInitializationRequired):
+            await manager.startup()
+        assert manager.started is False
+        assert not root.exists()
+
+    asyncio.run(scenario())
+
+
+def test_manager_ignores_mismatched_epoch_session_without_touching_it(tmp_path):
+    authority = _strict_epoch_authority()
+    store = ArenaStore(tmp_path / "arena")
+    old = ArenaSession(
+        session_id="arena_20260711_oldepoch",
+        mode="external_tcp",
+        status="running",
+    )
+    store.create_session(old)
+    old_dir = store.session_dir(old.session_id)
+    (old_dir / ".lock").unlink()
+    old_snapshot = (old_dir / "session.json").read_bytes()
+
+    current = ArenaSession(
+        session_id="arena_20260711_newepoch",
+        mode="external_tcp",
+        **NationalArenaManager.session_epoch_fields(authority),
+    )
+    store.create_session(current)
+
+    async def scenario():
+        manager = NationalArenaManager(store, epoch_authority=authority)
+        await manager.startup(epoch_authority=authority)
+        assert [row["session_id"] for row in manager.list_sessions()] == [
+            current.session_id
+        ]
+        assert manager.get_session(current.session_id)["workflow_run_id"] == (
+            "workflow-test-1"
+        )
+        with pytest.raises(ArenaError, match="not found"):
+            manager.get_session(old.session_id)
+        assert not (old_dir / ".lock").exists()
+        assert not (old_dir / "events.jsonl").exists()
+        assert (old_dir / "session.json").read_bytes() == old_snapshot
+        await manager.shutdown()
+
+    asyncio.run(scenario())
 
 
 def test_arena_certification_snapshot_fails_closed_when_status_unavailable(
@@ -222,6 +313,7 @@ def test_manager_marks_interrupted_session_failed_on_startup(tmp_path):
         session_id="arena_20260711_deadbeef",
         mode="external_tcp",
         status="running",
+        **_session_epoch_fields(),
     )
     store.create_session(session)
 
@@ -243,6 +335,7 @@ def test_manager_recovers_event_id_high_watermark_after_snapshot_lag(tmp_path):
     session = ArenaSession(
         session_id="arena_20260711_fadedcab",
         mode="external_tcp",
+        **_session_epoch_fields(),
     )
     store.create_session(session)
     store.append_event(session.session_id, {
@@ -416,8 +509,8 @@ def test_managed_seat_endpoints_ignore_connection_order_and_reported_name(
         await manager._open_listener(session, runtime)
         bottom_writer = FakeWriter(51001)
         top_writer = FakeWriter(51002)
-        await fake_servers[1].handler(FakeReader(b"CLAIM_TOP\n"), bottom_writer)
-        await fake_servers[0].handler(FakeReader(b"CLAIM_BOTTOM\n"), top_writer)
+        await fake_servers[1].handler(FakeReader(b"CLAIM_TOP"), bottom_writer)
+        await fake_servers[0].handler(FakeReader(b"CLAIM_BOTTOM"), top_writer)
         await asyncio.wait_for(runtime.connected.wait(), timeout=2.0)
         assert list(runtime.clients_by_seat) == ["bottom", "top"]
         assert runtime.clients == [
@@ -434,8 +527,8 @@ def test_managed_seat_endpoints_ignore_connection_order_and_reported_name(
             runtime.clients_by_seat["bottom"],
         ]
         assert names == ["AUTH_TOP", "AUTH_BOTTOM"]
-        assert top_writer.output == b"name\n"
-        assert bottom_writer.output == b"name\n"
+        assert top_writer.output == b"name"
+        assert bottom_writer.output == b"name"
 
         await manager._close_servers(runtime)
         for client in runtime.clients:
@@ -505,6 +598,11 @@ def test_managed_launch_records_central_executor_profile(tmp_path, monkeypatch):
             lambda label: (label, tmp_path / label),
         )
         monkeypatch.setattr(arena_manager, "check_native_contract", lambda _bot: [])
+        monkeypatch.setattr(
+            arena_manager,
+            "current_system_native_runtime_errors",
+            lambda _bot: [],
+        )
         monkeypatch.setattr(
             arena_manager,
             "seal_bot_artifact",

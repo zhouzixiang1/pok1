@@ -333,12 +333,11 @@ def _successful_bootstrap_consumption_fields(
     outcome: str,
     validated_entries: list[dict[str, Any]],
 ) -> dict[str, str]:
-    """Extract the one-time root receipt only for a successful full verdict.
+    """Extract the one-time control receipt only for a successful full verdict.
 
     The normal certificate validator performs the full selector comparison
     before ``append_verdict`` is reached.  This second local boundary prevents
-    a malformed caller from smuggling an unbound root marker into the signed
-    ledger, which would otherwise make the bootstrap root look consumed.
+    a malformed caller from smuggling an unbound marker into the signed ledger.
     """
     if outcome != "official-certified":
         return {}
@@ -346,35 +345,35 @@ def _successful_bootstrap_consumption_fields(
     identity = identity if isinstance(identity, dict) else {}
     spec = identity.get("spec")
     spec = spec if isinstance(spec, dict) else {}
-    root_id = spec.get("bootstrap_root_id")
-    if not isinstance(root_id, str) or not root_id.strip():
+    control_id = spec.get("bootstrap_control_id")
+    if not isinstance(control_id, str) or not control_id.strip():
         return {}
     selection = status.get("opponent_selection")
     if not isinstance(selection, dict):
-        raise ValueError("bootstrap root consumption requires opponent selection")
-    if selection.get("bootstrap_root_id", selection.get("root_id")) != root_id:
-        raise ValueError("bootstrap root consumption id does not match spec")
-    receipt = selection.get("bootstrap_root_receipt")
+        raise ValueError("bootstrap control consumption requires opponent selection")
+    if selection.get("bootstrap_control_id") != control_id:
+        raise ValueError("bootstrap control consumption id does not match spec")
+    receipt = selection.get("bootstrap_control_receipt")
     if not isinstance(receipt, dict):
-        raise ValueError("bootstrap root consumption receipt is missing")
+        raise ValueError("bootstrap control consumption receipt is missing")
     payload = {key: value for key, value in receipt.items() if key != "receipt_digest"}
     receipt_digest = str(receipt.get("receipt_digest") or "")
     if receipt_digest != canonical_digest(payload):
-        raise ValueError("bootstrap root consumption receipt digest is invalid")
-    if receipt.get("root_id") != root_id:
-        raise ValueError("bootstrap root consumption receipt id does not match spec")
+        raise ValueError("bootstrap control consumption receipt digest is invalid")
+    if receipt.get("bootstrap_control_id") != control_id:
+        raise ValueError("bootstrap control consumption receipt id does not match spec")
     opponent = selection.get("opponent")
     opponent = opponent if isinstance(opponent, dict) else {}
     if opponent.get("eligibility_receipt") != receipt:
-        raise ValueError("bootstrap root consumption opponent receipt does not match")
+        raise ValueError("bootstrap control opponent receipt does not match")
     for entry in validated_entries:
-        prior_root_id = str(entry.get("bootstrap_root_id") or "")
-        if prior_root_id != root_id:
+        prior_control_id = str(entry.get("bootstrap_control_id") or "")
+        if prior_control_id != control_id:
             continue
-        prior_receipt = str(entry.get("bootstrap_root_receipt_digest") or "")
+        prior_receipt = str(entry.get("bootstrap_control_receipt_digest") or "")
         if prior_receipt != receipt_digest:
             raise ValueError(
-                "bootstrap root has a prior mismatched signed consumption marker"
+                "bootstrap control has a prior mismatched signed consumption marker"
             )
         if (
             entry.get("outcome") == "official-certified"
@@ -384,10 +383,10 @@ def _successful_bootstrap_consumption_fields(
             and entry.get("blocking") is False
             and entry.get("classification") == "pass"
         ):
-            raise ValueError("bootstrap root was already successfully consumed")
+            raise ValueError("bootstrap control was already successfully consumed")
     return {
-        "bootstrap_root_id": root_id,
-        "bootstrap_root_receipt_digest": receipt_digest,
+        "bootstrap_control_id": control_id,
+        "bootstrap_control_receipt_digest": receipt_digest,
     }
 
 

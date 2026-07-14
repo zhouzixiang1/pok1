@@ -1,4 +1,4 @@
-"""Evolution Orchestrator — LLM-driven bot evolution pipeline.
+"""national_tcp_policy_v1 LLM-driven evolution orchestrator.
 
 Usage (standalone CLI):
     python web/core/orchestrator.py              # Run continuous evolution
@@ -41,6 +41,20 @@ from claude_agent_sdk import (
 from bot_namespace import bot_relpath
 from tools import evolution_server, inject_ui
 from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shutdown_cancel_error
+from llm_availability import (
+    LLMAvailabilityBlocked,
+    LLMAvailabilityTrace,
+    looks_like_provider_error_envelope,
+)
+from llm_availability_store import (
+    LLMAvailabilityPauseError,
+    active_llm_pause,
+    blocked_from_pause_state,
+    consume_operator_resume_ack_from_env,
+    load_llm_pause,
+    pause_wait_seconds,
+    persist_llm_pause,
+)
 from shutdown_manager import ShutdownManager
 from system_log import log_system_event, set_ui as set_system_log_ui
 from failure_classification import INFRA_BLOCKER_REASONS
@@ -69,10 +83,142 @@ os.environ.setdefault("POK_WORKFLOW_PROFILE", "national_native")
 SHUTDOWN_CANCEL_COST = -99998.0
 ORCH_ACTIONABLE_HANDOFF_COST = -99997.0
 ORCH_OPERATOR_COST_LIMIT_COST = -99996.0
+ORCH_LLM_AVAILABILITY_BLOCKED_COST = -99995.0
 
 # Infra-only blocker reasons used by the timed_out handler to distinguish
 # scheduler/daemon failures from real bot regressions.
 _INFRA_BLOCKER_REASONS_SET = frozenset(INFRA_BLOCKER_REASONS)
+
+
+_LLM_AVAILABILITY_CONTROL_ERRORS = frozenset({
+    "LLM_AVAILABILITY_STATE_INVALID",
+    "LLM_AVAILABILITY_PAUSE_WAS_NOT_PERSISTED",
+    "WORKER_AVAILABILITY_DEFER_FAILED",
+    "WORKER_AVAILABILITY_RESUME_FAILED",
+    "WORKER_AVAILABILITY_RESUME_INVARIANT_FAILED",
+    "WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID",
+})
+
+
+def _tool_result_payload(value):
+    """Decode the SDK's string-or-content-block ToolResult shape."""
+
+    if isinstance(value, dict):
+        if "error" in value or "action" in value or "success" in value:
+            return value
+        for key in ("text", "content"):
+            if key in value:
+                decoded = _tool_result_payload(value.get(key))
+                if decoded:
+                    return decoded
+        return {}
+    if isinstance(value, list):
+        for item in value:
+            decoded = _tool_result_payload(item)
+            if decoded:
+                return decoded
+        return {}
+    if isinstance(value, str):
+        try:
+            return _tool_result_payload(json.loads(value))
+        except (TypeError, json.JSONDecodeError):
+            return {}
+    return {}
+
+
+def _raise_for_llm_availability_tool_result(content) -> None:
+    """Turn a durable Worker pause result back into local stream control."""
+
+    payload = _tool_result_payload(content)
+    error = str(payload.get("error") or "")
+    if error == "LLM_AVAILABILITY_BLOCKED":
+        state = payload.get("availability") or active_llm_pause()
+        if isinstance(state, dict) and state.get("active"):
+            raise blocked_from_pause_state(state, role="Orchestrator")
+        raise LLMAvailabilityPauseError(
+            "Worker reported LLM availability blocked without a valid durable pause"
+        )
+    if error in _LLM_AVAILABILITY_CONTROL_ERRORS:
+        raise LLMAvailabilityPauseError(
+            f"Worker LLM availability control failed closed: {error}"
+        )
+
+
+async def _honor_active_llm_pause(ui=None, shutdown_mgr=None) -> bool:
+    """Return whether an LLM call may proceed under the durable pause policy.
+
+    Deterministic checkpoint routes call this only after they have had a chance
+    to advance.  A manual billing/auth pause stops the orchestrator without a
+    retry loop.  Transient availability records wait only until their bounded
+    system-owned cooldown and then reconcile themselves.
+    """
+
+    state = active_llm_pause()
+    if not state:
+        return True
+    category = str(state.get("category") or "unknown")
+    evidence_digest = str(state.get("evidence_digest") or "")
+    wait = pause_wait_seconds(state)
+    if wait is None:
+        msg = (
+            f"LLM availability is manually paused ({category}); checkpoint and "
+            "Worker attempt are preserved. Restart with "
+            f"POK_LLM_RESUME_EVIDENCE_DIGEST={evidence_digest} only after the "
+            "provider account/credential condition is resolved."
+        )
+        if ui:
+            ui.log_history(msg, "error")
+            ui.set_status(f"Stopped: LLM unavailable ({category})", is_working=False)
+        log.error(msg)
+        try:
+            log_system_event(
+                "orchestrator.llm_availability_paused",
+                "error",
+                msg,
+                {
+                    "category": category,
+                    "evidence_digest": evidence_digest,
+                    "retry_policy": state.get("retry_policy"),
+                    "operator_action_required": True,
+                },
+            )
+        except Exception:
+            pass
+        return False
+
+    wait = max(0.0, float(wait))
+    if wait > 0:
+        msg = (
+            f"LLM availability cooldown active ({category}); retrying after "
+            f"{wait:.0f}s without consuming a generation/Worker attempt."
+        )
+        if ui:
+            ui.log_history(msg, "warn")
+            ui.set_status(f"LLM cooldown ({category})", is_working=False)
+        log.warning(msg)
+        try:
+            log_system_event(
+                "orchestrator.llm_availability_cooldown",
+                "warn",
+                msg,
+                {
+                    "category": category,
+                    "evidence_digest": evidence_digest,
+                    "wait_seconds": round(wait, 3),
+                    "operator_action_required": False,
+                },
+            )
+        except Exception:
+            pass
+        if shutdown_mgr:
+            try:
+                await asyncio.wait_for(shutdown_mgr.wait_for_shutdown(), timeout=wait)
+                return False
+            except asyncio.TimeoutError:
+                pass
+        else:
+            await asyncio.sleep(wait)
+    return active_llm_pause() is None
 
 
 def _is_cycle_infra_error(e, *, is_shutting_down: bool = False) -> bool:
@@ -492,6 +638,42 @@ _DETERMINISTIC_RECOVERY_TOOLS = frozenset({
     "run_archivist",
 })
 
+_DETERMINISTIC_ROUTES_WITH_LLM = frozenset({
+    "run_crossover",
+    "run_direction_audit",
+    "run_master",
+    "execute_workers",
+    "run_review",
+    "run_critic",
+    "run_archivist",
+})
+
+
+def _deterministic_route_requires_llm(checkpoint, next_tool: str) -> bool:
+    if next_tool not in _DETERMINISTIC_ROUTES_WITH_LLM:
+        return False
+    try:
+        from system_strict_bootstrap import is_declared_native_bootstrap
+
+        system_migration = is_declared_native_bootstrap(checkpoint)
+    except Exception:
+        system_migration = False
+    if not system_migration:
+        return True
+    stage = str((checkpoint or {}).get("stage") or "")
+    # These exact first-migration stages are content-bound system verifiers.
+    if next_tool == "run_direction_audit" and stage == "prepared":
+        return False
+    if next_tool == "execute_workers" and stage == "master_planned" and not (
+        (checkpoint or {}).get("reviewer_feedback")
+    ):
+        return False
+    # Master (three proposals + two anonymous ballots), Review, and Critic are
+    # mandatory LLM governance stages even for the deterministic first Worker
+    # migration.  Only Direction's exact receipt and the initial Worker
+    # blueprint are system-executable while the provider is paused.
+    return True
+
 
 def _resolve_recovery_route(checkpoint):
     """Return deterministic checkpoint route only for known recovery-safe tools."""
@@ -503,7 +685,15 @@ def _resolve_recovery_route(checkpoint):
     except Exception:
         return None
     next_tool = route.get("next_tool")
-    if next_tool not in _DETERMINISTIC_RECOVERY_TOOLS:
+    if next_tool in {"run_direction_audit", "run_master"}:
+        try:
+            from system_strict_bootstrap import system_recovery_eligible
+
+            if not system_recovery_eligible(checkpoint, next_tool):
+                return None
+        except Exception:
+            return None
+    elif next_tool not in _DETERMINISTIC_RECOVERY_TOOLS:
         return None
     return {
         "next_tool": next_tool,
@@ -548,6 +738,14 @@ def _checkpoint_commit_strategy(checkpoint):
 
 def _deterministic_route_handler_and_args(next_tool, checkpoint, next_v, source_v, parent2_v):
     """Return the MCP handler and canonical args for a deterministic checkpoint route."""
+    if next_tool == "run_direction_audit":
+        args = {"source_v": source_v, "next_v": next_v}
+        from tool_planning import run_direction_audit
+        return run_direction_audit.handler, args
+    if next_tool == "run_master":
+        args = {"source_v": source_v, "next_v": next_v}
+        from tool_planning import run_master
+        return run_master.handler, args
     if next_tool == "execute_workers":
         args = {"next_v": next_v, "source_v": source_v}
         reviewer_feedback = _checkpoint_reviewer_feedback(checkpoint)
@@ -625,14 +823,14 @@ def _read_active_pipeline_checkpoint():
     return checkpoint if isinstance(checkpoint, dict) else None
 
 
-def _read_system_events_tail(max_bytes=None):
-    """Read a bounded tail of legacy system_events.jsonl for progress signals."""
+def _read_structured_events_tail(max_bytes=None):
+    """Read a bounded tail of the canonical structured-event ledger."""
     try:
-        from system_log import SYSTEM_EVENTS_FILE
-        path = Path(SYSTEM_EVENTS_FILE)
+        from event_bus import _events_file
+        path = _events_file()
     except Exception:
         return []
-    if not path.exists():
+    if path is None or not path.exists():
         return []
     limit = max(4096, int(max_bytes or ORCH_EXTERNAL_PROGRESS_TAIL_BYTES))
     try:
@@ -655,10 +853,15 @@ def _read_system_events_tail(max_bytes=None):
 def _event_matches_active_generation(event_data, checkpoint):
     if not checkpoint:
         return False
+    expected_workflow_run_id = str(checkpoint.get("workflow_run_id") or "").strip()
+    event_workflow_run_id = str(event_data.get("workflow_run_id") or "").strip()
+    if expected_workflow_run_id:
+        return event_workflow_run_id == expected_workflow_run_id
+
     expected_run_id = str(checkpoint.get("run_id") or "").strip()
     event_run_id = str(event_data.get("run_id") or "").strip()
-    if expected_run_id and event_run_id == expected_run_id:
-        return True
+    if expected_run_id:
+        return event_run_id == expected_run_id
 
     expected_v_text = str(checkpoint.get("next_v") or "").strip()
     if not expected_v_text:
@@ -684,9 +887,12 @@ def _latest_orchestrator_external_progress(since_ts):
     best = None
 
     if checkpoint:
+        from pipeline_state import pipeline_runtime_activity_ts
+
         checkpoint_ts = max(
             _coerce_event_ts(checkpoint.get("last_update_ts")),
             _coerce_event_ts(checkpoint.get("last_stage_change_ts")),
+            pipeline_runtime_activity_ts(checkpoint),
         )
         if checkpoint_ts > since:
             best = {
@@ -700,7 +906,7 @@ def _latest_orchestrator_external_progress(since_ts):
     if not checkpoint:
         return best
 
-    for line in _read_system_events_tail():
+    for line in _read_structured_events_tail():
         try:
             event = json.loads(line)
         except Exception:
@@ -746,9 +952,12 @@ def _detect_actionable_stage_stall(timeout_sec=None):
     if not checkpoint:
         return None
     stage = checkpoint.get("stage")
-    last_ts = (
-        float(checkpoint.get("last_stage_change_ts") or 0.0)
-        or float(checkpoint.get("last_update_ts") or 0.0)
+    from pipeline_state import pipeline_runtime_activity_ts
+
+    last_ts = max(
+        float(checkpoint.get("last_stage_change_ts") or 0.0),
+        float(checkpoint.get("last_update_ts") or 0.0),
+        pipeline_runtime_activity_ts(checkpoint),
     )
     if last_ts <= 0:
         return None
@@ -792,7 +1001,7 @@ def _detect_actionable_stage_handoff():
             "operator_action_required": True,
             "directive": (
                 "Stop automatic evolution and wait for the explicit operator "
-                "bootstrap-full suite. Automation must not consume the root."
+                "bootstrap-first-strict suite. Automation must not authorize or consume it."
             ),
         }
     return None
@@ -924,7 +1133,11 @@ async def _run_one_cycle(
     prompt = ORCHESTRATOR_PROMPT.replace("{context}", context)
 
     if dry_run:
-        prompt += "\n\nIMPORTANT: This is a DRY RUN. Only call get_status() and report the current state. Do NOT modify anything."
+        prompt += (
+            "\n\nIMPORTANT: This is a DRY RUN. Do not call any tool. Report only "
+            "the status already supplied in the context; live rating, H2H, match "
+            "history, and bot-stat query tools are intentionally unavailable."
+        )
 
     # Session resume: if orchestrator_session.json exists (written on every tool call),
     # the previous cycle was interrupted — resume the exact conversation.
@@ -967,6 +1180,10 @@ async def _run_one_cycle(
         cwd=str(PROJECT_ROOT),
         mcp_servers={"evolution": evolution_server},
         strict_mcp_config=True,
+        # The main planner needs only the typed evolution MCP server. Removing
+        # built-ins closes dynamic Python/shell import routes to operator-owned
+        # pause, official-bootstrap, and strict-authority state.
+        tools=[],
         disallowed_tools=_BLOCKED_MCP_TOOLS,
         hooks=_hooks,
         max_turns=max_turns,
@@ -1002,6 +1219,7 @@ async def _run_one_cycle(
             gen = None
             auth_err = False
             _tool_call_counts = {}
+            availability_trace = LLMAvailabilityTrace()
             try:
                 gen = claude_query(prompt=prompt, options=opts)
                 _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
@@ -1063,6 +1281,7 @@ async def _run_one_cycle(
                     if isinstance(message, AssistantMessage):
                         for block in message.content:
                             if isinstance(block, TextBlock):
+                                availability_trace.observe_text(block.text)
                                 texts.append(block.text)
                                 if ui:
                                     ui.log_io(block.text, "claude", "Orchestrator")
@@ -1128,6 +1347,21 @@ async def _run_one_cycle(
                                     lf.write(f"\n[tool_result] {content[:500]}\n")
                                     if ui:
                                         ui.log_io(content[:3000], "tool_result", "Orchestrator")
+                                _raise_for_llm_availability_tool_result(
+                                    block.content
+                                )
+                                # A nested role may have converted the typed
+                                # exception into its legacy infra payload. The
+                                # shared run_claude_query boundary persists the
+                                # pause first, so stop this parent stream before
+                                # the model can call another tool and consume a
+                                # second gate attempt.
+                                nested_pause = active_llm_pause()
+                                if nested_pause is not None:
+                                    raise blocked_from_pause_state(
+                                        nested_pause,
+                                        role="Orchestrator",
+                                    )
                         # Sub-agent costs have settled in the durable generation
                         # ledger by this point.  Default mode only emits telemetry;
                         # an explicit operator hard limit stops the stream.
@@ -1160,6 +1394,7 @@ async def _run_one_cycle(
                                 pass
                             raise _OrchActionableStageHandoff(msg)
                     elif isinstance(message, ResultMessage):
+                        availability_trace.observe_result(message)
                         billing_status = record_generation_cost(
                             "Orchestrator",
                             message.total_cost_usd,
@@ -1215,7 +1450,25 @@ async def _run_one_cycle(
                                     "invalid x-api-key" in error_text.lower() or \
                                     "authentication" in error_text.lower():
                                 auth_err = True
+                            availability_block = availability_trace.blocked(
+                                role="Orchestrator"
+                            )
+                            if availability_block is not None:
+                                raise availability_block
+            except LLMAvailabilityBlocked:
+                raise
+            except (
+                _OrchActionableStageHandoff,
+                OperatorGenerationCostLimitExceeded,
+            ):
+                raise
             except (CLINotFoundError, ProcessError) as e:
+                availability_block = availability_trace.blocked(
+                    role="Orchestrator",
+                    exception=e,
+                )
+                if availability_block is not None:
+                    raise availability_block from e
                 if ui:
                     ui.log_io(f"[ERROR] {e}", "error", "Orchestrator")
                 else:
@@ -1227,6 +1480,12 @@ async def _run_one_cycle(
                 # was fixed but this INNER one was missed (same shape as v84 deadlock).
                 raise
             except ClaudeSDKError as _sig_err:
+                availability_block = availability_trace.blocked(
+                    role="Orchestrator",
+                    exception=_sig_err,
+                )
+                if availability_block is not None:
+                    raise availability_block from _sig_err
                 # Signature-field stream errors: transient SDK deserialization bug
                 # (ThinkingBlock.signature missing). Retryable ONLY when no MCP tool
                 # has executed yet — otherwise tool side-effects would be duplicated.
@@ -1240,6 +1499,14 @@ async def _run_one_cycle(
                     except Exception:
                         pass
                     raise _OrchSignatureRetryable(str(_sig_err)) from _sig_err
+                raise
+            except Exception as e:
+                availability_block = availability_trace.blocked(
+                    role="Orchestrator",
+                    exception=e,
+                )
+                if availability_block is not None:
+                    raise availability_block from e
                 raise
             if _tool_call_counts:
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
@@ -1352,6 +1619,34 @@ async def _run_one_cycle(
                 try:
                     from evolution_core import read_pipeline_checkpoint as _read_ckpt
                     _ckpt = _read_ckpt()
+                    if _ckpt and _ckpt.get("stage") == "publishing":
+                        # Publication crossed a durable one-way boundary. A
+                        # provider/session timeout cannot rewrite it to
+                        # ``timed_out`` or abandon it; the next fresh session
+                        # must reconcile the same immutable intent.
+                        _clear_orchestrator_session()
+                        try:
+                            from evolution_core import write_pipeline_checkpoint
+                            write_pipeline_checkpoint(
+                                _ckpt.get("next_v"),
+                                _ckpt.get("source_v"),
+                                "publishing",
+                                touch_stage_timestamp=True,
+                                expected_checkpoint_revision=_ckpt.get(
+                                    "checkpoint_revision"
+                                ),
+                                expected_checkpoint_stage="publishing",
+                                expected_workflow_run_id=_ckpt.get(
+                                    "workflow_run_id"
+                                ),
+                            )
+                        except Exception:
+                            pass
+                        lf.write(
+                            "\n[TIMEOUT] Durable publication preserved; "
+                            "resuming the same intent.\n"
+                        )
+                        return _TIMEOUT_EXTENSION_SENTINEL
                     if _ckpt and _ckpt.get("stage") == "verified":
                         # ONE extension only: a per-version counter persisted in the
                         # checkpoint prevents every timeout at this stage re-granting.
@@ -1445,7 +1740,7 @@ async def _run_one_cycle(
                         _b3_stage = ckpt.get("stage")
                         _B3_MASTER_FAIL_THRESHOLD = 2  # mirrors MAX_MASTER_TOTAL_FAILURES (tool_planning.py)
                         if (_b3_audit >= _B3_MASTER_FAIL_THRESHOLD
-                                and _b3_stage not in ("verified", "archived")):
+                                and _b3_stage not in ("verified", "publishing", "archived")):
                             log.warning(
                                 "Cycle timed out with Master fail count=%d (stage=%s) — "
                                 "abandoning stuck generation instead of marking timed_out.",
@@ -1571,7 +1866,11 @@ async def _run_one_cycle(
                 return total_cost
 
             # 529 rate-limit retry with exponential backoff
-            if _is_rate_limited(full_output):
+            if (
+                not cycle_completed
+                and looks_like_provider_error_envelope(full_output)
+                and _is_rate_limited(full_output)
+            ):
                 # Preserve the original session so retries can resume the same
                 # conversation instead of starting from scratch.
                 _saved_session_id = _load_orchestrator_session()
@@ -1583,6 +1882,7 @@ async def _run_one_cycle(
                     cwd=str(PROJECT_ROOT),
                     mcp_servers={"evolution": evolution_server},
                     strict_mcp_config=True,
+                    tools=[],
                     disallowed_tools=_BLOCKED_MCP_TOOLS,
                     hooks={**_make_precompact_hook(), **_make_bot_dir_guard_hook()},
                     max_turns=max_turns,
@@ -1619,7 +1919,10 @@ async def _run_one_cycle(
                                 pass
                         raise  # Re-raise to outer timeout handler
                     total_cost += retry_cost
-                    if not _is_rate_limited(full_output):
+                    if not (
+                        looks_like_provider_error_envelope(full_output)
+                        and _is_rate_limited(full_output)
+                    ):
                         break
                 else:
                     # All retries exhausted — original session is gone.
@@ -1709,6 +2012,84 @@ async def _run_one_cycle(
                 _project_generation_cost_runtime(ui)
             lf.write(f"\n[OPERATOR_COST_LIMIT] {e}\n")
             return ORCH_OPERATOR_COST_LIMIT_COST
+
+        except LLMAvailabilityBlocked as e:
+            # Provider availability is control-plane state, not a failed bot or
+            # a retryable SDK signature glitch.  Close the disposable stream,
+            # persist the typed pause, and preserve every generation/Worker
+            # checkpoint exactly as-is.
+            for _g in (query_gen, _gen_ref[0]):
+                if _g is not None:
+                    try:
+                        await _g.aclose()
+                    except Exception as _ge:
+                        log.debug("gen.aclose failed during LLM pause: %s", _ge)
+            _clear_orchestrator_session(reason="llm_availability_blocked")
+            try:
+                pause_state = persist_llm_pause(e)
+            except Exception as pause_error:
+                pause_state = None
+                log.exception("Failed to persist LLM availability pause: %s", pause_error)
+            issue = e.issue
+            if ui:
+                ui.log_history(
+                    f"[Orchestrator] LLM unavailable ({issue.category}); "
+                    "checkpoint preserved and retry loop stopped.",
+                    "error",
+                )
+                ui.set_status(
+                    f"LLM unavailable ({issue.category})",
+                    is_working=False,
+                )
+            try:
+                log_system_event(
+                    "orchestrator.llm_availability_blocked",
+                    "error",
+                    f"Orchestrator paused for LLM availability: {issue.category}",
+                    {
+                        "availability_issue": issue.as_dict(),
+                        "pause_persisted": bool(pause_state),
+                        "checkpoint_preserved": True,
+                        "worker_attempt_consumed": False,
+                    },
+                )
+            except Exception:
+                pass
+            lf.write(
+                f"\n[LLM_AVAILABILITY_BLOCKED] {issue.category}: "
+                f"{issue.summary}\n"
+            )
+            return ORCH_LLM_AVAILABILITY_BLOCKED_COST
+
+        except LLMAvailabilityPauseError as e:
+            # The Worker was already fenced, but its global pause record could
+            # not be proven. Stop the current stream and let the outer sentinel
+            # path fail closed; never translate this into a generic retry.
+            for _g in (query_gen, _gen_ref[0]):
+                if _g is not None:
+                    try:
+                        await _g.aclose()
+                    except Exception as _ge:
+                        log.debug("gen.aclose failed during pause-state stop: %s", _ge)
+            _clear_orchestrator_session(reason="llm_availability_state_invalid")
+            if ui:
+                ui.log_history(f"[Orchestrator] {e}", "error")
+                ui.set_status("Stopped: invalid LLM availability state", is_working=False)
+            try:
+                log_system_event(
+                    "orchestrator.llm_availability_state_stop",
+                    "error",
+                    str(e),
+                    {
+                        "checkpoint_preserved": True,
+                        "worker_attempt_consumed": False,
+                        "operator_action_required": True,
+                    },
+                )
+            except Exception:
+                pass
+            lf.write(f"\n[LLM_AVAILABILITY_STATE_INVALID] {e}\n")
+            return ORCH_LLM_AVAILABILITY_BLOCKED_COST
 
         except Exception as e:
             # aclose 真实 gen：异常路径可能在元组解包前抛出 → query_gen 为 None，真实 gen
@@ -1959,10 +2340,7 @@ def _is_worker_circuit_breaker_result(data):
     if not isinstance(data, dict):
         return False
     error = str(data.get("error") or "")
-    return (
-        "CIRCUIT BREAKER" in error
-        or error == "WORKER_CIRCUIT_BREAKER_CROSS_GEN"
-    )
+    return "CIRCUIT BREAKER" in error
 
 
 def _is_worker_terminal_abandon_result(data):
@@ -2017,6 +2395,7 @@ async def _try_deterministic_checkpoint_route(
     log_level: str = "warn",
     label: str = "[Recovery]",
     cost_policy: GenerationCostPolicy | None = None,
+    shutdown_mgr=None,
 ):
     """Execute safe checkpoint routes without asking the Orchestrator LLM again."""
     if not recovery or recovery.get("action") != "resume":
@@ -2037,6 +2416,10 @@ async def _try_deterministic_checkpoint_route(
     source_v = route.get("source_v")
     parent2_v = route.get("parent2_v")
     stage = route.get("stage")
+
+    if _deterministic_route_requires_llm(checkpoint, str(next_tool)):
+        if not await _honor_active_llm_pause(ui, shutdown_mgr):
+            return False
 
     saved_session_id = _load_orchestrator_session()
     if saved_session_id:
@@ -2099,9 +2482,48 @@ async def _try_deterministic_checkpoint_route(
     except Exception:
         pass
 
-    result = await handler(args)
+    try:
+        result = await handler(args)
+        data = _extract_tool_result_json(result)
+        # Direct checkpoint recovery bypasses the SDK ToolResult stream where
+        # this conversion normally happens.  Re-establish the same typed
+        # availability boundary before generic tool-error routing can retry an
+        # Orchestrator/Worker or consume an infrastructure attempt.
+        _raise_for_llm_availability_tool_result(data)
+    except LLMAvailabilityBlocked as exc:
+        # Direct deterministic routes do not pass through _run_one_cycle's SDK
+        # stream catch. Persist the same durable control state here and leave the
+        # checkpoint/attempt untouched.
+        try:
+            persist_llm_pause(exc)
+        except Exception as pause_exc:
+            if ui:
+                ui.log_history(
+                    f"[Recovery] LLM pause persistence failed closed: {pause_exc}",
+                    "error",
+                )
+                ui.set_status(
+                    "Stopped: LLM pause persistence failed",
+                    is_working=False,
+                )
+            log.error(
+                "Deterministic route could not persist LLM pause: %s",
+                pause_exc,
+            )
+            raise LLMAvailabilityPauseError(
+                "deterministic route could not persist the classified LLM pause"
+            ) from pause_exc
+        _clear_orchestrator_session(reason="deterministic_llm_availability_blocked")
+        if await _honor_active_llm_pause(ui, shutdown_mgr):
+            return True
+        return False
+    except LLMAvailabilityPauseError as exc:
+        if ui:
+            ui.log_history(f"[Recovery] LLM pause control failed closed: {exc}", "error")
+            ui.set_status("Stopped: LLM pause control invalid", is_working=False)
+        log.error("Deterministic route LLM pause control failed closed: %s", exc)
+        raise
     _check_generation_cost_policy(ui)
-    data = _extract_tool_result_json(result)
     error = data.get("error")
     success = data.get("success")
     worker_terminal_abandon = (
@@ -2368,7 +2790,10 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
     global _watchdog_triggered
     from evolution_infra import WATCHDOG_TIMEOUT
     from evolution_core import read_pipeline_checkpoint
-    from pipeline_state import session_recoverable_stages
+    from pipeline_state import (
+        pipeline_runtime_activity_ts,
+        session_recoverable_stages,
+    )
 
     recoverable_stages = session_recoverable_stages()
 
@@ -2393,7 +2818,10 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             if stage not in recoverable_stages:
                 continue
 
-            last_ts = checkpoint.get("last_stage_change_ts", 0.0)
+            last_ts = max(
+                float(checkpoint.get("last_stage_change_ts") or 0.0),
+                pipeline_runtime_activity_ts(checkpoint),
+            )
             if last_ts <= 0:
                 continue
 
@@ -2722,8 +3150,26 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         shutdown_mgr: ShutdownManager for graceful signal handling.
         no_daemon: If True, skip daemon startup.
         daemon_workers: Number of parallel workers for the daemon subprocess.
-        daemon_pairs: Mirror pairs per match for the daemon subprocess.
+        daemon_pairs: Complete 70-hand native matches per scheduled bot pairing.
     """
+    try:
+        from epoch_authority import require_policy_epoch_initialized
+
+        require_policy_epoch_initialized("orchestrator_loop")
+    except Exception as exc:
+        state = getattr(exc, "state", {})
+        epoch_state = state.get("state", "epoch_authority_unavailable")
+        msg = (
+            "Orchestrator not started: policy epoch initialization is "
+            f"{epoch_state}"
+        )
+        if ui:
+            ui.log_history(msg, "warn")
+            ui.set_status(f"Stopped: {epoch_state}", is_working=False)
+        log.error(msg)
+        # Do not emit a structured event: its destination still belongs to the
+        # retired epoch.  Web and CLI launchers expose the canonical state.
+        return
     if daemon_workers is None:
         daemon_workers = max(1, int(os.cpu_count() * 28 / 32))
     from tools import inject_ui
@@ -2762,6 +3208,55 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
     if ui:
         ui.log_history("🔥 Orchestrator starting...", "success")
         ui.set_header("🔥 LLM Orchestrator Evolution 🔥")
+
+    try:
+        pause_before_reconcile = load_llm_pause()
+        # This is the parent-process launch boundary.  Consume and remove the
+        # operator acknowledgement before daemon/SDK children can inherit it.
+        pause_after_reconcile = consume_operator_resume_ack_from_env()
+    except Exception as exc:
+        msg = f"Invalid/unwritable LLM availability pause state: {exc}"
+        if ui:
+            ui.log_history(msg, "error")
+            ui.set_status("Stopped: invalid LLM pause state", is_working=False)
+        log.exception(msg)
+        try:
+            log_system_event(
+                "orchestrator.llm_availability_state_invalid",
+                "error",
+                msg,
+                {"operator_action_required": True},
+            )
+        except Exception:
+            pass
+        return
+    if (
+        pause_before_reconcile
+        and pause_before_reconcile.get("active")
+        and pause_after_reconcile
+        and not pause_after_reconcile.get("active")
+    ):
+        resume_source = pause_after_reconcile.get("resume_source")
+        msg = (
+            "LLM availability pause cleared by "
+            f"{resume_source}; deterministic checkpoint recovery will continue."
+        )
+        if ui:
+            ui.log_history(msg, "info")
+        log.info(msg)
+        try:
+            log_system_event(
+                "orchestrator.llm_availability_resumed",
+                "info",
+                msg,
+                {
+                    "category": pause_after_reconcile.get("category"),
+                    "evidence_digest": pause_after_reconcile.get("evidence_digest"),
+                    "resume_source": resume_source,
+                },
+            )
+        except Exception:
+            pass
 
     log_system_event("orchestrator.started", "success", "Orchestrator started",
                      {
@@ -2935,6 +3430,12 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 recovery = None  # consume recovery, only used once
             else:
                 # Phase 1: Prepare (disposable on interrupt)
+                # Do not create a fresh candidate while a provider pause is
+                # active. Existing deterministic recovery routes are attempted
+                # above first, which lets the system strict bootstrap advance
+                # without any LLM dependency.
+                if not await _honor_active_llm_pause(ui, shutdown_mgr):
+                    break
                 # Use degraded min_games after repeated eval timeouts
                 degraded_min = None
                 if consecutive_prep_fails >= 3:
@@ -2992,7 +3493,11 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         await asyncio.sleep(1)
                         continue
 
-            # Phase 2: Run one generation (preserves state on interrupt)
+            # Phase 2: Run one generation (preserves state on interrupt). A
+            # deterministic route has already had priority; any remaining work
+            # needs the Orchestrator LLM and must honor the durable pause.
+            if not await _honor_active_llm_pause(ui, shutdown_mgr):
+                break
             cost = await _run_one_cycle(
                 ui=ui,
                 log_file=log_file,
@@ -3015,6 +3520,33 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     ui.set_status("Stopped: operator generation cost limit", is_working=False)
                 log.error(msg)
                 break
+
+            if cost == ORCH_LLM_AVAILABILITY_BLOCKED_COST:
+                # A persisted manual pause ends the loop immediately; a
+                # transient pause waits for its bounded cooldown and then
+                # resumes from the exact active checkpoint. If persistence
+                # itself failed, fail closed instead of retrying blindly.
+                try:
+                    pause_state = load_llm_pause()
+                except Exception as exc:
+                    pause_state = None
+                    log.error("Cannot read LLM availability pause after block: %s", exc)
+                if not pause_state or not pause_state.get("active"):
+                    msg = (
+                        "LLM availability was classified but its durable pause "
+                        "record is unavailable; stopping fail-closed."
+                    )
+                    if ui:
+                        ui.log_history(msg, "error")
+                        ui.set_status("Stopped: LLM pause persistence failed", is_working=False)
+                    log.error(msg)
+                    break
+                if not await _honor_active_llm_pause(ui, shutdown_mgr):
+                    break
+                recovery = _checkpoint_recovery_context(
+                    "llm_availability_resumed", ui
+                )
+                continue
 
             # Timeout-extension sentinel: a cycle timed out but commit was imminent
             # (stage=verified) so ONE extension was granted mid-cycle. The cycle is NOT
@@ -3206,6 +3738,24 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
             ui.log_history(str(exc), "error")
             _project_generation_cost_runtime(ui)
         log.error("Operator generation cost limit stopped evolution: %s", exc)
+    except LLMAvailabilityBlocked as exc:
+        # Defensive boundary for an LLM role outside the normal stream/direct
+        # route wrappers. Never relabel a provider stop as an orchestrator crash.
+        try:
+            persist_llm_pause(exc)
+        except Exception as pause_exc:
+            log.exception("Failed to persist outer-loop LLM pause: %s", pause_exc)
+        _clear_orchestrator_session(reason="outer_llm_availability_blocked")
+        if ui:
+            ui.set_status(f"Stopped: LLM unavailable ({exc.issue.category})", is_working=False)
+            ui.log_history(str(exc), "error")
+        log.error("LLM availability stopped evolution: %s", exc)
+    except LLMAvailabilityPauseError as exc:
+        _clear_orchestrator_session(reason="llm_availability_state_invalid")
+        if ui:
+            ui.set_status("Stopped: LLM availability state invalid", is_working=False)
+            ui.log_history(str(exc), "error")
+        log.error("LLM availability control stopped evolution: %s", exc)
     except asyncio.CancelledError:
         if ui:
             ui.set_status("Stopped", is_working=False)
@@ -3284,6 +3834,10 @@ async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):
         # Operator policy is a terminal outer-loop control signal, not a
         # disposable prepare failure eligible for exponential retry.
         raise
+    except LLMAvailabilityBlocked:
+        # Provider availability is a durable outer-loop pause.  Returning None
+        # would turn it into a disposable prepare retry and lose typed control.
+        raise
     except Exception as e:
         if ui:
             ui.log_history(f"prepare_generation failed: {e}", "error")
@@ -3294,6 +3848,12 @@ async def _prepare_or_fail(shutdown_mgr, ui, min_games=None):
 
 async def run_orchestrator_cli(args, shutdown_mgr=None):
     """Run Orchestrator in standalone CLI mode."""
+    # All CLI modes, including --dry-run and --one-gen, enter orchestrator
+    # machinery and may create logs/checkpoints or invoke tools.  Refuse them
+    # before configuring runtime state when the one-time reset is absent.
+    from epoch_authority import require_policy_epoch_initialized
+
+    require_policy_epoch_initialized("orchestrator_cli")
     from logging_config import configure_logging
     configure_logging()
     os.makedirs(LOGS_DIR, exist_ok=True)
@@ -3322,6 +3882,22 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
             "orchestrator.cost_policy_invalid",
             "error",
             f"Invalid operator generation cost policy: {exc}",
+            {"operator_action_required": True},
+        )
+        return
+
+    # Standalone one-shot/dry-run modes do not enter ``orchestrator_loop``.
+    # Consume the operator acknowledgement here before prepare_generation or
+    # any direct SDK cycle can start. Continuous mode enters orchestrator_loop
+    # afterwards, but the environment value has already been removed.
+    try:
+        consume_operator_resume_ack_from_env()
+    except Exception as exc:
+        log.exception("Invalid/unwritable LLM availability pause state: %s", exc)
+        log_system_event(
+            "orchestrator.llm_availability_state_invalid",
+            "error",
+            f"Invalid/unwritable LLM availability pause state: {exc}",
             {"operator_action_required": True},
         )
         return
@@ -3376,7 +3952,9 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
 
 def main():
     import signal
-    parser = argparse.ArgumentParser(description="LLM Evolution Orchestrator")
+    parser = argparse.ArgumentParser(
+        description="national_tcp_policy_v1 LLM evolution orchestrator"
+    )
     parser.add_argument("--one-gen", action="store_true", help="Run one generation then stop")
     parser.add_argument("--dry-run", action="store_true", help="Only check status, no changes")
     parser.add_argument("--no-daemon", action="store_true", help="Skip daemon startup")

@@ -1,8 +1,9 @@
-"""Generation policy for national-native runtime architecture debt.
+"""Architecture policy for the ``national_tcp_policy_v1`` epoch.
 
-The detector reports facts for one bot. This module turns those facts into a
-stable parent-to-candidate contract: preserve every capability the parent has
-and close one coherent debt bundle selected by the system, not by the LLM.
+The policy treats raw TCP and state reconstruction as a system capability and
+poker decisions as a typed candidate policy capability.  Historical bot code
+is lineage only: it is never a baseline capability and is never opened by this
+module when the source directory is absent or does not implement the policy ABI.
 """
 
 from __future__ import annotations
@@ -14,24 +15,26 @@ from pathlib import Path
 from typing import Any
 
 from national_capability_contract import (
+    ADVISORY_CHECKS,
     NATIONAL_CAPABILITY_DETECTOR_VERSION,
-    _migration_dynamic_influence,
-    _migration_source_consumption,
+    REQUIRED_CHECKS,
     evaluate_national_capabilities,
 )
 from output_schema import (
-    LEGACY_CONSUMER_MIGRATION_BUNDLE_ID,
-    LEGACY_CONSUMER_MIGRATION_CHECKS,
-    LEGACY_CONSUMER_MIGRATION_FILES,
-    LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
+    NATIONAL_POLICY_FOCUS_ID,
+    POLICY_CONTEXT_SCHEMA_VERSION,
+    POLICY_CONTEXT_TOP_LEVEL_FIELDS,
+    POLICY_ENTRYPOINTS,
+    POLICY_INTENT_KINDS,
     STATE_LEARNING_ORACLE_REFS,
 )
 
 
-RUNTIME_ARCHITECTURE_POLICY_VERSION = "3.7.0"
-RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 12
-RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 2
-PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION = 1
+ACTIVE_EPOCH = "national_tcp_policy_v1"
+RUNTIME_ARCHITECTURE_POLICY_VERSION = "5.0.0"
+RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 14
+RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 3
+PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION = 3
 ARCHITECTURE_TRANSITION_PHASE_FINAL = "final"
 ARCHITECTURE_TRANSITION_PHASE_PREPLAN = "preplan"
 ARCHITECTURE_TRANSITION_PHASES = frozenset({
@@ -47,33 +50,15 @@ OFFICIAL_ORACLE_DOC_DIGESTS: dict[str, str] = {
         "ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9"
     ),
 }
-RUNTIME_CORRECTNESS_FLOOR_CHECKS: tuple[str, ...] = (
-    "decision_time_budget_visible",
-    "fast_strategy_baseline",
-    "killable_decision_runtime",
-    "decision_path_no_full_history_scan",
-    "decision_path_no_large_runtime_tables",
-    "persistent_match_memory",
-    "terminal_response_memory",
-    "showdown_range_posterior",
-    "authoritative_hand_context",
-)
-# Wrapper state is not a completed migration until the live strategy consumes it.
-# These user-observed legacy defects therefore form one universal floor rather
-# than four selectable innovations. Once closed, baseline preservation keeps them
-# blocking while ordinary state-learning returns to one primary per generation.
-RUNTIME_FLOOR_CHECKS = (
-    *RUNTIME_CORRECTNESS_FLOOR_CHECKS,
-    *LEGACY_CONSUMER_MIGRATION_CHECKS,
-)
-STATE_LEARNING_INNOVATION_CHECKS: tuple[str, ...] = (
-    "incremental_refinement_protocol",
-    "budget_scaled_refinement",
-    "precompute_lookup_path",
-    "precompute_runtime_influence",
-    "incremental_opponent_model",
-)
+
+RUNTIME_CORRECTNESS_FLOOR_CHECKS: tuple[str, ...] = tuple(REQUIRED_CHECKS)
+RUNTIME_FLOOR_CHECKS = RUNTIME_CORRECTNESS_FLOOR_CHECKS
+STATE_LEARNING_INNOVATION_CHECKS: tuple[str, ...] = tuple(ADVISORY_CHECKS)
 NATIVE_TEMPLATE_PROVIDED_CHECKS: tuple[str, ...] = (
+    "system_runtime_current",
+    "socket_owner_action_mapping",
+    "raw_tcp_stream_decoder",
+    "exact_raise_to_boundary",
     "decision_time_budget_visible",
     "killable_decision_runtime",
     "persistent_match_memory",
@@ -81,157 +66,32 @@ NATIVE_TEMPLATE_PROVIDED_CHECKS: tuple[str, ...] = (
     "showdown_range_posterior",
     "authoritative_hand_context",
 )
-
-
-def _verified_official_oracle_identity() -> dict[str, str]:
-    project_root = Path(__file__).resolve().parents[2]
-    observed: dict[str, str] = {}
-    for relative, expected_digest in OFFICIAL_ORACLE_DOC_DIGESTS.items():
-        path = project_root / relative
-        if not path.is_file():
-            raise RuntimeError(f"official oracle document missing: {relative}")
-        actual_digest = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual_digest != expected_digest:
-            raise RuntimeError(
-                "official oracle document digest mismatch: "
-                f"{relative} expected={expected_digest} actual={actual_digest}"
-            )
-        observed[relative] = actual_digest
-    return observed
-
-
-def _strategy_reference_pack_digest() -> str:
-    """Pin the local recipe registry into the architecture-policy identity."""
-    from strategy_reference_pack import reference_pack_registry_digest
-
-    return reference_pack_registry_digest()
 
 _FOCUS_SPECS: tuple[dict[str, Any], ...] = (
     {
-        "focus_id": LEGACY_CONSUMER_MIGRATION_FOCUS_ID,
-        "title": "Universal legacy state-consumer migration",
-        "selection_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
-        "required_checks": [
-            *RUNTIME_CORRECTNESS_FLOOR_CHECKS,
-            *LEGACY_CONSUMER_MIGRATION_CHECKS,
-        ],
-        "migration_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
-        "accepted_skill_layers": ["runtime_architecture"],
-        "suggested_files": list(LEGACY_CONSUMER_MIGRATION_FILES),
-        "required_terms": [
-            "terminal_response",
-            "showdown_range",
-            "can_donk",
-            "can_delayed_probe",
-            "sanitized wire action",
-        ],
-        "rationale": (
-            "Treat wrapper-owned terminal responses, showdown posterior, and "
-            "authoritative donk/delayed-probe flags as one ABI migration. All four "
-            "consumers are final-blocking and system-owned; the planner may design "
-            "their implementation but may not omit, defer, or relabel one as advisory."
-        ),
-    },
-    {
-        "focus_id": "national_runtime_v4_state_learning",
-        "title": "Complete event-state and anytime-learning migration",
-        "selection_checks": [
-            "killable_decision_runtime",
-            "fast_strategy_baseline",
-            "incremental_refinement_protocol",
-            "budget_scaled_refinement",
-            "decision_path_no_full_history_scan",
-            "decision_path_no_large_runtime_tables",
-            "precompute_lookup_path",
-            "precompute_runtime_influence",
-            "persistent_match_memory",
-            "terminal_response_memory",
-            "showdown_range_posterior",
-            "authoritative_hand_context",
-            "incremental_opponent_model",
-        ],
-        "required_checks": list(RUNTIME_CORRECTNESS_FLOOR_CHECKS),
+        "focus_id": NATIONAL_POLICY_FOCUS_ID,
+        "title": "Typed policy state learning",
+        "selection_checks": ["incremental_opponent_model"],
+        "required_checks": ["incremental_opponent_model"],
         "innovation_checks": list(STATE_LEARNING_INNOVATION_CHECKS),
-        "accepted_skill_layers": [
-            "runtime_architecture",
-            "precompute",
-            "match_memory",
-            "opponent_model",
-            "line_template",
-        ],
-        "suggested_files": [
-            "strategy.py",
-            "simulation.py",
-            "precompute.py",
-            "opponent.py",
-            "donk_probe.py",
-        ],
-        "required_terms": ["sanitized action", "telemetry"],
+        "accepted_skill_layers": ["opponent_model", "match_memory", "runtime_architecture"],
+        "suggested_files": ["policy.py"],
+        "required_terms": ["decision_context", "typed intent", "opponent", "confidence"],
         "rationale": (
-            "Keep wrapper-owned event state and protocol safety as universal correctness "
-            "floors, then choose exactly one typed primary strategy innovation per generation. "
-            "Only that work primitive, profile dimension, or line control becomes a new hard "
-            "consumer gate; other dimensions remain shadow evidence unless the parent already "
-            "passed them, in which case normal regression preservation remains blocking."
-        ),
-    },
-    {
-        "focus_id": "incremental_match_model",
-        "title": "Incremental 70-hand opponent model",
-        "required_checks": [
-            "persistent_match_memory",
-            "incremental_opponent_model",
-            "decision_path_no_full_history_scan",
-        ],
-        "accepted_skill_layers": ["match_memory", "opponent_model", "runtime_architecture"],
-        "suggested_files": ["national_bot.py", "strategy.py", "opponent.py", "state.py"],
-        "required_terms": ["opponent_runtime", "confidence", "incremental"],
-        "rationale": (
-            "Use the uninterrupted 70-hand connection: update bounded facts on every action, "
-            "settlement, and showdown; consume the snapshot directly instead of rebuilding from requests."
-        ),
-    },
-    {
-        "focus_id": "reusable_precompute",
-        "title": "Bounded precomputed decision facts",
-        "required_checks": ["precompute_lookup_path", "precompute_runtime_influence"],
-        "accepted_skill_layers": ["precompute", "runtime_architecture"],
-        "suggested_files": ["strategy.py", "simulation.py", "card_utils.py", "constants.py"],
-        "required_terms": ["precompute", "bounded", "lookup"],
-        "rationale": (
-            "Spend memory once on pure poker facts or a bounded cache and prove that the live decision path consumes it."
+            "Use the system tracker snapshot directly from decision_context.opponent "
+            "and prove one reachable typed-intent counterfactual."
         ),
     },
     {
         "focus_id": "deadline_refinement",
-        "title": "Deadline-aware bounded refinement",
-        "required_checks": ["decision_time_budget_visible"],
-        "accepted_skill_layers": ["runtime_architecture", "precompute"],
-        "suggested_files": ["strategy.py", "simulation.py", "constants.py"],
-        "required_terms": ["deadline", "fallback", "budget"],
-        "rationale": (
-            "Return a legal baseline first, refine only while a monotonic deadline has budget, and preserve a deterministic fallback."
-        ),
-    },
-    {
-        "focus_id": "bounded_runtime_enumeration",
-        "title": "Remove repeated combinatorial decision work",
-        "required_checks": ["decision_path_no_large_runtime_tables"],
-        "accepted_skill_layers": ["precompute", "runtime_architecture"],
-        "suggested_files": ["simulation.py", "card_utils.py", "strategy.py"],
-        "required_terms": ["bounded", "cache", "decision path"],
-        "rationale": (
-            "Replace repeated range/table construction in the live call graph with bounded reusable facts or incremental updates."
-        ),
-    },
-    {
-        "focus_id": "decision_path_purity",
-        "title": "Decision path without external I/O",
-        "required_checks": ["decision_path_no_external_io"],
-        "accepted_skill_layers": ["runtime_architecture", "telemetry"],
-        "suggested_files": ["strategy.py", "postflop.py", "opponent.py", "national_bot.py"],
-        "required_terms": ["decision path", "telemetry", "I/O"],
-        "rationale": "Move diagnostics and external I/O out of get_action and its reachable helpers.",
+        "title": "Deadline-bounded refinement",
+        "selection_checks": ["incremental_refinement_protocol", "budget_scaled_refinement"],
+        "required_checks": ["incremental_refinement_protocol", "budget_scaled_refinement"],
+        "innovation_checks": ["incremental_refinement_protocol", "budget_scaled_refinement"],
+        "accepted_skill_layers": ["runtime_architecture"],
+        "suggested_files": ["policy.py"],
+        "required_terms": ["baseline", "deadline", "fallback", "typed intent"],
+        "rationale": "Return a fast baseline, then yield bounded improvements before the system deadline.",
     },
 )
 
@@ -242,39 +102,58 @@ def architecture_focus_specs() -> list[dict[str, Any]]:
 
 def _canonical_json_digest(payload: Any) -> str:
     return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
     ).hexdigest()
 
 
-def legacy_consumer_migration_bundle() -> dict[str, Any]:
-    """Return the immutable migration obligations injected into Master plans."""
-    payload = {
-        "bundle_id": LEGACY_CONSUMER_MIGRATION_BUNDLE_ID,
-        "required_checks": list(LEGACY_CONSUMER_MIGRATION_CHECKS),
-        "consumer_files": list(LEGACY_CONSUMER_MIGRATION_FILES),
-        "oracle_refs": list(STATE_LEARNING_ORACLE_REFS),
-    }
-    payload["bundle_digest"] = _canonical_json_digest(payload)
-    return payload
+def _verified_official_oracle_identity() -> dict[str, str]:
+    project_root = Path(__file__).resolve().parents[2]
+    observed: dict[str, str] = {}
+    for relative, expected in OFFICIAL_ORACLE_DOC_DIGESTS.items():
+        path = project_root / relative
+        if not path.is_file():
+            raise RuntimeError(f"official oracle document missing: {relative}")
+        actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected:
+            raise RuntimeError(
+                f"official oracle digest mismatch:{relative}:expected={expected}:actual={actual}"
+            )
+        observed[relative] = actual
+    return observed
 
 
-def legacy_consumer_migration_runtime_contract() -> dict[str, Any]:
-    """Return the exact executable contract used by Master and repair paths."""
-    bundle = legacy_consumer_migration_bundle()
+def _strategy_reference_pack_digest() -> str:
+    from strategy_reference_pack import reference_pack_registry_digest
+
+    return reference_pack_registry_digest()
+
+
+def native_policy_runtime_contract() -> dict[str, Any]:
+    """Return the exact closed ABI floor used by deterministic planning paths."""
+
     return {
+        "policy_abi": {
+            "module": "policy.py",
+            "context_schema_version": POLICY_CONTEXT_SCHEMA_VERSION,
+            "context_fields": list(POLICY_CONTEXT_TOP_LEVEL_FIELDS),
+            "entrypoints": list(POLICY_ENTRYPOINTS),
+            "intent_kinds": list(POLICY_INTENT_KINDS),
+            "raise_field": "raise_to",
+            "pass_mapping": "socket_owner_call_or_check",
+        },
         "decision": {
             "clock": "time.monotonic",
             "hard_deadline_ms": 55_000,
             "baseline_target_ms": 250,
             "refinement_budget_ms": 54_000,
-            "baseline_path": (
-                "compute a legal deterministic action from bounded current-hand "
-                "and wrapper-owned runtime state before optional refinement"
-            ),
-            "fallback_action": "check when legal, otherwise call or fold",
-            "refinement_bound": (
-                "stop on the monotonic deadline and an explicit finite sample cap"
-            ),
+            "baseline_path": "policy.get_baseline_decision(context) returns a typed intent",
+            "fallback_action": "socket owner maps a legal pass/fold fallback",
+            "refinement_bound": "iter_decisions stops before context deadline and a finite cap",
             "max_samples": 4_096,
         },
         "precompute_artifacts": [],
@@ -289,54 +168,46 @@ def legacy_consumer_migration_runtime_contract() -> dict[str, Any]:
                 "settlement",
                 "showdown",
             ],
-            "snapshot_field": "opponent_runtime",
+            "snapshot_field": "opponent",
             "max_recent_hands": 8,
             "prior_rule": "beta_prior_weight_8",
             "confidence_rule": (
-                "global_actions_over_actions_plus_24_and_context_samples_over_"
-                "samples_plus_8"
+                "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
             ),
             "adaptation_cap": 0.65,
-            "consumer": "strategy.get_baseline_action",
+            "consumer": "policy.get_baseline_decision",
         },
         "state_learning": None,
-        "legacy_consumer_migration": {
-            key: value
-            for key, value in bundle.items()
-            if key != "bundle_digest"
-        },
         "reference_pack_id": "",
         "official_feedback_refs": [],
         "forbidden_runtime_work": [
-            "full-match requests/responses/showdowns scan inside the decision path",
-            "file, network, or subprocess I/O inside the decision path",
+            "protocol state outside decision_context",
+            "file, network, or subprocess I/O inside candidate policy",
             "unbounded combinatorial construction per decision",
         ],
     }
 
 
 def _runtime_contract_entry(task: dict[str, Any], index: int) -> dict[str, Any] | None:
-    raw_contract = task.get("runtime_contract")
-    if not isinstance(raw_contract, dict):
+    raw = task.get("runtime_contract")
+    if not isinstance(raw, dict):
         return None
     from output_schema import RuntimeContract
 
-    contract = RuntimeContract.model_validate(raw_contract).model_dump(mode="json")
+    contract = RuntimeContract.model_validate(raw).model_dump(mode="json")
     identity = {
         "worker_id": str(task.get("worker_id", index)),
         "skill_layer": str(task.get("skill_layer") or ""),
         "architecture_focus_id": str(task.get("architecture_focus_id") or ""),
         "runtime_contract": contract,
     }
-    return {
-        **identity,
-        "contract_digest": _canonical_json_digest(identity),
-    }
+    return {**identity, "contract_digest": _canonical_json_digest(identity)}
 
 
 def _ledger_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "schema_version": RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION,
+        "epoch": ACTIVE_EPOCH,
         "entries": entries,
     }
 
@@ -346,18 +217,12 @@ def build_runtime_contract_ledger(
     *,
     inherited_ledger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build an immutable contract ledger from accepted and inherited tasks.
-
-    Repair rounds replace the executable task list, but they must not erase the
-    contracts that were accepted with the original Master plan. The ledger is
-    system-owned: callers attach it only after schema/hard validation.
-    """
     entries: list[dict[str, Any]] = []
     seen: set[str] = set()
-    if isinstance(inherited_ledger, dict):
-        inherited_errors = validate_runtime_contract_ledger(inherited_ledger)
-        if inherited_errors:
-            raise ValueError("invalid inherited runtime contract ledger: " + "; ".join(inherited_errors))
+    if inherited_ledger is not None:
+        errors = validate_runtime_contract_ledger(inherited_ledger)
+        if errors:
+            raise ValueError("invalid inherited runtime contract ledger: " + "; ".join(errors))
         for item in inherited_ledger.get("entries") or []:
             digest = str(item.get("contract_digest") or "")
             if digest and digest not in seen:
@@ -367,10 +232,9 @@ def build_runtime_contract_ledger(
         if not isinstance(task, dict):
             continue
         entry = _runtime_contract_entry(task, index)
-        if entry is None or entry["contract_digest"] in seen:
-            continue
-        entries.append(entry)
-        seen.add(entry["contract_digest"])
+        if entry is not None and entry["contract_digest"] not in seen:
+            entries.append(entry)
+            seen.add(entry["contract_digest"])
     payload = _ledger_payload(entries)
     return {**payload, "ledger_digest": _canonical_json_digest(payload)}
 
@@ -380,34 +244,23 @@ def validate_runtime_contract_ledger(ledger: dict[str, Any] | None) -> list[str]
         return ["runtime_contract_ledger_missing_or_not_object"]
     errors: list[str] = []
     if ledger.get("schema_version") != RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION:
-        errors.append(
-            "runtime_contract_ledger_schema_mismatch: "
-            f"expected={RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION} "
-            f"actual={ledger.get('schema_version')!r}"
-        )
-    entries = ledger.get("entries")
-    if not isinstance(entries, list):
+        errors.append("runtime_contract_ledger_schema_mismatch")
+    if ledger.get("epoch") != ACTIVE_EPOCH:
+        errors.append("runtime_contract_ledger_epoch_mismatch")
+    raw_entries = ledger.get("entries")
+    if not isinstance(raw_entries, list):
         return [*errors, "runtime_contract_ledger_entries_not_list"]
-    normalized_entries: list[dict[str, Any]] = []
+    entries: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for index, item in enumerate(entries, start=1):
+    for index, item in enumerate(raw_entries, start=1):
         if not isinstance(item, dict):
             errors.append(f"runtime_contract_ledger_entry_{index}_not_object")
             continue
         try:
-            rebuilt = _runtime_contract_entry(
-                {
-                    "worker_id": item.get("worker_id"),
-                    "skill_layer": item.get("skill_layer"),
-                    "architecture_focus_id": item.get("architecture_focus_id"),
-                    "runtime_contract": item.get("runtime_contract"),
-                },
-                index,
-            )
+            rebuilt = _runtime_contract_entry(item, index)
         except Exception as exc:
             errors.append(
-                f"runtime_contract_ledger_entry_{index}_schema_error:"
-                f"{type(exc).__name__}:{str(exc)[:180]}"
+                f"runtime_contract_ledger_entry_{index}_schema_error:{type(exc).__name__}:{str(exc)[:180]}"
             )
             continue
         if rebuilt is None:
@@ -418,20 +271,19 @@ def validate_runtime_contract_ledger(ledger: dict[str, Any] | None) -> list[str]
         if rebuilt["contract_digest"] in seen:
             errors.append(f"runtime_contract_ledger_entry_{index}_duplicate")
         seen.add(rebuilt["contract_digest"])
-        normalized_entries.append(rebuilt)
-    payload = _ledger_payload(normalized_entries)
-    if ledger.get("ledger_digest") != _canonical_json_digest(payload):
+        entries.append(rebuilt)
+    expected = _ledger_payload(entries)
+    if ledger.get("ledger_digest") != _canonical_json_digest(expected):
         errors.append("runtime_contract_ledger_digest_mismatch")
-    return errors
+    return list(dict.fromkeys(errors))
 
 
-def runtime_contract_ledger_digest(ledger_or_plan: dict[str, Any] | None) -> str:
-    value = ledger_or_plan
+def runtime_contract_ledger_digest(value: dict[str, Any] | None) -> str:
     if isinstance(value, dict) and "runtime_contract_ledger" in value:
         value = value.get("runtime_contract_ledger")
     if validate_runtime_contract_ledger(value):
         return ""
-    return str(value.get("ledger_digest") or "")
+    return str((value or {}).get("ledger_digest") or "")
 
 
 def attach_runtime_contract_ledger(
@@ -439,158 +291,322 @@ def attach_runtime_contract_ledger(
     *,
     replace: bool = False,
 ) -> dict[str, Any]:
-    """Attach or extend the system-owned ledger without dropping old entries."""
     if not isinstance(plan, dict):
         return plan
     inherited = None if replace else plan.get("runtime_contract_ledger")
     if inherited is not None and validate_runtime_contract_ledger(inherited):
-        # Preserve corrupt evidence so the next hard gate fails closed instead
-        # of silently blessing a rewritten checkpoint.
         return plan
-    ledger = build_runtime_contract_ledger(plan, inherited_ledger=inherited)
-    return {**plan, "runtime_contract_ledger": ledger}
+    return {
+        **plan,
+        "runtime_contract_ledger": build_runtime_contract_ledger(
+            plan,
+            inherited_ledger=inherited,
+        ),
+    }
 
 
 def _ledger_contracts(plan: dict[str, Any]) -> tuple[list[tuple[str, dict[str, Any]]], list[str]]:
     ledger = plan.get("runtime_contract_ledger") if isinstance(plan, dict) else None
-    if ledger is not None:
-        errors = validate_runtime_contract_ledger(ledger)
-        if errors:
-            return [], errors
-        return [
-            (f"ledger_{index}", item["runtime_contract"])
-            for index, item in enumerate(ledger.get("entries") or [], start=1)
-        ], []
-    # Backward compatibility for checkpoints created before ledger schema v1.
-    contracts = []
-    for index, task in enumerate(plan.get("tasks") or [], start=1):
-        if isinstance(task, dict) and isinstance(task.get("runtime_contract"), dict):
-            contracts.append((f"task_{index}", task["runtime_contract"]))
-    return contracts, []
+    errors = validate_runtime_contract_ledger(ledger)
+    if errors:
+        return [], errors
+    return [
+        (f"ledger_{index}", item["runtime_contract"])
+        for index, item in enumerate(ledger.get("entries") or [], start=1)
+    ], []
 
 
-def _check_state(capabilities: dict[str, Any]) -> dict[str, bool]:
+def _check_state(capabilities: dict[str, Any] | None) -> dict[str, bool]:
+    if not isinstance(capabilities, dict):
+        return {}
     return {
         str(item.get("check_id") or item.get("name")): bool(item.get("passed"))
         for item in capabilities.get("checks") or []
-        if item.get("check_id") or item.get("name")
+        if isinstance(item, dict) and (item.get("check_id") or item.get("name"))
     }
-
-
-def _system_owned_external_io_only(capabilities: dict[str, Any]) -> bool:
-    check = (capabilities.get("checks_by_id") or {}).get(
-        "decision_path_no_external_io"
-    ) or {}
-    locations = [
-        str(item) for item in (check.get("evidence") or {}).get("locations") or []
-    ]
-    return bool(
-        locations
-        and all(location.startswith("national_bot.py:") for location in locations)
-    )
-
-
-def _focus_check_state(capabilities: dict[str, Any]) -> dict[str, bool]:
-    state = _check_state(capabilities)
-    if _system_owned_external_io_only(capabilities):
-        state["decision_path_no_external_io"] = True
-    return state
-
-
-def _task_writable_filenames(task: dict[str, Any]) -> set[str]:
-    return {
-        Path(str(item)).name
-        for item in [
-            *(task.get("target_files") or []),
-            *(task.get("files_allowed") or []),
-        ]
-        if str(item).strip()
-    }
-
-
-def _is_explicit_official_protocol_repair(task: dict[str, Any]) -> bool:
-    """Recognize the one system route allowed to edit the native entrypoint.
-
-    Master output cannot declare these repair-only fields because its Pydantic
-    schema forbids extras.  Requiring the deterministic task kind, blocker, and
-    exact protocol role prevents an ordinary strategy task from self-labeling a
-    writable system provider.  State-learning work is never an exception.
-    """
-    runtime_contract = task.get("runtime_contract")
-    state_learning = (
-        runtime_contract.get("state_learning")
-        if isinstance(runtime_contract, dict)
-        else None
-    )
-    target_names = {
-        Path(str(item)).name for item in task.get("target_files") or []
-    }
-    must_change_names = {
-        Path(str(item)).name for item in task.get("must_change_files") or []
-    }
-    return bool(
-        str(task.get("worker_id") or "") == "auto_official_full_repair"
-        and str(task.get("task_kind") or "") == "official_repair"
-        and str(task.get("repair_blocker") or "") == "official_full"
-        and str(task.get("role") or "") == "Protocol Integration Architect"
-        and not str(task.get("architecture_focus_id") or "").strip()
-        and not state_learning
-        and target_names == {"national_bot.py"}
-        and must_change_names == target_names
-        and not (task.get("files_allowed") or [])
-    )
-
-
-def _capability_infrastructure_failures(
-    capabilities: dict[str, Any] | None,
-    *,
-    side: str,
-) -> list[dict[str, Any]]:
-    """Normalize detector/probe failures without turning unknown checks false."""
-    if not isinstance(capabilities, dict):
-        return [{
-            "side": side,
-            "component": "national_capability_contract",
-            "failure_class": "internal_infrastructure",
-            "issues": ["capability_result_missing_or_not_object"],
-        }]
-    failures = capabilities.get("infrastructure_failures") or []
-    normalized = []
-    for item in failures:
-        if not isinstance(item, dict):
-            item = {"issues": [str(item)]}
-        normalized.append({
-            "side": side,
-            "component": str(item.get("component") or "national_capability_contract"),
-            "failure_class": str(item.get("failure_class") or "infrastructure"),
-            "issues": [str(issue) for issue in (item.get("issues") or [])[:8]]
-            or ["unspecified_capability_infrastructure_failure"],
-        })
-    if not normalized and capabilities.get("outcome") == "infrastructure_failure":
-        normalized.append({
-            "side": side,
-            "component": "national_capability_contract",
-            "failure_class": "internal_infrastructure",
-            "issues": ["capability_contract_reported_infrastructure_failure_without_detail"],
-        })
-    return normalized
 
 
 def _state_digest(state: dict[str, bool]) -> str:
-    payload = {
+    return _canonical_json_digest({
+        "epoch": ACTIVE_EPOCH,
         "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
         "checks": {key: bool(state[key]) for key in sorted(state)},
+    })
+
+
+def _epoch_compatible(capabilities: dict[str, Any] | None) -> bool:
+    return bool(
+        isinstance(capabilities, dict)
+        and capabilities.get("epoch") == ACTIVE_EPOCH
+        and capabilities.get("conclusive") is True
+        and (capabilities.get("checks_by_id") or {}).get("national_policy_module", {}).get("passed") is True
+    )
+
+
+def _lineage_capabilities(path: Path) -> dict[str, Any]:
+    """Return policy capabilities only for active-epoch artifacts.
+
+    Missing and archived/retired sources intentionally become an empty lineage
+    state.  No archived source file is opened to establish a baseline.
+    """
+
+    if not path.is_dir() or not (path / "policy.py").is_file():
+        return {
+            "schema_version": 2,
+            "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
+            "epoch": ACTIVE_EPOCH,
+            "conclusive": True,
+            "ok": True,
+            "outcome": "lineage_only",
+            "checks": [],
+            "checks_by_id": {},
+            "required_failures": [],
+            "advisory_warnings": [],
+            "infrastructure_failures": [],
+            "lineage_only": True,
+        }
+    capabilities = evaluate_national_capabilities(path)
+    capabilities, _probe, _infrastructure = _apply_typed_runtime_probe(
+        capabilities,
+        path,
+        runtime_contract_ledger=None,
+    )
+    return capabilities
+
+
+def _runtime_probe_check(
+    *,
+    passed: bool,
+    probe: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "check_id": "typed_runtime_probe",
+        "name": "typed_runtime_probe",
+        "passed": bool(passed),
+        "required": True,
+        "skill_layer": "runtime_architecture",
+        "guidance": (
+            "Keep policy.py on decision_context v1 and typed intents; the "
+            "system runtime must reconstruct official transcripts, persist "
+            "terminal/showdown memory, and emit delimiter-free legal actions."
+        ),
+        "evidence": {
+            "summary": (
+                "managed typed runtime probe passed"
+                if passed
+                else "managed typed runtime probe failed"
+            ),
+            "locations": ["policy.py", "national_bot.py"],
+            "probe_identity_digest": probe.get("probe_identity_digest"),
+            "managed_isolation_digest": probe.get("managed_isolation_digest"),
+            "issues": list(probe.get("issues") or [])[:20],
+        },
     }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
 
 
-_PREPARED_CAPABILITY_SNAPSHOT_KEYS = frozenset({
+def _dynamic_probe_states(probe: dict[str, Any]) -> dict[str, bool]:
+    rows = [
+        row
+        for row in probe.get("official_transcript_decisions") or []
+        if isinstance(row, dict)
+    ]
+    counterfactuals = (
+        (probe.get("policy_counterfactuals") or {}).get("dimensions") or {}
+    )
+    lines = (probe.get("line_reachability") or {}).get("dimensions") or {}
+    scaling = probe.get("budget_scaled_refinement") or {}
+    return {
+        "incremental_refinement_protocol": bool(
+            (rows and any(
+                int((row.get("runtime") or {}).get("refinement_messages") or 0)
+                > 0
+                for row in rows
+            ))
+            or int((scaling.get("long") or {}).get("refinement_messages") or 0)
+            > 0
+        ),
+        "budget_scaled_refinement": scaling.get("ok") is True,
+        # Importing a system fact table is not policy influence.  The typed
+        # probe currently has no digest-bound same-shape/different-value
+        # precompute variant, so this claim stays fail-closed when selected.
+        "precompute_runtime_influence": False,
+        "incremental_opponent_model": bool(
+            (counterfactuals.get("action_profile") or {}).get("changed")
+            and (counterfactuals.get("action_profile") or {}).get(
+                "socket_validated"
+            )
+        ),
+        "terminal_response_adaptation": bool(
+            (counterfactuals.get("terminal_response") or {}).get("changed")
+            and (counterfactuals.get("terminal_response") or {}).get(
+                "socket_validated"
+            )
+        ),
+        "showdown_range_adaptation": bool(
+            (counterfactuals.get("showdown_range") or {}).get("changed")
+            and (counterfactuals.get("showdown_range") or {}).get(
+                "socket_validated"
+            )
+        ),
+        "donk_line_reachability": bool(
+            (lines.get("donk") or {}).get("ok")
+            and (lines.get("donk") or {}).get("policy_changed")
+            and (lines.get("donk") or {}).get("socket_validated")
+        ),
+        "delayed_probe_line_reachability": bool(
+            (lines.get("delayed_probe") or {}).get("ok")
+            and (lines.get("delayed_probe") or {}).get("policy_changed")
+            and (lines.get("delayed_probe") or {}).get("socket_validated")
+        ),
+    }
+
+
+def _apply_typed_runtime_probe(
+    capabilities: dict[str, Any],
+    candidate: Path,
+    *,
+    runtime_contract_ledger: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Bind managed dynamic evidence without weakening the static parser.
+
+    Exact system-runtime drift is already candidate debt and is not executed.
+    A probe failure inside exact system bytes is infrastructure only when the
+    worker classifies the transcript/runtime side as the owner.
+    """
+
+    from national_runtime_probe import (
+        RUNTIME_PROBE_IDENTITY_DIGEST,
+        RUNTIME_PROBE_LIMITS_DIGEST,
+        RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        RUNTIME_PROBE_SCENARIO_DIGEST,
+        RUNTIME_PROBE_SCHEMA_VERSION,
+        run_national_runtime_probe,
+    )
+
+    static_checks = capabilities.get("checks_by_id") or {}
+    static_ready = all(
+        (static_checks.get(check_id) or {}).get("passed") is True
+        for check_id in (
+            "national_policy_module",
+            "system_runtime_current",
+            "policy_baseline_entrypoint",
+            "policy_refinement_entrypoint",
+        )
+    )
+    if static_ready:
+        try:
+            probe = run_national_runtime_probe(candidate)
+        except Exception as exc:
+            probe = {
+                "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+                "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+                "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+                "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+                "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+                "ok": False,
+                "failure_class": "probe_infra",
+                "issues": [
+                    f"typed_runtime_probe_exception:{type(exc).__name__}:"
+                    f"{str(exc)[:180]}"
+                ],
+            }
+    else:
+        probe = {
+            "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+            "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+            "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+            "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+            "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+            "ok": False,
+            "failure_class": "candidate_contract",
+            "issues": ["typed_runtime_probe_blocked_by_static_contract"],
+            "repeatability_ok": False,
+            "evidence_integrity_ok": False,
+            "managed_isolation_digest": "",
+        }
+    probe = deepcopy(probe)
+    probe["runtime_contract_ledger_digest"] = runtime_contract_ledger_digest(
+        runtime_contract_ledger
+    )
+
+    merged = deepcopy(capabilities)
+    merged["dynamic_runtime_probe"] = probe
+    infrastructure_failures: list[dict[str, Any]] = []
+    probe_is_infrastructure = probe.get("failure_class") == "probe_infra"
+    if probe_is_infrastructure:
+        infrastructure_failures.append({
+            "side": "system",
+            "component": "national_runtime_probe",
+            "failure_class": "internal_infrastructure",
+            "issues": [str(item) for item in (probe.get("issues") or [])[:20]],
+            "probe_identity_digest": probe.get("probe_identity_digest"),
+            "managed_isolation_digest": probe.get("managed_isolation_digest"),
+        })
+        merged.setdefault("infrastructure_failures", []).extend(
+            infrastructure_failures
+        )
+        merged["conclusive"] = False
+        merged["ok"] = False
+        merged["outcome"] = "infrastructure_failure"
+        return merged, probe, infrastructure_failures
+
+    probe_check = _runtime_probe_check(
+        passed=probe.get("ok") is True,
+        probe=probe,
+    )
+    checks = [
+        item
+        for item in merged.get("checks") or []
+        if item.get("check_id") != "typed_runtime_probe"
+    ]
+    checks.append(probe_check)
+    dynamic_states = _dynamic_probe_states(probe)
+    for item in checks:
+        check_id = str(item.get("check_id") or "")
+        if check_id not in dynamic_states:
+            continue
+        item["passed"] = dynamic_states[check_id]
+        evidence = dict(item.get("evidence") or {})
+        evidence.update({
+            "summary": "managed typed-policy counterfactual evidence",
+            "probe_identity_digest": probe.get("probe_identity_digest"),
+            "managed_isolation_digest": probe.get("managed_isolation_digest"),
+            "dynamic_passed": dynamic_states[check_id],
+        })
+        item["evidence"] = evidence
+    merged["checks"] = checks
+    merged["checks_by_id"] = {
+        str(item.get("check_id")): item for item in checks
+    }
+    merged["required_checks"] = list(dict.fromkeys([
+        *(merged.get("required_checks") or []),
+        "typed_runtime_probe",
+    ]))
+    merged["required_failures"] = [
+        item for item in checks
+        if item.get("required") and item.get("passed") is not True
+    ]
+    merged["advisory_warnings"] = [
+        item for item in checks
+        if not item.get("required") and item.get("passed") is not True
+    ]
+    merged["passed_checks"] = [
+        str(item.get("check_id")) for item in checks
+        if item.get("passed") is True
+    ]
+    merged["conclusive"] = True
+    merged["ok"] = not merged["required_failures"]
+    merged["outcome"] = "passed" if merged["ok"] else "failed"
+    return merged, probe, infrastructure_failures
+
+
+_SNAPSHOT_KEYS = frozenset({
     "schema_version",
+    "epoch",
     "detector_version",
     "parent_bot",
     "prepared_bot",
+    "parent_epoch_compatible",
     "parent_checks",
     "prepared_checks",
     "parent_capability_digest",
@@ -603,25 +619,11 @@ _PREPARED_CAPABILITY_SNAPSHOT_KEYS = frozenset({
 })
 
 
-def _prepared_capability_snapshot_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
-    """Return the immutable, serializable part of a prepared baseline snapshot."""
+def _snapshot_payload(value: dict[str, Any]) -> dict[str, Any]:
     return {
-        key: deepcopy(snapshot.get(key))
-        for key in sorted(_PREPARED_CAPABILITY_SNAPSHOT_KEYS - {"snapshot_digest"})
+        key: deepcopy(value.get(key))
+        for key in sorted(_SNAPSHOT_KEYS - {"snapshot_digest"})
     }
-
-
-def _normalized_snapshot_state(value: Any) -> dict[str, bool] | None:
-    if not isinstance(value, dict):
-        return None
-    normalized: dict[str, bool] = {}
-    for raw_key, raw_passed in value.items():
-        if not isinstance(raw_key, str) or not raw_key.strip():
-            return None
-        if not isinstance(raw_passed, bool):
-            return None
-        normalized[raw_key] = raw_passed
-    return {key: normalized[key] for key in sorted(normalized)}
 
 
 def build_prepared_capability_snapshot(
@@ -631,75 +633,45 @@ def build_prepared_capability_snapshot(
     parent_capabilities: dict[str, Any] | None = None,
     prepared_capabilities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Freeze the accepted pre-Worker child capability state.
-
-    A crossover child is subsequently edited in place by Workers, so its
-    pre-Worker detector result cannot safely be reconstructed at the final
-    gate.  This snapshot records only normalized detector facts and their
-    derived preservation set.  The complete payload is digest-bound and can be
-    embedded into the system-owned architecture policy.
-    """
-    parent_bot_dir = Path(parent_bot_dir)
-    prepared_bot_dir = Path(prepared_bot_dir)
-    parent_result = (
-        parent_capabilities
-        if parent_capabilities is not None
-        else evaluate_national_capabilities(parent_bot_dir)
-    )
-    prepared_result = (
-        prepared_capabilities
-        if prepared_capabilities is not None
-        else evaluate_national_capabilities(prepared_bot_dir)
-    )
-    infrastructure_failures = [
-        *_capability_infrastructure_failures(parent_result, side="parent"),
-        *_capability_infrastructure_failures(prepared_result, side="prepared"),
-    ]
-    if infrastructure_failures:
-        details = "; ".join(
-            f"{item['side']}/{item['component']}: {', '.join(item['issues'])}"
-            for item in infrastructure_failures
+    parent = Path(parent_bot_dir)
+    prepared = Path(prepared_bot_dir)
+    parent_cap = parent_capabilities or _lineage_capabilities(parent)
+    if prepared_capabilities is None:
+        prepared_cap = evaluate_national_capabilities(prepared)
+        prepared_cap, _probe, _infrastructure = _apply_typed_runtime_probe(
+            prepared_cap,
+            prepared,
+            runtime_contract_ledger=None,
         )
-        raise RuntimeError(
-            "prepared capability snapshot is inconclusive because infrastructure failed: "
-            + details[:1000]
-        )
-    parent_detector = str(parent_result.get("detector_version") or "")
-    prepared_detector = str(prepared_result.get("detector_version") or "")
-    if not parent_detector or parent_detector != prepared_detector:
-        raise RuntimeError(
-            "prepared capability snapshot detector mismatch: "
-            f"parent={parent_detector!r} prepared={prepared_detector!r}"
-        )
-
-    # Normalize the wrapper-owned external-I/O exception before freezing the
-    # state, exactly as architecture focus selection does.  This prevents the
-    # system's killable worker transport from becoming artificial child debt.
-    parent_state = _focus_check_state(parent_result)
-    prepared_state = _focus_check_state(prepared_result)
-    parent_passed = sorted(key for key, passed in parent_state.items() if passed)
-    prepared_passed = sorted(key for key, passed in prepared_state.items() if passed)
-    protected_passed = sorted(set(parent_passed) | set(prepared_passed))
-    snapshot = {
+    else:
+        prepared_cap = prepared_capabilities
+    if prepared_cap.get("conclusive") is not True:
+        raise RuntimeError("prepared capability assessment is inconclusive")
+    compatible = _epoch_compatible(parent_cap)
+    parent_state = _check_state(parent_cap) if compatible else {}
+    prepared_state = _check_state(prepared_cap)
+    payload = {
         "schema_version": PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION,
-        "detector_version": parent_detector,
-        "parent_bot": parent_bot_dir.name,
-        "prepared_bot": prepared_bot_dir.name,
-        "parent_checks": {key: bool(parent_state[key]) for key in sorted(parent_state)},
-        "prepared_checks": {
-            key: bool(prepared_state[key]) for key in sorted(prepared_state)
-        },
+        "epoch": ACTIVE_EPOCH,
+        "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
+        "parent_bot": parent.name,
+        "prepared_bot": prepared.name,
+        "parent_epoch_compatible": compatible,
+        "parent_checks": parent_state,
+        "prepared_checks": prepared_state,
         "parent_capability_digest": _state_digest(parent_state),
         "prepared_capability_digest": _state_digest(prepared_state),
-        "parent_passed_checks": parent_passed,
-        "prepared_passed_checks": prepared_passed,
-        "protected_passed_checks": protected_passed,
-        "acquired_checks": sorted(set(prepared_passed) - set(parent_passed)),
+        "parent_passed_checks": sorted(key for key, passed in parent_state.items() if passed),
+        "prepared_passed_checks": sorted(key for key, passed in prepared_state.items() if passed),
+        "protected_passed_checks": sorted({
+            key for key, passed in {**parent_state, **prepared_state}.items() if passed
+        }),
+        "acquired_checks": sorted(
+            key for key, passed in prepared_state.items()
+            if passed and not parent_state.get(key, False)
+        ),
     }
-    snapshot["snapshot_digest"] = _canonical_json_digest(
-        _prepared_capability_snapshot_payload(snapshot)
-    )
-    return snapshot
+    return {**payload, "snapshot_digest": _canonical_json_digest(payload)}
 
 
 def validate_prepared_capability_snapshot(
@@ -710,168 +682,58 @@ def validate_prepared_capability_snapshot(
     parent_capabilities: dict[str, Any] | None = None,
     prepared_capabilities: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Validate structure, derived state, digest, and optional live identities."""
     if not isinstance(snapshot, dict):
         return ["prepared_capability_snapshot_missing_or_not_object"]
     errors: list[str] = []
-    unexpected = sorted(set(snapshot) - _PREPARED_CAPABILITY_SNAPSHOT_KEYS)
-    missing = sorted(_PREPARED_CAPABILITY_SNAPSHOT_KEYS - set(snapshot))
-    if unexpected:
-        errors.append(f"prepared_capability_snapshot_unexpected_fields:{unexpected}")
-    if missing:
-        errors.append(f"prepared_capability_snapshot_missing_fields:{missing}")
+    if set(snapshot) != _SNAPSHOT_KEYS:
+        errors.append("prepared_capability_snapshot_fields_mismatch")
     if snapshot.get("schema_version") != PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION:
-        errors.append(
-            "prepared_capability_snapshot_schema_mismatch: "
-            f"expected={PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION} "
-            f"actual={snapshot.get('schema_version')!r}"
-        )
-    detector_version = snapshot.get("detector_version")
-    if not isinstance(detector_version, str) or not detector_version:
-        errors.append("prepared_capability_snapshot_detector_version_invalid")
-    for field in ("parent_bot", "prepared_bot"):
-        value = snapshot.get(field)
-        if not isinstance(value, str) or not value:
-            errors.append(f"prepared_capability_snapshot_{field}_invalid")
-
-    parent_state = _normalized_snapshot_state(snapshot.get("parent_checks"))
-    prepared_state = _normalized_snapshot_state(snapshot.get("prepared_checks"))
-    if parent_state is None:
-        errors.append("prepared_capability_snapshot_parent_checks_invalid")
-        parent_state = {}
-    if prepared_state is None:
-        errors.append("prepared_capability_snapshot_prepared_checks_invalid")
-        prepared_state = {}
-
-    expected_parent_passed = sorted(key for key, passed in parent_state.items() if passed)
-    expected_prepared_passed = sorted(
-        key for key, passed in prepared_state.items() if passed
-    )
-    expected_protected = sorted(set(expected_parent_passed) | set(expected_prepared_passed))
-    expected_acquired = sorted(set(expected_prepared_passed) - set(expected_parent_passed))
-    for field, expected in (
-        ("parent_passed_checks", expected_parent_passed),
-        ("prepared_passed_checks", expected_prepared_passed),
-        ("protected_passed_checks", expected_protected),
-        ("acquired_checks", expected_acquired),
-    ):
-        if snapshot.get(field) != expected:
-            errors.append(
-                f"prepared_capability_snapshot_{field}_mismatch: "
-                f"expected={expected!r} actual={snapshot.get(field)!r}"
-            )
-    expected_parent_digest = _state_digest(parent_state)
-    expected_prepared_digest = _state_digest(prepared_state)
-    if snapshot.get("parent_capability_digest") != expected_parent_digest:
-        errors.append("prepared_capability_snapshot_parent_capability_digest_mismatch")
-    if snapshot.get("prepared_capability_digest") != expected_prepared_digest:
-        errors.append("prepared_capability_snapshot_prepared_capability_digest_mismatch")
-    expected_snapshot_digest = _canonical_json_digest(
-        _prepared_capability_snapshot_payload(snapshot)
-    )
-    if snapshot.get("snapshot_digest") != expected_snapshot_digest:
+        errors.append("prepared_capability_snapshot_schema_mismatch")
+    if snapshot.get("epoch") != ACTIVE_EPOCH:
+        errors.append("prepared_capability_snapshot_epoch_mismatch")
+    if snapshot.get("detector_version") != NATIONAL_CAPABILITY_DETECTOR_VERSION:
+        errors.append("prepared_capability_snapshot_detector_mismatch")
+    payload = _snapshot_payload(snapshot)
+    if snapshot.get("snapshot_digest") != _canonical_json_digest(payload):
         errors.append("prepared_capability_snapshot_digest_mismatch")
-
-    if parent_bot_dir is not None and snapshot.get("parent_bot") != Path(parent_bot_dir).name:
-        errors.append(
-            "prepared_capability_snapshot_parent_bot_mismatch: "
-            f"expected={Path(parent_bot_dir).name!r} actual={snapshot.get('parent_bot')!r}"
-        )
-    if (
-        prepared_bot_dir is not None
-        and snapshot.get("prepared_bot") != Path(prepared_bot_dir).name
-    ):
-        errors.append(
-            "prepared_capability_snapshot_prepared_bot_mismatch: "
-            f"expected={Path(prepared_bot_dir).name!r} actual={snapshot.get('prepared_bot')!r}"
-        )
-
-    for label, capabilities, expected_state in (
-        ("parent", parent_capabilities, parent_state),
-        ("prepared", prepared_capabilities, prepared_state),
-    ):
-        if capabilities is None:
-            continue
-        infrastructure = _capability_infrastructure_failures(capabilities, side=label)
-        if infrastructure:
-            errors.append(f"prepared_capability_snapshot_{label}_infrastructure_failure")
-            continue
-        live_state = _focus_check_state(capabilities)
-        if live_state != expected_state:
-            errors.append(f"prepared_capability_snapshot_{label}_checks_mismatch")
-        live_detector = str(capabilities.get("detector_version") or "")
-        if live_detector != detector_version:
-            errors.append(
-                f"prepared_capability_snapshot_{label}_detector_version_mismatch"
+    parent_state = snapshot.get("parent_checks")
+    prepared_state = snapshot.get("prepared_checks")
+    if not isinstance(parent_state, dict) or not isinstance(prepared_state, dict):
+        errors.append("prepared_capability_snapshot_checks_invalid")
+        return errors
+    if snapshot.get("parent_capability_digest") != _state_digest(parent_state):
+        errors.append("prepared_capability_snapshot_parent_digest_mismatch")
+    if snapshot.get("prepared_capability_digest") != _state_digest(prepared_state):
+        errors.append("prepared_capability_snapshot_prepared_digest_mismatch")
+    # A fresh epoch has lineage-only parent authority: the archived high-water
+    # path intentionally does not exist.  Rebuild live state only when the
+    # caller supplies the prepared directory as well; a parent-only validation
+    # must never reinterpret snapshot["prepared_bot"] relative to cwd.
+    if prepared_bot_dir is not None:
+        try:
+            rebuilt = build_prepared_capability_snapshot(
+                parent_bot_dir or snapshot.get("parent_bot") or "",
+                prepared_bot_dir,
+                parent_capabilities=parent_capabilities,
+                prepared_capabilities=prepared_capabilities,
             )
-    return errors
+        except Exception as exc:
+            errors.append(f"prepared_capability_snapshot_rebuild_error:{type(exc).__name__}")
+        else:
+            if rebuilt != snapshot:
+                errors.append("prepared_capability_snapshot_current_state_mismatch")
+    return list(dict.fromkeys(errors))
 
 
 def prepared_capability_snapshot_digest(snapshot: dict[str, Any] | None) -> str:
-    """Return a validated snapshot digest, or an empty string for bad evidence."""
-    if validate_prepared_capability_snapshot(snapshot):
-        return ""
-    return str(snapshot.get("snapshot_digest") or "")
+    return "" if validate_prepared_capability_snapshot(snapshot) else str(snapshot.get("snapshot_digest") or "")
 
 
-def _policy_contract_payload(policy: dict[str, Any]) -> dict[str, Any]:
-    """Return the complete immutable contract represented by a policy."""
-    return {
-        "schema_version": policy.get("schema_version"),
-        "policy_version": policy.get("policy_version"),
-        "official_policy_id": policy.get("official_policy_id"),
-        "official_oracle_digests": policy.get("official_oracle_digests") or {},
-        "strategy_reference_pack_digest": policy.get("strategy_reference_pack_digest"),
-        "detector_version": policy.get("detector_version"),
-        "source_bot": policy.get("source_bot"),
-        "source_capability_digest": policy.get("source_capability_digest"),
-        "source_checks": policy.get("source_checks") or {},
-        "prepared_capability_snapshot": policy.get("prepared_capability_snapshot"),
-        "prepared_capability_snapshot_digest": policy.get(
-            "prepared_capability_snapshot_digest"
-        ),
-        "effective_baseline_bot": policy.get("effective_baseline_bot"),
-        "effective_baseline_capability_digest": policy.get(
-            "effective_baseline_capability_digest"
-        ),
-        "effective_baseline_checks": policy.get("effective_baseline_checks") or {},
-        "baseline_passed_checks": policy.get("baseline_passed_checks") or [],
-        "runtime_floor_checks": policy.get("runtime_floor_checks") or [],
-        "legacy_consumer_migration_checks": policy.get(
-            "legacy_consumer_migration_checks"
-        ) or [],
-        "legacy_consumer_migration_failures": policy.get(
-            "legacy_consumer_migration_failures"
-        ) or [],
-        "legacy_consumer_migration_bundle": policy.get(
-            "legacy_consumer_migration_bundle"
-        ),
-        "strategy_innovation_checks": policy.get("strategy_innovation_checks") or [],
-        "source_floor_failures": policy.get("source_floor_failures") or [],
-        "baseline_floor_failures": policy.get("baseline_floor_failures") or [],
-        "native_template_provided_checks": policy.get("native_template_provided_checks") or [],
-        "plan_required_floor_checks": policy.get("plan_required_floor_checks") or [],
-        "selected_focus": policy.get("selected_focus"),
-    }
-
-
-def _policy_contract_digest(policy: dict[str, Any]) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            _policy_contract_payload(policy),
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-
-
-def _select_architecture_focus_from_state(
-    state: dict[str, bool],
-) -> dict[str, Any] | None:
+def _select_architecture_focus_from_state(state: dict[str, bool]) -> dict[str, Any] | None:
     for spec in _FOCUS_SPECS:
-        selection_checks = spec.get("selection_checks") or spec["required_checks"]
         unresolved = [
-            check_id for check_id in selection_checks
+            check_id
+            for check_id in spec.get("selection_checks") or spec["required_checks"]
             if not state.get(check_id, False)
         ]
         if unresolved:
@@ -882,7 +744,15 @@ def _select_architecture_focus_from_state(
 
 
 def select_architecture_focus(capabilities: dict[str, Any]) -> dict[str, Any] | None:
-    return _select_architecture_focus_from_state(_focus_check_state(capabilities))
+    return _select_architecture_focus_from_state(_check_state(capabilities))
+
+
+def _policy_payload(policy: dict[str, Any]) -> dict[str, Any]:
+    return {key: deepcopy(value) for key, value in policy.items() if key != "policy_digest"}
+
+
+def _policy_contract_digest(policy: dict[str, Any]) -> str:
+    return _canonical_json_digest(_policy_payload(policy))
 
 
 def build_architecture_policy(
@@ -891,159 +761,117 @@ def build_architecture_policy(
     source_capabilities: dict[str, Any] | None = None,
     prepared_capability_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    source_bot_dir = Path(source_bot_dir)
-    capabilities = source_capabilities or evaluate_national_capabilities(source_bot_dir)
-    infrastructure_failures = _capability_infrastructure_failures(
-        capabilities,
-        side="source",
-    )
-    if infrastructure_failures:
-        details = "; ".join(
-            f"{item['component']}: {', '.join(item['issues'])}"
-            for item in infrastructure_failures
-        )
-        raise RuntimeError(
-            "source capability assessment is inconclusive because infrastructure failed: "
-            + details[:1000]
-        )
-    state = _check_state(capabilities)
+    source = Path(source_bot_dir)
+    capabilities = source_capabilities or _lineage_capabilities(source)
+    if capabilities.get("conclusive") is not True:
+        raise RuntimeError("source capability assessment is inconclusive")
+    source_compatible = _epoch_compatible(capabilities)
+    source_state = _check_state(capabilities) if source_compatible else {}
     snapshot = None
+    effective_state = dict(source_state)
+    effective_bot = source.name
     if prepared_capability_snapshot is not None:
         snapshot_errors = validate_prepared_capability_snapshot(
             prepared_capability_snapshot,
-            parent_bot_dir=source_bot_dir,
+            parent_bot_dir=source,
             parent_capabilities=capabilities,
         )
         if snapshot_errors:
-            raise ValueError(
-                "invalid prepared capability snapshot: " + "; ".join(snapshot_errors)
-            )
+            raise ValueError("invalid prepared capability snapshot: " + "; ".join(snapshot_errors))
         snapshot = deepcopy(prepared_capability_snapshot)
-        parent_snapshot_state = dict(snapshot["parent_checks"])
-        prepared_state = dict(snapshot["prepared_checks"])
-        effective_state = {
-            check_id: bool(
-                parent_snapshot_state.get(check_id, False)
-                or prepared_state.get(check_id, False)
-            )
-            for check_id in sorted(set(parent_snapshot_state) | set(prepared_state))
-        }
-        effective_baseline_bot = str(snapshot["prepared_bot"])
-        focus_state = effective_state
-    else:
-        effective_state = dict(state)
-        effective_baseline_bot = source_bot_dir.name
-        focus_state = _focus_check_state(capabilities)
-    focus = _select_architecture_focus_from_state(focus_state)
-    source_floor_failures = [
-        check_id for check_id in RUNTIME_FLOOR_CHECKS if not state.get(check_id, False)
-    ]
-    baseline_floor_failures = [
-        check_id
-        for check_id in RUNTIME_FLOOR_CHECKS
-        if not effective_state.get(check_id, False)
-    ]
-    legacy_consumer_migration_failures = [
-        check_id
-        for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS
-        if not effective_state.get(check_id, False)
-    ]
+        effective_state = dict(snapshot["prepared_checks"])
+        if snapshot.get("parent_epoch_compatible"):
+            effective_state.update({
+                key: bool(value or effective_state.get(key, False))
+                for key, value in snapshot["parent_checks"].items()
+            })
+        effective_bot = str(snapshot["prepared_bot"])
+    focus = _select_architecture_focus_from_state(effective_state)
+    floor_failures = [key for key in RUNTIME_FLOOR_CHECKS if not effective_state.get(key, False)]
     policy = {
         "schema_version": RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION,
         "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
+        "epoch": ACTIVE_EPOCH,
         "official_policy_id": OFFICIAL_FULL_POLICY_ID,
         "official_oracle_digests": _verified_official_oracle_identity(),
         "strategy_reference_pack_digest": _strategy_reference_pack_digest(),
-        "detector_version": capabilities.get("detector_version"),
-        "source_bot": source_bot_dir.name,
-        "source_capability_digest": _state_digest(state),
-        "source_checks": state,
+        "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
+        "source_bot": source.name,
+        "source_epoch_compatible": source_compatible,
+        "source_capability_digest": _state_digest(source_state),
+        "source_checks": source_state,
         "prepared_capability_snapshot": snapshot,
-        "prepared_capability_snapshot_digest": (
-            str(snapshot["snapshot_digest"]) if snapshot is not None else None
-        ),
-        "effective_baseline_bot": effective_baseline_bot,
+        "prepared_capability_snapshot_digest": snapshot.get("snapshot_digest") if snapshot else None,
+        "effective_baseline_bot": effective_bot,
         "effective_baseline_capability_digest": _state_digest(effective_state),
         "effective_baseline_checks": effective_state,
-        "baseline_passed_checks": sorted(
-            check_id for check_id, passed in effective_state.items() if passed
-        ),
+        "baseline_passed_checks": sorted(key for key, passed in effective_state.items() if passed),
         "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
-        "legacy_consumer_migration_checks": list(
-            LEGACY_CONSUMER_MIGRATION_CHECKS
-        ),
-        "legacy_consumer_migration_failures": (
-            legacy_consumer_migration_failures
-        ),
-        "legacy_consumer_migration_bundle": (
-            legacy_consumer_migration_bundle()
-            if legacy_consumer_migration_failures
-            else None
-        ),
         "strategy_innovation_checks": list(STATE_LEARNING_INNOVATION_CHECKS),
-        "source_floor_failures": source_floor_failures,
-        "baseline_floor_failures": baseline_floor_failures,
+        "source_floor_failures": [key for key in RUNTIME_FLOOR_CHECKS if not source_state.get(key, False)],
+        "baseline_floor_failures": floor_failures,
         "native_template_provided_checks": list(NATIVE_TEMPLATE_PROVIDED_CHECKS),
         "plan_required_floor_checks": [
-            check_id
-            for check_id in baseline_floor_failures
-            if check_id not in NATIVE_TEMPLATE_PROVIDED_CHECKS
+            key for key in floor_failures if key not in NATIVE_TEMPLATE_PROVIDED_CHECKS
         ],
         "selected_focus": focus,
+        "policy_abi": native_policy_runtime_contract()["policy_abi"],
     }
     policy["policy_digest"] = _policy_contract_digest(policy)
     return policy
 
 
-def _policy_identity_errors(
-    expected_policy: dict[str, Any],
-    current_policy: dict[str, Any],
-) -> list[str]:
+def _policy_identity_errors(expected: dict[str, Any], current: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     for key in (
         "schema_version",
         "policy_version",
+        "epoch",
         "official_policy_id",
         "official_oracle_digests",
         "strategy_reference_pack_digest",
         "detector_version",
         "source_bot",
+        "source_epoch_compatible",
         "source_capability_digest",
         "prepared_capability_snapshot_digest",
         "effective_baseline_bot",
         "effective_baseline_capability_digest",
+        "policy_abi",
     ):
-        if expected_policy.get(key) != current_policy.get(key):
-            errors.append(
-                f"architecture_policy_{key}_mismatch: expected={expected_policy.get(key)!r} "
-                f"current={current_policy.get(key)!r}"
-            )
-    for label, policy in (("expected", expected_policy), ("current", current_policy)):
-        snapshot = policy.get("prepared_capability_snapshot")
-        if snapshot is None:
-            continue
-        for error in validate_prepared_capability_snapshot(snapshot):
-            errors.append(f"architecture_policy_{label}_{error}")
-    expected_stored_digest = str(expected_policy.get("policy_digest") or "")
-    expected_content_digest = _policy_contract_digest(expected_policy)
-    current_stored_digest = str(current_policy.get("policy_digest") or "")
-    current_content_digest = _policy_contract_digest(current_policy)
-    if expected_stored_digest != expected_content_digest:
-        errors.append(
-            "architecture_policy_expected_content_digest_mismatch: "
-            f"stored={expected_stored_digest!r} computed={expected_content_digest!r}"
-        )
-    if current_stored_digest != current_content_digest:
-        errors.append(
-            "architecture_policy_current_content_digest_mismatch: "
-            f"stored={current_stored_digest!r} computed={current_content_digest!r}"
-        )
-    if expected_content_digest != current_content_digest:
-        errors.append(
-            "architecture_policy_contract_digest_mismatch: "
-            f"expected={expected_content_digest!r} current={current_content_digest!r}"
-        )
+        if expected.get(key) != current.get(key):
+            errors.append(f"architecture_policy_{key}_mismatch")
+    for label, policy in (("expected", expected), ("current", current)):
+        if policy.get("policy_digest") != _policy_contract_digest(policy):
+            errors.append(f"architecture_policy_{label}_content_digest_mismatch")
+    if expected.get("policy_digest") != current.get("policy_digest"):
+        errors.append("architecture_policy_digest_mismatch")
     return errors
+
+
+def _selected_dynamic_probe_checks(
+    ledger: dict[str, Any] | None,
+) -> tuple[set[str], list[str]]:
+    if ledger is None:
+        return set(), []
+    contracts, errors = _ledger_contracts({"runtime_contract_ledger": ledger})
+    if errors:
+        return set(), errors
+    from output_schema import RuntimeContract
+
+    selected: set[str] = set()
+    for label, raw in contracts:
+        try:
+            contract = RuntimeContract.model_validate(raw)
+        except Exception as exc:
+            errors.append(
+                f"{label}:runtime_contract_schema:{type(exc).__name__}:"
+                f"{str(exc)[:180]}"
+            )
+            continue
+        if contract.state_learning is not None:
+            selected.update(contract.state_learning.primary_checks())
+    return selected, list(dict.fromkeys(errors))
 
 
 def evaluate_architecture_transition(
@@ -1052,477 +880,188 @@ def evaluate_architecture_transition(
     *,
     expected_policy: dict[str, Any] | None = None,
     evaluation_phase: str = ARCHITECTURE_TRANSITION_PHASE_FINAL,
+    runtime_contract_ledger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if evaluation_phase not in ARCHITECTURE_TRANSITION_PHASES:
-        raise ValueError(
-            "unknown architecture transition evaluation phase: "
-            f"{evaluation_phase!r}"
-        )
-    source_capabilities = evaluate_national_capabilities(source_bot_dir)
-    candidate_capabilities = evaluate_national_capabilities(candidate_bot_dir)
-    infrastructure_failures = [
-        *_capability_infrastructure_failures(source_capabilities, side="source"),
-        *_capability_infrastructure_failures(candidate_capabilities, side="candidate"),
-    ]
-    if infrastructure_failures:
-        return {
-            "schema_version": 1,
-            "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
-            "ok": False,
-            "conclusive": False,
-            "outcome": "infrastructure_failure",
-            "failure_class": "infrastructure",
-            "evaluation_phase": evaluation_phase,
-            "policy": expected_policy if isinstance(expected_policy, dict) else None,
-            "policy_identity_errors": [],
-            "infrastructure_failures": infrastructure_failures,
-            # Compatibility alias for existing quality telemetry. This is not a
-            # candidate blocker and must never be routed into repair workers.
-            "runtime_probe_infra": infrastructure_failures,
-            "candidate_failures": [],
-            "regressions": [],
-            "system_provided_deltas": [],
-            "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
-            "legacy_consumer_migration_checks": list(
-                LEGACY_CONSUMER_MIGRATION_CHECKS
-            ),
-            "legacy_consumer_migration_failures": [],
-            "runtime_floor_failures": [],
-            "deferred_runtime_floor_checks": [],
-            "deferred_runtime_floor_failures": [],
-            "strategy_shadow_checks": [],
-            "selected_focus": None,
-            "unresolved_focus_checks": [],
-            "full_unresolved_focus_checks": [],
-            "deferred_unresolved_focus_checks": [],
-            "source_capabilities": source_capabilities,
-            "candidate_capabilities": candidate_capabilities,
-        }
-    expected_snapshot = (
-        expected_policy.get("prepared_capability_snapshot")
-        if isinstance(expected_policy, dict)
-        else None
+        raise ValueError(f"unknown architecture transition phase: {evaluation_phase}")
+    source = Path(source_bot_dir)
+    candidate = Path(candidate_bot_dir)
+    source_cap = _lineage_capabilities(source)
+    candidate_cap = evaluate_national_capabilities(candidate)
+    candidate_cap, runtime_probe, probe_infrastructure = _apply_typed_runtime_probe(
+        candidate_cap,
+        candidate,
+        runtime_contract_ledger=runtime_contract_ledger,
     )
-    snapshot_identity_errors: list[str] = []
-    if expected_snapshot is not None:
-        snapshot_identity_errors = [
-            f"architecture_policy_{error}"
-            for error in validate_prepared_capability_snapshot(
-                expected_snapshot,
-                parent_bot_dir=source_bot_dir,
-                prepared_bot_dir=candidate_bot_dir,
-                parent_capabilities=source_capabilities,
-            )
-        ]
+    infrastructure_failures: list[dict[str, Any]] = []
+    if candidate_cap.get("conclusive") is not True:
+        infrastructure_failures.extend(candidate_cap.get("infrastructure_failures") or [])
+
+    snapshot = expected_policy.get("prepared_capability_snapshot") if isinstance(expected_policy, dict) else None
     current_policy = build_architecture_policy(
-        source_bot_dir,
-        source_capabilities=source_capabilities,
-        prepared_capability_snapshot=(
-            expected_snapshot if expected_snapshot is not None and not snapshot_identity_errors else None
-        ),
+        source,
+        source_capabilities=source_cap,
+        prepared_capability_snapshot=snapshot,
     )
-    identity_errors = snapshot_identity_errors
-    if isinstance(expected_policy, dict):
-        identity_errors.extend(_policy_identity_errors(expected_policy, current_policy))
-    policy = expected_policy if isinstance(expected_policy, dict) and not identity_errors else current_policy
-    source_state = _check_state(source_capabilities)
-    candidate_state = _check_state(candidate_capabilities)
-    regressions = []
-    system_provided_deltas = []
-    candidate_checks = candidate_capabilities.get("checks_by_id") or {}
-    protected_passed_checks = {
-        str(check_id)
-        for check_id in policy.get("baseline_passed_checks") or []
-        if str(check_id)
-    }
-    prepared_checks = (
-        (policy.get("prepared_capability_snapshot") or {}).get("prepared_checks") or {}
-    )
-    for check_id in sorted(protected_passed_checks):
-        if candidate_state.get(check_id, False):
-            continue
-        check = candidate_checks.get(check_id) or {}
-        locations = [
-            str(item) for item in (check.get("evidence") or {}).get("locations") or []
-        ]
-        if (
-            check_id == "decision_path_no_external_io"
-            and _system_owned_external_io_only(candidate_capabilities)
-        ):
-            # The current system wrapper deliberately owns a killable subprocess
-            # worker. Do not misclassify that provider mechanism as strategy I/O;
-            # any strategy/helper location still takes the normal regression path.
-            system_provided_deltas.append({
-                "check_id": check_id,
-                "reason": "killable_strategy_worker_owned_by_national_bot",
-                "locations": locations[:8],
-            })
-            continue
-        regressions.append({
-            "check_id": check_id,
-            "source_passed": True,
-            "baseline_origin": (
-                "parent_and_prepared"
-                if source_state.get(check_id, False)
-                and prepared_checks.get(check_id, False)
-                else "prepared_child"
-                if prepared_checks.get(check_id, False)
-                else "parent"
-            ),
-            "candidate_passed": False,
-            "guidance": check.get("guidance", ""),
-        })
-    focus = policy.get("selected_focus") or None
-    full_unresolved_focus = []
-    if focus:
-        full_unresolved_focus = [
-            check_id
-            for check_id in focus.get("required_checks") or []
-            if not candidate_state.get(check_id, False)
-        ]
-    # Crossover is a preparation operator, not the generation's implementation
-    # worker.  The system wrapper must already provide its owned correctness
-    # checks, but source debt explicitly assigned to plan_required_floor_checks
-    # is closed only after direction audit -> Master -> Workers.  Final quality
-    # evaluation keeps the historic fail-closed behavior and defers nothing.
-    deferred_floor_checks = (
-        [
-            str(check_id)
-            for check_id in policy.get("plan_required_floor_checks") or []
-            if str(check_id) in RUNTIME_FLOOR_CHECKS
-        ]
-        if evaluation_phase == ARCHITECTURE_TRANSITION_PHASE_PREPLAN
+    policy = expected_policy or current_policy
+    policy_identity_errors = (
+        _policy_identity_errors(expected_policy, current_policy)
+        if isinstance(expected_policy, dict)
         else []
     )
-    deferred_floor_set = set(deferred_floor_checks)
-    unresolved_focus = [
-        check_id
-        for check_id in full_unresolved_focus
-        if check_id not in deferred_floor_set
-    ]
-    deferred_unresolved_focus = [
-        check_id
-        for check_id in full_unresolved_focus
-        if check_id in deferred_floor_set
-    ]
-    required_failures = candidate_capabilities.get("required_failures") or []
-    floor_failures = [
+    source_state = dict(policy.get("effective_baseline_checks") or {})
+    candidate_state = _check_state(candidate_cap)
+    regressions = [
         {
             "check_id": check_id,
-            "guidance": (
-                (candidate_capabilities.get("checks_by_id") or {}).get(check_id, {}).get("guidance", "")
-            ),
+            "guidance": (candidate_cap.get("checks_by_id") or {}).get(check_id, {}).get("guidance", "restore baseline capability"),
+        }
+        for check_id in policy.get("baseline_passed_checks") or []
+        if not candidate_state.get(check_id, False)
+    ]
+    runtime_floor_failures = [
+        {
+            "check_id": check_id,
+            "guidance": (candidate_cap.get("checks_by_id") or {}).get(check_id, {}).get("guidance", "satisfy national policy runtime floor"),
         }
         for check_id in RUNTIME_FLOOR_CHECKS
-        if check_id not in deferred_floor_set
         if not candidate_state.get(check_id, False)
     ]
-    deferred_floor_failures = [
-        {
-            "check_id": check_id,
-            "guidance": (
-                (candidate_capabilities.get("checks_by_id") or {})
-                .get(check_id, {})
-                .get("guidance", "")
-            ),
-        }
-        for check_id in deferred_floor_checks
-        if not candidate_state.get(check_id, False)
-    ]
-    strategy_shadow_checks = [
-        {"check_id": check_id, "passed": bool(candidate_state.get(check_id, False))}
-        for check_id in STATE_LEARNING_INNOVATION_CHECKS
-    ]
-    legacy_consumer_migration_failures = [
+    focus = policy.get("selected_focus") or None
+    unresolved_focus_checks = [
         check_id
-        for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS
+        for check_id in (focus or {}).get("required_checks") or []
         if not candidate_state.get(check_id, False)
     ]
+    selected_dynamic_checks, ledger_errors = _selected_dynamic_probe_checks(
+        runtime_contract_ledger
+    )
+    # The architecture policy may advertise the next useful direction, but an
+    # advisory counterfactual becomes acceptance-critical only after Master has
+    # frozen that exact primary in the digest-bound RuntimeContract ledger.
+    blocking_focus = (
+        [
+            check_id
+            for check_id in unresolved_focus_checks
+            if check_id in selected_dynamic_checks
+        ]
+        if evaluation_phase == ARCHITECTURE_TRANSITION_PHASE_FINAL
+        else []
+    )
+    selected_dynamic_failures = [
+        check_id
+        for check_id in sorted(selected_dynamic_checks)
+        if not candidate_state.get(check_id, False)
+    ]
+    typed_runtime_failures = [
+        str(item)
+        for item in (
+            (candidate_cap.get("checks_by_id") or {})
+            .get("typed_runtime_probe", {})
+            .get("evidence", {})
+            .get("issues", [])
+        )
+    ] if candidate_state.get("typed_runtime_probe") is False else []
+    policy_identity_errors.extend(
+        f"runtime_contract_ledger:{item}" for item in ledger_errors
+    )
+    ok = not any((
+        infrastructure_failures,
+        policy_identity_errors,
+        regressions,
+        runtime_floor_failures,
+        blocking_focus,
+        typed_runtime_failures,
+        selected_dynamic_failures,
+    ))
     return {
-        "schema_version": 1,
-        "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
+        "schema_version": 2,
+        "epoch": ACTIVE_EPOCH,
+        "ok": ok,
+        "conclusive": not infrastructure_failures,
+        "outcome": "passed" if ok else "infrastructure_failure" if infrastructure_failures else "failed",
+        "failure_class": "" if ok else "infrastructure" if infrastructure_failures else "candidate",
         "evaluation_phase": evaluation_phase,
-        "ok": (
-            not identity_errors
-            and not required_failures
-            and not floor_failures
-            and not regressions
-            and not unresolved_focus
-        ),
-        "conclusive": True,
-        "outcome": (
-            "passed"
-            if not identity_errors
-            and not required_failures
-            and not floor_failures
-            and not regressions
-            and not unresolved_focus
-            else "candidate_failure"
-        ),
-        "failure_class": (
-            "none"
-            if not identity_errors
-            and not required_failures
-            and not floor_failures
-            and not regressions
-            and not unresolved_focus
-            else "candidate"
-        ),
+        "source_capabilities": source_cap,
+        "candidate_capabilities": candidate_cap,
+        "source_checks": source_state,
+        "candidate_checks": candidate_state,
         "policy": policy,
-        "policy_identity_errors": identity_errors,
-        "infrastructure_failures": [],
-        "runtime_probe_infra": [],
-        "regressions": regressions,
-        "system_provided_deltas": system_provided_deltas,
-        "runtime_floor_checks": list(RUNTIME_FLOOR_CHECKS),
-        "legacy_consumer_migration_checks": list(
-            LEGACY_CONSUMER_MIGRATION_CHECKS
-        ),
-        "legacy_consumer_migration_failures": (
-            legacy_consumer_migration_failures
-        ),
-        "runtime_floor_failures": floor_failures,
-        "deferred_runtime_floor_checks": deferred_floor_checks,
-        "deferred_runtime_floor_failures": deferred_floor_failures,
-        "strategy_shadow_checks": strategy_shadow_checks,
         "selected_focus": focus,
-        "unresolved_focus_checks": unresolved_focus,
-        "full_unresolved_focus_checks": full_unresolved_focus,
-        "deferred_unresolved_focus_checks": deferred_unresolved_focus,
-        "source_capabilities": source_capabilities,
-        "candidate_capabilities": candidate_capabilities,
+        "regressions": regressions,
+        "runtime_floor_failures": runtime_floor_failures,
+        "unresolved_focus_checks": unresolved_focus_checks,
+        "blocking_focus_checks": blocking_focus,
+        "policy_identity_errors": policy_identity_errors,
+        "infrastructure_failures": infrastructure_failures,
+        "runtime_probe_infra": infrastructure_failures,
+        "runtime_probe": runtime_probe,
+        "runtime_probe_identity_digest": runtime_probe.get(
+            "probe_identity_digest"
+        ),
+        "runtime_probe_managed_isolation_digest": runtime_probe.get(
+            "managed_isolation_digest"
+        ),
+        "runtime_contract_ledger_digest": runtime_probe.get(
+            "runtime_contract_ledger_digest"
+        ),
+        "typed_runtime_failures": typed_runtime_failures,
+        "selected_dynamic_checks": sorted(selected_dynamic_checks),
+        "selected_dynamic_failures": selected_dynamic_failures,
     }
 
 
-def validate_plan_architecture_focus(
-    plan: dict[str, Any],
-    policy: dict[str, Any] | None = None,
-) -> list[str]:
-    policy = policy or (plan.get("architecture_policy") if isinstance(plan, dict) else None)
+def validate_plan_architecture_focus(plan: dict[str, Any]) -> list[str]:
+    if not isinstance(plan, dict):
+        return ["architecture_plan_missing_or_not_object"]
+    policy = plan.get("architecture_policy")
     if not isinstance(policy, dict):
         return []
-    focus = policy.get("selected_focus") or None
-    tasks = [task for task in (plan.get("tasks") or []) if isinstance(task, dict)]
     errors: list[str] = []
-    writable_native_tasks = [
+    if policy.get("epoch") != ACTIVE_EPOCH:
+        errors.append("architecture_policy_epoch_mismatch")
+    if policy.get("policy_digest") != _policy_contract_digest(policy):
+        errors.append("architecture_policy_content_digest_mismatch")
+    tasks = [task for task in plan.get("tasks") or [] if isinstance(task, dict)]
+    floor_checks = set(policy.get("plan_required_floor_checks") or [])
+    declared = {
+        str(check)
+        for task in tasks
+        for check in task.get("checks_required") or []
+    }
+    missing_floor = sorted(floor_checks.difference(declared))
+    if missing_floor:
+        errors.append(f"architecture_plan_missing_floor_checks:{missing_floor}")
+    focus = policy.get("selected_focus") or None
+    focus_tasks = [
         task for task in tasks
-        if "national_bot.py" in _task_writable_filenames(task)
-        and not _is_explicit_official_protocol_repair(task)
+        if str(task.get("architecture_focus_id") or "") == str((focus or {}).get("focus_id") or "")
+        and str((focus or {}).get("focus_id") or "")
     ]
-    for task in writable_native_tasks:
-        errors.append(
-            "system-provided national_bot.py is read-only for ordinary strategy/"
-            "state-learning tasks; writable access requires the deterministic "
-            "official_repair/official_full Protocol Integration Architect route "
-            f"(worker_id={task.get('worker_id')!r})."
-        )
-
-    state_learning_tasks = []
-    migration_tasks = []
-    for task in tasks:
-        raw_contract = task.get("runtime_contract")
-        if not isinstance(raw_contract, dict):
-            continue
-        if raw_contract.get("state_learning") is not None:
-            state_learning_tasks.append(task)
-            if str(task.get("architecture_focus_id") or "") != "national_runtime_v4_state_learning":
-                errors.append(
-                    "runtime_contract.state_learning may appear only on the single "
-                    "national_runtime_v4_state_learning primary task "
-                    f"(worker_id={task.get('worker_id')!r})."
-                )
-        if raw_contract.get("legacy_consumer_migration") is not None:
-            migration_tasks.append(task)
-            if str(task.get("architecture_focus_id") or "") != LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-                errors.append(
-                    "runtime_contract.legacy_consumer_migration may appear only on "
-                    "the system-owned migration focus task "
-                    f"(worker_id={task.get('worker_id')!r})."
-                )
-
-    required_floor = [str(item) for item in policy.get("plan_required_floor_checks") or []]
-    for check_id in required_floor:
-        matching_floor = [
-            task for task in tasks
-            if check_id in {str(item) for item in task.get("checks_required") or []}
-        ]
-        if not matching_floor:
-            errors.append(
-                f"Runtime floor check {check_id!r} is unresolved in the source and must be "
-                "declared in checks_required by at least one worker task."
-            )
-    if not focus:
-        return errors
-    focus_id = str(focus.get("focus_id") or "")
-    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID and len(tasks) != 1:
-        errors.append(
-            "Universal legacy consumer migration is generation-isolated and "
-            f"requires exactly one total worker task; found {len(tasks)}."
-        )
-    matching = [task for task in tasks if str(task.get("architecture_focus_id") or "") == focus_id]
-    if not matching:
-        errors.append(
-            f"Architecture focus {focus_id!r} is mandatory for this generation; "
-            "one worker task must declare the same architecture_focus_id."
-        )
-        return errors
-    if len(matching) != 1:
-        errors.append(
-            f"Architecture focus {focus_id!r} requires exactly one primary worker task; "
-            f"found {len(matching)}."
-        )
-    if focus_id == "national_runtime_v4_state_learning" and len(state_learning_tasks) != 1:
-        errors.append(
-            "Architecture focus 'national_runtime_v4_state_learning' requires "
-            "exactly one state_learning primary across the entire generation; "
-            f"found {len(state_learning_tasks)}."
-        )
-    if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-        if len(migration_tasks) != 1:
-            errors.append(
-                "Universal legacy consumer migration requires exactly one complete "
-                "system-owned migration contract; "
-                f"found {len(migration_tasks)}."
-            )
-        if state_learning_tasks:
-            errors.append(
-                "state_learning is forbidden while universal legacy consumer "
-                "migration remains active."
-            )
-
-    accepted_layers = set(focus.get("accepted_skill_layers") or [])
-    suggested_files = {Path(str(path)).name for path in focus.get("suggested_files") or []}
-    required_terms = [str(term).lower() for term in focus.get("required_terms") or []]
-    for task in matching:
-        layer = str(task.get("skill_layer") or "")
-        if layer not in accepted_layers:
-            errors.append(
-                f"Architecture focus {focus_id!r} task uses skill_layer={layer!r}; "
-                f"expected one of {sorted(accepted_layers)}."
-            )
-        targets = {
-            Path(str(path)).name
-            for path in [*(task.get("target_files") or []), *(task.get("files_allowed") or [])]
+    if focus:
+        if len(focus_tasks) != 1:
+            errors.append(f"architecture_focus_task_count:{len(focus_tasks)}")
+        else:
+            task = focus_tasks[0]
+            if task.get("skill_layer") not in set(focus.get("accepted_skill_layers") or []):
+                errors.append("architecture_focus_skill_layer_mismatch")
+            missing = sorted(set(focus.get("required_checks") or []).difference(task.get("checks_required") or []))
+            if missing:
+                errors.append(f"architecture_focus_required_checks_missing:{missing}")
+            prompt = str(task.get("worker_prompt") or "").lower()
+            missing_terms = [term for term in focus.get("required_terms") or [] if str(term).lower() not in prompt]
+            if missing_terms:
+                errors.append(f"architecture_focus_prompt_terms_missing:{missing_terms}")
+    elif any(str(task.get("architecture_focus_id") or "").strip() for task in tasks):
+        errors.append("architecture_focus_declared_without_selected_focus")
+    for index, task in enumerate(tasks, start=1):
+        writable = {
+            Path(str(value)).name
+            for value in [*(task.get("target_files") or []), *(task.get("files_allowed") or [])]
         }
-        if (
-            focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
-            and not set(LEGACY_CONSUMER_MIGRATION_FILES).issubset(targets)
-        ):
-            errors.append(
-                "Universal legacy consumer migration task must have writable scope "
-                f"for all {list(LEGACY_CONSUMER_MIGRATION_FILES)}; got {sorted(targets)}."
-            )
-        elif (
-            focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID
-            and targets != set(LEGACY_CONSUMER_MIGRATION_FILES)
-        ):
-            errors.append(
-                "Universal legacy consumer migration writable scope is exact; "
-                f"unexpected files {sorted(targets.difference(LEGACY_CONSUMER_MIGRATION_FILES))}."
-            )
-        elif suggested_files and not targets.intersection(suggested_files):
-            errors.append(
-                f"Architecture focus {focus_id!r} task targets {sorted(targets)} but none of "
-                f"the relevant files {sorted(suggested_files)}."
-            )
-        prompt = str(task.get("worker_prompt") or "").lower()
-        missing_terms = [term for term in required_terms if term not in prompt]
-        if missing_terms:
-            errors.append(
-                f"Architecture focus {focus_id!r} task prompt is missing execution terms {missing_terms}."
-            )
-        if focus_id == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-            try:
-                from output_schema import RuntimeContract
-
-                contract = RuntimeContract.model_validate(
-                    task.get("runtime_contract") or {}
-                )
-            except Exception as exc:
-                errors.append(
-                    f"Architecture focus {focus_id!r} has invalid runtime_contract: "
-                    f"{type(exc).__name__}: {str(exc)[:180]}"
-                )
-                continue
-            if contract.legacy_consumer_migration is None:
-                errors.append(
-                    "Universal legacy consumer migration focus requires the exact "
-                    "legacy_consumer_migration bundle."
-                )
-            declared_checks = {
-                str(item) for item in task.get("checks_required") or []
-            }
-            missing_migration = sorted(
-                set(LEGACY_CONSUMER_MIGRATION_CHECKS).difference(
-                    declared_checks
-                )
-            )
-            if missing_migration:
-                errors.append(
-                    "Universal legacy consumer migration task may not omit checks "
-                    f"{missing_migration}."
-                )
-            allowed_migration_checks = {
-                *(
-                    str(item)
-                    for item in policy.get("plan_required_floor_checks") or []
-                ),
-                *LEGACY_CONSUMER_MIGRATION_CHECKS,
-            }
-            unexpected_migration_checks = sorted(
-                declared_checks.difference(allowed_migration_checks)
-            )
-            if unexpected_migration_checks:
-                errors.append(
-                    "Universal legacy consumer migration checks_required is "
-                    "system-owned; unexpected ordinary/aggregate checks "
-                    f"{unexpected_migration_checks}."
-                )
-        elif focus_id == "national_runtime_v4_state_learning":
-            try:
-                from output_schema import RuntimeContract
-
-                contract = RuntimeContract.model_validate(task.get("runtime_contract") or {})
-            except Exception as exc:
-                errors.append(
-                    f"Architecture focus {focus_id!r} has invalid runtime_contract: "
-                    f"{type(exc).__name__}: {str(exc)[:180]}"
-                )
-                continue
-            state_learning = contract.state_learning
-            if state_learning is None:
-                errors.append(
-                    f"Architecture focus {focus_id!r} requires typed state_learning."
-                )
-                continue
-            declared_checks = {
-                str(item) for item in task.get("checks_required") or []
-            }
-            missing_primary = sorted(
-                set(state_learning.primary_checks()).difference(declared_checks)
-            )
-            if missing_primary:
-                errors.append(
-                    f"Architecture focus {focus_id!r} primary innovation "
-                    f"{state_learning.primary_innovation()!r} requires checks_required "
-                    f"{missing_primary}."
-                )
-            unresolved_innovations = {
-                str(item)
-                for item in focus.get("source_unresolved_checks") or []
-                if str(item) in STATE_LEARNING_INNOVATION_CHECKS
-            }
-            if (
-                unresolved_innovations
-                and not unresolved_innovations.intersection(
-                    state_learning.primary_checks()
-                )
-            ):
-                errors.append(
-                    f"Architecture focus {focus_id!r} primary innovation "
-                    f"{state_learning.primary_innovation()!r} does not close a source "
-                    f"shadow debt; choose one of {sorted(unresolved_innovations)}."
-                )
+        forbidden = sorted(writable.intersection({"national_bot.py", "precompute.py", "main.py", "state.py", "strategy.py"}))
+        if forbidden:
+            errors.append(f"architecture_task_{index}_forbidden_writable_files:{forbidden}")
     return errors
 
 
@@ -1530,535 +1069,118 @@ def validate_runtime_contract_implementation(
     plan: dict[str, Any],
     candidate_capabilities: dict[str, Any],
 ) -> list[str]:
-    """Bind Master RuntimeContract declarations to detector evidence."""
-    try:
-        from output_schema import RuntimeContract
-    except Exception as exc:
-        raise RuntimeError(
-            f"runtime_contract_validator_import_error:{type(exc).__name__}:{str(exc)[:160]}"
-        ) from exc
+    contracts, errors = _ledger_contracts(plan)
+    if errors:
+        return errors
+    checks = _check_state(candidate_capabilities)
+    expected_abi = native_policy_runtime_contract()["policy_abi"]
+    from output_schema import RuntimeContract
 
-    checks = {
-        str(item.get("check_id")): bool(item.get("passed"))
-        for item in candidate_capabilities.get("checks") or []
-    }
-    decision = candidate_capabilities.get("decision_time_evidence") or {}
-    precompute = candidate_capabilities.get("precompute_evidence") or {}
-    incremental = candidate_capabilities.get("incremental_model_evidence") or {}
-    provider = incremental.get("provider") or {}
-    risks = candidate_capabilities.get("decision_path_risks") or {}
-    artifacts = precompute.get("consumed_artifacts") or []
-    contract_items, ledger_errors = _ledger_contracts(plan)
-    errors: list[str] = [f"runtime_contract_ledger:{item}" for item in ledger_errors]
-
-    for label, raw_contract in contract_items:
-        prefix = f"runtime_contract_{label}"
+    for label, raw in contracts:
         try:
-            contract = RuntimeContract.model_validate(raw_contract)
+            contract = RuntimeContract.model_validate(raw)
         except Exception as exc:
-            errors.append(
-                f"{prefix}_schema_error:{type(exc).__name__}:{str(exc)[:200]}"
-            )
+            errors.append(f"{label}:runtime_contract_schema:{type(exc).__name__}:{str(exc)[:180]}")
             continue
-
-        state_learning = contract.state_learning
-        primary_innovation = (
-            state_learning.primary_innovation()
-            if state_learning is not None
-            else ""
-        )
-        if state_learning is not None and state_learning.work_primitive is not None:
-            from strategy_reference_pack import get_reference_card
-
-            card = get_reference_card(contract.reference_pack_id)
-            if card is None:
-                # RuntimeContract normally catches this first. Keep the
-                # implementation gate fail-closed if a serialized legacy plan
-                # bypasses schema validation in a caller.
-                errors.append(
-                    f"{prefix}: selected work primitive has no valid local strategy reference card"
-                )
-            else:
-                decision_fields = incremental.get("decision_field_locations") or {}
-                decision_field_functions = (
-                    incremental.get("decision_field_function_locations") or {}
-                )
-                # v4.3+ capability evidence contains exact request-rooted
-                # paths which reach an action sink.  A dead tuple of strings
-                # such as ('street', 'spr', 'confidence') must never satisfy a
-                # reference card simply because it shares field names with the
-                # live schema.  Retain the former normalized-literal heuristic
-                # only for persisted pre-v4.3 capability reports which do not
-                # carry this key at all.
-                has_source_rooted_paths = (
-                    "source_rooted_live_access_paths" in incremental
-                )
-                source_rooted_paths = (
-                    incremental.get("source_rooted_live_access_paths")
-                    if has_source_rooted_paths
-                    else None
-                )
-                if has_source_rooted_paths:
-                    if not isinstance(source_rooted_paths, dict):
-                        source_rooted_paths = {}
-                    missing_hand_fields = [
-                        field
-                        for field in card.required_hand_runtime_fields
-                        if not source_rooted_paths.get(field)
-                    ]
-                    if missing_hand_fields:
-                        errors.append(
-                            f"{prefix}: reference card {card.reference_id} lacks source-rooted "
-                            f"live hand_runtime action consumption for {missing_hand_fields}"
-                        )
-                    if not any(
-                        source_rooted_paths.get(path)
-                        for path in card.required_any_opponent_runtime_fields
-                    ):
-                        errors.append(
-                            f"{prefix}: reference card {card.reference_id} lacks a source-rooted "
-                            "confidence-scaled terminal/showdown opponent_runtime action consumer"
-                        )
-                else:
-                    missing_hand_fields = [
-                        field.rsplit(".", 1)[-1]
-                        for field in card.required_hand_runtime_fields
-                        if not decision_fields.get(field.rsplit(".", 1)[-1])
-                    ]
-                    if missing_hand_fields:
-                        errors.append(
-                            f"{prefix}: reference card {card.reference_id} lacks live "
-                            f"hand_runtime decision consumption for {missing_hand_fields}"
-                        )
-
-                    def _opponent_path_consumed(path: str) -> bool:
-                        parts = path.split(".")[1:]
-                        # A disconnected mention of ``confidence`` elsewhere in
-                        # strategy code is not evidence that the terminal or
-                        # showdown posterior controls this decision.  Require all
-                        # path components to meet in at least one decision
-                        # location, which keeps the legacy fallback meaningful.
-                        normalized_locations = decision_field_functions or decision_fields
-                        locations = [
-                            {
-                                str(item)
-                                for item in (normalized_locations.get(part) or [])
-                            }
-                            for part in parts
-                        ]
-                        return bool(parts) and bool(locations) and bool(
-                            set.intersection(*locations)
-                        )
-
-                    if not any(
-                        _opponent_path_consumed(path)
-                        for path in card.required_any_opponent_runtime_fields
-                    ):
-                        errors.append(
-                            f"{prefix}: reference card {card.reference_id} lacks a required "
-                            "confidence-scaled terminal/showdown opponent_runtime consumer"
-                        )
-
+        dumped = contract.model_dump(mode="json")
+        if dumped.get("policy_abi") != expected_abi:
+            errors.append(f"{label}:policy_abi_mismatch")
         if contract.decision is not None:
-            if not checks.get("decision_time_budget_visible"):
-                errors.append(
-                    f"{prefix}: decision contract has no proven deadline/baseline/fallback path"
-                )
-            declared_actual = (
-                (
-                    "hard_deadline_ms",
-                    contract.decision.hard_deadline_ms,
-                    "default_hard_deadline_ms",
-                    "DEFAULT_DECISION_HARD_DEADLINE_SEC",
-                ),
-                (
-                    "baseline_target_ms",
-                    contract.decision.baseline_target_ms,
-                    "default_baseline_target_ms",
-                    "DEFAULT_DECISION_BASELINE_TARGET_SEC",
-                ),
-                (
-                    "refinement_budget_ms",
-                    contract.decision.refinement_budget_ms,
-                    "default_refinement_budget_ms",
-                    "DEFAULT_DECISION_REFINEMENT_BUDGET_SEC",
-                ),
-            )
-            for field_name, declared_value, evidence_key, constant_name in declared_actual:
-                actual_value = decision.get(evidence_key)
-                if actual_value is None:
-                    errors.append(
-                        f"{prefix}: {constant_name} is not statically provable"
-                    )
-                elif int(actual_value) != int(declared_value):
-                    errors.append(
-                        f"{prefix}: declared {field_name}={declared_value} "
-                        f"but implementation default is {actual_value}"
-                    )
-            strategy_external_io = [
-                location
-                for location in risks.get("external_io") or []
-                if not str(location).startswith("national_bot.py:")
-            ]
-            if strategy_external_io:
-                errors.append(
-                    f"{prefix}: decision path performs external I/O at "
-                    f"{strategy_external_io[0]}"
-                )
-            if primary_innovation == "sample_counted_candidate_batch":
-                for check_id in (
-                    "fast_strategy_baseline",
-                    "incremental_refinement_protocol",
-                    "budget_scaled_refinement",
-                ):
-                    if not checks.get(check_id):
-                        errors.append(
-                            f"{prefix}: selected sample-counted work primitive lacks "
-                            f"proven {check_id}"
-                        )
-
-        for declared in contract.precompute_artifacts:
-            matching = [
-                item
-                for item in artifacts
-                if item.get("name") == declared.name
-                and str(item.get("location") or "").startswith(f"{declared.owner_file}:")
-            ]
-            if not matching:
-                errors.append(
-                    f"{prefix}: precompute artifact "
-                    f"{declared.owner_file}:{declared.name} is not proven built-before-decision and consumed"
-                )
-                continue
-            detected_bound = max(int(item.get("bound_entries", 0) or 0) for item in matching)
-            if detected_bound > declared.max_entries:
-                errors.append(
-                    f"{prefix}: precompute artifact {declared.name} "
-                    f"uses {detected_bound} entries above declared max_entries={declared.max_entries}"
-                )
-            detected_phases = {str(item.get("build_phase") or "") for item in matching}
-            if declared.build_phase not in detected_phases:
-                errors.append(
-                    f"{prefix}: precompute artifact {declared.name} declares "
-                    f"build_phase={declared.build_phase} but detector found {sorted(detected_phases)}"
-                )
-            consumer_module, declared_consumer = declared.consumer.rsplit(".", 1)
-            consumer_token = f"{consumer_module}.py:{declared_consumer}"
-            consumer_locations = [
-                str(location)
-                for item in matching
-                for location in item.get("consumer_locations") or []
-            ]
-            if not any(
-                consumer_token in location.split("->")
-                for location in consumer_locations
-            ):
-                errors.append(
-                    f"{prefix}: precompute artifact {declared.name} has no proven declared "
-                    f"consumer {declared.consumer}"
-                )
-            try:
-                from national_runtime_probe import validate_dynamic_precompute_contract
-
-                dynamic_errors = validate_dynamic_precompute_contract(
-                    candidate_capabilities.get("dynamic_runtime_probe") or {},
-                    name=declared.name,
-                    owner_file=declared.owner_file,
-                    build_phase=declared.build_phase,
-                    max_build_ms=declared.max_build_ms,
-                    max_entries=declared.max_entries,
-                    max_bytes=declared.max_bytes,
-                    key_shape=declared.key_shape,
-                    fallback=declared.fallback,
-                    require_action_influence=(
-                        primary_innovation == "bounded_precompute_lookup"
-                    ),
-                    require_key_variation=(
-                        primary_innovation == "bounded_precompute_lookup"
-                    ),
-                )
-            except Exception as exc:
-                dynamic_errors = [
-                    f"dynamic_precompute_validator_error:{type(exc).__name__}:{str(exc)[:160]}"
-                ]
-            for error in dynamic_errors:
-                errors.append(f"{prefix}: precompute artifact {declared.name}: {error}")
-        if contract.precompute_artifacts and risks.get("large_runtime_tables"):
-            errors.append(
-                f"{prefix}: live decision path still constructs a large table at "
-                f"{risks['large_runtime_tables'][0]}"
-            )
-
-        memory = contract.match_memory
-        if memory is not None:
-            if not incremental.get("provider_complete") or not incremental.get("consumed_by_decision"):
-                errors.append(
-                    f"{prefix}: match-memory provider/consumer evidence is incomplete"
-                )
-            consumer_module, consumer_function = memory.consumer.rsplit(".", 1)
-            consumer_token = f"{consumer_module}.py:{consumer_function}"
-            consumer_locations = [
-                str(location) for location in incremental.get("consumer_locations") or []
-            ]
-            if not any(
-                consumer_token in location.split("->")
-                for location in consumer_locations
-            ):
-                errors.append(
-                    f"{prefix}: match-memory contract has no proven declared consumer "
-                    f"{memory.consumer}"
-                )
-            if memory.tracker_class != "OpponentTracker" or memory.owner_file != "national_bot.py":
-                errors.append(
-                    f"{prefix}: detector found OpponentTracker in national_bot.py, "
-                    f"not {memory.owner_file}:{memory.tracker_class}"
-                )
-            actual_recent = provider.get("recent_state_maxlen")
-            if actual_recent is None or int(actual_recent) > int(memory.max_recent_hands):
-                errors.append(
-                    f"{prefix}: recent-hand bound {actual_recent!r} exceeds "
-                    f"declared max_recent_hands={memory.max_recent_hands}"
-                )
-            actual_cap = provider.get("adaptation_cap")
-            if actual_cap is None or float(actual_cap) > float(memory.adaptation_cap) + 1e-12:
-                errors.append(
-                    f"{prefix}: adaptation cap {actual_cap!r} exceeds "
-                    f"declared adaptation_cap={memory.adaptation_cap}"
-                )
-            event_evidence = {
-                "hand_start": "hand_lifecycle",
-                "opponent_action": "action_updates",
-                "hero_action": "action_updates",
-                "settlement": "settlement_updates",
-                "showdown": "showdown_updates",
-                "street_start": "street_lifecycle",
-            }
-            missing_events = [
-                event
-                for event in memory.update_events
-                if not provider.get(event_evidence[event])
-            ]
-            if missing_events:
-                errors.append(
-                    f"{prefix}: update events lack mutation/call evidence {missing_events}"
-                )
-            if risks.get("history_scans"):
-                errors.append(
-                    f"{prefix}: decision path rescans full match history at "
-                    f"{risks['history_scans'][0]}"
-                )
-            dynamic_tracker = incremental.get("dynamic_tracker") or {}
-            if not dynamic_tracker.get("ok"):
-                errors.append(
-                    f"{prefix}: dynamic OpponentTracker probe failed: "
-                    f"{(dynamic_tracker.get('issues') or ['unknown'])[:4]}"
-                )
+            for check_id in ("fast_policy_baseline", "incremental_refinement_protocol"):
+                if check_id in checks and not checks[check_id]:
+                    errors.append(f"{label}:decision_contract_lacks_{check_id}")
+        if contract.match_memory is not None:
+            if contract.match_memory.owner_file != "national_bot.py":
+                errors.append(f"{label}:match_memory_owner_must_be_system_runtime")
+            if contract.match_memory.consumer not in {
+                "policy.get_baseline_decision",
+                "policy.iter_decisions",
+            }:
+                errors.append(f"{label}:match_memory_consumer_not_policy")
             for check_id in (
+                "persistent_match_memory",
                 "terminal_response_memory",
                 "showdown_range_posterior",
-                "authoritative_hand_context",
             ):
-                if not checks.get(check_id):
-                    errors.append(
-                        f"{prefix}: match-memory contract lacks proven {check_id}"
-                    )
-
-        migration = contract.legacy_consumer_migration
-        if migration is not None:
-            for check_id in LEGACY_CONSUMER_MIGRATION_CHECKS:
-                if not checks.get(check_id):
-                    errors.append(
-                        f"{prefix}: universal legacy consumer migration lacks "
-                        f"proven {check_id}"
-                    )
-
-        if state_learning is None:
-            continue
-        if primary_innovation == "sample_counted_candidate_batch":
-            if contract.decision is None:
-                errors.append(
-                    f"{prefix}: selected sample_counted_candidate_batch has no decision contract"
-                )
-            else:
-                decision_runtime = (
-                    candidate_capabilities.get("decision_runtime_evidence") or {}
-                )
-                long_tier = (
-                    (decision_runtime.get("budget_scaling") or {}).get("long") or {}
-                )
-                trusted_steps = long_tier.get("trusted_steps")
-                if (
-                    not isinstance(trusted_steps, int)
-                    or isinstance(trusted_steps, bool)
-                    or trusted_steps < 8
-                ):
-                    errors.append(
-                        f"{prefix}: selected sample-counted work primitive has "
-                        f"long trusted_steps={trusted_steps!r}; expected at least 8 "
-                        "system-observed iterator steps"
-                    )
-                elif (
-                    contract.decision.max_samples is not None
-                    and trusted_steps > contract.decision.max_samples
-                ):
-                    errors.append(
-                        f"{prefix}: long trusted_steps={trusted_steps} exceeds declared "
-                        f"decision.max_samples={contract.decision.max_samples}"
-                    )
-        elif primary_innovation == "bounded_precompute_lookup":
-            if not contract.precompute_artifacts:
-                errors.append(
-                    f"{prefix}: selected bounded_precompute_lookup has no declared artifact"
-                )
-            if not checks.get("precompute_lookup_path"):
-                errors.append(
-                    f"{prefix}: selected bounded_precompute_lookup is not proven consumed"
-                )
-            if not checks.get("precompute_runtime_influence"):
-                errors.append(
-                    f"{prefix}: selected bounded_precompute_lookup has no proven "
-                    "value-sensitive final-wire counterfactual"
-                )
-        elif primary_innovation in {
-            "action_profile",
-            "terminal_response",
-            "showdown_range",
-        }:
-            check_id = {
-                "action_profile": "incremental_opponent_model",
-                "terminal_response": "terminal_response_adaptation",
-                "showdown_range": "showdown_range_adaptation",
-            }[primary_innovation]
-            if not checks.get(check_id):
-                errors.append(
-                    f"{prefix}: selected profile dimension {primary_innovation!r} "
-                    f"lacks proven {check_id}"
-                )
-        elif primary_innovation in {"donk", "delayed_probe"}:
-            source_consumption = _migration_source_consumption(incremental).get(
-                primary_innovation
-            ) or {}
-            if not source_consumption.get("ok"):
-                errors.append(
-                    f"{prefix}: selected line control {primary_innovation!r} is not "
-                    "consumed through its exact source-rooted hand_runtime field "
-                    "on a live action path"
-                )
-            dynamic_probe = candidate_capabilities.get("dynamic_runtime_probe") or {}
-            dynamic_evidence = _migration_dynamic_influence(
-                dynamic_probe,
-                primary_innovation,
-            )
-            if not dynamic_evidence.get("ok"):
-                errors.append(
-                    f"{prefix}: selected line control {primary_innovation!r} has no "
-                    "repeatable specific positive/control final sanitized-wire difference"
-                )
-            split_check_id = (
-                "donk_line_reachability"
-                if primary_innovation == "donk"
-                else "delayed_probe_line_reachability"
-            )
-            if not checks.get(split_check_id):
-                errors.append(
-                    f"{prefix}: selected line control {primary_innovation!r} lacks "
-                    f"proven {split_check_id}"
-                )
-    return errors
+                if not checks.get(check_id, False):
+                    errors.append(f"{label}:match_memory_lacks_{check_id}")
+        state_learning = contract.state_learning
+        if state_learning is not None:
+            for check_id in state_learning.primary_checks():
+                if not checks.get(check_id, False):
+                    errors.append(f"{label}:selected_primary_lacks_{check_id}")
+    return list(dict.fromkeys(errors))
 
 
 def architecture_policy_prompt(policy: dict[str, Any]) -> str:
     focus = policy.get("selected_focus") or None
     lines = [
-        "System-owned national runtime architecture policy:",
+        "System-owned national_tcp_policy_v1 architecture policy:",
         f"- policy_version={policy.get('policy_version')}",
         f"- official_policy_id={policy.get('official_policy_id')}",
-        "- official_oracle_digests="
-        + ", ".join(
+        "- official_oracle_digests=" + ", ".join(
             f"{path}:{digest}"
-            for path, digest in sorted(
-                (policy.get("official_oracle_digests") or {}).items()
-            )
+            for path, digest in sorted((policy.get("official_oracle_digests") or {}).items())
         ),
-        f"- source_capability_digest={policy.get('source_capability_digest')}",
-        f"- effective_baseline_bot={policy.get('effective_baseline_bot')}",
-        "- prepared_capability_snapshot_digest="
-        f"{policy.get('prepared_capability_snapshot_digest') or 'none'}",
-        "- preserve every check listed in baseline_passed_checks; candidate regressions are blocking",
-        "- every check in plan_required_floor_checks must appear in at least one task checks_required and be closed in this generation",
-        f"- native_template_provided_checks={', '.join(policy.get('native_template_provided_checks') or []) or 'none'}",
+        "- candidate decisions and all writable strategy code live only in policy.py",
+        "- national_bot.py and precompute.py are exact system-owned read-only bytes",
+        "- input is decision_context v1; output is pass/fold/allin/raise(raise_to)",
+        "- the socket owner alone maps pass to the official call/check token and emits bytes",
+        "- preserve every baseline_passed_checks item; regressions are blocking",
         f"- plan_required_floor_checks={', '.join(policy.get('plan_required_floor_checks') or []) or 'none'}",
     ]
-    if not focus:
-        lines.append("- selected_focus=none; all architecture debt bundles currently pass")
-        return "\n".join(lines)
-    lines.extend([
-        f"- selected_focus={focus.get('focus_id')}: {focus.get('title')}",
-        f"- required_checks={', '.join(focus.get('required_checks') or [])}",
-        f"- accepted_skill_layers={', '.join(focus.get('accepted_skill_layers') or [])}",
-        f"- suggested_files={', '.join(focus.get('suggested_files') or [])}",
-        f"- required_worker_prompt_terms={', '.join(focus.get('required_terms') or [])}",
-        f"- rationale={focus.get('rationale')}",
-        "- the matching task worker_prompt MUST literally contain every required_worker_prompt_terms value",
-    ])
-    if focus.get("focus_id") == LEGACY_CONSUMER_MIGRATION_FOCUS_ID:
-        bundle = policy.get("legacy_consumer_migration_bundle") or {}
+    if focus:
         lines.extend([
-            "- this is a system-owned universal migration bundle, not a selectable state_learning innovation",
-            f"- migration_bundle_id={bundle.get('bundle_id')}",
-            f"- migration_bundle_digest={bundle.get('bundle_digest')}",
-            "- migration_required_checks="
-            + ", ".join(bundle.get("required_checks") or []),
-            "- migration_consumer_files="
-            + ", ".join(bundle.get("consumer_files") or []),
-            "- exactly one total task MUST exist and carry the complete legacy_consumer_migration contract; state_learning and parallel support/strategy tasks are forbidden in this generation",
-            "- the system plan compiler discards other tasks and rebuilds the sole task's prompt plus exact bundle/check/file scope",
-            "- quality gates re-run every migration counterfactual; all four must pass before ordinary one-primary innovation resumes",
+            f"- selected_focus={focus.get('focus_id')}: {focus.get('title')}",
+            f"- required_checks={', '.join(focus.get('required_checks') or [])}",
+            f"- accepted_skill_layers={', '.join(focus.get('accepted_skill_layers') or [])}",
+            f"- suggested_files={', '.join(focus.get('suggested_files') or [])}",
+            f"- required_worker_prompt_terms={', '.join(focus.get('required_terms') or [])}",
+            "- exactly one matching task declares one typed state_learning primary",
         ])
     else:
-        lines.extend([
-            f"- innovation_shadow_checks={', '.join(focus.get('innovation_checks') or [])}",
-            "- state_learning declares exactly one primary strategy innovation; only its mapped consumer check is newly blocking, while other ordinary strategy dimensions stay shadow/advisory",
-            "- exactly one task MUST set architecture_focus_id exactly to selected_focus and declare one typed state_learning primary innovation",
-            "- a label is not proof: quality gates re-run AST/dynamic evidence for correctness floors, parent regressions, and the one selected primary innovation",
-        ])
+        lines.append("- selected_focus=none")
     return "\n".join(lines)
 
 
 def crossover_architecture_policy_prompt(policy: dict[str, Any]) -> str:
-    """Render the pre-Master architecture contract for crossover preparation.
-
-    Crossover deliberately has no WorkerTask schema, runtime-contract ledger, or
-    authority to close the generation's selected innovation focus.  Keeping its
-    prompt vocabulary separate prevents a weaker model from interpreting Master
-    requirements as a request to rewrite the entire strategy during recombination.
-    """
-
-    focus = policy.get("selected_focus") or None
-    lines = [
-        "System-owned crossover baseline architecture policy:",
+    return "\n".join([
+        "System-owned national_tcp_policy_v1 crossover baseline:",
         f"- policy_version={policy.get('policy_version')}",
-        f"- official_policy_id={policy.get('official_policy_id')}",
-        f"- source_capability_digest={policy.get('source_capability_digest')}",
-        "- this stage prepares a recombination baseline; it is NOT Master or Worker execution",
-        "- preserve every check in baseline_passed_checks; any regression is blocking",
-        "- preserve the installed system-owned national_bot.py and precompute.py providers",
-        "- do not emit or simulate downstream planning objects at this stage",
-        "- every strategic diff must be a traceable Parent B component; crossover makes no independent strategic innovation",
-        "- direction audit, literature probe, Master, and Workers run after this baseline; Master/Workers own the generation's exactly-one innovation",
-        "- native_template_provided_checks must pass before the baseline is accepted: "
-        + (", ".join(policy.get("native_template_provided_checks") or []) or "none"),
-        "- plan_required_floor_checks are deliberately deferred to Master/Workers: "
-        + (", ".join(policy.get("plan_required_floor_checks") or []) or "none"),
-    ]
-    if focus:
-        lines.extend([
-            f"- downstream_selected_focus={focus.get('focus_id')}: {focus.get('title')}",
-            "- the downstream focus is context only; do not attempt to close it during crossover",
-        ])
-    else:
-        lines.append("- downstream_selected_focus=none")
-    lines.append(
-        "- final quality gates will re-run the full architecture transition after Workers"
-    )
-    return "\n".join(lines)
+        "- crossover may combine policy.py only; helpers/assets are not writable ABI",
+        "- preserve exact national_bot.py, precompute.py, national_runtime_manifest.json, and policy_epoch_receipt.json",
+        "- source inputs are the two frozen parent policy.py artifacts and digest-bound evidence",
+        "- every candidate action remains a typed intent over decision_context v1",
+    ])
+
+
+__all__ = [
+    "ACTIVE_EPOCH",
+    "ARCHITECTURE_TRANSITION_PHASE_FINAL",
+    "ARCHITECTURE_TRANSITION_PHASE_PREPLAN",
+    "NATIVE_TEMPLATE_PROVIDED_CHECKS",
+    "OFFICIAL_FULL_POLICY_ID",
+    "OFFICIAL_ORACLE_DOC_DIGESTS",
+    "PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION",
+    "RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION",
+    "RUNTIME_ARCHITECTURE_POLICY_VERSION",
+    "RUNTIME_CORRECTNESS_FLOOR_CHECKS",
+    "RUNTIME_FLOOR_CHECKS",
+    "STATE_LEARNING_INNOVATION_CHECKS",
+    "architecture_focus_specs",
+    "architecture_policy_prompt",
+    "attach_runtime_contract_ledger",
+    "build_architecture_policy",
+    "build_prepared_capability_snapshot",
+    "build_runtime_contract_ledger",
+    "crossover_architecture_policy_prompt",
+    "evaluate_architecture_transition",
+    "native_policy_runtime_contract",
+    "prepared_capability_snapshot_digest",
+    "runtime_contract_ledger_digest",
+    "select_architecture_focus",
+    "validate_plan_architecture_focus",
+    "validate_prepared_capability_snapshot",
+    "validate_runtime_contract_implementation",
+    "validate_runtime_contract_ledger",
+]

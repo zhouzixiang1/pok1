@@ -1,181 +1,165 @@
-# 远程部署教程
+# Setup Guide — National TCP Policy
 
-## 1. 克隆项目
-
-```bash
-git clone --recurse-submodules https://github.com/zhouzixiang1/pok1.git
-cd pok1
-```
-
-> 如果忘记加 `--recurse-submodules`，克隆后执行：
-> ```bash
-> git submodule update --init --recursive
-> ```
-
-## 2. 环境准备
-
-### Python（需要 3.11+）
+## 1. Environment
 
 ```bash
-# 推荐使用 conda 或 venv
-conda create -n pok python=3.13 -y
-conda activate pok
-# 或者
-python -m venv venv && source venv/bin/activate
+cd /home/zzx/project/pok
+python3 --version
+git fetch --tags origin
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r web/requirements.txt -r sever/requirements.txt
+pip install pytest 'claude-agent-sdk==0.2.91'
 ```
 
-### Python 依赖
+There is no root `requirements.txt`; using that retired command leaves the Web
+and Agent SDK runtime only partially installed. The SDK version above matches
+the currently tested streaming/signature workarounds in `web/core/`.
 
-```bash
-pip install -r web/requirements.txt
-pip install claude-agent-sdk numpy
-```
-
-### Node.js（前端需要，需要 18+）
-
-```bash
-# macOS
-brew install node
-
-# Ubuntu/Debian
-curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-sudo apt install -y nodejs
-```
-
-## 3. 前端构建（如需 Web Dashboard）
+Frontend dependencies are installed by the normal first `web/main.py` launch,
+or manually with:
 
 ```bash
 cd web/frontend
-npm install
-npm run build        # 构建到 web/server/static/
-cd ../..
+npm ci
+npm run build
 ```
 
-> 开发模式可用 `npm run dev`（端口 5173，自动代理 API 到 8000）
+## 2. Choose the correct checkout
 
-## 4. 启动方式
+Use `/home/zzx/project/pok` for code, prompts, tests, and docs. The autonomous
+service runs from `/home/zzx/project/pok/.evolution_pok`. Never copy files
+between the two; synchronize through `origin/main` at a safe point.
 
-### 方式 A：完整 Web 服务（推荐）
+## 3. Verify the national platform
 
 ```bash
-# 启动全栈：Orchestrator + Daemon + Frontend（端口 8000）
+python -m pytest sever/tests -q
+
+# Terminal 1
+cd sever && python main.py
+
+# Optional diagnostic clients in two other terminals
+cd sever && python test_client.py 127.0.0.1 10001 BotA
+cd sever && python test_client.py 127.0.0.1 10001 BotB
+```
+
+The platform listens on TCP `10001` and serves its diagnostic dashboard on
+`18080` by default.
+
+## 4. Run the evolution web app
+
+```bash
 python web/main.py
-
-# 自定义端口
-python web/main.py --port 3000
-
-# 不启动后台对弈守护进程（仅 Web UI）
+python web/main.py --view-only
 python web/main.py --no-daemon
-
-# 跳过前端构建（已构建过时）
-python web/main.py --no-build
-
-# 开发模式（uvicorn 自动重载）
-python web/main.py --dev
+python web/main.py --no-build   # only after static assets already exist
 ```
 
-浏览器打开 `http://<服务器IP>:8000` 即可看到 Dashboard。
-
-### 方式 B：仅后台进化（无 Web UI）
+Standalone commands:
 
 ```bash
-# 持续进化
-python web/core/orchestrator.py
-
-# 跑一代就停
 python web/core/orchestrator.py --one-gen
+python web/core/orchestrator.py --dry-run
+python web/core/elo_daemon.py --once
 ```
 
-### 方式 C：仅 Glicko-2 对弈评测
+## 5. Test the control plane
 
 ```bash
-python web/core/elo_daemon.py --workers 28 --pairs 5 -v
+cd web
+python -m pytest tests -q
+
+cd frontend
+npm run build
 ```
 
-## 5. 本地对战测试
+## 6. Candidate contract
+
+An active candidate is `bots/national_v<N>/` with the current
+`national_tcp_policy_v1` manifest. Candidate decisions and any pure helper
+functions live inside the single `policy.py` artifact. Separate candidate
+helper modules are forbidden. Policies return typed `pass`, `fold`, `allin`, or `raise`
+intent; they never send TCP, return integer actions, or reconstruct another
+protocol history.
+
+The system runtime owns packet splitting, authoritative state, implicit
+street-close completion, terminal/showdown tracking, fallback, deadline,
+legality, action throttle, and the socket.
+
+The reset preserves `national-bot-v142` only as the numeric high-water and
+targets `national_v143` first. Do not select or repair an untagged higher
+directory such as old-wrapper `national_v155`; the runtime reset archives it as
+stale unpublished debris.
+
+## 7. Diagnostic Arena
 
 ```bash
-# 两个 bot 对战 50 局
-python engine/battle.py bots/claude_v5/main.py bots/claude_v4/main.py -n 50 -v
-
-# 镜像对战（消除运气因素）
-python engine/battle.py bots/claude_v5/main.py bots/claude_v5/main.py -n 10
-
-# 全量天梯赛（所有 bot 循环对战）
-python engine/ladder.py -n 20 -v
-
-# 指定 bot 天梯
-python engine/ladder.py -b 1 4 5 6 -n 20 -j 4
+python scripts/national_arena.py serve --view-only
+python scripts/national_arena.py run --mode managed \
+  --top-bot national_v<N> --bottom-bot national_v<M> --hands 70 --wait
 ```
 
-## 6. Botzone 上传
+Arena output is diagnostic only and never updates ratings or satisfies a gate.
+
+## 8. Official Windows EXE checks
 
 ```bash
-# 设置环境变量
-export BOTZONE_EMAIL="your@email.com"
-export BOTZONE_PASSWORD="your_password"
+python scripts/official_platform_acceptance.py \
+  --candidate bots/national_v<N> --opponent bots/national_v<M> \
+  --self-play-rounds 1 --opponent-rounds 1 --target-hands 70
 
-# 上传 bot
-python scripts/botzone_upload_match.py upload --source bots/claude_v5/main.py --bot-name test --execute
-
-# 排位赛
-python scripts/botzone_upload_match.py rank-match --bot-name test --execute
+python scripts/official_certify.py doctor
+python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
 ```
 
-## 7. Claude Code 集成（进化系统需要）
+Every published bot needs a content-bound signed full certificate. The
+only qualifying normal profile is `official-full-v5`: five 70-hand self-play
+rounds plus three 70-hand opponent rounds. The v143-only operator bootstrap
+uses the current system-owned `first_strict_control_v1`; it is a one-time
+empty-pool ceremony, not a normal selection fallback. Arena, smoke, compliance,
+and EXE chip outcomes cannot replace the full certificate or become strength
+evidence.
 
-进化系统使用 `claude-agent-sdk` 调用 Claude API。需要：
+## 9. Claude Agent SDK operator probe
 
-1. **Claude Code 已登录**：
-   ```bash
-   claude login
-   ```
-
-2. 或者设置 API Key：
-   ```bash
-   export ANTHROPIC_API_KEY="sk-ant-..."
-   ```
-
-## 8. TCP 竞赛服务器（可选）
+After synchronizing the runtime checkout and before restarting autonomous
+evolution, run the production-path SDK probe once:
 
 ```bash
-cd sever
-python main.py              # TCP :10001 + Web :18080
-
-# 用 bot_adapter 桥接本地 bot 到 TCP 服务器
-python bot_adapter.py --bot ../bots/claude_v5 --name test
-
-# TCP 服务器测试
-python -m pytest tests/ -v
+python scripts/claude_sdk_operator_probe.py --timeout-seconds 300 --pretty
 ```
 
-## 常用命令速查
+This is a billed Claude Agent SDK call, not a `curl` health check. It requires
+three separate `Read` calls and two separate `Bash` calls, verifies the exact
+pinned SHA-256 values of both official oracle documents, and inspects
+`sever/server/transport.py`. The Bash hook accepts only the two commands printed
+in the receipt; network commands and shell variants are denied. MCP is disabled,
+no write-capable SDK tools are exposed, the temporary role log is outside the
+repository, and stdout is one machine-readable receipt. Exit status is zero only
+when every tool has a non-error result, the hashes match, delimiter-free send
+behavior is proven locally, and the model returns the matching evidence. Timeout,
+provider availability, missing tools, or bad evidence fail closed.
 
-| 场景 | 命令 |
-|------|------|
-| 启动全栈 | `python web/main.py` |
-| 仅进化 | `python web/core/orchestrator.py` |
-| 仅评测 | `python web/core/elo_daemon.py --workers 28 -v` |
-| 快速对战 | `python engine/battle.py bots/claude_v5/main.py bots/claude_v4/main.py -n 10` |
-| 天梯赛 | `python engine/ladder.py -n 20 -v` |
-| 前端开发 | `cd web/frontend && npm run dev` |
-| 后端测试 | `cd web && python -m pytest tests/ -v` |
-| 合并 bot 文件（旧工具） | `python archive/cleanup_20260708/root_experiments/merge_bot.py bots/claude_v5/` |
-| 重置进化 | `python scripts/reset_evolution.py` |
+Do not run this command in unit tests. The regression suite uses a mocked SDK
+wrapper and never starts a paid request:
 
-## 目录结构
-
+```bash
+cd web && python -m pytest tests/test_operator_sdk_probe.py -q
 ```
-pok/
-├── bots/                # 所有 bot（claude_v1~v6 + neural_bot）
-├── engine/              # 本地对战引擎（battle.py, ladder.py, judge.py）
-├── sever/               # TCP 竞赛服务器（git 子模块）
-├── web/                 # Web 全栈
-│   ├── main.py          # 统一入口
-│   ├── core/            # 后端核心（进化、评测、工具）
-│   ├── server/          # FastAPI 路由
-│   └── frontend/        # React 前端
-├── scripts/             # 工具脚本（Botzone、重置等）
-├── archive/cleanup_20260708/root_experiments/merge_bot.py  # 旧多文件 bot 合并工具
-└── CLAUDE.md            # Claude Code 项目指令
-```
+
+## 10. Archived history
+
+Retired facilities live under `archive/`. Do not install them, import them,
+place them on `PYTHONPATH`, run their tests as active gates, or reuse their
+ratings/experience. The archive is for historical inspection only.
+
+## 11. Important references
+
+- `AGENTS.md`
+- `docs/national-tcp-policy-epoch.md`
+- `docs/national-runtime-architecture-policy.md`
+- `docs/evolution-dual-checkout-sync-policy.md`
+- `docs/official-certification-policy.md`
+- `docs/official-raise-boundary-oracle-2026-07-11.md`
+- `docs/official-terminal-settlement-oracle-2026-07-11.md`

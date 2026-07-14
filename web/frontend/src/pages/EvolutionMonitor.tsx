@@ -13,6 +13,9 @@ import type { WorkerInfo } from "../components/evolution/WorkerProgress";
 import { ToolCard, ThinkingBlock } from "../components/evolution/ToolCard";
 import type { ConvMsg } from "../components/evolution/ToolCard";
 import { CrossIcon, CopyIcon } from "../components/evolution/icons";
+import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { OfficialCertificationProgress } from "../components/evolution/OfficialCertificationProgress";
+import { useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 
 type TabKey = "pipeline" | "metrics" | "history";
@@ -46,6 +49,7 @@ let _msgId = 0;
 const nextId = () => ++_msgId + Date.now();
 
 export default function EvolutionMonitor() {
+  const { status: epochStatus, loading: epochLoading, error: epochError } = useControlStatus(5_000);
   const [messages, setMessages] = useState<ConvMsg[]>([]);
   const [historyLines, setHistoryLines] = useState<Array<{ msg: string; status: string }>>([]);
   const [status, setStatus] = useState("连接中...");
@@ -70,6 +74,28 @@ export default function EvolutionMonitor() {
   const thinkingId = useRef<number | null>(null);
   const activeRoleRef = useRef<string>(activeRole);
   activeRoleRef.current = activeRole;
+  const epochReady = Boolean(epochStatus?.epoch_initialized);
+
+  const clearEpochProjection = useCallback(() => {
+    setMessages([]);
+    setHistoryLines([]);
+    setStatus("等待 epoch 权威");
+    setIsWorking(false);
+    setGrand(0);
+    setGen(0);
+    setCostPolicy(null);
+    setLeaderboard([]);
+    setCheckpoint(null);
+    setFailures([]);
+    setWorkers([]);
+    setRoleCosts([]);
+    setMetrics({});
+    setFilterRole("");
+    setActiveRole("");
+    setKnownRoles([]);
+    openToolId.current = null;
+    thinkingId.current = null;
+  }, []);
 
   // ── Message management (unchanged from original) ──
 
@@ -112,6 +138,7 @@ export default function EvolutionMonitor() {
 
   const connect = useEvolutionSSE({
     onHistory: (msg, s) => {
+      if (!epochStatus?.epoch_initialized) return;
       setHistoryLines((prev) => [...prev.slice(-200), { msg, status: s }]);
       const w = parseWorkerStatus(msg);
       if (w) {
@@ -126,8 +153,13 @@ export default function EvolutionMonitor() {
         });
       }
     },
-    onStatus: (msg, w) => { setStatus(msg); setIsWorking(w); },
+    onStatus: (msg, w) => {
+      if (!epochStatus?.epoch_initialized) return;
+      setStatus(msg);
+      setIsWorking(w);
+    },
     onIO: (line: IOLine) => {
+      if (!epochStatus?.epoch_initialized) return;
       const role = line.role || "";
       if (role) {
         setActiveRole(role);
@@ -183,9 +215,17 @@ export default function EvolutionMonitor() {
         }
       }
     },
-    onClearIO: () => { setMessages([]); openToolId.current = null; thinkingId.current = null; setWorkers([]); setFilterRole(""); },
+    onClearIO: () => {
+      if (!epochStatus?.epoch_initialized) return;
+      setMessages([]);
+      openToolId.current = null;
+      thinkingId.current = null;
+      setWorkers([]);
+      setFilterRole("");
+    },
     onHeader: () => {},
     onCost: (data) => {
+      if (!epochStatus?.epoch_initialized) return;
       setGrand(data.grand_total);
       setGen((prevGen) => {
         if (data.gen_total < prevGen) setRoleCosts([]);
@@ -204,11 +244,13 @@ export default function EvolutionMonitor() {
       });
     },
     onGenerationCostPolicy: (data) => {
+      if (!epochStatus?.epoch_initialized) return;
       setGen(data.spent_usd ?? 0);
       setCostPolicy(data.policy ?? null);
       if (!data.generation_id) setRoleCosts([]);
     },
     onToolCall: (data) => {
+      if (!epochStatus?.epoch_initialized) return;
       closeTool();
       const id = nextId();
       openToolId.current = id;
@@ -217,63 +259,72 @@ export default function EvolutionMonitor() {
       addMsg({ id, type: "tool_call", text: data.tool_name, role, toolName: data.tool_name, toolArgs: data.args, toolOutput: [], toolDone: false });
     },
     onEvalTable: (rows) => {
-      setLeaderboard((prev) => {
-        const prevMap = new Map(prev.map((b) => [b.name, b]));
-        return rows.map((r: { rank: number; name: string; rating: number; rd: number; sigma?: number; conservative_rating: number; confidence?: string; h2h_avg_wr?: number; leaderboard_score?: number; selection_score?: number; h2h_coverage?: number; strength_confidence?: string; strength_note?: string }) => {
-          const existing = prevMap.get(r.name);
-          return {
-            name: r.name, rank: r.rank, rating: r.rating, rd: r.rd,
-            sigma: r.sigma ?? existing?.sigma ?? 0.06,
-            conservative_rating: r.conservative_rating,
-            confidence: r.confidence ?? existing?.confidence ?? "uncertain",
-            last_period: existing?.last_period ?? "", win_rate: existing?.win_rate, games: existing?.games, h2h_avg_wr: r.h2h_avg_wr,
-            leaderboard_score: r.leaderboard_score ?? existing?.leaderboard_score,
-            selection_score: r.selection_score ?? existing?.selection_score,
-            h2h_coverage: r.h2h_coverage ?? existing?.h2h_coverage,
-            strength_confidence: r.strength_confidence ?? existing?.strength_confidence,
-            strength_note: r.strength_note ?? existing?.strength_note,
-          };
-        });
-      });
+      if (!epochStatus?.epoch_initialized) {
+        setLeaderboard([]);
+        return;
+      }
+      // The event is a complete immutable-cycle projection. Missing fields
+      // must disappear instead of inheriting authority from an older cycle.
+      setLeaderboard(rows.filter((row) => (
+        Number.isFinite(row.selection_score ?? row.leaderboard_score)
+      )));
     },
-    onMetrics: (m) => setMetrics(m),
+    onMetrics: (m) => setMetrics(epochStatus?.epoch_initialized ? m : {}),
     onDaemonStats: () => {},
+    onEpochBlocked: () => clearEpochProjection(),
     onConnect: () => {
+      if (!epochStatus?.epoch_initialized) return;
       setRoleCosts([]); setMessages([]); setHistoryLines([]); setWorkers([]);
       setFilterRole(""); setActiveRole(""); setKnownRoles([]);
       openToolId.current = null; thinkingId.current = null;
-      fetchEvolutionState().then((state) => {
-        if (state) {
-          setGrand(state.grand_cost_total ?? 0);
-          setGen(state.gen_cost_total ?? 0);
-          setCostPolicy(state.generation_cost_policy ?? null);
-        }
-      }).catch((e) => console.error("[EvolutionMonitor] fetchEvolutionState error:", e));
     },
-  });
+  }, epochReady);
 
   useEffect(() => {
+    if (!epochReady) {
+      clearEpochProjection();
+      return;
+    }
+
+    let cancelled = false;
     fetchEvolutionState().then((state) => {
-      if (state) {
+      if (cancelled) return;
+      if (state.epoch_initialized && state.evaluation_epoch === "national_tcp_policy_v1") {
         setStatus(state.status);
         setIsWorking(state.is_working);
         setGrand(state.grand_cost_total ?? 0);
         setGen(state.gen_cost_total ?? 0);
         setCostPolicy(state.generation_cost_policy ?? null);
+      } else {
+        clearEpochProjection();
       }
     }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
-    const refreshLeaderboard = () => api.ratings().then(setLeaderboard).catch((e) => console.error("[EvolutionMonitor] API error:", e));
+    const refreshLeaderboard = () => api.ratings().then((rows) => {
+      if (!cancelled) {
+        setLeaderboard(rows.filter((row) => Number.isFinite(row.selection_score ?? row.leaderboard_score)));
+      }
+    }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshLeaderboard();
     const lbInterval = setInterval(refreshLeaderboard, 15000);
-    const refreshPipeline = () => api.pipelineCheckpoint().then(setCheckpoint).catch((e) => console.error("[EvolutionMonitor] API error:", e));
+    const refreshPipeline = () => api.pipelineCheckpoint().then((value) => {
+      if (!cancelled) setCheckpoint(value);
+    }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshPipeline();
     const pipeInterval = setInterval(refreshPipeline, 5000);
-    const refreshFailures = () => api.pipelineFailures(3).then(setFailures).catch((e) => console.error("[EvolutionMonitor] API error:", e));
+    const refreshFailures = () => api.pipelineFailures(3).then((value) => {
+      if (!cancelled) setFailures(value);
+    }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
     refreshFailures();
     const failInterval = setInterval(refreshFailures, 30000);
     const disconnect = connect();
-    return () => { clearInterval(lbInterval); clearInterval(pipeInterval); clearInterval(failInterval); disconnect(); };
-  }, [connect]);
+    return () => {
+      cancelled = true;
+      clearInterval(lbInterval);
+      clearInterval(pipeInterval);
+      clearInterval(failInterval);
+      disconnect();
+    };
+  }, [clearEpochProjection, connect, epochReady]);
 
   useEffect(() => {
     if (autoScroll && ioRef.current) {
@@ -296,9 +347,12 @@ export default function EvolutionMonitor() {
   }, [messages]);
 
   const filteredMessages = useMemo(() => {
+    if (!epochStatus?.epoch_initialized) return [];
     if (!filterRole) return messages;
     return messages.filter((m) => m.role === filterRole);
-  }, [messages, filterRole]);
+  }, [epochStatus?.epoch_initialized, messages, filterRole]);
+
+  const authoritativeWorking = Boolean(epochStatus?.epoch_initialized && epochStatus.running && isWorking);
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "pipeline", label: "流水线" },
@@ -309,32 +363,41 @@ export default function EvolutionMonitor() {
   return (
     <>
       <PageMeta title="进化监控 — Bot 自进化" description="实时进化视图" />
+      <EpochAuthorityStatus
+        status={epochStatus}
+        loading={epochLoading}
+        error={epochError}
+        compact
+        className="mb-4"
+      />
       {/* Compact status bar */}
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <div className="flex items-center gap-2">
-          <Badge variant={isWorking ? "success" : status === "连接中..." ? "neutral" : "warning"} size="sm" pulse={isWorking}>
-            {isWorking ? "运行中" : status === "连接中..." ? "连接中" : "空闲"}
+          <Badge variant={authoritativeWorking ? "success" : status === "连接中..." ? "neutral" : "warning"} size="sm" pulse={authoritativeWorking}>
+            {!epochStatus?.epoch_initialized ? "等待 epoch 初始化" : authoritativeWorking ? "运行中" : status === "连接中..." ? "连接中" : "空闲"}
           </Badge>
         </div>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
         <span className="text-gray-600 dark:text-gray-400">
-          总成本 <span className="font-semibold text-gray-900 dark:text-white">${grand.toFixed(2)}</span>
+          累计 LLM 成本（运营指标） <span className="font-semibold text-gray-900 dark:text-white">{epochStatus?.epoch_initialized ? `$${grand.toFixed(2)}` : "—"}</span>
         </span>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
         <span className="text-gray-600 dark:text-gray-400">
           成功率 <span className={cn(
             "font-semibold",
-            metrics.success_rate != null && metrics.success_rate >= 0.8 ? "text-success-600 dark:text-success-400"
-            : metrics.success_rate != null && metrics.success_rate >= 0.5 ? "text-warning-600 dark:text-warning-400"
-            : metrics.success_rate != null ? "text-error-600 dark:text-error-400"
+            epochStatus?.epoch_initialized && metrics.success_rate != null && metrics.success_rate >= 0.8 ? "text-success-600 dark:text-success-400"
+            : epochStatus?.epoch_initialized && metrics.success_rate != null && metrics.success_rate >= 0.5 ? "text-warning-600 dark:text-warning-400"
+            : epochStatus?.epoch_initialized && metrics.success_rate != null ? "text-error-600 dark:text-error-400"
             : "text-gray-900 dark:text-white",
-          )}>{metrics.success_rate != null ? `${(metrics.success_rate * 100).toFixed(0)}%` : "—"}</span>
+          )}>{epochStatus?.epoch_initialized && metrics.success_rate != null ? `${(metrics.success_rate * 100).toFixed(0)}%` : "—"}</span>
         </span>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
         <span className="text-gray-600 dark:text-gray-400">
-          代次 <span className="font-semibold text-gray-900 dark:text-white">{metrics.total_gens ?? "—"}</span>
+          严格代次 <span className="font-semibold text-gray-900 dark:text-white">{epochStatus?.strict_generation_count ?? "—"}</span>
         </span>
       </div>
+
+      <OfficialCertificationProgress status={epochStatus} className="mb-4" />
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Terminal stream */}
@@ -348,7 +411,7 @@ export default function EvolutionMonitor() {
                 <span className="w-3 h-3 rounded-full bg-[#28c840]" />
               </div>
               <span className="text-xs font-medium text-gray-400">LLM 对话流</span>
-              {isWorking && <Badge variant="success" size="sm" pulse>LIVE</Badge>}
+              {authoritativeWorking && <Badge variant="success" size="sm" pulse>LIVE</Badge>}
             </div>
             <div className="flex items-center gap-2">
               <button onClick={handleCopy} title="复制" className="p-1 rounded hover:bg-gray-800 text-gray-500 hover:text-gray-300 transition-colors">
@@ -401,7 +464,7 @@ export default function EvolutionMonitor() {
                       isActive && "opacity-100",
                     )}
                   >
-                    <span className={cn("inline-block w-1.5 h-1.5 rounded-full", color.dot, isActive && isWorking && "animate-pulse")} />
+                    <span className={cn("inline-block w-1.5 h-1.5 rounded-full", color.dot, isActive && authoritativeWorking && "animate-pulse")} />
                     {shortRoleName(role)}
                   </button>
                 );
@@ -415,12 +478,17 @@ export default function EvolutionMonitor() {
             onScroll={handleScroll}
             className="h-[500px] overflow-y-auto p-4 font-mono text-[13px] leading-relaxed custom-scrollbar"
           >
-            {filteredMessages.length === 0 && messages.length === 0 && (
+            {!epochStatus?.epoch_initialized && (
+              <div className="flex items-center justify-center h-full px-8 text-center text-gray-500 text-sm">
+                严格国赛 epoch 尚未初始化。旧 checkpoint、v155 残骸和旧对话流不会显示为当前进化；完成操作员 reset 后才接收新 workflow 输出。
+              </div>
+            )}
+            {epochStatus?.epoch_initialized && filteredMessages.length === 0 && messages.length === 0 && (
               <div className="flex items-center justify-center h-full text-gray-600 text-sm">
                 等待进化输出...
               </div>
             )}
-            {filteredMessages.length === 0 && messages.length > 0 && (
+            {epochStatus?.epoch_initialized && filteredMessages.length === 0 && messages.length > 0 && (
               <div className="flex items-center justify-center h-full text-gray-600 text-sm">
                 该角色暂无输出
               </div>
@@ -463,7 +531,7 @@ export default function EvolutionMonitor() {
               );
             })}
             {/* Streaming cursor */}
-            {isWorking && (
+            {authoritativeWorking && (
               <span className="inline-block w-2 h-4 bg-indigo-400 animate-cursor-blink ml-1" />
             )}
           </div>
@@ -503,16 +571,28 @@ export default function EvolutionMonitor() {
           <div className="flex-1 overflow-y-auto">
             {activeTab === "pipeline" && (
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                <PipelineStatus checkpoint={checkpoint} />
+                <PipelineStatus checkpoint={checkpoint} activeGeneration={epochStatus?.active_generation ?? null} />
                 <WorkerProgress workers={workers} />
-                <CostBreakdown costs={roleCosts} grand={grand} gen={gen} policy={costPolicy} onReset={() => { setRoleCosts([]); setGen(0); }} />
+                {epochStatus?.epoch_initialized && (
+                  <CostBreakdown costs={roleCosts} grand={grand} gen={gen} policy={costPolicy} onReset={() => { setRoleCosts([]); setGen(0); }} />
+                )}
               </div>
             )}
 
             {activeTab === "metrics" && (
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
+                {!epochStatus?.epoch_initialized && (
+                  <div className="p-4 text-xs text-gray-500">
+                    epoch 未初始化：旧评分、H2H、成本和成功率不属于当前权威视图。
+                  </div>
+                )}
+                {epochStatus?.epoch_initialized && Object.keys(metrics).length === 0 && leaderboard.length === 0 && failures.length === 0 && (
+                  <div className="p-4 text-xs text-gray-500">
+                    当前严格 workflow 尚无指标、排行榜或失败记录；这是权威空集。
+                  </div>
+                )}
                 {/* Evolution metrics */}
-                {Object.keys(metrics).length > 0 && (
+                {epochStatus?.epoch_initialized && Object.keys(metrics).length > 0 && (
                   <div className="p-3">
                     <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">进化指标</h3>
                     <div className="space-y-1.5 text-xs">
@@ -547,7 +627,7 @@ export default function EvolutionMonitor() {
                 )}
 
                 {/* Leaderboard */}
-                {leaderboard.length > 0 && (
+                {epochStatus?.epoch_initialized && leaderboard.length > 0 && (
                   <div className="p-3">
                     <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">排行榜</h3>
                     <div className="space-y-1">
@@ -576,7 +656,7 @@ export default function EvolutionMonitor() {
                 )}
 
                 {/* Worker failures */}
-                {failures.length > 0 && (
+                {epochStatus?.epoch_initialized && failures.length > 0 && (
                   <div className="p-3">
                     <h3 className="mb-2 text-xs font-semibold uppercase text-error-600 dark:text-error-400">最近失败</h3>
                     <div className="space-y-2">
@@ -596,8 +676,9 @@ export default function EvolutionMonitor() {
               <div className="p-3">
                 <h3 className="mb-2 text-xs font-semibold uppercase text-gray-500">历史</h3>
                 <div className="space-y-1">
-                  {historyLines.length === 0 && <div className="text-xs text-gray-500">暂无事件</div>}
-                  {historyLines.slice(-100).reverse().map((line, i) => (
+                  {!epochStatus?.epoch_initialized && <div className="text-xs text-gray-500">epoch 未初始化；旧事件不属于当前 workflow。</div>}
+                  {epochStatus?.epoch_initialized && historyLines.length === 0 && <div className="text-xs text-gray-500">当前 workflow 暂无事件</div>}
+                  {epochStatus?.epoch_initialized && historyLines.slice(-100).reverse().map((line, i) => (
                     <div key={i} className={cn(
                       "text-xs py-0.5",
                       line.status === "error" ? "text-red-400" :

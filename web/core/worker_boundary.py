@@ -1,20 +1,22 @@
 """Worker and candidate editable-boundary checks.
 
 The LLM worker already receives an allowed write directory, but that only
-prevents writes outside the candidate bot directory.  These checks enforce the
-stronger contract that a worker may only change its declared target files and
-explicitly allowed helper files.
+prevents writes outside the candidate bot directory.  The strict national TCP
+artifact has five files and exactly one candidate-owned write target:
+``policy.py``.  These checks independently enforce that rule against stale
+tasks while snapshotting and restoring the complete artifact byte-for-byte, so
+system runtime, precompute, manifest, and epoch receipt bytes cannot drift.
 
-Worker boundaries deliberately use the same artifact surface as
-``bot_artifact``.  Decision assets are not necessarily Python source: a worker
-may own a packed lookup table, model fragment, or another binary file.  The
-legacy public helper names are retained because several pipeline modules import
-them, but they now snapshot and restore every artifact file, byte-for-byte.
+Some public helper names still say ``python_files`` because pipeline callers
+predate the exact artifact contract.  Their implementation covers every
+regular artifact file; this is rollback safety, not permission to create
+candidate helpers or binary assets.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shutil
 import stat
@@ -32,8 +34,18 @@ from bot_artifact import (
     _EXCLUDED_FILE_NAMES,
     _EXCLUDED_FILE_SUFFIXES,
     artifact_manifest,
+    canonical_digest,
+    hash_path,
 )
-from bot_namespace import bot_relpath
+from bot_namespace import (
+    NATIONAL_RUNTIME_MANIFEST,
+    POLICY_ENTRYPOINT,
+    POLICY_EPOCH_RECEIPT,
+    SYSTEM_DERIVED_IDENTITY_FILES,
+    bot_relpath,
+    canonical_json_digest,
+    policy_identity_document_errors,
+)
 
 
 _BINARY_ARTIFACT_SUFFIXES = frozenset({
@@ -41,11 +53,8 @@ _BINARY_ARTIFACT_SUFFIXES = frozenset({
     ".pkl", ".pickle", ".db", ".sqlite", ".sqlite3",
 })
 
-# Worker rollback snapshots are intentionally bounded in memory. Runtime
-# precompute contracts permit at most 8 MiB per artifact; 16 MiB per file and
-# 64 MiB total leave room for multiple tables plus source while preventing a
-# sparse/oversized file from forcing an unbounded bytearray allocation before
-# quality gates run.
+# Worker rollback snapshots are intentionally bounded in memory so a malformed
+# candidate cannot force a sparse/oversized allocation before quality gates.
 WORKER_SNAPSHOT_MAX_FILE_COUNT = ARTIFACT_MAX_FILE_COUNT
 WORKER_SNAPSHOT_MAX_ENTRY_COUNT = ARTIFACT_MAX_ENTRY_COUNT
 WORKER_SNAPSHOT_MAX_DIRECTORY_DEPTH = ARTIFACT_MAX_DIRECTORY_DEPTH
@@ -105,6 +114,7 @@ class BoundaryAuditResult:
     changed_files: list[str] = field(default_factory=list)
     allowed_files: list[str] = field(default_factory=list)
     ignored_changed_files: list[str] = field(default_factory=list)
+    system_derived_files: list[str] = field(default_factory=list)
     violation_files: list[str] = field(default_factory=list)
     violations: list[str] = field(default_factory=list)
     artifact_integrity_failed: bool = False
@@ -114,6 +124,7 @@ class BoundaryAuditResult:
             "changed_files": self.changed_files,
             "allowed_files": self.allowed_files,
             "ignored_changed_files": self.ignored_changed_files,
+            "system_derived_files": self.system_derived_files,
             "violation_files": self.violation_files,
             "violation_count": len(self.violations),
             "artifact_integrity_failed": self.artifact_integrity_failed,
@@ -423,21 +434,21 @@ def hash_changed_files(root: Path, changed_files: list[str]) -> str:
     return h.hexdigest()
 
 
-def _is_tuner_task(task: dict[str, Any]) -> bool:
-    role = str(task.get("role", "")).lower()
-    return "tuner" in role or "hyperparameter" in role
-
-
 def allowed_files_for_task(task: dict[str, Any], next_v: int | None = None) -> list[str]:
+    """Return the task's writable strict-policy surface.
+
+    ``national_tcp_policy_v1`` has exactly one candidate-owned file.  Plan
+    validation rejects broader declarations, and this lower boundary repeats
+    that restriction so a stale/resumed task cannot turn a system runtime or
+    precompute artifact into an allowed Worker target.
+    """
     allowed: set[str] = set()
     for key in ("target_files", "files_allowed"):
         for item in task.get(key, []) or []:
             rel = _normalize_rel(item, next_v)
             if rel:
                 allowed.add(rel)
-    if _is_tuner_task(task):
-        allowed = {rel for rel in allowed if rel == "constants.py"}
-    return sorted(allowed)
+    return sorted(rel for rel in allowed if rel == "policy.py")
 
 
 def audit_worker_boundary(
@@ -653,4 +664,172 @@ def audit_changed_files_against_plan(
         allowed_files=sorted(allowed),
         violation_files=violation_files,
         violations=violations,
+    )
+
+
+def audit_strict_policy_artifact_delta_against_plan(
+    changed_files: list[str],
+    tasks: list[dict[str, Any]],
+    *,
+    candidate_dir: str | Path,
+    version: int,
+    parent_versions: list[int] | tuple[int, ...],
+    identity_refresh_receipt: dict[str, Any] | None = None,
+    durable_worker_output: dict[str, Any] | None = None,
+    require_identity_refresh_receipt: bool = False,
+) -> BoundaryAuditResult:
+    """Audit candidate writes separately from deterministic identity outputs.
+
+    Master tasks can authorize only ``policy.py``.  A policy edit necessarily
+    changes both identity documents, but those files become exempt from the
+    Worker scope only when the *complete pair* exactly matches the host-owned
+    deterministic encoding for the current bytes/version/lineage.  Any helper,
+    binary, runtime/precompute change, partial identity update, or equivalent
+    but non-canonical JSON remains a normal undeclared mutation.
+    """
+
+    normalized = sorted({
+        rel
+        for rel in (_normalize_rel(item, int(version)) for item in changed_files)
+        if rel
+    })
+    changed_set = set(normalized)
+    observed_identity = changed_set & set(SYSTEM_DERIVED_IDENTITY_FILES)
+    derived: set[str] = set()
+    identity_errors: list[str] = []
+    if observed_identity:
+        if POLICY_ENTRYPOINT not in changed_set:
+            identity_errors.append(
+                "system_identity_changed_without_candidate_policy_change"
+            )
+        if observed_identity != set(SYSTEM_DERIVED_IDENTITY_FILES):
+            identity_errors.append(
+                "system_identity_change_set_incomplete:"
+                f"expected={sorted(SYSTEM_DERIVED_IDENTITY_FILES)}:"
+                f"actual={sorted(observed_identity)}"
+            )
+        if not identity_errors:
+            identity_errors.extend(
+                policy_identity_document_errors(
+                    candidate_dir,
+                    int(version),
+                    parent_versions=tuple(map(int, parent_versions)),
+                )
+            )
+        if not identity_errors and require_identity_refresh_receipt:
+            receipt = (
+                identity_refresh_receipt
+                if isinstance(identity_refresh_receipt, dict)
+                else {}
+            )
+            unsigned = {
+                key: value for key, value in receipt.items()
+                if key != "receipt_digest"
+            }
+            fixed_expectations = {
+                "schema_version": 1,
+                "kind": "strict-policy-identity-refresh-v1",
+                "version": int(version),
+                "parent_versions": list(map(int, parent_versions)),
+                "candidate_changed_files": [POLICY_ENTRYPOINT],
+                "system_derived_files": sorted(SYSTEM_DERIVED_IDENTITY_FILES),
+                "final_changed_files": sorted({
+                    POLICY_ENTRYPOINT,
+                    *SYSTEM_DERIVED_IDENTITY_FILES,
+                }),
+            }
+            if not receipt:
+                identity_errors.append("policy_identity_refresh_receipt_missing")
+            else:
+                for field, expected in fixed_expectations.items():
+                    if receipt.get(field) != expected:
+                        identity_errors.append(
+                            f"policy_identity_refresh_receipt_{field}_mismatch"
+                        )
+                if receipt.get("receipt_digest") != canonical_digest(unsigned):
+                    identity_errors.append(
+                        "policy_identity_refresh_receipt_digest_mismatch"
+                    )
+                try:
+                    runtime_manifest = json.loads(
+                        (Path(candidate_dir) / NATIONAL_RUNTIME_MANIFEST)
+                        .read_text(encoding="utf-8")
+                    )
+                    epoch_receipt = json.loads(
+                        (Path(candidate_dir) / POLICY_EPOCH_RECEIPT)
+                        .read_text(encoding="utf-8")
+                    )
+                except Exception as exc:
+                    identity_errors.append(
+                        "policy_identity_refresh_receipt_subject_unreadable:"
+                        f"{type(exc).__name__}"
+                    )
+                else:
+                    if receipt.get("runtime_manifest_digest") != canonical_json_digest(
+                        runtime_manifest
+                    ):
+                        identity_errors.append(
+                            "policy_identity_refresh_receipt_runtime_manifest_mismatch"
+                        )
+                    if receipt.get("epoch_receipt_digest") != canonical_json_digest(
+                        epoch_receipt
+                    ):
+                        identity_errors.append(
+                            "policy_identity_refresh_receipt_epoch_receipt_mismatch"
+                        )
+                try:
+                    actual_output_hash = hash_path(Path(candidate_dir))
+                except Exception as exc:
+                    identity_errors.append(
+                        "policy_identity_refresh_receipt_output_unreadable:"
+                        f"{type(exc).__name__}"
+                    )
+                else:
+                    if receipt.get("output_artifact_hash") != actual_output_hash:
+                        identity_errors.append(
+                            "policy_identity_refresh_receipt_output_hash_mismatch"
+                        )
+                durable = (
+                    durable_worker_output
+                    if isinstance(durable_worker_output, dict)
+                    else {}
+                )
+                for receipt_field, durable_field in (
+                    ("output_artifact_hash", "artifact_hash"),
+                    ("envelope_digest", "envelope_digest"),
+                    ("effect_id", "effect_id"),
+                    ("lease_epoch", "lease_epoch"),
+                ):
+                    if not durable or receipt.get(receipt_field) != durable.get(
+                        durable_field
+                    ):
+                        identity_errors.append(
+                            "policy_identity_refresh_receipt_durable_"
+                            f"{durable_field}_mismatch"
+                        )
+        if not identity_errors:
+            derived = set(SYSTEM_DERIVED_IDENTITY_FILES)
+
+    candidate_changed = [item for item in normalized if item not in derived]
+    base = audit_changed_files_against_plan(
+        candidate_changed,
+        tasks,
+        next_v=int(version),
+    )
+    violations = list(base.violations)
+    violation_files = set(base.violation_files)
+    if identity_errors:
+        violation_files.update(observed_identity)
+        violations.extend(
+            f"system-derived identity validation failed: {error}"
+            for error in identity_errors
+        )
+    return BoundaryAuditResult(
+        passed=not violations,
+        changed_files=normalized,
+        allowed_files=base.allowed_files,
+        system_derived_files=sorted(derived),
+        violation_files=sorted(violation_files),
+        violations=violations,
+        artifact_integrity_failed=bool(identity_errors),
     )

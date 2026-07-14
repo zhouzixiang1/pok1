@@ -5,8 +5,12 @@ import socket
 import pytest
 
 from bot_artifact import hash_path
-from managed_bot_executor import EndpointLease, EndpointLeaseError
-from official_bot_sandbox import launch_sandboxed_bot, seal_bot_artifact
+from managed_bot_executor import (
+    EndpointLease,
+    EndpointLeaseError,
+    launch_managed_bot,
+)
+from official_bot_sandbox import seal_bot_artifact
 
 
 def _listener() -> socket.socket:
@@ -72,13 +76,15 @@ def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
             "127.0.0.1", authorized_port, timeout=2
         ) as endpoint:
             accepted, _peer = authorized_listener.accept()
-            managed = launch_sandboxed_bot(
-                sealed,
+            # This is a managed-executor/socket-capability unit test, not an
+            # official launch. Formal launch correctly rejects this synthetic
+            # entry because it is not the exact system-owned native runtime.
+            managed = launch_managed_bot(
+                sealed.root,
                 endpoint,
+                entry_relative="national_bot.py",
                 name="candidate",
                 seat="upper",
-                log_path=None,
-                supports_log=False,
             )
         payload = accepted.recv(4096)
         stdout, stderr = managed.process.communicate(timeout=10)

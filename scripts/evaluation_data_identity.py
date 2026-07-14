@@ -26,14 +26,34 @@ from evaluation_data_identity import (  # noqa: E402
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Inspect the national_tcp_policy_v1 rating-data identity, or "
+            "explicitly archive incompatible authoritative rating payloads "
+            "and initialize an empty identity. Archived ratings, H2H, match "
+            "history, and generation evidence are never migrated into the new "
+            "identity."
+        ),
+    )
     parser.add_argument(
         "--results-dir",
         type=Path,
         default=ROOT / "web" / "core" / "results",
+        help="Authoritative rating results directory to inspect (default: %(default)s).",
     )
-    parser.add_argument("--archive-and-initialize", action="store_true")
-    parser.add_argument("--reason", default="operator-approved evaluator identity migration")
+    parser.add_argument(
+        "--archive-and-initialize",
+        action="store_true",
+        help=(
+            "Archive incompatible identity-bound payloads and create an empty "
+            "current identity; do not carry old strength evidence forward."
+        ),
+    )
+    parser.add_argument(
+        "--reason",
+        default="operator-approved evaluator identity migration",
+        help="Operator reason recorded in the archive manifest.",
+    )
     args = parser.parse_args()
     if args.archive_and_initialize:
         payload = archive_and_initialize(args.results_dir, reason=args.reason)

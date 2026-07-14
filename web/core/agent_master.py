@@ -1,8 +1,4 @@
-"""Master Architect agent: plans worker tasks for the next evolution generation.
-
-Analysis helpers (stagnation, direction audit, replay, experience, archivist)
-live in their own modules. This module keeps the core Master and match analysis.
-"""
+"""Master Architect agent: plans worker tasks from frozen generation evidence."""
 
 import ast
 import hashlib
@@ -12,23 +8,17 @@ from pathlib import Path
 
 from bot_namespace import bot_name, bot_relpath
 from evolution_infra import (
-    run_claude_query, parse_json_output, substitute_template,
-    locked_file, get_logs_dir, load_ratings, get_active_bots,
-    _trim_to_budget, RESULTS_DIR, PROMPTS_DIR,
-    MATCH_HISTORY_FILE, REPLAY_DIR,
+    run_claude_query, substitute_template,
+    get_logs_dir, _trim_to_budget, PROMPTS_DIR,
     MAX_MASTER_RETRIES,
-    get_bot_dir, MAX_LINES_HARD_CAP, CORE_STRATEGY_FILES,
+    get_bot_dir, MAX_LINES_HARD_CAP,
 )
 
-from replay_analysis import summarize_replay_for_analysis  # noqa: F401 — re-exported via evolution_core
 from output_schema import master_plan_executable_contract_text
+from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
 
-# C-class sentinel: returned by _analyze_recent_matches /
-# _run_performance_verification when their LLM call hit an infrastructure
-# error (ClaudeSDKError / timeout / connection). Detected here so the Master
-# prompt surfaces "analysis unavailable due to LLM failure" rather than the
-# misleading "No data available" (which would imply the daemon hadn't run).
+# C-class sentinel for explicitly unavailable advisory analysis.
 LLM_INFRA_SENTINEL = "[LLM_INFRA_ERROR: analysis unavailable]"
 LLM_INFRA_SENTINEL_MSG = (
     "⚠ Analysis unavailable: the LLM analyst crashed with an infrastructure "
@@ -39,10 +29,9 @@ LLM_INFRA_SENTINEL_MSG = (
 
 
 PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER = (
-    "PROTOCOL BOOTSTRAP NO-STRENGTH: intentionally unavailable. Historical "
-    "ratings, H2H, match replays, action/opponent profiles, battle experience, "
-    "exploitability results, and critic strength conclusions are quarantined "
-    "and were not loaded for this plan."
+    "PROTOCOL BOOTSTRAP NO-STRENGTH: no current-cycle strength evidence exists. "
+    "Use only the digest-bound strict prepared artifact, repository-pinned "
+    "protocol evidence, and bootstrap receipt supplied by the system."
 )
 
 
@@ -96,6 +85,21 @@ _PROPOSAL_CRITIC_CRITERIA = {
         "The implementation scope and fallback make regressions observable and bounded."
     ),
 }
+
+_PROPOSAL_SUBSTANTIVE_FIELDS = (
+    "schema_version",
+    "targeted_failure",
+    "structural_change",
+    "counterfactual",
+    "measurement",
+    "why_not_threshold_tuning",
+    "expected_diff",
+    "target_files",
+    "source_symbols",
+    "reachable_chain",
+    "falsifier",
+    "evidence_refs",
+)
 
 
 def _safe_relative_python_path(value: object) -> str | None:
@@ -188,10 +192,10 @@ def _source_symbol_prompt_index(
     ]
     for caller in sorted(graph):
         callees = sorted({
-            candidate
+            candidates[0]
             for leaf in graph[caller]
-            for candidate in symbols_by_leaf.get(leaf, [])
-            if candidate != caller
+            if len(candidates := symbols_by_leaf.get(leaf, [])) == 1
+            and candidates[0] != caller
         })
         if not callees:
             continue
@@ -263,12 +267,21 @@ def _validated_snapshot_reference(value: object, snapshot_dir: Path | None) -> s
     return f"snapshot:{relative.as_posix()}#{locator[:240]}"
 
 
-def _proposal_identity(proposal: dict) -> str:
-    identity_payload = {
-        key: value
-        for key, value in proposal.items()
-        if key not in {"direction", "proposal_id"}
+def _proposal_substantive_contract(proposal: dict) -> dict:
+    """Return only decision-bearing mechanism claims used for diversity.
+
+    ``direction`` is scout routing and ``risks`` is advisory prose.  Neither
+    may make an otherwise identical mechanism count as an independent option.
+    """
+
+    return {
+        key: proposal.get(key)
+        for key in _PROPOSAL_SUBSTANTIVE_FIELDS
     }
+
+
+def _proposal_identity(proposal: dict) -> str:
+    identity_payload = _proposal_substantive_contract(proposal)
     return hashlib.sha256(
         json.dumps(
             identity_payload,
@@ -285,6 +298,7 @@ def _validated_master_proposal(
     *,
     source_graph: dict[str, set[str]] | None = None,
     snapshot_dir: Path | None = None,
+    national_policy_only: bool = False,
 ) -> dict | None:
     """Normalize one evidence-bound proposal before critics or Master see it."""
     from llm_query import parse_json_output_with_mode
@@ -322,6 +336,9 @@ def _validated_master_proposal(
         target_files.append(name)
     if not target_files:
         return None
+    if national_policy_only:
+        if target_files != ["policy.py"]:
+            return None
     normalized["target_files"] = target_files
 
     raw_symbols = data.get("source_symbols")
@@ -351,9 +368,18 @@ def _validated_master_proposal(
     if len(set(chain)) != len(chain):
         return None
     if source_graph is not None:
+        symbols_by_leaf: dict[str, list[str]] = {}
+        for source_symbol in source_graph:
+            source_leaf = source_symbol.rsplit(":", 1)[1].rsplit(".", 1)[-1]
+            symbols_by_leaf.setdefault(source_leaf, []).append(source_symbol)
         for caller, callee in zip(chain, chain[1:]):
             callee_leaf = callee.rsplit(":", 1)[1].rsplit(".", 1)[-1]
-            if callee_leaf not in source_graph.get(caller, set()):
+            resolved = symbols_by_leaf.get(callee_leaf, [])
+            if (
+                callee_leaf not in source_graph.get(caller, set())
+                or len(resolved) != 1
+                or resolved[0] != callee
+            ):
                 return None
     chain_files = {item.rsplit(":", 1)[0] for item in chain}
     if not chain_files.intersection(target_files):
@@ -373,7 +399,6 @@ def _validated_master_proposal(
             return None
         normalized_falsifier[key] = value[:1000]
     normalized["falsifier"] = normalized_falsifier
-
     raw_refs = data.get("evidence_refs")
     if not isinstance(raw_refs, list) or not 1 <= len(raw_refs) <= 10:
         return None
@@ -411,7 +436,7 @@ def _validated_proposal_critique(output: str, proposal_ids: set[str]) -> dict | 
     from llm_query import parse_json_output_with_mode
 
     data, _mode = parse_json_output_with_mode(output or "")
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or set(data) != {"ballots"}:
         return None
     raw_ballots = data.get("ballots")
     if not isinstance(raw_ballots, list) or len(raw_ballots) != len(proposal_ids):
@@ -419,14 +444,21 @@ def _validated_proposal_critique(output: str, proposal_ids: set[str]) -> dict | 
     ballots = []
     seen: set[str] = set()
     for raw_ballot in raw_ballots:
-        if not isinstance(raw_ballot, dict):
+        if not isinstance(raw_ballot, dict) or set(raw_ballot) != {
+            "proposal_id",
+            "scores",
+            "reject",
+            "reason",
+        }:
             return None
-        proposal_id = str(raw_ballot.get("proposal_id") or "")
+        proposal_id = raw_ballot.get("proposal_id")
         scores = raw_ballot.get("scores")
-        reason = str(raw_ballot.get("reason") or "").strip()
+        reason_value = raw_ballot.get("reason")
+        reason = reason_value.strip() if isinstance(reason_value, str) else ""
         reject = raw_ballot.get("reject")
         if (
-            proposal_id not in proposal_ids
+            not isinstance(proposal_id, str)
+            or proposal_id not in proposal_ids
             or proposal_id in seen
             or not isinstance(scores, dict)
             or set(scores) != set(_PROPOSAL_CRITIC_CRITERIA)
@@ -468,16 +500,23 @@ def _validated_proposal_critique(output: str, proposal_ids: set[str]) -> dict | 
     }
 
 
-def _proposal_packet_error(reason: str, *, context_digest: str = "") -> str:
+def _proposal_packet_error(
+    reason: str,
+    *,
+    context_digest: str = "",
+    source_code_digest: str = "",
+) -> str:
     return json.dumps({
         "schema_version": _PROPOSAL_PACKET_SCHEMA_VERSION,
         "valid": False,
         "reason": str(reason)[:500],
         "context_digest": context_digest,
+        "source_code_digest": source_code_digest,
         "proposal_count": 0,
         "valid_critic_count": 0,
         "allowed_proposal_ids": [],
         "ordered_proposals": [],
+        "proposal_invocations": {},
         "critic_reviews": [],
     }, ensure_ascii=False, sort_keys=True)
 
@@ -495,11 +534,29 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
         errors.append("proposal_packet_schema_mismatch")
     if packet.get("valid") is not True:
         errors.append(f"proposal_packet_invalid:{packet.get('reason', 'unknown')}")
+    expected_packet_fields = {
+        "schema_version",
+        "valid",
+        "authority",
+        "context_digest",
+        "source_code_digest",
+        "critic_criteria",
+        "proposal_count",
+        "valid_critic_count",
+        "allowed_proposal_ids",
+        "ordered_proposals",
+        "proposal_invocations",
+        "critic_reviews",
+    }
+    if set(packet) != expected_packet_fields:
+        errors.append("proposal_packet_fields_mismatch")
     proposals = packet.get("ordered_proposals")
     allowed = packet.get("allowed_proposal_ids")
-    if not isinstance(proposals, list) or not proposals:
-        errors.append("proposal_packet_has_no_proposals")
+    if not isinstance(proposals, list) or len(proposals) != 3:
+        errors.append("proposal_packet_requires_exactly_three_proposals")
         proposals = []
+    if packet.get("proposal_count") != 3:
+        errors.append("proposal_packet_count_must_be_three")
     proposal_ids = [
         str(item.get("proposal_id") or "")
         for item in proposals
@@ -514,6 +571,7 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
         errors.append("proposal_packet_id_set_mismatch")
     required_proposal_fields = {
         "schema_version",
+        "direction",
         "proposal_id",
         "targeted_failure",
         "structural_change",
@@ -531,15 +589,195 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
     for item in proposals:
         if not isinstance(item, dict):
             continue
-        if not required_proposal_fields.issubset(item):
+        if set(item) != required_proposal_fields:
             errors.append(f"proposal_packet_fields_missing:{item.get('proposal_id', '')}")
             continue
         if item.get("schema_version") != _PROPOSAL_SCHEMA_VERSION:
             errors.append(f"proposal_schema_mismatch:{item.get('proposal_id', '')}")
         if item.get("proposal_id") != _proposal_identity(item):
             errors.append(f"proposal_identity_mismatch:{item.get('proposal_id', '')}")
+    proposal_invocations = packet.get("proposal_invocations")
+    if (
+        not isinstance(proposal_invocations, dict)
+        or set(proposal_invocations) != set(proposal_ids)
+    ):
+        errors.append("proposal_invocation_set_mismatch")
+        proposal_invocations = {}
+    invocation_ids: list[str] = []
+    try:
+        from bot_artifact import canonical_digest
+        from system_strict_bootstrap import validate_llm_invocation_evidence
+
+        for proposal in proposals:
+            if not isinstance(proposal, dict):
+                continue
+            proposal_id = str(proposal.get("proposal_id") or "")
+            evidence = proposal_invocations.get(proposal_id)
+            direction = str(proposal.get("direction") or "")
+            evidence_errors = validate_llm_invocation_evidence(
+                evidence,
+                expected_purpose=f"master_proposal_scout:{direction}",
+            )
+            errors.extend(
+                f"proposal_invocation_invalid:{proposal_id}:{item}"
+                for item in evidence_errors
+            )
+            if isinstance(evidence, dict):
+                invocation_ids.append(str(evidence.get("invocation_id") or ""))
+                role = str(evidence.get("role") or "")
+                if not role.startswith(f"MASTER PROPOSAL {direction}"):
+                    errors.append(
+                        f"proposal_invocation_role_mismatch:{proposal_id}"
+                    )
+                if evidence.get("role_result_digest") != canonical_digest(proposal):
+                    errors.append(
+                        f"proposal_invocation_result_mismatch:{proposal_id}"
+                    )
+    except Exception as exc:
+        errors.append(
+            f"proposal_invocation_validation_error:{type(exc).__name__}"
+        )
     if packet.get("valid_critic_count") != 2:
         errors.append("proposal_packet_requires_two_valid_critics")
+    reviews = packet.get("critic_reviews")
+    expected_critic_ids = {"falsification", "scope"}
+    if not isinstance(reviews, list) or len(reviews) != 2:
+        errors.append("proposal_packet_requires_two_critic_reviews")
+        reviews = []
+    critic_ids = {
+        str(review.get("critic_id") or "")
+        for review in reviews
+        if isinstance(review, dict)
+    }
+    if critic_ids != expected_critic_ids:
+        errors.append("proposal_critic_identity_set_mismatch")
+    try:
+        from bot_artifact import canonical_digest
+        from system_strict_bootstrap import validate_llm_invocation_evidence
+
+        for review in reviews:
+            if not isinstance(review, dict):
+                errors.append("proposal_critic_review_not_object")
+                continue
+            critic_id = str(review.get("critic_id") or "")
+            if set(review) != {
+                "critic_id",
+                "ranking",
+                "reject",
+                "ballots",
+                "invocation_evidence",
+            }:
+                errors.append(f"proposal_critic_review_fields_mismatch:{critic_id}")
+            ballots = review.get("ballots")
+            if not isinstance(ballots, list) or len(ballots) != len(proposal_ids):
+                errors.append(f"proposal_critic_ballot_count_mismatch:{critic_id}")
+                ballots = []
+            seen_ballots: set[str] = set()
+            normalized_ballots = []
+            for ballot in ballots:
+                if not isinstance(ballot, dict) or set(ballot) != {
+                    "proposal_id",
+                    "scores",
+                    "total_score",
+                    "reject",
+                    "reason",
+                }:
+                    errors.append(
+                        f"proposal_critic_ballot_fields_mismatch:{critic_id}"
+                    )
+                    continue
+                proposal_id = ballot.get("proposal_id")
+                scores = ballot.get("scores")
+                reject = ballot.get("reject")
+                reason = ballot.get("reason")
+                if (
+                    not isinstance(proposal_id, str)
+                    or proposal_id not in set(proposal_ids)
+                    or proposal_id in seen_ballots
+                    or not isinstance(scores, dict)
+                    or set(scores) != set(_PROPOSAL_CRITIC_CRITERIA)
+                    or not isinstance(reject, bool)
+                    or not isinstance(reason, str)
+                    or len(reason.strip()) < 12
+                ):
+                    errors.append(
+                        f"proposal_critic_ballot_schema_invalid:{critic_id}"
+                    )
+                    continue
+                if any(
+                    isinstance(score, bool)
+                    or not isinstance(score, int)
+                    or not 1 <= score <= 5
+                    for score in scores.values()
+                ):
+                    errors.append(
+                        f"proposal_critic_ballot_score_invalid:{critic_id}"
+                    )
+                    continue
+                total = sum(scores.values())
+                if ballot.get("total_score") != total:
+                    errors.append(
+                        f"proposal_critic_ballot_total_mismatch:{critic_id}"
+                    )
+                seen_ballots.add(proposal_id)
+                normalized_ballots.append(ballot)
+            if seen_ballots != set(proposal_ids):
+                errors.append(f"proposal_critic_ballot_set_mismatch:{critic_id}")
+            expected_ranking = [
+                item["proposal_id"]
+                for item in sorted(
+                    normalized_ballots,
+                    key=lambda item: (
+                        item["reject"],
+                        -item["total_score"],
+                        item["proposal_id"],
+                    ),
+                )
+            ]
+            expected_reject = [
+                item["proposal_id"]
+                for item in normalized_ballots
+                if item["reject"]
+            ]
+            if review.get("ranking") != expected_ranking:
+                errors.append(f"proposal_critic_ranking_mismatch:{critic_id}")
+            if review.get("reject") != expected_reject:
+                errors.append(f"proposal_critic_reject_mismatch:{critic_id}")
+            evidence = review.get("invocation_evidence")
+            evidence_errors = validate_llm_invocation_evidence(
+                evidence,
+                expected_purpose=f"master_proposal_critic:{critic_id}",
+            )
+            errors.extend(
+                f"proposal_critic_invocation_invalid:{critic_id}:{item}"
+                for item in evidence_errors
+            )
+            if isinstance(evidence, dict):
+                invocation_ids.append(str(evidence.get("invocation_id") or ""))
+                role = str(evidence.get("role") or "")
+                if not role.startswith(f"MASTER PROPOSAL CRITIC {critic_id}"):
+                    errors.append(
+                        f"proposal_critic_invocation_role_mismatch:{critic_id}"
+                    )
+                role_result = {
+                    key: value
+                    for key, value in review.items()
+                    if key not in {"critic_id", "invocation_evidence"}
+                }
+                if evidence.get("role_result_digest") != canonical_digest(
+                    role_result
+                ):
+                    errors.append(
+                        f"proposal_critic_invocation_result_mismatch:{critic_id}"
+                    )
+    except Exception as exc:
+        errors.append(
+            f"proposal_critic_invocation_validation_error:{type(exc).__name__}"
+        )
+    if len(invocation_ids) != 5 or len(set(invocation_ids)) != 5:
+        errors.append("proposal_packet_invocations_not_independent")
+    if packet.get("critic_criteria") != _PROPOSAL_CRITIC_CRITERIA:
+        errors.append("proposal_critic_criteria_mismatch")
     context_digest = str(packet.get("context_digest") or "")
     source_digest = str(packet.get("source_code_digest") or "")
     if (
@@ -638,8 +876,11 @@ def _selected_proposal_contract(proposal: dict) -> dict:
 
 
 def _selected_proposal_worker_block(proposal: dict) -> str:
+    from plan_compiler import SELECTED_PROPOSAL_BEGIN, SELECTED_PROPOSAL_END
+
     contract = _selected_proposal_contract(proposal)
     return "\n".join((
+        SELECTED_PROPOSAL_BEGIN,
         "# SYSTEM-BOUND SELECTED PROPOSAL CONTRACT",
         f"proposal_id={contract['proposal_id']}",
         f"contract_digest={contract['contract_digest']}",
@@ -654,6 +895,7 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
         "not_threshold_tuning=" + contract["why_not_threshold_tuning"],
         "Implement this one mechanism through the named reachable chain. Do not "
         "substitute a threshold-only edit, a second mechanism, or telemetry-only code.",
+        SELECTED_PROPOSAL_END,
     ))
 
 
@@ -678,6 +920,108 @@ def _bind_selected_proposal_workers(data: dict, proposal: dict) -> dict:
     return result
 
 
+def _project_strict_final_master_result(
+    output: str,
+    *,
+    proposal_packet: dict | None,
+    architecture_policy: dict | None,
+) -> tuple[dict | None, list[str]]:
+    """Deterministically project provider text to the accepted strict plan.
+
+    This is intentionally the same post-provider transformation used by the
+    first strict Master path: proposal selection, system-owned policy ABI terms,
+    canonical Master schema normalization, and the frozen proposal bindings.
+    Strict authority calls this function before completing the provider effect,
+    so an unrelated caller-supplied plan can never be accepted as LLM output.
+    """
+
+    if not isinstance(proposal_packet, dict):
+        return None, ["proposal_packet_missing"]
+    packet, packet_errors = _parse_valid_proposal_packet(json.dumps(
+        proposal_packet,
+        ensure_ascii=False,
+        sort_keys=True,
+    ))
+    if packet_errors or packet is None:
+        return None, ["proposal_packet_invalid:" + item for item in packet_errors]
+    if not isinstance(architecture_policy, dict) or not architecture_policy:
+        return None, ["architecture_policy_missing"]
+
+    from llm_query import parse_json_output_with_mode
+
+    data, failure_mode = parse_json_output_with_mode(output or "")
+    if not isinstance(data, dict) or "tasks" not in data:
+        return None, [f"master_output_invalid:{failure_mode}"]
+    binding_errors = _validate_final_proposal_binding(data, packet)
+    if binding_errors:
+        return None, binding_errors
+    selected_proposal_id = data.pop("selected_proposal_id")
+    selected_proposal = next(
+        item
+        for item in packet["ordered_proposals"]
+        if item["proposal_id"] == selected_proposal_id
+    )
+    data = _bind_selected_proposal_workers(data, selected_proposal)
+
+    from plan_compiler import (
+        bind_system_owned_policy_abi,
+        bind_system_owned_worker_contract_terms,
+    )
+
+    data, _policy_abi = bind_system_owned_policy_abi(
+        data,
+        policy=architecture_policy,
+    )
+    data, _terms = bind_system_owned_worker_contract_terms(data)
+    if any(data.get(field) for field in (
+        "branch_from",
+        "source_override",
+        "source_v_override",
+    )):
+        return None, ["master_source_override_forbidden"]
+
+    from output_schema import validate_agent_output
+
+    data, schema_errors = validate_agent_output("master", data)
+    if schema_errors:
+        return None, ["master_schema:" + item for item in schema_errors]
+
+    selected_contract = _selected_proposal_contract(selected_proposal)
+    data["selected_proposal_id"] = selected_proposal_id
+    data["proposal_binding"] = {
+        "schema_version": _PROPOSAL_PACKET_SCHEMA_VERSION,
+        "selected_proposal_id": selected_proposal_id,
+        "contract_digest": selected_contract["contract_digest"],
+        "context_digest": packet["context_digest"],
+        "source_code_digest": packet["source_code_digest"],
+        "target_files": list(selected_proposal["target_files"]),
+        "source_symbols": list(selected_proposal["source_symbols"]),
+        "reachable_chain": list(selected_proposal["reachable_chain"]),
+        "falsifier": dict(selected_proposal["falsifier"]),
+        "evidence_refs": list(selected_proposal["evidence_refs"]),
+        "structural_change": selected_contract["structural_change"],
+        "expected_diff": selected_contract["expected_diff"],
+        "why_not_threshold_tuning": selected_contract[
+            "why_not_threshold_tuning"
+        ],
+        "selected_proposal": {
+            key: value
+            for key, value in selected_proposal.items()
+            if key != "direction"
+        },
+        "proposal_packet_digest": hashlib.sha256(
+            json.dumps(
+                packet,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+    data["proposal_ensemble"] = packet
+    return data, []
+
+
 async def _run_master_proposal_ensemble(
     planning_context: str,
     *,
@@ -688,6 +1032,7 @@ async def _run_master_proposal_ensemble(
     allowed_evidence_snapshot_dir: str,
     baseline_v: int | None = None,
     protocol_bootstrap_prepared_only: bool = False,
+    strict_checkpoint: dict | None = None,
 ) -> str:
     """Three proposals, two anonymous criterion critics, deterministic ordering.
 
@@ -715,12 +1060,34 @@ async def _run_master_proposal_ensemble(
         )
     snapshot_dir = Path(allowed_evidence_snapshot_dir)
     source_symbol_index = _source_symbol_prompt_index(source_graph)
+    strict_authority_enabled = (
+        protocol_bootstrap_prepared_only
+        and isinstance(strict_checkpoint, dict)
+    )
 
     async def propose(direction: str, directive: str, *, schema_retry: bool = False):
+        strict_call = None
+        if strict_authority_enabled:
+            from strict_authority_workflow import new_call, proposal_call_context
+
+            strict_call = new_call(
+                strict_checkpoint,
+                slot=f"proposal:{direction}",
+                context_binding=proposal_call_context(
+                    context_digest=context_digest,
+                    source_code_digest=source_code_digest,
+                    direction=direction,
+                ),
+            )
+            invocation_id = strict_call["invocation_id"]
+        else:
+            from system_strict_bootstrap import new_llm_invocation_id
+
+            invocation_id = new_llm_invocation_id()
         output_contract = (
             "Return one JSON object with exactly: targeted_failure, structural_change, "
             "counterfactual, measurement, why_not_threshold_tuning, target_files "
-            "(1-3 source-relative .py paths), expected_diff, source_symbols (1-8 exact "
+            "(exactly [\"policy.py\"]), expected_diff, source_symbols (1-8 exact "
             "source-relative file.py:symbol references), reachable_chain (2-8 of those "
             "symbols in direct caller-to-callee order), falsifier {test_name, control, "
             "intervention, expected_observation}, evidence_refs (source:file.py:symbol "
@@ -729,6 +1096,13 @@ async def _run_master_proposal_ensemble(
             "and risks. Every chain edge must be a direct syntactic call in the baseline. "
             "Do not invent a symbol or snapshot file. Do not emit tasks, a worker plan, "
             "source choice, proposal_id, Markdown, or commentary."
+        )
+        output_contract += (
+            " This is national_tcp_policy_v1. policy.py is the only candidate-owned "
+            "writable source file; national_bot.py and precompute.py are system-owned "
+            "read-only files, and candidate helper modules/assets are forbidden. Propose "
+            "a causally distinct policy mechanism over decision_context that returns only "
+            "typed pass/fold/allin/raise intents (raise uses raise_to)."
         )
         code_scope = (
             f"Read only the prepared target code at {bot_relpath(next_v)}/ and "
@@ -756,26 +1130,47 @@ async def _run_master_proposal_ensemble(
             + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
             + output_contract
         )
-        return await run_claude_query(
+        purpose = f"master_proposal_scout:{direction}"
+        prompt += (
+            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+            f"invocation_id={invocation_id}; purpose={purpose}."
+        )
+        log_file = log_dir / (
+            f"master_proposal_{direction}_schema_retry_io.txt"
+            if schema_retry
+            else f"master_proposal_{direction}_io.txt"
+        )
+        output, cost_usd, usage = await run_claude_query(
             prompt,
             [],
             ui,
             f"MASTER PROPOSAL {direction}{' SCHEMA RETRY' if schema_retry else ''}",
-            log_dir / (
-                f"master_proposal_{direction}_schema_retry_io.txt"
-                if schema_retry
-                else f"master_proposal_{direction}_io.txt"
-            ),
+            log_file,
             tools=["Read"],
             allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+            strict_authority=strict_call,
         )
+        return {
+            "output": output,
+            "cost_usd": cost_usd,
+            "usage": usage,
+            "invocation_id": invocation_id,
+            "purpose": purpose,
+            "role": (
+                f"MASTER PROPOSAL {direction}"
+                f"{' SCHEMA RETRY' if schema_retry else ''}"
+            ),
+            "prompt": prompt,
+            "log_file": str(log_file),
+            "strict_call": strict_call,
+        }
 
-    proposal_results = await asyncio.gather(
+    proposal_results = await gather_llm_fail_fast(
         *(propose(direction, directive) for direction, directive in _MASTER_PROPOSAL_DIRECTIONS),
-        return_exceptions=True,
     )
     proposals = []
-    seen_payloads = set()
+    proposal_invocations: dict[str, dict] = {}
+    seen_proposal_ids: set[str] = set()
     proposal_exceptions = []
     invalid_proposal_specs = []
     for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
@@ -783,62 +1178,107 @@ async def _run_master_proposal_ensemble(
             proposal_exceptions.append(result)
             invalid_proposal_specs.append((direction, _directive))
             continue
-        output = result[0] if isinstance(result, tuple) else ""
+        output = result.get("output", "") if isinstance(result, dict) else ""
         proposal = _validated_master_proposal(
             output,
             direction,
             source_graph=source_graph,
             snapshot_dir=snapshot_dir,
+            national_policy_only=True,
         )
         if proposal is None:
             invalid_proposal_specs.append((direction, _directive))
             continue
-        dedupe = json.dumps(
-            {key: value for key, value in proposal.items() if key not in {"direction", "proposal_id"}},
-            sort_keys=True,
-            ensure_ascii=False,
-        )
-        if dedupe in seen_payloads:
+        proposal_id = proposal["proposal_id"]
+        if proposal_id in seen_proposal_ids:
             continue
-        seen_payloads.add(dedupe)
+        from system_strict_bootstrap import (
+            llm_result_digest,
+            record_llm_invocation_evidence,
+        )
+
+        if strict_authority_enabled:
+            from strict_authority_workflow import accept_role_result
+
+            accept_role_result(
+                result["strict_call"],
+                role_result=proposal,
+                parse_contract=_PROPOSAL_SCHEMA_VERSION,
+            )
+
+        proposal_invocations[proposal_id] = record_llm_invocation_evidence(
+            invocation_id=result["invocation_id"],
+            purpose=result["purpose"],
+            role=result["role"],
+            prompt_digest=hashlib.sha256(
+                result["prompt"].encode("utf-8")
+            ).hexdigest(),
+            raw_output_digest=hashlib.sha256(output.encode("utf-8")).hexdigest(),
+            result_digest=llm_result_digest(result["cost_usd"], result["usage"]),
+            role_result=proposal,
+            log_file=result["log_file"],
+        )
+        seen_proposal_ids.add(proposal_id)
         proposals.append(proposal)
     if invalid_proposal_specs:
-        retry_results = await asyncio.gather(
+        retry_results = await gather_llm_fail_fast(
             *(
                 propose(direction, directive, schema_retry=True)
                 for direction, directive in invalid_proposal_specs
             ),
-            return_exceptions=True,
         )
         for (direction, _directive), result in zip(
             invalid_proposal_specs, retry_results
         ):
+            if isinstance(result, LLMAvailabilityBlocked):
+                raise result
             if isinstance(result, BaseException):
                 proposal_exceptions.append(result)
                 continue
-            output = result[0] if isinstance(result, tuple) else ""
+            output = result.get("output", "") if isinstance(result, dict) else ""
             proposal = _validated_master_proposal(
                 output,
                 direction,
                 source_graph=source_graph,
                 snapshot_dir=snapshot_dir,
+                national_policy_only=True,
             )
             if proposal is None:
                 continue
-            dedupe = json.dumps(
-                {
-                    key: value
-                    for key, value in proposal.items()
-                    if key not in {"direction", "proposal_id"}
-                },
-                sort_keys=True,
-                ensure_ascii=False,
-            )
-            if dedupe in seen_payloads:
+            proposal_id = proposal["proposal_id"]
+            if proposal_id in seen_proposal_ids:
                 continue
-            seen_payloads.add(dedupe)
+            from system_strict_bootstrap import (
+                llm_result_digest,
+                record_llm_invocation_evidence,
+            )
+
+            if strict_authority_enabled:
+                from strict_authority_workflow import accept_role_result
+
+                accept_role_result(
+                    result["strict_call"],
+                    role_result=proposal,
+                    parse_contract=_PROPOSAL_SCHEMA_VERSION,
+                )
+
+            proposal_invocations[proposal_id] = record_llm_invocation_evidence(
+                invocation_id=result["invocation_id"],
+                purpose=result["purpose"],
+                role=result["role"],
+                prompt_digest=hashlib.sha256(
+                    result["prompt"].encode("utf-8")
+                ).hexdigest(),
+                raw_output_digest=hashlib.sha256(output.encode("utf-8")).hexdigest(),
+                result_digest=llm_result_digest(
+                    result["cost_usd"], result["usage"]
+                ),
+                role_result=proposal,
+                log_file=result["log_file"],
+            )
+            seen_proposal_ids.add(proposal_id)
             proposals.append(proposal)
-    if not proposals:
+    if len(proposals) != len(_MASTER_PROPOSAL_DIRECTIONS):
         if len(proposal_exceptions) == len(proposal_results) + len(
             invalid_proposal_specs
         ):
@@ -848,11 +1288,33 @@ async def _run_master_proposal_ensemble(
                 f"{str(proposal_exceptions[0])[:240]}"
             ) from proposal_exceptions[0]
         return _proposal_packet_error(
-            "all_scout_proposals_failed_deterministic_validation",
+            "three_distinct_schema_valid_scout_proposals_required:"
+            f"got_{len(proposals)}",
             context_digest=context_digest,
+            source_code_digest=source_code_digest,
         )
 
     async def critique(name: str, lens: str, *, schema_retry: bool = False):
+        strict_call = None
+        if strict_authority_enabled:
+            from strict_authority_workflow import ballot_call_context, new_call
+
+            strict_call = new_call(
+                strict_checkpoint,
+                slot=f"ballot:{name}",
+                context_binding=ballot_call_context(
+                    context_digest=context_digest,
+                    source_code_digest=source_code_digest,
+                    critic_id=name,
+                    proposal_ids=(item["proposal_id"] for item in proposals),
+                    critic_criteria=_PROPOSAL_CRITIC_CRITERIA,
+                ),
+            )
+            invocation_id = strict_call["invocation_id"]
+        else:
+            from system_strict_bootstrap import new_llm_invocation_id
+
+            invocation_id = new_llm_invocation_id()
         # No scout lens/identity is exposed.  Each critic receives a different
         # but replayable ordering derived from the immutable planning digest.
         critic_proposals = [
@@ -896,23 +1358,44 @@ async def _run_master_proposal_ensemble(
             + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ballots JSON in the supplied "
             "proposal order; do not rank, repeat, or rewrite proposal claims."
         )
-        return await run_claude_query(
+        purpose = f"master_proposal_critic:{name}"
+        prompt += (
+            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+            f"invocation_id={invocation_id}; purpose={purpose}."
+        )
+        log_file = log_dir / (
+            f"master_proposal_critic_{name}_schema_retry_io.txt"
+            if schema_retry
+            else f"master_proposal_critic_{name}_io.txt"
+        )
+        output, cost_usd, usage = await run_claude_query(
             prompt,
             [],
             ui,
             f"MASTER PROPOSAL CRITIC {name}{' SCHEMA RETRY' if schema_retry else ''}",
-            log_dir / (
-                f"master_proposal_critic_{name}_schema_retry_io.txt"
-                if schema_retry
-                else f"master_proposal_critic_{name}_io.txt"
-            ),
+            log_file,
             tools=[],
+            strict_authority=strict_call,
         )
+        return {
+            "output": output,
+            "cost_usd": cost_usd,
+            "usage": usage,
+            "invocation_id": invocation_id,
+            "purpose": purpose,
+            "role": (
+                f"MASTER PROPOSAL CRITIC {name}"
+                f"{' SCHEMA RETRY' if schema_retry else ''}"
+            ),
+            "prompt": prompt,
+            "log_file": str(log_file),
+            "critic_id": name,
+            "strict_call": strict_call,
+        }
 
-    critic_results = await asyncio.gather(
+    critic_results = await gather_llm_fail_fast(
         critique("falsification", "Counterfactual quality, causal attribution, and evidence support."),
         critique("scope", "Reachability, bounded implementation scope, and regression risk."),
-        return_exceptions=True,
     )
     proposal_ids = {item["proposal_id"] for item in proposals}
     critiques = []
@@ -925,36 +1408,118 @@ async def _run_master_proposal_ensemble(
         if isinstance(result, BaseException):
             invalid_critics.append(spec)
             continue
-        output = result[0] if isinstance(result, tuple) else ""
+        output = result.get("output", "") if isinstance(result, dict) else ""
         critique_row = _validated_proposal_critique(output, proposal_ids)
         if critique_row is not None:
+            from system_strict_bootstrap import (
+                llm_result_digest,
+                record_llm_invocation_evidence,
+            )
+
+            critique_row["critic_id"] = result["critic_id"]
+            if strict_authority_enabled:
+                from strict_authority_workflow import accept_role_result
+
+                accept_role_result(
+                    result["strict_call"],
+                    role_result={
+                        key: value
+                        for key, value in critique_row.items()
+                        if key not in {"critic_id", "invocation_evidence"}
+                    },
+                    parse_contract="master-proposal-ballot-v1",
+                )
+            critique_row["invocation_evidence"] = (
+                record_llm_invocation_evidence(
+                    invocation_id=result["invocation_id"],
+                    purpose=result["purpose"],
+                    role=result["role"],
+                    prompt_digest=hashlib.sha256(
+                        result["prompt"].encode("utf-8")
+                    ).hexdigest(),
+                    raw_output_digest=hashlib.sha256(
+                        output.encode("utf-8")
+                    ).hexdigest(),
+                    result_digest=llm_result_digest(
+                        result["cost_usd"], result["usage"]
+                    ),
+                    role_result={
+                        key: value
+                        for key, value in critique_row.items()
+                        if key not in {"critic_id", "invocation_evidence"}
+                    },
+                    log_file=result["log_file"],
+                )
+            )
             critiques.append(critique_row)
         else:
             invalid_critics.append(spec)
 
     if invalid_critics:
-        retry_results = await asyncio.gather(
+        retry_results = await gather_llm_fail_fast(
             *(
                 critique(name, lens, schema_retry=True)
                 for name, lens in invalid_critics
             ),
-            return_exceptions=True,
         )
         for result in retry_results:
+            if isinstance(result, LLMAvailabilityBlocked):
+                raise result
             if isinstance(result, BaseException):
                 raise RuntimeError(
                     "proposal_critic_call_failed:"
                     f"{type(result).__name__}:{str(result)[:240]}"
                 ) from result
-            output = result[0] if isinstance(result, tuple) else ""
+            output = result.get("output", "") if isinstance(result, dict) else ""
             critique_row = _validated_proposal_critique(output, proposal_ids)
             if critique_row is not None:
+                from system_strict_bootstrap import (
+                    llm_result_digest,
+                    record_llm_invocation_evidence,
+                )
+
+                critique_row["critic_id"] = result["critic_id"]
+                if strict_authority_enabled:
+                    from strict_authority_workflow import accept_role_result
+
+                    accept_role_result(
+                        result["strict_call"],
+                        role_result={
+                            key: value
+                            for key, value in critique_row.items()
+                            if key not in {"critic_id", "invocation_evidence"}
+                        },
+                        parse_contract="master-proposal-ballot-v1",
+                    )
+                critique_row["invocation_evidence"] = (
+                    record_llm_invocation_evidence(
+                        invocation_id=result["invocation_id"],
+                        purpose=result["purpose"],
+                        role=result["role"],
+                        prompt_digest=hashlib.sha256(
+                            result["prompt"].encode("utf-8")
+                        ).hexdigest(),
+                        raw_output_digest=hashlib.sha256(
+                            output.encode("utf-8")
+                        ).hexdigest(),
+                        result_digest=llm_result_digest(
+                            result["cost_usd"], result["usage"]
+                        ),
+                        role_result={
+                            key: value
+                            for key, value in critique_row.items()
+                            if key not in {"critic_id", "invocation_evidence"}
+                        },
+                        log_file=result["log_file"],
+                    )
+                )
                 critiques.append(critique_row)
 
     if len(critiques) != 2:
         return _proposal_packet_error(
             f"expected_two_schema_valid_critics_got_{len(critiques)}",
             context_digest=context_digest,
+            source_code_digest=source_code_digest,
         )
 
     # Deterministic equal-criterion aggregation. Critic prose cannot
@@ -989,6 +1554,7 @@ async def _run_master_proposal_ensemble(
         "valid_critic_count": len(critiques),
         "allowed_proposal_ids": [item["proposal_id"] for item in proposals],
         "ordered_proposals": proposals,
+        "proposal_invocations": proposal_invocations,
         "critic_reviews": critiques,
     }
     return json.dumps(
@@ -1021,7 +1587,7 @@ def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:
     except Exception:
         return "Line budget: unavailable."
     lines = [f"Line budget / file-size pressure ({baseline_label}={bot_dir.name}):"]
-    for filename in sorted(CORE_STRATEGY_FILES):
+    for filename in ("policy.py",):
         path = bot_dir / filename
         if not path.exists():
             continue
@@ -1035,11 +1601,11 @@ def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:
             status = "near_hard_cap"
         lines.append(f"- {filename}: {count}/{MAX_LINES_HARD_CAP} lines, remaining={remaining}, status={status}")
     if len(lines) == 1:
-        return "Line budget: no core strategy files found."
+        return "Line budget: policy.py not found."
     if any("near_hard_cap" in line for line in lines):
         lines.append(
-            "MANDATORY when near_hard_cap: do LOC recovery or move cohesive logic into helper modules; "
-            "do not increase that core file's line count."
+            "MANDATORY when near_hard_cap: recover LOC inside policy.py before adding "
+            "behavior; candidate helper modules are outside the artifact ABI."
         )
     return "\n".join(lines)
 
@@ -1051,7 +1617,6 @@ def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:
 async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                match_analysis="", performance_verification="",
                                replay_spotlight="", bot_action_stats="",
-                               battle_experience="", exploitability_weaknesses="",
                                opponent_profiles="", research_proposals="",
                                architecture_policy=None,
                                prepared_baseline=None,
@@ -1059,7 +1624,20 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     """Run Master analysis — can run concurrently with daemon evaluation."""
     master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
     protocol_bootstrap_active = isinstance(protocol_bootstrap, dict)
-    # Apply section budgets to avoid experience_pool crowding out match_analysis.
+    strict_checkpoint = None
+    if protocol_bootstrap_active:
+        from evolution_infra import read_pipeline_checkpoint
+        from system_strict_bootstrap import is_declared_native_bootstrap
+
+        strict_checkpoint = read_pipeline_checkpoint() or {}
+        if not is_declared_native_bootstrap(strict_checkpoint):
+            raise MasterInfrastructureError(
+                source_v,
+                next_v,
+                hashlib.sha256(b"strict-checkpoint-missing").hexdigest(),
+                "strict_authority_checkpoint_not_declared",
+            )
+    # Apply section budgets so one evidence source cannot crowd out match analysis.
     # C-class: render the sentinel (returned when the analyst LLM crashed on an
     # infrastructure error) into an explicit warning BEFORE trimming, so the
     # Master sees "LLM crashed" rather than "no data" (which would be read as a
@@ -1082,25 +1660,16 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     perf_trimmed = _trim_to_budget(perf_rendered, 4_000)
 
     if protocol_bootstrap_active:
-        battle_experience_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
         bot_action_stats_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
         opponent_profiles_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
         replay_spotlight_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
-        exploitability_trimmed = PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
     else:
-        battle_experience_trimmed = _trim_to_budget(
-            battle_experience or "No battle experience data available yet.",
-            12_000,
-            tail=True,
-        )
         bot_action_stats_trimmed = _trim_to_budget(
             bot_action_stats or "No bot action statistics available.", 12_000)
         opponent_profiles_trimmed = _trim_to_budget(
             opponent_profiles or "No per-opponent behavior profiles available.", 8_000)
         replay_spotlight_trimmed = _trim_to_budget(
             replay_spotlight or "No replay spotlight data available.", 8_000)
-        exploitability_trimmed = _trim_to_budget(
-            exploitability_weaknesses or "No exploitability probe data available yet.", 6_000)
     research_trimmed = _trim_to_budget(
         (
             "No admissible non-match literature receipt was supplied for this "
@@ -1110,18 +1679,6 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             or "No web-derived research proposals this generation (run_literature_probe not triggered or returned none)."
         ),
         4_000,
-    )
-    # MAP-Elites fitness is updated asynchronously from live H2H.  Reopening it
-    # here would bypass the generation evidence cutoff and could change a retry's
-    # plan. Source/crossover diversity already uses the frozen SelectionView;
-    # Master receives no second live strength ranking.
-    frontier_trimmed = (
-        "Frontier/MAP-Elites strength ranking is unavailable during protocol "
-        "bootstrap; no two-bot strict strength population exists."
-        if protocol_bootstrap_active
-        else
-        "Frontier/MAP-Elites strength ranking omitted here; system-owned source "
-        "selection already consumed the frozen diversity view."
     )
     if protocol_bootstrap_active:
         official_feedback = (
@@ -1185,9 +1742,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         from workflow_profiles import get_workflow_profile, profile_summary
         workflow_profile = get_workflow_profile()
         workflow_profile_text = profile_summary(workflow_profile)
-    except Exception:
-        workflow_profile = None
-        workflow_profile_text = "Workflow profile: default"
+    except Exception as exc:
+        raise RuntimeError(
+            "workflow_profile_contract_unavailable: "
+            f"{type(exc).__name__}: {str(exc)[:240]}"
+        ) from exc
     line_budget_text = _line_budget_summary(
         planning_baseline_v,
         baseline_label=planning_baseline_label,
@@ -1257,17 +1816,6 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             )
             return None
 
-    # eval_rounds.jsonl is a live, independently written strength view.  The
-    # same information is represented by the cycle-bound selection rows, so it
-    # must not be injected as a second mutable authority.
-    eval_round_summary = (
-        "No evaluation rounds exist during protocol bootstrap."
-        if protocol_bootstrap_active
-        else
-        "Live eval-round summary intentionally omitted; use the frozen "
-        "selection rows and rating-history tail."
-    )
-
     master_prompt = substitute_template(master_prompt, {
         "stagnation_info": stagnation_info,
         "match_analysis": match_analysis_trimmed,
@@ -1277,9 +1825,6 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "replay_spotlight": replay_spotlight_trimmed,
         "bot_action_stats": bot_action_stats_trimmed,
         "opponent_profiles": opponent_profiles_trimmed,
-        "eval_round_summary": eval_round_summary,
-        "battle_experience": battle_experience_trimmed,
-        "exploitability_weaknesses": exploitability_trimmed,
         "research_proposals": research_trimmed,
         "official_feedback": official_feedback,
         "runtime_feedback": runtime_feedback,
@@ -1291,19 +1836,15 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     })
     evidence_context = (
         "Protocol bootstrap has no strength snapshot. Do not open live ratings, "
-        "H2H, replay, bot_stats, or rating_history files.\n"
+        "H2H, replay, bot_stats, rating_history, or eval_rounds files.\n"
         if protocol_bootstrap_active
         else
         f"Selection evidence snapshot: {selection_data_file}\n"
         f"Use only that digest-bound snapshot for ratings, RD, games, coverage, trends, and ranking; "
-        f"do not reopen live glicko_ratings.json, bot_stats.json, or rating_history.jsonl.\n"
+        f"do not reopen live glicko_ratings.json, bot_stats.json, rating_history.jsonl, "
+        f"or eval_rounds.jsonl.\n"
         f"Head-to-Head data snapshot: {h2h_data_file}\n"
         f"Do not read live H2H for matchup counts during planning; use the snapshot above.\n"
-    )
-    experience_context = (
-        PROTOCOL_BOOTSTRAP_NO_STRENGTH_PLACEHOLDER
-        if protocol_bootstrap_active
-        else "Experience/lesson evidence is frozen as bounded injected prompt excerpts; do not reopen live results files."
     )
     source_context = (
         "Historical lineage source directory: quarantined and intentionally not "
@@ -1317,10 +1858,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
         f"Planning baseline: {bot_relpath(planning_baseline_v)}/ ({planning_baseline_label})\n"
         f"{evidence_context}"
-        f"{experience_context}\n"
         f"\n{h2h_snapshot_contract}\n"
         f"\n{workflow_profile_text}\n"
-        f"\n{frontier_trimmed}\n"
         f"\nOfficial EXE Compliance Feedback:\n{official_feedback}\n"
         f"\nNational Runtime Architecture Feedback:\n{runtime_feedback}\n"
         f"\nPrepared Baseline Contract:\n{prepared_baseline_text}\n"
@@ -1339,7 +1878,10 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
             baseline_v=int(planning_baseline_v),
             protocol_bootstrap_prepared_only=protocol_bootstrap_active,
+            strict_checkpoint=strict_checkpoint,
         )
+    except LLMAvailabilityBlocked:
+        raise
     except Exception as exc:
         raise MasterInfrastructureError(
             source_v,
@@ -1390,13 +1932,41 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
 
     for attempt in range(MAX_MASTER_RETRIES):
         ui.clear_io()
+        strict_final_call = None
+        final_role = f"MASTER (Try {attempt+1})"
+        if protocol_bootstrap_active:
+            from strict_authority_workflow import final_master_call_context, new_call
+
+            strict_final_call = new_call(
+                strict_checkpoint,
+                slot="master:final",
+                role=final_role,
+                context_binding=final_master_call_context(
+                    proposal_packet,
+                    architecture_policy if isinstance(architecture_policy, dict) else {},
+                ),
+            )
+            master_call_prompt = (
+                master_prompt
+                + "\n"
+                + master_ctx
+                + "\n\nSYSTEM CALL BINDING (copying this value does not grant "
+                + "authority): invocation_id="
+                + strict_final_call["invocation_id"]
+                + "; purpose=system_strict_bootstrap_master:final."
+            )
+        else:
+            master_call_prompt = master_prompt + "\n" + master_ctx
         try:
             output, _, _ = await run_claude_query(
-                master_prompt + "\n" + master_ctx, [], ui,
-                f"MASTER (Try {attempt+1})", master_log_file,
+                master_call_prompt, [], ui,
+                final_role, master_log_file,
                 tools=["Read"],
                 allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+                strict_authority=strict_final_call,
             )
+        except LLMAvailabilityBlocked:
+            raise
         except Exception as exc:
             _final_mode = f"LLM_EXCEPTION:{type(exc).__name__}"
             try:
@@ -1426,8 +1996,6 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 )
             except Exception:
                 pass
-            import hashlib
-
             raise MasterInfrastructureError(
                 source_v,
                 next_v,
@@ -1492,11 +2060,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # Invalid contracts are intentionally left untouched and still fail
             # the canonical schema gate below.
             from plan_compiler import (
-                bind_system_owned_legacy_consumer_migration,
+                bind_system_owned_policy_abi,
                 bind_system_owned_worker_contract_terms,
             )
-            data, _migration_binding_meta = (
-                bind_system_owned_legacy_consumer_migration(
+            data, _policy_abi_binding_meta = (
+                bind_system_owned_policy_abi(
                     data,
                     policy=(
                         architecture_policy
@@ -1506,10 +2074,9 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 )
             )
             data, _binding_meta = bind_system_owned_worker_contract_terms(data)
-            if _migration_binding_meta.get("bound"):
+            if _policy_abi_binding_meta.get("bound"):
                 ui.log_history(
-                    "Master plan compiler restored the system-owned universal "
-                    "legacy-consumer migration bundle.",
+                    "Master plan compiler bound the closed national policy ABI.",
                     "info",
                 )
             if _binding_meta.get("bound"):
@@ -1536,17 +2103,13 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # P0 修复：在 Pydantic 剥离 branch_from (extra='ignore') 之前，对原始 dict
             # 跑 Master 的 source-override 硬校验。MasterPlan 删除 branch_from 字段后，
             # model_validate 会静默丢弃该键，必须在丢弃前拦截。
-            from tool_planning import _validate_master_plan
-            # Backward-compat: this pre-schema check only needs to catch source
-            # override fields before Pydantic strips unknown keys. The canonical
-            # Master validation, including EXHAUSTED-direction hard gating, runs
-            # in tool_planning.run_master after plan normalization/audit context.
-            _errs, _ = _validate_master_plan(data, exhausted_policy="warn")
+            # This pre-schema check catches source override fields before
+            # Pydantic strips unknown keys. Canonical validation runs again
+            # after plan normalization in the tool layer.
             _src_override = any(data.get(f) for f in ("branch_from", "source_override", "source_v_override"))
             if _src_override:
                 ui.log_history(
-                    f"Master plan rejected: must not set branch_from. "
-                    f"({_errs})",
+                    "Master plan rejected: must not set branch_from.",
                     "warn",
                 )
                 import asyncio as _asyncio
@@ -1607,7 +2170,32 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 "why_not_threshold_tuning": selected_contract[
                     "why_not_threshold_tuning"
                 ],
+                "selected_proposal": {
+                    key: value
+                    for key, value in selected_proposal.items()
+                    if key != "direction"
+                },
+                "proposal_packet_digest": hashlib.sha256(
+                    json.dumps(
+                        proposal_packet,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
             }
+            # Freeze all three independent proposals and both anonymous ballots
+            # with the selected plan.  The deterministic Worker envelope then
+            # binds the actual governance evidence, not merely an invocation bit.
+            data["proposal_ensemble"] = proposal_packet
+            if protocol_bootstrap_active:
+                from strict_authority_workflow import accept_role_result
+
+                accept_role_result(
+                    strict_final_call,
+                    role_result=data,
+                    parse_contract="master-plan-schema-v1",
+                )
             # SUCCESS path (BUGFIX, root cause of the v107–v127 Master deadlock):
             # the plan parsed with `tasks`, carries no branch_from override, and
             # passed schema validation with NO errors. This `return data` was
@@ -1671,139 +2259,3 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     except Exception:
         pass
     return None
-
-
-# ──────────────────────────────────────────────
-# Match Analysis
-# ──────────────────────────────────────────────
-
-async def _analyze_recent_matches(source_v, ui, max_matches=8, *, next_v=None):
-    """Use LLM to analyze recent replay data for the current bot.
-
-    Collects both recent losses and close wins (margin < 3 games) to give
-    the Master a balanced view of weaknesses and what's working.
-
-    Returns a match analysis string to inject into Master's context, or ""
-    if no replay data is available.
-    """
-    source_bot_name = bot_name(source_v)
-
-    recent_losses = []
-    close_wins = []
-    from rating_snapshot import _admitted_70_hand_history_sample
-    if next_v is not None:
-        from evidence_snapshot import load_generation_evaluation_snapshot
-
-        frozen = load_generation_evaluation_snapshot(next_v)
-        if not frozen.get("available"):
-            return ""
-        history_index = frozen.get("match_history_index") or {}
-        entries = history_index.get("entries") or []
-    else:
-        if not MATCH_HISTORY_FILE.exists():
-            return ""
-        entries = []
-        with locked_file(MATCH_HISTORY_FILE, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                entries.append(entry)
-
-    for entry in entries:
-            if not isinstance(entry, dict):
-                continue
-            if _admitted_70_hand_history_sample(entry) is None:
-                continue
-
-            b0, b1 = entry.get("bot0"), entry.get("bot1")
-            w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
-
-            if b0 == source_bot_name:
-                bot_wins, opp_wins = w0, w1
-            elif b1 == source_bot_name:
-                bot_wins, opp_wins = w1, w0
-            else:
-                continue
-
-            if opp_wins > bot_wins:
-                recent_losses.append(entry)
-            elif bot_wins > opp_wins and (bot_wins - opp_wins) <= 2:
-                # Close win (margin ≤ 2 games) — reveals near-miss vulnerabilities
-                close_wins.append(entry)
-
-    if not recent_losses and not close_wins:
-        return ""
-
-    recent_losses = recent_losses[-max_matches:]
-    close_wins = close_wins[-(max_matches // 2):]
-
-    def _load_summaries(entries, label):
-        result = []
-        for entry in entries:
-            replay_path = REPLAY_DIR / entry["id"]
-            if not replay_path.exists():
-                continue
-            try:
-                with locked_file(replay_path, "r") as rf:
-                    replay_data = json.load(rf)
-                if replay_data.get("evaluation_identity_digest") != entry.get(
-                    "evaluation_identity_digest"
-                ):
-                    continue
-                summary = summarize_replay_for_analysis(
-                    replay_data,
-                    source_bot_name,
-                )
-                if summary:
-                    result.append(f"[{label}] {summary}")
-            except (json.JSONDecodeError, OSError):
-                continue
-        return result
-
-    summaries = _load_summaries(recent_losses, "LOSS") + _load_summaries(close_wins, "CLOSE WIN")
-
-    if not summaries:
-        return ""
-
-    # Load template and substitute
-    template_file = PROMPTS_DIR / "match_analyst.md"
-    if not template_file.exists():
-        return ""
-    match_analyst_prompt = template_file.read_text()
-    match_analyst_prompt = substitute_template(match_analyst_prompt, {
-        "match_summaries": "\n\n".join(summaries),
-    })
-
-    log_file = get_logs_dir(source_v) / "match_analyst_io.txt"
-    try:
-        output, _, _ = await run_claude_query(
-            match_analyst_prompt, [], ui,
-            "MATCH ANALYST", log_file,
-        )
-        if not output or not output.strip():
-            # Retry once if match analyst returned empty (529/timeout)
-            output, _, _ = await run_claude_query(
-                match_analyst_prompt, [], ui,
-                "MATCH ANALYST (retry)", log_file,
-            )
-        return output or ""
-    except Exception as e:
-        # C-class: distinguish LLM infrastructure crash from "no data".
-        # Return a sentinel string so the Master prompt builder can surface
-        # "analysis unavailable due to LLM failure" instead of the misleading
-        # "No match analysis data available". Return type stays str for compat.
-        from llm_failure import is_llm_infra_error
-        if is_llm_infra_error(e):
-            ui.log_history(f"Match analysis LLM infrastructure error: {e}", "warn")
-            from system_log import log_system_event
-            log_system_event("pipeline.match_analyst_infra", "warn",
-                             f"Match analyst v{source_v} LLM crashed (infra): {e}",
-                             {"source_v": source_v, "error": str(e)})
-            return "[LLM_INFRA_ERROR: analysis unavailable]"
-        ui.log_history(f"Match analysis failed: {e}", "warn")
-        return ""

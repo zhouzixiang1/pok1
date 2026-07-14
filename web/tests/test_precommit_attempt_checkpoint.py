@@ -18,17 +18,59 @@ touch the real bots/ dir or production checkpoint file.
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from types import SimpleNamespace
 
 import pytest
 
+import checkpoint_schema
 import evolution_infra
 from evolution_infra import (
-    clear_pipeline_checkpoint,
-    write_pipeline_checkpoint,
+    clear_pipeline_checkpoint as _clear_pipeline_checkpoint,
+    write_pipeline_checkpoint as _write_pipeline_checkpoint,
     read_pipeline_checkpoint,
     MAX_PRECOMMIT_RETRIES,
 )
 from pipeline_state import route_policy
+
+
+def write_pipeline_checkpoint(*args, **kwargs):
+    """Map retired compact fixture numbers into the strict policy namespace."""
+
+    mutable = list(args)
+    if mutable:
+        mutable[0] = 200 if mutable[0] == 100 else mutable[0]
+    if len(mutable) > 1:
+        mutable[1] = 199 if mutable[1] == 99 else mutable[1]
+    if kwargs.get("next_v") == 100:
+        kwargs["next_v"] = 200
+    if kwargs.get("source_v") == 99:
+        kwargs["source_v"] = 199
+    return _write_pipeline_checkpoint(*mutable, **kwargs)
+
+
+def clear_pipeline_checkpoint(**kwargs):
+    if kwargs.get("expected_next_v") == 100:
+        kwargs["expected_next_v"] = 200
+    if kwargs.get("expected_source_v") == 99:
+        kwargs["expected_source_v"] = 199
+    return _clear_pipeline_checkpoint(**kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _strict_parent_authority(monkeypatch):
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            eligible=True,
+            version=199,
+            issues=(),
+            runtime_manifest={"epoch": "national_tcp_policy_v1"},
+            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": 199},
+            publication_identity={"published": True, "version": 199},
+            certificate_digest="a" * 64,
+        ),
+    )
 
 
 def _write_basic(stage="prepared", **kwargs):
@@ -57,8 +99,8 @@ def test_fresh_checkpoint_defaults_precommit_attempt_to_zero():
 def test_fresh_checkpoint_persists_log_correlation_fields():
     """Fresh checkpoints carry the same correlation key the event bus emits."""
     state = _write_basic(stage="prepared")
-    assert state.get("run_id") == "100#0"
-    assert state.get("workflow_run_id", "").startswith("generation:100:")
+    assert state.get("run_id") == "200#0"
+    assert state.get("workflow_run_id", "").startswith("generation:200:")
     assert state.get("checkpoint_revision") == 1
     assert state.get("generation_attempt") == 0
     assert state.get("audit_attempt") == 0
@@ -133,8 +175,8 @@ def test_workflow_identity_survives_generation_attempt_changes():
         reset_generation_attempt=True,
     )
     second = read_pipeline_checkpoint()
-    assert first["run_id"] == "100#2"
-    assert second["run_id"] == "100#0"
+    assert first["run_id"] == "200#2"
+    assert second["run_id"] == "200#0"
     assert second["workflow_run_id"] == first["workflow_run_id"]
 
 
@@ -199,8 +241,18 @@ def test_rework_to_workers_done_invalidates_stale_downstream_gates():
         precommit_attempt=1,
         gate_results={
             "quality": _passing_quality_gate(),
-            "review": {"approved": True},
-            "critic": {"approved": True},
+            "review": {
+                "approved": True,
+                "llm_invoked": True,
+                "reviewer_llm_executed": True,
+                "schema_valid": True,
+            },
+            "critic": {
+                "approved": True,
+                "llm_invoked": True,
+                "critic_llm_executed": True,
+                "schema_valid": True,
+            },
             "precommit_eval": {
                 "passed": False,
                 "blockers": [{"reason": "aggregate_precommit_regression"}],
@@ -237,8 +289,18 @@ def test_post_rework_gates_route_to_fresh_precommit_eval():
         precommit_attempt=1,
         gate_results={
             "quality": _passing_quality_gate(),
-            "review": {"approved": True},
-            "critic": {"approved": True},
+            "review": {
+                "approved": True,
+                "llm_invoked": True,
+                "reviewer_llm_executed": True,
+                "schema_valid": True,
+            },
+            "critic": {
+                "approved": True,
+                "llm_invoked": True,
+                "critic_llm_executed": True,
+                "schema_valid": True,
+            },
             "precommit_eval": {
                 "passed": False,
                 "blockers": [{"reason": "semantic_regression"}],
@@ -269,13 +331,27 @@ def test_post_rework_gates_route_to_fresh_precommit_eval():
         next_v=100,
         source_v=99,
         stage="reviewed",
-        gate_results={"review": {"approved": True}},
+        gate_results={
+            "review": {
+                "approved": True,
+                "llm_invoked": True,
+                "reviewer_llm_executed": True,
+                "schema_valid": True,
+            }
+        },
     )
     write_pipeline_checkpoint(
         next_v=100,
         source_v=99,
         stage="critic_checked",
-        gate_results={"critic": {"approved": True}},
+        gate_results={
+            "critic": {
+                "approved": True,
+                "llm_invoked": True,
+                "critic_llm_executed": True,
+                "schema_valid": True,
+            }
+        },
     )
 
     state = read_pipeline_checkpoint()

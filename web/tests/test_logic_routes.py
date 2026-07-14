@@ -60,7 +60,13 @@ class TestDaemonStatusLogic:
     def test_status_field_is_valid(self, client):
         resp = client.get("/api/daemon/status")
         data = resp.json()
-        assert data["status"] in ("active", "recent", "idle", "unknown")
+        assert data["status"] in (
+            "active",
+            "degraded",
+            "stopped",
+            "disabled",
+            "blocked",
+        )
 
     def test_age_non_negative(self, client):
         resp = client.get("/api/daemon/status")
@@ -68,24 +74,19 @@ class TestDaemonStatusLogic:
         assert data["last_update_age_seconds"] >= -1
 
 
-# ── ratings.py: Experience append logic ──
+# ── ratings.py: retired experience API remains absent ──
 
-class TestExperienceAppendLogic:
-    def test_whitespace_only_rejected(self, client, temp_experience, monkeypatch):
-        from server.routes import ratings
-        monkeypatch.setattr(ratings, "EXPERIENCE_FILE", temp_experience)
+class TestRetiredExperienceRouteLogic:
+    def test_get_route_does_not_exist(self, client):
+        assert client.get("/api/experience").status_code == 404
+
+    def test_append_route_does_not_exist(self, client):
         resp = client.post("/api/experience/append", json={"lesson": "   "})
-        assert resp.status_code == 400
+        assert resp.status_code == 404
 
-    def test_double_newline_not_duplicated(self, client, temp_experience, monkeypatch):
-        from server.routes import ratings
-        monkeypatch.setattr(ratings, "EXPERIENCE_FILE", temp_experience)
-        temp_experience.write_text("existing content\n\n")
-        resp = client.post("/api/experience/append", json={"lesson": "new lesson"})
-        assert resp.status_code == 200
-        content = temp_experience.read_text()
-        # Should not have triple newline
-        assert "\n\n\n" not in content
+    def test_markdown_overwrite_route_does_not_exist(self, client):
+        resp = client.put("/api/experience", json={"content": "old markdown"})
+        assert resp.status_code == 404
 
 
 # ── ratings.py: H2H filtering ──
@@ -127,11 +128,10 @@ class TestBotsSorting:
         for bot in data.get("active", []):
             assert bot.get("completed") is True
 
-    def test_graveyard_flag(self, client):
+    def test_archive_is_not_exposed_by_compatibility_query(self, client):
         resp = client.get("/api/bots?include_graveyard=true")
         data = resp.json()
-        for bot in data.get("graveyard", []):
-            assert bot.get("graveyard") is True
+        assert "graveyard" not in data
 
 
 # ── bots.py: Code reading ──
@@ -139,18 +139,18 @@ class TestBotsSorting:
 class TestBotCodeLogic:
     @pytest.mark.requires_active_bot
     def test_returns_python_source(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/main.py")
+        resp = client.get(f"/api/bots/{active_bot_version}/code/policy.py")
         assert resp.status_code == 200
         assert "def " in resp.text or "import " in resp.text
 
     @pytest.mark.requires_active_bot
     def test_non_py_rejected(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/main.txt")
+        resp = client.get(f"/api/bots/{active_bot_version}/code/policy.txt")
         assert resp.status_code == 400
 
     @pytest.mark.requires_active_bot
     def test_path_separator_rejected(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/sub/dir/main.py")
+        resp = client.get(f"/api/bots/{active_bot_version}/code/sub/dir/policy.py")
         assert resp.status_code in (400, 404)
 
 
@@ -203,29 +203,37 @@ class TestPromptsNameMapping:
         assert len(resp.text) > 0
 
     def test_all_allowed_names_return_content(self, client):
-        for name in ["master", "worker", "reviewer", "critic", "crossover", "orchestrator", "initial"]:
+        for name in [
+            "master", "master_plan_audit", "worker",
+            "worker_profile_national_native", "worker_cot_check", "debug_worker",
+            "reviewer", "critic", "crossover", "crossover_compatibility",
+            "direction_auditor", "literature_probe", "combined_analyst",
+            "degeneration_diagnosis", "cycle_archivist",
+            "official_platform_analysis", "orchestrator",
+        ]:
             resp = client.get(f"/api/prompts/{name}")
             assert resp.status_code == 200, f"Failed for prompt: {name}"
 
 
-# ── prompts.py: Write logic ──
+# ── prompts.py: source-controlled, read-only catalog ──
 
 class TestPromptsWriteLogic:
-    def test_empty_content_accepted(self, client, temp_prompt_dir, monkeypatch):
+    def test_empty_content_cannot_be_written_over_http(self, client, temp_prompt_dir, monkeypatch):
         from server.routes import prompts
         monkeypatch.setattr(prompts, "PROMPTS_DIR", temp_prompt_dir)
+        before = (temp_prompt_dir / "master_prompt.md").read_bytes()
         resp = client.put("/api/prompts/master", json={"content": ""})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["lines"] == 1  # empty string has 1 line per count("\n") + 1
+        assert resp.status_code == 405
+        assert (temp_prompt_dir / "master_prompt.md").read_bytes() == before
 
-    def test_lines_count_matches_content(self, client, temp_prompt_dir, monkeypatch):
+    def test_multiline_content_cannot_be_written_over_http(self, client, temp_prompt_dir, monkeypatch):
         from server.routes import prompts
         monkeypatch.setattr(prompts, "PROMPTS_DIR", temp_prompt_dir)
+        before = (temp_prompt_dir / "master_prompt.md").read_bytes()
         content = "line1\nline2\nline3\n"
         resp = client.put("/api/prompts/master", json={"content": content})
-        assert resp.status_code == 200
-        assert resp.json()["lines"] == 4  # 3 newlines + 1
+        assert resp.status_code == 405
+        assert (temp_prompt_dir / "master_prompt.md").read_bytes() == before
 
 
 # ── control.py: Config clamping ──
@@ -281,9 +289,7 @@ class TestSessionLogic:
 # ── control.py: Tool dispatch ──
 
 class TestToolDispatchLogic:
-    def test_unknown_tool_lists_available(self, client):
+    def test_old_tool_dispatch_is_permanently_retired(self, client):
         resp = client.post("/api/control/tool/nonexistent_xyz", json={"args": {}})
-        assert resp.status_code == 404
-        # Response should mention available tools
-        detail = resp.json().get("detail", "")
-        assert "Available" in detail or "tool" in detail.lower()
+        assert resp.status_code == 410
+        assert resp.json()["detail"]["code"] == "control_tool_executor_retired"

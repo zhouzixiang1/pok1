@@ -3,11 +3,7 @@
 from __future__ import annotations
 
 import json
-import hmac
-import ipaddress
-import os
 from typing import Literal
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -22,6 +18,7 @@ from national_arena.manager import (
     NationalArenaManager,
 )
 from national_arena.models import ACTIVE_ARENA_STATES
+from server.operator_control import require_operator_mutation
 
 
 router = APIRouter(prefix="/api/national-arena", tags=["national-arena"])
@@ -40,11 +37,99 @@ class ArenaCreateRequest(BaseModel):
     bottom_bot: str | None = None
 
 
-def _manager(request: Request) -> NationalArenaManager:
+def _epoch_access_state(request: Request, operation: str) -> dict:
+    """Return the canonical read-only epoch projection without side effects."""
+
+    try:
+        from epoch_authority import require_policy_epoch_initialized
+
+        state = require_policy_epoch_initialized(operation)
+    except Exception as exc:
+        state = getattr(exc, "state", None) or {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "epoch_authority_unavailable",
+            "initialized": False,
+            "operator_action": "inspect_epoch_authority",
+            "operator_command": None,
+        }
+    lifespan_state = getattr(
+        request.app.state,
+        "national_arena_epoch_authority",
+        None,
+    )
+    if (
+        isinstance(lifespan_state, dict)
+        and lifespan_state.get("initialized")
+        and state.get("initialized")
+        and lifespan_state.get("evaluation_epoch") == state.get("evaluation_epoch")
+        and lifespan_state.get("reset_receipt_digest")
+        == state.get("reset_receipt_digest")
+    ):
+        # Lifespan may carry the richer strict_epoch_projection, including an
+        # active workflow identity.  Initialization evidence still comes from
+        # the live guard above.
+        state = {**state, **lifespan_state}
+    return state
+
+
+def _epoch_metadata(state: dict) -> dict:
+    return {
+        "evaluation_epoch": state.get("evaluation_epoch", "national_tcp_policy_v1"),
+        "epoch_state": state.get("state", "epoch_authority_unavailable"),
+        "epoch_reset_receipt_digest": state.get("reset_receipt_digest"),
+        "epoch_authority": state,
+        "epoch_initialized": bool(state.get("initialized")),
+        "result_authority": "diagnostic_only",
+        "affects_glicko": False,
+        "official_exe_certification": False,
+        "can_certify": False,
+    }
+
+
+def _epoch_headers(state: dict) -> dict[str, str]:
+    """Carry the canonical authority on successful artifact GETs."""
+
+    return {
+        "X-Pok-Evaluation-Epoch": str(state.get("evaluation_epoch") or ""),
+        "X-Pok-Epoch-State": str(state.get("state") or ""),
+        "X-Pok-Epoch-Initialized": (
+            "true" if state.get("initialized") else "false"
+        ),
+        "X-Pok-Result-Authority": "diagnostic_only",
+    }
+
+
+def _manager(
+    request: Request,
+    *,
+    epoch: dict,
+    required: bool = True,
+) -> NationalArenaManager | None:
     manager = getattr(request.app.state, "national_arena_manager", None)
-    if not isinstance(manager, NationalArenaManager):
+    if (
+        not epoch.get("initialized")
+        or not isinstance(manager, NationalArenaManager)
+        or not manager.started
+        or not manager.accepts_epoch_authority(epoch)
+    ):
+        if not required:
+            return None
         raise HTTPException(status_code=503, detail="National Arena manager is not running")
     return manager
+
+
+def _require_initialized_epoch(request: Request, operation: str) -> dict:
+    state = _epoch_access_state(request, operation)
+    if not state.get("initialized"):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "policy_epoch_not_initialized",
+                "operation": operation,
+                "epoch": state,
+            },
+        ) from None
+    return state
 
 
 def _raise_http(exc: ArenaError) -> None:
@@ -57,41 +142,23 @@ def _raise_http(exc: ArenaError) -> None:
     raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _require_control(request: Request) -> None:
-    configured = os.environ.get("POK_ARENA_CONTROL_TOKEN", "")
-    supplied = request.headers.get("x-arena-token", "")
-    if configured:
-        if not supplied or not hmac.compare_digest(configured, supplied):
-            raise HTTPException(status_code=403, detail="invalid Arena control token")
-        return
-    client_host = request.client.host if request.client else ""
-    try:
-        loopback = ipaddress.ip_address(client_host).is_loopback
-    except ValueError:
-        loopback = False
-    if not loopback:
-        raise HTTPException(
-            status_code=403,
-            detail="remote Arena mutation requires POK_ARENA_CONTROL_TOKEN",
-        )
-    origin = request.headers.get("origin")
-    host = request.headers.get("host", "")
-    if origin:
-        if urlsplit(origin).netloc == host:
-            return
-        raise HTTPException(status_code=403, detail="cross-origin Arena mutation rejected")
-    return
-
-
 @router.get("/bots")
 async def list_arena_bots(request: Request):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.list_bots")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "bots": [],
+            "selection_contract": "strict_epoch_unavailable",
+            "selection_authority": "official_windows_exe",
+            **_epoch_metadata(epoch),
+        }
     try:
         return {
             "bots": manager.list_launchable_bots(),
             "selection_contract": "active_tagged_native_and_official_eligible",
-            "result_authority": "diagnostic_only",
             "selection_authority": "official_windows_exe",
+            **_epoch_metadata(epoch),
         }
     except ArenaError as exc:
         _raise_http(exc)
@@ -99,7 +166,19 @@ async def list_arena_bots(request: Request):
 
 @router.get("/health")
 async def arena_health(request: Request):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.health")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "ok": False,
+            "active_session": None,
+            "accepting_new_session": False,
+            "session_count": 0,
+            "compliance_oracle": "official_windows_exe",
+            "resource_fence_held": False,
+            "mutation_auth": "operator_control",
+            **_epoch_metadata(epoch),
+        }
     sessions = manager.list_sessions()
     active = [
         item for item in sessions if item.get("status") in ACTIVE_ARENA_STATES
@@ -112,30 +191,30 @@ async def arena_health(request: Request):
         "active_session": active[0] if active else None,
         "accepting_new_session": not active,
         "session_count": len(sessions),
-        "result_authority": "diagnostic_only",
-        "official_exe_certification": False,
         "compliance_oracle": "official_windows_exe",
-        "can_certify": False,
         "resource_fence_held": resource_fence_held,
-        "mutation_auth": (
-            "control_token" if os.environ.get("POK_ARENA_CONTROL_TOKEN") else "loopback_only"
-        ),
+        "mutation_auth": "operator_control",
+        **_epoch_metadata(epoch),
     }
 
 
 @router.get("/sessions")
 async def list_arena_sessions(request: Request):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.list_sessions")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {"sessions": [], **_epoch_metadata(epoch)}
     try:
-        return {"sessions": manager.list_sessions()}
+        return {"sessions": manager.list_sessions(), **_epoch_metadata(epoch)}
     except ArenaError as exc:
         _raise_http(exc)
 
 
 @router.post("/sessions", status_code=201)
 async def create_arena_session(payload: ArenaCreateRequest, request: Request):
-    _require_control(request)
-    manager = _manager(request)
+    require_operator_mutation(request, operation="national_arena.create_session")
+    epoch = _require_initialized_epoch(request, "national_arena.create_session")
+    manager = _manager(request, epoch=epoch)
     try:
         values = payload.model_dump()
         managed_port_override = bool(values.pop("managed_port_override", False))
@@ -148,17 +227,25 @@ async def create_arena_session(payload: ArenaCreateRequest, request: Request):
 
 @router.get("/sessions/{session_id}")
 async def get_arena_session(session_id: str, request: Request):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.get_session")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "session": None,
+            "requested_session_id": session_id,
+            **_epoch_metadata(epoch),
+        }
     try:
-        return manager.get_session(session_id)
+        return {**manager.get_session(session_id), "epoch_authority": epoch}
     except ArenaError as exc:
         _raise_http(exc)
 
 
 @router.post("/sessions/{session_id}/start")
 async def start_arena_session(session_id: str, request: Request):
-    _require_control(request)
-    manager = _manager(request)
+    require_operator_mutation(request, operation="national_arena.start_session")
+    epoch = _require_initialized_epoch(request, "national_arena.start_session")
+    manager = _manager(request, epoch=epoch)
     try:
         return await manager.start_session(session_id)
     except ArenaError as exc:
@@ -167,8 +254,9 @@ async def start_arena_session(session_id: str, request: Request):
 
 @router.post("/sessions/{session_id}/stop")
 async def stop_arena_session(session_id: str, request: Request):
-    _require_control(request)
-    manager = _manager(request)
+    require_operator_mutation(request, operation="national_arena.stop_session")
+    epoch = _require_initialized_epoch(request, "national_arena.stop_session")
+    manager = _manager(request, epoch=epoch)
     try:
         return await manager.stop_session(session_id)
     except ArenaError as exc:
@@ -182,7 +270,16 @@ async def arena_event_history(
     after_event_id: int = Query(default=0, ge=0),
     limit: int = Query(default=500, ge=1, le=5000),
 ):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.event_history")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "events": [],
+            "after_event_id": after_event_id,
+            "high_watermark": 0,
+            "next_after_event_id": after_event_id,
+            **_epoch_metadata(epoch),
+        }
     try:
         rows = await manager.read_events(
             session_id,
@@ -195,6 +292,7 @@ async def arena_event_history(
             "after_event_id": after_event_id,
             "high_watermark": int(snapshot.get("last_event_id", 0) or 0),
             "next_after_event_id": int(rows[-1]["event_id"]) if rows else after_event_id,
+            **_epoch_metadata(epoch),
         }
     except ArenaError as exc:
         _raise_http(exc)
@@ -206,7 +304,28 @@ async def arena_event_stream(
     request: Request,
     after_event_id: int = Query(default=0, ge=0),
 ):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.event_stream")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        async def blocked_stream():
+            yield {
+                "id": "0",
+                "event": "epoch_blocked",
+                "data": json.dumps({
+                    "session": None,
+                    **_epoch_metadata(epoch),
+                }, ensure_ascii=False),
+            }
+            yield {
+                "id": "0",
+                "event": "stream_closed",
+                "data": json.dumps({"status": "epoch_not_initialized"}),
+            }
+
+        return EventSourceResponse(
+            blocked_stream(),
+            headers=_epoch_headers(epoch),
+        )
     try:
         manager.get_session(session_id)
     except ArenaError as exc:
@@ -231,6 +350,7 @@ async def arena_event_stream(
                     "official_exe_certification": False,
                     "compliance_oracle": "official_windows_exe",
                     "can_certify": False,
+                    "epoch_authority": epoch,
                 }, ensure_ascii=False),
             }
         while not await request.is_disconnected():
@@ -263,7 +383,7 @@ async def arena_event_stream(
                     "data": json.dumps(row, ensure_ascii=False),
                 }
 
-    return EventSourceResponse(generate())
+    return EventSourceResponse(generate(), headers=_epoch_headers(epoch))
 
 
 @router.get("/sessions/{session_id}/wire/history")
@@ -273,7 +393,15 @@ async def arena_wire_history(
     after_sequence: int = Query(default=0, ge=0),
     limit: int = Query(default=1000, ge=1, le=5000),
 ):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.wire_history")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "records": [],
+            "after_sequence": after_sequence,
+            "complete": True,
+            **_epoch_metadata(epoch),
+        }
     try:
         rows = await manager.read_wire_async(
             session_id,
@@ -285,6 +413,7 @@ async def arena_wire_history(
             "records": rows,
             "after_sequence": after_sequence,
             "complete": bool(session.get("wire_log_complete", True)),
+            **_epoch_metadata(epoch),
         }
     except ArenaError as exc:
         _raise_http(exc)
@@ -292,7 +421,14 @@ async def arena_wire_history(
 
 @router.get("/sessions/{session_id}/thp")
 async def download_arena_thp(session_id: str, request: Request):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.download_thp")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "artifact": None,
+            "requested_session_id": session_id,
+            **_epoch_metadata(epoch),
+        }
     try:
         path = manager.artifact_path(session_id, "thp")
     except ArenaError as exc:
@@ -301,6 +437,7 @@ async def download_arena_thp(session_id: str, request: Request):
         path,
         media_type="text/plain; charset=gb2312",
         filename=f"{session_id}.txt",
+        headers=_epoch_headers(epoch),
     )
 
 
@@ -310,9 +447,22 @@ async def download_arena_artifact(
     artifact_key: str,
     request: Request,
 ):
-    manager = _manager(request)
+    epoch = _epoch_access_state(request, "national_arena.download_artifact")
+    manager = _manager(request, epoch=epoch, required=False)
+    if manager is None:
+        return {
+            "artifact": None,
+            "artifact_key": artifact_key,
+            "requested_session_id": session_id,
+            **_epoch_metadata(epoch),
+        }
     try:
         path = manager.artifact_path(session_id, artifact_key)
     except ArenaError as exc:
         _raise_http(exc)
-    return FileResponse(path, media_type="text/plain; charset=utf-8", filename=path.name)
+    return FileResponse(
+        path,
+        media_type="text/plain; charset=utf-8",
+        filename=path.name,
+        headers=_epoch_headers(epoch),
+    )

@@ -19,7 +19,6 @@ def _native_worker_prompt() -> str:
 
 def test_core_prompts_include_full_national_legality_rules():
     prompt_names = [
-        "initial_prompt.md",
         "worker_profile_national_native.md",
         "master_prompt.md",
         "reviewer_prompt.md",
@@ -52,9 +51,7 @@ def test_core_prompts_include_full_national_legality_rules():
 
 def test_active_generation_prompts_use_national_bot_namespace():
     prompt_names = [
-        "initial_prompt.md",
         "combined_analyst.md",
-        "stagnation_analyzer.md",
         "orchestrator.md",
         "master_plan_audit.md",
         "crossover_prompt.md",
@@ -80,52 +77,98 @@ def test_active_generation_prompts_use_national_bot_namespace():
         "national_vN",
         "national-bot-v",
         "national_bot.py",
-        "sever/bot_adapter.py",
+        "policy.py",
     ]
     for fragment in required_fragments:
         assert fragment in combined
+    assert "sever/bot_adapter.py" not in combined
+
+
+def test_retired_live_analyst_prompts_are_not_exposed_as_active_roles():
+    from server.routes.prompts import ALLOWED_PROMPTS
+
+    assert "combined_analyst" in ALLOWED_PROMPTS
+    assert "initial" not in ALLOWED_PROMPTS
+    assert "match_analyst" not in ALLOWED_PROMPTS
+    assert "performance_analyst" not in ALLOWED_PROMPTS
+    assert "stagnation_analyzer" not in ALLOWED_PROMPTS
 
 
 def test_auxiliary_prompts_block_national_protocol_misleading_plans():
     assert "National rules safety" in _prompt("master_plan_audit.md")
     assert "national protocol legality assumptions" in _prompt("crossover_compatibility.md")
+    assert not (PROMPTS / "dynamic_test_generator.md").exists()
 
-    dynamic_prompt = _prompt("dynamic_test_generator.md")
-    assert "never `check/check`" in dynamic_prompt
-    assert "postflop first action" in dynamic_prompt
+    active = _prompt("master_prompt.md") + _prompt("reviewer_prompt.md")
+    assert "Postflop first action" in active
+    assert "check/check" in active
 
 
 def test_tuner_prompt_contract_matches_planning_hard_gate():
     master_prompt = _prompt("master_prompt.md")
     worker_prompt = _prompt("worker_prompt.md")
 
-    assert '`target_files` must be exactly `["constants.py"]`' in master_prompt
-    assert "strategy_helpers.py" in master_prompt
-    assert "do not label that task as Tuner" in master_prompt
+    assert '`target_files` must be exactly `["policy.py"]`' in master_prompt
+    assert "existing named numeric" in master_prompt
+    assert "Any other file, new functions, classes, imports, or control flow" in master_prompt
 
-    assert "must target constants.py only" in worker_prompt
-    assert "report BLOCKED instead of searching other .py files" in worker_prompt
-    assert "search all .py files" not in worker_prompt
+    assert "must target `policy.py` only" in worker_prompt
+    assert "Any other file, new functions/classes/imports/control flow" in worker_prompt
+    assert "constants.py only" not in worker_prompt
 
 
-def test_prompts_require_structured_battle_memory_citations():
+def test_weak_model_exploration_uses_frozen_structural_evidence_not_retired_qd():
+    from skill_library import SKILL_LAYERS
+    from workflow_profiles import get_workflow_profile
+
+    novelty = SKILL_LAYERS["novelty"]
+    profile = get_workflow_profile("exploration_diversity")
+    master = _prompt("master_prompt.md")
+    worker = _prompt("worker_prompt.md")
+
+    assert novelty.poker_skill_ref == "Frozen structural proposal contract"
+    assert novelty.required_spot_fields == (
+        "proposal_id",
+        "structural_call_chain",
+        "falsifier",
+        "consumer_trace_digest",
+    )
+    assert "niche_id" not in novelty.required_spot_fields
+    assert "children_count" not in novelty.gate_metrics
+    assert "frozen, falsifiable" in profile.description
+    assert "A Tuner-only proposal is invalid" in master
+    assert "BAD primary plan" in master
+    assert "subordinate calibration" in worker
+
+
+def test_prompts_do_not_inject_retired_replay_experience_surface():
     master_prompt = _prompt("master_prompt.md")
     worker_prompt = _prompt("worker_prompt.md")
 
-    # Battle memory is frozen and injected by the orchestrator.  The planning
-    # model must not reopen independently changing live result files.
-    assert "battle-lesson" in master_prompt
-    assert "already injected below by the orchestrator" in master_prompt
+    # The storage kernel may retain identity-bound replay records internally,
+    # but active planning has no Markdown/background experience injection.
     assert "mutable `web/core/results/*`" in master_prompt
-    assert "the other checkout" in master_prompt
+    assert "the other checkout" in " ".join(master_prompt.split())
     assert "battle_lessons.jsonl" not in master_prompt
     assert "battle_evidence.jsonl" not in master_prompt
-    assert "lesson_id" in master_prompt
-    assert "evidence_id" in master_prompt
-    assert "Pending Battle Summaries" in master_prompt
+    assert "Battle Experience" not in master_prompt
+    assert "battle_lesson_*" not in worker_prompt
+    assert "<battle_evidence_contract>" not in worker_prompt
 
-    assert "battle_lesson_*" in worker_prompt
-    assert "ev_*" in worker_prompt
+
+def test_master_and_skill_registry_have_no_retired_exploitability_sidecar():
+    from skill_library import SKILL_LAYERS
+
+    master_prompt = _prompt("master_prompt.md")
+    opponent_model = SKILL_LAYERS["opponent_model"]
+
+    assert "exploitability_weaknesses" not in master_prompt
+    assert "Exploitability Weaknesses" not in master_prompt
+    assert "exploitability_delta" not in opponent_model.gate_metrics
+    assert opponent_model.gate_metrics == (
+        "h2h_delta",
+        "opponent_profile_consumed",
+    )
 
 
 def test_prompts_require_national_runtime_architecture_contracts():
@@ -134,7 +177,9 @@ def test_prompts_require_national_runtime_architecture_contracts():
     reviewer_prompt = _prompt("reviewer_prompt.md")
     critic_prompt = _prompt("critic_prompt.md")
 
-    assert "Decision-time budget" in master_prompt
+    assert "hard_deadline_ms" in master_prompt
+    assert "baseline_target_ms" in master_prompt
+    assert "refinement_budget_ms" in master_prompt
     assert "Official EXE Compliance Feedback" in master_prompt
     assert "{official_feedback}" in master_prompt
     assert "National Runtime Architecture Feedback" in master_prompt
@@ -146,62 +191,64 @@ def test_prompts_require_national_runtime_architecture_contracts():
     assert "reference_pack_id" in master_prompt
     assert "same-shape/different-value" in master_prompt
     assert "same constants and literal types used" in master_prompt
-    assert "bounded module-import precomputation" in worker_prompt
-    assert "binding local strategy reference card" in worker_prompt
-    assert "process persists for all 70 hands" in worker_prompt
+    assert "system-owned, read-only pure import-time data" in worker_prompt
+    assert "task's injected typed strategy-reference card" in worker_prompt
+    assert "persistent," in worker_prompt and "worker owns policy imports" in worker_prompt
     assert "# Runtime Contract" in worker_prompt
     assert "Runtime architecture check" in reviewer_prompt
     assert "incremental" in reviewer_prompt
     assert "baseline_passed_check" in reviewer_prompt
     assert "sparse snapshot" in reviewer_prompt
-    assert "get_baseline_action" in worker_prompt
-    assert "late result" in worker_prompt
+    assert "get_baseline_decision" in worker_prompt
+    assert "A missed deadline terminates the complete process group/tree" in worker_prompt
     assert "Official Windows EXE artifacts are compliance evidence only" in critic_prompt
     assert "Never use EXE" in critic_prompt
 
 
 def test_native_prompts_require_authoritative_terminal_repair_and_memory():
     master = _prompt("master_prompt.md")
-    worker = _prompt("worker_profile_national_native.md")
+    worker = _native_worker_prompt()
     reviewer = _prompt("reviewer_prompt.md")
 
     for prompt in (master, worker, reviewer):
         assert "street-closing" in prompt
         assert "exactly once" in prompt
-        assert "req['hand_runtime']" in prompt
-        assert "req['opponent_runtime']" in prompt
-        assert "old `requests`" in prompt or "archived `requests`" in prompt
+        assert "decision_context" in prompt
+        assert "req['hand_runtime']" not in prompt
+        assert "req['opponent_runtime']" not in prompt
         assert "showdown_range" in prompt
-        assert "selection-bias" in prompt
         assert "terminal" in prompt and "fold" in prompt and "call" in prompt
 
-    required_hand_runtime_fields = (
+    required_context_fields = (
         "preflop_aggressor",
         "preflop_spot",
-        "hero_position",
-        "previous_street",
+        "position",
         "can_donk",
         "can_delayed_probe",
         "street_open",
         "spr",
         "pot_odds",
     )
-    for field in required_hand_runtime_fields:
+    for field in required_context_fields:
         assert field in master
         assert field in worker
+    for field in ("position", "can_donk", "can_delayed_probe", "showdown_range"):
         assert field in reviewer
 
 
 def test_native_prompts_require_transcript_reachability_and_control_pairs():
     master = _prompt("master_prompt.md")
-    worker = _prompt("worker_profile_national_native.md")
+    worker = _native_worker_prompt()
     reviewer = _prompt("reviewer_prompt.md")
 
-    for prompt in (master, worker, reviewer):
-        assert "producer -> consumer -> sanitized action -> telemetry" in prompt
+    assert "producer -> policy consumer -> socket-validated typed intent -> telemetry" in master
+    assert "producer -> consumer -> socket-validated typed intent -> telemetry" in reviewer
+    for prompt in (master, reviewer):
         assert "firing tuple" in prompt
         assert "one-predicate control" in prompt
-        assert "action difference" in prompt
+        assert "difference" in prompt
+
+    for prompt in (master, worker, reviewer):
         assert "hero BB" in prompt
         assert "SB raise" in prompt
         assert "official `call`" in prompt or "official wire `call`" in prompt
@@ -211,15 +258,19 @@ def test_native_prompts_require_transcript_reachability_and_control_pairs():
 
 def test_native_prompts_reject_fake_refinement_and_threshold_only_innovation():
     master = _prompt("master_prompt.md")
-    worker = _prompt("worker_profile_national_native.md")
+    worker = _native_worker_prompt()
     reviewer = _prompt("reviewer_prompt.md")
 
-    for prompt in (master, worker, reviewer):
+    for prompt in (master, reviewer):
         assert "strictly under 250 ms" in prompt
         assert "sample_count" in prompt
         assert "original baseline" in prompt or "input baseline" in prompt
         assert "fixed-seed" in prompt
         assert "improved action" in prompt or "action improves" in prompt
+
+    assert "at least eight trusted refinement steps" in worker
+    assert "at least 5 ms" in worker
+    assert "typed intent" in worker or "typed-intent" in worker
 
     assert "one attributable structural hypothesis" in master
     assert "threshold-only" in master
@@ -235,15 +286,22 @@ def test_native_prompts_preserve_both_20260711_official_oracles():
         normalized = " ".join(prompt.split())
         assert "Exact" in normalized and "2x" in normalized
         assert "1..70" in normalized
-        assert "1..69" in normalized
+        assert "1..69" in normalized or "69 TCP settlement pairs" in normalized
         assert "STATE:0..69" in normalized
-        assert "69 settlements alone" in normalized
+        assert (
+            "69 settlements alone" in normalized
+            or "69 TCP settlement pairs are sufficient only" in normalized
+            or "completion then requires starts 1..70, settlements 1..69" in normalized
+        )
         assert "hand-70 `earnChips`" in normalized
-        assert "Glicko" in normalized and "H2H" in normalized
         assert "official-full-v5" in normalized
 
-    assert "advisory context only" in master
-    assert "Only deterministic official verdict/issues/evidence" in master
+    assert "H2H" in master
+    for prompt in (worker, reviewer):
+        assert "Glicko" in prompt and "H2H" in prompt
+
+    assert "Official EXE Compliance Feedback (compliance-only, not strength)" in master
+    assert "National Runtime Architecture Feedback (planning signal, not legality)" in master
 
 
 def test_prompts_never_promote_web_arena_to_official_or_strength_authority():
@@ -255,8 +313,8 @@ def test_prompts_never_promote_web_arena_to_official_or_strength_authority():
 
     assert "Arena completion" in orchestrator
     assert "Only a valid content-bound certificate" in orchestrator
-    assert "local debugging and presentation harness" in worker
-    assert "do not claim Arena success proves official compliance" in worker
+    assert "The Web Arena is diagnostic only" in worker
+    assert "Arena and official chip totals never" in worker
     assert "Arena THP" in reviewer
     assert "non-strength, local diagnostic evidence" in critic
     assert "deterministic EXE verdict" in official_analyst
@@ -265,20 +323,78 @@ def test_prompts_never_promote_web_arena_to_official_or_strength_authority():
 def test_worker_execution_profiles_do_not_mix_native_and_botzone_verification():
     common = _prompt("worker_prompt.md")
     native = _native_worker_prompt()
-    legacy = common.replace(
-        "{execution_profile_contract}",
-        _prompt("worker_profile_legacy_adapter.md"),
-    )
 
     assert common.count("{execution_profile_contract}") == 1
-    assert "current_request_view" in native
-    assert "complete match history" in native
+    assert not (PROMPTS / "worker_profile_legacy_adapter.md").exists()
+    assert "delimiter-free raw TCP byte stream" in native
+    assert "five-file submission ABI" in " ".join(native.split())
+    assert "The complete candidate decision surface is `policy.py`" in native
+    assert "Do not reconstruct these values from raw TCP text" in native
     assert "require_current_stream_decoder=True" in native
     assert "require_current_decision_runtime=True" in native
     assert "smoke_tester.py" not in native
     assert "emit exactly one JSON" not in native
-    assert "smoke_tester.py" in legacy
-    assert "emit exactly one JSON" in legacy
+
+
+def test_active_llm_prompt_templates_expose_only_strict_raw_tcp_vocabulary():
+    """Weak models must not be taught retired protocol/control-plane concepts."""
+
+    combined = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(PROMPTS.glob("*.md"))
+    )
+    retired_patterns = (
+        r"\bbotzone\b",
+        r"\bbot[_ -]?adapter\b",
+        r"\badapter\b",
+        r"\bnewline\b",
+        r"\bmap[-_ ]?elites?\b",
+        r"\bqd archive\b",
+        r"\bniches?\b",
+        r"\belite parents?\b",
+        r"\bbattle[_ -]?scheduler\b",
+        r"\bcertification queue\b",
+        r"\bofficial(?: exe)? queue\b",
+        r"\blegacy (?:exe|transport|protocol|subprocess)\b",
+        r"\bretired protocol\b",
+        r"\brequest/response\b",
+        r"\binteger actions?\b",
+        r"\bjson entrypoint\b",
+    )
+    for pattern in retired_patterns:
+        assert not re.search(pattern, combined, flags=re.IGNORECASE), pattern
+
+    required = (
+        "delimiter-free",
+        "fragmented",
+        "coalesced",
+        "typed policy-intent ABI",
+        "official-full-v5",
+    )
+    for phrase in required:
+        assert phrase in combined
+
+
+def test_official_repair_worker_prompt_keeps_the_same_strict_abi():
+    import tool_planning
+
+    task = tool_planning._official_repair_tasks(
+        {
+            "next_v": 143,
+            "source_v": 143,
+            "stage": "official_full_failed",
+            "gate_results": {
+                "official_full": {
+                    "issues": ["policy.py: bounded decision exception"],
+                },
+            },
+        },
+        "Repair the bounded policy exception.",
+    )[0]
+    prompt = task["worker_prompt"]
+    assert "five-file strict artifact" in prompt
+    assert "system-owned TCP entrypoint byte-identical" in prompt
+    assert "bot_adapter" not in prompt.lower()
 
 
 def test_master_and_crossover_prompts_do_not_embed_generation_case_history():
@@ -306,7 +422,7 @@ def test_master_prompts_prioritize_h2h_snapshot_over_spotlight_samples():
     critic_prompt = _prompt("critic_prompt.md")
 
     assert "The stable H2H snapshot is authoritative" in master_prompt
-    assert "Replay Spotlight, match_history excerpts" in master_prompt
+    assert "Replay Spotlight and supplied match-history excerpts" in master_prompt
     assert "must not override" in master_prompt
     assert "`games`, `a_wins`, `b_wins`, and `win_rate`" in master_prompt
     assert "canonical_citation" in master_prompt
@@ -329,37 +445,34 @@ def test_prompts_require_reachable_embedded_selftests():
     assert "_self_test_*" in master_prompt
     assert "_self_test_*" in worker_prompt
     assert "Never leave a new top-level `_self_test_*`" in worker_prompt
-    assert "standalone `_self_test_*` helpers uncalled" in master_prompt
+    assert "Never leave new standalone `_self_test_*` functions uncalled" in master_prompt
 
 
-def test_regression_guardian_prompt_matches_current_trigger_contract():
-    guardian_prompt = _prompt("regression_guardian.md")
+def test_retired_strategy_side_roles_have_no_active_prompt_or_callable():
     tool_gates = (ROOT / "web" / "core" / "tool_gates.py").read_text(encoding="utf-8")
+    audit_agents = (ROOT / "web" / "core" / "audit_agents.py").read_text(encoding="utf-8")
 
-    assert "currently called only from `run_critic`" in guardian_prompt
-    assert "advisory critic score is below 4" in guardian_prompt
-    assert "Neither the Critic nor this Guardian can block or certify" in guardian_prompt
-    assert "local native-TCP precommit evaluation is the strategy hard gate" in guardian_prompt
-    assert "do not automatically invoke this Guardian" in guardian_prompt
-    assert "Precommit eval blocks a commit" not in guardian_prompt
-    assert "2+ consecutive generations show rating decline" not in guardian_prompt
+    for prompt_name in (
+        "regression_guardian.md",
+        "precommit_semantic.md",
+        "critic_calibration.md",
+    ):
+        assert not (PROMPTS / prompt_name).exists()
+    for symbol in (
+        "_run_regression_guardian",
+        "_run_precommit_semantic",
+        "_run_critic_calibration",
+    ):
+        assert symbol not in tool_gates
+        assert symbol not in audit_agents
 
-    assert "_run_regression_guardian" in tool_gates
-    assert "score_num < 4" in tool_gates
 
+def test_active_prompts_use_call_to_pass_after_postflop_check():
+    master = _prompt("master_prompt.md")
+    worker = _prompt("worker_profile_national_native.md")
+    crossover = _prompt("crossover_prompt.md")
+    worker_normalized = " ".join(worker.split())
 
-def test_decision_templates_use_call_to_pass_after_postflop_check():
-    import sys
-
-    sys.path.insert(0, str(ROOT / "web" / "core"))
-    import decision_tester
-
-    for scenario in decision_tester.TEMPLATE_SCENARIOS:
-        by_round = {}
-        for action in scenario["input"].get("history", []):
-            by_round.setdefault(action.get("round"), []).append(action)
-        for street, actions in by_round.items():
-            if street in (1, 2, 3) and len(actions) >= 2 and actions[0].get("action_type") == "check":
-                assert actions[1].get("action_type") != "check", scenario["id"]
-                if actions[1].get("action") == 0:
-                    assert actions[1].get("action_type") == "call", scenario["id"]
+    assert "second postflop pass after a check is wire `call`" in master
+    assert "after the first postflop action a pass is `call`" in worker_normalized
+    assert "after a postflop check the second pass is call, not check" in crossover

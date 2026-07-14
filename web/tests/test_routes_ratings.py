@@ -1,4 +1,4 @@
-"""Tests for /api/ratings, /api/history, /api/experience, /api/daemon/status, /api/h2h, /api/bot-stats."""
+"""Tests for ratings, history, daemon, H2H, and bot-stat routes."""
 
 import pytest
 from bot_namespace import bot_name
@@ -55,36 +55,14 @@ class TestHistory:
         assert isinstance(data, dict)
 
 
-class TestExperience:
-    def test_get(self, client):
-        resp = client.get("/api/experience")
-        assert resp.status_code == 200
-        assert isinstance(resp.text, str)
+class TestRetiredExperienceSurface:
+    @pytest.mark.parametrize("method", ["get", "put", "post"])
+    def test_route_is_absent(self, client, method):
+        response = getattr(client, method)("/api/experience")
+        assert response.status_code == 404
 
-    def test_update(self, client, temp_experience, monkeypatch):
-        from server.routes import ratings
-        monkeypatch.setattr(ratings, "EXPERIENCE_FILE", temp_experience)
-        resp = client.put("/api/experience", json={"content": "## Updated\n- New lesson\n"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["saved"] is True
-        assert temp_experience.read_text() == "## Updated\n- New lesson\n"
-
-    def test_append(self, client, temp_experience, monkeypatch):
-        from server.routes import ratings
-        monkeypatch.setattr(ratings, "EXPERIENCE_FILE", temp_experience)
-        resp = client.post("/api/experience/append", json={"lesson": "Test lesson"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["appended"] is True
-        content = temp_experience.read_text()
-        assert "Test lesson" in content
-
-    def test_append_empty(self, client, temp_experience, monkeypatch):
-        from server.routes import ratings
-        monkeypatch.setattr(ratings, "EXPERIENCE_FILE", temp_experience)
-        resp = client.post("/api/experience/append", json={"lesson": ""})
-        assert resp.status_code == 400
+    def test_append_route_is_absent(self, client):
+        assert client.post("/api/experience/append").status_code == 404
 
 
 class TestDaemonStatus:
@@ -95,6 +73,100 @@ class TestDaemonStatus:
         assert "status" in data
         assert "last_update_age_seconds" in data
         assert "daemon_enabled" in data
+
+    def test_pre_reset_config_is_not_reported_as_effective_daemon(self, client, monkeypatch):
+        import epoch_authority
+        from server.state import app_state
+
+        app_state.override_runtime_config(daemon_enabled=True)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda **_kwargs: {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "reset_required",
+                "initialized": False,
+            },
+        )
+
+        data = client.get("/api/daemon/status").json()
+
+        assert data["status"] == "blocked"
+        assert data["reason"] == "policy_epoch_not_initialized"
+        assert data["epoch_state"] == "reset_required"
+        assert data["daemon_enabled"] is False
+        assert data["daemon_configured"] is True
+
+    def test_initialized_status_uses_process_liveness_not_cycle_age(self, client, monkeypatch):
+        import epoch_authority
+        import server.routes.control as control
+        import server.routes.ratings as ratings
+        from server.state import app_state
+
+        monkeypatch.setattr(app_state, "daemon_enabled", True)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda **_kwargs: {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "fresh_bootstrap_ready",
+                "initialized": True,
+            },
+        )
+        monkeypatch.setattr(ratings, "_snapshot", lambda: {})
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "alive": False,
+                "heartbeat_stale": False,
+            },
+        )
+
+        data = client.get("/api/daemon/status").json()
+
+        assert data["status"] == "stopped"
+        assert data["reason"] == "daemon_process_not_alive"
+        assert data["daemon_enabled"] is False
+        assert data["daemon_configured"] is True
+        assert data["process_alive"] is False
+        assert data["strength_evidence_available"] is False
+        assert data["strength_evidence_status"] == "awaiting_first_rating_cycle"
+
+    def test_fresh_live_daemon_is_active_before_first_rating_cycle(self, client, monkeypatch):
+        import epoch_authority
+        import server.routes.control as control
+        import server.routes.ratings as ratings
+        from server.state import app_state
+
+        monkeypatch.setattr(app_state, "daemon_enabled", True)
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda **_kwargs: {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "strict_published",
+                "initialized": True,
+            },
+        )
+        monkeypatch.setattr(ratings, "_snapshot", lambda: {})
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "alive": True,
+                "heartbeat_stale": False,
+                "heartbeat_age_sec": 2.0,
+            },
+        )
+
+        data = client.get("/api/daemon/status").json()
+
+        assert data["status"] == "active"
+        assert data["daemon_enabled"] is True
+        assert data["process_alive"] is True
+        assert data["heartbeat_age_seconds"] == 2.0
+        assert data["strength_evidence_status"] == "awaiting_first_rating_cycle"
 
 
 class TestH2H:

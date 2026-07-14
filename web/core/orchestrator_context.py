@@ -4,15 +4,20 @@ _build_context assembles the status string injected into the orchestrator prompt
 _make_precompact_hook preserves evolution state across LLM context compaction.
 """
 
-import json
 import re
 import shlex
 import time
 
 from claude_agent_sdk.types import HookMatcher, SyncHookJSONOutput
 
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, bot_tag_glob
-from evolution_infra import locked_file, RESULTS_DIR, MAX_PRECOMMIT_RETRIES
+from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    parse_bot_version,
+)
+from evolution_infra import MAX_PRECOMMIT_RETRIES
 from failure_classification import classify_precommit_gate
 from pipeline_state import route_policy
 
@@ -48,6 +53,33 @@ _GIT_TAG_MUTATION_FLAGS = {
     "--force", "-d", "--delete",
 }
 _GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
+_OPERATOR_ONLY_OFFICIAL_BOOTSTRAP_MARKERS = (
+    "--acknowledge-one-time-first-strict-control",
+    "bootstrap-first-strict",
+    "bootstrap_first_strict",
+    "official_bootstrap.py",
+    "official_bootstrap_control.json",
+    "import official_bootstrap",
+    "from official_bootstrap",
+)
+_LLM_AVAILABILITY_CONTROL_MARKERS = (
+    "pok_llm_resume_evidence_digest",
+    "llm_availability_store",
+    "llm_availability_pause.json",
+    "reconcile_llm_pause",
+    "resume_llm_pause",
+    "consume_operator_resume_ack",
+    "persist_llm_pause",
+)
+_STRICT_AUTHORITY_CONTROL_MARKERS = (
+    "strict_authority_workflow",
+    "strict-role-accepted",
+    "accept_role_result",
+    "dispatch_call",
+    "complete_provider_call",
+    "strictroleaccepted",
+    "strictproviderresultobserved",
+)
 
 
 def _strip_heredoc_bodies(command: str) -> str:
@@ -284,6 +316,35 @@ def _orchestrator_bash_is_mutation(command: str) -> bool:
     return False
 
 
+def _orchestrator_bash_targets_operator_only_bootstrap(command: str) -> bool:
+    """Reject every main-LLM Bash route to the one-time formal control.
+
+    This is intentionally independent of file-mutation detection and the
+    current pipeline stage.  ``bootstrap-first-strict`` is an operator action
+    whose durable side effect is outside the ordinary
+    orchestrator tool route, even when its command text contains no shell
+    redirect or other syntactic write marker.
+    """
+    low = str(command).lower().replace("\\", "/")
+    return any(
+        marker in low for marker in _OPERATOR_ONLY_OFFICIAL_BOOTSTRAP_MARKERS
+    )
+
+
+def _orchestrator_bash_targets_llm_availability_control(command: str) -> bool:
+    """Reject main-LLM shell access to provider pause/resume authority."""
+
+    low = str(command).lower().replace("\\", "/")
+    return any(marker in low for marker in _LLM_AVAILABILITY_CONTROL_MARKERS)
+
+
+def _orchestrator_bash_targets_strict_authority_control(command: str) -> bool:
+    """Reject shell/import access to first-strict execution authority."""
+
+    low = str(command).lower().replace("\\", "/")
+    return any(marker in low for marker in _STRICT_AUTHORITY_CONTROL_MARKERS)
+
+
 def set_cycle_start_time(t):
     """Called from orchestrator._run_one_cycle to mark the cycle start."""
     global _cycle_start_time
@@ -351,53 +412,6 @@ def _inject_master_plan_hint(checkpoint, lines):
         lines.append("Master plan is saved — do NOT call run_master again.")
 
 
-def _load_guardian_insights(max_entries=3):
-    """Load recent regression_guardian.jsonl entries for context injection.
-
-    Returns a formatted string block with up to *max_entries* recent guardian
-    diagnoses, or empty string if the file doesn't exist or has no entries.
-    fix-9: surfaces guardian_diagnosis to Master context (previously "written
-    and forgotten" — zero downstream consumers).
-    """
-    try:
-        import evolution_infra as _ei
-        _gf = _ei.RESULTS_DIR / "regression_guardian.jsonl"
-        if not _gf.exists():
-            return ""
-        _entries = []
-        with open(_gf, "r", encoding="utf-8") as _f:
-            for _line in _f:
-                _line = _line.strip()
-                if _line:
-                    try:
-                        _entries.append(json.loads(_line))
-                    except Exception:
-                        pass
-        _recent = _entries[-max_entries:] if len(_entries) > max_entries else _entries
-        if not _recent:
-            return ""
-        _blocks = []
-        for _e in _recent:
-            _ver = _e.get("version", "?")
-            _score = _e.get("score", "?")
-            _diag = _e.get("diagnosis", "")[:300]
-            _rc = _e.get("root_cause", "")
-            _rec = _e.get("recovery_recommendation", "")
-            _block = f"v{_ver} (score={_score}): {_diag}"
-            if _rc:
-                _block += f"\n  Root cause: {_rc[:200]}"
-            if _rec:
-                _block += f"\n  Recommendation: {_rec[:200]}"
-            _blocks.append(_block)
-        return (
-            "\nREGRESSION GUARDIAN INSIGHTS (recent critic score<4 diagnoses):\n"
-            + "\n".join(f"  - {b}" for b in _blocks)
-            + "\nAvoid these pitfalls in the next generation.\n"
-        )
-    except Exception:
-        return ""
-
-
 def _format_checkpoint_info(checkpoint, lines):
     """Append pipeline checkpoint details to *lines*.
 
@@ -414,7 +428,7 @@ def _format_checkpoint_info(checkpoint, lines):
     gen_attempt = checkpoint.get("generation_attempt", 0)
     if gen_attempt > 0:
         lines.append(
-            f"INTRA-GEN RETRIES: {gen_attempt} previous critic rejection(s). "
+            f"INTRA-GEN ATTEMPTS: {gen_attempt}. "
             "Follow the checkpoint route and the latest tool directive exactly; "
             "do not maintain a private retry counter."
         )
@@ -469,23 +483,27 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     data from the code-layer scheduler instead of raw status data.
     """
     from evolution_core import (
-        get_active_bots, load_ratings,
-        get_bot_dir, git_has_tag, _load_recent_failures, _git,
+        get_active_bots,
+        get_bot_dir,
         find_current_v, find_max_committed_v, find_abandoned_version_floor,
         compute_next_generation_v,
     )
-    from glicko2 import Glicko2Player
-
     # If GenerationContext is provided, build streamlined context
     if gen_ctx is not None:
         lines = [
-            f"Current generation: v{gen_ctx.current_v}",
+            f"Version authority high-water: v{gen_ctx.current_v}",
             f"Next generation: v{gen_ctx.next_v}",
             f"Strategy: {gen_ctx.strategy}",
-            f"Source bot: {bot_name(gen_ctx.source_v)}",
             f"Active bots: {len(get_active_bots())}",
             f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         ]
+        if gen_ctx.strategy == "fresh_policy_bootstrap":
+            lines.append(
+                "Source bot: NONE. v142 is archived version authority only and "
+                "must not be opened, copied, executed, or mined for strategy."
+            )
+        else:
+            lines.append(f"Source bot: {bot_name(gen_ctx.source_v)}")
         if gen_ctx.strategy == "crossover" and gen_ctx.crossover_parents:
             lines.append(f"Crossover parents: {bot_name(gen_ctx.crossover_parents[0])} x {bot_name(gen_ctx.crossover_parents[1])}")
 
@@ -497,11 +515,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — after Master, pass tasks=[] to load the exact checkpoint-owned plan; modifies bot code in parallel when target_files do not overlap (max 3), otherwise serial")
         lines.append("  run_quality_gates(version, source_v) — full hard gates: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, reachability")
         lines.append("  run_review(version, source_v, plan) — code quality review (boundaries, size, correctness)")
-        lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — hard strategic gate; rejected candidates must rework before precommit_eval")
-        lines.append("  run_precommit_eval(version, source_v, n_games) — workflow final regression check; national_primary uses adapter-backed national matches, national_native uses native TCP national matches")
+        lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — required schema-valid advisory strategy assessment; it does not accept, reject, or schedule repair")
+        lines.append("  run_precommit_eval(version, source_v, n_games) — final local regression check over complete 70-hand native TCP matches")
         lines.append("  commit_bot(version, source_v, strategy, review_approved=true) — git commit + tag (requires all gates passed)")
         lines.append("  run_archivist(version, source_v) — archive + cleanup after commit")
-        lines.append("  run_crossover(parent_a, parent_b, target_v) — merge two parent bots (alternative to master+workers)")
+        lines.append("  run_crossover(parent_a, parent_b, target_v) — prepare a two-parent baseline only; direction audit, optional research, Master planning, and Workers still follow")
         lines.append("  run_literature_probe(source_v, next_v, h2h_weakness, stagnation_info) — web-search ONE codable strategy hypothesis for the bot's biggest H2H weakness (governance-gated: auto-skips on cooldown). MANDATORY when stagnation analysis shows is_stagnant:true.")
 
         if gen_ctx.stagnation_info:
@@ -513,20 +531,6 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         if gen_ctx.performance_verification:
             lines.append(f"\nPerformance verification:\n{gen_ctx.performance_verification}")
 
-        # Eval round summary (deterministic cross-generation performance data)
-        try:
-            from eval_rounds import EvalRoundManager
-            _erm = EvalRoundManager()
-            source_bot_name = bot_name(gen_ctx.source_v)
-            eval_summary = _erm.get_last_round_summary(source_bot_name)
-            if eval_summary:
-                lines.append(f"\n{eval_summary}")
-        except Exception:
-            pass
-        # fix-9: inject regression guardian insights into gen_ctx Master context
-        _guardian = _load_guardian_insights(max_entries=3)
-        if _guardian:
-            lines.append(_guardian)
         if one_gen:
             lines.append("MODE: Run exactly ONE generation, then stop.")
         else:
@@ -541,80 +545,64 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             pass
         return "\n".join(lines)
 
-    active_bots = get_active_bots()
-    ratings = load_ratings()
-    current_v = find_current_v()
-    max_committed_v = find_max_committed_v()
-    abandoned_floor = find_abandoned_version_floor()
-    next_v = compute_next_generation_v(
-        current_v=current_v,
-        max_committed_v=max_committed_v,
-        abandoned_floor=abandoned_floor,
+    from epoch_authority import (
+        strict_epoch_projection,
+        unpublished_candidate_versions,
     )
 
+    epoch = strict_epoch_projection()
+    active_bots = list(epoch["active_bots"])
+    current_v = int(epoch["current_v"])
+    next_v = int(epoch["next_v"])
+
     lines = [
-        f"Current generation: v{current_v}",
+        f"Version authority high-water: v{current_v}",
         f"Next generation will be: v{next_v}",
         f"Active bots: {len(active_bots)}",
+        f"Evaluation epoch: {epoch['evaluation_epoch']} ({epoch['state']})",
         f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
     ]
+
+    if not epoch["initialized"]:
+        lines.append(
+            "STRICT EPOCH NOT INITIALIZED: mutable ratings, H2H, abandoned "
+            "versions, candidate directories, and the retired checkpoint are "
+            "excluded from planning and numbering authority."
+        )
+        if epoch.get("operator_command"):
+            lines.append(
+                "OPERATOR ACTION REQUIRED (the LLM must not execute it): "
+                f"{epoch['operator_command']}"
+            )
+        elif epoch.get("operator_action"):
+            lines.append(
+                f"OPERATOR RECOVERY REQUIRED: {epoch['operator_action']}"
+            )
 
     # Tool reference — prevents ToolSearch in non-gen_ctx path
     lines.append("\nAVAILABLE TOOLS (call by exact name):")
     lines.append("  prepare_next_gen | run_direction_audit | run_literature_probe | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
 
-    current_bot_name = bot_name(current_v)
+    strict_active_versions = sorted(
+        (
+            (version, name)
+            for name in active_bots
+            if (version := parse_bot_version(str(name))) is not None
+            and version >= FIRST_STRICT_POLICY_VERSION
+        ),
+        reverse=True,
+    )
+    current_bot_name = strict_active_versions[0][1] if strict_active_versions else ""
+    if not current_bot_name:
+        lines.append(
+            "Strict active source: NONE. Archived completion high-water is not a "
+            "strategy source or prompt-evidence identity."
+        )
 
-    # Current bot action stats (fold/call/raise frequencies by street)
-    bot_action_stats_file = RESULTS_DIR / "bot_action_stats.json"
-    if bot_action_stats_file.exists():
-        try:
-            with locked_file(bot_action_stats_file, "r") as f:
-                action_stats = json.load(f)
-            bot_stats = action_stats.get(current_bot_name)
-            if bot_stats:
-                lines.append(f"\nCurrent bot action stats ({current_bot_name}):")
-                for street in ("preflop", "flop", "turn", "river"):
-                    st = bot_stats.get(street)
-                    if st:
-                        total = st.get("total", 0)
-                        if total > 0:
-                            fold_pct = st.get("fold", 0) / total * 100
-                            call_pct = st.get("call", 0) / total * 100
-                            raise_pct = st.get("raise", 0) / total * 100
-                            lines.append(
-                                f"  {street}: total={total}, fold={fold_pct:.1f}%, call={call_pct:.1f}%, raise={raise_pct:.1f}%"
-                            )
-        except Exception:
-            pass
-
-    # Current bot rating reliability
-    cur_p = ratings.get(current_bot_name)
-    if cur_p:
-        # Load bot_stats for games-based reliability
-        bot_stats_file = RESULTS_DIR / "bot_stats.json"
-        games = 0
-        wr = 0.0
-        if bot_stats_file.exists():
-            try:
-                with locked_file(bot_stats_file, "r") as f:
-                    bs = json.load(f)
-                games = bs.get(current_bot_name, {}).get("games", 0)
-                wr = bs.get(current_bot_name, {}).get("win_rate", 0.0)
-            except Exception:
-                pass
-        reliable = "RELIABLE" if games >= 100 else f"UNRELIABLE ({games}/100 games — wait for more matches)"
-        # Compute H2H avg win rate for the current bot
-        try:
-            from tool_helpers import load_h2h_avg_winrates, load_strength_scores
-            h2h_wrs = load_h2h_avg_winrates()
-            strength_scores = load_strength_scores()
-            h2h_wr = h2h_wrs.get(current_bot_name, 0.5)
-            score = strength_scores.get(current_bot_name, 0.5)
-            h2h_str = f"leaderboard_score={score:.4f}, h2h_avg_wr={h2h_wr:.2%}"
-        except Exception:
-            h2h_str = "leaderboard_score=N/A, h2h_avg_wr=N/A"
-        lines.append(f"Current bot {current_bot_name}: {h2h_str}, r={cur_p.r:.1f}, rd={cur_p.rd:.1f}, wr={wr:.0%} ({games} games) [{reliable}]")
+    # The no-GenerationContext path is used by status-only dry runs.  It must
+    # not reopen mutable ratings/action/history files and accidentally create a
+    # second prompt-evidence authority.  Normal evolution receives the exact
+    # generation snapshot through ``gen_ctx`` above.
 
     # Incomplete bot detection — previous cycle may have been interrupted
     next_dir = get_bot_dir(next_v)
@@ -624,53 +612,58 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             f"(previous cycle was interrupted). Decide: resume workers or clean up and restart."
         )
 
-    # Recent completed generations (from git tags)
+    # Recent completed generations from the strict published identity resolver.
+    # Raw tag enumeration would mix archived v1..v142 identities into the
+    # current policy epoch and is therefore not prompt authority.
     try:
-        tag_output = _git("tag", "-l", bot_tag_glob(), "--sort=-version:refname", check=False)
-        recent_tags = [t.strip() for t in tag_output.splitlines() if t.strip()][:5]
+        from national_runtime_authority import strict_published_bot_names
+
+        strict_versions = sorted({
+            version
+            for name in strict_published_bot_names()
+            if (version := parse_bot_version(name)) is not None
+            and version >= FIRST_STRICT_POLICY_VERSION
+        }, reverse=True)
+        recent_tags = [bot_tag(version) for version in strict_versions[:5]]
         if recent_tags:
             lines.append(f"Recent completed gens: {', '.join(recent_tags)}")
-    except Exception:
-        pass
-
-    # Recent worker failures
-    try:
-        recent_failures = _load_recent_failures(3)
-        if recent_failures:
-            lines.append("Recent worker failures (last 3):")
-            for f in recent_failures:
-                lines.append(f"  - Gen {f['gen']} Worker {f['worker_id']} ({f.get('role', 'unknown')}): {f['error'][:120]}")
     except Exception:
         pass
 
     # Pipeline checkpoint — tell Orchestrator exactly where a killed cycle left off
     try:
         from evolution_core import read_pipeline_checkpoint
-        checkpoint = read_pipeline_checkpoint()
-        if checkpoint:
-            _format_checkpoint_info(checkpoint, lines)
+
+        if epoch.get("active_generation"):
+            checkpoint = read_pipeline_checkpoint()
+            if checkpoint:
+                _format_checkpoint_info(checkpoint, lines)
+        elif epoch.get("ignored_checkpoint"):
+            ignored = epoch["ignored_checkpoint"]
+            lines.append(
+                "RETIRED CHECKPOINT EVIDENCE (NOT ACTIVE): "
+                f"v{ignored.get('next_v')} from v{ignored.get('source_v')}, "
+                f"stage={ignored.get('stage')}; it will be archived by the "
+                "operator reset and cannot route any pipeline tool."
+            )
     except Exception:
         pass
+
+    debris = unpublished_candidate_versions()
+    if debris:
+        lines.append(
+            "UNPUBLISHED CANDIDATE DEBRIS (NOT VERSION AUTHORITY): "
+            + ", ".join(f"v{version}" for version in debris)
+        )
 
     # Environment anomaly detection
     anomalies = []
     if next_dir.exists() and not (next_dir / ".completed").exists():
         anomalies.append("incomplete bot directory")
-    try:
-        from evolution_core import _load_recent_failures
-        if _load_recent_failures(1):
-            anomalies.append("recent worker failures")
-    except Exception:
-        pass
     if anomalies:
         lines.append(
             f"ENVIRONMENT ANOMALIES DETECTED: {', '.join(anomalies)}."
         )
-
-    # fix-9: inject regression guardian insights into non-gen_ctx Master context
-    _guardian = _load_guardian_insights(max_entries=3)
-    if _guardian:
-        lines.append(_guardian)
 
     if one_gen:
         lines.append("MODE: Run exactly ONE generation, then stop.")
@@ -690,13 +683,15 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
 def _make_precompact_hook():
     """Return hooks dict that injects evolution state before Claude compacts context."""
     async def handler(hook_input, tool_use_id, context) -> SyncHookJSONOutput:
-        from evolution_core import read_pipeline_checkpoint, find_current_v
+        from evolution_core import read_pipeline_checkpoint
+        from epoch_authority import strict_epoch_projection
         lines = ["=== EVOLUTION STATE — PRESERVE DURING COMPACTION ==="]
         try:
-            current_v = find_current_v()
-            lines.append(f"Current completed bot: {bot_name(current_v)}")
-            checkpoint = read_pipeline_checkpoint()
-            if checkpoint:
+            epoch = strict_epoch_projection()
+            current_v = int(epoch["current_v"])
+            lines.append(f"Version authority high-water: {bot_name(current_v)}")
+            checkpoint = read_pipeline_checkpoint() if epoch.get("active_generation") else None
+            if checkpoint is not None:
                 stage = checkpoint.get("stage", "unknown")
                 route = route_policy(checkpoint)
                 next_step = route.get("next_tool") or "inspect checkpoint context"
@@ -706,6 +701,18 @@ def _make_precompact_hook():
                     f"{route.get('directive')} DO NOT restart this generation — continue from this stage."
                 )
                 _inject_master_plan_hint(checkpoint, lines)
+            elif epoch.get("ignored_checkpoint"):
+                ignored = epoch["ignored_checkpoint"]
+                lines.append(
+                    "NO ACTIVE GENERATION. Retired checkpoint "
+                    f"v{ignored.get('next_v')} is incompatible evidence only; "
+                    "do not resume it or treat it as a version floor."
+                )
+            if not epoch["initialized"]:
+                lines.append(
+                    "Strict policy epoch is not initialized; operator reset is "
+                    "required before any generation tool may run."
+                )
         except Exception:
             pass
         # Cycle time budget for compaction survival
@@ -733,7 +740,7 @@ def _make_bot_dir_guard_hook():
     this hook now also covers:
       - pipeline_state.json: forge stage="verified" + all-passed gate_results
         to skip every gate and commit arbitrary code.
-      - worker_failures.jsonl: truncate to reset the H6 cross-gen breaker.
+      - worker_failures.jsonl: truncate the operator-visible failure audit trail.
       - git commit/tag/push: bypass commit_bot's gate checks.
     The orchestrator LLM's task-orchestration is done via MCP tools, so these
     built-in file-mutation paths are never legitimately needed.
@@ -765,7 +772,6 @@ def _make_bot_dir_guard_hook():
         "priority_eval.json",
         "glicko_ratings.json",
         "bot_stats.json",
-        "cross_gen_exhausted_history.jsonl",
         "abandoned_versions.jsonl",
         # Operator-owned cost authority.  The main LLM may inspect these files,
         # but cannot truncate the durable ledger, erase write-ahead failures, or
@@ -776,6 +782,8 @@ def _make_bot_dir_guard_hook():
         "llm_query.py",
         "generation_scheduler.py",
         "orchestrator.py",
+        "llm_availability_pause.json",
+        "llm_availability_store.py",
         "pokctl.sh",
     )
     _HARD_ROUTE_TOOLS = {
@@ -869,21 +877,52 @@ def _make_bot_dir_guard_hook():
             blocked_data = {}
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-                directive, route_data = _actionable_route_directive()
-                if directive:
+                if _orchestrator_bash_targets_operator_only_bootstrap(cmd):
                     blocked_command = str(cmd)
-                    blocked_data = route_data
-                    blocked_reason = directive
-                elif _targets_protected(cmd) and _orchestrator_bash_is_mutation(cmd):
-                    blocked_command = str(cmd)
-                    directive, blocked_data = _current_stage_directive()
+                    blocked_data = {"operator_action_required": True}
                     blocked_reason = (
-                        "Bash command targets a protected path (bot code or pipeline state) "
-                        "and appears to mutate files. Bot code may ONLY be modified via "
-                        "execute_workers or run_crossover; pipeline state only via designated "
-                        "tools; git commits only via commit_bot. Direct mutations bypass all "
-                        "pipeline gates. " + directive
+                        "The first-strict formal control is operator-only. The main "
+                        "Orchestrator may never invoke bootstrap-first-strict, acknowledge "
+                        "its one-time consumption, or call official_bootstrap through Bash. "
+                        "Stop automatic evolution and wait for an explicit external "
+                        "operator command."
                     )
+                elif _orchestrator_bash_targets_llm_availability_control(cmd):
+                    blocked_command = str(cmd)
+                    blocked_data = {"operator_action_required": True}
+                    blocked_reason = (
+                        "LLM availability pause/resume authority is operator-owned. "
+                        "The main Orchestrator may not inspect or import the pause "
+                        "store, set the resume environment variable, or call a "
+                        "reconcile/resume API through Bash. A manual acknowledgement "
+                        "is accepted only once at parent-process startup before any "
+                        "SDK child is created."
+                    )
+                elif _orchestrator_bash_targets_strict_authority_control(cmd):
+                    blocked_command = str(cmd)
+                    blocked_data = {"operator_action_required": True}
+                    blocked_reason = (
+                        "First-strict LLM execution authority is system-owned. "
+                        "The Orchestrator may not import its WorkflowStore backend, "
+                        "dispatch/complete provider effects, or append accepted-role "
+                        "events through Bash. Use only the typed pipeline tools."
+                    )
+                else:
+                    directive, route_data = _actionable_route_directive()
+                    if directive:
+                        blocked_command = str(cmd)
+                        blocked_data = route_data
+                        blocked_reason = directive
+                    elif _targets_protected(cmd) and _orchestrator_bash_is_mutation(cmd):
+                        blocked_command = str(cmd)
+                        directive, blocked_data = _current_stage_directive()
+                        blocked_reason = (
+                            "Bash command targets a protected path (bot code or pipeline state) "
+                            "and appears to mutate files. Bot code may ONLY be modified via "
+                            "execute_workers or run_crossover; pipeline state only via designated "
+                            "tools; git commits only via commit_bot. Direct mutations bypass all "
+                            "pipeline gates. " + directive
+                        )
             elif tool_name in ("Edit", "Write", "NotebookEdit"):
                 file_path = tool_input.get("file_path", "") or tool_input.get("notebook_path", "")
                 directive, route_data = _actionable_route_directive()

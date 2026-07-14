@@ -1,21 +1,16 @@
 """Rating endpoints — Glicko-2 ratings and history."""
 
-import json
 import time
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
-from fastapi.responses import PlainTextResponse
-from pydantic import BaseModel
 
-from server.cache import cached_read
 from server.routes._helpers import (
-    build_rating_row, build_ranked_ratings, downsample, read_jsonl,
+    load_strict_strength_snapshot,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
-EXPERIENCE_FILE = PROJECT_ROOT / "web" / "core" / "experience_pool.md"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 H2H_FILE = RESULTS_DIR / "head_to_head.json"
@@ -26,26 +21,108 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 router = APIRouter(prefix="/api", tags=["ratings"])
 
 
+def _snapshot() -> dict:
+    snapshot = load_strict_strength_snapshot(RESULTS_DIR)
+    return snapshot if snapshot.get("available") is True else {}
+
+
+def strict_daemon_status(snapshot: dict | None = None) -> dict:
+    """Project daemon observability from the same strict epoch authority.
+
+    ``daemon_enabled`` means effective availability in the current epoch. The
+    persisted preference is exposed separately so an old config value cannot
+    make a stopped/pre-reset daemon look active.
+    """
+
+    from server.state import app_state
+
+    configured = bool(app_state.get_config()["daemon_enabled"])
+    try:
+        from epoch_authority import strict_epoch_projection
+
+        epoch = strict_epoch_projection(include_checkpoint=False)
+    except Exception:
+        epoch = {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "epoch_authority_unavailable",
+            "initialized": False,
+        }
+    if not epoch.get("initialized"):
+        return {
+            "status": "blocked",
+            "reason": "policy_epoch_not_initialized",
+            "epoch_state": epoch.get("state", "epoch_authority_unavailable"),
+            "last_update_age_seconds": -1,
+            "daemon_enabled": False,
+            "daemon_configured": configured,
+        }
+
+    try:
+        from server.routes.control import _daemon_health_snapshot
+
+        health = _daemon_health_snapshot()
+    except Exception:
+        health = {
+            "alive": False,
+            "heartbeat_stale": False,
+        }
+    process_alive = bool(health.get("alive"))
+    heartbeat_stale = bool(health.get("heartbeat_stale"))
+    effective_alive = process_alive and not heartbeat_stale
+    if effective_alive:
+        status = "active"
+        reason = None
+    elif process_alive:
+        status = "degraded"
+        reason = "daemon_heartbeat_stale"
+    elif configured:
+        status = "stopped"
+        reason = "daemon_process_not_alive"
+    else:
+        status = "disabled"
+        reason = "daemon_not_configured"
+
+    snapshot = _snapshot() if snapshot is None else snapshot
+    cycle_manifest = RESULTS_DIR / "evaluation_cycle_manifest.json"
+    evidence_age = -1
+    if snapshot and cycle_manifest.exists():
+        try:
+            evidence_age = round(time.time() - cycle_manifest.stat().st_mtime, 0)
+        except OSError:
+            evidence_age = -1
+    evidence_available = bool(snapshot)
+    payload = {
+        "status": status,
+        "reason": reason,
+        "epoch_state": epoch.get("state"),
+        "last_update_age_seconds": evidence_age,
+        "daemon_enabled": effective_alive,
+        "daemon_configured": configured,
+        "process_alive": process_alive,
+        "heartbeat_stale": heartbeat_stale,
+        "heartbeat_age_seconds": health.get("heartbeat_age_sec"),
+        "strength_evidence_available": evidence_available,
+        "strength_evidence_status": (
+            "current_evaluation_cycle"
+            if evidence_available
+            else "awaiting_first_rating_cycle"
+        ),
+    }
+    return payload
+
+
 @router.get("/ratings")
 async def get_ratings():
-    data = cached_read("ratings", RATINGS_FILE)
-    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = cached_read("h2h", H2H_FILE) or {}
-    return build_ranked_ratings(data or {}, bot_stats_data, h2h_data, match_history_path=MATCH_HISTORY_FILE)
+    return list(_snapshot().get("selection_rows") or [])
 
 
 @router.get("/ratings/{bot_name}")
 async def get_rating_detail(bot_name: str):
-    data = cached_read("ratings", RATINGS_FILE)
-    bot_stats_data = cached_read("bot_stats", BOT_STATS_FILE) or {}
-    h2h_data = cached_read("h2h", H2H_FILE) or {}
-    if not data or bot_name not in data:
-        raise HTTPException(status_code=404, detail="Bot not found")
-    rows = build_ranked_ratings(data, bot_stats_data, h2h_data, match_history_path=MATCH_HISTORY_FILE)
-    for row in rows:
+    snapshot = _snapshot()
+    for row in snapshot.get("selection_rows") or []:
         if row["name"] == bot_name:
             return row
-    return build_rating_row(bot_name, data[bot_name], bot_stats_data, h2h_data)
+    raise HTTPException(status_code=404, detail="Bot not found")
 
 
 @router.get("/history")
@@ -53,7 +130,7 @@ async def history(
     bots: str = Query("", description="Comma-separated bot names"),
     resolution: str = Query("medium", description="full, medium, or low"),
 ):
-    entries = read_jsonl(HISTORY_FILE, reverse=False)
+    entries = list(_snapshot().get("rating_history") or [])
     if resolution != "full" and len(entries) > 100:
         step = max(1, len(entries) // (200 if resolution == "medium" else 50))
         sampled = entries[::step]
@@ -80,7 +157,7 @@ async def history(
 
 @router.get("/history/summary")
 async def history_summary():
-    entries = read_jsonl(HISTORY_FILE, reverse=False)
+    entries = list(_snapshot().get("rating_history") or [])
     if not entries:
         return {}
     all_bots = set()
@@ -116,77 +193,14 @@ async def history_summary():
     return summary
 
 
-@router.get("/experience", response_class=PlainTextResponse)
-async def experience():
-    if not EXPERIENCE_FILE.exists():
-        return ""
-    from evolution_infra import locked_file
-    with locked_file(EXPERIENCE_FILE, "r") as f:
-        return f.read()
-
-
-class ExperienceUpdateRequest(BaseModel):
-    content: str
-
-
-class ExperienceAppendRequest(BaseModel):
-    lesson: str
-
-
-@router.put("/experience")
-async def update_experience(req: ExperienceUpdateRequest):
-    """Overwrite experience_pool.md with new content."""
-    try:
-        from evolution_infra import locked_file
-        with locked_file(EXPERIENCE_FILE, "w", encoding="utf-8") as f:
-            f.write(req.content)
-        lines = req.content.count("\n") + 1
-        return {"saved": True, "lines": lines, "chars": len(req.content)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/experience/append")
-async def append_experience(req: ExperienceAppendRequest):
-    """Append a new lesson to experience_pool.md."""
-    lesson = req.lesson.strip()
-    if not lesson:
-        raise HTTPException(status_code=400, detail="lesson is empty")
-    try:
-        import fcntl
-        with open(EXPERIENCE_FILE, "a+", encoding="utf-8") as f:
-            fcntl.flock(f, fcntl.LOCK_EX)
-            try:
-                f.seek(0)
-                existing = f.read()
-                separator = "\n\n" if existing and not existing.endswith("\n\n") else ""
-                new_content = existing + separator + f"- {lesson}\n"
-                f.seek(0)
-                f.truncate()
-                f.write(new_content)
-            finally:
-                fcntl.flock(f, fcntl.LOCK_UN)
-        return {"appended": True, "lesson": lesson, "total_chars": len(new_content)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/daemon/status")
 async def daemon_status():
-    import os
-    from server.state import app_state
-    config = app_state.get_config()
-    if RATINGS_FILE.exists():
-        mtime = os.path.getmtime(RATINGS_FILE)
-        age = time.time() - mtime
-        status = "active" if age < 60 else ("recent" if age < 600 else "idle")
-        return {"status": status, "last_update_age_seconds": round(age, 0), "daemon_enabled": config["daemon_enabled"]}
-    return {"status": "unknown", "last_update_age_seconds": -1, "daemon_enabled": config["daemon_enabled"]}
+    return strict_daemon_status()
 
 
 @router.get("/h2h")
 async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
-    data = cached_read("h2h", H2H_FILE)
+    data = _snapshot().get("h2h") or {}
     if not data:
         return {}
     if not bot_name:
@@ -201,5 +215,4 @@ async def get_h2h(bot_name: str = Query("", description="Filter by bot name")):
 
 @router.get("/bot-stats")
 async def get_all_bot_stats():
-    data = cached_read("bot_stats", BOT_STATS_FILE)
-    return data or {}
+    return _snapshot().get("bot_stats") or {}

@@ -1,8 +1,7 @@
 """Native national TCP execution backend for evolved bots.
 
-The legacy national backend runs Botzone JSON bots through ``sever/bot_adapter.py``.
-This module is the native path: a candidate must contain ``national_bot.py`` that
-connects to the national TCP server directly and sends wire actions itself.
+A candidate must contain ``national_bot.py`` that connects to the national TCP
+server directly and sends canonical wire actions itself.
 """
 
 from __future__ import annotations
@@ -22,11 +21,12 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 from typing import Any
 
 from eval_stats import paired_bootstrap_ci
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, parse_bot_version, version_sort_key
+from bot_namespace import bot_name, parse_bot_version, version_sort_key
 from national_runtime_telemetry import (
     empty_bot_log_summary as _empty_bot_log_summary,
     empty_runtime_telemetry as _empty_runtime_telemetry,
@@ -37,17 +37,21 @@ from national_runtime_telemetry import (
 from managed_bot_executor import BotTiming, EndpointLease, launch_managed_bot
 from national_bot_launcher import native_entry_supports_log_arg
 from national_game_runtime import NationalTCPGameEngine
-from national_transport import NationalTCPClient
+from sever.server.transport import NationalTCPClient
 from pipeline_schema import NationalAcceptanceResult
 from runtime_capacity import acquire_match_slots_async
-from strength_order import is_strength_matchup, precommit_outcome_blockers
+from strength_order import (
+    is_precommit_gate_matchup,
+    is_strength_matchup,
+    precommit_outcome_blockers,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
 NATIVE_ENTRY = "national_bot.py"
 PRECOMPUTE_ENTRY = "precompute.py"
 TRACE_PREFIX = "POK_TRACE_DECISION "
-NATIONAL_DECISION_RUNTIME_VERSION = 8
+NATIONAL_DECISION_RUNTIME_VERSION = 9
 LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC = 2.0
 LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC = 1.8
 LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC = 0.20
@@ -68,10 +72,10 @@ NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
 """Native national TCP entrypoint for this bot.
 
 This file is the formal national-platform submission entry. It connects to the
-TCP server, maintains raw-stream state, calls the local strategy in process,
-and sends only national wire actions: raise <amount>, fold, call, check, allin.
-It deliberately uses no legacy bridge module and prints no JSON responses to
-stdout.
+TCP server, maintains authoritative raw-stream state, calls a typed local
+``policy.py`` in an isolated worker, and sends only canonical national wire
+actions: raise <amount>, fold, call, check, allin.
+No candidate policy code owns sockets or writes protocol output.
 """
 
 from __future__ import annotations
@@ -106,8 +110,7 @@ BIG_BLIND = 100
 INITIAL_CHIPS = 20000
 TOTAL_HANDS = 70
 CARD_RE = re.compile(r"<(\d+),(\d+)>")
-TCP_TO_JUDGE_SUIT = {0: 2, 1: 0, 2: 1, 3: 3}
-ACTION_PREFIX_RE = re.compile(r"^(raise|bet)\s+(\d+)")
+ACTION_PREFIX_RE = re.compile(r"^raise [0-9]+")
 EARN_PREFIX_RE = re.compile(r"^earnChips\s+-?\d+")
 DEFAULT_OFFICIAL_ACTION_DELAY_SEC = 0.30
 OFFICIAL_ACTION_DELAY_ENV = "POK_OFFICIAL_ACTION_DELAY"
@@ -117,7 +120,11 @@ DEFAULT_STREAM_IDLE_FLUSH_SEC = 0.10
 STREAM_IDLE_FLUSH_ENV = "POK_NATIONAL_STREAM_IDLE_FLUSH"
 MAX_STREAM_BUFFER_CHARS = 16_384
 OPPONENT_TRACKER_SCHEMA_VERSION = 4
-HAND_RUNTIME_SCHEMA_VERSION = 1
+LINE_CONTEXT_SCHEMA_VERSION = 1
+DECISION_CONTEXT_SCHEMA_VERSION = 1
+POLICY_DECISION_SCHEMA_VERSION = 1
+NATIONAL_CARD_ENCODING = "national_tcp_suit_rank_v1"
+MAX_DECISION_HISTORY_ACTIONS = 64
 SHOWDOWN_RANGE_SCHEMA_VERSION = 1
 OPPONENT_PRIOR_WEIGHT = 8.0
 OPPONENT_ADAPTATION_CAP = 0.65
@@ -227,23 +234,28 @@ def _stream_idle_flush_sec() -> float:
     return max(0.01, min(delay, 0.50))
 
 
-def _tcp_card_to_int(suit: int, rank: int) -> int:
-    return rank * 4 + TCP_TO_JUDGE_SUIT[suit]
+def _parse_cards(text: str) -> list[tuple[int, int]]:
+    """Keep cards in the national protocol's native ``(suit, rank)`` space."""
+    cards = []
+    for raw_suit, raw_rank in CARD_RE.findall(text):
+        suit = int(raw_suit)
+        rank = int(raw_rank)
+        if not (0 <= suit <= 3 and 0 <= rank <= 12):
+            raise ValueError(f"invalid national card <{suit},{rank}>")
+        cards.append((suit, rank))
+    return cards
 
 
-def _parse_cards(text: str) -> list[int]:
-    return [_tcp_card_to_int(int(s), int(r)) for s, r in CARD_RE.findall(text)]
+def _context_card(card: tuple[int, int]) -> dict:
+    suit, rank = card
+    return {"suit": int(suit), "rank": int(rank)}
 
 
 def _parse_action(raw: str) -> tuple[str, int | None]:
-    parts = raw.strip().split()
-    if not parts:
-        return "unknown", None
-    head = parts[0]
-    if head in {"raise", "bet"} and len(parts) >= 2 and parts[1].isdigit():
-        return "raise", int(parts[1])
-    if head in {"call", "check", "fold", "allin"}:
-        return head, None
+    if re.fullmatch(r"raise [0-9]+", raw):
+        return "raise", int(raw.split(" ", 1)[1])
+    if raw in {"call", "check", "fold", "allin"}:
+        return raw, None
     return "unknown", None
 
 
@@ -260,7 +272,6 @@ def _take_card_message(buffer: str, prefix: str, count: int) -> tuple[str | None
 
 
 def _take_message(buffer: str, *, flush_numeric: bool = False) -> tuple[str | None, str]:
-    buffer = buffer.lstrip("\r\n\t ")
     if not buffer:
         return None, ""
     if buffer.startswith("name"):
@@ -301,7 +312,7 @@ def _split_messages(buffer: str, *, flush_numeric: bool = False) -> tuple[list[s
 
 
 def _has_ambiguous_numeric_tail(buffer: str) -> bool:
-    candidate = buffer.lstrip("\r\n\t ")
+    candidate = buffer
     if not candidate:
         return False
     return any(
@@ -563,10 +574,10 @@ class OpponentTracker:
             self._pending_hero_pressure = None
 
     @staticmethod
-    def _showdown_class(cards: list[int]) -> tuple[str, str]:
-        rank_a, rank_b = cards[0] // 4 + 2, cards[1] // 4 + 2
+    def _showdown_class(cards: list[tuple[int, int]]) -> tuple[str, str]:
+        rank_a, rank_b = cards[0][1] + 2, cards[1][1] + 2
         high, low = max(rank_a, rank_b), min(rank_a, rank_b)
-        suited = cards[0] % 4 == cards[1] % 4
+        suited = cards[0][0] == cards[1][0]
         if high == low:
             hand_class = RANK_SYMBOLS[high - 2] * 2
             bucket = "premium_pair" if high >= 10 else "small_pair"
@@ -624,8 +635,8 @@ class OpponentTracker:
     def observe_showdown(
         self,
         hand: int,
-        opponent_cards: list[int] | None = None,
-        public_cards: list[int] | None = None,
+        opponent_cards: list[tuple[int, int]] | None = None,
+        public_cards: list[tuple[int, int]] | None = None,
     ) -> None:
         hand = int(hand)
         if hand in self._showdown_hands:
@@ -634,8 +645,8 @@ class OpponentTracker:
         self.showdowns += 1
         cards = list(opponent_cards or [])
         if len(cards) == 2:
-            ranks = [card // 4 for card in cards]
-            suits = [card % 4 for card in cards]
+            ranks = [card[1] for card in cards]
+            suits = [card[0] for card in cards]
             hole_class = "pair" if ranks[0] == ranks[1] else "suited" if suits[0] == suits[1] else "offsuit"
             self.showdown_hole_classes[hole_class] += 1
             hand_class, bucket = self._showdown_class(cards)
@@ -1027,30 +1038,49 @@ def _resolve_seat(name: str, seat: str) -> str:
     return "unknown"
 
 
-def _strategy_worker_candidate(raw_value):
-    """Normalize one refinement yield without imposing a strategy framework."""
+def _safe_policy_payload(raw_value) -> dict:
+    """Copy an untrusted policy result into a primitive, pickle-safe shape.
+
+    This is serialization hygiene only.  The socket owner remains the sole
+    authority that validates a decision against the live betting state.
+    """
+    if type(raw_value) is not dict:
+        return {"kind": "__invalid_non_mapping__"}
+    if not set(raw_value).issubset({"kind", "raise_to"}):
+        return {"kind": "__invalid_mapping_shape__"}
+    kind = raw_value.get("kind")
+    if type(kind) is not str:
+        return {"kind": "__invalid_kind__"}
+    payload = {"kind": kind}
+    if "raise_to" in raw_value:
+        raise_to = raw_value.get("raise_to")
+        if type(raise_to) is not int:
+            return {"kind": "__invalid_raise_to__"}
+        payload["raise_to"] = raise_to
+    return payload
+
+
+def _policy_worker_candidate(raw_value):
+    """Normalize one incremental policy result without legalizing it."""
     metadata = {}
-    value = raw_value
-    if isinstance(raw_value, dict):
-        value = raw_value.get("action")
-        metadata = {
-            str(key): raw_value[key]
-            for key in ("sample_count", "confidence", "reason", "complete")
-            if key in raw_value
-            and isinstance(raw_value[key], (str, int, float, bool, type(None)))
-        }
-    elif isinstance(raw_value, (tuple, list)) and raw_value:
-        value = raw_value[0]
-        if len(raw_value) > 1 and isinstance(raw_value[1], dict):
+    decision = raw_value
+    if type(raw_value) is dict and "decision" in raw_value:
+        if not set(raw_value).issubset({
+            "decision", "sample_count", "confidence", "reason", "complete"
+        }):
+            decision = {"kind": "__invalid_envelope_shape__"}
+        else:
+            decision = raw_value.get("decision")
             metadata = {
-                str(key): item
-                for key, item in raw_value[1].items()
-                if isinstance(item, (str, int, float, bool, type(None)))
+                str(key): raw_value[key]
+                for key in ("sample_count", "confidence", "reason", "complete")
+                if key in raw_value
+                and type(raw_value[key]) in (str, int, float, bool, type(None))
             }
-    return value, metadata
+    return _safe_policy_payload(decision), metadata
 
 
-def _apply_strategy_worker_resource_limits() -> None:
+def _apply_policy_worker_resource_limits() -> None:
     if _resource is None:
         return
     limits = [
@@ -1071,8 +1101,8 @@ def _apply_strategy_worker_resource_limits() -> None:
             pass
 
 
-def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> None:
-    """Persistent, killable strategy runtime. It never owns the TCP socket."""
+def _policy_worker_main(connection, bot_dir: str, random_seed: int | None) -> None:
+    """Persistent, killable candidate policy runtime with no socket authority."""
     started = time.monotonic()
     try:
         if hasattr(os, "setsid"):
@@ -1082,31 +1112,29 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
                 os.setsid()
             except OSError:
                 pass
-        _apply_strategy_worker_resource_limits()
+        _apply_policy_worker_resource_limits()
         if random_seed is not None:
             random.seed(int(random_seed))
         if bot_dir not in sys.path:
             sys.path.insert(0, bot_dir)
         # Standardized pure-fact precompute is loaded once per worker lifetime.
-        # Strategy modules may import and consume it without rebuilding tables per turn.
+        # Policy modules may import and consume it without rebuilding tables per turn.
         if os.path.isfile(os.path.join(bot_dir, "precompute.py")):
             importlib.import_module("precompute")
-        strategy_module = importlib.import_module("strategy")
-        main_module = importlib.import_module("main")
-        state_module = importlib.import_module("state")
-        get_action = getattr(strategy_module, "get_action")
-        get_baseline_action = getattr(strategy_module, "get_baseline_action", None)
-        iter_refinements = getattr(strategy_module, "iter_refinements", None)
-        refine_action = getattr(strategy_module, "refine_action", None)
-        sanitize_action = getattr(main_module, "sanitize_action")
-        reconstruct_state = getattr(state_module, "reconstruct_state")
+        policy_module = importlib.import_module("policy")
+        get_baseline_decision = getattr(policy_module, "get_baseline_decision")
+        iter_decisions = getattr(policy_module, "iter_decisions")
+        if not callable(get_baseline_decision) or not callable(iter_decisions):
+            raise TypeError(
+                "policy.py must define callable get_baseline_decision(context) "
+                "and iter_decisions(context, baseline, deadline)"
+            )
         connection.send({
             "kind": "ready",
             "import_elapsed_ms": round((time.monotonic() - started) * 1000.0, 3),
             "pid": os.getpid(),
-            "has_baseline": callable(get_baseline_action),
-            "has_iterator": callable(iter_refinements),
-            "has_refine_action": callable(refine_action),
+            "has_baseline": True,
+            "has_iterator": True,
             "random_seed": random_seed,
             "process_group": os.getpgrp() if hasattr(os, "getpgrp") else None,
         })
@@ -1133,10 +1161,9 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
         if job.get("kind") != "decide":
             continue
         decision_id = int(job.get("decision_id") or 0)
-        req = job.get("request") or {}
-        current_view = tuple(job.get("current_request_view") or (req,))
+        context = job.get("decision_context") or {}
         deadline = float(job.get("deadline_monotonic") or time.monotonic())
-        fallback = int(job.get("fallback_action") or 0)
+        fallback = _safe_policy_payload(job.get("fallback_decision") or {})
         raw_candidate_limit = job.get("max_refinement_candidates")
         candidate_limit = (
             None
@@ -1145,36 +1172,28 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
         )
         sequence = 0
         try:
-            state = reconstruct_state(req)
-
-            def publish(phase: str, raw_action, metadata=None, trusted=None) -> int:
+            def publish(phase: str, raw_decision, metadata=None, trusted=None) -> dict:
                 nonlocal sequence
-                sanitized = int(sanitize_action(raw_action, state, int(req.get("my_chips", 0))))
+                decision = _safe_policy_payload(raw_decision)
                 sequence += 1
                 connection.send({
                     "kind": "candidate",
                     "decision_id": decision_id,
                     "phase": phase,
                     "sequence": sequence,
-                    "action": sanitized,
+                    "decision": decision,
                     "published_monotonic": time.monotonic(),
                     "metadata": dict(metadata or {}),
                     "trusted": dict(trusted or {}),
                 })
-                return sanitized
+                return decision
 
             baseline = fallback
-            if callable(get_baseline_action):
+            if time.monotonic() < deadline:
                 baseline = publish(
                     "baseline",
-                    get_baseline_action(req, current_view),
-                    {"source": "get_baseline_action"},
-                )
-            elif time.monotonic() < deadline:
-                baseline = publish(
-                    "baseline",
-                    get_action(req, current_view),
-                    {"source": "legacy_get_action"},
+                    get_baseline_decision(context),
+                    {"source": "get_baseline_decision"},
                 )
 
             refinement_started_cpu = time.process_time_ns()
@@ -1183,11 +1202,10 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
             iterator_exhausted = False
             termination_reason = "not_available"
             if (
-                callable(iter_refinements)
-                and candidate_limit != 0
+                candidate_limit != 0
                 and time.monotonic() < deadline
             ):
-                iterator = iter_refinements(req, current_view, baseline, deadline)
+                iterator = iter_decisions(context, baseline, deadline)
                 termination_reason = "deadline"
                 while True:
                     if iterator_steps >= MAX_REFINEMENT_MESSAGES:
@@ -1206,7 +1224,7 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
                         termination_reason = "iterator_exhausted"
                         break
                     iterator_steps += 1
-                    candidate, metadata = _strategy_worker_candidate(raw_candidate)
+                    candidate, metadata = _policy_worker_candidate(raw_candidate)
                     baseline = publish(
                         "refinement",
                         candidate,
@@ -1223,32 +1241,13 @@ def _strategy_worker_main(connection, bot_dir: str, random_seed: int | None) -> 
                             ),
                         },
                     )
-            elif callable(refine_action) and candidate_limit != 0 and time.monotonic() < deadline:
-                iterator_steps = 1
-                termination_reason = "one_shot_refine_action"
-                baseline = publish(
-                    "refinement",
-                    refine_action(req, current_view, baseline, deadline),
-                    {"source": "refine_action"},
-                    {
-                        "iterator_step": iterator_steps,
-                        "process_cpu_ms": round(
-                            (time.process_time_ns() - refinement_started_cpu) / 1_000_000.0,
-                            6,
-                        ),
-                        "elapsed_ms": round(
-                            (time.monotonic_ns() - refinement_started_wall) / 1_000_000.0,
-                            6,
-                        ),
-                    },
-                )
             elif candidate_limit == 0:
                 termination_reason = "probe_candidate_limit"
             connection.send({
                 "kind": "done",
                 "decision_id": decision_id,
                 "sequence": sequence,
-                "action": baseline,
+                "decision": baseline,
                 "completed_monotonic": time.monotonic(),
                 "refinement_stats": {
                     "iterator_steps": iterator_steps,
@@ -1308,15 +1307,14 @@ class NativeNationalBot:
 
     def _reset_match(self) -> None:
         self._buf = ""
-        self._my_cards: list[int] = []
-        self._public_cards: list[int] = []
+        self._my_cards: list[tuple[int, int]] = []
+        self._public_cards: list[tuple[int, int]] = []
         self._is_sb = False
         self._hand_num = 0
         self._history: list[dict] = []
         self._stage = "preflop"
         self._my_id = 0
         self._opponent_id = 1
-        self._dealer_id = 0
         self._my_action_count = 0
         self._my_chips = INITIAL_CHIPS
         self._my_stage_bet = 0
@@ -1324,12 +1322,6 @@ class NativeNationalBot:
         self._opponent_stage_bet = 0
         self._pot = 0
         self._in_allin_runout = False
-        self._requests: list[dict] = []
-        self._responses: list[int] = []
-        self._total_win_chips = [0, 0]
-        self._total_win_games = [0, 0]
-        self._last_earned = 0
-        self._showdowns: list[dict] = []
         self._showdown_by_hand: dict[int, dict] = {}
         self._earned_by_hand: dict[int, int] = {}
         self._opponent_tracker = OpponentTracker()
@@ -1351,17 +1343,6 @@ class NativeNationalBot:
 
     def _round_num(self) -> int:
         return {"preflop": 0, "flop": 1, "turn": 2, "river": 3}.get(self._stage, 0)
-
-    def _betting_snapshot(self) -> dict:
-        to_call = max(0, self._opponent_stage_bet - self._my_stage_bet)
-        return {
-            "opponent_chips": self._opponent_chips,
-            "my_stage_bet": self._my_stage_bet,
-            "opponent_stage_bet": self._opponent_stage_bet,
-            "pot": self._pot,
-            "to_call": to_call,
-            "opponent_allin": self._opponent_chips == 0 and self._opponent_stage_bet > 0,
-        }
 
     def _actor_label(self, player_id: int | None) -> str:
         if player_id == self._my_id:
@@ -1478,13 +1459,8 @@ class NativeNationalBot:
             spot = "sb_open"
         return aggressor, spot
 
-    def _hand_runtime(self) -> dict:
-        """Return wrapper-owned, cross-street semantics for strategy consumers.
-
-        The socket state machine is the only authority for these fields.  In
-        particular, strategy modules must not rediscover the preflop aggressor
-        or checked-through streets from a current-street-only request view.
-        """
+    def _line_state(self) -> dict:
+        """Return socket-authoritative cross-street line semantics."""
         round_num = self._round_num()
         current = self._semantic_street_summary(round_num)
         previous = (
@@ -1508,8 +1484,6 @@ class NativeNationalBot:
             and previous
             and previous["opponent_checked_back"]
         )
-        to_call = max(0, self._opponent_stage_bet - self._my_stage_bet)
-        effective_stack = min(self._my_chips, self._opponent_chips)
         line_tags = []
         if can_donk:
             line_tags.append("donk_opportunity")
@@ -1520,10 +1494,10 @@ class NativeNationalBot:
         if self._responding_to_check():
             line_tags.append("responding_to_check")
         return {
-            "schema_version": HAND_RUNTIME_SCHEMA_VERSION,
+            "schema_version": LINE_CONTEXT_SCHEMA_VERSION,
             "street": self._stage,
-            "round": round_num,
-            "hero_position": hero_position,
+            "street_index": round_num,
+            "position": "small_blind" if self._is_sb else "big_blind",
             "hero_in_position_postflop": self._is_sb,
             "preflop_aggressor": preflop_aggressor,
             "preflop_spot": preflop_spot,
@@ -1534,54 +1508,178 @@ class NativeNationalBot:
             "line_tags": line_tags,
             "current_street": current,
             "previous_street": previous,
-            "pot": self._pot,
-            "my_chips": self._my_chips,
-            "opponent_chips": self._opponent_chips,
-            "effective_stack": effective_stack,
-            "my_stage_bet": self._my_stage_bet,
-            "opponent_stage_bet": self._opponent_stage_bet,
-            "to_call": to_call,
-            "spr": round(effective_stack / max(1.0, float(self._pot)), 6),
-            "pot_odds": round(to_call / max(1.0, float(self._pot + to_call)), 6),
         }
 
-    def _request(self) -> dict:
-        req = {
-            "num_players": 2,
-            "dealer_id": self._dealer_id,
-            "my_id": self._my_id,
-            "my_chips": self._my_chips,
-            "my_cards": list(self._my_cards),
-            "public_cards": list(self._public_cards),
-            "history": list(self._history),
-            "hand": self._hand_num - 1,
-            "max_hand": TOTAL_HANDS,
-            "total_win_chips": list(self._total_win_chips),
-            "total_win_games": list(self._total_win_games),
-            # Cross-hand opponent evidence is available through the bounded
-            # incremental opponent_runtime snapshot. Do not expose the full
-            # showdown list to decision code and reintroduce batch rescans.
-            "opponent_showdowns": [],
-            "opponent_runtime": self._opponent_tracker.snapshot(),
-            "hand_runtime": self._hand_runtime(),
-            **self._betting_snapshot(),
+    def _semantic_hand_history(self) -> dict:
+        actions = []
+        last_by_round = {}
+        for record in self._history:
+            round_num = int(record.get("round", 0))
+            wire_kind = str(record.get("action_type") or "unknown")
+            committed = int(record.get("committed", 0) or 0)
+            previous = last_by_round.get(round_num)
+            if wire_kind == "check":
+                semantic_kind = "pass"
+            elif wire_kind == "call" and (
+                committed == 0
+                or (previous and previous.get("wire_kind") == "check")
+            ):
+                semantic_kind = "pass"
+            elif wire_kind == "call":
+                semantic_kind = "match"
+            else:
+                semantic_kind = wire_kind
+            item = {
+                "street": record.get("street", self._stage),
+                "street_index": round_num,
+                "actor": self._actor_label(record.get("player_id")),
+                "wire_kind": wire_kind,
+                "semantic_kind": semantic_kind,
+                "committed": committed,
+                "stage_bet_after": int(record.get("stage_bet", 0) or 0),
+                "inferred": bool(record.get("inferred")),
+            }
+            if wire_kind == "raise":
+                item["raise_to"] = int(record.get("stage_bet", 0) or 0)
+            if record.get("inferred"):
+                item["inference_boundary"] = str(
+                    record.get("inference_boundary") or ""
+                )
+            actions.append(item)
+            last_by_round[round_num] = item
+        truncated = max(0, len(actions) - MAX_DECISION_HISTORY_ACTIONS)
+        return {
+            "schema_version": 1,
+            "actions": actions[-MAX_DECISION_HISTORY_ACTIONS:],
+            "truncated_count": truncated,
         }
-        req["remaining_hands"] = max(1, TOTAL_HANDS - int(req["hand"]))
-        return req
 
-    def _socket_safe_fallback_action(self) -> int:
-        """Choose a zero-strategy-risk action from socket-owned betting state."""
-        return -1 if self._opponent_stage_bet > self._my_stage_bet else 0
+    def _pass_wire_kind(self) -> str:
+        """Map candidate ``pass`` to the only legal official pass token."""
+        if self._opponent_stage_bet > self._my_stage_bet:
+            return "call"
+        if self._responding_to_check():
+            return "call"
+        return "check"
 
-    def _sanitize_worker_action(self, raw_action, fallback: int) -> int:
-        """Keep untrusted strategy output inside the integer action domain."""
-        try:
-            action = int(raw_action)
-        except (TypeError, ValueError, OverflowError):
-            return int(fallback)
-        if action in {-2, -1, 0} or action > 0:
-            return action
-        return int(fallback)
+    def _legal_policy_state(self) -> dict:
+        policy_kinds = ["fold", "pass"]
+        allin_occurred = self._current_round_has_allin()
+        if not allin_occurred and self._my_chips > 0:
+            policy_kinds.append("allin")
+        minimum = self._minimum_raise_total()
+        # An exact stack commitment must use the official ``allin`` token.
+        maximum = self._my_stage_bet + max(0, self._my_chips - 1)
+        if not allin_occurred and minimum <= maximum:
+            policy_kinds.append("raise")
+            min_raise_to = minimum
+            max_raise_to = maximum
+        else:
+            min_raise_to = None
+            max_raise_to = None
+        return {
+            "schema_version": POLICY_DECISION_SCHEMA_VERSION,
+            "policy_kinds": policy_kinds,
+            "pass_wire_kind": self._pass_wire_kind(),
+            "min_raise_to": min_raise_to,
+            "max_raise_to": max_raise_to,
+            "raise_boundary": "inclusive_exact_2x_raise_to",
+        }
+
+    def _build_decision_context(
+        self,
+        *,
+        decision_id: int,
+        hard_deadline: float,
+        refinement_deadline: float,
+    ) -> dict:
+        """Build the sole bounded, versioned candidate policy input."""
+        to_call = max(0, self._opponent_stage_bet - self._my_stage_bet)
+        effective_stack = min(self._my_chips, self._opponent_chips)
+        return {
+            "schema_version": DECISION_CONTEXT_SCHEMA_VERSION,
+            "runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+            "decision_id": int(decision_id),
+            "cards": {
+                "encoding": NATIONAL_CARD_ENCODING,
+                "hole": [_context_card(card) for card in self._my_cards],
+                "board": [_context_card(card) for card in self._public_cards],
+            },
+            "hand": {
+                "number": int(self._hand_num),
+                "total_hands": TOTAL_HANDS,
+                "remaining_including_current": max(
+                    1, TOTAL_HANDS - max(0, self._hand_num - 1)
+                ),
+                "street": self._stage,
+                "street_index": self._round_num(),
+                "position": "small_blind" if self._is_sb else "big_blind",
+                "acts_first_postflop": self._acts_first_postflop(),
+            },
+            "betting": {
+                "pot": int(self._pot),
+                "hero_stack": int(self._my_chips),
+                "opponent_stack": int(self._opponent_chips),
+                "effective_stack": int(effective_stack),
+                "hero_street_bet": int(self._my_stage_bet),
+                "opponent_street_bet": int(self._opponent_stage_bet),
+                "to_call": int(to_call),
+                "spr": round(effective_stack / max(1.0, float(self._pot)), 6),
+                "pot_odds": round(
+                    to_call / max(1.0, float(self._pot + to_call)), 6
+                ),
+            },
+            "history": self._semantic_hand_history(),
+            "line": self._line_state(),
+            "legal": self._legal_policy_state(),
+            "opponent": self._opponent_tracker.snapshot(),
+            "deadline": {
+                "clock": "time.monotonic",
+                "hard_monotonic": float(hard_deadline),
+                "refinement_monotonic": float(refinement_deadline),
+                "hard_budget_ms": int(self._decision_hard_deadline_sec * 1000),
+                "baseline_target_ms": int(
+                    self._decision_baseline_target_sec * 1000
+                ),
+                "refinement_budget_ms": int(
+                    self._decision_refinement_budget_sec * 1000
+                ),
+            },
+        }
+
+    def _socket_safe_fallback_decision(self) -> dict:
+        """Return a typed risk-safe decision before candidate code runs."""
+        if self._opponent_stage_bet > self._my_stage_bet:
+            return {"kind": "fold"}
+        return {"kind": "pass"}
+
+    def _legalize_policy_decision(self, raw_decision, fallback: dict) -> dict:
+        """Validate untrusted policy output against socket-owned live state."""
+        safe_fallback = dict(fallback)
+        if type(raw_decision) is not dict:
+            return safe_fallback
+        if not set(raw_decision).issubset({"kind", "raise_to"}):
+            return safe_fallback
+        kind = raw_decision.get("kind")
+        if type(kind) is not str:
+            return safe_fallback
+        legal = self._legal_policy_state()
+        if kind not in legal["policy_kinds"]:
+            return safe_fallback
+        if kind != "raise":
+            if "raise_to" in raw_decision:
+                return safe_fallback
+            return {"kind": kind}
+        if set(raw_decision) != {"kind", "raise_to"}:
+            return safe_fallback
+        raise_to = raw_decision.get("raise_to")
+        if type(raise_to) is not int:
+            return safe_fallback
+        minimum = legal.get("min_raise_to")
+        maximum = legal.get("max_raise_to")
+        if minimum is None or maximum is None or not minimum <= raise_to <= maximum:
+            return safe_fallback
+        return {"kind": "raise", "raise_to": raise_to}
 
     def _strategy_worker_alive(self) -> bool:
         return bool(self._strategy_process is not None and self._strategy_process.is_alive())
@@ -1757,10 +1855,10 @@ class NativeNationalBot:
             else self._strategy_base_seed + next_generation - 1
         )
         process = self._mp_context.Process(
-            target=_strategy_worker_main,
+            target=_policy_worker_main,
             args=(child_connection, BOT_DIR, worker_seed),
-            name=f"national-strategy-{next_generation}",
-            # Non-daemon is intentional: strategy may own a bounded fixed CPU
+            name=f"national-policy-{next_generation}",
+            # Non-daemon is intentional: policy may own a bounded fixed CPU
             # pool. The socket owner enforces the deadline on its whole process
             # group/tree rather than allowing descendants to escape.
             daemon=False,
@@ -1787,36 +1885,38 @@ class NativeNationalBot:
         self._stop_strategy_worker("client_close")
         self._reap_retired_strategy_workers(wait=True)
 
-    def _strategy_action(self) -> int:
+    def _policy_decision(self) -> dict:
         started = time.monotonic()
         hard_deadline = started + self._decision_hard_deadline_sec
         baseline_target = started + self._decision_baseline_target_sec
         refinement_deadline = started + self._decision_refinement_budget_sec
-        # Facing a bet, action 0 would become a call. The socket-owned fallback
-        # therefore folds to positive to_call and passes only at zero to_call.
-        baseline = self._socket_safe_fallback_action()
+        baseline = self._socket_safe_fallback_decision()
         self._last_decision_source = "socket_baseline"
-        try:
-            req = self._request()
-        except BaseException as exc:
-            _log(
-                f"DECIDE request_error={type(exc).__name__}:{str(exc)[:160]!r} "
-                f"fallback={baseline}"
-            )
-            self._last_decision_source = "request_error_baseline"
-            return baseline
         self._decision_serial += 1
         decision_id = self._decision_serial
+        try:
+            context = self._build_decision_context(
+                decision_id=decision_id,
+                hard_deadline=hard_deadline,
+                refinement_deadline=refinement_deadline,
+            )
+        except BaseException as exc:
+            _log(
+                f"DECIDE context_error={type(exc).__name__}:{str(exc)[:160]!r} "
+                f"fallback={baseline}"
+            )
+            self._last_decision_source = "context_error_baseline"
+            return baseline
         decision_metrics = {
             "runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
             "decision_id": decision_id,
-            "socket_fallback_action": baseline,
+            "socket_fallback_decision": dict(baseline),
             "socket_fallback_ready_ms": round((time.monotonic() - started) * 1000.0, 3),
             "baseline_published_ms": None,
             "baseline_target_met": False,
-            "strategy_baseline_action": None,
+            "policy_baseline_decision": None,
             "refinement_messages": 0,
-            "refinement_action_changes": 0,
+            "refinement_decision_changes": 0,
             "refinement_progress": [],
             "trusted_refinement_steps": 0,
             "trusted_refinement_cpu_ms": 0.0,
@@ -1831,15 +1931,6 @@ class NativeNationalBot:
             "completed": False,
         }
         self._last_decision_metrics = decision_metrics
-        req["decision_runtime_version"] = NATIONAL_DECISION_RUNTIME_VERSION
-        req["decision_id"] = decision_id
-        req["decision_hard_deadline_ms"] = int(self._decision_hard_deadline_sec * 1000)
-        req["decision_baseline_target_ms"] = int(self._decision_baseline_target_sec * 1000)
-        req["decision_refinement_budget_ms"] = int(self._decision_refinement_budget_sec * 1000)
-        req["decision_hard_deadline_monotonic"] = hard_deadline
-        req["decision_refinement_deadline_monotonic"] = refinement_deadline
-        req["decision_baseline_action"] = baseline
-        self._requests.append(req)
         if not self._ensure_strategy_worker():
             self._last_decision_source = "worker_start_error_baseline"
             return baseline
@@ -1851,10 +1942,8 @@ class NativeNationalBot:
             connection.send({
                 "kind": "decide",
                 "decision_id": decision_id,
-                "request": req,
-                # Bounded current-hand compatibility view; never full match history.
-                "current_request_view": (req,),
-                "fallback_action": baseline,
+                "decision_context": context,
+                "fallback_decision": baseline,
                 "deadline_monotonic": refinement_deadline,
                 "max_refinement_candidates": self._strategy_max_refinement_candidates,
             })
@@ -1872,7 +1961,7 @@ class NativeNationalBot:
                 baseline_target_logged = True
                 _log(
                     f"DECIDE baseline_target_missed decision_id={decision_id} "
-                    f"target={self._decision_baseline_target_sec:.3f}s safe_action={baseline}"
+                    f"target={self._decision_baseline_target_sec:.3f}s safe_decision={baseline}"
                 )
             remaining = min(refinement_deadline, hard_deadline) - now
             if remaining <= 0:
@@ -1954,33 +2043,35 @@ class NativeNationalBot:
                     continue
                 latest_sequence = sequence
                 decision_metrics["latest_sequence"] = sequence
-                previous_action = baseline
-                baseline = self._sanitize_worker_action(message.get("action"), baseline)
+                previous_decision = baseline
+                baseline = self._legalize_policy_decision(
+                    message.get("decision"),
+                    baseline,
+                )
                 phase = str(message.get("phase") or "refinement")
-                req["decision_baseline_action"] = baseline
                 elapsed = result_at - started
                 metadata = message.get("metadata") or {}
                 trusted = message.get("trusted") or {}
                 if phase == "baseline":
-                    decision_metrics["strategy_baseline_action"] = baseline
+                    decision_metrics["policy_baseline_decision"] = dict(baseline)
                     decision_metrics["baseline_published_ms"] = round(elapsed * 1000.0, 3)
                     decision_metrics["baseline_target_met"] = (
                         elapsed <= self._decision_baseline_target_sec
                     )
-                    self._last_decision_source = "strategy_baseline"
+                    self._last_decision_source = "policy_baseline"
                     _log(
-                        f"DECIDE baseline decision_id={decision_id} action={baseline} "
+                        f"DECIDE baseline decision_id={decision_id} decision={baseline} "
                         f"elapsed={elapsed:.3f}s "
                         f"target_met={elapsed <= self._decision_baseline_target_sec}"
                     )
                 else:
                     decision_metrics["refinement_messages"] += 1
-                    if baseline != previous_action:
-                        decision_metrics["refinement_action_changes"] += 1
+                    if baseline != previous_decision:
+                        decision_metrics["refinement_decision_changes"] += 1
                     if len(decision_metrics["refinement_progress"]) < 64:
                         decision_metrics["refinement_progress"].append({
                             "sequence": sequence,
-                            "action": baseline,
+                            "decision": dict(baseline),
                             "reported_sample_count": metadata.get("sample_count"),
                             "reported_confidence": metadata.get("confidence"),
                             "reported_complete": metadata.get("complete"),
@@ -2003,7 +2094,7 @@ class NativeNationalBot:
                     self._last_decision_source = "incremental_refinement"
                     _log(
                         f"DECIDE refinement decision_id={decision_id} sequence={sequence} "
-                        f"action={baseline} elapsed={elapsed:.3f}s "
+                        f"decision={baseline} elapsed={elapsed:.3f}s "
                         f"trusted_step={trusted.get('iterator_step')} "
                         f"trusted_cpu_ms={trusted.get('process_cpu_ms')} "
                         f"reported_samples={metadata.get('sample_count')} "
@@ -2042,10 +2133,10 @@ class NativeNationalBot:
                 return baseline
             if kind == "decision_error":
                 _log(
-                    f"DECIDE strategy_error decision_id={decision_id} "
+                    f"DECIDE policy_error decision_id={decision_id} "
                     f"error={message.get('error')!r} latest_safe={baseline}"
                 )
-                self._last_decision_source = "strategy_error_latest_safe"
+                self._last_decision_source = "policy_error_latest_safe"
                 return baseline
 
     def _current_round_has_allin(self) -> bool:
@@ -2061,26 +2152,16 @@ class NativeNationalBot:
         *,
         inferred_boundary: str | None = None,
     ) -> None:
-        if action_type == "call":
-            action_val = 0
-        elif action_type == "check":
-            action_val = 0
-        elif action_type == "fold":
-            action_val = -1
-        elif action_type == "allin":
-            action_val = -2
-        elif action_type == "raise" and amount is not None:
-            if player_id == self._my_id:
-                action_val = self._my_stage_bet
-            else:
-                action_val = self._opponent_stage_bet
-        else:
+        if action_type not in {"call", "check", "fold", "allin", "raise"}:
+            return
+        if action_type == "raise" and amount is None:
             return
         entry = {
+            "street": self._stage,
             "round": self._round_num(),
             "player_id": player_id,
-            "action": action_val,
             "action_type": action_type,
+            "committed": int(committed),
         }
         if inferred_boundary is not None:
             entry["inferred"] = True
@@ -2093,7 +2174,6 @@ class NativeNationalBot:
             else:
                 entry["stage_bet"] = self._opponent_stage_bet
                 entry["chips_after"] = self._opponent_chips
-            entry["committed"] = committed
         self._history.append(entry)
         self._opponent_tracker.observe_action(
             "hero" if player_id == self._my_id else "opponent",
@@ -2106,9 +2186,10 @@ class NativeNationalBot:
     def _infer_suppressed_terminal_opponent_action(self, boundary: str) -> str | None:
         """Repair the official EXE's omitted peer pass before a proven boundary.
 
-        The local server relays terminal calls/checks, while the official EXE can
-        advance directly after our action.  A street/settlement/showdown boundary
-        proves the peer response only when our last action still required one:
+        The local server mirrors the official EXE and may advance directly
+        after a terminal call/check without relaying it.  A
+        street/settlement/showdown boundary proves the peer response only when
+        our last action still required one:
         calls close our raise/allin, postflop calls close our first check, and the
         big blind checks behind our opening small-blind limp.  Recording through
         the normal action path keeps chips, pot, current-hand history, and the
@@ -2171,7 +2252,7 @@ class NativeNationalBot:
                 continue
             if record.get("action_type") != "raise":
                 continue
-            value = record.get("stage_bet", record.get("action"))
+            value = record.get("stage_bet")
             try:
                 value = int(value)
             except (TypeError, ValueError):
@@ -2183,9 +2264,8 @@ class NativeNationalBot:
     def _minimum_raise_total(self) -> int:
         last_raise = self._last_raise_total()
         if last_raise is not None:
-            # Official legality is inclusive 2x.  Keep +1 as conservative
-            # sizing headroom, not because exact 2x is illegal.
-            minimum = last_raise * 2 + 1
+            # The controlled official oracle proves exact inclusive 2x legal.
+            minimum = last_raise * 2
         elif self._stage == "preflop":
             minimum = 2 * BIG_BLIND
         else:
@@ -2220,42 +2300,20 @@ class NativeNationalBot:
             self._pot += committed
         return committed
 
-    def _raise_action(self, requested_total: int) -> tuple[str, str, int | None]:
-        if self._current_round_has_allin():
-            return self._zero_action()
-        target = max(int(requested_total), self._minimum_raise_total())
-        needed = target - self._my_stage_bet
-        if needed <= 0:
-            return self._zero_action()
-        if needed >= self._my_chips:
-            return "allin", "allin", None
-        return f"raise {target}", "raise", target
-
-    def _zero_action(self) -> tuple[str, str, int | None]:
-        if self._opponent_stage_bet > self._my_stage_bet:
-            return "call", "call", None
-        if self._responding_to_check():
-            return "call", "call", None
-        return "check", "check", None
-
-    def _action_to_tcp(self, action: int) -> tuple[str, str, int | None]:
-        if action == -1:
+    def _decision_to_tcp(self, raw_decision) -> tuple[str, str, int | None]:
+        """Final socket-owner legalization and canonical wire translation."""
+        fallback = self._socket_safe_fallback_decision()
+        decision = self._legalize_policy_decision(raw_decision, fallback)
+        kind = decision["kind"]
+        if kind == "fold":
             return "fold", "fold", None
-        if action == -2:
-            if self._current_round_has_allin():
-                return self._zero_action()
-            if self._opponent_chips == 0 and self._opponent_stage_bet > self._my_stage_bet:
-                return "call", "call", None
+        if kind == "pass":
+            wire_kind = self._pass_wire_kind()
+            return wire_kind, wire_kind, None
+        if kind == "allin":
             return "allin", "allin", None
-        if action > 0:
-            if self._current_round_has_allin():
-                return self._zero_action()
-            if action <= self._my_stage_bet:
-                return self._zero_action()
-            if self._opponent_stage_bet > self._my_stage_bet and action <= self._opponent_stage_bet:
-                return "call", "call", None
-            return self._raise_action(action)
-        return self._zero_action()
+        target = int(decision["raise_to"])
+        return f"raise {target}", "raise", target
 
     def _should_respond(self, action_type: str) -> bool:
         if action_type == "fold":
@@ -2286,18 +2344,17 @@ class NativeNationalBot:
             f"opp_chips={self._opponent_chips} is_sb={self._is_sb}"
         )
         try:
-            action = self._strategy_action()
+            decision = self._policy_decision()
         except Exception:
             traceback.print_exc(file=sys.stderr)
             _log("DECIDE exception -> fold")
-            action = -1
+            decision = {"kind": "fold"}
         elapsed = time.perf_counter() - t0
         _log(
-            f"DECIDE done action={action!r} source={self._last_decision_source} "
+            f"DECIDE done decision={decision!r} source={self._last_decision_source} "
             f"elapsed={elapsed:.3f}s"
         )
-        self._responses.append(int(action))
-        msg, action_type, amount = self._action_to_tcp(int(action))
+        msg, action_type, amount = self._decision_to_tcp(decision)
         self._send_wire_action(sock, msg)
         _log(
             f"SEND name={self.name} hand={self._hand_num} stage={self._stage} "
@@ -2347,7 +2404,6 @@ class NativeNationalBot:
                 self._my_stage_bet = BIG_BLIND
                 self._opponent_chips -= SMALL_BLIND
                 self._opponent_stage_bet = SMALL_BLIND
-            self._dealer_id = 0 if self._is_sb else 1
             self._opponent_tracker.begin_hand(
                 self._hand_num,
                 opponent_is_sb=not self._is_sb,
@@ -2370,14 +2426,7 @@ class NativeNationalBot:
         if line.startswith("earnChips"):
             earned = int(line.split()[1])
             self._infer_suppressed_terminal_opponent_action("settlement")
-            self._last_earned = earned
             self._earned_by_hand[self._hand_num] = earned
-            self._total_win_chips[self._my_id] += earned
-            self._total_win_chips[self._opponent_id] -= earned
-            if earned > 0:
-                self._total_win_games[self._my_id] += 1
-            elif earned < 0:
-                self._total_win_games[self._opponent_id] += 1
             showdown = self._showdown_by_hand.get(self._hand_num)
             if showdown is not None:
                 showdown["earned"] = earned
@@ -2408,7 +2457,6 @@ class NativeNationalBot:
                     "earned": self._earned_by_hand.get(self._hand_num),
                 }
                 self._showdown_by_hand[self._hand_num] = record
-                self._showdowns.append(record)
             self._opponent_tracker.observe_showdown(
                 self._hand_num,
                 record["opponent_cards"],
@@ -2454,9 +2502,16 @@ def run_client(host: str, port: int, name: str, log_path: str = "", seat: str = 
                     _log(f"RECV closed_by_server exception={type(exc).__name__}: {exc}")
                     return 0
                 if not data:
+                    # A delimiter-free numeric settlement can be followed
+                    # immediately by EOF. EOF is a proven token boundary; do
+                    # not discard the final complete token merely because no
+                    # idle window elapsed first.
+                    for line in decoder.flush_idle():
+                        _log(f"DISPATCH eof_flush line={line!r}")
+                        bot.handle(line, sock)
                     _log("RECV empty -> server closed")
                     return 0
-                chunk = data.decode("utf-8", "replace")
+                chunk = data.decode("ascii")
                 messages = decoder.feed(chunk)
                 _log(f"RECV raw={chunk!r} buffer={decoder.buffer!r}")
                 for line in messages:
@@ -2500,7 +2555,13 @@ NATIVE_BOT_TEMPLATE = NATIVE_BOT_TEMPLATE.replace(
 )
 
 
-NATIVE_PRECOMPUTE_TEMPLATE = r'''"""Bounded pure poker facts built once before live decisions."""
+NATIVE_PRECOMPUTE_TEMPLATE = r'''"""System-owned poker facts and evaluators loaded once per policy worker.
+
+The module is deliberately stdlib-only and performs no file I/O.  Candidate
+``policy.py`` may consume these immutable tables and pure helpers, but cannot
+replace them.  Card ids use the national protocol rank/suit space:
+``card_id = rank_index * 4 + suit`` where rank 0 is deuce and 12 is ace.
+"""
 
 from __future__ import annotations
 
@@ -2509,16 +2570,90 @@ import itertools
 import json
 
 
-PRECOMPUTE_SCHEMA_VERSION = 2
-CARD_ENCODING = "judge_int:rank=card//4+2,suit=card%4"
-GENERATOR_VERSION = "national-precompute-v1"
+PRECOMPUTE_SCHEMA_VERSION = 3
+CARD_ENCODING = "national_tcp_card_id_v1:card_id=rank_index*4+suit"
+GENERATOR_VERSION = "national-precompute-v2"
+FULL_DECK = tuple(range(52))
 FIVE_OF_SEVEN_INDICES = tuple(itertools.combinations(range(7), 5))
+RANK_SYMBOLS = "23456789TJQKA"
+
+
+def card_id(suit: int, rank_index: int) -> int:
+    suit, rank_index = int(suit), int(rank_index)
+    if not 0 <= suit < 4 or not 0 <= rank_index < 13:
+        raise ValueError("national card outside suit=0..3/rank=0..12")
+    return rank_index * 4 + suit
+
+
+def card_parts(card: int) -> tuple[int, int]:
+    card = int(card)
+    if not 0 <= card < 52:
+        raise ValueError("card id outside 0..51")
+    return card % 4, card // 4
 
 
 def _hole_fact(card_a: int, card_b: int) -> tuple[int, int, bool, bool, int]:
     rank_a, rank_b = card_a // 4 + 2, card_b // 4 + 2
     high, low = max(rank_a, rank_b), min(rank_a, rank_b)
     return high, low, card_a % 4 == card_b % 4, high == low, high - low
+
+
+def _hole_class_index(card_a: int, card_b: int) -> int:
+    rank_a, rank_b = card_a // 4, card_b // 4
+    high, low = max(rank_a, rank_b), min(rank_a, rank_b)
+    if high == low:
+        row, column = high, high
+    elif card_a % 4 == card_b % 4:
+        row, column = high, low
+    else:
+        row, column = low, high
+    return row * 13 + column
+
+
+def _preflop_bucket(card_a: int, card_b: int) -> str:
+    rank_a, rank_b = card_a // 4 + 2, card_b // 4 + 2
+    high, low = max(rank_a, rank_b), min(rank_a, rank_b)
+    suited = card_a % 4 == card_b % 4
+    if high == low:
+        return "premium_pair" if high >= 10 else "small_pair"
+    if high == 14 and low >= 10:
+        return "ace_broadway"
+    if low >= 10:
+        return "broadway"
+    if suited and high - low <= 2:
+        return "suited_connector"
+    if suited and high == 14:
+        return "suited_ace"
+    if not suited and high == 14:
+        return "offsuit_ace"
+    if suited:
+        return "suited_other"
+    return "offsuit_other"
+
+
+def _class_equity(row: int, column: int) -> float:
+    """Compact heads-up preflop prior, calibrated for ordering not certification.
+
+    The 169 values are materialized once below.  They are a deterministic
+    baseline prior; live postflop equity comes from the exact evaluator and
+    bounded sampling.  No strength claim relies on this table alone.
+    """
+
+    if row == column:
+        return round(0.503 + 0.029 * row, 6)
+    high, low = max(row, column), min(row, column)
+    suited = row > column
+    gap = high - low
+    value = (
+        0.315
+        + 0.018 * high
+        + 0.010 * low
+        - 0.012 * max(0, gap - 1)
+        + (0.030 if suited else 0.0)
+        + (0.018 if gap <= 2 else 0.0)
+        + (0.010 if high == 12 else 0.0)
+    )
+    return round(max(0.30, min(0.74, value)), 6)
 
 
 def _straight_high(rank_mask: int) -> int:
@@ -2536,16 +2671,138 @@ HOLE_COMBO_FACTS = {
     for card_a in range(52)
     for card_b in range(card_a + 1, 52)
 }
+HOLE_CLASS_INDEX_BY_COMBO = {
+    key: _hole_class_index(*key) for key in HOLE_COMBO_FACTS
+}
+HOLE_BUCKET_BY_COMBO = {
+    key: _preflop_bucket(*key) for key in HOLE_COMBO_FACTS
+}
 STRAIGHT_HIGH_BY_MASK = {
     rank_mask: _straight_high(rank_mask)
     for rank_mask in range(1 << 13)
 }
+PREFLOP_CLASS_EQUITY = tuple(
+    _class_equity(row, column)
+    for row in range(13)
+    for column in range(13)
+)
+
+
+def _validated_cards(cards, expected=None) -> tuple[int, ...]:
+    result = tuple(int(card) for card in cards)
+    if expected is not None and len(result) != int(expected):
+        raise ValueError(f"expected {expected} cards, got {len(result)}")
+    if len(result) < 5 or len(result) > 7:
+        raise ValueError("hand evaluator requires five through seven cards")
+    if any(card < 0 or card >= 52 for card in result):
+        raise ValueError("card id outside 0..51")
+    if len(set(result)) != len(result):
+        raise ValueError("duplicate card in hand")
+    return result
+
+
+def _evaluate_five_unchecked(cards) -> tuple:
+    ranks = sorted((card // 4 for card in cards), reverse=True)
+    suits = [card % 4 for card in cards]
+    counts = {}
+    rank_mask = 0
+    for rank in ranks:
+        counts[rank] = counts.get(rank, 0) + 1
+        rank_mask |= 1 << rank
+    groups = sorted(counts.items(), key=lambda item: (item[1], item[0]), reverse=True)
+    pattern = tuple(item[1] for item in groups)
+    kickers = tuple(item[0] for item in groups)
+    flush = len(set(suits)) == 1
+    straight = STRAIGHT_HIGH_BY_MASK[rank_mask]
+    # ``straight_high`` stores natural rank values 5..14; sever's evaluator
+    # uses protocol rank indices 3..12, hence the subtraction here.
+    straight_high = straight - 2 if straight else 0
+    if flush and straight:
+        return (9, straight_high)
+    if pattern == (4, 1):
+        return (8, kickers)
+    if pattern == (3, 2):
+        return (7, kickers)
+    if flush:
+        return (6, tuple(ranks))
+    if straight:
+        return (5, straight_high)
+    if pattern == (3, 1, 1):
+        return (4, kickers)
+    if pattern == (2, 2, 1):
+        return (3, kickers)
+    if pattern == (2, 1, 1, 1):
+        return (2, kickers)
+    return (1, tuple(ranks))
+
+
+def evaluate_five(cards) -> tuple:
+    """Return the complete, directly comparable five-card rank tuple."""
+
+    return _evaluate_five_unchecked(_validated_cards(cards, 5))
+
+
+def best_hand_rank(cards) -> tuple:
+    """Return the best five-card rank from a valid five-, six-, or seven-card set."""
+
+    cards = _validated_cards(cards)
+    if len(cards) == 5:
+        return _evaluate_five_unchecked(cards)
+    indices = (
+        FIVE_OF_SEVEN_INDICES
+        if len(cards) == 7
+        else itertools.combinations(range(len(cards)), 5)
+    )
+    return max(
+        _evaluate_five_unchecked(tuple(cards[index] for index in selected))
+        for selected in indices
+    )
+
+
+def evaluate_seven(cards) -> tuple:
+    return best_hand_rank(_validated_cards(cards, 7))
+
+
+def compare_hands(left, right) -> int:
+    left_rank, right_rank = best_hand_rank(left), best_hand_rank(right)
+    return (left_rank > right_rank) - (left_rank < right_rank)
+
+
+def deck_without(excluded=()) -> tuple[int, ...]:
+    excluded = tuple(int(card) for card in excluded)
+    if any(card < 0 or card >= 52 for card in excluded):
+        raise ValueError("excluded card id outside 0..51")
+    if len(set(excluded)) != len(excluded):
+        raise ValueError("duplicate excluded card")
+    blocked = set(excluded)
+    return tuple(card for card in FULL_DECK if card not in blocked)
+
+
+def deterministic_draw(deck, count: int, state: int) -> tuple[tuple[int, ...], int]:
+    """Draw without replacement using a stable xorshift64 stream."""
+
+    pool = list(deck)
+    count = int(count)
+    if count < 0 or count > len(pool):
+        raise ValueError("draw count outside deck")
+    state = int(state) & 0xFFFFFFFFFFFFFFFF or 0x9E3779B97F4A7C15
+    for offset in range(count):
+        state ^= (state << 13) & 0xFFFFFFFFFFFFFFFF
+        state ^= state >> 7
+        state ^= (state << 17) & 0xFFFFFFFFFFFFFFFF
+        state &= 0xFFFFFFFFFFFFFFFF
+        selected = offset + state % (len(pool) - offset)
+        pool[offset], pool[selected] = pool[selected], pool[offset]
+    return tuple(pool[:count]), state
 
 
 def _content_digest() -> str:
     payload = {
         "five_of_seven": FIVE_OF_SEVEN_INDICES,
         "hole_combo_facts": sorted((list(key), list(value)) for key, value in HOLE_COMBO_FACTS.items()),
+        "hole_class_indices": sorted((list(key), value) for key, value in HOLE_CLASS_INDEX_BY_COMBO.items()),
+        "hole_buckets": sorted((list(key), value) for key, value in HOLE_BUCKET_BY_COMBO.items()),
+        "preflop_class_equity": PREFLOP_CLASS_EQUITY,
         "straight_high": [STRAIGHT_HIGH_BY_MASK[index] for index in range(1 << 13)],
     }
     return hashlib.sha256(
@@ -2558,6 +2815,8 @@ PRECOMPUTE_MANIFEST = {
     "generator_version": GENERATOR_VERSION,
     "card_encoding": CARD_ENCODING,
     "hole_combo_entries": len(HOLE_COMBO_FACTS),
+    "hole_class_entries": len(PREFLOP_CLASS_EQUITY),
+    "hole_bucket_entries": len(HOLE_BUCKET_BY_COMBO),
     "straight_mask_entries": len(STRAIGHT_HIGH_BY_MASK),
     "five_of_seven_entries": len(FIVE_OF_SEVEN_INDICES),
     # These are system-provided domain facts.  They may accelerate a live
@@ -2566,6 +2825,9 @@ PRECOMPUTE_MANIFEST = {
     # influence for any selected precompute primary.
     "foundation_pure_facts": [
         "HOLE_COMBO_FACTS",
+        "HOLE_CLASS_INDEX_BY_COMBO",
+        "HOLE_BUCKET_BY_COMBO",
+        "PREFLOP_CLASS_EQUITY",
         "STRAIGHT_HIGH_BY_MASK",
         "FIVE_OF_SEVEN_INDICES",
     ],
@@ -2578,35 +2840,30 @@ def hole_combo_fact(card_a: int, card_b: int):
     return HOLE_COMBO_FACTS.get(key)
 
 
+def hole_class_index(card_a: int, card_b: int) -> int:
+    key = (card_a, card_b) if card_a < card_b else (card_b, card_a)
+    if key not in HOLE_CLASS_INDEX_BY_COMBO:
+        raise ValueError("hole cards must be two distinct card ids")
+    return HOLE_CLASS_INDEX_BY_COMBO[key]
+
+
+def preflop_equity(card_a: int, card_b: int) -> float:
+    return PREFLOP_CLASS_EQUITY[hole_class_index(card_a, card_b)]
+
+
+def preflop_bucket(card_a: int, card_b: int) -> str:
+    key = (card_a, card_b) if card_a < card_b else (card_b, card_a)
+    if key not in HOLE_BUCKET_BY_COMBO:
+        raise ValueError("hole cards must be two distinct card ids")
+    return HOLE_BUCKET_BY_COMBO[key]
+
+
 def straight_high(rank_mask: int) -> int:
     return STRAIGHT_HIGH_BY_MASK.get(int(rank_mask) & 0x1FFF, 0)
 '''
 
 
-CURRENT_STRENGTH_RUNTIME_OVERLAY_VERSION = 1
-CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST = hashlib.sha256(
-    NATIVE_BOT_TEMPLATE.encode("utf-8")
-).hexdigest()
-CURRENT_STRENGTH_MISSING_PRECOMPUTE_DIGEST = hashlib.sha256(
-    NATIVE_PRECOMPUTE_TEMPLATE.encode("utf-8")
-).hexdigest()
-
-
-def current_strength_runtime_overlay_identity() -> dict[str, Any]:
-    """Return the explicit local-strength runtime identity.
-
-    Rating and precommit strength use a temporary bilateral wrapper overlay so
-    historic policy modules are compared under the same repaired connection
-    state and deadline runtime.  Official EXE and raw artifact smoke never use
-    this identity: they execute the candidate's submitted entry verbatim.
-    """
-    return {
-        "schema_version": CURRENT_STRENGTH_RUNTIME_OVERLAY_VERSION,
-        "mode": "current_system_wrapper_bilateral",
-        "native_template_digest": CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST,
-        "missing_precompute_template_digest": CURRENT_STRENGTH_MISSING_PRECOMPUTE_DIGEST,
-        "precompute_policy": "preserve_candidate_file_or_provision_if_missing",
-    }
+DIRECT_ARTIFACT_EXECUTION_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -2614,12 +2871,65 @@ class NativeBotSpec:
     label: str
     path: Path
     entry: Path
-    temp_root: Path | None = None
-    wrapper_used: bool = False
-    runtime_overlay: bool = False
-    runtime_overlay_template_digest: str = ""
-    runtime_overlay_precompute_source: str = ""
-    runtime_overlay_precompute_digest: str = ""
+    artifact_hash: str
+    entry_digest: str = ""
+    policy_digest: str = ""
+    precompute_digest: str = ""
+    runtime_manifest_digest: str = ""
+    artifact_contract_digest: str = ""
+    epoch_receipt_digest: str = ""
+
+    def execution_identity(self) -> dict[str, Any]:
+        """Return the exact immutable artifact identity launched for a match."""
+
+        from bot_artifact import canonical_digest
+
+        payload = {
+            "schema_version": DIRECT_ARTIFACT_EXECUTION_SCHEMA_VERSION,
+            "mode": "direct_content_bound_policy_artifact",
+            "label": self.label,
+            "artifact_hash": self.artifact_hash,
+            "entrypoint": NATIVE_ENTRY,
+            "entry_digest": self.entry_digest,
+            "policy_digest": self.policy_digest,
+            "precompute_digest": self.precompute_digest,
+            "runtime_manifest_digest": self.runtime_manifest_digest,
+            "artifact_contract_digest": self.artifact_contract_digest,
+            "epoch_receipt_digest": self.epoch_receipt_digest,
+        }
+        return {**payload, "identity_digest": canonical_digest(payload)}
+
+
+def _artifact_execution_is_valid(
+    payload: Any,
+    expected_artifacts: dict[str, str],
+) -> bool:
+    """Validate the compact execution identity without reopening bot code."""
+
+    from bot_artifact import canonical_digest
+
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        return False
+    if payload.get("mode") != "direct_content_bound_policy_artifact":
+        return False
+    by_player = payload.get("by_player")
+    if not isinstance(by_player, dict) or set(by_player) != set(expected_artifacts):
+        return False
+    for label, expected_hash in expected_artifacts.items():
+        identity = by_player.get(label)
+        if not isinstance(identity, dict):
+            return False
+        unsigned = {
+            key: value for key, value in identity.items() if key != "identity_digest"
+        }
+        if (
+            identity.get("mode") != "direct_content_bound_policy_artifact"
+            or identity.get("label") != label
+            or identity.get("artifact_hash") != expected_hash
+            or identity.get("identity_digest") != canonical_digest(unsigned)
+        ):
+            return False
+    return True
 
 
 def ensure_native_entry(bot_dir: str | Path, *, overwrite: bool = False) -> Path:
@@ -2700,16 +3010,29 @@ print(json.dumps({"errors": errors[:20]}, ensure_ascii=True))
 
 
 def check_native_stream_decoder(bot_dir: str | Path) -> list[str]:
-    """Behaviorally verify the current delimiter-free stream decoder contract."""
+    """Verify the sole current decoder without executing candidate-owned bytes.
+
+    ``runpy`` is an execution boundary, not a static checker.  In particular,
+    ``python -I`` does not sandbox the target file.  Probing the candidate path
+    would therefore let an edited ``national_bot.py`` execute on the host
+    before the managed bot sandbox is created.  First require the exact
+    system-owned entrypoint bytes, then run the behavioral probe against a
+    private copy made from :data:`NATIVE_BOT_TEMPLATE` itself.
+    """
 
     bot_dir = Path(bot_dir)
-    entry = bot_dir / NATIVE_ENTRY
-    if not entry.exists():
-        return [f"{NATIVE_ENTRY} missing; cannot verify stream decoder"]
-    try:
-        text = entry.read_text(encoding="utf-8")
-    except OSError as exc:
-        return [f"{NATIVE_ENTRY} unreadable: {exc}"]
+    from national_runtime_authority import current_system_native_runtime_errors
+
+    identity_errors = current_system_native_runtime_errors(bot_dir)
+    if identity_errors:
+        return [
+            f"{NATIVE_ENTRY}: current system-owned stream decoder required: {error}"
+            for error in identity_errors
+        ]
+
+    # Tokens are checked on the system authority, never by reopening the
+    # candidate after the byte-identity read above.
+    text = NATIVE_BOT_TEMPLATE
 
     required_tokens = (
         "NATIONAL_STREAM_DECODER_VERSION = 2",
@@ -2727,14 +3050,36 @@ def check_native_stream_decoder(bot_dir: str | Path) -> list[str]:
         ]
 
     try:
-        proc = subprocess.run(
-            [sys.executable, "-I", "-c", _NATIVE_STREAM_PROBE_SCRIPT, str(entry.resolve())],
-            cwd=str(bot_dir),
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="pok_system_decoder_probe_") as raw_tmp:
+            probe_root = Path(raw_tmp)
+            probe_entry = probe_root / NATIVE_ENTRY
+            descriptor = os.open(
+                probe_entry,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                0o400,
+            )
+            try:
+                content = NATIVE_BOT_TEMPLATE.encode("utf-8")
+                with os.fdopen(descriptor, "wb", closefd=False) as writer:
+                    writer.write(content)
+                    writer.flush()
+                    os.fsync(writer.fileno())
+            finally:
+                os.close(descriptor)
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    _NATIVE_STREAM_PROBE_SCRIPT,
+                    str(probe_entry),
+                ],
+                cwd=str(probe_root),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [f"{NATIVE_ENTRY}: stream decoder behavior probe failed: {type(exc).__name__}: {exc}"]
     if proc.returncode != 0:
@@ -2773,7 +3118,22 @@ def check_native_contract(
     forbidden = ("bot_adapter", "BotAdapter", '"response"', "'response'")
     for token in forbidden:
         if token in text:
-            errors.append(f"{NATIVE_ENTRY}: forbidden legacy adapter/JSON response token {token!r}")
+            errors.append(f"{NATIVE_ENTRY}: forbidden alternate-entry token {token!r}")
+    legacy_policy_abi_tokens = (
+        'import_module("main")',
+        'import_module("state")',
+        'import_module("strategy")',
+        "current_request_view",
+        "self._requests",
+        "self._responses",
+        "def _action_to_tcp",
+        "def _strategy_action",
+    )
+    for token in legacy_policy_abi_tokens:
+        if token in text:
+            errors.append(
+                f"{NATIVE_ENTRY}: forbidden Botzone-derived candidate ABI token {token!r}"
+            )
     legacy_wire_tokens = (
         "makefile(",
         ".readline(",
@@ -2808,41 +3168,73 @@ def check_native_contract(
         errors.append(f"{NATIVE_ENTRY}: opponent raise amount is treated as an increment; it must be raise-to-total")
     if "return f\"raise {needed}\", \"raise\", action" in text:
         errors.append(f"{NATIVE_ENTRY}: outgoing raise uses delta-style wire amount; it must send raise-to-total")
-    formal_wrapper = "class NativeNationalBot" in text or "def _action_to_tcp" in text or "def _zero_action" in text
+    formal_wrapper = "class NativeNationalBot" in text
     if formal_wrapper:
-        action_to_tcp = _function_source(text, "_action_to_tcp")
-        if action_to_tcp is None:
-            errors.append(f"{NATIVE_ENTRY}: missing _action_to_tcp protocol translator")
-        elif "self._current_round_has_allin()" not in action_to_tcp:
+        decision_to_tcp = _function_source(text, "_decision_to_tcp")
+        if decision_to_tcp is None:
+            errors.append(f"{NATIVE_ENTRY}: missing typed _decision_to_tcp translator")
+        elif "_legalize_policy_decision" not in decision_to_tcp:
             errors.append(
-                f"{NATIVE_ENTRY}: _action_to_tcp missing current-round allin guard; "
-                "after any allin it must map strategy raises/allins to call/fold/check-safe actions"
+                f"{NATIVE_ENTRY}: _decision_to_tcp must perform final socket-owner legalization"
             )
-        zero_action = _function_source(text, "_zero_action")
-        if zero_action is None:
-            errors.append(f"{NATIVE_ENTRY}: missing _zero_action call/check mapper")
-        elif "_responding_to_check()" not in zero_action:
+        pass_mapper = _function_source(text, "_pass_wire_kind")
+        if pass_mapper is None:
+            errors.append(f"{NATIVE_ENTRY}: missing abstract pass-to-wire mapper")
+        elif "_responding_to_check()" not in pass_mapper:
             errors.append(
-                f"{NATIVE_ENTRY}: _zero_action missing postflop check-response guard; "
-                "second pass after an opponent check must be call, not check"
+                f"{NATIVE_ENTRY}: pass mapper missing prior-check guard; the second "
+                "official pass token must be call"
             )
-    if _strategy_action_has_exception_pass(text):
+    if _policy_decision_has_exception_pass(text):
         errors.append(
-            f"{NATIVE_ENTRY}: _strategy_action must not continue with raw action after sanitizer failure"
+            f"{NATIVE_ENTRY}: _policy_decision must not continue with an unvalidated decision"
         )
     if require_current_stream_decoder:
         errors.extend(check_native_stream_decoder(bot_dir))
     if require_current_decision_runtime:
+        policy_entry = bot_dir / "policy.py"
+        if not policy_entry.is_file():
+            errors.append(
+                "policy.py missing; current national candidates require the typed "
+                "get_baseline_decision/iter_decisions ABI"
+            )
+        else:
+            try:
+                policy_tree = ast.parse(
+                    policy_entry.read_text(encoding="utf-8"),
+                    filename=str(policy_entry),
+                )
+            except (OSError, UnicodeError, SyntaxError) as exc:
+                errors.append(f"policy.py unreadable or invalid: {type(exc).__name__}: {exc}")
+            else:
+                policy_functions = {
+                    node.name
+                    for node in policy_tree.body
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                }
+                for required_function in (
+                    "get_baseline_decision",
+                    "iter_decisions",
+                ):
+                    if required_function not in policy_functions:
+                        errors.append(
+                            f"policy.py missing required function {required_function}"
+                        )
         runtime_tokens = (
             f"NATIONAL_DECISION_RUNTIME_VERSION = {NATIONAL_DECISION_RUNTIME_VERSION}",
-            "decision_hard_deadline_monotonic",
-            "decision_refinement_deadline_monotonic",
-            "decision_baseline_target_ms",
+            "DECISION_CONTEXT_SCHEMA_VERSION = 1",
+            'NATIONAL_CARD_ENCODING = "national_tcp_suit_rank_v1"',
+            'importlib.import_module("policy")',
+            "get_baseline_decision",
+            "iter_decisions",
+            "decision_context",
+            "hard_monotonic",
+            "refinement_monotonic",
+            "baseline_target_ms",
             "mp.get_context(\"spawn\")",
-            "def _strategy_worker_main",
+            "def _policy_worker_main",
             'os.environ["POK_NATIVE_BOT_SEED"]',
             "random.seed(int(random_seed))",
-            "iter_refinements",
             "decision_id",
             "process.terminate()",
             "process.kill()",
@@ -2853,8 +3245,14 @@ def check_native_contract(
             "reported_sample_count",
             "def _reap_retired_strategy_workers",
             '_stop_strategy_worker("decision_deadline", wait=False)',
-            "def _socket_safe_fallback_action",
-            "return -1 if self._opponent_stage_bet > self._my_stage_bet else 0",
+            "def _socket_safe_fallback_decision",
+            'return {"kind": "fold"}',
+            'return {"kind": "pass"}',
+            "def _legalize_policy_decision",
+            "def _decision_to_tcp",
+            "def _build_decision_context",
+            '"policy_kinds": policy_kinds',
+            '"raise_boundary": "inclusive_exact_2x_raise_to"',
             "def _infer_suppressed_terminal_opponent_action",
             "official_suppressed_terminal_action",
         )
@@ -2877,13 +3275,13 @@ def _function_source(text: str, name: str) -> str | None:
     return None
 
 
-def _strategy_action_has_exception_pass(text: str) -> bool:
+def _policy_decision_has_exception_pass(text: str) -> bool:
     try:
         tree = ast.parse(text)
     except SyntaxError:
         return False
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_strategy_action":
+        if isinstance(node, ast.FunctionDef) and node.name == "_policy_decision":
             for child in ast.walk(node):
                 if isinstance(child, ast.Try):
                     for handler in child.handlers:
@@ -2914,28 +3312,41 @@ def _bot_version(label: str) -> int:
 
 
 def resolve_bot(token: str | Path) -> tuple[str, Path]:
+    """Resolve only a strict policy artifact in the active ``bots/`` root.
+
+    Path aliases into ``archive/`` and the old ``vN``/``botN``/``claude_vN``
+    namespaces are rejected lexically before any artifact bytes are opened.
+    """
+
+    from bot_namespace import ROLE_CANDIDATE, resolve_national_bot_spec
+
     token_str = str(token)
-    raw = Path(token_str)
-    candidates: list[Path] = []
-    if raw.exists():
-        candidates.append(raw)
-    if token_str.startswith("v") and token_str[1:].isdigit():
-        candidates.append(ROOT / "bots" / bot_name(token_str[1:]))
-    if token_str.isdigit():
-        candidates.append(ROOT / "bots" / bot_name(token_str))
-        candidates.append(ROOT / "bots" / f"bot{token_str}")
-    if token_str.startswith(ACTIVE_BOT_PREFIX) or token_str.startswith("claude_v") or token_str.startswith("bot"):
-        candidates.append(ROOT / "bots" / token_str)
-    for path in candidates:
-        if path.is_dir() and (
-            (path / NATIVE_ENTRY).is_file() or (path / "main.py").is_file()
-        ):
-            return path.name, path.resolve()
-        if path.is_file() and path.name in {NATIVE_ENTRY, "main.py"}:
-            return path.parent.name, path.resolve().parent
-    raise ValueError(
-        f"bot not found or missing {NATIVE_ENTRY}/main.py entry: {token_str}"
+    raw = Path(token_str).expanduser()
+    if raw.is_absolute() or len(raw.parts) > 1:
+        candidate = raw.parent if raw.name == NATIVE_ENTRY else raw
+        candidate = Path(os.path.abspath(os.fspath(candidate)))
+    else:
+        if parse_bot_version(token_str) is None:
+            raise ValueError(f"invalid active national bot label: {token_str}")
+        candidate = (ROOT / "bots" / token_str).absolute()
+    active_root = (ROOT / "bots").absolute()
+    if candidate.parent != active_root:
+        raise ValueError(
+            f"bot path is outside the active strict namespace: {candidate}"
+        )
+    spec = resolve_national_bot_spec(
+        candidate,
+        ROLE_CANDIDATE,
+        repo_root=ROOT,
+        require_completion=False,
+        require_certificate=False,
     )
+    if not spec.eligible:
+        raise ValueError(
+            f"invalid strict policy artifact {spec.label}: "
+            + ";".join(spec.issues[:8])
+        )
+    return spec.label, spec.path
 
 
 def _completed_active_bots() -> list[tuple[str, Path]]:
@@ -2943,9 +3354,10 @@ def _completed_active_bots() -> list[tuple[str, Path]]:
 
     specs: list[tuple[str, Path]] = []
     for name in get_active_bots():
-        path = ROOT / "bots" / name
-        if path.is_dir() and (path / NATIVE_ENTRY).is_file():
-            specs.append((name, path.resolve()))
+        try:
+            specs.append(resolve_bot(name))
+        except ValueError:
+            continue
     return sorted(specs, key=lambda item: version_sort_key(item[0]), reverse=True)
 
 
@@ -2974,120 +3386,80 @@ def _prepare_native_spec(
     label: str,
     bot_dir: Path,
     *,
-    allow_legacy_wrapper: bool = False,
-    current_runtime_overlay: bool = False,
-    projected_strategy_seed: bool = False,
+    system_control: bool = False,
+    expected_artifact_hash: str = "",
 ) -> NativeBotSpec:
-    """Resolve an existing native entry, optionally wrapping a copied legacy bot.
+    """Validate and bind the exact artifact that will be executed.
 
-    The strict path never writes to ``bot_dir``. Wrapper generation is reserved
-    for the explicitly named legacy/debug runner and only touches a temporary
-    copy of the source bot.
+    No files are copied, generated, replaced, or projected here.  The sole
+    exception to the active ``bots/`` namespace is the receipt-bound first
+    strict system control, which is validated by its own materializer.
     """
-    entry = bot_dir / NATIVE_ENTRY
-    from national_protocol_quarantine import quarantined_native_entry_sources
 
-    quarantined_sources = quarantined_native_entry_sources(bot_dir)
-    if quarantined_sources:
-        migration_seed = bot_name(142)
-        canonical_seed = (ROOT / "bots" / migration_seed).resolve()
-        legal_projection = bool(
-            projected_strategy_seed
-            and current_runtime_overlay
-            and not allow_legacy_wrapper
-            and label == migration_seed
-            and bot_dir.resolve() == canonical_seed
-            and migration_seed in quarantined_sources
-        )
-        if not legal_projection:
-            raise ValueError(
-                "protocol_quarantined_native_entry_forbidden:"
-                f"{label}:matches={','.join(quarantined_sources)}"
-            )
-    elif projected_strategy_seed:
-        raise ValueError(
-            f"projected_strategy_seed_source_not_quarantined:{label}"
-        )
-    if current_runtime_overlay:
-        if allow_legacy_wrapper:
-            raise ValueError(
-                "current runtime overlay cannot be combined with legacy wrapper generation"
-            )
-        if not entry.exists():
-            raise ValueError(f"{label}: missing required {NATIVE_ENTRY}")
-        original_errors = check_native_contract(bot_dir)
-        if original_errors:
-            raise ValueError(
-                f"{label}: invalid source {NATIVE_ENTRY} before runtime overlay: "
-                + "; ".join(original_errors[:3])
-            )
-        # Do not mutate an immutable historical bot or an in-progress
-        # candidate.  Local strength is intentionally a policy-vs-policy
-        # comparison under one current system wrapper; official and raw smoke
-        # paths continue to execute the artifact's own entrypoint.
-        tmp = Path(tempfile.mkdtemp(prefix=f"pok_native_strength_{label}_"))
-        dst = tmp / bot_dir.name
-        try:
-            shutil.copytree(bot_dir, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-            precompute = dst / PRECOMPUTE_ENTRY
-            precompute_source = (
-                "preserved_candidate_artifact"
-                if precompute.exists()
-                else "provisioned_system_facts"
-            )
-            overlaid_entry = ensure_native_entry(dst, overwrite=True)
-            contract_errors = check_native_contract(
-                dst,
-                require_current_stream_decoder=True,
-                require_current_decision_runtime=True,
-            )
-            if contract_errors:
-                raise ValueError(
-                    f"{label}: current runtime overlay invalid {NATIVE_ENTRY}: "
-                    + "; ".join(contract_errors[:3])
-                )
-            precompute_digest = ""
-            if (dst / PRECOMPUTE_ENTRY).is_file():
-                precompute_digest = hashlib.sha256(
-                    (dst / PRECOMPUTE_ENTRY).read_bytes()
-                ).hexdigest()
-            return NativeBotSpec(
-                label=label,
-                path=dst,
-                entry=overlaid_entry,
-                temp_root=tmp,
-                runtime_overlay=True,
-                runtime_overlay_template_digest=CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST,
-                runtime_overlay_precompute_source=precompute_source,
-                runtime_overlay_precompute_digest=precompute_digest,
-            )
-        except BaseException:
-            shutil.rmtree(tmp, ignore_errors=True)
-            raise
-    if entry.exists():
-        contract_errors = check_native_contract(bot_dir)
-        if not contract_errors:
-            return NativeBotSpec(label=label, path=bot_dir, entry=entry)
-        if not allow_legacy_wrapper:
-            raise ValueError(f"{label}: invalid {NATIVE_ENTRY}: {'; '.join(contract_errors[:3])}")
-    if not allow_legacy_wrapper:
-        raise ValueError(f"{label}: missing required {NATIVE_ENTRY}")
-    tmp = Path(tempfile.mkdtemp(prefix=f"pok_native_{label}_"))
-    dst = tmp / bot_dir.name
-    shutil.copytree(bot_dir, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-    return NativeBotSpec(
-        label=label,
-        path=dst,
-        entry=ensure_native_entry(dst, overwrite=True),
-        temp_root=tmp,
-        wrapper_used=True,
+    from bot_artifact import canonical_digest, hash_path
+    from bot_namespace import (
+        NATIONAL_RUNTIME_MANIFEST,
+        POLICY_EPOCH_RECEIPT,
+        artifact_contract_digest,
     )
+    from national_runtime_authority import current_system_native_runtime_errors
 
+    bot_dir = Path(bot_dir).absolute()
+    if system_control:
+        from first_strict_control import validate_materialized_control
 
-def _cleanup_specs(specs: list[NativeBotSpec]) -> None:
-    for spec in specs:
-        if spec.temp_root is not None:
-            shutil.rmtree(spec.temp_root, ignore_errors=True)
+        control_errors = validate_materialized_control(bot_dir)
+        if control_errors:
+            raise ValueError(
+                f"invalid first-strict control {label}: "
+                + ";".join(control_errors[:8])
+            )
+    else:
+        resolved_label, resolved_path = resolve_bot(bot_dir)
+        if resolved_label != label or resolved_path != bot_dir:
+            raise ValueError(f"strict artifact resolution mismatch: {label}")
+
+    runtime_errors = current_system_native_runtime_errors(bot_dir)
+    if runtime_errors:
+        raise ValueError(
+            f"non_system_owned_native_runtime_forbidden:{label}:{runtime_errors[0]}"
+        )
+    contract_errors = check_native_contract(
+        bot_dir,
+        require_current_stream_decoder=True,
+        require_current_decision_runtime=True,
+    )
+    if contract_errors:
+        raise ValueError(
+            f"{label}: invalid strict policy artifact: "
+            + "; ".join(contract_errors[:5])
+        )
+
+    runtime_manifest = json.loads(
+        (bot_dir / NATIONAL_RUNTIME_MANIFEST).read_text(encoding="utf-8")
+    )
+    epoch_receipt = json.loads(
+        (bot_dir / POLICY_EPOCH_RECEIPT).read_text(encoding="utf-8")
+    )
+    artifact_hash = hash_path(bot_dir)
+    if expected_artifact_hash and artifact_hash != expected_artifact_hash:
+        raise ValueError(f"{label}: artifact hash does not match execution authority")
+    core_digests = dict(runtime_manifest.get("files") or {})
+    spec = NativeBotSpec(
+        label=label,
+        path=bot_dir,
+        entry=bot_dir / NATIVE_ENTRY,
+        artifact_hash=artifact_hash,
+        entry_digest=str(core_digests.get(NATIVE_ENTRY) or ""),
+        policy_digest=str(core_digests.get("policy.py") or ""),
+        precompute_digest=str(core_digests.get(PRECOMPUTE_ENTRY) or ""),
+        runtime_manifest_digest=canonical_digest(runtime_manifest),
+        artifact_contract_digest=artifact_contract_digest(runtime_manifest),
+        epoch_receipt_digest=canonical_digest(epoch_receipt),
+    )
+    if hash_path(bot_dir) != artifact_hash:
+        raise ValueError(f"{label}: artifact changed while binding execution identity")
+    return spec
 
 
 def _native_bot_seed(bot_seed_base: int | None, player_idx: int) -> int | None:
@@ -3257,7 +3629,7 @@ def _safe_label_fragment(label: str) -> str:
     return safe[:80] or "bot"
 
 
-async def _run_tcp_server_with_processes(
+async def _execute_tcp_server_with_processes(
     bot_a: NativeBotSpec,
     bot_b: NativeBotSpec,
     *,
@@ -3431,8 +3803,8 @@ async def _run_tcp_server_with_processes(
             proc_streams.append((stdout_file, stderr_file))
             procs.append(proc)
         await asyncio.wait_for(connected.wait(), timeout=connect_timeout)
-        await clients[0].send_line("name")
-        await clients[1].send_line("name")
+        await clients[0].send_message("name")
+        await clients[1].send_message("name")
         name0 = await clients[0].recv_name(timeout=name_timeout)
         name1 = await clients[1].recv_name(timeout=name_timeout)
         if not name0 or not name1:
@@ -3555,13 +3927,7 @@ async def _run_tcp_server_with_processes(
             "earnings": int(earnings[idx]),
             "illegal_actions": illegal[idx],
             "timeouts": timeouts[idx],
-            "wrapper_used": spec.wrapper_used,
-            "runtime_overlay": {
-                "enabled": spec.runtime_overlay,
-                "native_template_digest": spec.runtime_overlay_template_digest,
-                "precompute_source": spec.runtime_overlay_precompute_source,
-                "precompute_digest": spec.runtime_overlay_precompute_digest,
-            },
+            "artifact_execution": spec.execution_identity(),
             "runtime_telemetry": runtime_telemetry,
             "native": {
                 "returncode": proc_info.get("returncode"),
@@ -3573,15 +3939,6 @@ async def _run_tcp_server_with_processes(
                 "decision_trace": decision_trace,
                 "process_failures": 1 if proc_failed else 0,
                 "json_response_stdout": 1 if '"response"' in stdout_text or "'response'" in stdout_text else 0,
-            },
-            "adapter": {
-                "bot_failures": 0,
-                "invalid_actions": 0,
-                "actions_sent": 0,
-                "clamped_raises": 0,
-                "allin_conversions": 0,
-                "would_be_illegal_raise": 0,
-                "postflop_pass_conversions": 0,
             },
         }
         player_issues = []
@@ -3598,6 +3955,14 @@ async def _run_tcp_server_with_processes(
         issues.extend(player_issues)
     if hands_played != hands:
         issues.append(f"hands_played={hands_played}, expected={hands}")
+    from bot_artifact import hash_path
+
+    for run_label, spec in zip(run_labels, (bot_a, bot_b)):
+        if hash_path(spec.path) != spec.artifact_hash:
+            issue = f"{run_label}: artifact_changed_during_execution"
+            issues.append(issue)
+            per_player[run_label]["compliance_issues"].append(issue)
+            per_player[run_label]["passed_compliance"] = False
     return {
         "bot_a": run_labels[0],
         "bot_b": run_labels[1],
@@ -3608,42 +3973,12 @@ async def _run_tcp_server_with_processes(
         "net_chips_b": int(earnings[1]),
         "net_chips_a_per_hand": round(int(earnings[0]) / max(1, hands_played), 3),
         "execution_mode": "native_tcp",
-        "wrapper_used": bot_a.wrapper_used or bot_b.wrapper_used,
-        "wrapper_used_by_player": {
-            run_labels[0]: bot_a.wrapper_used,
-            run_labels[1]: bot_b.wrapper_used,
-        },
-        "runtime_overlay": {
-            **current_strength_runtime_overlay_identity(),
-            "enabled": bool(bot_a.runtime_overlay or bot_b.runtime_overlay),
-            "both_sides": bool(bot_a.runtime_overlay and bot_b.runtime_overlay),
-            "mode": (
-                "current_system_wrapper_bilateral"
-                if bot_a.runtime_overlay and bot_b.runtime_overlay
-                else (
-                    "candidate_raw_opponent_current_runtime_projection"
-                    if bot_b.runtime_overlay and not bot_a.runtime_overlay
-                    else "artifact_native_entry"
-                )
-            ),
-            "native_template_digest": (
-                CURRENT_STRENGTH_RUNTIME_TEMPLATE_DIGEST
-                if bot_a.runtime_overlay or bot_b.runtime_overlay
-                else ""
-            ),
+        "artifact_execution": {
+            "schema_version": DIRECT_ARTIFACT_EXECUTION_SCHEMA_VERSION,
+            "mode": "direct_content_bound_policy_artifact",
             "by_player": {
-                run_labels[0]: {
-                    "enabled": bot_a.runtime_overlay,
-                    "native_template_digest": bot_a.runtime_overlay_template_digest,
-                    "precompute_source": bot_a.runtime_overlay_precompute_source,
-                    "precompute_digest": bot_a.runtime_overlay_precompute_digest,
-                },
-                run_labels[1]: {
-                    "enabled": bot_b.runtime_overlay,
-                    "native_template_digest": bot_b.runtime_overlay_template_digest,
-                    "precompute_source": bot_b.runtime_overlay_precompute_source,
-                    "precompute_digest": bot_b.runtime_overlay_precompute_digest,
-                },
+                run_labels[0]: bot_a.execution_identity(),
+                run_labels[1]: bot_b.execution_identity(),
             },
         },
         "deck_seed_base": deck_seed_base,
@@ -3657,247 +3992,297 @@ async def _run_tcp_server_with_processes(
     }
 
 
-async def run_native_tcp_pair(
-    bot_a_token: str | Path,
-    bot_b_token: str | Path,
-    hands: int,
-    *,
-    require_native_a: bool = True,
-    require_native_b: bool = True,
-    deck_seed_base: int | None = None,
-    bot_seed_base: int | None = None,
-    timeout_sec: float | None = None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
-    capture_events: bool = False,
-    sanitize_parent_environment: bool = False,
-) -> dict[str, Any]:
-    """Run a formal native TCP match using both bots' existing entries.
+def _build_first_strict_runner_authority(execute_native_match):
+    """Keep the one-shot completion authority inside the real runner closure.
 
-    The ``require_native_*`` arguments are retained so formal callers can state
-    the contract explicitly. They cannot be disabled; legacy wrapper generation
-    is available only through ``run_legacy_debug_tcp_pair_with_wrappers``.
-    """
-    if require_native_a is not True or require_native_b is not True:
-        raise ValueError(
-            "run_native_tcp_pair requires existing valid national_bot.py entries "
-            "for both players; use run_legacy_debug_tcp_pair_with_wrappers only "
-            "for legacy/debug regression"
-        )
-    return await _run_native_tcp_pair(
-        bot_a_token,
-        bot_b_token,
-        hands,
-        allow_legacy_wrappers=False,
-        deck_seed_base=deck_seed_base,
-        bot_seed_base=bot_seed_base,
-        timeout_sec=timeout_sec,
-        bot_a_env_overrides=bot_a_env_overrides,
-        bot_b_env_overrides=bot_b_env_overrides,
-        capture_events=capture_events,
-        current_runtime_overlay_a=False,
-        current_runtime_overlay_b=False,
-        sanitize_parent_environment=sanitize_parent_environment,
-    )
+    The execution ticket is only a durable workflow fence; it is deliberately
+    not a capability and contains no secret.  A completion capability comes
+    into existence only after the captured 70-hand TCP implementation above
+    returns a terminal result for the exact content-bound candidate/control
+    pair.  The opaque object is retained in process memory and is consumed once
+    by the journal.  Nothing is added to the replay/result dictionary.
 
-
-async def run_current_runtime_native_strength_pair(
-    bot_a_token: str | Path,
-    bot_b_token: str | Path,
-    hands: int,
-    *,
-    require_native_a: bool = True,
-    require_native_b: bool = True,
-    deck_seed_base: int | None = None,
-    bot_seed_base: int | None = None,
-    timeout_sec: float | None = None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
-    capture_events: bool = False,
-) -> dict[str, Any]:
-    """Run a local-strength match under the current system runtime on both sides.
-
-    This is deliberately separate from :func:`run_native_tcp_pair`: the latter
-    is the raw artifact path used by protocol/compliance smoke and external
-    experiments.  The strength runner copies both native artifacts, replaces
-    only their system-owned TCP/deadline wrapper, and retains their policy
-    modules.  It must never be used for official EXE certification.
-    """
-    if require_native_a is not True or require_native_b is not True:
-        raise ValueError(
-            "run_current_runtime_native_strength_pair requires existing native entries "
-            "for both players"
-        )
-    return await _run_native_tcp_pair(
-        bot_a_token,
-        bot_b_token,
-        hands,
-        allow_legacy_wrappers=False,
-        deck_seed_base=deck_seed_base,
-        bot_seed_base=bot_seed_base,
-        timeout_sec=timeout_sec,
-        bot_a_env_overrides=bot_a_env_overrides,
-        bot_b_env_overrides=bot_b_env_overrides,
-        capture_events=capture_events,
-        current_runtime_overlay_a=True,
-        current_runtime_overlay_b=True,
-    )
-
-
-async def run_native_candidate_vs_projected_strategy_seed(
-    candidate_token: str | Path,
-    strategy_seed_token: str | Path,
-    hands: int,
-    *,
-    deck_seed_base: int | None = None,
-    bot_seed_base: int | None = None,
-    timeout_sec: float | None = None,
-) -> dict[str, Any]:
-    """Exercise a candidate's raw entry against a legacy strategy only.
-
-    The second artifact's immutable ``national_bot.py`` is never executed.  A
-    temporary copy receives the current system-owned stream/deadline runtime,
-    while its strategy files remain content-bound.  This transition exists
-    only for the one-time protocol migration seed and is not a rating mode.
+    This protects the checkpoint/LLM/shell/public-API boundary.  As elsewhere
+    in this repository, arbitrary same-UID Python memory inspection or runtime
+    monkeypatching is outside the security boundary.
     """
 
-    strategy_label, strategy_path = resolve_bot(strategy_seed_token)
-    mode = _acceptance_opponent_runtime_mode(strategy_label, strategy_path)
-    if mode != "projected_strategy_seed":
-        raise RuntimeError(
-            "projected_strategy_seed_transition_not_authorized:"
-            f"{strategy_label}:{mode}"
+    seal_lock = threading.Lock()
+    pending_seals: dict[str, Any] = {}
+    digest_chars = frozenset("0123456789abcdef")
+
+    class RunnerSeal:
+        __slots__ = (
+            "nonce",
+            "ticket_digest",
+            "match_run_id",
+            "deck_seed_base",
+            "bot_seed_base",
+            "execution_identity",
+            "execution_digest",
+            "engine_projection_digest",
+            "bot_spec_digest",
         )
 
-    return await _run_authorized_projected_strategy_seed(
-        candidate_token,
-        strategy_path,
-        hands,
-        deck_seed_base=deck_seed_base,
-        bot_seed_base=bot_seed_base,
-        timeout_sec=timeout_sec,
-    )
+        def __init__(
+            self,
+            *,
+            ticket_digest: str,
+            match_run_id: str,
+            deck_seed_base: int,
+            bot_seed_base: int,
+            execution: dict[str, Any],
+            execution_digest: str,
+            engine_projection_digest: str,
+            bot_spec_digest: str,
+        ) -> None:
+            self.nonce = os.urandom(32)
+            self.ticket_digest = ticket_digest
+            self.match_run_id = match_run_id
+            self.deck_seed_base = deck_seed_base
+            self.bot_seed_base = bot_seed_base
+            self.execution_identity = id(execution)
+            self.execution_digest = execution_digest
+            self.engine_projection_digest = engine_projection_digest
+            self.bot_spec_digest = bot_spec_digest
 
-
-async def _run_authorized_projected_strategy_seed(
-    candidate_token: str | Path,
-    strategy_seed_path: Path,
-    hands: int,
-    *,
-    deck_seed_base: int | None = None,
-    bot_seed_base: int | None = None,
-    timeout_sec: float | None = None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
-) -> dict[str, Any]:
-    """Run the projection after the caller validated the current transition."""
-
-    return await _run_native_tcp_pair(
-        candidate_token,
-        strategy_seed_path,
-        hands,
-        allow_legacy_wrappers=False,
-        deck_seed_base=deck_seed_base,
-        bot_seed_base=bot_seed_base,
-        timeout_sec=timeout_sec,
-        bot_a_env_overrides=bot_a_env_overrides,
-        bot_b_env_overrides=bot_b_env_overrides,
-        current_runtime_overlay_a=False,
-        current_runtime_overlay_b=True,
-        projected_strategy_seed_b=True,
-    )
-
-
-async def run_legacy_debug_tcp_pair_with_wrappers(
-    bot_a_token: str | Path,
-    bot_b_token: str | Path,
-    hands: int,
-    *,
-    deck_seed_base: int | None = None,
-    bot_seed_base: int | None = None,
-    timeout_sec: float | None = None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
-    sanitize_parent_environment: bool = False,
-) -> dict[str, Any]:
-    """Run an old regression match, wrapping missing/invalid native entries.
-
-    This API is intentionally named for legacy/debug use. Any generated entry is
-    written only to a temporary copy and reported through ``wrapper_used``.
-    """
-    return await _run_native_tcp_pair(
-        bot_a_token,
-        bot_b_token,
-        hands,
-        allow_legacy_wrappers=True,
-        deck_seed_base=deck_seed_base,
-        bot_seed_base=bot_seed_base,
-        timeout_sec=timeout_sec,
-        bot_a_env_overrides=bot_a_env_overrides,
-        bot_b_env_overrides=bot_b_env_overrides,
-        current_runtime_overlay_a=False,
-        current_runtime_overlay_b=False,
-        sanitize_parent_environment=sanitize_parent_environment,
-    )
-
-
-async def _run_native_tcp_pair(
-    bot_a_token: str | Path,
-    bot_b_token: str | Path,
-    hands: int,
-    *,
-    allow_legacy_wrappers: bool,
-    deck_seed_base: int | None,
-    bot_seed_base: int | None,
-    timeout_sec: float | None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
-    capture_events: bool = False,
-    current_runtime_overlay_a: bool = False,
-    current_runtime_overlay_b: bool = False,
-    projected_strategy_seed_b: bool = False,
-    sanitize_parent_environment: bool = False,
-) -> dict[str, Any]:
-    if not allow_legacy_wrappers:
-        bot_a_env_overrides = _validate_formal_native_env_overrides(
-            "bot_a", bot_a_env_overrides
+    def valid_digest(value: Any) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in digest_chars for char in value)
         )
-        bot_b_env_overrides = _validate_formal_native_env_overrides(
-            "bot_b", bot_b_env_overrides
+
+    def plain_int(value: Any) -> bool:
+        return isinstance(value, int) and not isinstance(value, bool)
+
+    def ticket_binding(ticket: Any) -> dict[str, Any]:
+        from bot_artifact import canonical_digest
+        from first_strict_execution_journal import (
+            execution_scope_digest,
+            normalize_execution_scope,
         )
-    if projected_strategy_seed_b and not current_runtime_overlay_b:
-        raise ValueError(
-            "projected strategy seed requires the current runtime overlay"
+
+        if not isinstance(ticket, dict) or set(ticket) != {
+            "authority_run_id",
+            "effect_id",
+            "lease_epoch",
+            "match_run_id",
+            "input_payload",
+        }:
+            raise RuntimeError("first_strict_execution_runner_ticket_invalid")
+        if not plain_int(ticket.get("lease_epoch")) or ticket["lease_epoch"] < 1:
+            raise RuntimeError("first_strict_execution_runner_lease_invalid")
+        input_payload = ticket.get("input_payload")
+        if not isinstance(input_payload, dict) or set(input_payload) != {
+            "scope",
+            "scope_digest",
+            "repeat",
+            "deck_seed_base",
+            "bot_seed_base",
+            "hands",
+            "match_run_id",
+        }:
+            raise RuntimeError("first_strict_execution_runner_input_invalid")
+        scope = normalize_execution_scope(input_payload.get("scope"))
+        if input_payload.get("scope") != scope:
+            raise RuntimeError("first_strict_execution_runner_scope_not_canonical")
+        scope_digest = execution_scope_digest(scope)
+        if input_payload.get("scope_digest") != scope_digest:
+            raise RuntimeError("first_strict_execution_runner_scope_digest_mismatch")
+        repeat = input_payload.get("repeat")
+        deck_seed_base = input_payload.get("deck_seed_base")
+        bot_seed_base = input_payload.get("bot_seed_base")
+        if not plain_int(repeat) or not 1 <= repeat <= 8:
+            raise RuntimeError("first_strict_execution_runner_repeat_invalid")
+        if not plain_int(deck_seed_base) or not plain_int(bot_seed_base):
+            raise RuntimeError("first_strict_execution_runner_seed_invalid")
+        if bot_seed_base != deck_seed_base + 1_000_000_000:
+            raise RuntimeError("first_strict_execution_runner_seed_relation_invalid")
+        if input_payload.get("hands") != 70:
+            raise RuntimeError("first_strict_execution_runner_hands_invalid")
+        match_identity = {
+            "scope": scope,
+            "scope_digest": scope_digest,
+            "repeat": repeat,
+            "deck_seed_base": deck_seed_base,
+            "bot_seed_base": bot_seed_base,
+            "hands": 70,
+        }
+        match_run_id = "first-strict-native:" + canonical_digest(match_identity)
+        authority_run_id = f"first-strict-control:{scope_digest}"
+        effect_id = f"{authority_run_id}:repeat-{repeat}"
+        if (
+            input_payload.get("match_run_id") != match_run_id
+            or ticket.get("match_run_id") != match_run_id
+            or ticket.get("authority_run_id") != authority_run_id
+            or ticket.get("effect_id") != effect_id
+        ):
+            raise RuntimeError("first_strict_execution_runner_ticket_binding_mismatch")
+        canonical_ticket = {
+            "authority_run_id": authority_run_id,
+            "effect_id": effect_id,
+            "lease_epoch": ticket["lease_epoch"],
+            "match_run_id": match_run_id,
+            "input_payload": {**match_identity, "match_run_id": match_run_id},
+        }
+        if ticket != canonical_ticket:
+            raise RuntimeError("first_strict_execution_runner_ticket_not_canonical")
+        return {
+            "ticket_digest": canonical_digest(canonical_ticket),
+            "match_run_id": match_run_id,
+            "deck_seed_base": deck_seed_base,
+            "bot_seed_base": bot_seed_base,
+            "scope": scope,
+        }
+
+    def bot_spec_identity(
+        spec: NativeBotSpec,
+        *,
+        expected_label: str,
+        expected_artifact_hash: str,
+    ) -> dict[str, Any]:
+        from bot_artifact import canonical_digest, hash_path
+
+        if (
+            spec.label != expected_label
+            or spec.entry != spec.path / NATIVE_ENTRY
+            or not valid_digest(spec.artifact_hash)
+            or spec.artifact_hash != expected_artifact_hash
+            or not valid_digest(spec.entry_digest)
+            or not valid_digest(spec.policy_digest)
+            or not valid_digest(spec.precompute_digest)
+            or not valid_digest(spec.runtime_manifest_digest)
+            or not valid_digest(spec.artifact_contract_digest)
+            or not valid_digest(spec.epoch_receipt_digest)
+        ):
+            raise RuntimeError("first_strict_execution_runner_bot_spec_invalid")
+        if hash_path(spec.path) != spec.artifact_hash:
+            raise RuntimeError("first_strict_execution_runner_artifact_hash_mismatch")
+        if hashlib.sha256(spec.entry.read_bytes()).hexdigest() != spec.entry_digest:
+            raise RuntimeError("first_strict_execution_runner_entry_digest_mismatch")
+        identity = spec.execution_identity()
+        if identity.get("identity_digest") != canonical_digest({
+            key: value
+            for key, value in identity.items()
+            if key != "identity_digest"
+        }):
+            raise RuntimeError("first_strict_execution_runner_identity_digest_mismatch")
+        return identity
+
+    def engine_projection(execution: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "execution_mode": execution.get("execution_mode"),
+            "bot_a": execution.get("bot_a"),
+            "bot_b": execution.get("bot_b"),
+            "hands_requested": execution.get("hands_requested"),
+            "hands_played": execution.get("hands_played"),
+            "deck_seed_base": execution.get("deck_seed_base"),
+            "bot_seed_base": execution.get("bot_seed_base"),
+            "net_chips_a": execution.get("net_chips_a"),
+            "net_chips_b": execution.get("net_chips_b"),
+            "settlements": execution.get("settlements"),
+            "hand_records": execution.get("hand_records"),
+            "events": execution.get("events"),
+        }
+
+    def validate_terminal_result(
+        execution: Any,
+        *,
+        bot_a: NativeBotSpec,
+        bot_b: NativeBotSpec,
+        binding: dict[str, Any],
+    ) -> tuple[str, str]:
+        from bot_artifact import canonical_digest
+        from first_strict_execution_journal import _terminal_execution_issues
+
+        issues, _proof = _terminal_execution_issues(
+            execution,
+            deck_seed_base=binding["deck_seed_base"],
+            bot_seed_base=binding["bot_seed_base"],
         )
-    label_a, dir_a = resolve_bot(bot_a_token)
-    label_b, dir_b = resolve_bot(bot_b_token)
-    capacity_owner = (
-        f"native_tcp:{label_a}:{label_b}:{os.getpid()}:{time.monotonic_ns()}"
-    )
-    capacity_lease = await acquire_match_slots_async(capacity_owner, count=1)
-    specs: list[NativeBotSpec] = []
-    try:
-        specs.append(_prepare_native_spec(
-            label_a,
-            dir_a,
-            allow_legacy_wrapper=allow_legacy_wrappers,
-            current_runtime_overlay=current_runtime_overlay_a,
-        ))
-        specs.append(_prepare_native_spec(
-            label_b,
-            dir_b,
-            allow_legacy_wrapper=allow_legacy_wrappers,
-            current_runtime_overlay=current_runtime_overlay_b,
-            projected_strategy_seed=projected_strategy_seed_b,
-        ))
-        hands = max(1, min(70, int(hands)))
-        if timeout_sec is None:
-            timeout_sec = max(90.0, hands * 4.0)
-        return await _run_tcp_server_with_processes(
-            specs[0],
-            specs[1],
+        if issues:
+            raise RuntimeError(
+                "first_strict_execution_runner_terminal_invalid:"
+                + ";".join(issues[:12])
+            )
+        if execution.get("bot_a") != bot_a.label or execution.get("bot_b") != bot_b.label:
+            raise RuntimeError("first_strict_execution_runner_label_mismatch")
+        artifact_execution = execution.get("artifact_execution") or {}
+        by_player = artifact_execution.get("by_player") or {}
+        if (
+            artifact_execution.get("schema_version")
+            != DIRECT_ARTIFACT_EXECUTION_SCHEMA_VERSION
+            or artifact_execution.get("mode")
+            != "direct_content_bound_policy_artifact"
+            or set(by_player) != {bot_a.label, bot_b.label}
+            or any(
+                by_player.get(spec.label) != spec.execution_identity()
+                for spec in (bot_a, bot_b)
+            )
+        ):
+            raise RuntimeError(
+                "first_strict_execution_runner_artifact_execution_invalid"
+            )
+        try:
+            return (
+                canonical_digest(execution),
+                canonical_digest(engine_projection(execution)),
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "first_strict_execution_runner_result_not_canonical"
+            ) from exc
+
+    async def run_tcp_server_with_processes(
+        bot_a: NativeBotSpec,
+        bot_b: NativeBotSpec,
+        *,
+        hands: int,
+        timeout_sec: float,
+        deck_seed_base: int | None,
+        bot_seed_base: int | None = None,
+        bot_a_env_overrides: dict[str, str | int | None] | None = None,
+        bot_b_env_overrides: dict[str, str | int | None] | None = None,
+        capture_events: bool = False,
+        sanitize_parent_environment: bool = False,
+        control_execution_ticket: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        binding = None
+        before_specs = None
+        if control_execution_ticket is not None:
+            from bot_artifact import canonical_digest
+
+            binding = ticket_binding(control_execution_ticket)
+            scope = binding["scope"]
+            if (
+                hands != 70
+                or deck_seed_base != binding["deck_seed_base"]
+                or bot_seed_base != binding["bot_seed_base"]
+                or capture_events is not True
+                or bot_a.label == bot_b.label
+            ):
+                raise RuntimeError("first_strict_execution_runner_arguments_mismatch")
+            before_specs = [
+                bot_spec_identity(
+                    bot_a,
+                    expected_label=scope["candidate_label"],
+                    expected_artifact_hash=scope["candidate_artifact_hash"],
+                ),
+                bot_spec_identity(
+                    bot_b,
+                    expected_label=scope["control_id"],
+                    expected_artifact_hash=scope["control_artifact_hash"],
+                ),
+            ]
+            with seal_lock:
+                if binding["ticket_digest"] in pending_seals:
+                    raise RuntimeError("first_strict_execution_runner_seal_already_pending")
+        execution = await execute_native_match(
+            bot_a,
+            bot_b,
             hands=hands,
-            timeout_sec=float(timeout_sec),
+            timeout_sec=timeout_sec,
             deck_seed_base=deck_seed_base,
             bot_seed_base=bot_seed_base,
             bot_a_env_overrides=bot_a_env_overrides,
@@ -3905,47 +4290,281 @@ async def _run_native_tcp_pair(
             capture_events=capture_events,
             sanitize_parent_environment=sanitize_parent_environment,
         )
+        if binding is not None:
+            from bot_artifact import canonical_digest
+
+            scope = binding["scope"]
+            after_specs = [
+                bot_spec_identity(
+                    bot_a,
+                    expected_label=scope["candidate_label"],
+                    expected_artifact_hash=scope["candidate_artifact_hash"],
+                ),
+                bot_spec_identity(
+                    bot_b,
+                    expected_label=scope["control_id"],
+                    expected_artifact_hash=scope["control_artifact_hash"],
+                ),
+            ]
+            if after_specs != before_specs:
+                raise RuntimeError("first_strict_execution_runner_bot_spec_changed")
+            execution_digest, projection_digest = validate_terminal_result(
+                execution,
+                bot_a=bot_a,
+                bot_b=bot_b,
+                binding=binding,
+            )
+            spec_digest = canonical_digest({"bot_specs": after_specs})
+            seal = RunnerSeal(
+                ticket_digest=binding["ticket_digest"],
+                match_run_id=binding["match_run_id"],
+                deck_seed_base=binding["deck_seed_base"],
+                bot_seed_base=binding["bot_seed_base"],
+                execution=execution,
+                execution_digest=execution_digest,
+                engine_projection_digest=projection_digest,
+                bot_spec_digest=spec_digest,
+            )
+            with seal_lock:
+                if binding["ticket_digest"] in pending_seals:
+                    raise RuntimeError("first_strict_execution_runner_seal_already_pending")
+                pending_seals[binding["ticket_digest"]] = seal
+            # Persist the terminal body at the real runner boundary before it
+            # can escape to a higher layer.  The journal commits the complete
+            # replay in the same fenced SQLite transaction, consumes this seal
+            # only after that commit, and can reconstruct its file projection
+            # after a process death.  The outer caller's second completion call
+            # is an exact, idempotent reference lookup.
+            from first_strict_execution_journal import complete_control_execution
+
+            complete_control_execution(
+                control_execution_ticket,
+                execution=execution,
+            )
+        return execution
+
+    def _matched_runner_execution_seal(
+        ticket: Any,
+        execution: dict[str, Any],
+    ) -> tuple[dict[str, Any], RunnerSeal]:
+        from bot_artifact import canonical_digest
+
+        binding = ticket_binding(ticket)
+        with seal_lock:
+            seal = pending_seals.get(binding["ticket_digest"])
+        if seal is None:
+            raise RuntimeError("first_strict_execution_runner_seal_missing")
+        try:
+            execution_digest = canonical_digest(execution)
+            projection_digest = canonical_digest(engine_projection(execution))
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "first_strict_execution_runner_result_not_canonical"
+            ) from exc
+        if (
+            not isinstance(seal, RunnerSeal)
+            or seal.ticket_digest != binding["ticket_digest"]
+            or seal.match_run_id != binding["match_run_id"]
+            or seal.deck_seed_base != binding["deck_seed_base"]
+            or seal.bot_seed_base != binding["bot_seed_base"]
+            or seal.execution_identity != id(execution)
+            or seal.execution_digest != execution_digest
+            or seal.engine_projection_digest != projection_digest
+            or not valid_digest(seal.bot_spec_digest)
+        ):
+            raise RuntimeError("first_strict_execution_runner_seal_mismatch")
+
+        return binding, seal
+
+    def validate_runner_execution_seal(
+        ticket: Any,
+        execution: dict[str, Any],
+    ) -> None:
+        """Prove a real terminal runner result without consuming its authority."""
+
+        _matched_runner_execution_seal(ticket, execution)
+
+    def consume_runner_execution_seal(
+        ticket: Any,
+        execution: dict[str, Any],
+    ) -> None:
+        """Commit-consume a previously validated seal after durable completion."""
+
+        binding, seal = _matched_runner_execution_seal(ticket, execution)
+        with seal_lock:
+            current = pending_seals.get(binding["ticket_digest"])
+            if current is not seal:
+                raise RuntimeError("first_strict_execution_runner_seal_mismatch")
+            del pending_seals[binding["ticket_digest"]]
+
+    return (
+        run_tcp_server_with_processes,
+        validate_runner_execution_seal,
+        consume_runner_execution_seal,
+    )
+
+
+(
+    _run_tcp_server_with_processes,
+    _validate_first_strict_runner_execution_seal,
+    _consume_first_strict_runner_execution_seal,
+) = _build_first_strict_runner_authority(_execute_tcp_server_with_processes)
+del _build_first_strict_runner_authority
+del _execute_tcp_server_with_processes
+
+
+async def run_native_tcp_pair(
+    bot_a_token: str | Path,
+    bot_b_token: str | Path,
+    hands: int,
+    *,
+    deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
+    timeout_sec: float | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
+    sanitize_parent_environment: bool = False,
+) -> dict[str, Any]:
+    """Execute both strict policy artifacts directly over national raw TCP."""
+
+    return await _run_direct_artifact_tcp_pair(
+        bot_a_token,
+        bot_b_token,
+        hands,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
+        capture_events=capture_events,
+        sanitize_parent_environment=sanitize_parent_environment,
+    )
+
+
+async def run_native_strength_pair(
+    bot_a_token: str | Path,
+    bot_b_token: str | Path,
+    hands: int,
+    *,
+    deck_seed_base: int | None = None,
+    bot_seed_base: int | None = None,
+    timeout_sec: float | None = None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
+    control_execution_ticket: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Execute one local-strength sample from the exact submitted artifacts."""
+
+    return await _run_direct_artifact_tcp_pair(
+        bot_a_token,
+        bot_b_token,
+        hands,
+        deck_seed_base=deck_seed_base,
+        bot_seed_base=bot_seed_base,
+        timeout_sec=timeout_sec,
+        bot_a_env_overrides=bot_a_env_overrides,
+        bot_b_env_overrides=bot_b_env_overrides,
+        capture_events=capture_events,
+        control_execution_ticket=control_execution_ticket,
+    )
+
+
+async def _run_direct_artifact_tcp_pair(
+    bot_a_token: str | Path,
+    bot_b_token: str | Path,
+    hands: int,
+    *,
+    deck_seed_base: int | None,
+    bot_seed_base: int | None,
+    timeout_sec: float | None,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    capture_events: bool = False,
+    sanitize_parent_environment: bool = False,
+    control_execution_ticket: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    bot_a_env_overrides = _validate_formal_native_env_overrides(
+        "bot_a", bot_a_env_overrides
+    )
+    bot_b_env_overrides = _validate_formal_native_env_overrides(
+        "bot_b", bot_b_env_overrides
+    )
+    if control_execution_ticket is not None and (
+        capture_events is not True
+        or int(hands) != 70
+    ):
+        raise ValueError(
+            "first strict control ticket requires one captured 70-hand "
+            "direct-artifact match"
+        )
+    label_a, dir_a = resolve_bot(bot_a_token)
+    system_control_b = control_execution_ticket is not None
+    if control_execution_ticket is not None:
+        from first_strict_execution_journal import normalize_execution_scope
+
+        ticket_input = control_execution_ticket.get("input_payload") or {}
+        ticket_scope = normalize_execution_scope(ticket_input.get("scope"))
+        if label_a != ticket_scope["candidate_label"]:
+            raise ValueError("first strict candidate label mismatch")
+        dir_b = Path(bot_b_token).absolute()
+        label_a = ticket_scope["candidate_label"]
+        label_b = ticket_scope["control_id"]
+    else:
+        ticket_scope = {}
+        label_b, dir_b = resolve_bot(bot_b_token)
+    capacity_owner = (
+        f"native_tcp:{label_a}:{label_b}:{os.getpid()}:{time.monotonic_ns()}"
+    )
+    capacity_lease = await acquire_match_slots_async(capacity_owner, count=1)
+    try:
+        spec_a = _prepare_native_spec(
+            label_a,
+            dir_a,
+            expected_artifact_hash=str(
+                ticket_scope.get("candidate_artifact_hash") or ""
+            ),
+        )
+        spec_b = _prepare_native_spec(
+            label_b,
+            dir_b,
+            system_control=system_control_b,
+            expected_artifact_hash=str(
+                ticket_scope.get("control_artifact_hash") or ""
+            ),
+        )
+        hands = max(1, min(70, int(hands)))
+        if timeout_sec is None:
+            timeout_sec = max(90.0, hands * 4.0)
+        runner_kwargs = {
+            "hands": hands,
+            "timeout_sec": float(timeout_sec),
+            "deck_seed_base": deck_seed_base,
+            "bot_seed_base": bot_seed_base,
+            "bot_a_env_overrides": bot_a_env_overrides,
+            "bot_b_env_overrides": bot_b_env_overrides,
+            "capture_events": capture_events,
+            "sanitize_parent_environment": sanitize_parent_environment,
+        }
+        if control_execution_ticket is not None:
+            runner_kwargs["control_execution_ticket"] = control_execution_ticket
+        return await _run_tcp_server_with_processes(
+            spec_a,
+            spec_b,
+            **runner_kwargs,
+        )
     finally:
-        _cleanup_specs(specs)
         capacity_lease.release()
 
 
 def _acceptance_opponent_runtime_mode(label: str, path: Path) -> str:
-    """Return ``raw`` or the one legal migration projection, failing closed."""
+    """Prove that an acceptance opponent is a strict direct artifact."""
 
-    version = parse_bot_version(label)
-    if version is None:
-        return "raw"
-    from national_protocol_quarantine import (
-        is_quarantined_version,
-        protocol_quarantine_health,
-        select_protocol_bootstrap_source,
-    )
-
-    health = protocol_quarantine_health()
-    if not health.get("valid"):
-        raise RuntimeError(
-            "protocol_quarantine_policy_invalid:"
-            + ";".join(str(item) for item in (health.get("issues") or [])[:6])
-        )
-    if not is_quarantined_version(version, health=health):
-        return "raw"
-    expected = (ROOT / "bots" / label).resolve()
-    if path.resolve() != expected:
-        raise RuntimeError("protocol_quarantine_opponent_path_mismatch")
-    from evolution_infra import get_active_bots
-
-    transition = select_protocol_bootstrap_source(get_active_bots())
-    if (
-        transition.get("available") is True
-        and transition.get("reason") == "legacy_strategy_migration"
-        and transition.get("source") == label
-    ):
-        return "projected_strategy_seed"
-    raise RuntimeError(
-        "protocol_quarantined_opponent_execution_forbidden:"
-        f"{label}:{transition.get('reason', 'transition_unavailable')}"
-    )
+    resolved_label, resolved_path = resolve_bot(path)
+    if resolved_label != label or resolved_path != Path(path).absolute():
+        raise RuntimeError("strict_policy_opponent_identity_mismatch")
+    return "direct_content_bound_policy_artifact"
 
 
 async def run_native_tcp_smoke(
@@ -3953,6 +4572,7 @@ async def run_native_tcp_smoke(
     *,
     source_v: int | None = None,
     opponent_token: str | Path | None = None,
+    self_play: bool = False,
     hands: int = 1,
     timeout_sec: float | None = 90.0,
 ) -> dict[str, Any]:
@@ -3964,14 +4584,25 @@ async def run_native_tcp_smoke(
         return {
             "passed": False,
             "execution_mode": "native_tcp",
-            "wrapper_used": False,
             "hands": hands,
             "issues": [f"native_smoke_candidate_error={type(exc).__name__}: {str(exc)[:300]}"],
             "outcome": "candidate_failure",
             "failure_side": "candidate",
         }
 
-    if opponent_token is not None:
+    if self_play and opponent_token is not None:
+        return {
+            "candidate": candidate_label,
+            "passed": False,
+            "execution_mode": "native_tcp",
+            "hands": hands,
+            "issues": ["native_smoke_self_play_and_opponent_are_mutually_exclusive"],
+            "outcome": "infrastructure_failure",
+            "failure_side": "harness",
+        }
+    if self_play:
+        opponents = [(candidate_label, candidate_dir)]
+    elif opponent_token is not None:
         try:
             opponents = [resolve_bot(opponent_token)]
         except Exception as exc:
@@ -3979,7 +4610,6 @@ async def run_native_tcp_smoke(
                 "candidate": candidate_label,
                 "passed": False,
                 "execution_mode": "native_tcp",
-                "wrapper_used": False,
                 "hands": hands,
                 "issues": [f"native_smoke_opponent_error={type(exc).__name__}: {str(exc)[:300]}"],
                 "outcome": "infrastructure_failure",
@@ -3993,7 +4623,6 @@ async def run_native_tcp_smoke(
             "candidate": candidate_label,
             "passed": False,
             "execution_mode": "native_tcp",
-            "wrapper_used": False,
             "hands": hands,
             "issues": ["native_smoke_no_opponent"],
             "outcome": "infrastructure_failure",
@@ -4006,39 +4635,37 @@ async def run_native_tcp_smoke(
             opponent_label,
             opponent_dir,
         )
-        if opponent_mode == "projected_strategy_seed":
-            result = await _run_authorized_projected_strategy_seed(
-                candidate_dir,
-                opponent_dir,
-                hands,
-                timeout_sec=timeout_sec,
-            )
-        else:
-            result = await run_native_tcp_pair(
-                candidate_dir,
-                opponent_dir,
-                hands,
-                require_native_a=True,
-                require_native_b=True,
-                timeout_sec=timeout_sec,
-            )
+        result = await run_native_tcp_pair(
+            candidate_dir,
+            opponent_dir,
+            hands,
+            timeout_sec=timeout_sec,
+        )
     except Exception as exc:
         return {
             "candidate": candidate_label,
             "opponent": opponent_label,
             "passed": False,
             "execution_mode": "native_tcp",
-            "wrapper_used": False,
             "hands": hands,
             "issues": [f"native_smoke_exception={type(exc).__name__}: {str(exc)[:500]}"],
             "outcome": "infrastructure_failure",
             "failure_side": "harness",
         }
 
-    candidate_row = (result.get("per_player") or {}).get(candidate_label) or {}
-    opponent_row = (result.get("per_player") or {}).get(opponent_label) or {}
-    candidate_issues = list(candidate_row.get("compliance_issues") or [])
-    opponent_issues = list(opponent_row.get("compliance_issues") or [])
+    player_rows = list((result.get("per_player") or {}).values())
+    if self_play:
+        candidate_issues = [
+            str(issue)
+            for row in player_rows
+            for issue in (row.get("compliance_issues") or [])
+        ]
+        opponent_issues = []
+    else:
+        candidate_row = (result.get("per_player") or {}).get(candidate_label) or {}
+        opponent_row = (result.get("per_player") or {}).get(opponent_label) or {}
+        candidate_issues = list(candidate_row.get("compliance_issues") or [])
+        opponent_issues = list(opponent_row.get("compliance_issues") or [])
     attributed = set(candidate_issues + opponent_issues)
     unscoped_issues = [
         str(item) for item in result.get("issues") or []
@@ -4057,10 +4684,11 @@ async def run_native_tcp_smoke(
     return {
         "candidate": candidate_label,
         "opponent": opponent_label,
+        "self_play": bool(self_play),
         "opponent_runtime_mode": opponent_mode,
         "passed": passed,
         "execution_mode": "native_tcp",
-        "wrapper_used": bool(result.get("wrapper_used")),
+        "artifact_execution": result.get("artifact_execution") or {},
         "hands": hands,
         "issues": issues,
         "outcome": outcome,
@@ -4077,15 +4705,9 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             "net_chips": 0,
             "illegal_actions": 0,
             "timeouts": 0,
-            "bot_failures": 0,
-            "invalid_actions": 0,
-            "clamped_raises": 0,
-            "allin_conversions": 0,
-            "would_be_illegal_raise": 0,
-            "postflop_pass_conversions": 0,
             "native_process_failures": 0,
             "json_response_stdout": 0,
-            "wrapper_used": False,
+            "artifact_executions": [],
             "passed_compliance": True,
             "runtime_telemetry": _empty_runtime_telemetry(),
         }
@@ -4102,7 +4724,9 @@ def _summary_from_results(bots: list[tuple[str, Path]], results: list[dict[str, 
             native = pdata.get("native", {}) or {}
             row["native_process_failures"] += int(native.get("process_failures", 0) or 0)
             row["json_response_stdout"] += int(native.get("json_response_stdout", 0) or 0)
-            row["wrapper_used"] = row["wrapper_used"] or bool(pdata.get("wrapper_used"))
+            row["artifact_executions"].append(
+                dict(pdata.get("artifact_execution") or {})
+            )
             row["passed_compliance"] = (
                 row["passed_compliance"]
                 and bool(pdata.get("passed_compliance", result.get("passed_compliance", False)))
@@ -4137,8 +4761,8 @@ async def run_native_acceptance_for_candidate(
             outcome="infrastructure_failure",
             failure_side="opponent",
             issues=["need at least one opponent for native national acceptance"],
-            summary={"wrapper_used": False, "passed_compliance": False},
-            report={"execution_mode": "native_tcp", "wrapper_used": False},
+            summary={"passed_compliance": False},
+            report={"execution_mode": "native_tcp"},
         )
     pair_indices = [(0, idx) for idx in range(1, len(bots))]
     if timeout_sec is None:
@@ -4152,26 +4776,14 @@ async def run_native_acceptance_for_candidate(
             bot_seed = 171_000 + pair_index * 1_000
             mode = _acceptance_opponent_runtime_mode(bots[j][0], bots[j][1])
             opponent_runtime_modes[bots[j][0]] = mode
-            if mode == "projected_strategy_seed":
-                result = await _run_authorized_projected_strategy_seed(
-                    bots[i][1],
-                    bots[j][1],
-                    hands,
-                    deck_seed_base=pair_seed,
-                    bot_seed_base=bot_seed,
-                    timeout_sec=timeout_sec,
-                )
-            else:
-                result = await run_native_tcp_pair(
-                    bots[i][1],
-                    bots[j][1],
-                    hands,
-                    require_native_a=True,
-                    require_native_b=True,
-                    deck_seed_base=pair_seed,
-                    bot_seed_base=bot_seed,
-                    timeout_sec=timeout_sec,
-                )
+            result = await run_native_tcp_pair(
+                bots[i][1],
+                bots[j][1],
+                hands,
+                deck_seed_base=pair_seed,
+                bot_seed_base=bot_seed,
+                timeout_sec=timeout_sec,
+            )
             results.append(result)
     except TimeoutError:
         issue = f"native_national_acceptance_timeout: exceeded {timeout_sec:g}s"
@@ -4186,14 +4798,12 @@ async def run_native_acceptance_for_candidate(
             summary={
                 "matches": 0,
                 "net_chips": 0,
-                "wrapper_used": False,
                 "passed_compliance": False,
             },
             report={
                 "generated_at": datetime.now().isoformat(timespec="seconds"),
                 "hands_per_pair": hands,
                 "execution_mode": "native_tcp",
-                "wrapper_used": False,
                 "candidate_only": True,
                 "timeout_sec": timeout_sec,
                 "timed_out": True,
@@ -4210,21 +4820,23 @@ async def run_native_acceptance_for_candidate(
             "net_chips": result["net_chips_a"],
             "per_hand": result["net_chips_a_per_hand"],
             "passed_compliance": result["passed_compliance"],
-            "wrapper_used": bool(result.get("wrapper_used")),
+            "artifact_execution": result.get("artifact_execution") or {},
             "issues": result["issues"],
         }
         matrix[b][a] = {
             "net_chips": result["net_chips_b"],
             "per_hand": round(result["net_chips_b"] / max(1, result["hands_played"]), 3),
             "passed_compliance": result["passed_compliance"],
-            "wrapper_used": bool(result.get("wrapper_used")),
+            "artifact_execution": result.get("artifact_execution") or {},
             "issues": result["issues"],
         }
     report = {
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "hands_per_pair": hands,
         "execution_mode": "native_tcp",
-        "wrapper_used": any(bool(result.get("wrapper_used")) for result in results),
+        "artifact_executions": [
+            dict(result.get("artifact_execution") or {}) for result in results
+        ],
         "pair_count": len(pair_indices),
         "bots": [{"label": label, "path": str(path)} for label, path in bots],
         "results": results,
@@ -4293,7 +4905,10 @@ async def run_native_precommit(
     parent_label: str = "",
     deck_seed_base: int | None = 91_000,
     sample_plan: list[dict[str, Any]] | None = None,
+    control_execution_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    from bot_artifact import hash_path
+
     candidate = resolve_bot(candidate_token)
     hands = int(hands)
     if hands != 70:
@@ -4325,19 +4940,129 @@ async def run_native_precommit(
         blockers.append({"reason": "native_no_opponents", "details": "Native precommit requires at least one opponent."})
     for opp_index, item in enumerate(opponents):
         reason = str(item.get("reason") or "precommit")
-        strength_authoritative = is_strength_matchup(item)
         token = item.get("path") or item.get("token") or item.get("name")
-        opponent = resolve_bot(token)
-        opponent_runtime_mode = _acceptance_opponent_runtime_mode(
-            opponent[0], opponent[1]
-        )
-        migration_projection = opponent_runtime_mode == "projected_strategy_seed"
+        system_control = str(item.get("authority") or "") == "system_first_strict_control"
+        if system_control:
+            from first_strict_control import validate_control_receipt
+            from first_strict_execution_journal import normalize_execution_scope
+
+            control_receipt = item.get("control_receipt") or {}
+            control_identity = control_receipt.get("control") or {}
+            opponent = (
+                str(item.get("name") or control_identity.get("control_id") or ""),
+                Path(str(token)).absolute(),
+            )
+            if str(opponent[1]) != str(control_identity.get("path") or ""):
+                raise RuntimeError("first_strict_control_path_binding_mismatch")
+            control_active_bots = list(
+                control_receipt.get("active_policy_bots") or []
+            )
+
+            expected_control_flags = {
+                "precommit_gate_admitted": True,
+                "formal_bootstrap_opponent_admitted": True,
+                "strength_admitted": False,
+                "rating_eligible": False,
+                "official_opponent_eligible": False,
+            }
+            invalid_flags = [
+                field for field, expected in expected_control_flags.items()
+                if item.get(field) is not expected
+            ]
+            if invalid_flags:
+                raise RuntimeError(
+                    "first_strict_control_flags_invalid:"
+                    + ",".join(invalid_flags)
+                )
+            if item.get("formal_bootstrap_scope") != "first_policy_bot_empty_pool_only":
+                raise RuntimeError("first_strict_control_formal_scope_invalid")
+            gate_authoritative = True
+            strength_authoritative = False
+            rating_eligible = False
+
+            control_issues = validate_control_receipt(
+                control_receipt,
+                candidate_version=control_receipt.get(
+                    "candidate_version"
+                ),
+                source_version=control_receipt.get(
+                    "source_version"
+                ),
+                active_bots=control_active_bots,
+                # Plan/receipt construction already performs a full refresh.
+                # A cold process or changed ref/stat cache key still forces a
+                # complete refresh here; the function also closes with an
+                # unconditional full refresh below.
+                force_protocol_refresh=False,
+            )
+            if control_issues:
+                raise RuntimeError(
+                    "first_strict_control_contract_invalid:"
+                    + ";".join(control_issues[:8])
+                )
+            try:
+                normalized_control_execution_scope = normalize_execution_scope(
+                    control_execution_scope
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "first_strict_control_execution_scope_invalid:"
+                    + str(exc)
+                ) from exc
+            expected_execution_bindings = {
+                "candidate_version": int(
+                    control_receipt.get("candidate_version") or 0
+                ),
+                "candidate_label": candidate[0],
+                "candidate_artifact_hash": hash_path(candidate[1]),
+                "control_id": str(item.get("name") or opponent[0]),
+                "control_artifact_hash": str(
+                    ((control_receipt.get("control") or {}).get("artifact_hash"))
+                    or ""
+                ),
+                "control_receipt_digest": str(
+                    control_receipt.get("receipt_digest") or ""
+                ),
+            }
+            mismatched_execution_bindings = [
+                field
+                for field, expected in expected_execution_bindings.items()
+                if normalized_control_execution_scope.get(field) != expected
+            ]
+            if mismatched_execution_bindings:
+                raise RuntimeError(
+                    "first_strict_control_execution_scope_binding_mismatch:"
+                    + ",".join(mismatched_execution_bindings)
+                )
+            opponent_runtime_mode = "system_first_strict_control"
+        else:
+            opponent = resolve_bot(token)
+            normalized_control_execution_scope = None
+            gate_authoritative = is_precommit_gate_matchup(item)
+            strength_authoritative = is_strength_matchup(item)
+            rating_eligible = bool(
+                item.get("rating_eligible", strength_authoritative)
+            )
+            opponent_runtime_mode = _acceptance_opponent_runtime_mode(
+                opponent[0], opponent[1]
+            )
         resolved_opponents.append({
             "name": item.get("name") or opponent[0],
             "reason": reason,
             "path": str(opponent[1]),
             "runtime_mode": opponent_runtime_mode,
-            "rating_eligible": not migration_projection,
+            "precommit_gate_admitted": gate_authoritative,
+            "formal_bootstrap_opponent_admitted": bool(
+                item.get("formal_bootstrap_opponent_admitted", False)
+            ),
+            "formal_bootstrap_scope": str(
+                item.get("formal_bootstrap_scope") or ""
+            ),
+            "strength_admitted": strength_authoritative,
+            "rating_eligible": rating_eligible,
+            "official_opponent_eligible": bool(
+                item.get("official_opponent_eligible", not system_control)
+            ),
         })
         samples: list[int] = []
         repeats: list[dict[str, Any]] = []
@@ -4345,6 +5070,25 @@ async def run_native_precommit(
         opponent_issues: list[str] = []
         hands_played_total = 0
         for repeat in range(matches_per_opponent):
+            if system_control:
+                from first_strict_control import validate_control_receipt
+
+                control_issues = validate_control_receipt(
+                    control_receipt,
+                    candidate_version=control_receipt.get(
+                        "candidate_version"
+                    ),
+                    source_version=control_receipt.get(
+                        "source_version"
+                    ),
+                    active_bots=control_active_bots,
+                    force_protocol_refresh=False,
+                )
+                if control_issues:
+                    raise RuntimeError(
+                        "first_strict_control_contract_drift:"
+                        + ";".join(control_issues[:8])
+                    )
             sample_key = (str(item.get("name") or opponent[0]), repeat + 1)
             frozen = frozen_samples.get(sample_key) if sample_plan is not None else None
             if sample_plan is not None and frozen is None:
@@ -4370,30 +5114,69 @@ async def run_native_precommit(
                 "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
                 "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
             }
-            if migration_projection:
-                result = await _run_authorized_projected_strategy_seed(
-                    candidate[1],
-                    opponent[1],
-                    hands,
-                    deck_seed_base=seed,
-                    bot_seed_base=bot_seed,
-                    timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
-                    bot_a_env_overrides=timing_overrides,
-                    bot_b_env_overrides=timing_overrides,
+            execution_ticket = None
+            if system_control:
+                from first_strict_execution_journal import begin_control_execution
+
+                execution_ticket = begin_control_execution(
+                    scope=normalized_control_execution_scope,
+                    repeat=repeat + 1,
+                    deck_seed_base=int(seed),
+                    bot_seed_base=int(bot_seed),
+                    lease_seconds=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC + 60.0,
                 )
+            recovered_execution = bool(
+                system_control and execution_ticket.get("recovered") is True
+            )
+            if recovered_execution:
+                result = execution_ticket["execution"]
+                execution_receipt = execution_ticket["execution_receipt"]
             else:
-                result = await run_current_runtime_native_strength_pair(
+                result = await run_native_strength_pair(
                     candidate[1],
                     opponent[1],
                     hands,
-                    require_native_a=True,
-                    require_native_b=True,
                     deck_seed_base=seed,
                     bot_seed_base=bot_seed,
                     timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
                     bot_a_env_overrides=timing_overrides,
                     bot_b_env_overrides=timing_overrides,
+                    capture_events=system_control,
+                    **(
+                        {"control_execution_ticket": execution_ticket}
+                        if system_control
+                        else {}
+                    ),
                 )
+                execution_receipt = None
+            if system_control and not recovered_execution:
+                from first_strict_execution_journal import complete_control_execution
+
+                execution_receipt = complete_control_execution(
+                    execution_ticket,
+                    execution=result,
+                )
+            if system_control:
+                # Revalidate after every full match as well as before it.  A
+                # concurrently published strict bot, altered system asset, or
+                # runtime-template drift revokes the empty-pool authority and
+                # must force replanning before this sample is admitted.
+                control_issues = validate_control_receipt(
+                    control_receipt,
+                    candidate_version=control_receipt.get(
+                        "candidate_version"
+                    ),
+                    source_version=control_receipt.get(
+                        "source_version"
+                    ),
+                    active_bots=control_active_bots,
+                    force_protocol_refresh=False,
+                )
+                if control_issues:
+                    raise RuntimeError(
+                        "first_strict_control_contract_drift_after_match:"
+                        + ";".join(control_issues[:8])
+                    )
             net = int(result.get("net_chips_a", 0) or 0)
             hands_played = int(result.get("hands_played", 0) or 0)
             hands_played_total += hands_played
@@ -4409,42 +5192,44 @@ async def run_native_precommit(
             ]
             complete = hands_played == hands
             compliance_passed = bool(result.get("passed_compliance", False))
-            overlay = result.get("runtime_overlay") or {}
-            if migration_projection:
-                overlay_by_player = overlay.get("by_player") or {}
-                candidate_overlay = overlay_by_player.get(candidate[0]) or {}
-                opponent_overlay = overlay_by_player.get(opponent[0]) or {}
-                overlay_valid = bool(
-                    overlay.get("enabled") is True
-                    and overlay.get("both_sides") is False
-                    and overlay.get("mode")
-                    == "candidate_raw_opponent_current_runtime_projection"
-                    and candidate_overlay.get("enabled") is False
-                    and opponent_overlay.get("enabled") is True
-                )
-            else:
-                overlay_valid = bool(
-                    overlay.get("enabled") is True
-                    and overlay.get("both_sides") is True
-                    and overlay.get("mode") == "current_system_wrapper_bilateral"
-                )
-            if not overlay_valid:
-                c_issues.append("native_runtime_overlay_missing")
+            artifact_execution = result.get("artifact_execution") or {}
+            expected_execution_artifacts = {
+                candidate[0]: (
+                    str(normalized_control_execution_scope.get(
+                        "candidate_artifact_hash"
+                    ) or "")
+                    if system_control
+                    else hash_path(candidate[1])
+                ),
+                opponent[0]: (
+                    str(normalized_control_execution_scope.get(
+                        "control_artifact_hash"
+                    ) or "")
+                    if system_control
+                    else hash_path(opponent[1])
+                ),
+            }
+            artifact_execution_valid = _artifact_execution_is_valid(
+                artifact_execution,
+                expected_execution_artifacts,
+            )
+            if not artifact_execution_valid:
+                c_issues.append("native_artifact_execution_identity_invalid")
             sample_valid = (
                 complete
                 and compliance_passed
-                and overlay_valid
+                and artifact_execution_valid
                 and not c_issues
                 and not o_issues
             )
-            strength_admitted = strength_authoritative and sample_valid
-            if sample_valid:
+            gate_sample_admitted = gate_authoritative and sample_valid
+            strength_sample_admitted = strength_authoritative and sample_valid
+            if gate_sample_admitted:
                 samples.append(net)
-            if strength_admitted:
                 aggregate_net_chips.append(net)
             candidate_issues.extend(c_issues)
             opponent_issues.extend(o_issues)
-            repeats.append({
+            repeat_result = {
                 "repeat": repeat + 1,
                 "deck_seed_base": seed,
                 "bot_seed_base": bot_seed,
@@ -4455,34 +5240,66 @@ async def run_native_precommit(
                 "complete": complete,
                 "passed_compliance": compliance_passed,
                 "sample_valid": sample_valid,
-                "strength_admitted": strength_admitted,
+                "precommit_gate_admitted": gate_sample_admitted,
+                "formal_bootstrap_opponent_admitted": bool(
+                    item.get("formal_bootstrap_opponent_admitted", False)
+                ),
+                "formal_bootstrap_scope": str(
+                    item.get("formal_bootstrap_scope") or ""
+                ),
+                "strength_admitted": strength_sample_admitted,
                 "opponent_runtime_mode": opponent_runtime_mode,
-                "migration_projection": migration_projection,
-                "rating_eligible": not migration_projection,
+                "rating_eligible": rating_eligible,
+                "official_opponent_eligible": bool(
+                    item.get("official_opponent_eligible", not system_control)
+                ),
                 "evaluation_authority": (
-                    "local_precommit_only_non_rating_migration"
-                    if migration_projection
+                    "first_strict_bootstrap_regression_v1"
+                    if system_control
                     else "local_precommit_strength"
                 ),
-                "runtime_overlay": overlay,
-                "runtime_overlay_valid": overlay_valid,
+                "artifact_execution": artifact_execution,
+                "artifact_execution_valid": artifact_execution_valid,
                 "local_runtime_budget": {
                     "hard_deadline_sec": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
                     "refinement_budget_sec": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
                     "baseline_target_sec": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
                     "match_timeout_sec": LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
                     "scope": (
-                        "local_precommit_only_non_rating_migration"
-                        if migration_projection
+                        "first_strict_bootstrap_regression_only"
+                        if system_control
                         else "local_strength_only"
                     ),
                 },
-                "raw": result,
-            })
+            }
+            if system_control:
+                # Full events/hand records/settlements live only in the
+                # content-addressed execution authority.  The checkpoint result
+                # carries a small reference plus independently recomputed
+                # summary fields.
+                repeat_result["execution_receipt"] = execution_receipt
+            else:
+                repeat_result["raw"] = result
+            repeats.append(repeat_result)
+        if system_control:
+            # Close the cached per-match guard with a full Git/artifact refresh
+            # before any samples can leave this function as admitted evidence.
+            control_issues = validate_control_receipt(
+                control_receipt,
+                candidate_version=control_receipt.get("candidate_version"),
+                source_version=control_receipt.get("source_version"),
+                active_bots=control_active_bots,
+                force_protocol_refresh=True,
+            )
+            if control_issues:
+                raise RuntimeError(
+                    "first_strict_control_contract_drift_final:"
+                    + ";".join(control_issues[:8])
+                )
         wins = sum(1 for value in samples if value > 0)
         losses = sum(1 for value in samples if value < 0)
         draws = sum(1 for value in samples if value == 0)
-        if strength_authoritative:
+        if gate_authoritative:
             total_wins += wins
             total_losses += losses
             total_draws += draws
@@ -4491,13 +5308,23 @@ async def run_native_precommit(
         matchup = {
             "opponent": item.get("name") or opponent[0],
             "reason": reason,
+            "precommit_gate_admitted": gate_authoritative,
+            "formal_bootstrap_opponent_admitted": bool(
+                item.get("formal_bootstrap_opponent_admitted", False)
+            ),
+            "formal_bootstrap_scope": str(
+                item.get("formal_bootstrap_scope") or ""
+            ),
             "strength_authoritative": strength_authoritative,
+            "strength_admitted": strength_authoritative,
             "opponent_runtime_mode": opponent_runtime_mode,
-            "migration_projection": migration_projection,
-            "rating_eligible": not migration_projection,
+            "rating_eligible": rating_eligible,
+            "official_opponent_eligible": bool(
+                item.get("official_opponent_eligible", not system_control)
+            ),
             "evaluation_authority": (
-                "local_precommit_only_non_rating_migration"
-                if migration_projection
+                "first_strict_bootstrap_regression_v1"
+                if system_control
                 else "local_precommit_strength"
             ),
             "protocol": "national_native_tcp",
@@ -4514,20 +5341,21 @@ async def run_native_precommit(
             "net_chip_ci": [_rounded(ci_lo), _rounded(ci_hi)],
             "candidate_compliance_issues": candidate_issues,
             "opponent_compliance_issues": opponent_issues,
-            "wrapper_used": any(bool(row["raw"].get("wrapper_used")) for row in repeats),
-            "runtime_overlay": [row.get("runtime_overlay") or {} for row in repeats],
+            "artifact_executions": [
+                row.get("artifact_execution") or {} for row in repeats
+            ],
             "repeats": repeats,
         }
         matchups.append(matchup)
-        if strength_authoritative and candidate_issues:
+        if gate_authoritative and candidate_issues:
             blockers.append({"reason": "native_candidate_compliance", "opponent": matchup["opponent"], "details": "; ".join(candidate_issues[:5])})
-        if strength_authoritative and opponent_issues:
+        if gate_authoritative and opponent_issues:
             blockers.append({"reason": "native_opponent_compliance", "opponent": matchup["opponent"], "details": "; ".join(opponent_issues[:5])})
-        if strength_authoritative and any(not row["complete"] for row in repeats):
+        if gate_authoritative and any(not row["complete"] for row in repeats):
             blockers.append({"reason": "native_incomplete_match", "opponent": matchup["opponent"], "details": f"{hands_played_total}/{hands * matches_per_opponent} hands completed"})
-        if strength_authoritative and len(samples) != matches_per_opponent:
+        if gate_authoritative and len(samples) != matches_per_opponent:
             blockers.append({
-                "reason": "native_strength_sample_shortfall",
+                "reason": "native_precommit_sample_shortfall",
                 "opponent": matchup["opponent"],
                 "details": f"{len(samples)}/{matches_per_opponent} complete compliant 70-hand samples admitted",
             })
@@ -4541,6 +5369,18 @@ async def run_native_precommit(
         aggregate_reason="aggregate_native_regression",
     )
     blockers.extend(outcome_blockers)
+    control_gate = None
+    if any(
+        str(item.get("authority") or "") == "system_first_strict_control"
+        for item in opponents
+    ):
+        from first_strict_control import control_gate_blockers
+
+        control_blockers, control_gate = control_gate_blockers(
+            matchups,
+            expected_execution_scope=control_execution_scope,
+        )
+        blockers.extend(control_blockers)
     paired_payload = {
         "protocol": "national_native_tcp",
         "hands_per_match": hands,
@@ -4551,7 +5391,13 @@ async def run_native_precommit(
         "aggregate_gate_bound": outcome_gate.get("primary_match_score"),
         "aggregate_gate_rule": "complete_70_hand_wld_loss_margin",
         "outcome_gate": outcome_gate,
+        "first_strict_control_gate": control_gate,
         "net_chips_samples": len(aggregate_net_chips),
+        "strength_net_chips_samples": sum(
+            len(matchup.get("net_chips") or [])
+            for matchup in matchups
+            if is_strength_matchup(matchup)
+        ),
         "gate_degraded": len(aggregate_net_chips) < 2,
         "net_chips_mean": _rounded(agg_mean),
         "net_chips_std": round(statistics.pstdev(aggregate_net_chips), 1) if len(aggregate_net_chips) > 1 else None,
@@ -4570,9 +5416,20 @@ async def run_native_precommit(
         "total_draws": total_draws,
         "aggregate_net_chips": aggregate_net_chips,
         "sample_plan": list(sample_plan or []),
+        "control_execution_scope": (
+            normalized_control_execution_scope
+            if any(
+                str(item.get("authority") or "")
+                == "system_first_strict_control"
+                for item in opponents
+            )
+            else None
+        ),
         "paired_bootstrap": paired_payload,
-        "wrapper_used": any(bool(matchup.get("wrapper_used")) for matchup in matchups),
-        "runtime_overlay_identity": current_strength_runtime_overlay_identity(),
+        "artifact_execution_contract": {
+            "schema_version": DIRECT_ARTIFACT_EXECUTION_SCHEMA_VERSION,
+            "mode": "direct_content_bound_policy_artifact",
+        },
         "blockers": blockers,
         "passed": not blockers,
     }

@@ -9,21 +9,24 @@ The probe records both raw byte streams and a replay summary:
 
 ```bash
 python scripts/official_wire_probe.py \
-  --candidate bots/national_v103 \
-  --opponent bots/national_v70 \
+  --candidate bots/national_v<N> \
+  --opponent bots/national_v<M> \
   --target-hands 3 \
   --results-dir /tmp/pok_wire_probe
 ```
 
-To run the root official sample without editing it:
+For a deterministic diagnostic peer, use the maintained raw-stream client:
 
 ```bash
 python scripts/official_wire_probe.py \
-  --candidate untitled0-1.py --candidate-kind sample \
-  --opponent bots/national_v70 \
+  --candidate bots/national_v<N> \
+  --opponent scripts/official_scripted_bot.py \
   --target-hands 1 \
-  --results-dir /tmp/pok_wire_probe_sample
+  --results-dir /tmp/pok_wire_probe_scripted
 ```
+
+The original platform sample is archived and is not wrapped or launched by
+active tooling.
 
 Important artifacts:
 
@@ -47,5 +50,8 @@ Interpretation:
 - A large `max_platform_silent_gap_sec` with no `pending_expected_actions` is
   platform silence, not bot no-response evidence.
 
-The normal official acceptance harness remains the pass/fail compliance gate.
-This probe is for root-cause evidence when the EXE and local simulator disagree.
+The low-level acceptance harness can classify a diagnostic EXE suite, but it
+does not issue publication authority. The only formal compliance gate is the
+signed `official-full-v5` path in `scripts/official_certify.py` (5 self-play +
+3 eligible-opponent rounds, 70 hands each). This probe is root-cause evidence
+when the EXE and local simulator disagree; it cannot certify or rate a bot.

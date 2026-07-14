@@ -10,7 +10,7 @@ from sever.engine.deck import Deck
 from sever.engine.game import GameEngine
 from sever.engine.thp_recorder import THPRecorder
 
-from national_transport import NationalTCPClient
+from sever.server.transport import NationalTCPClient
 
 
 class NationalTCPGameEngine(GameEngine):
@@ -37,10 +37,10 @@ class NationalTCPGameEngine(GameEngine):
         )
 
     async def _send_to_client(self, player_idx: int, message: str) -> None:
-        await self._clients[player_idx].send_line(message)
+        await self._clients[player_idx].send_message(message)
 
     async def _recv_action(self, player_idx: int) -> str | None:
-        return await self._clients[player_idx].recv_line(timeout=self.action_timeout_sec)
+        return await self._clients[player_idx].recv_action(timeout=self.action_timeout_sec)
 
     async def _record_event(self, event: dict[str, Any]) -> None:
         snapshot = dict(event)

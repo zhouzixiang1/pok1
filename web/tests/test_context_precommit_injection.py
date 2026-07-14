@@ -23,8 +23,8 @@ def _render(checkpoint):
 
 def _base_checkpoint(**overrides):
     cp = {
-        "next_v": 100,
-        "source_v": 99,
+        "next_v": 145,
+        "source_v": 144,
         "stage": "critic_checked",
         "generation_attempt": 0,
     }
@@ -96,7 +96,7 @@ def test_precommit_gate_derives_n_opponents_from_list():
                 "total_wins": 5,
                 "total_losses": 5,
                 "total_draws": 0,
-                "opponents": ["claude_v1", "claude_v2"],
+                "opponents": ["national_v143", "national_v144"],
             }
         },
     )

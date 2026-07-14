@@ -1,4 +1,4 @@
-"""Bot management MCP tools: reaping, cleanup, abandonment, experience pool."""
+"""Bot lifecycle management: MCP reaping/abandonment and guarded cleanup."""
 
 import fcntl
 import json
@@ -6,7 +6,7 @@ import shutil
 import time
 from typing import Annotated, TypedDict
 
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_name, parse_bot_version
+from bot_namespace import bot_name, parse_bot_version
 from tool_runtime_guard import tool
 
 from evolution_core import (
@@ -23,12 +23,11 @@ from system_log import log_system_event
 
 from evolution_infra import (
     MAX_PRECOMMIT_RETRIES,
+    BOTS_DIR,
     append_locked_jsonl,
     read_pipeline_checkpoint,
     record_reaped_bot,
 )
-from experience_pool import trim_experience_pool
-from code_verification import seed_initial_bots
 from pipeline_state import generic_abandon_block
 
 # A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
@@ -211,56 +210,149 @@ async def reap_weakest(args):
     return _mcp_result(result)
 
 
-class CleanupIncompleteInput(TypedDict):
-    pass
+async def cleanup_incomplete(args: dict | None = None):
+    """Fail closed instead of scanning arbitrary incomplete bot directories.
 
+    The old helper enumerated ``bots/`` and inferred deletion authority from a
+    raw checkpoint.  That made retired v155 debris actionable.  The only safe
+    cleanup is now the normal fenced abandon transaction for an explicitly
+    named, currently validated strict workflow.  The helper is deliberately
+    not registered in either the MCP or HTTP tool catalogs; these checks remain
+    as defence in depth for direct/internal calls.
+    """
 
-@tool("cleanup_incomplete", "Remove bot directories without .completed that have no git tag.", {})
-async def cleanup_incomplete(args):
-    cleaned = []
-    preserved = []
-    bots_dir = PROJECT_ROOT / "bots"
-    if bots_dir.exists():
-        # Check for active pipeline checkpoint to avoid deleting mid-generation bots
-        active_next_v = None
-        checkpoint_file = RESULTS_DIR / "pipeline_state.json"
-        if checkpoint_file.exists():
-            try:
-                ckpt = json.loads(checkpoint_file.read_text())
-                stage = ckpt.get("stage")
-                if ckpt.get("next_v") and stage not in (None, "archived"):
-                    active_next_v = ckpt["next_v"]
-            except Exception:
-                pass
-        for d in sorted(bots_dir.iterdir()):
-            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX):
-                if not (d / ".completed").exists():
-                    v = parse_bot_version(d.name)
-                    if v is None:
-                        continue
-                    if v == active_next_v:
-                        continue
-                    if not git_has_tag(v):
-                        if git_dir_is_committed(v):
-                            preserved.append(d.name)
-                            log_system_event(
-                                "bot.cleanup_incomplete_preserved",
-                                "warn",
-                                f"Preserved git-tracked incomplete bot {d.name} (no tag)",
-                                {
-                                    "version": v,
-                                    "bot": d.name,
-                                    "reason": "git_tracked_without_tag",
-                                },
-                            )
-                            continue
-                        shutil.rmtree(d)
-                        cleaned.append(d.name)
-    return {"content": [{"type": "text", "text": json.dumps({
-        "cleaned": cleaned,
-        "preserved_git_tracked": preserved,
-        "count": len(cleaned),
-    })}]}
+    try:
+        from epoch_authority import require_policy_epoch_initialized
+
+        epoch = require_policy_epoch_initialized("cleanup_incomplete")
+    except Exception as exc:
+        state = getattr(exc, "state", None)
+        return _mcp_result({
+            "cleaned": False,
+            "error": "policy_epoch_not_initialized",
+            "epoch": state if isinstance(state, dict) else None,
+        })
+
+    checkpoint = read_pipeline_checkpoint()
+    if not isinstance(checkpoint, dict):
+        return _mcp_result({
+            "cleaned": False,
+            "error": "strict_checkpoint_required",
+        })
+    next_v = checkpoint.get("next_v")
+    revision = checkpoint.get("checkpoint_revision")
+    workflow_run_id = checkpoint.get("workflow_run_id")
+    if (
+        type(next_v) is not int
+        or type(revision) is not int
+        or not isinstance(workflow_run_id, str)
+        or not workflow_run_id.strip()
+    ):
+        return _mcp_result({
+            "cleaned": False,
+            "error": "strict_checkpoint_identity_missing",
+        })
+
+    try:
+        from checkpoint_schema import strict_checkpoint_event_identity
+
+        strict_checkpoint_event_identity(
+            checkpoint,
+            expected_gen=next_v,
+            project_root=PROJECT_ROOT,
+        )
+    except Exception as exc:
+        return _mcp_result({
+            "cleaned": False,
+            "error": "strict_checkpoint_invalid",
+            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+        })
+
+    request = args if isinstance(args, dict) else {}
+    requested_identity = (
+        request.get("workflow_run_id"),
+        request.get("next_v"),
+        request.get("checkpoint_revision"),
+    )
+    current_identity = (workflow_run_id, next_v, revision)
+    if requested_identity != current_identity:
+        return _mcp_result({
+            "cleaned": False,
+            "error": "explicit_cleanup_identity_mismatch",
+            "requested": {
+                "workflow_run_id": request.get("workflow_run_id"),
+                "next_v": request.get("next_v"),
+                "checkpoint_revision": request.get("checkpoint_revision"),
+            },
+            "current": {
+                "workflow_run_id": workflow_run_id,
+                "next_v": next_v,
+                "checkpoint_revision": revision,
+            },
+        })
+
+    candidate = get_bot_dir(next_v)
+    bot_root = BOTS_DIR
+    expected_candidate = bot_root / bot_name(next_v)
+    try:
+        candidate_parent = candidate.parent.resolve(strict=True)
+        bot_root_resolved = bot_root.resolve(strict=True)
+    except OSError as exc:
+        return _mcp_result({
+            "cleaned": False,
+            "error": "candidate_scope_unavailable",
+            "detail": f"{type(exc).__name__}: {str(exc)[:300]}",
+        })
+    if (
+        candidate != expected_candidate
+        or candidate_parent != bot_root_resolved
+        or candidate.name != bot_name(next_v)
+    ):
+        return _mcp_result({
+            "cleaned": False,
+            "error": "candidate_outside_current_workflow_scope",
+        })
+    if not candidate.exists():
+        return _mcp_result({
+            "cleaned": False,
+            "reason": "current_candidate_absent",
+            "candidate": candidate.name,
+            "workflow_run_id": workflow_run_id,
+            "epoch": epoch.get("evaluation_epoch"),
+        })
+    if candidate.is_symlink() or not candidate.is_dir():
+        return _mcp_result({
+            "cleaned": False,
+            "error": "current_candidate_path_unsafe",
+        })
+    if (candidate / ".completed").exists() or git_has_tag(next_v):
+        return _mcp_result({
+            "cleaned": False,
+            "error": "current_candidate_is_published_or_completed",
+        })
+    if git_dir_is_committed(next_v):
+        return _mcp_result({
+            "cleaned": False,
+            "error": "current_candidate_is_git_tracked",
+        })
+
+    result = await _do_abandon_generation(
+        reason="cleanup_incomplete_exact_workflow",
+        expected_workflow_run_id=workflow_run_id,
+        expected_next_v=next_v,
+        expected_source_v=checkpoint.get("source_v"),
+        expected_checkpoint_revision=revision,
+    )
+    return _mcp_result({
+        "cleaned": bool(
+            result.get("abandoned") is True
+            and result.get("removed_directory") == candidate.name
+        ),
+        "candidate": candidate.name,
+        "workflow_run_id": workflow_run_id,
+        "epoch": epoch.get("evaluation_epoch"),
+        "abandon_result": result,
+    })
 
 
 class AbandonGenerationInput(TypedDict):
@@ -277,6 +369,11 @@ async def _do_abandon_generation(
     reason: str = "abandon_generation",
     *,
     _actor_lock_owned: bool = False,
+    _bypass_rate_limit: bool = False,
+    expected_workflow_run_id: str | None = None,
+    expected_next_v: int | None = None,
+    expected_source_v: int | None = None,
+    expected_checkpoint_revision: int | None = None,
 ) -> dict:
     """Core abandon logic — clears the pipeline checkpoint and removes the
     incomplete next-gen directory.
@@ -285,11 +382,77 @@ async def _do_abandon_generation(
     (notably ``MASTER_EXHAUSTED`` in run_master, B2 v125 fix) so the latter no
     longer relies on the orchestrator LLM obeying a plain-text directive.
 
+    ``_bypass_rate_limit`` is reserved for system-owned fail-closed paths that
+    have already proved the current immutable candidate cannot be retried.  It
+    does not bypass checkpoint identity, workflow fencing, or stage guards.
+
     Returns the abandon result dict (also written as a ``pipeline.abandoned``
     system event). The caller is responsible for clearing the orchestrator
     session BEFORE calling this if a stale session must not be resumed.
     """
     from evolution_core import PIPELINE_STATE_FILE
+
+    def expected_identity_conflict(candidate):
+        if not any(value is not None for value in (
+            expected_workflow_run_id,
+            expected_next_v,
+            expected_source_v,
+            expected_checkpoint_revision,
+        )):
+            return None
+        if not isinstance(candidate, dict):
+            current = None
+            mismatch = True
+        else:
+            current = {
+                "workflow_run_id": str(
+                    candidate.get("workflow_run_id")
+                    or candidate.get("run_id")
+                    or ""
+                ),
+                "next_v": candidate.get("next_v"),
+                "source_v": candidate.get("source_v"),
+                "checkpoint_revision": candidate.get("checkpoint_revision"),
+            }
+            mismatch = bool(
+                (
+                    expected_workflow_run_id is not None
+                    and current["workflow_run_id"]
+                    != str(expected_workflow_run_id)
+                )
+                or (
+                    expected_next_v is not None
+                    and current["next_v"] != int(expected_next_v)
+                )
+                or (
+                    expected_source_v is not None
+                    and current["source_v"] != int(expected_source_v)
+                )
+                or (
+                    expected_checkpoint_revision is not None
+                    and current["checkpoint_revision"]
+                    != int(expected_checkpoint_revision)
+                )
+            )
+        if not mismatch:
+            return None
+        return {
+            "abandoned": False,
+            "reason": "expected_checkpoint_identity_mismatch",
+            "action": "stale_rejection_ignored",
+            "expected_checkpoint": {
+                "workflow_run_id": expected_workflow_run_id,
+                "next_v": expected_next_v,
+                "source_v": expected_source_v,
+                "checkpoint_revision": expected_checkpoint_revision,
+            },
+            "current_checkpoint": current,
+            "directive": (
+                "The rejection belongs to an older checkpoint identity. Preserve "
+                "the current generation and ignore this stale cleanup request."
+            ),
+        }
+
     checkpoint_exists = PIPELINE_STATE_FILE.exists()
     checkpoint = read_pipeline_checkpoint() if checkpoint_exists else None
     if checkpoint_exists and not isinstance(checkpoint, dict):
@@ -303,6 +466,9 @@ async def _do_abandon_generation(
                 "or delete a candidate from directory names."
             ),
         }
+    identity_conflict = expected_identity_conflict(checkpoint)
+    if identity_conflict:
+        return identity_conflict
     infra_failure = (
         dict(checkpoint.get("infra_failure"))
         if isinstance(checkpoint, dict) and isinstance(checkpoint.get("infra_failure"), dict)
@@ -327,7 +493,7 @@ async def _do_abandon_generation(
     # generation reach the gates. Enforce a 60s cooldown between abandons.
     import time as _t
     now = _t.time()
-    if (now - _LAST_ABANDON_TS[0]) < 60:
+    if not _bypass_rate_limit and (now - _LAST_ABANDON_TS[0]) < 60:
         try:
             log_system_event(
                 "pipeline.abandon_rate_limited", "warn",
@@ -361,6 +527,9 @@ async def _do_abandon_generation(
                     raise RuntimeError(
                         "checkpoint disappeared or became unreadable before fence"
                     )
+                latest_identity_conflict = expected_identity_conflict(latest)
+                if latest_identity_conflict:
+                    return latest_identity_conflict, None
                 if checkpoint_workflow_run_id(latest) != workflow.run_id:
                     raise RuntimeError(
                         "checkpoint workflow identity changed before fence"
@@ -525,32 +694,3 @@ async def _do_abandon_generation(
         "workflow_fenced": workflow_fenced,
         "workflow_run_id": workflow_run_id,
     }
-
-
-class TrimExperienceInput(TypedDict):
-    pass
-
-
-@tool("trim_experience", "Trim the experience pool to keep only the most recent entries.", {})
-async def trim_experience(args):
-    trim_experience_pool(max_entries=8)
-    return {"content": [{"type": "text", "text": json.dumps({"trimmed": True})}]}
-
-
-@tool("seed_initial_bots", "Seed national_v001 through national_v006 from reference bots if they don't exist. Call this when get_status() returns current_v=0 or no completed bots.", {})
-async def seed_initial_bots_tool(args):
-    ui = _get_ui()
-    seeded = seed_initial_bots(ui)
-    return {"content": [{"type": "text", "text": json.dumps({"seeded": seeded})}]}
-
-
-class ConsolidateExperienceInput(TypedDict):
-    pass
-
-
-@tool("consolidate_experience", "Use LLM to consolidate and deduplicate the experience pool.", {})
-async def consolidate_experience(args):
-    from evolution_core import _consolidate_experience_pool
-    ui = _get_ui()
-    await _consolidate_experience_pool(ui)
-    return {"content": [{"type": "text", "text": json.dumps({"consolidated": True, "logs": ui.get_output()})}]}

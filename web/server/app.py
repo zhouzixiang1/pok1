@@ -40,14 +40,46 @@ async def lifespan(app: FastAPI):
     config = app_state.get_config()
     daemon_enabled = config["daemon_enabled"]
     view_only = os.environ.get("POK_WEB_VIEW_ONLY") == "1"
+    epoch_launch_state = None
+    epoch_launch_allowed = False
+    try:
+        from epoch_authority import (
+            require_policy_epoch_initialized,
+            strict_epoch_projection,
+        )
+
+        epoch_launch_state = require_policy_epoch_initialized("web_lifespan")
+        try:
+            projection = strict_epoch_projection()
+            if projection.get("initialized"):
+                epoch_launch_state = projection
+        except Exception:
+            # The initialization guard remains authoritative.  Failure to
+            # obtain optional workflow provenance must not manufacture a
+            # second epoch interpretation.
+            pass
+        epoch_launch_allowed = True
+    except Exception as exc:
+        # The typed exception carries the canonical, read-only projection.  Do
+        # not emit a structured event here: results/ still belongs to the
+        # retired epoch and must remain untouched until the reset is executed.
+        epoch_launch_state = getattr(exc, "state", None) or {
+            "state": "epoch_authority_unavailable",
+            "operator_action": "inspect_epoch_authority",
+            "operator_command": None,
+        }
 
     # Let uvicorn own signal handling — its handle_exit sets should_exit,
     # which triggers sse-starlette shutdown → lifespan shutdown below.
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
     app_state.set_shutdown_mgr(shutdown_mgr)
-    await arena_manager.startup()
     app.state.national_arena_manager = arena_manager
+    app.state.national_arena_epoch_authority = epoch_launch_state
+    arena_started = False
+    if epoch_launch_allowed:
+        await arena_manager.startup(epoch_authority=epoch_launch_state)
+        arena_started = True
     try:
         from llm_query import set_shutdown_manager
         set_shutdown_manager(shutdown_mgr)
@@ -94,6 +126,21 @@ async def lifespan(app: FastAPI):
                 "Dashboard started in view-only mode; evolution loop is not running.",
                 "info",
             )
+        elif not epoch_launch_allowed:
+            app_state.set_running(False)
+            epoch_state = str(epoch_launch_state.get("state") or "reset_required")
+            operator_command = epoch_launch_state.get("operator_command")
+            message = (
+                "Dashboard started with evolution stopped: policy epoch "
+                f"initialization is {epoch_state}."
+            )
+            if operator_command:
+                message += f" Run: {operator_command}"
+            web_ui.log_history(message, "warn")
+            web_ui.set_status(
+                f"Stopped: {epoch_state}",
+                is_working=False,
+            )
         elif not app_state.try_set_running(True):
             web_ui.log_history("Orchestrator already running", "warn")
         else:
@@ -127,7 +174,8 @@ async def lifespan(app: FastAPI):
                 )
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
-        await arena_manager.shutdown()
+        if arena_started:
+            await arena_manager.shutdown()
         if view_only:
             web_ui.log_history("Dashboard stopped.", "info")
         elif orchestrator_owned:
@@ -155,7 +203,6 @@ from server.routes.certification import router as certification_router
 from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
-from server.routes.scheduler import router as scheduler_router
 from server.routes.national_arena import router as national_arena_router
 
 app.include_router(ratings_router)
@@ -168,7 +215,6 @@ app.include_router(certification_router)
 app.include_router(pipeline_router)
 app.include_router(prompts_router)
 app.include_router(data_stream_router)
-app.include_router(scheduler_router)
 app.include_router(national_arena_router)
 
 def _install_static_spa_routes(target_app: FastAPI, static_dir: Path) -> None:

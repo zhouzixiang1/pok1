@@ -6,7 +6,11 @@ This is the DeepEvolve plan→search→reflect→write loop (arxiv 2510.06056) w
 
 ## CRITICAL: what counts as codable
 
-The bot is a **rule-based** heads-up NLHE bot (NOT a neural net). Only propose things translatable into Python rules / thresholds / decision-tree branches. For each proposal you MUST provide:
+The bot is a **rule-based** heads-up NLHE bot (NOT a neural net). Propose
+falsifiable mechanisms translatable into bounded Python algorithms, typed
+decision rules, opponent-posterior consumers, or decision-tree branches.
+Thresholds may calibrate such a mechanism but cannot be the proposal itself.
+For each proposal you MUST provide:
 - `target_fn`: the exact function to add or modify (e.g. `_spr_commitment_gate`, `bb_vs_limp_opp_sizing_delta`)
 - `numeric_claim`: the precise numeric content (sizing ratio, frequency, equity threshold, e.g. "fold when equity < to_call/(pot+2*to_call)")
 - `pseudocode`: a minimal Python sketch
@@ -45,10 +49,10 @@ From the surviving evidence, produce exactly ONE proposal (the highest-ROI, best
   "claim": "one-sentence description of the strategy improvement",
   "source_url": "primary URL",
   "numeric_claim": "the precise numeric content (thresholds/ratios/frequencies)",
-  "target_fn": "function to add/modify in strategy_helpers.py",
+  "target_fn": "exact reachable function to add/modify inside policy.py",
   "proposed_change": "2-3 sentence description of the code change",
-  "pseudocode": "if <cond>: return -1  # fold",
-  "firing_tuple": "(made_str 0.40-0.55, river to_call>=my_chips, spr>4, fold)",
+  "pseudocode": "if <cond>: return {\"kind\": \"fold\"}",
+  "firing_tuple": "(made_str 0.40-0.55, river to_call>=effective_stack, spr>4, typed fold intent)",
   "h2h_weakness_addressed": "which part of the weakness this targets"
 }
 ```

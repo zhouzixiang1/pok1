@@ -39,8 +39,8 @@ class TestParseJsonOutputWithMode:
         # analyzing) but never produced a ```json block or any JSON structure
         # before being wall-clock terminated.
         output = (
-            "I'll start by reading the H2H data and experience pool. "
-            "Let me analyze the recent losses against claude_v121..."
+            "I'll start by reading the frozen H2H and replay evidence. "
+            "Let me analyze the frozen losses against national_v143..."
         )
         data, mode = parse_json_output_with_mode(output)
         assert mode == "NO_FENCE"

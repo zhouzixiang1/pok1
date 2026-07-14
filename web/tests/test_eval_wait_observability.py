@@ -20,10 +20,10 @@ def test_prepare_priority_eval_signal_written(monkeypatch, tmp_path):
         lambda *args: events.append(args),
     )
 
-    generation_scheduler._ensure_priority_eval_signal("national_v85", 24)
+    generation_scheduler._ensure_priority_eval_signal("national_v145", 24)
 
     payload = json.loads((results_dir / "priority_eval.json").read_text())
-    assert payload["bot"] == "national_v85"
+    assert payload["bot"] == "national_v145"
     assert payload["min_games"] == 24
     assert payload["source"] == "prepare_eval_wait"
     assert events[0][0] == "pipeline.eval_wait_priority_set"
@@ -31,7 +31,7 @@ def test_prepare_priority_eval_signal_written(monkeypatch, tmp_path):
 
 def test_wait_for_daemon_eval_emits_start_and_ready(monkeypatch, tmp_path):
     stats_file = tmp_path / "bot_stats.json"
-    stats_file.write_text(json.dumps({"claude_v9": {"games": 100}}), encoding="utf-8")
+    stats_file.write_text(json.dumps({"national_v143": {"games": 100}}), encoding="utf-8")
     monkeypatch.setattr(evolution_infra, "BOT_STATS_FILE", stats_file)
 
     events = []
@@ -44,7 +44,7 @@ def test_wait_for_daemon_eval_emits_start_and_ready(monkeypatch, tmp_path):
     )
 
     ready = asyncio.run(
-        evolution_infra.wait_for_daemon_eval("claude_v9", timeout=1, min_games=100)
+        evolution_infra.wait_for_daemon_eval("national_v143", timeout=1, min_games=100)
     )
 
     assert ready is True
@@ -54,14 +54,14 @@ def test_wait_for_daemon_eval_emits_start_and_ready(monkeypatch, tmp_path):
     ]
     _event_type, severity, _message, data = events[-1]
     assert severity == "success"
-    assert data["bot"] == "claude_v9"
+    assert data["bot"] == "national_v143"
     assert data["games"] == 100
     assert data["reason"] == "min_games"
 
 
 def test_wait_for_daemon_eval_emits_progress_and_timeout(monkeypatch, tmp_path):
     stats_file = tmp_path / "bot_stats.json"
-    stats_file.write_text(json.dumps({"claude_v9": {"games": 12}}), encoding="utf-8")
+    stats_file.write_text(json.dumps({"national_v143": {"games": 12}}), encoding="utf-8")
     monkeypatch.setattr(evolution_infra, "BOT_STATS_FILE", stats_file)
     monkeypatch.setattr(evolution_infra, "EVAL_WAIT_PROGRESS_INTERVAL_SEC", 1)
 
@@ -87,7 +87,7 @@ def test_wait_for_daemon_eval_emits_progress_and_timeout(monkeypatch, tmp_path):
     )
 
     ready = asyncio.run(
-        evolution_infra.wait_for_daemon_eval("claude_v9", timeout=8, min_games=100)
+        evolution_infra.wait_for_daemon_eval("national_v143", timeout=8, min_games=100)
     )
 
     assert ready is False
@@ -98,14 +98,14 @@ def test_wait_for_daemon_eval_emits_progress_and_timeout(monkeypatch, tmp_path):
 
     _event_type, severity, _message, data = events[-1]
     assert severity == "warn"
-    assert data["bot"] == "claude_v9"
+    assert data["bot"] == "national_v143"
     assert data["games"] == 12
     assert data["min_games"] == 100
 
 
 def test_wait_for_daemon_eval_uses_custom_rd_gate(monkeypatch, tmp_path):
     stats_file = tmp_path / "bot_stats.json"
-    stats_file.write_text(json.dumps({"claude_v9": {"games": 12}}), encoding="utf-8")
+    stats_file.write_text(json.dumps({"national_v143": {"games": 12}}), encoding="utf-8")
     ratings_file = tmp_path / "ratings.json"
     ratings_file.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(evolution_infra, "BOT_STATS_FILE", stats_file)
@@ -113,7 +113,7 @@ def test_wait_for_daemon_eval_uses_custom_rd_gate(monkeypatch, tmp_path):
     monkeypatch.setattr(
         evolution_infra,
         "load_ratings",
-        lambda: {"claude_v9": SimpleNamespace(rd=100.0)},
+        lambda: {"national_v143": SimpleNamespace(rd=100.0)},
     )
 
     events = []
@@ -127,7 +127,7 @@ def test_wait_for_daemon_eval_uses_custom_rd_gate(monkeypatch, tmp_path):
 
     ready = asyncio.run(
         evolution_infra.wait_for_daemon_eval(
-            "claude_v9",
+            "national_v143",
             timeout=1,
             min_games=24,
             rd_threshold=110,
@@ -181,9 +181,9 @@ def _evaluation_snapshot_bundle(active, *, games=15, rd=108.12):
 
 
 def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
-    active = ["national_v111", "national_v142"]
+    active = ["national_v143", "national_v144"]
     monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: list(active))
-    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 144)
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -192,8 +192,8 @@ def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
     )
 
     evidence = generation_scheduler._load_post_wait_evaluation_evidence(
-        active_v=142,
-        active_bot_name="national_v142",
+        active_v=144,
+        active_bot_name="national_v144",
         min_games=24,
         rd_threshold=110,
         rd_min_games=12,
@@ -202,17 +202,17 @@ def test_post_wait_evidence_uses_manifest_bound_ratings_and_stats(monkeypatch):
     )
 
     assert evidence is not None
-    assert evidence.ratings["national_v142"].rd == 108.12
-    assert evidence.bot_stats["national_v142"]["games"] == 15
+    assert evidence.ratings["national_v144"].rd == 108.12
+    assert evidence.bot_stats["national_v144"]["games"] == 15
     assert evidence.rd == 108.12
     assert evidence.readiness_reason == "rd_threshold"
     assert events[-1][0] == "pipeline.eval_evidence_frozen"
 
 
 def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatch):
-    active = ["national_v142"]
-    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: ["national_v142"])
-    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 142)
+    active = ["national_v143"]
+    monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: ["national_v143"])
+    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 143)
     events = []
     monkeypatch.setattr(
         generation_scheduler,
@@ -221,8 +221,8 @@ def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatc
     )
 
     evidence = generation_scheduler._load_post_wait_evaluation_evidence(
-        active_v=142,
-        active_bot_name="national_v142",
+        active_v=143,
+        active_bot_name="national_v143",
         min_games=24,
         rd_threshold=110,
         rd_min_games=12,
@@ -236,15 +236,15 @@ def test_post_wait_evidence_rejects_published_cycle_that_is_not_ready(monkeypatc
 
 
 def test_post_wait_evidence_rejects_active_pool_change_while_loading(monkeypatch):
-    active = ["national_v142"]
-    pools = iter([active, ["national_v141", "national_v142"]])
+    active = ["national_v143"]
+    pools = iter([active, ["national_v143", "national_v144"]])
     monkeypatch.setattr(evolution_infra_abs, "get_active_bots", lambda: list(next(pools)))
-    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 142)
+    monkeypatch.setattr(evolution_infra_abs, "find_latest_active_v", lambda: 143)
     monkeypatch.setattr(generation_scheduler, "log_system_event", lambda *_args: None)
 
     evidence = generation_scheduler._load_post_wait_evaluation_evidence(
-        active_v=142,
-        active_bot_name="national_v142",
+        active_v=143,
+        active_bot_name="national_v143",
         min_games=24,
         rd_threshold=110,
         rd_min_games=12,

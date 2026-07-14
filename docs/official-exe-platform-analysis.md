@@ -149,8 +149,9 @@ official EXE's 60 second timeout path.
 - Local strength evaluation can still use the local national TCP server, but
   official acceptance must include the real EXE because the timing race is not
   represented by the local server.
-- Existing native bots produced without the throttle should be considered
-  official-risk until retested through the real EXE.
+- Any strict runtime build that removes the throttle is official-risk and must
+  fail the current runtime contract before formal certification. Retired bot
+  trees are not retested or promoted into the active pool.
 - Full 70-hand official certification must preserve raw wire evidence:
   `wire_events.jsonl` plus `replay_summary.json`. If the harness declares the
   wire probe enabled but either artifact is missing, the evidence bundle is

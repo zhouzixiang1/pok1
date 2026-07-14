@@ -1,29 +1,111 @@
-"""Review-stage LLM agents: Critic, Performance Verification, and Crossover.
+"""Review-stage LLM agents: Critic and Crossover.
 
 These agents evaluate worker output and verify strategic improvements.
 """
 
+import hashlib
 import json
-import time
+from pathlib import Path
 
 from logging_config import get_logger
 _log = get_logger("review")
 
-from bot_namespace import bot_name
-from llm_failure import is_llm_infra_error, infra_payload
-from strength_order import match_score
+from llm_failure import infra_payload
+from llm_availability import LLMAvailabilityBlocked
 
 from evolution_infra import (
-    run_claude_query, parse_json_output, substitute_template,
-    locked_file, get_bot_dir, get_logs_dir, get_active_bots,
-    verify_code, run_import_contract_test, run_smoke_test,
-    PROMPTS_DIR, RESULTS_DIR, MATCH_HISTORY_FILE, H2H_FILE, BOT_STATS_FILE,
+    run_claude_query, substitute_template,
+    get_bot_dir, get_logs_dir,
+    verify_code, run_import_contract_test,
+    PROMPTS_DIR, RESULTS_DIR,
     MAX_CROSSOVER_RETRIES, copy_bot_tree_for_candidate,
-    Glicko2Player,
 )
 
 
-async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=None):
+def _crossover_checkpoint_digest(checkpoint):
+    """Bind a crossover projection to the complete semantic checkpoint."""
+    from crossover_projection import checkpoint_digest
+
+    return checkpoint_digest(checkpoint)
+
+
+def _crossover_projection_failure(component, issue, **extra):
+    from crossover_projection import projection_failure
+
+    return projection_failure(component, issue, **extra)
+
+
+def _crossover_synthesis_in_progress(issue):
+    """A concurrent valid lease is a retry signal, not infrastructure drift."""
+    return {
+        "success": False,
+        "outcome": "concurrent_effect_in_progress",
+        "failure_class": "concurrency",
+        "component": "crossover_synthesis_effect",
+        "issue": str(issue),
+    }
+
+
+def _crossover_target_identity(target_dir):
+    """Return the canonical target preimage without treating absence as data."""
+    from crossover_projection import target_identity
+
+    return target_identity(target_dir)
+
+
+def _project_crossover_candidate(
+    *,
+    workspace,
+    target_dir,
+    parent_a_v,
+    parent_b_v,
+    target_v,
+    attempt,
+    compatibility,
+    architecture_policy,
+    synthesis_receipt,
+    entry_checkpoint,
+    entry_target_identity,
+    preimage_artifact_hash,
+    workflow_store,
+    artifact_store,
+):
+    """Atomically publish one validated isolated crossover attempt.
+
+    The LLM and every candidate gate run against ``workspace``.  Only this
+    actor-serialized projection may replace the canonical child or advance the
+    checkpoint, and both are guarded by immutable preimages plus checkpoint
+    compare-and-swap.
+    """
+    from crossover_projection import project_crossover_candidate
+
+    return project_crossover_candidate(
+        workspace=workspace,
+        target_dir=target_dir,
+        parent_a_v=parent_a_v,
+        parent_b_v=parent_b_v,
+        target_v=target_v,
+        attempt=attempt,
+        compatibility=compatibility,
+        architecture_policy=architecture_policy,
+        synthesis_receipt=synthesis_receipt,
+        entry_checkpoint=entry_checkpoint,
+        entry_target_identity=entry_target_identity,
+        preimage_artifact_hash=preimage_artifact_hash,
+        workflow_store=workflow_store,
+        artifact_store=artifact_store,
+    )
+
+
+async def _run_critic(
+    next_v,
+    source_v,
+    master_plan_str,
+    ui,
+    prev_critic_result=None,
+    execution_invocation_id=None,
+    strict_authority=None,
+):
     """Poker Strategy Critic — independently scores the strategic value of worker changes.
 
     Separate from the Reviewer (which checks code correctness and role boundaries).
@@ -48,6 +130,7 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
         "version": str(next_v),
         "parent_version": str(source_v),
     })
+    allowed_evidence_snapshot_dir = None
     try:
         from evidence_snapshot import h2h_snapshot_contract_text
 
@@ -57,6 +140,13 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             include_json=True,
             max_chars=12000,
         )
+        from evidence_snapshot import load_generation_snapshot_identity
+
+        snapshot_identity = load_generation_snapshot_identity(next_v)
+        if snapshot_identity.get("available"):
+            allowed_evidence_snapshot_dir = Path(
+                snapshot_identity["manifest_path"]
+            ).parent
     except Exception as exc:
         critic_prompt += (
             "\n\n# Stable H2H Snapshot Contract\n"
@@ -77,47 +167,21 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             f"If improvements were made that address ALL feedback points, raise the score accordingly.\n"
         )
 
-    # --- Meta-3: Critic Bias Calibration ---
-    try:
-        calibration_file = RESULTS_DIR / "critic_calibration.jsonl"
-        if calibration_file.exists():
-            lines = calibration_file.read_text().strip().split('\n')
-            all_rows = [json.loads(l) for l in lines[-10:] if l.strip()]
-            # fix-2: skip rows where rating_delta is None (unreconciled).
-            # Old rows without "reconciled" field are backward-compat: they
-            # have a real delta value from the old r-2*rd calculation.
-            recent = [
-                r for r in all_rows
-                if r.get("rating_delta") is not None
-            ]
-            if len(recent) >= 3:
-                scores = [r.get("critic_score", 0) for r in recent]
-                deltas = [r.get("rating_delta", 0) for r in recent]
-                avg_score = sum(scores) / len(scores)
-                avg_delta = sum(deltas) / len(deltas)
-                if avg_score > 7 and avg_delta < 0:
-                    critic_prompt += (
-                        f"\n\n# Critic Calibration Note\n"
-                        f"Over the last {len(recent)} generations, your average score was {avg_score:.1f} "
-                        f"but actual rating change was {avg_delta:+.0f} points. "
-                        f"You may be OVERESTIMATING improvements, especially in strategy complexity. "
-                        f"Please be more critical this time — demand concrete evidence of improvement.\n"
-                    )
-                elif avg_score < 4 and avg_delta > 0:
-                    critic_prompt += (
-                        f"\n\n# Critic Calibration Note\n"
-                        f"Over the last {len(recent)} generations, your average score was {avg_score:.1f} "
-                        f"but actual rating improved by {avg_delta:+.0f} points. "
-                        f"You may be TOO HARSH. Consider giving credit for small but real improvements.\n"
-                    )
-    except Exception:
-        pass  # Calibration is advisory
-
     log_file = get_logs_dir(next_v) / "critic_io.txt"
+    if strict_authority is not None:
+        execution_invocation_id = strict_authority.get("invocation_id")
+    if execution_invocation_id is not None:
+        critic_prompt += (
+            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+            f"invocation_id={execution_invocation_id}; "
+            "purpose=system_strict_bootstrap_gate:critic."
+        )
     try:
-        output, _, _ = await run_claude_query(
+        output, cost_usd, usage = await run_claude_query(
             critic_prompt, [], ui, "STRATEGY CRITIC", log_file,
-            tools=["Bash", "Read"],
+            tools=["Read"] if strict_authority is not None else ["Bash", "Read"],
+            allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+            strict_authority=strict_authority,
         )
         from llm_query import parse_json_output_with_mode
         data, failure_mode = parse_json_output_with_mode(output)
@@ -133,7 +197,25 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
             if "approved" not in data:
                 data["approved"] = data["score"] >= 6
             data.setdefault("local_optima_warning", False)
+            if execution_invocation_id is not None:
+                from system_strict_bootstrap import llm_result_digest
+
+                data["_llm_execution_material"] = {
+                    "invocation_id": str(execution_invocation_id),
+                    "purpose": "system_strict_bootstrap_gate:critic",
+                    "role": "STRATEGY CRITIC",
+                    "prompt_digest": hashlib.sha256(
+                        critic_prompt.encode("utf-8")
+                    ).hexdigest(),
+                    "raw_output_digest": hashlib.sha256(
+                        (output or "").encode("utf-8")
+                    ).hexdigest(),
+                    "result_digest": llm_result_digest(cost_usd, usage),
+                    "log_file": str(log_file),
+                }
             return data
+    except LLMAvailabilityBlocked:
+        raise
     except Exception as e:
         ui.log_history(f"Critic execution error (NOT a strategic rejection): {e}", "warn")
         return infra_payload(e, approved=None)
@@ -160,318 +242,6 @@ async def _run_critic(next_v, source_v, master_plan_str, ui, prev_critic_result=
     }
 
 
-# ──────────────────────────────────────────────
-# fix-2: Async calibration backfill
-# ──────────────────────────────────────────────
-
-def reconcile_critic_calibration(ratings, bot_stats, rd_threshold=60, min_games=100):
-    """Backfill real rating_delta into critic_calibration.jsonl.
-
-    Called from the daemon's save_cycle so it runs every save cycle (every
-    ~20 games or ~60s). For each row where reconciled=False and rating_delta
-    is None, checks whether the bot (version) has converged (rd < rd_threshold
-    and games >= min_games). If so, computes the real delta = r_bot - r_source
-    and freezes it (reconciled=True). Once frozen, the delta is never recomputed
-    even if source bot's rating changes.
-
-    Args:
-        ratings: dict of bot_name -> Glicko2Player (current daemon ratings).
-        bot_stats: dict of bot_name -> stats dict (must have 'games' key).
-        rd_threshold: max rd to consider a bot converged (default 60).
-        min_games: min games to consider a bot converged (default 100).
-    """
-    import fcntl
-
-    cal_file = RESULTS_DIR / "critic_calibration.jsonl"
-    if not cal_file.exists():
-        return
-
-    try:
-        # Read all rows under shared lock
-        with locked_file(cal_file, "r", encoding="utf-8") as f:
-            raw = f.read()
-        if not raw.strip():
-            return
-
-        lines = raw.strip().split('\n')
-        rows = []
-        changed = False
-        for line in lines:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
-                rows.append(line)
-                continue
-
-            # Skip rows that are already reconciled or have a non-None delta
-            if row.get("reconciled") is True or row.get("rating_delta") is not None:
-                rows.append(row)
-                continue
-
-            # This row needs backfill — check if the bot has converged
-            version = row.get("version")
-            source_v = row.get("source_v")
-            if version is None:
-                rows.append(row)
-                continue
-
-            review_bot_name = bot_name(version)
-            source_name = bot_name(source_v) if source_v is not None else None
-
-            bot_player = ratings.get(review_bot_name)
-            bot_games = bot_stats.get(review_bot_name, {}).get("games", 0)
-
-            if bot_player is None or bot_games < min_games:
-                rows.append(row)
-                continue
-            if bot_player.rd >= rd_threshold:
-                rows.append(row)
-                continue
-
-            # Bot has converged — compute real rating delta
-            source_player = ratings.get(source_name) if source_name else None
-            if source_player is not None:
-                delta = round(bot_player.r - source_player.r, 1)
-            else:
-                # Source bot not found (reaped?) — use absolute rating delta from default
-                delta = round(bot_player.r - 1500.0, 1)
-
-            row["rating_delta"] = delta
-            row["reconciled"] = True
-            row["reconciled_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-            changed = True
-            rows.append(row)
-            _log.debug("Reconciled calibration v%d: delta=%.1f (rd=%.1f, %d games)",
-                       version, delta, bot_player.rd, bot_games)
-
-        if not changed:
-            return
-
-        # Write back under exclusive lock
-        with locked_file(cal_file, "w", encoding="utf-8") as f:
-            for row in rows:
-                if isinstance(row, str):
-                    f.write(row + "\n")
-                else:
-                    f.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-    except Exception:
-        pass  # Calibration reconciliation is advisory
-
-
-async def _run_performance_verification(source_v, ratings, ui):
-    """SATLUTION-style LLM performance verification.
-
-    Synthesises rating history + win-rate trends into a structured JSON insight
-    that Master uses to prioritise improvements and avoid local optima.
-
-    Returns a JSON-formatted string (to be injected into master prompt).
-    Returns "" on failure so master prompt degrades gracefully.
-    """
-    # ── Build rating history for last 10 periods ──
-    history_file = RESULTS_DIR / "rating_history.jsonl"
-    gen_trend_lines = []
-    if history_file.exists():
-        try:
-            with locked_file(history_file, "r") as hf:
-                raw_lines = hf.readlines()
-            for line in raw_lines[-10:]:
-                try:
-                    snap = json.loads(line.strip())
-                    wr_data = snap.get("win_rates", {})
-                    wrs = [v["h2h_avg_wr"] for v in wr_data.values() if v.get("h2h_avg_wr") is not None]
-                    if wrs:
-                        gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_h2h_wr={max(wrs):.4f}")
-                    else:
-                        bots_in_snap = snap.get("ratings", {})
-                        top_r = max((v.get("r", 1500) for v in bots_in_snap.values()), default=1500)
-                        gen_trend_lines.append(f"  Period {snap.get('period','?')}: top_r={top_r:.0f}")
-                except (json.JSONDecodeError, KeyError):
-                    continue
-        except Exception as e:
-            _log.warning("Failed to read rating history for perf verification: %s", e)
-
-    # ── Win-rate summary for source_v (last 30 matches) ──
-    source_bot_name = bot_name(source_v)
-    win_rate_lines = []
-    if MATCH_HISTORY_FILE.exists():
-        try:
-            wins, losses, draws = 0, 0, 0
-            from rating_snapshot import _admitted_70_hand_history_sample
-            with locked_file(MATCH_HISTORY_FILE, "r") as mf:
-                all_lines = mf.readlines()
-            for line in all_lines[-100:]:
-                try:
-                    entry = json.loads(line.strip())
-                    if _admitted_70_hand_history_sample(entry) is None:
-                        continue
-                    b0, b1 = entry.get("bot0"), entry.get("bot1")
-                    w0, w1 = entry.get("bot0_wins", 0), entry.get("bot1_wins", 0)
-                    d = entry.get("draws", 0)
-                    if b0 == source_bot_name:
-                        wins += w0; losses += w1; draws += d
-                    elif b1 == source_bot_name:
-                        wins += w1; losses += w0; draws += d
-                except (json.JSONDecodeError, KeyError):
-                    continue
-            total = wins + losses + draws
-            win_rate = match_score(wins, draws, total)
-            if win_rate is not None:
-                win_rate_lines.append(
-                    f"  {source_bot_name} recent: {wins}W / {losses}L / "
-                    f"{draws}D ({win_rate:.0%} score)"
-                )
-        except Exception as e:
-            _log.warning("Failed to read match history for perf verification: %s", e)
-
-    # ── Top-5 active bots for context ──
-    active_bots = get_active_bots()
-    from tool_helpers import (
-        load_h2h_avg_winrates,
-        load_selection_order_keys,
-        load_selection_scores,
-    )
-    h2h_winrates = load_h2h_avg_winrates()
-    strength_scores = load_selection_scores()
-    selection_order_keys = load_selection_order_keys()
-    sorted_bots = sorted(
-        [(b, ratings.get(b, Glicko2Player())) for b in active_bots],
-        key=lambda x: selection_order_keys.get(
-            x[0],
-            (strength_scores.get(x[0], 0.0),),
-        ),
-        reverse=True,
-    )[:5]
-    ratings_lines = [
-        f"  {b}: score={strength_scores.get(b, 0.0):.4f}, h2h_avg_wr={h2h_winrates.get(b, 0.0):.2%} (r={p.r:.0f} rd={p.rd:.0f})"
-        for b, p in sorted_bots
-    ]
-
-    # ── Head-to-Head data ──
-    h2h_lines = []
-    if H2H_FILE.exists():
-        try:
-            with locked_file(H2H_FILE, "r") as hf:
-                h2h_data = json.load(hf)
-            for k, v in h2h_data.items():
-                parts = k.split(" vs ")
-                if len(parts) != 2:
-                    continue
-                a_name, b_name = parts
-                if source_bot_name not in (a_name, b_name):
-                    continue
-                opponent = b_name if source_bot_name == a_name else a_name
-                g = v.get("games", 0)
-                if g == 0:
-                    continue
-                # Figure out which side our bot is
-                if source_bot_name == a_name:
-                    bot_w = v.get("a_wins", 0)
-                else:
-                    bot_w = v.get("b_wins", 0)
-                draws = v.get("draws", 0)
-                opp_w = g - bot_w - draws
-                wr = match_score(bot_w, draws, g)
-                if wr is None:
-                    continue
-                tag = ""
-                if wr < 0.40:
-                    tag = " ← WEAKNESS"
-                elif wr > 0.60:
-                    tag = " ← STRENGTH"
-                h2h_lines.append((wr, f"  vs {opponent}: {bot_w}W-{opp_w}L-{draws}D ({wr:.0%}){tag}"))
-            h2h_lines.sort(key=lambda x: x[0])
-        except Exception as e:
-            _log.warning("Failed to read H2H data for perf verification: %s", e)
-
-    # ── Bot stats (overall win rate) ──
-    bot_stats_line = ""
-    if BOT_STATS_FILE.exists():
-        try:
-            with locked_file(BOT_STATS_FILE, "r") as bsf:
-                bs_data = json.load(bsf)
-            bs = bs_data.get(source_bot_name, {})
-            g = bs.get("games", 0)
-            wr = bs.get("win_rate", 0.0)
-            if g > 0:
-                bot_stats_line = f"  {source_bot_name}: {wr:.0%} overall ({g} games)"
-        except Exception as e:
-            _log.warning("Failed to read bot stats for perf verification: %s", e)
-
-    # ── Build prompt ──
-    # Check rd (rating deviation) for the current bot to flag unreliable data
-    bot_rd = ratings.get(source_bot_name, Glicko2Player()).rd if ratings else 350
-    rd_warning = ""
-    if bot_rd > 200:
-        rd_warning = (
-            f"\n⚠️ IMPORTANT: This bot has rd={bot_rd:.0f} (>200), meaning its rating is VERY uncertain.\n"
-            "Trend analysis is unreliable — period-to-period fluctuations are likely noise, not signal.\n"
-            "You MUST note this explicitly and treat any 'trend' with extreme skepticism.\n"
-        )
-    elif bot_rd > 100:
-        rd_warning = (
-            f"\nNOTE: This bot has rd={bot_rd:.0f} (>100), meaning its rating is moderately uncertain.\n"
-            "Be cautious about interpreting small period-to-period changes as meaningful trends.\n"
-        )
-
-    # Build prompt from template
-    template_file = PROMPTS_DIR / "performance_analyst.md"
-    if not template_file.exists():
-        return ""
-    prompt = template_file.read_text()
-    prompt = substitute_template(prompt, {
-        "bot_name": source_bot_name,
-        "rd_warning": rd_warning,
-        "performance_history": "\n".join(gen_trend_lines) if gen_trend_lines else "  No history available",
-        "bot_stats": bot_stats_line if bot_stats_line else "  No stats available",
-        "h2h_results": "\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data available",
-        "top_bots": "\n".join(ratings_lines),
-    })
-
-    log_file = get_logs_dir(source_v) / "performance_verification_io.txt"
-    try:
-        output, _, _ = await run_claude_query(
-            prompt, [], ui, "PERFORMANCE ANALYST", log_file,
-        )
-        from llm_query import parse_json_output_with_mode
-        data, failure_mode = parse_json_output_with_mode(output)
-        if data:
-            return json.dumps(data, ensure_ascii=False)
-    except Exception as e:
-        # C-class: distinguish LLM infrastructure crash from "no data".
-        # Return a sentinel string so the Master prompt builder can surface
-        # "analysis unavailable due to LLM failure" instead of the misleading
-        # "No performance verification data available". Return type stays str.
-        if is_llm_infra_error(e):
-            ui.log_history(f"Performance verification LLM infrastructure error: {e}", "warn")
-            from system_log import log_system_event
-            log_system_event("pipeline.performance_analyst_infra", "warn",
-                             f"Performance analyst v{source_v} LLM crashed (infra): {e}",
-                             {"source_v": source_v, "error": str(e)})
-            return "[LLM_INFRA_ERROR: analysis unavailable]"
-        ui.log_history(f"Performance verification failed: {e}", "warn")
-
-    # Parse collapse: reaching here means the LLM output failed to parse
-    # (NO_JSON/NO_FENCE/PARSE_ERROR), or the LLM call threw a non-infra
-    # exception. Previously this was a silent "" return that the Master
-    # prompt builder surfaced as "No performance verification data available"
-    # — hiding a parse failure behind a benign-looking empty-string. Emit a
-    # classifiable failure event so the parse collapse is visible.
-    _fm = locals().get("failure_mode", "EXCEPTION")
-    _out = locals().get("output", "") or ""
-    try:
-        from event_bus import warn
-        warn("pipeline.performance_analyst_parse_failed",
-             f"Performance analyst v{source_v} parse failed (mode={_fm}); "
-             "returning empty (master prompt degrades to no-data)",
-             source_v=source_v, failure_mode=_fm, output_len=len(_out))
-    except Exception:
-        pass
-    return ""
-
-
 async def _run_crossover(
     parent_a_v,
     parent_b_v,
@@ -484,6 +254,12 @@ async def _run_crossover(
 ):
     """Run crossover between two elite bots to create a new child bot."""
     import shutil
+    import tempfile
+
+    from evolution_infra import read_pipeline_checkpoint
+    from worker_workflow import WorkerArtifactStore, workflow_run_id
+    from workflow_kernel import WorkflowStore
+
     crossover_prompt_path = PROMPTS_DIR / "crossover_prompt.md"
     if not crossover_prompt_path.exists():
         ui.log_history("Crossover prompt not found — skipping crossover.", "error")
@@ -499,22 +275,42 @@ async def _run_crossover(
         "version": str(target_v),
     })
     compatibility = compatibility if isinstance(compatibility, dict) else {}
+    compatibility_score = compatibility.get("compatibility_score")
+    if not isinstance(compatibility_score, (int, float, str, type(None))):
+        compatibility_score = str(compatibility_score)[:100]
+
+    def _bounded_guidance_files(field):
+        return sorted({
+            str(item).strip()[:200]
+            for item in compatibility.get(field) or []
+            if str(item).strip()
+        })[:20]
+
     compatibility_receipt = {
         "compatible": bool(compatibility.get("compatible", True)),
-        "compatibility_score": compatibility.get("compatibility_score"),
+        "compatibility_score": compatibility_score,
         "conflict_area_count": len(compatibility.get("conflict_areas") or []),
-        "files_to_take_from_a": sorted({
-            str(item)
-            for item in compatibility.get("files_to_take_from_a") or []
-            if str(item).strip()
-        }),
-        "files_to_take_from_b": sorted({
-            str(item)
-            for item in compatibility.get("files_to_take_from_b") or []
-            if str(item).strip()
-        }),
+        "files_to_take_from_a": _bounded_guidance_files("files_to_take_from_a"),
+        "files_to_take_from_b": _bounded_guidance_files("files_to_take_from_b"),
         "advisory_only": True,
     }
+    # This frozen receipt, rather than the audit's unbounded prose, is the
+    # complete compatibility guidance shown to the synthesis model.  The same
+    # value is persisted in the LLM effect and final crossover receipt.
+    compatibility_receipt = json.loads(json.dumps(
+        compatibility_receipt,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ))
+    frozen_capability_context = json.loads(json.dumps(
+        capability_context or {},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ))
     crossover_prompt += (
         "\n\n# System-owned Crossover Context\n"
         "The compatibility receipt is advisory evidence, not an instruction. "
@@ -523,14 +319,18 @@ async def _run_crossover(
         + json.dumps(
             {
                 "compatibility_receipt": compatibility_receipt,
-                "parent_capabilities": capability_context or {},
+                "parent_capabilities": frozen_capability_context,
             },
             indent=2,
             ensure_ascii=False,
         )[:12000]
     )
+    allowed_evidence_snapshot_dir = None
     try:
-        from evidence_snapshot import h2h_snapshot_contract_text
+        from evidence_snapshot import (
+            h2h_snapshot_contract_text,
+            load_generation_snapshot_identity,
+        )
 
         crossover_prompt += "\n\n" + h2h_snapshot_contract_text(
             target_v,
@@ -538,6 +338,11 @@ async def _run_crossover(
             include_json=True,
             max_chars=24_000,
         )
+        snapshot_identity = load_generation_snapshot_identity(target_v)
+        if snapshot_identity.get("available"):
+            allowed_evidence_snapshot_dir = Path(
+                snapshot_identity["manifest_path"]
+            ).parent
     except Exception as exc:
         crossover_prompt += (
             "\n\n# Stable H2H Snapshot Contract\n"
@@ -552,97 +357,373 @@ async def _run_crossover(
             architecture_policy
         )
 
-    target_dir = get_bot_dir(target_v)
+    canonical_target_dir = get_bot_dir(target_v)
     parent_a_dir = get_bot_dir(parent_a_v)
     log_file = get_logs_dir(target_v) / "crossover_io.txt"
 
+    entry_checkpoint = read_pipeline_checkpoint() or {}
+    if (
+        entry_checkpoint.get("next_v") != target_v
+        or entry_checkpoint.get("source_v") != parent_a_v
+        or entry_checkpoint.get("parent2_v") != parent_b_v
+        or entry_checkpoint.get("stage") not in {"selected", "crossover_running"}
+        or int(entry_checkpoint.get("checkpoint_revision") or 0) < 1
+        or not str(entry_checkpoint.get("workflow_run_id") or "").strip()
+    ):
+        return _crossover_projection_failure(
+            "crossover_projection_contract",
+            "active_checkpoint_does_not_bind_selected_crossover",
+            checkpoint_stage=entry_checkpoint.get("stage"),
+            checkpoint_revision=int(entry_checkpoint.get("checkpoint_revision") or 0),
+        )
+    workflow_root = RESULTS_DIR / "workflow"
+    artifact_store = WorkerArtifactStore(workflow_root / "artifacts")
+    workflow_store = WorkflowStore(workflow_root / "events.sqlite3")
+    # Validate the fallback identity now, before any expensive LLM work.
+    run_id = workflow_run_id(entry_checkpoint)
+    from crossover_projection import (
+        completed_crossover_projection,
+        recover_crossover_projection,
+    )
+
+    recovery = recover_crossover_projection(
+        entry_checkpoint=entry_checkpoint,
+        target_dir=canonical_target_dir,
+        parent_a_v=parent_a_v,
+        parent_b_v=parent_b_v,
+        target_v=target_v,
+        workflow_store=workflow_store,
+        artifact_store=artifact_store,
+    )
+    if recovery is not None:
+        return recovery
+    completed = completed_crossover_projection(
+        checkpoint=entry_checkpoint,
+        target_dir=canonical_target_dir,
+        parent_a_v=parent_a_v,
+        parent_b_v=parent_b_v,
+        target_v=target_v,
+        architecture_policy=architecture_policy,
+    )
+    if completed is not None:
+        return completed
+    try:
+        entry_target_identity = _crossover_target_identity(canonical_target_dir)
+    except Exception as exc:
+        return _crossover_projection_failure(
+            "crossover_projection_contract",
+            f"target_preimage_error:{type(exc).__name__}:{str(exc)[:240]}",
+        )
+    preimage_artifact_hash = (
+        artifact_store.capture(canonical_target_dir)
+        if entry_target_identity["exists"]
+        else ""
+    )
+    if (
+        entry_target_identity["exists"]
+        and preimage_artifact_hash
+        != str(entry_target_identity.get("artifact_hash") or "")
+    ):
+        return _crossover_projection_failure(
+            "crossover_projection_contract",
+            "canonical_target_changed_while_capturing_preimage",
+            entry_target_identity=entry_target_identity,
+            captured_preimage_artifact_hash=preimage_artifact_hash,
+        )
+    workspace_root = RESULTS_DIR / "crossover_workspaces"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+
+    parent_b_dir = get_bot_dir(parent_b_v)
+    if not parent_b_dir.is_dir():
+        return _crossover_projection_failure(
+            "crossover_synthesis_contract",
+            "parent_b_directory_missing",
+        )
+    try:
+        # Parent identities are frozen once per invocation and embedded in
+        # every semantic-attempt effect.  A same-id request with changed parent
+        # bytes is rejected by WorkflowStore before the provider can run.
+        parent_a_artifact_hash = artifact_store.capture(parent_a_dir)
+        parent_b_artifact_hash = artifact_store.capture(parent_b_dir)
+        frozen_parent_a_dir = artifact_store.path_for(parent_a_artifact_hash)
+        frozen_parent_b_dir = artifact_store.path_for(parent_b_artifact_hash)
+    except Exception as exc:
+        return _crossover_projection_failure(
+            "crossover_synthesis_contract",
+            f"parent_snapshot_error:{type(exc).__name__}:{str(exc)[:240]}",
+        )
+
     architecture_retry_feedback = ""
+    target_dir = None
     for attempt in range(MAX_CROSSOVER_RETRIES):
-        try:
-            from evolution_infra import write_pipeline_checkpoint
-            checkpoint_ok = write_pipeline_checkpoint(
-                target_v,
-                parent_a_v,
-                "crossover_running",
-                parent2_v=parent_b_v,
-                touch_stage_timestamp=True,
-                audit_context={
-                    "crossover": {
-                        "parent_a": parent_a_v,
-                        "parent_b": parent_b_v,
-                        "attempt": attempt + 1,
-                        "compatibility": compatibility or {},
-                        "architecture_policy_digest": str(
-                            (architecture_policy or {}).get("policy_digest") or ""
-                        ),
-                    }
-                },
-            )
-        except Exception as exc:
-            ui.log_history(f"Crossover checkpoint write failed: {exc}", "error")
-            return False
-        if not checkpoint_ok:
-            ui.log_history(
-                f"Crossover checkpoint write refused for v{target_v}; refusing to mutate target dir.",
-                "error",
-            )
-            return False
+        if target_dir is not None:
+            shutil.rmtree(target_dir, ignore_errors=True)
+        target_dir = tempfile.mkdtemp(
+            prefix=f"v{target_v}-attempt-{attempt + 1}-",
+            dir=workspace_root,
+        )
+        # tempfile creates the leaf; candidate copy requires a fresh path.
+        target_dir = type(canonical_target_dir)(target_dir)
+        target_dir.rmdir()
 
-        # Reset target dir from parent A baseline to avoid corrupted state from previous attempt
-        if target_dir.exists():
-            shutil.rmtree(target_dir)
-        copy_bot_tree_for_candidate(parent_a_dir, target_dir)
-
-        # Apply known critical fixes to crossover child
-        from fix_injection import apply_known_fixes, log_fix_application
-        applied, skipped = apply_known_fixes(target_dir)
-        if applied or skipped:
-            log_fix_application(applied, skipped, target_dir, parent_a_v)
+        # Every retry starts in a private Parent-A-derived workspace.  The
+        # canonical child and checkpoint remain byte-identical until projection.
+        copy_bot_tree_for_candidate(frozen_parent_a_dir, target_dir)
 
         try:
             from candidate_hygiene import sanitize_candidate_dir
             from workflow_profiles import get_workflow_profile
-            native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
-            sanitize_candidate_dir(target_dir, require_native_tcp=native_tcp)
+            if getattr(get_workflow_profile(), "national_execution_mode", None) != "native_tcp":
+                raise RuntimeError("only native_tcp crossover is supported")
+            sanitize_candidate_dir(target_dir, require_native_tcp=True)
+            from bot_namespace import (
+                refresh_policy_identity_documents,
+                strict_lineage_parent_versions,
+            )
+
+            crossover_lineage = strict_lineage_parent_versions(
+                target_v,
+                parent_a_v,
+                parent_b_v,
+            )
+            refresh_policy_identity_documents(
+                target_dir,
+                target_v,
+                parent_versions=crossover_lineage,
+            )
         except Exception as exc:
             ui.log_history(f"Crossover native TCP entry preparation failed: {exc}", "warn")
             continue
 
         from crossover_provenance import python_source_snapshot
+        from worker_boundary import snapshot_python_files
 
-        # Freeze the exact Parent-A-plus-system-fixes baseline before the LLM.
-        # This keeps mandatory fix/hygiene changes out of the provenance diff.
+        # Freeze the exact Parent-A-derived, system-hygiene baseline before the
+        # LLM. No candidate code is auto-patched in the strict policy epoch.
         system_prepared_baseline = python_source_snapshot(target_dir)
+        crossover_boundary_snapshot = snapshot_python_files(target_dir)
+
+        full_attempt_prompt = crossover_prompt + architecture_retry_feedback
+        try:
+            from crossover_synthesis import (
+                build_synthesis_input,
+                claim_synthesis_effect,
+                complete_synthesis_effect,
+                ensure_synthesis_effect,
+                materialize_completed_effect,
+                synthesis_receipt,
+            )
+            from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
+            from workflow_kernel import WorkflowBusy, WorkflowConflict
+
+            input_snapshot_hash = artifact_store.capture(target_dir)
+            effect_id, invocation_id, synthesis_input = build_synthesis_input(
+                run_id=run_id,
+                prompt=full_attempt_prompt,
+                parent_a_v=parent_a_v,
+                parent_b_v=parent_b_v,
+                target_v=target_v,
+                attempt=attempt + 1,
+                checkpoint=entry_checkpoint,
+                checkpoint_digest=_crossover_checkpoint_digest(entry_checkpoint),
+                parent_a_artifact_hash=parent_a_artifact_hash,
+                parent_b_artifact_hash=parent_b_artifact_hash,
+                input_snapshot_hash=input_snapshot_hash,
+                compatibility_receipt=compatibility_receipt,
+                capability_context=frozen_capability_context,
+                architecture_policy=(
+                    architecture_policy
+                    if isinstance(architecture_policy, dict)
+                    else {}
+                ),
+            )
+            synthesis_effect = ensure_synthesis_effect(
+                store=workflow_store,
+                run_id=run_id,
+                effect_id=effect_id,
+                input_payload=synthesis_input,
+                definition_version=WORKER_WORKFLOW_DEFINITION_VERSION,
+            )
+        except WorkflowBusy as exc:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return _crossover_synthesis_in_progress(
+                f"effect_prepare_busy:{str(exc)[:240]}"
+            )
+        except WorkflowConflict as exc:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return _crossover_projection_failure(
+                "crossover_synthesis_effect",
+                f"effect_prepare_conflict:{type(exc).__name__}:{str(exc)[:240]}",
+            )
+        except Exception as exc:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return _crossover_projection_failure(
+                "crossover_synthesis_effect",
+                f"effect_prepare_error:{type(exc).__name__}:{str(exc)[:240]}",
+            )
+
+        accepted_synthesis_receipt = None
+        if synthesis_effect.get("status") == "completed":
+            try:
+                materialize_completed_effect(
+                    effect=synthesis_effect,
+                    workspace=target_dir,
+                    artifact_store=artifact_store,
+                )
+                accepted_synthesis_receipt = synthesis_receipt(
+                    synthesis_effect,
+                    artifact_store,
+                )
+            except Exception as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_projection_failure(
+                    "crossover_synthesis_replay",
+                    f"completed_effect_invalid:{type(exc).__name__}:{str(exc)[:240]}",
+                )
+        elif synthesis_effect.get("status") in {"exhausted", "abandoned"}:
+            # A provider/SDK failure terminally owns only this semantic attempt.
+            # Continue to the next stable attempt id without rerunning it.
+            continue
+        elif synthesis_effect.get("status") == "deferred":
+            shutil.rmtree(target_dir, ignore_errors=True)
+            return _crossover_projection_failure(
+                "crossover_synthesis_effect",
+                "effect_is_deferred_pending_llm_availability_resume",
+            )
+        else:
+            try:
+                synthesis_lease = claim_synthesis_effect(
+                    store=workflow_store,
+                    effect_id=effect_id,
+                    invocation_id=invocation_id,
+                )
+            except WorkflowBusy as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_synthesis_in_progress(
+                    f"active_provider_lease:{str(exc)[:240]}",
+                )
+            except Exception as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_projection_failure(
+                    "crossover_synthesis_effect",
+                    f"effect_claim_error:{type(exc).__name__}:{str(exc)[:240]}",
+                )
 
         ui.clear_io()
         ui.set_status(f"Crossover v{parent_a_v}×v{parent_b_v}→v{target_v} (Try {attempt+1})", is_working=True)
-        try:
-            await run_claude_query(
-                crossover_prompt + architecture_retry_feedback, [], ui,
-                f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v}",
-                log_file,
-                tools=["Bash", "Read", "Edit"],
-                allowed_write_dir=target_dir,  # A1: scope writes to target bot dir only
-            )
-        except Exception as e:
-            # SDK error (e.g. ClaudeSDKError now propagates from run_claude_query)
-            # — retry the crossover attempt instead of escaping the retry loop.
-            ui.log_history(f"Crossover LLM error: {e}", "warn")
-            continue
+        if accepted_synthesis_receipt is None:
+            try:
+                await run_claude_query(
+                    full_attempt_prompt, [], ui,
+                    f"CROSSOVER v{parent_a_v}×v{parent_b_v}→v{target_v} [{invocation_id}]",
+                    log_file,
+                    tools=["Bash", "Read", "Edit"],
+                    allowed_write_dir=target_dir,  # A1: scope writes to target bot dir only
+                    allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+                )
+            except LLMAvailabilityBlocked:
+                # Persist a retryable fenced failure so the active lease cannot
+                # strand resume.  The outer availability pause remains
+                # attempt-neutral at the semantic crossover level.
+                try:
+                    workflow_store.fail_effect(
+                        effect_id,
+                        lease_epoch=synthesis_lease.lease_epoch,
+                        error="llm_availability_blocked",
+                        retryable=True,
+                        causation_id=(
+                            f"crossover-synthesis-availability:{effect_id}:"
+                            f"{synthesis_lease.lease_epoch}"
+                        ),
+                    )
+                except Exception:
+                    # Preserve the classified availability signal even if a
+                    # concurrent lease epoch already fenced this caller.
+                    pass
+                finally:
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                raise
+            except Exception as e:
+                # A provider/SDK exception did not produce an accepted output.
+                # Terminally fence this semantic attempt and advance to the
+                # next stable attempt id, preserving the legacy bounded retry.
+                try:
+                    workflow_store.fail_effect(
+                        effect_id,
+                        lease_epoch=synthesis_lease.lease_epoch,
+                        error=f"{type(e).__name__}: {str(e)[:2000]}",
+                        retryable=False,
+                        causation_id=(
+                            f"crossover-synthesis-failed:{effect_id}:"
+                            f"{synthesis_lease.lease_epoch}"
+                        ),
+                    )
+                except Exception as fence_exc:
+                    # A replacement epoch may already be executing this same
+                    # stable attempt.  Never start attempt N+1 concurrently.
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                    return _crossover_synthesis_in_progress(
+                        "provider_failure_lost_lease:"
+                        f"{type(fence_exc).__name__}:{str(fence_exc)[:200]}"
+                    )
+                ui.log_history(f"Crossover LLM error: {e}", "warn")
+                continue
 
-        # The crossover agent may rebuild the target by copying a parent after
-        # the pre-LLM baseline was fixed. Re-apply mandatory fixes before any
-        # downstream gate sees the candidate.
-        from fix_injection import apply_known_fixes, log_fix_application
-        post_applied, post_skipped = apply_known_fixes(target_dir)
-        if post_applied:
-            log_fix_application(post_applied, post_skipped, target_dir, parent_a_v)
+            try:
+                # This must be the first operation after a successful provider
+                # return: freeze the edited tree and complete through the lease
+                # fence before fixes, hygiene, or deterministic gates mutate it.
+                complete_synthesis_effect(
+                    store=workflow_store,
+                    artifact_store=artifact_store,
+                    lease=synthesis_lease,
+                    invocation_id=invocation_id,
+                    workspace=target_dir,
+                )
+                synthesis_effect = workflow_store.effect(effect_id)
+                accepted_synthesis_receipt = synthesis_receipt(
+                    synthesis_effect,
+                    artifact_store,
+                )
+            except WorkflowBusy as exc:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_synthesis_in_progress(
+                    f"provider_completion_lost_lease:{str(exc)[:240]}",
+                )
+            except Exception as exc:
+                # Snapshot/receipt persistence is infrastructure, not a model
+                # semantic failure.  Preserve the same stable effect id for an
+                # at-least-once retry instead of consuming a crossover attempt.
+                try:
+                    workflow_store.fail_effect(
+                        effect_id,
+                        lease_epoch=synthesis_lease.lease_epoch,
+                        error=(
+                            "synthesis_completion_error:"
+                            f"{type(exc).__name__}: {str(exc)[:1800]}"
+                        ),
+                        retryable=True,
+                        causation_id=(
+                            f"crossover-synthesis-completion-failed:{effect_id}:"
+                            f"{synthesis_lease.lease_epoch}"
+                        ),
+                    )
+                except Exception:
+                    # A completion may already be durable even if its readback
+                    # failed; the next invocation will validate and replay it.
+                    pass
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return _crossover_projection_failure(
+                    "crossover_synthesis_completion",
+                    f"snapshot_or_receipt_error:{type(exc).__name__}:{str(exc)[:240]}",
+                )
 
         try:
             from candidate_hygiene import sanitize_candidate_dir
             from workflow_profiles import get_workflow_profile
-            native_tcp = getattr(get_workflow_profile(), "national_execution_mode", "adapter") == "native_tcp"
-            hygiene = sanitize_candidate_dir(target_dir, require_native_tcp=native_tcp)
+            if getattr(get_workflow_profile(), "national_execution_mode", None) != "native_tcp":
+                raise RuntimeError("only native_tcp crossover is supported")
+            hygiene = sanitize_candidate_dir(target_dir, require_native_tcp=True)
             if hygiene.get("completed_removed") or hygiene.get("native_entry"):
                 try:
                     from system_log import log_system_event
@@ -662,6 +743,65 @@ async def _run_crossover(
                     pass
         except Exception as exc:
             ui.log_history(f"Crossover candidate hygiene failed: {exc}", "warn")
+            continue
+
+        # The provider receives a private directory for tool ergonomics, but
+        # its semantic write authority is still exactly policy.py.  Audit the
+        # raw provider output before the host rewrites identities; otherwise a
+        # forged manifest or extra helper/binary could be hidden by cleanup.
+        from worker_boundary import audit_worker_boundary
+
+        crossover_boundary = audit_worker_boundary(
+            target_dir,
+            {
+                "role": "Crossover Policy Recombiner",
+                "target_files": ["policy.py"],
+                "must_change_files": ["policy.py"],
+            },
+            crossover_boundary_snapshot,
+            next_v=target_v,
+        )
+        if not crossover_boundary.passed:
+            architecture_retry_feedback = (
+                "\n\n# Previous Attempt Rejected By Artifact Write Boundary\n"
+                "Rebuild from Parent A and edit exactly policy.py. Do not write "
+                "identity JSON, runtime/precompute, helper modules, directories, "
+                "or binary assets.\n"
+                + json.dumps(
+                    crossover_boundary.violations[:12],
+                    indent=2,
+                    ensure_ascii=False,
+                )[:4000]
+            )
+            ui.log_history(
+                "Crossover artifact write boundary failed, retrying from Parent A...",
+                "warn",
+            )
+            continue
+
+        try:
+            from bot_namespace import (
+                SYSTEM_DERIVED_IDENTITY_FILES,
+                refresh_policy_identity_documents,
+            )
+
+            refresh_policy_identity_documents(
+                target_dir,
+                target_v,
+                parent_versions=crossover_lineage,
+            )
+            # Provenance compares the policy to the original Parent-A/B
+            # components.  Replace only its identity-document baseline with
+            # the just-derived host bytes so those deterministic consequences
+            # are not mistaken for LLM recombination.
+            refreshed_snapshot = python_source_snapshot(target_dir)
+            for relative in SYSTEM_DERIVED_IDENTITY_FILES:
+                system_prepared_baseline[relative] = refreshed_snapshot[relative]
+        except Exception as exc:
+            ui.log_history(
+                f"Crossover policy identity refresh failed: {exc}",
+                "warn",
+            )
             continue
 
         compile_errors = verify_code(target_dir)
@@ -686,7 +826,21 @@ async def _run_crossover(
             ui.log_history("Crossover runtime import contract failed, retrying...", "warn")
             continue
 
-        smoke_errors = run_smoke_test(target_dir)
+        from workflow_profiles import get_workflow_profile
+
+        from national_native import run_native_tcp_smoke
+
+        smoke_report = await run_native_tcp_smoke(
+            target_dir,
+            source_v=parent_a_v,
+            opponent_token=frozen_parent_a_dir,
+            hands=1,
+        )
+        smoke_errors = (
+            []
+            if smoke_report.get("passed") is True
+            else list(smoke_report.get("issues") or ["native_crossover_smoke_failed"])
+        )
         if smoke_errors:
             ui.log_history("Crossover smoke test failed, retrying...", "warn")
             continue
@@ -695,7 +849,7 @@ async def _run_crossover(
 
         _total_lines, oversized_files = check_code_size(
             target_dir,
-            source_dir=parent_a_dir,
+            source_dir=frozen_parent_a_dir,
         )
         if oversized_files:
             architecture_retry_feedback = (
@@ -741,7 +895,7 @@ async def _run_crossover(
 
         provenance_issues = validate_crossover_recombination_provenance(
             system_prepared_baseline,
-            get_bot_dir(parent_b_v),
+            frozen_parent_b_dir,
             target_dir,
         )
         if provenance_issues:
@@ -827,7 +981,7 @@ async def _run_crossover(
                 )
 
                 transition = evaluate_architecture_transition(
-                    parent_a_dir,
+                    frozen_parent_a_dir,
                     target_dir,
                     expected_policy=architecture_policy,
                     evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
@@ -874,7 +1028,7 @@ async def _run_crossover(
                     )
                 except Exception:
                     pass
-                return {
+                failure = {
                     "success": False,
                     "failure_class": "infrastructure",
                     "outcome": "infrastructure_failure",
@@ -886,6 +1040,8 @@ async def _run_crossover(
                     "infrastructure_failures": failures,
                     "transition": transition,
                 }
+                shutil.rmtree(target_dir, ignore_errors=True)
+                return failure
             if not transition.get("ok"):
                 candidate_capabilities = transition.get("candidate_capabilities") or {}
                 candidate_checks = candidate_capabilities.get("checks_by_id") or {}
@@ -997,13 +1153,11 @@ async def _run_crossover(
         # changed vs parent_a, so the modification is auditable (parity with the
         # worker_files_reset event on the evolve path).
         try:
-            parent_a_dir = get_bot_dir(parent_a_v)
             changed = []
-            if parent_a_dir.exists():
-                import os as _os
-                src_files = {f.name for f in parent_a_dir.glob("*.py")}
+            if frozen_parent_a_dir.exists():
+                src_files = {f.name for f in frozen_parent_a_dir.glob("*.py")}
                 for f in target_dir.glob("*.py"):
-                    src_f = parent_a_dir / f.name
+                    src_f = frozen_parent_a_dir / f.name
                     if f.name not in src_files:
                         changed.append(f.name + " (new)")
                     elif src_f.exists() and f.read_text() != src_f.read_text():
@@ -1019,6 +1173,25 @@ async def _run_crossover(
         except Exception:
             pass
 
-        return True
+        projection = _project_crossover_candidate(
+            workspace=target_dir,
+            target_dir=canonical_target_dir,
+            parent_a_v=parent_a_v,
+            parent_b_v=parent_b_v,
+            target_v=target_v,
+            attempt=attempt,
+            compatibility=compatibility_receipt,
+            architecture_policy=architecture_policy,
+            synthesis_receipt=accepted_synthesis_receipt,
+            entry_checkpoint=entry_checkpoint,
+            entry_target_identity=entry_target_identity,
+            preimage_artifact_hash=preimage_artifact_hash,
+            workflow_store=workflow_store,
+            artifact_store=artifact_store,
+        )
+        shutil.rmtree(target_dir, ignore_errors=True)
+        return projection
 
+    if target_dir is not None:
+        shutil.rmtree(target_dir, ignore_errors=True)
     return False

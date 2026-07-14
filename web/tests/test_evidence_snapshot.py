@@ -21,6 +21,106 @@ class _UI:
         pass
 
 
+def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
+    import hashlib
+
+    from system_strict_bootstrap import record_llm_invocation_evidence
+
+    directions = ("mechanism", "counterfactual", "compute_memory")
+    structural_changes = (
+        selected_proposal["structural_change"],
+        "Add a bounded state accumulator before the same reachable decision consumer.",
+        "Add a deterministic paired-feature path into the same reachable decision consumer.",
+    )
+    proposals = []
+    for index, (direction, structural_change) in enumerate(
+        zip(directions, structural_changes), start=1
+    ):
+        proposal = json.loads(json.dumps(selected_proposal))
+        proposal["direction"] = direction
+        proposal["structural_change"] = structural_change
+        if index > 1:
+            proposal["expected_diff"] = (
+                f"Independent alternative {index} reaches the existing decision consumer."
+            )
+            proposal["falsifier"]["test_name"] = (
+                f"test_alternative_{index}_mechanism"
+            )
+        proposal["proposal_id"] = agent_master._proposal_identity(proposal)
+        proposals.append(proposal)
+    proposal_ids = [proposal["proposal_id"] for proposal in proposals]
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    def invocation(index, *, purpose, role, role_result):
+        return record_llm_invocation_evidence(
+            invocation_id=f"{index:032x}",
+            purpose=purpose,
+            role=role,
+            prompt_digest=hashlib.sha256(f"prompt:{index}".encode()).hexdigest(),
+            raw_output_digest=hashlib.sha256(f"output:{index}".encode()).hexdigest(),
+            result_digest=hashlib.sha256(f"result:{index}".encode()).hexdigest(),
+            role_result=role_result,
+            log_file=log_dir / f"invocation_{index}.txt",
+        )
+
+    proposal_invocations = {
+        proposal["proposal_id"]: invocation(
+            index,
+            purpose=f"master_proposal_scout:{proposal['direction']}",
+            role=f"MASTER PROPOSAL {proposal['direction']}",
+            role_result=proposal,
+        )
+        for index, proposal in enumerate(proposals, start=1)
+    }
+    reviews = []
+    proposal_id_set = set(proposal_ids)
+    for index, critic_id in enumerate(("falsification", "scope"), start=4):
+        raw_review = {
+            "ballots": [
+                {
+                    "proposal_id": proposal_id,
+                    "scores": {
+                        criterion: 5
+                        for criterion in agent_master._PROPOSAL_CRITIC_CRITERIA
+                    },
+                    "reject": False,
+                    "reason": "The proposal is traceable, reachable, bounded, and falsifiable.",
+                }
+                for proposal_id in proposal_ids
+            ]
+        }
+        review = agent_master._validated_proposal_critique(
+            json.dumps(raw_review), proposal_id_set
+        )
+        assert review is not None
+        review["critic_id"] = critic_id
+        review["invocation_evidence"] = invocation(
+            index,
+            purpose=f"master_proposal_critic:{critic_id}",
+            role=f"MASTER PROPOSAL CRITIC {critic_id}",
+            role_result={key: value for key, value in review.items() if key != "critic_id"},
+        )
+        reviews.append(review)
+    return {
+        "schema_version": "master-proposal-packet-v2",
+        "valid": True,
+        "authority": (
+            "advisory_only; final Master must obey frozen lineage/evidence and "
+            "canonical runtime/schema/gate contracts"
+        ),
+        "authority": "advisory_only",
+        "context_digest": "c" * 64,
+        "source_code_digest": "d" * 64,
+        "proposal_count": 3,
+        "valid_critic_count": 2,
+        "critic_criteria": agent_master._PROPOSAL_CRITIC_CRITERIA,
+        "allowed_proposal_ids": proposal_ids,
+        "ordered_proposals": proposals,
+        "proposal_invocations": proposal_invocations,
+        "critic_reviews": reviews,
+    }
+
+
 def _patch_h2h_paths(
     monkeypatch,
     tmp_path,
@@ -191,6 +291,59 @@ def test_generation_h2h_snapshot_freezes_live_file(monkeypatch, tmp_path):
     assert frozen["national_v17 vs national_v20"]["games"] == 45
     assert frozen["national_v17 vs national_v20"]["a_wins"] == 29
     assert frozen["national_v17 vs national_v20"]["b_wins"] == 16
+
+
+def test_snapshot_freezes_replay_spotlight_and_anchor_map(monkeypatch, tmp_path):
+    import evidence_snapshot
+    import replay_spotlight
+    import tool_planning
+
+    _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v143 vs national_v144": {
+            "games": 20,
+            "a_wins": 10,
+            "b_wins": 10,
+            "draws": 0,
+        }
+    })
+    identity = evidence_snapshot._evaluation_identity_digest(
+        evidence_snapshot._infra().RESULTS_DIR
+    )
+    frozen_payload = {
+        "schema_version": 2,
+        "epoch": "national_tcp_policy_v1",
+        "execution_mode": "native_tcp",
+        "evaluation_identity_digest": identity,
+        "bot": "national_v144",
+        "text": "Strict native critical hands for national_v144:\nG1H2#1234abcd",
+        "citations": [{"id": "G1H2", "anchor": "1234abcd"}],
+        "source_replays": {"match.json": {"sha256": "b" * 64}},
+    }
+    monkeypatch.setattr(
+        replay_spotlight,
+        "build_critical_hands_evidence",
+        lambda *_args, **_kwargs: dict(frozen_payload),
+    )
+
+    created = evidence_snapshot.ensure_generation_h2h_snapshot(
+        145, spotlight_bot="national_v144"
+    )
+    loaded = evidence_snapshot.load_generation_evaluation_snapshot(145)
+
+    assert created["available"] is True
+    assert loaded["replay_spotlight"] == frozen_payload
+    assert tool_planning._load_replay_anchor_map(145) == {"G1H2": "1234abcd"}
+
+    payload_path = (
+        evidence_snapshot._infra().RESULTS_DIR
+        / "v145"
+        / "evidence_snapshot"
+        / evidence_snapshot.REPLAY_SPOTLIGHT_FILENAME
+    )
+    payload_path.write_text("{}", encoding="utf-8")
+    rejected = evidence_snapshot.load_generation_evaluation_snapshot(145)
+    assert rejected["available"] is False
+    assert "snapshot_replay_spotlight_digest_mismatch" in rejected["issues"]
 
 
 def test_generation_snapshot_accepts_only_bounded_same_identity_action_stats_lag(
@@ -610,9 +763,15 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         "measurement": "Run paired positive and control decisions before native regression.",
         "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
         "expected_diff": "The strategy decision path consumes the selected structural mechanism.",
-        "target_files": ["strategy.py"],
-        "source_symbols": ["strategy.py:get_action", "strategy.py:choose_action"],
-        "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+        "target_files": ["policy.py"],
+        "source_symbols": [
+            "policy.py:get_baseline_decision",
+            "policy.py:iter_decisions",
+        ],
+        "reachable_chain": [
+            "policy.py:get_baseline_decision",
+            "policy.py:iter_decisions",
+        ],
         "falsifier": {
             "test_name": "test_frozen_evidence_mechanism",
             "control": "The frozen parent preserves the original paired decision.",
@@ -620,8 +779,8 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
             "expected_observation": "The intervention changes the target action while control does not.",
         },
         "evidence_refs": [
-            "source:strategy.py:get_action",
-            "source:strategy.py:choose_action",
+            "source:policy.py:get_baseline_decision",
+            "source:policy.py:iter_decisions",
         ],
         "risks": "Frozen evidence may be sparse, so the fallback and implementation remain bounded.",
     }
@@ -631,15 +790,15 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         "analysis": "use stable snapshot",
         "targeted_failure": targeted_failure,
         "expected_behavior_change": "one changed decision",
-        "do_not_touch": ["opponent.py"],
+        "do_not_touch": ["national_bot.py"],
         "measurement_plan": "compare to parent",
         "tasks": [{
             "worker_id": 1,
             "role": "Algorithmic Logic Architect",
-            "target_files": ["strategy.py"],
+            "target_files": ["policy.py"],
             "difficulty": "medium",
             "skill_layer": "spr",
-            "worker_prompt": "Change strategy.py in the target bot.",
+            "worker_prompt": "Change policy.py in the target bot.",
         }],
         "selected_proposal_id": proposal_id,
     }
@@ -649,18 +808,18 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         return "```json\n" + json.dumps(valid_plan) + "\n```", 0.0, {}
 
     monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+
     async def fake_ensemble(*_args, **_kwargs):
-        return json.dumps({
-            "schema_version": "master-proposal-packet-v2",
-            "valid": True,
-            "context_digest": "c" * 64,
-            "source_code_digest": "d" * 64,
-            "proposal_count": 1,
-            "valid_critic_count": 2,
-            "allowed_proposal_ids": [proposal_id],
-            "ordered_proposals": [proposal],
-            "critic_reviews": [],
-        })
+        packet = _valid_proposal_packet(
+            agent_master,
+            proposal,
+            tmp_path / "master_proposal_invocations",
+        )
+        valid_plan["selected_proposal_id"] = packet["ordered_proposals"][0][
+            "proposal_id"
+        ]
+        return json.dumps(packet)
+
     monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", fake_ensemble)
 
     result = asyncio.run(agent_master._run_master_analysis(20, 24, "flat", _UI()))
@@ -668,7 +827,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     assert result is not None
     assert "web/core/results/v24/evidence_snapshot/head_to_head.json" in captured["prompt"]
     assert "Do not read live H2H for matchup counts during planning" in captured["prompt"]
-    assert "do not reopen live glicko_ratings.json, bot_stats.json, or rating_history.jsonl" in captured["prompt"]
+    assert "do not reopen live glicko_ratings.json, bot_stats.json, rating_history.jsonl" in captured["prompt"]
     assert "Selection evidence snapshot:" in captured["prompt"]
     assert "web/core/results/glicko_ratings.json` —" not in captured["prompt"]
 
@@ -697,7 +856,7 @@ def test_master_plan_audit_prompt_includes_snapshot_json(monkeypatch, tmp_path):
                 "plan_coherent": True,
                 "contradiction_found": False,
                 "contradictions": [],
-                "experience_alignment": "aligned",
+                "evidence_alignment": "aligned",
                 "direction_novelty": "novel",
                 "overall_pass": True,
                 "feedback": "",
@@ -749,4 +908,6 @@ def test_hard_critic_uses_generation_snapshot_not_live_h2h(monkeypatch, tmp_path
     assert result["approved"] is True
     assert "Stable H2H Snapshot Contract" in captured["prompt"]
     assert "national_v11 vs national_v20" in captured["prompt"]
-    assert "Do not read live `web/core/results/head_to_head.json`" in captured["prompt"]
+    assert "Never read live `web/core/results/`" in captured["prompt"]
+    assert "another checkout's results" in captured["prompt"]
+    assert "there is no live fallback" in captured["prompt"]

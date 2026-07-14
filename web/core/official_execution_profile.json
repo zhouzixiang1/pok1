@@ -97,7 +97,7 @@
     },
     "source": {
       "path": "web/core/managed_bot_executor.py",
-      "sha256": "1f18dbe8375ae4fb4523aeca3d8a6906ff730d63339b7b36d1f7b97629715859"
+      "sha256": "094968f7d0f55c734ebd8cadd76ec8531e4b0828ff9332e6ef27ba68a089183d"
     },
     "tools": {
       "bwrap": {

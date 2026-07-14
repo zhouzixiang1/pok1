@@ -10,18 +10,17 @@ Module structure:
     code_verification.py    — verify_code, check_code_size, smoke/decision tests
     agent_master.py         — Master Architect + match analysis
     agent_workers.py        — Worker execution + retry logic
-    agent_review.py         — Critic, Performance Verification, Crossover
+    agent_review.py         — Critic and crossover
     direction_auditor.py    — Pre-Master repetition detection
-    stagnation_analyzer.py  — Rating trend stagnation analysis
     replay_analysis.py      — Replay data summarization (pure data, no LLM)
-    experience_archivist.py — Experience pool consolidation + archivist analysis
+    cycle_archivist.py      — Content-bound, non-strategy post-commit annotation
 """
 
 # ── Infrastructure ──
 from evolution_infra import (  # noqa: F401
     # Constants
     CORE_DIR, PROJECT_ROOT, _COPY_IGNORE, PROMPTS_DIR, RESULTS_DIR, BOTS_DIR,
-    EXPERIENCE_FILE, REFERENCE_DIR, GRAVEYARD_DIR, RATINGS_FILE, STATS_FILE,
+    RATINGS_FILE, STATS_FILE,
     H2H_FILE, BOT_STATS_FILE, WORKER_FAILURES_FILE, PIPELINE_STATE_FILE,
     REPLAY_DIR, MATCH_HISTORY_FILE, ARCHIVE_DIR, LLM_COSTS_FILE, RATING_HISTORY_FILE,
     MAX_ACTIVE_BOTS, DAEMON_EVAL_TIMEOUT, MIN_GAMES_FOR_EVAL, MAX_LINES_PER_FILE, MAX_LINES_HELPER, MAX_LINES_HARD_CAP, LINE_GROWTH_BUDGET, CORE_STRATEGY_FILES,
@@ -51,7 +50,12 @@ from evolution_infra import (  # noqa: F401
     # Archiving
     archive_generation, archive_rotate_files, archive_old_logs,
     # External re-exports
-    Glicko2Player, update_rating_period, trim_experience_pool,
+    Glicko2Player, update_rating_period,
+)
+
+from epoch_authority import (  # noqa: F401
+    policy_epoch_initialization, strict_epoch_projection,
+    unpublished_candidate_versions,
 )
 
 # ── Extracted runtime modules (re-exported via evolution_infra, but explicit here for direct consumers) ──
@@ -63,36 +67,30 @@ from llm_query import (  # noqa: F401
 )
 from code_verification import (  # noqa: F401
     verify_code, check_code_size, run_smoke_test, run_decision_test_details,
-    run_national_protocol_tests, run_import_contract_test, seed_initial_bots,
+    run_national_protocol_tests, run_import_contract_test,
 )
-from fix_verification import verify_fixes  # noqa: F401
-
 # ── Master Agent ──
 from agent_master import (  # noqa: F401
-    _run_master_analysis, _analyze_recent_matches,
+    _run_master_analysis,
 )
 
 # ── Analysis Modules ──
 from direction_auditor import _run_direction_audit  # noqa: F401
-from stagnation_analyzer import _analyze_stagnation  # noqa: F401
-from experience_archivist import _consolidate_experience_pool, _run_archivist_analysis  # noqa: F401
 from replay_analysis import _num_public_cards_to_street, extract_street_patterns, summarize_replay_for_analysis  # noqa: F401
 
 # ── Worker Agent ──
 from agent_workers import (  # noqa: F401
     _run_single_worker, _execute_workers,
-    _record_worker_failure, _load_recent_failures,
+    _record_worker_failure,
 )
 
 # ── Review Agents ──
 from agent_review import (  # noqa: F401
-    _run_critic, _run_performance_verification, _run_crossover,
+    _run_critic, _run_crossover,
 )
 
 # ── Audit Agents ──
 from audit_agents import (  # noqa: F401
     _run_master_plan_audit, _run_worker_cot_check,
-    _generate_dynamic_tests, _run_precommit_semantic,
     _run_degeneration_diagnosis, _run_crossover_compatibility_audit,
-    _run_experience_pool_audit, _run_regression_guardian,
 )

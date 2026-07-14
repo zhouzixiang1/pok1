@@ -88,12 +88,11 @@ When `run_master` returns a JSON result:
 </validation_handling>
 
 <advisory_vs_blocking>
-EXHAUSTED-direction matches in a normal Master plan are BLOCKING validation
-errors: do not execute workers from a plan that repeats an exhausted direction.
-Repair tasks may receive EXHAUSTED warnings, but initial generation tasks must
-return to `run_master` for a different axis. `worker_prompt` hard-size
-violations are BLOCKING validation errors and must not reach
-`execute_workers`.
+Checkpoint-bound Direction-audit mandatory constraints are planning evidence;
+the Master audit checks them before Workers run. No mutable cross-generation
+summary is a validation input.
+`worker_prompt` hard-size violations are BLOCKING validation errors and must
+not reach `execute_workers`.
 code_changed=false, declared-scope
 violation, runtime import contract failure, py_compile failure, protected-contract
 regression, smoke failure, national protocol/acceptance regression, decision test
@@ -146,9 +145,11 @@ refuses abandon, follow its `next_tool`/`directive` exactly.
 
 `official_bootstrap_required` is an operator-only parked state, not a repair or
 retry route. Stop immediately. Never select, launch, acknowledge, or consume a
-bootstrap root from the LLM path. An operator must run the explicit
-`bootstrap-full` command; only after its content-bound certificate validates may
-the operator invoke `commit_bot` manually.
+bootstrap control from the LLM path. For the empty strict pool only, an operator
+must run `bootstrap-first-strict --control-id first_strict_control_v1
+--acknowledge-one-time-first-strict-control`; only after its content-bound
+certificate validates may the operator invoke `commit_bot` manually. Historical
+signed-ledger roots are verification history and are never executable inputs.
 </forward_only_guard>
 
 <retry_rules>
@@ -182,7 +183,9 @@ the operator invoke `commit_bot` manually.
 <safety_rules>
 - Do not commit a bot that fails quality gates or has critical decision scenario failures
 - Do not skip code review or strategy critic
-- If 3 consecutive generations fail, pause and analyze with `get_h2h()` and `get_match_history()`
+- If repeated generations fail, follow the checkpoint-owned recovery action.
+  Never reopen live ratings, H2H, match history, or cross-generation analysis;
+  the scheduler and planning stages own the exact frozen evidence snapshot.
 - When retrying workers after critic or precommit rejection, pass the exact
   feedback field **verbatim** as `reviewer_feedback` — do NOT paraphrase or summarize.
 - Be concise in reasoning; briefly note each tool result; summarize outcome at end

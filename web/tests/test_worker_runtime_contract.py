@@ -6,7 +6,7 @@ from tool_planning import _load_worker_prompt_template
 
 def test_worker_prompt_includes_runtime_contract_block():
     task = {
-        "worker_prompt": "Implement the bounded precompute change.",
+        "worker_prompt": "Consume the bounded system precompute from policy.py.",
         "runtime_contract": {
             "decision": {
                 "clock": "time.monotonic",
@@ -20,13 +20,13 @@ def test_worker_prompt_includes_runtime_contract_block():
             },
             "precompute_artifacts": [{
                 "name": "preflop_bucket_table",
-                "owner_file": "strategy.py",
+                "owner_file": "precompute.py",
                 "build_phase": "module_import",
                 "max_build_ms": 500,
                 "max_entries": 169,
                 "max_bytes": 65536,
                 "key_shape": "tuple[int,int,bool]",
-                "consumer": "strategy.get_action",
+                "consumer": "policy.get_baseline_decision",
                 "fallback": "legal_baseline",
             }],
             "match_memory": {
@@ -34,14 +34,14 @@ def test_worker_prompt_includes_runtime_contract_block():
                 "owner_file": "national_bot.py",
                 "reset_boundary": "tcp_connection",
                 "update_events": ["hand_start", "opponent_action", "settlement", "showdown"],
-                "snapshot_field": "opponent_runtime",
+                "snapshot_field": "decision_context.opponent_model",
                 "max_recent_hands": 8,
                 "prior_rule": "beta_prior_weight_8",
                 "confidence_rule": (
                     "global_actions_over_actions_plus_24_and_context_samples_over_samples_plus_8"
                 ),
                 "adaptation_cap": 0.65,
-                "consumer": "strategy.get_action",
+                "consumer": "policy.get_baseline_decision",
             },
             "official_feedback_refs": ["official_evidence:self_play_01"],
             "forbidden_runtime_work": ["file_io_in_decision"],
@@ -53,24 +53,26 @@ def test_worker_prompt_includes_runtime_contract_block():
     assert "# Runtime Contract" in prompt
     assert "250 ms" in prompt
     assert "preflop_bucket_table" in prompt
-    assert "opponent_runtime" in prompt
+    assert "decision_context.opponent_model" in prompt
     assert "adaptation" in prompt.lower()
     assert "official_evidence:self_play_01" in prompt
     assert "do not treat this block as optional" in prompt
 
 
-def test_worker_template_loader_selects_one_protocol_profile():
+def test_worker_template_loader_exposes_only_strict_native_profile():
     prompts = Path(__file__).resolve().parents[1] / "core" / "prompts"
 
     native = _load_worker_prompt_template(prompts, native_tcp=True)
-    legacy = _load_worker_prompt_template(prompts, native_tcp=False)
 
     assert "{execution_profile_contract}" not in native
-    assert "{execution_profile_contract}" not in legacy
-    assert "formal submission is `national_bot.py`" in native
+    assert "formal submission is the system-owned `national_bot.py`" in native
+    assert "code lives behind the versioned `policy.py` ABI" in native
     assert "smoke_tester.py" not in native
-    assert "formal entrypoint is `main.py`" in legacy.lower()
-    assert "smoke_tester.py" in legacy
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="requires national native TCP"):
+        _load_worker_prompt_template(prompts, native_tcp=False)
 
 
 def test_timeout_retry_keeps_the_complete_runtime_contract():

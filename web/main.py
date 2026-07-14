@@ -1,4 +1,4 @@
-"""Unified web entry point for the Poker Evolution Framework.
+"""Web entry point for the national_tcp_policy_v1 evolution control plane.
 
 Usage:
     python web/main.py                      # Orchestrator mode on port 8000
@@ -60,7 +60,9 @@ def build_frontend() -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Unified Evolution Web App")
+    parser = argparse.ArgumentParser(
+        description="national_tcp_policy_v1 evolution Web/API control plane"
+    )
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--no-daemon", action="store_true", help="Run orchestrator without the background rating daemon")

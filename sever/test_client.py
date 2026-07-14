@@ -1,4 +1,6 @@
-"""智能测试客户端：能正确处理完整的德州扑克对弈流程。
+"""本地诊断客户端：按国赛无分隔符 raw-TCP 流处理完整对局。
+
+它不签发正式证书，也不把本地结果升级为官方合规证据。
 
 用法: python test_client.py <服务器IP> <端口> <玩家名称>
 示例: python test_client.py 127.0.0.1 10001 BotA
@@ -6,6 +8,8 @@
 import socket
 import sys
 import re
+
+from server.protocol import split_server_messages
 
 
 SUIT_NAMES = {0: "S", 1: "H", 2: "D", 3: "C"}
@@ -32,6 +36,7 @@ def run_client(host, port, name):
     sock.connect((host, port))
     sock.settimeout(120)
     buf = ""
+    pending_messages = []
 
     print(f"Connected to {host}:{port} as '{name}'", flush=True)
 
@@ -41,20 +46,50 @@ def run_client(host, port, name):
     in_allin_runout = False
 
     def recv():
-        nonlocal buf
-        while "\n" not in buf:
-            data = sock.recv(4096)
+        nonlocal buf, pending_messages
+        while not pending_messages:
+            messages, buf = split_server_messages(
+                buf,
+                flush_boundary=False,
+            )
+            pending_messages.extend(messages)
+            if pending_messages:
+                break
+            # Numeric messages have no lexical terminator. Resolve only after
+            # a short idle interval; all structural prefixes keep the normal
+            # match timeout so arbitrary TCP fragmentation is preserved.
+            sock.settimeout(0.025 if re.fullmatch(
+                r"(?:raise [0-9]+|earnChips -?[0-9]+)",
+                buf,
+            ) else 120)
+            try:
+                data = sock.recv(4096)
+            except socket.timeout:
+                messages, buf = split_server_messages(
+                    buf,
+                    flush_boundary=True,
+                )
+                pending_messages.extend(messages)
+                if not pending_messages:
+                    return None
+                break
             if not data:
-                return None
-            buf += data.decode("utf-8")
-        line, buf = buf.split("\n", 1)
-        return line.strip()
+                messages, buf = split_server_messages(
+                    buf,
+                    flush_boundary=True,
+                )
+                pending_messages.extend(messages)
+                if not pending_messages:
+                    return None
+                break
+            buf += data.decode("ascii")
+        return pending_messages.pop(0)
 
     def send(msg):
         nonlocal my_action_count
         my_action_count += 1
         print(f"  >> {msg}", flush=True)
-        sock.sendall((msg + "\n").encode("utf-8"))
+        sock.sendall(msg.encode("ascii"))
 
     while True:
         msg = recv()

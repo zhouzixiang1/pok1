@@ -3,8 +3,8 @@
 Generation tools create bot directories by copying completed parents. Parent
 metadata such as ``.completed`` is authoritative only after ``commit_bot`` has
 created the git commit and tag, so it must never leak into an in-progress
-candidate. Native national workflows also require the formal TCP entry to be
-present even if an LLM rewrites the target directory during crossover.
+candidate. System-owned runtime bytes and manifests are immutable preparation
+inputs: hygiene validates them but never repairs or overwrites them.
 """
 
 from __future__ import annotations
@@ -134,11 +134,13 @@ def sanitize_candidate_dir(
     bot_dir: str | Path,
     *,
     require_native_tcp: bool = False,
-    overwrite_native_entry: bool = False,
 ) -> dict[str, Any]:
-    """Remove parent completion metadata and restore required native entry.
+    """Remove transient metadata and validate the immutable native artifact.
 
     Returns a small audit payload that callers can include in logs/tests.
+    A missing or stale system runtime is an integrity failure.  Only the
+    system preparation/materialization owner may create those bytes; later
+    stages must never make a broken candidate appear valid by rewriting it.
     """
 
     root = Path(bot_dir)
@@ -156,20 +158,20 @@ def sanitize_candidate_dir(
         result["completed_removed"] = True
 
     if require_native_tcp:
-        from national_native import check_native_contract, ensure_native_entry
+        from national_native import check_native_contract
 
-        should_overwrite = overwrite_native_entry
         entry_path = root / "national_bot.py"
-        if not should_overwrite and entry_path.exists():
-            contract_errors = check_native_contract(
-                root,
-                require_current_stream_decoder=True,
-                require_current_decision_runtime=True,
+        contract_errors = check_native_contract(
+            root,
+            require_current_stream_decoder=True,
+            require_current_decision_runtime=True,
+        )
+        result["native_entry_contract_errors"] = contract_errors[:20]
+        if contract_errors:
+            raise RuntimeError(
+                "candidate native artifact failed immutable contract: "
+                + "; ".join(contract_errors[:8])
             )
-            result["native_entry_contract_errors"] = contract_errors[:20]
-            should_overwrite = bool(contract_errors)
-        entry = ensure_native_entry(root, overwrite=should_overwrite)
-        result["native_entry"] = entry.name
-        result["native_entry_refreshed"] = should_overwrite
+        result["native_entry"] = entry_path.name
 
     return result

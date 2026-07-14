@@ -9,7 +9,9 @@ Workers describe what they intend to do in their output text. You compare those 
 2. **Diff verification**: For each claimed change, check if the actual diff contains corresponding modifications
 3. **Contradiction detection**: Look for cases where the Worker says "increased X" but the diff shows X was decreased
 4. **Boundary check**: Verify changes respect role boundaries:
-   - Hyperparameter Tuner: should ONLY change numeric constants
+   - Hyperparameter Tuner: should ONLY change numeric constants and must be a
+     subordinate sensitivity task for the frozen structural mechanism named in
+     its Worker contract; threshold-only primary work is a boundary violation
    - Algorithmic Logic Architect: should ONLY change code structure (functions, conditionals, imports)
    - If a Tuner modified control flow or an Architect changed constants, flag it
 5. **Focus areas**: If issues are found, generate specific areas the Reviewer should scrutinize
@@ -52,7 +54,7 @@ If issues found:
   "cot_consistent": false,
   "discrepancies": ["Claimed to 'increase river bluff frequency' but no bluff-related code was changed in the diff"],
   "logical_contradictions": ["Claimed 'more aggressive' but diff shows a new fold condition was added on line 234"],
-  "boundary_violations": ["Tuner role but modified an if/else block in strategy.py — should only change constants"],
+  "boundary_violations": ["Tuner role but modified an if/else block in policy.py — should only change constants"],
   "focus_areas": ["Verify that the new fold condition on line 234 doesn't cause over-folding", "Check why bluff frequency was unchanged despite the claim"]
 }
 ```

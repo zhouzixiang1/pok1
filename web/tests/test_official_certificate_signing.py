@@ -373,7 +373,7 @@ def test_rotation_renderer_never_touches_private_key(tmp_path):
         )
 
 
-def test_production_historical_exception_is_exact_v141_chain():
+def test_production_historical_validation_is_exact_and_non_issuing():
     policy = load_signer_trust_policy()
     historical = policy["historical_signers"]
 
@@ -397,6 +397,7 @@ def test_production_historical_exception_is_exact_v141_chain():
     assert chain["bootstrap_root_id"] == (
         "national-v141-official-full-v5-signed-ledger-root"
     )
+    assert historical[0]["state"] == "historical-validation-only"
     assert {item["purpose"] for item in historical[0]["allowed_records"]} == {
         "certificate",
         "ledger-entry",

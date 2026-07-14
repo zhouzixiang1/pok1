@@ -31,6 +31,7 @@ from managed_bot_socket import (
     PRECONNECTED_HOST_ENV,
     PRECONNECTED_PORT_ENV,
     SANDBOX_BOOTSTRAP,
+    stdlib_shadow_errors,
 )
 
 
@@ -975,6 +976,7 @@ def launch_isolated_worker(
     stderr: int | IO[bytes] | None = subprocess.PIPE,
     start_new_session: bool = False,
     host_process_owner: str | None = None,
+    trusted_control_fds: Sequence[int] = (),
 ) -> ManagedProcess:
     """Launch a read-only ``/work`` worker using only the mounted /usr runtime."""
 
@@ -991,6 +993,28 @@ def launch_isolated_worker(
     child_environment = _validated_environment(environment)
     selected_runtime = runtime or ExecutorRuntime.discover()
     prepared_inputs = _prepare_readonly_inputs(root, readonly_inputs)
+    control_descriptors: list[int] = []
+    if len(trusted_control_fds) > 2:
+        raise ManagedExecutorError(
+            "managed worker requested too many trusted control descriptors"
+        )
+    for raw_descriptor in trusted_control_fds:
+        descriptor = int(raw_descriptor)
+        if descriptor <= 2 or descriptor in control_descriptors:
+            raise ManagedExecutorError(
+                "managed worker trusted control descriptor is invalid"
+            )
+        try:
+            metadata = os.fstat(descriptor)
+        except OSError as exc:
+            raise ManagedExecutorError(
+                "managed worker trusted control descriptor is unavailable"
+            ) from exc
+        if not stat.S_ISFIFO(metadata.st_mode):
+            raise ManagedExecutorError(
+                "managed worker trusted control descriptor must be an anonymous pipe"
+            )
+        control_descriptors.append(descriptor)
     prepared_outputs = _prepare_output_files(output_files)
     program: _SeccompProgram | None = None
     cleanup_transferred = False
@@ -1021,7 +1045,7 @@ def launch_isolated_worker(
         return _spawn(
             command,
             program=program,
-            inherited_fds=output_descriptors,
+            inherited_fds=(*output_descriptors, *control_descriptors),
             close_callbacks=callbacks,
             stdin=stdin,
             stdout=stdout,
@@ -1068,6 +1092,9 @@ def launch_managed_bot(
     if not isinstance(endpoint, EndpointLease):
         raise EndpointLeaseError("managed bot requires an EndpointLease")
     root = _artifact_root(artifact_root, label="bot artifact")
+    shadow_errors = stdlib_shadow_errors(root)
+    if shadow_errors:
+        raise ManagedExecutorError(shadow_errors[0])
     entry = _entry_path(root, entry_relative)
     safe_name = _safe_text(name, "bot name")
     safe_seat = _safe_text(seat, "bot seat") if seat is not None else None

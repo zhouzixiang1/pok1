@@ -7,14 +7,18 @@ from collections import Counter
 from dataclasses import dataclass
 import difflib
 import hashlib
-import re
 from pathlib import Path
 from typing import Any
 
 from bot_artifact import artifact_manifest
 
 
-_PROTECTED_CROSSOVER_FILES = frozenset({"national_bot.py", "precompute.py"})
+_PROTECTED_CROSSOVER_FILES = frozenset({
+    "national_bot.py",
+    "precompute.py",
+    "national_runtime_manifest.json",
+    "policy_epoch_receipt.json",
+})
 _MAX_GLUE_STATEMENTS_PER_REPLACEMENT = 4
 
 # No trusted system-owned non-Python crossover output currently exists.  A
@@ -118,37 +122,14 @@ def _artifact_issue(path: str, reason: str, **extra: Any) -> dict[str, Any]:
 
 
 def _apply_system_normalizations(path: str, source: str) -> str:
-    """Apply the trusted fix registry in memory using its production order."""
-    try:
-        from fix_injection import MANDATORY_FIXES
+    """Return exact bytes: strict policy provenance has no mutation allowance.
 
-        normalized = source
-        for fix in MANDATORY_FIXES:
-            if not fix.active:
-                continue
-            for patch in fix.patches:
-                if patch.file_rel != path:
-                    continue
-                if patch.guard and patch.guard in normalized and not patch.replace_all:
-                    continue
-                if patch.regex:
-                    normalized = re.sub(
-                        patch.search,
-                        patch.replace,
-                        normalized,
-                        count=0 if patch.replace_all else 1,
-                    )
-                elif patch.search in normalized:
-                    normalized = normalized.replace(
-                        patch.search,
-                        patch.replace,
-                        -1 if patch.replace_all else 1,
-                    )
-        return normalized
-    except Exception:
-        # Normalization is an allowance, never a prerequisite for rejecting a
-        # candidate.  Failure therefore leaves the strict raw-parent contract.
-        return source
+    Protocol invariants live in the system runtime and candidate strategy
+    changes belong to an explicit Worker effect.  Silently normalizing copied
+    source would make provenance describe bytes that were never reviewed.
+    """
+    del path
+    return source
 
 
 def _ast_fingerprint(node: ast.AST) -> str:

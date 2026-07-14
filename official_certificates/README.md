@@ -1,5 +1,12 @@
 # Official Platform Attestations
 
+This store belongs to the active `national_tcp_policy_v1` publication path.
+Only a signed, content-valid `official-full-v5` attestation—five 70-hand
+self-play rounds plus three 70-hand eligible-opponent rounds—can satisfy formal
+publication. Short smoke/compliance jobs and Web Arena sessions are diagnostic
+evidence only. Official EXE chips/winners never contribute to local Glicko,
+H2H, source selection, or poker-strength scoring.
+
 Each completed `national_v<N>` bot publishes one compact JSON attestation in
 this directory. The attestation is committed atomically with the bot and bound
 by the annotated `national-bot-v<N>` tag to:

@@ -4,7 +4,9 @@ import type { ApexOptions } from "apexcharts";
 import { useMatchMatrix, useH2H } from "../context/DataProvider";
 import PageMeta from "../components/common/PageMeta";
 import { SegmentedControl } from "../components/shared/SegmentedControl";
-import { Skeleton } from "../components/shared/Skeleton";
+import { EmptyState } from "../components/shared/EmptyState";
+import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { useControlStatus } from "../hooks/useControlStatus";
 import { compactBotName } from "../lib/utils";
 
 type ViewMode = "winrate" | "count";
@@ -12,6 +14,7 @@ type ViewMode = "winrate" | "count";
 export default function MatchMatrix() {
   const data = useMatchMatrix();
   const h2hRaw = useH2H();
+  const { status, loading, error } = useControlStatus(5_000);
   const [viewMode, setViewMode] = useState<ViewMode>("winrate");
 
   const { series, options } = useMemo(() => {
@@ -68,7 +71,7 @@ export default function MatchMatrix() {
             const l = isA ? entry.b_wins : entry.a_wins;
             return `<div style="padding:6px 10px;font-size:12px">
               <div style="font-weight:600">${bots[seriesIndex]} vs ${bots[dataPointIndex]}</div>
-              <div style="margin-top:2px">${entry.games} 场 · ${w}胜 ${entry.draws}平 ${l}负</div>
+              <div style="margin-top:2px">${entry.games} 个70手样本 · ${w}胜 ${entry.draws}平 ${l}负</div>
             </div>`;
           },
         },
@@ -134,7 +137,7 @@ export default function MatchMatrix() {
           if (val == null) return '<div style="padding:4px 8px;font-size:12px">无数据</div>';
           const rowBot = data!.bots[seriesIndex];
           const colBot = data!.bots[dataPointIndex];
-          if (!isH2H) return `<div style="padding:6px 10px;font-size:12px">${bots[seriesIndex]} vs ${bots[dataPointIndex]}<br/>${val} 场对局</div>`;
+          if (!isH2H) return `<div style="padding:6px 10px;font-size:12px">${bots[seriesIndex]} vs ${bots[dataPointIndex]}<br/>${val} 个完整70手样本</div>`;
           const key1 = `${rowBot} vs ${colBot}`;
           const key2 = `${colBot} vs ${rowBot}`;
           const entry = h2hRaw[key1] || h2hRaw[key2];
@@ -143,7 +146,7 @@ export default function MatchMatrix() {
             const isA = !!h2hRaw[key1];
             const w = isA ? entry.a_wins : entry.b_wins;
             const l = isA ? entry.b_wins : entry.a_wins;
-            extra = `<div style="margin-top:2px">${entry.games} 场 · ${w}胜 ${entry.draws}平 ${l}负</div>`;
+            extra = `<div style="margin-top:2px">${entry.games} 个70手样本 · ${w}胜 ${entry.draws}平 ${l}负</div>`;
           }
           return `<div style="padding:6px 10px;font-size:12px">
             <div style="font-weight:600">${bots[seriesIndex]} vs ${bots[dataPointIndex]}</div>
@@ -158,13 +161,27 @@ export default function MatchMatrix() {
     return { series, options };
   }, [data, h2hRaw, viewMode]);
 
-  if (!data || !data.bots.length) {
-    return <div className="p-6 space-y-4"><Skeleton className="h-8 w-64" /><Skeleton className="h-[400px] rounded-2xl" /></div>;
+  if (!status?.epoch_initialized || !data || data.evidence_available !== true || !data.bots.length) {
+    const emptyMessage = !status?.epoch_initialized
+      ? "epoch 尚未初始化；旧 H2H 矩阵已从权威视图移除。"
+      : status.active_bots.length === 0
+        ? "当前严格发布池为空；尚无可构成 H2H 矩阵的 Bot。"
+        : "等待首个同发布池 evaluation cycle 形成完整 70 手 H2H 矩阵。";
+    return (
+      <>
+        <PageMeta title="对局矩阵 — Bot 自进化" description="严格 epoch H2H 矩阵" />
+        <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
+        <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
+          <EmptyState message={emptyMessage} />
+        </div>
+      </>
+    );
   }
 
   return (
     <>
       <PageMeta title="对局矩阵 — Bot 自进化" description="Bot 间的 Head-to-Head 胜率" />
+      <EpochAuthorityStatus status={status} loading={loading} error={error} compact className="mb-4" />
       <div className="rounded-2xl border border-gray-200 bg-white dark:border-border-subtle dark:bg-surface-1">
         <div className="px-5 py-4 border-b border-gray-100 dark:border-border-subtle">
           <div className="flex items-center justify-between">
@@ -173,13 +190,13 @@ export default function MatchMatrix() {
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
                 {viewMode === "winrate"
                   ? "每格表示行 Bot 对列 Bot 的胜率（蓝=强，红=弱）"
-                  : "每格表示行 Bot 与列 Bot 之间的对局总数"}
+                  : "每格表示行 Bot 与列 Bot 之间的完整 70 手强度样本数"}
               </p>
             </div>
             <SegmentedControl
               value={viewMode}
               onChange={(v) => setViewMode(v as ViewMode)}
-              options={[{ value: "winrate", label: "胜率" }, { value: "count", label: "对局数" }]}
+              options={[{ value: "winrate", label: "胜率" }, { value: "count", label: "70手样本数" }]}
             />
           </div>
         </div>

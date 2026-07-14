@@ -7,8 +7,79 @@ exercises a NEW branch added by a fix so it is not left uncovered.
 import asyncio
 import json, os, tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+
+
+def _strict_artifact(root, version, *, action="pass"):
+    from bot_namespace import refresh_policy_identity_documents
+
+    root.mkdir(parents=True)
+    (root / "national_bot.py").write_text("def run():\n    return None\n", encoding="utf-8")
+    (root / "policy.py").write_text(
+        f"def decide(_context):\n    return {{'kind': '{action}'}}\n",
+        encoding="utf-8",
+    )
+    (root / "precompute.py").write_text("TABLE = ()\n", encoding="utf-8")
+    (root / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
+    refresh_policy_identity_documents(root, version, parent_versions=(version - 1,))
+    return root
+
+
+def _resolve_published_parent(name, **_kwargs):
+    version = int(str(name).rsplit("national_v", 1)[1])
+    return SimpleNamespace(
+        eligible=True,
+        version=version,
+        issues=(),
+        runtime_manifest={"epoch": "national_tcp_policy_v1", "version": version},
+        epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
+        publication_identity={
+            "published": True,
+            "tag": f"national-bot-v{version}",
+            "version": version,
+        },
+        certificate_digest="b" * 64,
+    )
+
+
+def _strict_checkpoint(next_v, source_v, stage, **extra):
+    import checkpoint_schema
+
+    audit_context = dict(extra.pop("audit_context", {}) or {})
+    binding = checkpoint_schema.build_checkpoint_epoch_binding(
+        next_v=next_v,
+        source_v=source_v,
+        parent2_v=extra.get("parent2_v"),
+        audit_context=audit_context,
+        parent_resolver=_resolve_published_parent,
+    )
+    return {
+        "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": binding,
+        "next_v": next_v,
+        "source_v": source_v,
+        "parent2_v": extra.pop("parent2_v", None),
+        "stage": stage,
+        "workflow_run_id": f"generation:{next_v}:hidden-fixes-test",
+        "checkpoint_revision": 1,
+        "audit_context": audit_context,
+        **extra,
+    }
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_strict_parent_resolution(monkeypatch):
+    import checkpoint_schema
+
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_national_bot_spec",
+        _resolve_published_parent,
+    )
 
 
 # ──────────────────────────────────────────────
@@ -113,9 +184,8 @@ def test_H3_finalize_bare_commit_requires_verified_gate_ledger(tmp_path, monkeyp
     import evolution_infra
     import tool_commit
 
-    bot_dir = tmp_path / "bots" / "claude_v888"
-    bot_dir.mkdir(parents=True)
-    (bot_dir / "main.py").write_text("# code\n")
+    bot_dir = tmp_path / "bots" / "national_v888"
+    _strict_artifact(bot_dir, 888)
 
     monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
     commit_calls = []
@@ -123,12 +193,7 @@ def test_H3_finalize_bare_commit_requires_verified_gate_ledger(tmp_path, monkeyp
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: bot_dir)
     monkeypatch.setattr(gs, "log_system_event", lambda *_a, **_k: None)
 
-    ckpt = {
-        "next_v": 888,
-        "source_v": 887,
-        "stage": "workers_done",
-        "gate_results": {},
-    }
+    ckpt = _strict_checkpoint(888, 887, "workers_done", gate_results={})
 
     assert gs._finalize_bare_commit(888, ckpt=ckpt) is False
     assert commit_calls == []
@@ -142,17 +207,16 @@ def test_H3_bare_commit_recovery_blocks_stale_code_fingerprint(tmp_path, monkeyp
     import tool_commit
     from tool_gates import _bot_code_fingerprint
 
-    bot_dir = tmp_path / "bots" / "claude_v889"
-    bot_dir.mkdir(parents=True)
-    (bot_dir / "main.py").write_text("# changed after gates\n")
+    bot_dir = tmp_path / "bots" / "national_v889"
+    _strict_artifact(bot_dir, 889, action="fold")
     current_fp = _bot_code_fingerprint(bot_dir)
 
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: bot_dir)
-    ckpt = {
-        "next_v": 889,
-        "source_v": 888,
-        "stage": "verified",
-        "gate_results": {
+    ckpt = _strict_checkpoint(
+        889,
+        888,
+        "verified",
+        gate_results={
             "quality": {
                 "all_passed": True,
                 "critical_scenarios_passed": True,
@@ -162,7 +226,7 @@ def test_H3_bare_commit_recovery_blocks_stale_code_fingerprint(tmp_path, monkeyp
             "critic": {"approved": True},
             "precommit_eval": {"passed": True, "code_fingerprint": current_fp},
         },
-    }
+    )
 
     ok, reason = gs._bare_commit_gate_ledger_ok(889, ckpt)
 
@@ -204,8 +268,7 @@ def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):
     # Set up a fake bots dir with a bare-commit-style v entry.
     fake_bots = tmp_path / "bots"
     fake_v_dir = fake_bots / "national_v888"
-    fake_v_dir.mkdir(parents=True)
-    (fake_v_dir / "main.py").write_text("# bare commit code\n")
+    _strict_artifact(fake_v_dir, 888)
 
     # Stub the evolution_infra helpers used by _cleanup_incomplete.
     import evolution_infra as ei
@@ -226,143 +289,8 @@ def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):
 
     # H3 invariant: the dir is preserved (NOT rmtrued) because it's git-tracked.
     assert fake_v_dir.exists(), "bare-commit dir must NOT be removed"
-    assert (fake_v_dir / "main.py").exists(), "bare-commit code must survive"
+    assert (fake_v_dir / "policy.py").exists(), "bare-commit code must survive"
     assert called["finalize"] is True, "finalize must be attempted for bare commits"
-
-
-# ──────────────────────────────────────────────
-# H4: daemon priority hot-reload (mtime-based queue reset)
-# ──────────────────────────────────────────────
-
-def test_H4_priority_hot_reload_keeps_external_jobs():
-    """When priority_eval.json mtime changes, daemon-internal matches should be
-    dropped from the queue but external (precommit) jobs must be preserved."""
-    from collections import deque
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
-    import elo_daemon as ed
-
-    # Build a mixed queue: 2 internal + 2 external jobs.
-    q = deque()
-    q.append(("claude_v1", "claude_v2", "p1", "p2", 5))                       # internal
-    q.append(("external", "job1", "claude_v1", "claude_v2", "p1", "p2", 5, 1))  # external
-    q.append(("claude_v3", "claude_v4", "p3", "p4", 5))                       # internal
-    q.append(("external", "job2", "claude_v3", "claude_v4", "p3", "p4", 5, 1))  # external
-
-    # Mirror the H4 logic exactly as implemented in the daemon loop.
-    kept = [m for m in q if ed._is_external(m)]
-    dropped = len(q) - len(kept)
-    q.clear()
-    q.extend(kept)
-
-    assert dropped == 2, "2 internal matches should be dropped"
-    assert len(q) == 2, "2 external jobs should be preserved"
-    assert all(ed._is_external(m) for m in q), "remaining jobs must all be external"
-
-
-def test_H4_is_external_detection():
-    """_is_external must correctly classify internal vs external job tuples."""
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
-    import elo_daemon as ed
-    internal = ("claude_v1", "claude_v2", "p1", "p2", 5)
-    external7 = ("external", "job1", "a", "b", "pa", "pb", 5)
-    external8 = ("external", "job1", "a", "b", "pa", "pb", 5, 2)
-    not_ext = ("claude_v1", "external")  # wrong shape
-    assert ed._is_external(internal) is False
-    assert ed._is_external(external7) is True
-    assert ed._is_external(external8) is True
-    assert ed._is_external(not_ext) is False
-
-
-# ──────────────────────────────────────────────
-# H5: cross_gen_pivot writes EXHAUSTED marker into experience_pool
-# ──────────────────────────────────────────────
-
-def test_H5_mark_axis_exhausted_in_pool_appends_marker(tmp_path, monkeypatch):
-    """_mark_axis_exhausted_in_pool must append an [EXHAUSTED ...] line that
-    _extract_exhausted_keywords' regex can subsequently match."""
-    import sys, re
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
-    import tool_planning as tp
-
-    fake_pool = tmp_path / "experience_pool.md"
-    fake_pool.write_text(
-        "# Experience Pool\n\n## RECENT_LESSONS\n- something\n\n## OPPONENT_MODELING\n- note\n"
-    )
-    monkeypatch.setattr(tp, "EXPERIENCE_FILE", fake_pool, raising=False)
-
-    tp._mark_axis_exhausted_in_pool("commitment", version=999)
-
-    text = fake_pool.read_text()
-    # Must contain the marker line for this version+axis.
-    assert "cross_gen_pivot auto-mark v999" in text
-    assert "commitment" in text
-    # The marker must be matched by the same regex _extract_exhausted_keywords uses.
-    marker_re = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
-    assert marker_re.search(text), "marker must match _extract_exhausted_keywords regex"
-
-
-def test_H5_mark_axis_exhausted_idempotent(tmp_path, monkeypatch):
-    """Repeated calls for the same (version, axis) must not duplicate the line."""
-    import sys
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
-    import tool_planning as tp
-
-    fake_pool = tmp_path / "experience_pool.md"
-    fake_pool.write_text("# Pool\n\n## EXHAUSTED\n")
-    monkeypatch.setattr(tp, "EXPERIENCE_FILE", fake_pool, raising=False)
-
-    tp._mark_axis_exhausted_in_pool("defense", version=42)
-    tp._mark_axis_exhausted_in_pool("defense", version=42)
-    text = fake_pool.read_text()
-    assert text.count("cross_gen_pivot auto-mark v42") == 1, "must be idempotent"
-
-
-# ──────────────────────────────────────────────
-# H6: cross-gen worker circuit breaker (distinct-gen failure count)
-# Note: a single-gen circuit breaker already exists in execute_workers
-# (MAX_WORKER_FAILURES=6 per generation). H6 adds a CROSS-GENERATION breaker
-# that trips when workers fail across >=2 distinct recent generations.
-# ──────────────────────────────────────────────
-
-def test_H6_circuit_breaker_threshold_logic():
-    """The cross-gen circuit-breaker condition: >= THRESHOLD distinct failed gens
-    trips it, but only inside the recent generation-distance window."""
-    import core.tool_planning as tp
-
-    # Case A: 2 nearby prior failed gens -> trips
-    distinct = tp._recent_prior_worker_failure_gens(
-        [{"gen": 215}, {"gen": 214}],
-        next_v=216,
-    )
-    assert len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD
-    # Case B: only 1 nearby gen -> does NOT trip (single gen retry is normal)
-    distinct = tp._recent_prior_worker_failure_gens([{"gen": 215}], next_v=216)
-    assert not (len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD)
-    # Case C: stale history does NOT combine with one nearby failure.
-    distinct = tp._recent_prior_worker_failure_gens(
-        [{"gen": 215}, {"gen": 11}],
-        next_v=216,
-    )
-    assert distinct == [215]
-    assert not (len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD)
-
-
-def test_H6_circuit_breaker_only_counts_worker_category():
-    """Reviewer/critic gate rejections (category != 'worker') must NOT trip the
-    cross-gen worker circuit breaker — only real worker-exec failures count."""
-    import core.tool_planning as tp
-
-    recent = [
-        {"gen": 215, "category": "worker", "error": "compile"},
-        {"gen": 214, "category": "reviewer", "error": "boundary"},   # ignored
-        {"gen": 213, "category": "critic", "error": "score low"},    # ignored
-        {"gen": 214, "category": "worker", "error": "smoke"},
-    ]
-    distinct = tp._recent_prior_worker_failure_gens(recent, next_v=216)
-    assert distinct == [215, 214]
-    assert len(distinct) >= tp.H6_CROSS_GEN_THRESHOLD   # trips
 
 
 # ──────────────────────────────────────────────
@@ -370,7 +298,7 @@ def test_H6_circuit_breaker_only_counts_worker_category():
 # ──────────────────────────────────────────────
 
 def test_P1_guard_hook_blocks_bot_dir_edit():
-    """The guard hook's _targets_protected must catch bots/claude_v* paths."""
+    """The guard hook's protected-path rule must catch strict bot paths."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
     import orchestrator_context as oc
@@ -379,18 +307,18 @@ def test_P1_guard_hook_blocks_bot_dir_edit():
     _PROTECTED_STATE_FILES = (
         "pipeline_state.json", "worker_failures.jsonl", "circuit_breaker_state.json",
         "priority_eval.json", "glicko_ratings.json", "bot_stats.json",
-        "cross_gen_exhausted_history.jsonl", "abandoned_versions.jsonl",
+        "abandoned_versions.jsonl",
     )
     def targets_protected(text):
         if not text: return False
         low = str(text).lower()
-        if "bots/claude_v" in low: return True
+        if "bots/national_v" in low: return True
         for sf in _PROTECTED_STATE_FILES:
             if sf in low: return True
         return False
     # Bot code paths
-    assert targets_protected("bots/claude_v218/strategy.py")
-    assert targets_protected("/abs/path/bots/claude_v195/main.py")
+    assert targets_protected("bots/national_v218/policy.py")
+    assert targets_protected("/abs/path/bots/national_v195/policy.py")
     # State files
     assert targets_protected("results/pipeline_state.json")
     assert targets_protected("echo x > worker_failures.jsonl")
@@ -398,7 +326,7 @@ def test_P1_guard_hook_blocks_bot_dir_edit():
     # A path match alone does not mean block during open-ended planning — the hook
     # also checks mutation verbs. At actionable route stages, even read-only Bash is
     # blocked by a separate route guard.
-    assert targets_protected("grep foo bots/claude_v218/strategy.py")
+    assert targets_protected("grep foo bots/national_v218/policy.py")
     assert targets_protected("results/abandoned_versions.jsonl")
 
 
@@ -410,14 +338,14 @@ def test_P1_guard_hook_git_commit_blocked():
 
     # git operations on bot dir via commit/tag/push are blocked
     assert bash_is_mutation("git commit -m foo")
-    assert bash_is_mutation("git tag bot-v219")
-    assert bash_is_mutation("git tag -a bot-v219 -m evolve")
+    assert bash_is_mutation("git tag national-bot-v219")
+    assert bash_is_mutation("git tag -a national-bot-v219 -m evolve")
     assert bash_is_mutation("git push origin main")
     # read-only git is NOT a mutation
     assert not bash_is_mutation("git status")
     assert not bash_is_mutation("git log --oneline -5")
     assert not bash_is_mutation("git tag")
-    assert not bash_is_mutation("git tag -l 'bot-v2*' | tail -10")
+    assert not bash_is_mutation("git tag -l 'national-bot-v2*' | tail -10")
     assert not bash_is_mutation("git tag --sort=-creatordate | head -5")
 
 
@@ -435,7 +363,7 @@ def test_P1_guard_hook_returns_stage_recovery_and_command_preview():
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     command = (
         "mkdir -p bots/national_v232 && "
-        "cp bots/national_v224/main.py bots/national_v232/main.py"
+        "cp bots/national_v224/policy.py bots/national_v232/policy.py"
     )
 
     output = asyncio.run(hook(
@@ -487,8 +415,8 @@ def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkey
                 {
                     "worker_id": "w1",
                     "role": "Algorithmic Logic Architect",
-                    "target_files": ["state.py"],
-                    "worker_prompt": "fix position semantics",
+                    "target_files": ["policy.py"],
+                    "worker_prompt": "fix typed policy semantics",
                 }
             ],
         },
@@ -496,14 +424,14 @@ def test_P1_guard_hook_blocks_readonly_bash_at_actionable_stage(tmp_path, monkey
         gate_results={
             "quality": {
                 "all_passed": False,
-                "failed_gates": ["position_semantics(state.py:1)"],
+                "failed_gates": ["policy_contract(policy.py:1)"],
             }
         },
     )
 
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     output = asyncio.run(hook(
-        {"tool_name": "Bash", "tool_input": {"command": "grep -n dealer bots/claude_v268/state.py"}},
+        {"tool_name": "Bash", "tool_input": {"command": "grep -n decide bots/national_v268/policy.py"}},
         "call_test_actionable_guard",
         None,
     ))
@@ -539,7 +467,7 @@ def test_P1_guard_hook_routes_critic_checked_to_precommit(tmp_path, monkeypatch)
 
     hook = oc._make_bot_dir_guard_hook()["PreToolUse"][0].hooks[0]
     output = asyncio.run(hook(
-        {"tool_name": "Bash", "tool_input": {"command": "grep -n BB_DEFENSE bots/national_v327/strategy.py"}},
+        {"tool_name": "Bash", "tool_input": {"command": "grep -n decide bots/national_v327/policy.py"}},
         "call_test_precommit_route_guard",
         None,
     ))

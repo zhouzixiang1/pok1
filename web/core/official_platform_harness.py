@@ -32,16 +32,12 @@ from bot_artifact import canonical_digest, hash_path
 from pipeline_schema import NationalAcceptanceResult
 from official_attribution import round_topology
 from official_bot_sandbox import (
-    OfficialBootstrapLaunchAuthorization,
     SealedBotArtifact,
     launch_sandboxed_bot,
     seal_bot_artifact,
 )
 from managed_bot_executor import EndpointLease
-from national_protocol_quarantine import (
-    ProtocolQuarantineError,
-    quarantined_native_entry_sources,
-)
+from national_runtime_authority import current_system_native_runtime_errors
 from official_execution_profile import (
     execution_profile_identity,
     load_execution_profile,
@@ -600,7 +596,6 @@ def _launch_bot(
     stdout_path: Path,
     stderr_path: Path,
     port: int | None = None,
-    quarantine_authorization: OfficialBootstrapLaunchAuthorization | None = None,
 ) -> subprocess.Popen:
     stdout = stdout_path.open("wb")
     stderr = stderr_path.open("wb")
@@ -617,14 +612,11 @@ def _launch_bot(
                 stdout_path.parent / "managed_inputs" / stdout_path.stem,
                 expected_hash=source_hash,
             )
-        quarantine_matches = tuple(sorted(set(
-            quarantined_native_entry_sources(bot.path)
-            + quarantined_native_entry_sources(artifact.root)
-        )))
-        if quarantine_matches and quarantine_authorization is None:
+        runtime_errors = current_system_native_runtime_errors(artifact.root)
+        if runtime_errors:
             raise RuntimeError(
-                "protocol_quarantined_native_entry_forbidden:"
-                f"{bot.name}:matches={','.join(quarantine_matches)}"
+                "non_system_owned_native_runtime_forbidden:official:"
+                f"{bot.name}:{runtime_errors[0]}"
             )
         profile = load_execution_profile()
         source_relative = str(
@@ -649,7 +641,6 @@ def _launch_bot(
                 log_path=log_path,
                 supports_log=bot.supports_log,
                 extra_args=bot.extra_args,
-                quarantine_authorization=quarantine_authorization,
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=not managed_group,
@@ -670,120 +661,6 @@ def _launch_bot(
     proc._pok_stdout = stdout  # type: ignore[attr-defined]
     proc._pok_stderr = stderr  # type: ignore[attr-defined]
     return proc
-
-
-def _official_quarantine_authorization(
-    bot: BotLaunchConfig,
-    peer: BotLaunchConfig,
-    job_envelope: dict[str, Any] | None,
-) -> tuple[OfficialBootstrapLaunchAuthorization | None, list[str]]:
-    """Authorize only the exact one-time v141 bootstrap opponent."""
-
-    try:
-        matches = tuple(sorted(set(
-            quarantined_native_entry_sources(bot.path)
-            + (
-                quarantined_native_entry_sources(bot.sealed_artifact.root)
-                if bot.sealed_artifact is not None
-                else ()
-            )
-        )))
-    except ProtocolQuarantineError as exc:
-        return None, [
-            "protocol_quarantine_authority_unavailable:"
-            f"{bot.name}:{type(exc).__name__}:{str(exc)[:180]}"
-        ]
-    if not matches:
-        return None, []
-
-    prefix = (
-        "protocol_quarantined_native_entry_forbidden:"
-        f"{bot.name}:matches={','.join(matches)}"
-    )
-    if bot.role != "opponent" or peer.role != "candidate":
-        return None, [f"{prefix}:bootstrap_role_invalid"]
-    if bot.sealed_artifact is None or not isinstance(job_envelope, dict):
-        return None, [f"{prefix}:bootstrap_formal_binding_missing"]
-    root_id = str(job_envelope.get("bootstrap_root_id") or "")
-    if root_id != "national-v141-official-full-v5-signed-ledger-root":
-        return None, [f"{prefix}:bootstrap_root_invalid"]
-    selection = job_envelope.get("opponent_selection")
-    if not isinstance(selection, dict):
-        return None, [f"{prefix}:bootstrap_selection_missing"]
-    if job_envelope.get("opponent_selection_digest") != canonical_digest(selection):
-        return None, [f"{prefix}:bootstrap_selection_digest_mismatch"]
-
-    opponent = (
-        selection.get("opponent")
-        if isinstance(selection.get("opponent"), dict)
-        else {}
-    )
-    try:
-        bot_hash = hash_path(bot.path)
-        peer_hash = hash_path(peer.path)
-    except Exception as exc:
-        return None, [
-            f"{prefix}:bootstrap_artifact_hash_error:{type(exc).__name__}"
-        ]
-    exact_fields = (
-        opponent.get("bot") == "national_v141",
-        Path(str(opponent.get("path") or "")).expanduser().resolve()
-        == Path(bot.path).expanduser().resolve(),
-        opponent.get("artifact_hash") == bot_hash,
-        job_envelope.get("opponent_hash") == bot_hash,
-        bot.sealed_artifact.artifact_hash == bot_hash,
-        job_envelope.get("candidate_hash") == peer_hash,
-        bool(opponent.get("tag_object")),
-        bool(opponent.get("completion_tree_oid")),
-        isinstance(opponent.get("eligibility_receipt"), dict),
-    )
-    if not all(exact_fields):
-        return None, [f"{prefix}:bootstrap_exact_identity_mismatch"]
-    try:
-        from official_bootstrap import (
-            validate_operator_bootstrap_authorized_selection,
-            validate_signed_v5_ledger_bootstrap_selection,
-        )
-
-        validation = validate_signed_v5_ledger_bootstrap_selection(
-            selection,
-            root_id,
-            peer.path,
-            allow_consumed=False,
-        )
-        authorization = validate_operator_bootstrap_authorized_selection(
-            selection,
-            root_id,
-            peer.path,
-        )
-    except Exception as exc:
-        return None, [
-            f"{prefix}:bootstrap_validation_error:"
-            f"{type(exc).__name__}:{str(exc)[:160]}"
-        ]
-    if validation.get("valid") is not True:
-        detail = ",".join(str(item) for item in (validation.get("issues") or [])[:4])
-        return None, [f"{prefix}:bootstrap_selection_invalid:{detail or 'unknown'}"]
-    if authorization.get("valid") is not True:
-        detail = ",".join(
-            str(item) for item in (authorization.get("issues") or [])[:4]
-        )
-        return None, [
-            f"{prefix}:bootstrap_operator_authorization_invalid:"
-            f"{detail or authorization.get('reason') or 'unknown'}"
-        ]
-    return OfficialBootstrapLaunchAuthorization(
-        root_id=root_id,
-        artifact_hash=bot_hash,
-        selection_digest=canonical_digest(selection),
-        selection_json=json.dumps(
-            selection,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
-        candidate_path=str(Path(peer.path).expanduser().resolve()),
-    ), []
 
 
 def _close_process_files(proc: subprocess.Popen | None) -> None:
@@ -1775,18 +1652,16 @@ def run_official_round(
         launch_contract_issues.append("official_formal_sandbox_asymmetric")
     if job_envelope is not None and not formal_sandbox:
         launch_contract_issues.append("official_formal_sandbox_required")
-    quarantine_authorization_a, quarantine_issues_a = _official_quarantine_authorization(
-        bot_a,
-        bot_b,
-        job_envelope,
-    )
-    quarantine_authorization_b, quarantine_issues_b = _official_quarantine_authorization(
-        bot_b,
-        bot_a,
-        job_envelope,
-    )
-    launch_contract_issues.extend(quarantine_issues_a)
-    launch_contract_issues.extend(quarantine_issues_b)
+    for label, bot in (("bot_a", bot_a), ("bot_b", bot_b)):
+        subject = (
+            bot.sealed_artifact.root
+            if bot.sealed_artifact is not None
+            else bot.path
+        )
+        launch_contract_issues.extend(
+            f"{label}:non_system_owned_native_runtime_forbidden:{item}"
+            for item in current_system_native_runtime_errors(subject)
+        )
     environment = check_environment(
         cfg,
         require_formal_sandbox=formal_sandbox,
@@ -1925,7 +1800,6 @@ def run_official_round(
                 stdout_path=bot_a_stdout,
                 stderr_path=bot_a_stderr,
                 port=proxy_ports.get("A") if proxy_ports else None,
-                quarantine_authorization=quarantine_authorization_a,
             )
             bot_b_proc = _launch_bot(
                 bot_b,
@@ -1935,7 +1809,6 @@ def run_official_round(
                 stdout_path=bot_b_stdout,
                 stderr_path=bot_b_stderr,
                 port=proxy_ports.get("B") if proxy_ports else None,
-                quarantine_authorization=quarantine_authorization_b,
             )
             receipt["formal_execution"]["bot_isolation"] = {
                 "schema_version": 1,

@@ -1,18 +1,100 @@
+import hashlib
+import json
+
 import pytest
 
 from core.pipeline_state import (
-    generic_abandon_block,
+    generic_abandon_block as _generic_abandon_block,
     literature_probe_receipt_binding,
-    next_tool_for_checkpoint,
-    route_policy,
+    next_tool_for_checkpoint as _next_tool_for_checkpoint,
+    route_policy as _route_policy,
     session_recoverable_stages,
     validate_stage_transition,
 )
-from core.tool_helpers import _critic_gate_ok, _prepare_official_profile_refresh
+from core.tool_helpers import (
+    _critic_gate_ok,
+    _prepare_official_profile_refresh as _prepare_official_profile_refresh_impl,
+)
 from core.pipeline_infrastructure import (
     build_infrastructure_failure,
     infrastructure_attempt_key,
 )
+
+
+def _digest(payload):
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _strict_checkpoint(checkpoint):
+    """Add the trusted strict-parent envelope omitted by compact route fixtures."""
+
+    if not isinstance(checkpoint, dict) or checkpoint.get("epoch_binding"):
+        return checkpoint
+    target = checkpoint.get("next_v")
+    source = checkpoint.get("source_v")
+    if type(target) is not int or type(source) is not int or target < 144 or source < 143:
+        return checkpoint
+    parent2 = checkpoint.get("parent2_v")
+    parents = [source] + ([parent2] if type(parent2) is int else [])
+    identities = [
+        {
+            "version": version,
+            "bot": f"national_v{version}",
+            "role": "parent_source",
+            "epoch": "national_tcp_policy_v1",
+            "runtime_manifest_digest": "1" * 64,
+            "epoch_receipt_digest": "2" * 64,
+            "publication_identity_digest": "3" * 64,
+            "certificate_digest": "4" * 64,
+        }
+        for version in parents
+    ]
+    payload = {
+        "schema_version": 1,
+        "epoch": "national_tcp_policy_v1",
+        "mode": "published_strict_parent",
+        "next_v": target,
+        "source_v": source,
+        "parent2_v": parent2 if type(parent2) is int else None,
+        "parent_versions": parents,
+        "source_artifact_inherited": True,
+        "parent_authority": "strict_published_parent_resolution",
+        "published_parent_identities": identities,
+        "protocol_bootstrap_receipt_digest": None,
+        "policy_epoch_reset_receipt_digest": None,
+    }
+    return {
+        **checkpoint,
+        "checkpoint_schema_version": 1,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": {**payload, "binding_digest": _digest(payload)},
+    }
+
+
+def route_policy(checkpoint):
+    return _route_policy(_strict_checkpoint(checkpoint))
+
+
+def next_tool_for_checkpoint(checkpoint):
+    return _next_tool_for_checkpoint(_strict_checkpoint(checkpoint))
+
+
+def generic_abandon_block(checkpoint, **kwargs):
+    return _generic_abandon_block(_strict_checkpoint(checkpoint), **kwargs)
+
+
+def _prepare_official_profile_refresh(checkpoint, next_tool):
+    return _prepare_official_profile_refresh_impl(
+        _strict_checkpoint(checkpoint),
+        next_tool,
+    )
 
 
 def test_precommit_failed_is_forward_and_reworkable():
@@ -111,6 +193,9 @@ def test_completed_critic_advice_does_not_replace_native_precommit_gate():
                 "advisory_approved": False,
                 "score": 2,
                 "action": "proceed_to_precommit",
+                "llm_invoked": True,
+                "critic_llm_executed": True,
+                "schema_valid": True,
             }
         }
     }
@@ -539,6 +624,28 @@ def test_session_recovery_classification_covers_official_active_stages():
     assert "official_bootstrap_required" not in stages
     assert "official_inconclusive" not in stages
     assert "archived" not in stages
+
+
+def test_publishing_is_forward_only_recoverable_commit_route():
+    checkpoint = {
+        "stage": "publishing",
+        "next_v": 300,
+        "source_v": 299,
+        "gate_results": {},
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] == "commit_bot"
+    assert route["intent"] == "publication_resume"
+    assert route["allowed_tools"] == ["commit_bot"]
+    assert "publishing" in session_recoverable_stages()
+    ok, reason = validate_stage_transition("publishing", "timed_out")
+    assert not ok
+    assert reason == "publication_transaction_is_durable"
+    blocked = generic_abandon_block(checkpoint)
+    assert blocked["blocked"] is True
+    assert blocked["next_tool"] == "commit_bot"
 
 
 def test_profile_refresh_cancels_attached_official_job(monkeypatch):

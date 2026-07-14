@@ -16,8 +16,8 @@ from bot_artifact import canonical_digest, hash_path, published_bot_identity
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN_SCHEMA_VERSION = 3
-EVALUATION_CONTRACT_SCHEMA_VERSION = 2
+PLAN_SCHEMA_VERSION = 5
+EVALUATION_CONTRACT_SCHEMA_VERSION = 4
 DEFAULT_DECK_SEED_BASE = 91_000
 
 SEMANTIC_PATHS = (
@@ -27,14 +27,17 @@ SEMANTIC_PATHS = (
     "sever/engine/validator.py",
     "sever/server/protocol.py",
     "web/core/eval_stats.py",
+    "web/core/first_strict_control.py",
+    "web/core/first_strict_execution_journal.py",
+    "web/core/bootstrap_assets/first_strict_control_v1/manifest.json",
+    "web/core/bootstrap_assets/first_strict_control_v1/policy.py",
     "web/core/managed_bot_executor.py",
     "web/core/managed_bot_socket.py",
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_native.py",
-    "web/core/national_protocol_quarantine.py",
-    "web/core/national_protocol_quarantine.json",
-    "web/core/national_transport.py",
+    "web/core/national_runtime_authority.py",
+    "sever/server/transport.py",
     "web/core/precommit_eval_contract.py",
     "web/core/strength_order.py",
     "web/core/tool_eval.py",
@@ -69,18 +72,33 @@ def evaluator_identity(
     execution_mode: str,
     evaluation_protocol: str,
 ) -> dict[str, Any]:
-    native_strength_runtime_overlay: dict[str, Any] = {}
-    if str(execution_mode) == "native_tcp":
-        from national_native import current_strength_runtime_overlay_identity
+    from bot_namespace import (
+        NATIONAL_ARTIFACT_CONTRACT_SCHEMA_VERSION,
+        NATIONAL_ENTRYPOINT,
+        NATIONAL_RUNTIME_CONTRACT_ID,
+        NATIONAL_RUNTIME_MANIFEST,
+        POLICY_ENTRYPOINT,
+        POLICY_EPOCH_RECEIPT,
+        PRECOMPUTE_ENTRYPOINT,
+    )
 
-        native_strength_runtime_overlay = current_strength_runtime_overlay_identity()
+    artifact_execution_contract = {
+        "schema_version": NATIONAL_ARTIFACT_CONTRACT_SCHEMA_VERSION,
+        "mode": "direct_content_bound_policy_artifact",
+        "runtime_contract_id": NATIONAL_RUNTIME_CONTRACT_ID,
+        "entrypoint": NATIONAL_ENTRYPOINT,
+        "policy_entrypoint": POLICY_ENTRYPOINT,
+        "precompute_entrypoint": PRECOMPUTE_ENTRYPOINT,
+        "runtime_manifest": NATIONAL_RUNTIME_MANIFEST,
+        "epoch_receipt": POLICY_EPOCH_RECEIPT,
+    }
     payload = {
         "schema_version": 1,
         "authority": "precommit_eval",
         "profile_id": str(profile_id),
         "execution_mode": str(execution_mode),
         "evaluation_protocol": str(evaluation_protocol),
-        "native_strength_runtime_overlay": native_strength_runtime_overlay,
+        "artifact_execution_contract": artifact_execution_contract,
         "semantic_files": {
             relative: _sha256(ROOT / relative) if (ROOT / relative).is_file() else "missing"
             for relative in SEMANTIC_PATHS
@@ -132,6 +150,58 @@ def _portable_published_identity(path: Path, *, require_published: bool) -> dict
     }
 
 
+def _system_control_identity(
+    item: dict[str, Any],
+    path: Path,
+    *,
+    candidate_version: int,
+    source_version: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from first_strict_control import (
+        CONTROL_AUTHORITY,
+        CONTROL_ID,
+        CONTROL_REASON,
+        validate_control_receipt,
+    )
+
+    if str(item.get("name") or "") != CONTROL_ID:
+        raise PrecommitEvalContractError("first-strict control name mismatch")
+    if str(item.get("reason") or "") != CONTROL_REASON:
+        raise PrecommitEvalContractError("first-strict control reason mismatch")
+    if item.get("authority") != CONTROL_AUTHORITY:
+        raise PrecommitEvalContractError("first-strict control authority mismatch")
+    expected_flags = {
+        "precommit_gate_admitted": True,
+        "formal_bootstrap_opponent_admitted": True,
+        "strength_admitted": False,
+        "rating_eligible": False,
+        "official_opponent_eligible": False,
+    }
+    for field, value in expected_flags.items():
+        if item.get(field) is not value:
+            raise PrecommitEvalContractError(
+                f"first-strict control {field} mismatch"
+            )
+    if item.get("formal_bootstrap_scope") != "first_policy_bot_empty_pool_only":
+        raise PrecommitEvalContractError(
+            "first-strict control formal bootstrap scope mismatch"
+        )
+    receipt = item.get("control_receipt")
+    issues = validate_control_receipt(
+        receipt,
+        candidate_version=int(candidate_version),
+        source_version=int(source_version),
+    )
+    if issues:
+        raise PrecommitEvalContractError(
+            "first-strict control receipt invalid: " + ";".join(issues[:8])
+        )
+    identity = (receipt or {}).get("control") or {}
+    if str(path.absolute()) != str(identity.get("path") or ""):
+        raise PrecommitEvalContractError("first-strict control path mismatch")
+    return dict(identity), dict(receipt)
+
+
 def create_precommit_plan(
     *,
     candidate_version: int,
@@ -154,6 +224,7 @@ def create_precommit_plan(
         raise PrecommitEvalContractError("precommit plan requires at least one opponent")
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
+    system_control_count = 0
     for index, item in enumerate(opponents):
         name = str(item.get("name") or "").strip()
         if not name or name in seen:
@@ -164,15 +235,59 @@ def create_precommit_plan(
         path = Path(path_resolver(item)).absolute()
         if not path.exists():
             raise PrecommitEvalContractError(f"precommit opponent path is missing: {path}")
-        normalized.append({
+        authority = str(item.get("authority") or "published_bot")
+        if authority == "system_first_strict_control":
+            identity, control_receipt = _system_control_identity(
+                item,
+                path,
+                candidate_version=int(candidate_version),
+                source_version=int(source_version),
+            )
+            system_control_count += 1
+        elif authority == "published_bot":
+            identity = _portable_published_identity(
+                path,
+                require_published=require_published_opponents,
+            )
+            control_receipt = None
+        else:
+            raise PrecommitEvalContractError(
+                f"precommit opponent {name} has unsupported authority {authority!r}"
+            )
+        normalized_item = {
             "name": name,
             "reason": str(item.get("reason") or "precommit"),
             "path": str(path),
-            "identity": _portable_published_identity(
-                path,
-                require_published=require_published_opponents,
+            "authority": authority,
+            "identity": identity,
+            "precommit_gate_admitted": bool(
+                item.get("precommit_gate_admitted", True)
             ),
-        })
+            "formal_bootstrap_opponent_admitted": bool(
+                item.get("formal_bootstrap_opponent_admitted", False)
+            ),
+            "formal_bootstrap_scope": str(
+                item.get("formal_bootstrap_scope") or ""
+            ),
+            "strength_admitted": bool(item.get("strength_admitted", True)),
+            "rating_eligible": bool(item.get("rating_eligible", True)),
+            "official_opponent_eligible": bool(
+                item.get("official_opponent_eligible", True)
+            ),
+        }
+        if control_receipt is not None:
+            normalized_item["control_receipt"] = control_receipt
+        normalized.append(normalized_item)
+
+    if system_control_count:
+        if system_control_count != 1 or len(normalized) != 1:
+            raise PrecommitEvalContractError(
+                "first-strict system control cannot be mixed with published opponents"
+            )
+        if int(source_version) != 142:
+            raise PrecommitEvalContractError(
+                "first-strict system control requires source version 142"
+            )
 
     from strength_order import (
         PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
@@ -180,16 +295,52 @@ def create_precommit_plan(
         PRECOMMIT_PARENT_MAX_SCORE,
         PRECOMMIT_PARENT_MIN_SAMPLES,
     )
+    if system_control_count:
+        from first_strict_control import (
+            CONTROL_GATE_PROFILE_ID,
+        )
+        # ``_system_control_identity`` has already validated the receipt back
+        # to the checked-in package.  The manifest-owned gate contract, not the
+        # caller/LLM's n_games suggestion, therefore fixes the execution shape.
+        control_contract = dict(
+            (normalized[0].get("control_receipt") or {}).get("gate_contract")
+            or {}
+        )
+        effective_matches_per_opponent = int(control_contract["exact_samples"])
+        control_min_samples = int(control_contract["minimum_samples"])
+        control_min_match_score = float(
+            control_contract["minimum_match_score"]
+        )
+    else:
+        control_contract = {}
+        effective_matches_per_opponent = int(matches_per_opponent)
+        control_min_samples = None
+        control_min_match_score = None
 
     settings = {
         "sample_unit": "70_hand_match" if int(hands_per_match) == 70 else "national_match",
         "hands_per_match": int(hands_per_match),
-        "matches_per_opponent": int(matches_per_opponent),
+        "matches_per_opponent": effective_matches_per_opponent,
         "deck_seed_base": int(deck_seed_base),
         "parent_min_samples": PRECOMMIT_PARENT_MIN_SAMPLES,
         "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
         "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
         "aggregate_min_loss_margin": PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+        "gate_profile_id": (
+            CONTROL_GATE_PROFILE_ID
+            if system_control_count
+            else "national_strength_precommit_v1"
+        ),
+        "strength_evidence_required": not bool(system_control_count),
+        "control_min_samples": (
+            control_min_samples if system_control_count else None
+        ),
+        "control_exact_samples": (
+            effective_matches_per_opponent if system_control_count else None
+        ),
+        "control_min_match_score": (
+            control_min_match_score if system_control_count else None
+        ),
     }
     payload = {
         "schema_version": PLAN_SCHEMA_VERSION,
@@ -208,7 +359,7 @@ def create_precommit_plan(
         "settings": settings,
         "sample_plan": build_sample_plan(
             normalized,
-            int(matches_per_opponent),
+            effective_matches_per_opponent,
             deck_seed_base=int(deck_seed_base),
         ),
     }
@@ -221,6 +372,23 @@ def opponents_from_plan(plan: dict[str, Any]) -> list[dict[str, Any]]:
             "name": str(item.get("name") or ""),
             "reason": str(item.get("reason") or "precommit"),
             "path": str(item.get("path") or ""),
+            "authority": str(item.get("authority") or "published_bot"),
+            "identity": dict(item.get("identity") or {}),
+            "control_receipt": dict(item.get("control_receipt") or {}),
+            "precommit_gate_admitted": bool(
+                item.get("precommit_gate_admitted", True)
+            ),
+            "formal_bootstrap_opponent_admitted": bool(
+                item.get("formal_bootstrap_opponent_admitted", False)
+            ),
+            "formal_bootstrap_scope": str(
+                item.get("formal_bootstrap_scope") or ""
+            ),
+            "strength_admitted": bool(item.get("strength_admitted", True)),
+            "rating_eligible": bool(item.get("rating_eligible", True)),
+            "official_opponent_eligible": bool(
+                item.get("official_opponent_eligible", True)
+            ),
         }
         for item in plan.get("opponents", [])
         if isinstance(item, dict)
@@ -268,6 +436,7 @@ def validate_precommit_plan(
         opponents = []
     names: set[str] = set()
     require_published = bool(plan.get("require_published_opponents"))
+    system_control_count = 0
     for index, item in enumerate(opponents):
         if not isinstance(item, dict):
             issues.append(f"precommit_opponent_{index}_invalid")
@@ -280,11 +449,38 @@ def validate_precommit_plan(
         if not path.exists():
             issues.append(f"precommit_opponent_{name or index}_missing")
             continue
+        authority = str(item.get("authority") or "published_bot")
         try:
-            current = _portable_published_identity(
-                path,
-                require_published=require_published,
-            )
+            if authority == "system_first_strict_control":
+                current, receipt = _system_control_identity(
+                    item,
+                    path,
+                    candidate_version=int(candidate_version),
+                    source_version=int(source_version),
+                )
+                if item.get("control_receipt") != receipt:
+                    issues.append(
+                        f"precommit_opponent_{name or index}_control_receipt_drift"
+                    )
+                system_control_count += 1
+            elif authority == "published_bot":
+                if item.get("formal_bootstrap_opponent_admitted") is not False:
+                    issues.append(
+                        f"precommit_opponent_{name or index}_formal_bootstrap_flag_invalid"
+                    )
+                if str(item.get("formal_bootstrap_scope") or ""):
+                    issues.append(
+                        f"precommit_opponent_{name or index}_formal_bootstrap_scope_invalid"
+                    )
+                current = _portable_published_identity(
+                    path,
+                    require_published=require_published,
+                )
+            else:
+                issues.append(
+                    f"precommit_opponent_{name or index}_authority_invalid"
+                )
+                continue
         except Exception as exc:
             issues.append(
                 f"precommit_opponent_{name or index}_identity_error:{type(exc).__name__}"
@@ -292,6 +488,13 @@ def validate_precommit_plan(
             continue
         if item.get("identity") != current:
             issues.append(f"precommit_opponent_{name or index}_identity_drift")
+
+    if system_control_count and (
+        system_control_count != 1
+        or len(opponents) != 1
+        or int(source_version) != 142
+    ):
+        issues.append("precommit_first_strict_control_shape_invalid")
 
     settings = plan.get("settings") if isinstance(plan.get("settings"), dict) else {}
     if str(execution_mode) == "native_tcp":
@@ -301,6 +504,28 @@ def validate_precommit_plan(
             PRECOMMIT_PARENT_MAX_SCORE,
             PRECOMMIT_PARENT_MIN_SAMPLES,
         )
+        if system_control_count:
+            from first_strict_control import (
+                CONTROL_GATE_PROFILE_ID,
+            )
+            control_contract = dict(
+                ((opponents[0].get("control_receipt") or {}).get(
+                    "gate_contract"
+                ) or {})
+            )
+            control_exact_samples = int(
+                control_contract.get("exact_samples") or 0
+            )
+            control_min_samples = int(
+                control_contract.get("minimum_samples") or 0
+            )
+            control_min_match_score = control_contract.get(
+                "minimum_match_score"
+            )
+        else:
+            control_exact_samples = None
+            control_min_samples = None
+            control_min_match_score = None
 
         if int(settings.get("hands_per_match", 0) or 0) != 70:
             issues.append("precommit_native_hands_per_match_not_70")
@@ -311,10 +536,29 @@ def validate_precommit_plan(
             "parent_max_score": PRECOMMIT_PARENT_MAX_SCORE,
             "aggregate_min_samples": PRECOMMIT_AGGREGATE_MIN_SAMPLES,
             "aggregate_min_loss_margin": PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
+            "gate_profile_id": (
+                CONTROL_GATE_PROFILE_ID
+                if system_control_count
+                else "national_strength_precommit_v1"
+            ),
+            "strength_evidence_required": not bool(system_control_count),
+            "control_min_samples": (
+                control_min_samples if system_control_count else None
+            ),
+            "control_exact_samples": (
+                control_exact_samples if system_control_count else None
+            ),
+            "control_min_match_score": (
+                control_min_match_score if system_control_count else None
+            ),
         }
         for key, expected in expected_outcome_settings.items():
             if settings.get(key) != expected:
                 issues.append(f"precommit_native_{key}_mismatch")
+        if system_control_count and int(
+            settings.get("matches_per_opponent", 0) or 0
+        ) != control_exact_samples:
+            issues.append("precommit_first_strict_control_sample_count_mismatch")
     try:
         expected_samples = build_sample_plan(
             opponents,

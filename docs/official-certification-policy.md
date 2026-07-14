@@ -116,8 +116,9 @@ makes the result inconclusive.
 ## Durable Job Lifecycle
 
 All production smoke, precommit compliance, and formal certification requests
-use `official-job-v3` in `web/core/official_certification_job.py`. The old JSONL
-queue helpers remain legacy regression APIs and have no production caller.
+use `official-job-v3` in `web/core/official_certification_job.py`. Retired queue
+implementations are archived and are not importable by the active control
+plane.
 
 The job manager provides:
 
@@ -141,7 +142,7 @@ job every 30 seconds. A deterministic candidate failure becomes
 ambiguity is infrastructure failure and never becomes bot repair. Commit/tag is
 impossible until the signed full certificate validates.
 
-## Eligibility And Migration
+## Eligibility And Epoch Bootstrap
 
 Eligibility is role-specific:
 
@@ -149,33 +150,36 @@ Eligibility is role-specific:
 - `parent_source`: may seed a generation or crossover;
 - `rating_pool`: may participate in native strength evaluation.
 
-New candidates at or above the tracked cutoff can never be grandfathered.
-Historical grants in `web/core/official_grandfathering.json` bind an annotated
-tag, exact artifact hash, roles, and migration policy. Known blocking evidence
-overrides every grant.
+Every active role in `national_tcp_policy_v1` requires the strict typed-policy
+artifact contract. `official_opponent` additionally requires a published,
+signed, content-valid `official-full-v5` certificate. Retired epoch grants and
+artifacts have no `parent_source`, `rating_pool`, or ordinary opponent role;
+their ratings and head-to-head rows are not migrated into the new epoch.
 
-Normal `official_opponent` eligibility requires a published, signed,
-content-valid `official-full-v5` certificate. Historical grants, including
-v142, are limited to their explicitly recorded parent/rating roles and can
-never satisfy a formal opponent selection. They sunset at the tracked migration
-boundary, which preserves continuity in the local rating population without
-turning grandfathering into a certification path for new output.
+The sole one-time ceremony uses `first_strict_control_v1`, materialized from the
+current system-owned typed-policy runtime and its checked-in policy asset. It
+can certify only the fresh, unpublished `national_v143` candidate while both
+the active policy pool and strict publication pool are empty. The control is
+not a normal opponent, parent, rating bot, active-pool fallback, or automatic
+evolution choice; its wire results have no strength or prompt authority. The
+old v141 signed-ledger root is retained only as historical signature-validation
+metadata. Its archived bot bytes cannot be resolved, parsed as a bot artifact,
+sealed, selected, or executed.
 
-The repository-pinned v141 signed-ledger root is a one-time operator bootstrap,
-not a normal opponent, active-pool fallback, or automatic evolution choice. It
-can certify exactly one fresh, unpublished candidate through the explicit
-`bootstrap-full` command. Only a successful certificate appended to the signed
-verdict ledger consumes the root; failed or inconclusive runs do not create a
-normal opponent. The normal locked workflow will not replay a consumed root.
+The operator runs `bootstrap-first-strict`. Its selection binds the exact
+candidate hash, control artifact hash, current runtime/control manifests,
+empty-pool receipt, parked checkpoint/evaluation contract, and full 5+3x70
+suite. Only a successful signed `official-full-v5` verdict consumes that exact
+receipt; failed or inconclusive runs do not create a normal opponent.
 This is an operational state-machine guarantee, not a cryptographic guarantee
 against a same-uid rollback of both the ledger and its signed head; durable
 rollback resistance would require an independently protected monotonic anchor.
 
 After that manual suite succeeds, `commit_bot` may reuse only the exact existing
 certificate that passes the complete content-bound validator (candidate hash,
-signed receipt, evidence, ledger, selection receipt, job envelope, parked
+signed receipt, evidence, ledger, control-selection receipt, job envelope, parked
 checkpoint, workflow/evaluation contract, and policy). It skips a second
-opponent selection/job for that handoff, then reruns the consumed-root-aware
+opponent selection/job for that handoff, then reruns the consumed-control-aware
 authorization immediately before staging and tagging. A status label, mutable
 JSON, or ledger entry alone is insufficient. Publishing that first attestation
 creates the first normal full-v5 opponent; subsequent candidates use the
@@ -185,9 +189,19 @@ When the first verified candidate finds no normal opponent, the pipeline parks
 at `official_bootstrap_required`. This is a deliberate stop barrier:
 `next_tool` is empty, automatic recovery exits, and the LLM cannot call
 `commit_bot` again or initiate bootstrap. The runtime guard unlocks the manual
-commit handoff only after the external `bootstrap-full` result passes the full
+commit handoff only after the external `bootstrap-first-strict` result passes the full
 validator. Missing, forged, stale, or candidate-mismatched certificates remain
 fail-closed.
+
+While that exact v143 checkpoint remains parked, its sole request-bound manual
+bootstrap durable job is visible read-only through
+`GET /api/certification/jobs` and `GET /api/certification/jobs/{job_id}` with
+`formal_authority=operator_bootstrap_full_v5_job`. This projection grants no
+launch or cancellation authority: HTTP enqueue remains retired with status
+410, the retired `/api/certification/queue` route is absent, and
+`POST /api/certification/jobs/{job_id}/cancel` returns 404 for the bootstrap
+job. Unbound bootstrap jobs, old-epoch jobs, v155 debris, identity drift, and
+ambiguous duplicate jobs are hidden fail-closed.
 
 Lifecycle state is durable in annotated Git tags:
 
@@ -195,8 +209,9 @@ Lifecycle state is durable in annotated Git tags:
 - `national-reaped-registry-v1` proves legacy ledger migration;
 - `national-high-water-vN` preserves the monotonic version floor.
 
-Historical bots are recertified in batches. A failed bot is removed from
-eligible roles or repaired; the validator is never relaxed to keep it active.
+Retired bots are not recertified into the new pool. A policy bot that fails is
+repaired as a new content-bound candidate; the validator is never relaxed to
+keep it active.
 
 ## Operator Commands
 
@@ -211,16 +226,16 @@ python3 scripts/official_certify.py doctor
 # Durable full 5+3x70 request and wait for its terminal result
 python3 scripts/official_certify.py full bots/national_v<N> --wait-if-busy
 
-# One-time first-anchor bootstrap for a fresh unpublished candidate
-python3 scripts/official_certify.py bootstrap-full bots/national_v<N> \
-  --root-id national-v141-official-full-v5-signed-ledger-root \
-  --acknowledge-one-time-ledger-bootstrap \
+# One-time first-anchor bootstrap; only national_v143 in an empty strict pool
+python3 scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
+  --control-id first_strict_control_v1 \
+  --acknowledge-one-time-first-strict-control \
   --wait-if-busy
 
 # Inspect/reconcile durable jobs
-python3 scripts/official_certify.py queue-status
-python3 scripts/official_certify.py process-queue --limit 4
+python3 scripts/official_certify.py jobs-status
+python3 scripts/official_certify.py reconcile-jobs --limit 4
 ```
 
-`queue-status` and `process-queue` keep their CLI names for compatibility, but
-they operate on durable job directories, not the retired JSONL queue.
+`jobs-status` and `reconcile-jobs` operate directly on durable job directories.
+The retired JSONL queue is neither a production path nor a compatibility API.

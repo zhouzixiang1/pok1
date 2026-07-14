@@ -31,90 +31,27 @@ def test_C1_try_set_running_cancels_stale_task():
     s.set_running(False)
 
 
-def test_E1_isolated_recent_snaps_filters_cross_run():
-    """_isolated_recent_snaps keeps only the latest run's contiguous block."""
-    from combined_analyst import _isolated_recent_snaps
-    from evolution_infra import RESULTS_DIR
+def test_E1_combined_analysis_rejects_live_history_fallback():
+    """Missing frozen inputs must never reopen a legacy rating-history file."""
+    import asyncio
+    import combined_analyst
 
-    history = RESULTS_DIR / "rating_history.jsonl"
-    backup = None
-    created = not history.exists()
-    try:
-        if history.exists():
-            backup = history.read_text()
-        # Mix of run ids: older run A (periods 1-3), newer run B (periods 10-12)
-        lines = []
-        for p in (1, 2, 3):
-            lines.append(json.dumps({"period": p, "daemon_run_id": "runA", "ratings": {}}))
-        for p in (10, 11, 12):
-            lines.append(json.dumps({"period": p, "daemon_run_id": "runB", "ratings": {}}))
-        history.write_text("\n".join(lines) + "\n")
+    result = asyncio.run(combined_analyst._run_combined_analysis(
+        source_v=143,
+        active_bots=["national_v143"],
+        ratings={},
+        ui=None,
+        h2h_data={},
+    ))
 
-        snaps = _isolated_recent_snaps(max_n=10)
-        periods = [s["period"] for s in snaps]
-        assert periods == [10, 11, 12], periods          # E1: only run B kept
-    finally:
-        if backup is not None:
-            history.write_text(backup)
-        elif created:
-            history.unlink(missing_ok=True)
-
-
-def test_E1_isolated_legacy_fallback_no_runid():
-    """Legacy snapshots without daemon_run_id fall back to last-N verbatim."""
-    from combined_analyst import _isolated_recent_snaps
-    from evolution_infra import RESULTS_DIR
-
-    history = RESULTS_DIR / "rating_history.jsonl"
-    backup = None
-    created = not history.exists()
-    try:
-        if history.exists():
-            backup = history.read_text()
-        lines = [json.dumps({"period": i, "ratings": {}}) for i in range(1, 15)]
-        history.write_text("\n".join(lines) + "\n")
-        snaps = _isolated_recent_snaps(max_n=10)
-        assert len(snaps) == 10
-        assert [s["period"] for s in snaps] == list(range(5, 15))
-    finally:
-        if backup is not None:
-            history.write_text(backup)
-        elif created:
-            history.unlink(missing_ok=True)
+    assert result["evidence_status"] == "missing_frozen_evidence"
+    assert "live result files are not an allowed fallback" in result["reason"]
 
 
 def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
     """The generation-scoped H2H path must execute before any analyst LLM call."""
     import asyncio
     import combined_analyst
-    import rating_snapshot
-
-    captured = {}
-
-    def fake_strength_rows(
-        ratings,
-        bot_stats,
-        h2h_data,
-        active_bots,
-        *,
-        match_history_path,
-    ):
-        captured["ratings"] = ratings
-        captured["h2h_data"] = h2h_data
-        captured["active_bots"] = active_bots
-        captured["match_history_path"] = match_history_path
-        return [{
-            "name": "national_v142",
-            "selection_score": 0.5,
-            "leaderboard_score": 0.5,
-            "h2h_avg_wr": 0.5,
-            "h2h_coverage": 1.0,
-            "h2h_opponents": 1,
-            "h2h_opponents_total": 1,
-            "h2h_games": 20,
-        }]
-
-    monkeypatch.setattr(rating_snapshot, "build_strength_rows", fake_strength_rows)
     monkeypatch.setattr(
         combined_analyst,
         "_statistical_stagnation_check",
@@ -122,7 +59,7 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
     )
 
     frozen_h2h = {
-        "national_v141 vs national_v142": {
+        "national_v143 vs national_v144": {
             "games": 20,
             "a_wins": 9,
             "b_wins": 11,
@@ -131,17 +68,26 @@ def test_combined_analysis_accepts_frozen_h2h_snapshot(monkeypatch):
         }
     }
     result = asyncio.run(combined_analyst._run_combined_analysis(
-        source_v=142,
-        active_bots=["national_v142"],
+        source_v=144,
+        active_bots=["national_v143", "national_v144"],
         ratings={},
         ui=None,
         h2h_data=frozen_h2h,
+        bot_stats_data={"national_v144": {"games": 20, "win_rate": 0.55}},
+        selection_rows_data=[{
+            "name": "national_v144",
+            "selection_score": 0.5,
+            "leaderboard_score": 0.5,
+            "h2h_avg_wr": 0.55,
+            "h2h_coverage": 1.0,
+            "h2h_opponents": 1,
+            "h2h_opponents_total": 1,
+            "h2h_games": 20,
+        }],
+        rating_history_data=[],
     ))
 
     assert result["trend"] == "improving"
-    assert captured["h2h_data"] == frozen_h2h
-    assert captured["active_bots"] == ["national_v142"]
-    assert captured["match_history_path"] == Path("/dev/null")
 
 
 def test_combined_analysis_frozen_rows_preserve_real_low_coverage(monkeypatch):
@@ -154,12 +100,12 @@ def test_combined_analysis_frozen_rows_preserve_real_low_coverage(monkeypatch):
         raise AssertionError("low-coverage frozen evidence must stop before the LLM")
 
     monkeypatch.setattr(combined_analyst, "run_claude_query", must_not_call_llm)
-    active = ["national_v140", "national_v141", "national_v142"]
+    active = ["national_v143", "national_v144", "national_v145"]
     ratings = {
         name: Glicko2Player(r=1500.0, rd=90.0, sigma=0.06) for name in active
     }
     frozen_h2h = {
-        "national_v140 vs national_v142": {
+        "national_v143 vs national_v145": {
             "games": 15,
             "a_wins": 7,
             "b_wins": 8,
@@ -167,17 +113,28 @@ def test_combined_analysis_frozen_rows_preserve_real_low_coverage(monkeypatch):
         }
     }
     frozen_stats = {
-        "national_v142": {"games": 15, "win_rate": 8 / 15},
+        "national_v145": {"games": 15, "win_rate": 8 / 15},
     }
 
     result = asyncio.run(
         combined_analyst._run_combined_analysis(
-            source_v=142,
+            source_v=145,
             active_bots=active,
             ratings=ratings,
             ui=None,
             h2h_data=frozen_h2h,
             bot_stats_data=frozen_stats,
+            selection_rows_data=[{
+                "name": "national_v145",
+                "selection_score": 0.5,
+                "leaderboard_score": 0.5,
+                "h2h_avg_wr": 8 / 15,
+                "h2h_coverage": 0.5,
+                "h2h_opponents": 1,
+                "h2h_opponents_total": 2,
+                "h2h_games": 15,
+            }],
+            rating_history_data=[],
         )
     )
 

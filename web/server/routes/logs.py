@@ -1,7 +1,7 @@
 """Log endpoints — generation logs browsing, orchestrator logs, system events, and worker failures."""
 
 import json
-import time
+import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -16,14 +16,56 @@ ORCHESTRATOR_LOGS_DIR = PROJECT_ROOT / "web" / "logs"
 router = APIRouter(prefix="/api", tags=["logs"])
 
 
+def _current_log_epoch_identity() -> dict | None:
+    try:
+        from log_epoch import load_current_log_epoch_identity
+
+        return load_current_log_epoch_identity(RESULTS_DIR, ORCHESTRATOR_LOGS_DIR)
+    except Exception:
+        return None
+
+
+def _current_event_epoch_identity() -> dict | None:
+    try:
+        from system_strict_bootstrap import load_policy_epoch_reset_receipt
+
+        receipt, errors = load_policy_epoch_reset_receipt(RESULTS_DIR)
+    except Exception:
+        return None
+    if errors or not isinstance(receipt, dict):
+        return None
+    return {
+        "evaluation_epoch": receipt.get("epoch"),
+        "epoch_reset_receipt_digest": receipt.get("receipt_digest"),
+    }
+
+
 @router.get("/logs/generations")
 async def list_generations():
-    from server.routes._helpers import list_generation_dirs
-    return list_generation_dirs(RESULTS_DIR)
+    from server.routes._helpers import (
+        list_generation_dirs,
+        strict_observable_generation_versions,
+    )
+
+    allowed = strict_observable_generation_versions(
+        RESULTS_DIR,
+        RESULTS_DIR / "pipeline_state.json",
+    )
+    return list_generation_dirs(RESULTS_DIR, allowed_versions=allowed)
 
 
 @router.get("/logs/generations/{version}/{filename}")
 async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
+    from server.routes._helpers import strict_observable_generation_versions
+
+    if re.fullmatch(r"v[1-9][0-9]*", version) is None:
+        raise HTTPException(status_code=400, detail="Invalid generation")
+    allowed = strict_observable_generation_versions(
+        RESULTS_DIR,
+        RESULTS_DIR / "pipeline_state.json",
+    )
+    if int(version[1:]) not in allowed:
+        raise HTTPException(status_code=404, detail="Generation not observable")
     # Resolve to prevent path traversal (e.g. version="../../etc")
     resolved = (RESULTS_DIR / version / "logs" / filename).resolve()
     if not resolved.is_relative_to(RESULTS_DIR.resolve()):
@@ -43,7 +85,7 @@ async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
 @router.get("/logs/orchestrator")
 async def list_orchestrator_logs():
     """List orchestrator log files (most recent first)."""
-    if not ORCHESTRATOR_LOGS_DIR.exists():
+    if _current_log_epoch_identity() is None or not ORCHESTRATOR_LOGS_DIR.exists():
         return []
     files = sorted(
         (f for f in ORCHESTRATOR_LOGS_DIR.iterdir()
@@ -66,8 +108,10 @@ async def get_orchestrator_log(filename: str, tail: int = Query(0, ge=0)):
     """Get orchestrator log content. filename must be orchestrator_*.txt."""
     if not filename.startswith("orchestrator_") or not filename.endswith(".txt") or "/" in filename:
         return PlainTextResponse("Invalid filename", status_code=400)
+    if _current_log_epoch_identity() is None:
+        return PlainTextResponse("Log epoch unavailable", status_code=404)
     path = ORCHESTRATOR_LOGS_DIR / filename
-    if not path.is_file():
+    if path.is_symlink() or not path.is_file():
         return PlainTextResponse("File not found", status_code=404)
     content = path.read_text(errors="replace")
     if tail > 0:
@@ -115,19 +159,30 @@ async def get_system_events(
     type: str = Query("", description="Filter by event type prefix (e.g. pipeline.)"),
     category: str = Query("", description="Filter by data.category or type-prefix category (e.g. pipeline.)"),
     severity: str = Query("", description="Filter by severity: info|warn|error|success"),
-    source: str = Query("legacy", description="Event source: legacy|structured"),
+    source: str = Query("structured", description="Canonical event source; only 'structured' is valid"),
     run_id: str = Query("", description="Filter by data.run_id, e.g. 231#0"),
     stage: str = Query("", description="Filter by data.stage"),
     since: float | None = Query(None, description="Only events after this Unix timestamp"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
-    from system_log import SYSTEM_EVENTS_FILE
-    if source not in {"legacy", "structured"}:
-        raise HTTPException(status_code=400, detail="source must be 'legacy' or 'structured'")
-    events_file = RESULTS_DIR / "events.jsonl" if source == "structured" else SYSTEM_EVENTS_FILE
+    if source != "structured":
+        raise HTTPException(status_code=400, detail="source must be 'structured'")
+    identity = _current_event_epoch_identity()
+    if identity is None:
+        return {
+            "events": [],
+            "total": 0,
+            "authority_status": "policy_epoch_not_initialized",
+        }
+    events_file = RESULTS_DIR / "events.jsonl"
     if not events_file.exists():
-        return {"events": [], "total": 0}
+        return {
+            "events": [],
+            "total": 0,
+            "authority_status": "current_epoch_empty",
+            **identity,
+        }
     events = []
     with locked_file(events_file, "r") as f:
         for line in f:
@@ -138,16 +193,23 @@ async def get_system_events(
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if source == "structured":
-                entry = _normalise_structured_event(entry)
+            event_data = entry.get("data")
+            if not isinstance(event_data, dict) or (
+                event_data.get("evaluation_epoch")
+                != identity["evaluation_epoch"]
+                or event_data.get("epoch_reset_receipt_digest")
+                != identity["epoch_reset_receipt_digest"]
+            ):
+                continue
+            entry = _normalise_structured_event(entry)
             if type and not entry.get("type", "").startswith(type):
                 continue
             if severity and entry.get("severity") != severity:
                 continue
             if since is not None and entry.get("ts", 0) < since:
                 continue
-            # Category dimension: backfill legacy rows (no data.category) from
-            # the event type's first segment. In-memory only, not written to disk.
+            # Old canonical rows may predate data.category. Backfill only in the
+            # response; never create a second compatibility ledger.
             data = entry.get("data") or {}
             cat = data.get("category") if isinstance(data, dict) else None
             if not cat:
@@ -164,21 +226,12 @@ async def get_system_events(
             events.append(entry)
     events.reverse()
     total = len(events)
-    return {"events": events[offset:offset + limit], "total": total}
-
-
-def _infer_category_from_role(role: str) -> str:
-    """Backfill a worker_failures category from a legacy row's role.
-
-    Critic/Reviewer rows belong to gates ("gate"), everything else is a worker
-    ("worker").
-    """
-    if not role:
-        return "worker"
-    r = role.lower()
-    if "critic" in r or "reviewer" in r:
-        return "gate"
-    return "worker"
+    return {
+        "events": events[offset:offset + limit],
+        "total": total,
+        "authority_status": "current_epoch",
+        **identity,
+    }
 
 
 @router.get("/logs/worker-failures")
@@ -189,33 +242,21 @@ async def get_worker_failures(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    from evolution_infra import WORKER_FAILURES_FILE
-    failures_file = WORKER_FAILURES_FILE
-    if not failures_file.exists():
-        return {"failures": [], "total": 0}
-    failures = []
-    with locked_file(failures_file, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if gen is not None and entry.get("gen") != gen:
-                continue
-            if role and role.lower() not in entry.get("role", "").lower():
-                continue
-            # Category dimension: backfill legacy rows (no category) from role.
-            # In-memory only, not written to disk.
-            cat = entry.get("category")
-            if not cat:
-                cat = _infer_category_from_role(entry.get("role", ""))
-                entry["category"] = cat
-            if category and cat != category:
-                continue
-            failures.append(entry)
-    failures.reverse()
+    from server.routes._helpers import read_strict_worker_failures
+
+    failures_file = RESULTS_DIR / "worker_failures.jsonl"
+    failures = read_strict_worker_failures(
+        failures_file,
+        results_dir=RESULTS_DIR,
+        checkpoint_path=RESULTS_DIR / "pipeline_state.json",
+        limit=None,
+    )
+    failures = [
+        entry
+        for entry in failures
+        if (gen is None or entry.get("gen") == gen)
+        and (not role or role.lower() in str(entry.get("role") or "").lower())
+        and (not category or entry.get("category") == category)
+    ]
     total = len(failures)
     return {"failures": failures[offset:offset + limit], "total": total}

@@ -25,8 +25,8 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
 
 ## Mandatory actions
 1. Modify at least one assigned `target_files` entry. Reading or analysis alone
-   is failure. If the Master explicitly assigns a new file, create only that
-   declared path; otherwise use Edit on existing files.
+   is failure. The only valid target is the existing `policy.py`; if any task
+   names another writable file, report BLOCKED instead of creating it.
 2. After every edit, Read the changed region and verify the applied behavior.
 3. Before finishing, run
    `diff -rq bots/national_v{parent_version}/ {candidate_path}/` and
@@ -48,27 +48,30 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
 <role_boundaries>
 | Role | Allowed | Forbidden |
 |---|---|---|
-| Hyperparameter Tuner | Existing numeric constants, thresholds, and magic numbers in `constants.py` only. | Any other file, new functions/classes/imports/control flow. |
-| Algorithmic Logic Architect | New functions, branches, imports, and local constants inside new functions. | Editing existing tuned constants in `constants.py` or unrelated literals. |
-| Opponent Modeler | Incremental per-street/match tracking and confidence-scaled consumption in decision code. | Collection without a reachable consumer, or unrelated decision rewrites. |
+| Hyperparameter Tuner | Existing numeric constants, thresholds, and magic numbers inside `policy.py` only. | Any other file, new functions/classes/imports/control flow. |
+| Algorithmic Logic Architect | Functions and branches inside `policy.py`. | Any other file or unrelated literal tuning. |
+| Opponent Modeler | Confidence-scaled consumption of reducer-owned `decision_context.opponent` fields inside `policy.py`. | Reimplementing system tracking, collection without a reachable consumer, or unrelated decision rewrites. |
 
 Boundary criterion: adding a function or control-flow branch is Architect
-scope; changing only existing literals in `constants.py` is Tuner scope.
+scope; changing only existing literals in `policy.py` is Tuner scope. Every
+role still has the same sole writable file: `policy.py`.
 
 CRITICAL ENFORCEMENT:
-- **Hyperparameter Tuner** must target constants.py only and change at least one
-  existing numeric constant. Before editing, list each change exactly as:
+- **Hyperparameter Tuner** must target `policy.py` only, change at least one
+  existing numeric constant, and operate only as subordinate calibration of
+  the frozen structural mechanism named by the task. Before editing, name that
+  mechanism, its control and falsifier, then list each change exactly as:
   ```text
-  File: constants.py, Line <N>: <CONSTANT_NAME> = <old_value> -> <new_value>
+  File: policy.py, Line <N>: <CONSTANT_NAME> = <old_value> -> <new_value>
   Reason: <match-data or poker-math justification>
   ```
   If the named constant is absent, report BLOCKED instead of searching other .py files.
   Never output a file identical to the source.
 - **Algorithmic Logic Architect** must make a structural change. Do not disguise
   a numeric tune as a new helper or edit tuned literals outside its new logic.
-- **Opponent Modeler** must wire new state into strategy/postflop behavior and
-  prove sparse evidence stays near the parent baseline. Tracking-only code is
-  failure.
+- **Opponent Modeler** must consume existing bounded reducer-owned evidence in
+  a reachable policy decision and prove sparse evidence stays near the parent
+  baseline. Candidate-owned tracking or collection-only code is failure.
 </role_boundaries>
 
 <embedded_selftest_contract>
@@ -80,7 +83,9 @@ never call a self-test from a live decision path merely to satisfy reachability.
 </embedded_selftest_contract>
 
 <examples>
-**Hyperparameter Tuner**: change an existing `constants.py` value only.
+**Hyperparameter Tuner**: change an existing module-level value in `policy.py`
+only as a sensitivity control for the bound structural mechanism. If the task
+does not name that mechanism and its socket-visible falsifier, report BLOCKED.
 
 **Algorithmic Logic Architect**:
 ```python
@@ -89,22 +94,24 @@ def _estimate_fold_equity(opp_snapshot, street):
     return max(0.0, min(1.0, fold_rate))
 ```
 
-**Opponent Modeler**: increment bounded counters on observed events and consume
-the resulting posterior/confidence in a reachable strategy branch.
+**Opponent Modeler**: consume the supplied terminal/showdown posterior and its
+confidence in a reachable `policy.py` branch; do not maintain a second tracker.
 </examples>
 
 <reference>
-You may read `web/core/reference_bots/` for strategy reference. Reference code
-does not override the active execution profile or Runtime Contract.
+Use only the task's injected typed strategy-reference card, published
+`decision_context`, and system-owned runtime contract as candidate design
+inputs.
 </reference>
 
 <poker_math>
 - `pot_odds = to_call / (pot + to_call)` when pot is measured before calling.
 - EQR is a 0-1 equity-realization scalar; SPR is effective stack divided by pot.
 - MDF is `pot / (pot + to_call)` against a balanced bet.
-- Local strategy action encoding is `0=check/call`, `-1=fold`, `-2=allin`,
-  `>0=raise-to-total`; the execution profile owns final wire translation.
-- `round_idx`: 0 preflop, 1 flop, 2 turn, 3 river.
+- Policy intents are strict mappings: `pass`, `fold`, `allin`, or `raise` with
+  an exact `raise_to`. The socket owner alone maps pass to call/check and emits
+  the canonical wire token.
+- `decision_context.hand.street_index`: 0 preflop, 1 flop, 2 turn, 3 river.
 </poker_math>
 
 <skill_layer_contract>
@@ -129,20 +136,13 @@ Check the exact source and candidate limits before adding code. If the parent/so
 {worker_prompt}
 </master_prompt>
 
-<battle_evidence_contract>
-If the task cites `battle_lesson_*` or `ev_*`, keep the implementation and
-checks tied to those exact evidence IDs. A single pending summary does not
-justify a broad strategy rewrite without corroborating H2H or repeated replay
-evidence.
-</battle_evidence_contract>
-
 <verification>
 1. Inspect a substantive diff against the worker's input candidate. Normal
    logic work must change executable behavior, not only whitespace/comments.
    Explicit `file_size`, LOC, or `position_semantics` repairs may make a
    text-only correction only when it directly clears the named blocker.
-2. Check line counts before adding code. `strategy.py` and `postflop.py` have a
-   2000-line base limit, helpers 1500, hard cap 2500. An already oversized
+2. Check line counts before adding code. `policy.py` has a 2000-line base
+   limit and 2500-line hard cap. An already oversized
    parent may be matched or shrunk but not grown. A repair-contract limit is
    authoritative.
 3. Run every command in the execution profile's `<profile_verification>` block.

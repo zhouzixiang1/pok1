@@ -272,24 +272,58 @@ class TestDaemonRatingIntegration:
         from elo_daemon import process_result
 
         ratings = {
-            "national_v76": Glicko2Player(),
-            "national_v77": Glicko2Player(),
+            "national_v143": Glicko2Player(),
+            "national_v144": Glicko2Player(),
         }
         h2h = {}
         bot_stats = {}
 
         total = process_result(
-            ("national_v76", "national_v77", 5, 0, 0, 5, None, [100] * 5),
+            ("national_v143", "national_v144", 5, 0, 0, 5, None, [100] * 5),
             ratings,
             h2h,
             bot_stats,
         )
 
         assert total == 5
-        assert ratings["national_v76"].r > 1700
-        assert ratings["national_v77"].r < 1300
-        assert ratings["national_v76"].rd < DEFAULT_RD
-        assert ratings["national_v77"].rd < DEFAULT_RD
+        assert ratings["national_v143"].r > 1700
+        assert ratings["national_v144"].r < 1300
+        assert ratings["national_v143"].rd < DEFAULT_RD
+        assert ratings["national_v144"].rd < DEFAULT_RD
+
+
+def _frozen_selection_view(monkeypatch, gs, active, strength, ratings):
+    """Build the same immutable evidence boundary used by formal selection."""
+
+    monkeypatch.setattr(gs, "_read_source_v_history", lambda: [])
+    rows = tuple(
+        {
+            "name": name,
+            "selection_score": strength[name],
+            "leaderboard_score": strength[name],
+            "secondary_net_chips_mean": 0.0,
+            "h2h_avg_wr": 0.5,
+            "h2h_games": 20,
+            "h2h_opponents": max(0, len(active) - 1),
+            "h2h_opponents_total": max(0, len(active) - 1),
+            "h2h_coverage": 1.0,
+            "strength_confidence": "medium",
+        }
+        for name in active
+    )
+    evidence = gs.EvaluationEvidence(
+        active_bots=tuple(active),
+        ratings=ratings,
+        bot_stats={name: {"games": 20, "win_rate": 0.5} for name in active},
+        h2h={},
+        selection_rows=rows,
+        rating_history_tail=(),
+        games=20,
+        rd=50.0,
+        readiness_reason="rd_threshold",
+        cutoffs={"cycle_manifest_digest": "c" * 64},
+    )
+    return gs._build_selection_view(evidence)
 
 
 class TestCrossoverParents:
@@ -298,120 +332,92 @@ class TestCrossoverParents:
     def test_sorts_by_strength_score(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
-        # Setup: mock get_active_bots and load_selection_scores
-        active = ["claude_v1", "claude_v2", "claude_v3", "claude_v4"]
-        # v3 has highest strength, v1 has second highest
-        strength = {"claude_v1": 0.52, "claude_v2": 0.48, "claude_v3": 0.55, "claude_v4": 0.45}
+        active = ["national_v143", "national_v144", "national_v145", "national_v146"]
+        # v145 has highest strength, v143 has second highest
+        strength = {"national_v143": 0.52, "national_v144": 0.48, "national_v145": 0.55, "national_v146": 0.45}
         ratings = {b: Glicko2Player(1500 + i * 10, 50) for i, b in enumerate(active)}
 
         import generation_scheduler as gs
-        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
+        view = _frozen_selection_view(monkeypatch, gs, active, strength, ratings)
 
-        result = gs._pick_crossover_parents(ratings, 4)
+        result = gs._pick_crossover_parents(
+            ratings, 146, selection_view=view
+        )
         assert result is not None
         pa, pb = result
-        # Parent A should be v3 (highest strength)
-        assert pa == 3
+        # Parent A should be national_v145 (highest strength).
+        assert pa == 145
 
     def test_selects_diverse_parents(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
-        active = ["claude_v1", "claude_v2", "claude_v3", "claude_v4", "claude_v5"]
-        # v5 highest, v2 second highest with gap >= 3
-        strength = {"claude_v5": 0.55, "claude_v4": 0.54, "claude_v3": 0.53,
-                    "claude_v2": 0.52, "claude_v1": 0.50}
+        active = ["national_v143", "national_v144", "national_v145", "national_v146", "national_v147"]
+        # v147 highest; v144 is the strongest candidate with a >=3 version gap.
+        strength = {"national_v147": 0.55, "national_v146": 0.54, "national_v145": 0.53,
+                    "national_v144": 0.52, "national_v143": 0.50}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs
-        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
+        view = _frozen_selection_view(monkeypatch, gs, active, strength, ratings)
 
-        result = gs._pick_crossover_parents(ratings, 5)
+        result = gs._pick_crossover_parents(
+            ratings, 147, selection_view=view
+        )
         assert result is not None
         pa, pb = result
-        # Parent A = v5 (highest)
-        assert pa == 5
-        # Parent B should prefer gap >= 3, so v2 (|5-2|=3) over v4 (|5-4|=1)
-        assert pb == 2
+        # Parent A is national_v147 (highest strength).
+        assert pa == 147
+        assert pb == 144
 
     def test_falls_back_to_second(self, monkeypatch, tmp_path):
         from glicko2 import Glicko2Player
 
         # Only 2 bots, adjacent versions — no gap candidate, fallback to second
-        active = ["claude_v5", "claude_v6"]
-        strength = {"claude_v5": 0.55, "claude_v6": 0.50}
+        active = ["national_v145", "national_v146"]
+        strength = {"national_v145": 0.55, "national_v146": 0.50}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs
-        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_strength_scores", lambda: strength)
+        view = _frozen_selection_view(monkeypatch, gs, active, strength, ratings)
 
-        result = gs._pick_crossover_parents(ratings, 6)
+        result = gs._pick_crossover_parents(
+            ratings, 146, selection_view=view
+        )
         assert result is not None
-        assert result == (5, 6)
+        assert result == (145, 146)
 
-    def test_children_count_cannot_demote_clear_strength_leader(self, monkeypatch):
+    def test_candidate_child_ledger_is_not_a_selection_input(self, monkeypatch):
         from glicko2 import Glicko2Player
 
-        active = ["claude_v1", "claude_v2", "claude_v5"]
-        strength = {"claude_v1": 0.50, "claude_v2": 0.49, "claude_v5": 0.90}
+        active = ["national_v143", "national_v144", "national_v147"]
+        strength = {"national_v143": 0.50, "national_v144": 0.49, "national_v147": 0.90}
         ratings = {b: Glicko2Player() for b in active}
 
         import generation_scheduler as gs
-        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
 
-        def _children(parent_id, **kwargs):
-            return 10 if parent_id == "claude_v5" else 0
+        def _children(*_args, **_kwargs):
+            raise AssertionError("mutable candidate ledger must not enter selection")
 
         monkeypatch.setattr("candidate_store.count_candidate_children", _children)
+        view = _frozen_selection_view(monkeypatch, gs, active, strength, ratings)
 
-        result = gs._pick_crossover_parents(ratings, 5)
+        result = gs._pick_crossover_parents(
+            ratings, 147, selection_view=view
+        )
 
         assert result is not None
-        assert result[0] == 5
-
-    def test_map_elites_niche_guides_parent_b(self, monkeypatch):
-        from glicko2 import Glicko2Player
-
-        active = ["claude_v1", "claude_v4", "claude_v5", "claude_v8"]
-        strength = {
-            "claude_v8": 0.90,
-            "claude_v5": 0.80,  # same MAP niche as v8; would win without niche diversity
-            "claude_v4": 0.70,
-            "claude_v1": 0.60,
-        }
-        ratings = {b: Glicko2Player() for b in active}
-        archive = {
-            "cells": {
-                "agg1_loose1": {"bot": "claude_v8", "fitness": 0.9},
-                "agg3_loose3": {"bot": "claude_v4", "fitness": 0.7},
-                "agg4_loose4": {"bot": "claude_v1", "fitness": 0.6},
-            },
-            "bot_niches": {
-                "claude_v8": {"niche": "agg1_loose1"},
-                "claude_v5": {"niche": "agg1_loose1"},
-                "claude_v4": {"niche": "agg3_loose3"},
-                "claude_v1": {"niche": "agg4_loose4"},
-            },
-        }
-        import generation_scheduler as gs
-
-        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: active)
-        monkeypatch.setattr("tool_helpers.load_selection_scores", lambda: strength)
-        monkeypatch.setattr("candidate_store.count_candidate_children", lambda *_a, **_k: 0)
-        monkeypatch.setattr(gs, "log_system_event", lambda *a, **k: None)
-
-        result = gs._pick_crossover_parents(ratings, 8, archive=archive)
-
-        assert result == (8, 4)
+        assert result[0] == 147
+        assert not hasattr(view, "child_counts")
 
     def test_returns_none_single_bot(self, monkeypatch):
         import generation_scheduler as gs
-        monkeypatch.setattr("evolution_infra.get_active_bots", lambda: ["claude_v1"])
-        monkeypatch.setattr("tool_helpers.load_strength_scores", lambda: {"claude_v1": 0.5})
-        result = gs._pick_crossover_parents({"claude_v1": Glicko2Player()}, 1)
+        active = ["national_v143"]
+        strength = {"national_v143": 0.5}
+        ratings = {"national_v143": Glicko2Player()}
+        view = _frozen_selection_view(monkeypatch, gs, active, strength, ratings)
+        result = gs._pick_crossover_parents(
+            ratings, 143, selection_view=view
+        )
         assert result is None
 
 
@@ -425,15 +431,15 @@ class TestRdDecayInDaemon:
         p_a = Glicko2Player(1600, 50, 0.06)
         p_b = Glicko2Player(1500, 50, 0.06)
         p_c = Glicko2Player(1400, 50, 0.06)
-        ratings = {"claude_v1": p_a, "claude_v2": p_b, "claude_v3": p_c}
+        ratings = {"national_v143": p_a, "national_v144": p_b, "national_v145": p_c}
 
-        active_bots = ["claude_v1", "claude_v2", "claude_v3"]
-        played = {"claude_v1", "claude_v2"}
+        active_bots = ["national_v143", "national_v144", "national_v145"]
+        played = {"national_v143", "national_v144"}
 
         for b in active_bots:
             if b not in played and b in ratings:
                 ratings[b] = decay_rd(ratings[b])
 
-        assert ratings["claude_v3"].rd > 50
-        assert ratings["claude_v1"].rd == 50
-        assert ratings["claude_v2"].rd == 50
+        assert ratings["national_v145"].rd > 50
+        assert ratings["national_v143"].rd == 50
+        assert ratings["national_v144"].rd == 50

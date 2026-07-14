@@ -1,0 +1,315 @@
+"""ARCHIVED national_native_v1 experience-pool consolidation and archivist analysis.
+
+Experience consolidation runs every 3 generations to deduplicate the pool.
+Archivist analysis runs conditionally after commit to assess generation quality.
+"""
+
+import json
+import re
+
+from evolution_infra import (
+    run_claude_query, parse_json_output,
+    locked_file, get_logs_dir,
+    PROMPTS_DIR, EXPERIENCE_FILE, ARCHIVE_DIR,
+    substitute_template,
+)
+
+
+# Tag-identity round-trip contract for the exhausted-direction gate (bug #8
+# recurrence path). MUST match the marker regex in
+# tool_planning._extract_exhausted_keywords so the consolidator (emitter) and
+# the extractor (consumer) agree on what a tag is.
+_EXHAUSTED_TAG_RE = re.compile(r"\[[A-Z ]*EXHAUSTED[^\]]*\]")
+
+
+def _tag_identity(text):
+    """Return the set of EXHAUSTED tag CLASSES in text (canonicalized to one
+    sentinel per direction-gate marker).
+
+    All bracket variants — '[POSSIBLY EXHAUSTED]', '[EXHAUSTED]', and
+    '[EXHAUSTED — hard gate]' — mark the SAME exhausted-direction gate, so they
+    canonicalize to a single 'exhausted' class. This implements true tag-CLASS
+    semantics: consolidation may legitimately merge entries or reword a tag
+    prefix (count shrinks, suffix dropped) and the gate still passes; it only
+    fails when EVERY exhausted marker vanishes (the gate would go inert).
+    """
+    tags = set()
+    for m in _EXHAUSTED_TAG_RE.finditer(text or ""):
+        tags.add("exhausted")  # canonical class — all variants are one gate
+    return tags
+
+
+async def _consolidate_experience_pool(ui, exhausted_directions: str = ""):
+    """Use LLM to deduplicate and consolidate the experience pool.
+
+    Reads the current experience_pool.md, asks LLM to merge redundant entries,
+    and writes back a consolidated version. Runs every 3 generations.
+
+    Strategy: ask LLM to output the consolidated text directly (not edit in-place),
+    then write it back here as a guaranteed fallback. The LLM's text output is the
+    source of truth — no dependency on the agent using Edit tool.
+    """
+    if not EXPERIENCE_FILE.exists():
+        return
+
+    with locked_file(EXPERIENCE_FILE, "r") as ef:
+        content = ef.read()
+    if not content or content.strip() == "":
+        return  # Skip only if file is completely empty
+
+    # Load template and substitute
+    template_file = PROMPTS_DIR / "experience_consolidator.md"
+    if not template_file.exists():
+        return
+    consolidate_prompt = template_file.read_text()
+    consolidate_prompt = substitute_template(consolidate_prompt, {
+        "pool_content": content,
+        "exhausted_directions": exhausted_directions,
+    })
+    log_file = get_logs_dir(0) / "experience_consolidation_io.txt"
+
+    # --- P1-4: Experience Pool Quality Audit (pre-consolidation) ---
+    audit_context = ""
+    try:
+        from audit_agents import _run_experience_pool_audit
+        from evolution_infra import load_ratings
+        ratings = load_ratings() or {}
+        audit_result = await _run_experience_pool_audit(content, ratings, ui)
+        if audit_result.get("overall_health") != "healthy":
+            issues = []
+            if audit_result.get("contradictions"):
+                issues.append(f"Contradictions: {'; '.join(audit_result['contradictions'][:3])}")
+            if audit_result.get("stale_entries"):
+                issues.append(f"Stale: {'; '.join(audit_result['stale_entries'][:3])}")
+            if issues:
+                audit_context = (
+                    "\n\n# Pre-consolidation Audit Findings\n"
+                    f"Health: {audit_result.get('overall_health', 'unknown')}\n"
+                    + "\n".join(f"- {i}" for i in issues) + "\n"
+                    "Please address these issues during consolidation.\n"
+                )
+    except Exception:
+        pass  # Audit is advisory — never block consolidation
+
+    # fix-9: surface regression_guardian insights into experience consolidation.
+    # Previously guardian_diagnosis (produced when critic score<4) was only returned
+    # to the orchestrator via MCP result — zero downstream consumers. Now the last
+    # N entries from regression_guardian.jsonl are injected as "GUARDIAN INSIGHTS"
+    # into the consolidator prompt so the LLM can fold them into the experience pool.
+    guardian_insights = ""
+    try:
+        from evolution_infra import RESULTS_DIR
+        _gf = RESULTS_DIR / "regression_guardian.jsonl"
+        if _gf.exists():
+            _entries = []
+            with open(_gf, "r", encoding="utf-8") as _f:
+                for _line in _f:
+                    _line = _line.strip()
+                    if _line:
+                        try:
+                            _entries.append(json.loads(_line))
+                        except json.JSONDecodeError:
+                            pass
+            # Take the last 5 entries (most recent)
+            _recent = _entries[-5:] if len(_entries) > 5 else _entries
+            if _recent:
+                _blocks = []
+                for _e in _recent:
+                    _ver = _e.get("version", "?")
+                    _score = _e.get("score", "?")
+                    _diag = _e.get("diagnosis", "")[:300]
+                    _rc = _e.get("root_cause", "")
+                    _rec = _e.get("recovery_recommendation", "")
+                    _block = (
+                        f"v{_ver} (score={_score}): {_diag}"
+                    )
+                    if _rc:
+                        _block += f"\n  Root cause: {_rc[:200]}"
+                    if _rec:
+                        _block += f"\n  Recommendation: {_rec[:200]}"
+                    _blocks.append(_block)
+                guardian_insights = (
+                    "\n\n# GUARDIAN INSIGHTS (regression_guardian diagnosis)\n"
+                    "Below are recent regression-guardian diagnoses from critic scores < 4.\n"
+                    "These diagnose why a bot's strategic quality was deemed poor.\n"
+                    "Consider incorporating actionable lessons into the experience pool.\n\n"
+                    + "\n---\n".join(_blocks) + "\n"
+                )
+    except Exception:
+        pass  # Guardian insights are advisory — never block consolidation
+
+    # fix-12: Ratchet retire for the experience pool. Lessons that have been
+    # tried across >= RETIRE_N_MIN (30) generations with no rating lift
+    # (ĉ = (help-hurt)/trials <= RETIRE_TAU=-0.10) are retired here, then
+    # surfaced to the consolidator so it can demote/drop them as stale.
+    #
+    # This REUSES research_governance's score_candidate / RETIRE_N_MIN /
+    # RETIRE_TAU primitives (Ratchet arxiv 2605.19576) rather than rebuilding
+    # them. The ablated N_min=20 showed -0.019 active harm, so the floor stays 30.
+    #
+    # The outcome signal is rating_delta (continuous), backfilled by
+    # reconcile_lesson_outcomes in the daemon save_cycle — NOT precommit_passed,
+    # which is structurally always-True at commit time and would make retire
+    # INERT (see experience_attribution module docstring).
+    ratchet_retire_context = ""
+    try:
+        from experience_attribution import retire_lessons, _load_attribution, score_lesson
+        retired = retire_lessons()
+        if retired:
+            attrib = _load_attribution()
+            _lines = []
+            for _lid in retired:
+                _e = attrib.get(_lid, {})
+                _lines.append(
+                    f"- {_lid}: ĉ={score_lesson(_e):.3f}, "
+                    f"trials={_e.get('trials', 0)}, "
+                    f"help={_e.get('attributed_help', 0)}, "
+                    f"hurt={_e.get('attributed_hurt', 0)}"
+                )
+            ratchet_retire_context = (
+                "\n\n# RATCHET RETIRE (experience_attribution)\n"
+                "The following lessons were RETIRED because they were tried across\n"
+                f">={30} generations without a rating lift (ĉ <= -0.10). Demote them\n"
+                "to 'stale/superseded' or DROP them outright — do NOT keep recommending\n"
+                "them as active directions:\n\n"
+                + "\n".join(_lines) + "\n"
+            )
+            try:
+                ui.log_history(
+                    f"fix-12: retired {len(retired)} low-score lesson(s) via Ratchet "
+                    f"(ĉ <= -0.10, >=30 trials).",
+                    "success",
+                )
+            except Exception:
+                pass
+    except Exception as e:
+        try:
+            ui.log_history(f"fix-12: lesson retire failed (non-fatal): {e}", "warn")
+        except Exception:
+            pass  # never block consolidation
+
+    try:
+        ui.clear_io()
+        if audit_context:
+            consolidate_prompt += audit_context
+        if guardian_insights:
+            consolidate_prompt += guardian_insights
+        if ratchet_retire_context:
+            consolidate_prompt += ratchet_retire_context
+        output, _, _ = await run_claude_query(
+            consolidate_prompt, [], ui,
+            "EXPERIENCE CONSOLIDATOR", log_file,
+        )
+        consolidated = output.strip() if output else ""
+        # Strip accidental code fences if LLM added them
+        if consolidated.startswith("```"):
+            lines = consolidated.split("\n")
+            consolidated = "\n".join(
+                l for l in lines if not l.strip().startswith("```")
+            ).strip()
+
+        if consolidated and len(consolidated) > 20:
+            # Ensure consolidated content preserves section headers
+            has_headers = any(f"## {h}" in consolidated for h in [
+                "OPPONENT_MODELING", "POSTFLOP_STRATEGY", "BLUFF_CALIBRATION",
+                "PARAMETER_TUNING", "GENERAL", "RECENT_LESSONS"
+            ])
+            if not has_headers:
+                ui.log_history("Experience pool consolidation lost section headers — skipping write.", "warn")
+            else:
+                # Tag-identity round-trip gate: the consolidator must not silently
+                # drop an EXHAUSTED direction tag class. Count may shrink via
+                # legitimate merge, but a whole tag vanishing aborts the write so
+                # the exhausted-direction gate stays reliable.
+                pre_tags = _tag_identity(content)
+                post_tags = _tag_identity(consolidated)
+                lost = pre_tags - post_tags
+                if lost:
+                    ui.log_history(
+                        f"Experience consolidation dropped EXHAUSTED tag(s): {sorted(lost)} — "
+                        f"skipping write to preserve the exhausted-direction gate.",
+                        "error",
+                    )
+                    try:
+                        from system_log import log_system_event
+                        log_system_event("pipeline.experience_consolidation_tag_loss", "error",
+                            f"Consolidation dropped EXHAUSTED tags: {sorted(lost)}",
+                            {"lost_tags": sorted(lost)})
+                    except Exception:
+                        pass
+                else:
+                    tmp = EXPERIENCE_FILE.with_suffix(".tmp")
+                    tmp.write_text(consolidated + "\n", encoding="utf-8")
+                    tmp.replace(EXPERIENCE_FILE)
+                    ui.log_history("Experience pool consolidated and written back.", "success")
+        else:
+            ui.log_history("Experience pool consolidation produced no output — skipping write.", "warn")
+    except Exception as e:
+        ui.log_history(f"Experience pool consolidation failed: {e}", "warn")
+
+
+async def _run_archivist_analysis(version, source_v, snapshot, ui):
+    """Run Cycle Archivist LLM analysis on a completed generation.
+
+    Called conditionally (rating decline, experience pool growth, or forced).
+    Returns a JSON dict with assessment and strategic advice.
+    """
+    prompt_file = PROMPTS_DIR / "archivist.md"
+    if prompt_file.exists():
+        prompt = prompt_file.read_text()
+    else:
+        prompt = (
+            "You are the Cycle Archivist for a poker bot evolution system.\n"
+            "Analyze the completed generation and provide a strategic assessment.\n\n"
+            "## Archive Snapshot\n{snapshot}\n\n"
+            "Output ONLY a JSON block:\n"
+            "```json\n"
+            '{"generation_assessment": "improvement|neutral|regression", '
+            '"archive_notes": "brief summary of what this generation achieved"}\n'
+            "```\n"
+        )
+
+    prompt = prompt.replace("{snapshot}", json.dumps(snapshot, indent=2, ensure_ascii=False))
+
+    # Build recent rating trend context
+    trend_lines = []
+    for check_v in range(max(1, version - 4), version + 1):
+        check_archive = ARCHIVE_DIR / f"v{check_v}.json"
+        if check_archive.exists():
+            try:
+                with open(check_archive, "r") as f:
+                    s = json.load(f)
+                r = s.get("rating", {}).get("r", "?")
+                wr = s.get("h2h_avg_wr", "?")
+                trend_lines.append(f"v{check_v}: r={r}, h2h_avg_wr={wr}")
+            except Exception:
+                pass
+    if trend_lines:
+        prompt += f"\n\n## Recent Rating Trend\n" + "\n".join(trend_lines)
+
+    log_file = get_logs_dir(version) / "archivist_io.txt"
+    try:
+        output, _, _ = await run_claude_query(
+            prompt, [], ui,
+            "CYCLE ARCHIVIST", log_file,
+            tools=["Bash", "Read"],
+        )
+        from llm_query import parse_json_output_with_mode
+        data, failure_mode = parse_json_output_with_mode(output)
+        if data and isinstance(data, dict):
+            return data
+        # RC4: parse failed — previously returned a silent {archive_notes: output[:300]}
+        # default with no event, hiding NO_JSON/NO_FENCE/PARSE_ERROR behind a
+        # plausible-looking archive_notes string. Emit so the archivist's degraded
+        # state is visible downstream.
+        try:
+            from event_bus import warn
+            warn("pipeline.archivist_parse_failed",
+                 f"Archivist parse failed (mode={failure_mode})",
+                 failure_mode=failure_mode, output_len=len(output or ""))
+        except Exception:
+            pass
+        return {"archive_notes": output[:300] if output else "No output",
+                "parse_failed": True}
+    except Exception as e:
+        return {"error": str(e)}

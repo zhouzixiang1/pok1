@@ -15,16 +15,16 @@ def _roots(tmp_path):
 
 def test_threshold_only_crossover_mutation_is_rejected(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "DEFEND_THRESHOLD = 0.44\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "DEFEND_THRESHOLD = 0.52\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "DEFEND_THRESHOLD = 0.40\n",
         encoding="utf-8",
     )
@@ -43,10 +43,10 @@ def test_threshold_only_crossover_mutation_is_rejected(tmp_path):
 
 def test_exact_parent_b_module_is_accepted(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text("STYLE = 'A'\n", encoding="utf-8")
-    (parent_b / "strategy.py").write_text("STYLE = 'B'\n", encoding="utf-8")
+    (parent_a / "policy.py").write_text("STYLE = 'A'\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("STYLE = 'B'\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text("STYLE = 'B'\n", encoding="utf-8")
+    (child / "policy.py").write_text("STYLE = 'B'\n", encoding="utf-8")
 
     assert validate_crossover_recombination_provenance(
         baseline,
@@ -57,16 +57,16 @@ def test_exact_parent_b_module_is_accepted(tmp_path):
 
 def test_composed_parent_b_component_allows_nonnumeric_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return fallback(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def imported_component(state):\n    return profile_action(state)\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def imported_component(state):\n"
         "    return profile_action(state)\n\n"
         "def decide(state):\n"
@@ -84,10 +84,10 @@ def test_composed_parent_b_component_allows_nonnumeric_glue(tmp_path):
 
 def test_noop_or_comment_only_child_is_valid_baseline(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text("VALUE = True\n", encoding="utf-8")
-    (parent_b / "strategy.py").write_text("OTHER = True\n", encoding="utf-8")
+    (parent_a / "policy.py").write_text("VALUE = True\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("OTHER = True\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "# recombination found no safe component\nVALUE = True\n",
         encoding="utf-8",
     )
@@ -120,16 +120,16 @@ def test_crossover_cannot_replace_system_owned_native_runtime(tmp_path):
 
 def test_parent_b_import_cannot_camouflage_novel_branch_logic(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return fallback(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "from opponent import imported_profile\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "from opponent import imported_profile\n\n"
         "def decide(state):\n"
         "    if state.is_scared:\n"
@@ -153,16 +153,16 @@ def test_parent_b_import_cannot_camouflage_novel_branch_logic(tmp_path):
 
 def test_parent_b_import_cannot_authorize_unrelated_call_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return fallback(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "from opponent import imported_profile\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "from opponent import imported_profile\n\n"
         "def decide(state):\n"
         "    return allin(state)\n",
@@ -184,18 +184,18 @@ def test_parent_b_import_cannot_authorize_unrelated_call_glue(tmp_path):
 
 def test_parent_b_symbol_shadowed_by_parent_a_local_is_not_valid_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n"
         "    imported_component = allin\n"
         "    return fallback(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def imported_component(state):\n    return profile_action(state)\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def imported_component(state):\n"
         "    return profile_action(state)\n\n"
         "def decide(state):\n"
@@ -219,16 +219,16 @@ def test_parent_b_symbol_shadowed_by_parent_a_local_is_not_valid_glue(tmp_path):
 
 def test_parent_b_call_result_local_remains_valid_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return fallback(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def imported_component(state):\n    return profile_action(state)\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def imported_component(state):\n"
         "    return profile_action(state)\n\n"
         "def decide(state):\n"
@@ -246,16 +246,16 @@ def test_parent_b_call_result_local_remains_valid_glue(tmp_path):
 
 def test_parent_b_call_result_does_not_authorize_novel_attribute(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def build(ctx):\n    return ctx\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def build(ctx):\n"
         "    return ctx\n\n"
         "def decide(ctx):\n"
@@ -279,16 +279,16 @@ def test_parent_b_call_result_does_not_authorize_novel_attribute(tmp_path):
 
 def test_parent_b_call_result_does_not_authorize_novel_method(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def build(ctx):\n    return ctx\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def build(ctx):\n"
         "    return ctx\n\n"
         "def decide(ctx):\n"
@@ -313,16 +313,16 @@ def test_parent_b_call_result_does_not_authorize_novel_method(tmp_path):
 
 def test_parent_a_context_novel_attribute_is_not_valid_b_call_argument(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return ctx\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def build(value):\n    return value\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def build(value):\n"
         "    return value\n\n"
         "def decide(ctx):\n"
@@ -345,18 +345,18 @@ def test_parent_a_context_novel_attribute_is_not_valid_b_call_argument(tmp_path)
 
 def test_parent_a_local_novel_attribute_is_not_valid_b_call_argument(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n"
         "    selected = ctx.profile\n"
         "    return fallback(selected)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def build(value):\n    return value\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def build(value):\n"
         "    return value\n\n"
         "def decide(ctx):\n"
@@ -380,16 +380,16 @@ def test_parent_a_local_novel_attribute_is_not_valid_b_call_argument(tmp_path):
 
 def test_parent_a_observed_context_attribute_is_valid_b_call_argument(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx.known_policy)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def build(value):\n    return value\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def build(value):\n"
         "    return value\n\n"
         "def decide(ctx):\n"
@@ -406,10 +406,10 @@ def test_parent_a_observed_context_attribute_is_valid_b_call_argument(tmp_path):
 
 def test_novel_non_python_artifact_is_rejected(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text("STYLE = 'A'\n", encoding="utf-8")
-    (parent_b / "strategy.py").write_text("STYLE = 'B'\n", encoding="utf-8")
+    (parent_a / "policy.py").write_text("STYLE = 'A'\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("STYLE = 'B'\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text("STYLE = 'A'\n", encoding="utf-8")
+    (child / "policy.py").write_text("STYLE = 'A'\n", encoding="utf-8")
     (child / "policy_weights.json").write_bytes(b'{"jam": 0.91}\n')
 
     issues = validate_crossover_recombination_provenance(
@@ -528,16 +528,16 @@ def test_complete_manifest_accepts_exact_parent_b_empty_directory(tmp_path):
 
 def test_unrelated_parent_b_return_line_is_not_component_evidence(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return safe_action(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def fold_on_parse_error(error):\n    return -1\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def decide(state):\n    return -1\n",
         encoding="utf-8",
     )
@@ -558,20 +558,20 @@ def test_unrelated_parent_b_return_line_is_not_component_evidence(tmp_path):
     )
 
 
-def test_parent_b_marker_cannot_explain_deleting_parent_a_strategy(tmp_path):
+def test_parent_b_marker_cannot_explain_deleting_parent_a_policy(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return safe_action(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "B_MARKER = True\n\n"
         "def parent_b_component(state):\n"
         "    return state\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text("B_MARKER = True\n", encoding="utf-8")
+    (child / "policy.py").write_text("B_MARKER = True\n", encoding="utf-8")
 
     issues = validate_crossover_recombination_provenance(
         baseline,
@@ -589,18 +589,18 @@ def test_parent_b_marker_cannot_explain_deleting_parent_a_strategy(tmp_path):
 
 def test_parent_b_marker_cannot_be_used_as_replacement_decision(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return safe_action(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "B_MARKER = True\n\n"
         "def parent_b_component(state):\n"
         "    return state\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "B_MARKER = True\n\n"
         "def decide(state):\n"
         "    return B_MARKER\n",
@@ -622,13 +622,13 @@ def test_parent_b_marker_cannot_be_used_as_replacement_decision(tmp_path):
 
 def test_unused_parent_b_module_import_cannot_authorize_new_attribute_call(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return safe_action(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text("import random\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("import random\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "import random\n\n"
         "def decide(state):\n"
         "    return random.choice(state)\n",
@@ -650,18 +650,18 @@ def test_unused_parent_b_module_import_cannot_authorize_new_attribute_call(tmp_p
 
 def test_parent_b_module_attribute_call_is_valid_only_when_b_used_same_chain(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return safe_action(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "import random\n\n"
         "def parent_b_probe(options):\n"
         "    return random.choice(options)\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "import random\n\n"
         "def decide(state):\n"
         "    return random.choice(state)\n",
@@ -677,16 +677,16 @@ def test_parent_b_module_attribute_call_is_valid_only_when_b_used_same_chain(tmp
 
 def test_explicit_parent_b_from_import_is_valid_direct_call_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return safe_action(state)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "from profile import imported_component\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "from profile import imported_component\n\n"
         "def decide(state):\n"
         "    action = imported_component(state)\n"
@@ -703,19 +703,19 @@ def test_explicit_parent_b_from_import_is_valid_direct_call_glue(tmp_path):
 
 def test_parent_a_side_effect_component_cannot_be_duplicated(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "STATE = []\n"
         "STATE.append('a')\n\n"
         "def decide(state):\n"
         "    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "B_MARKER = True\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "STATE = []\n"
         "STATE.append('a')\n"
         "STATE.append('a')\n\n"
@@ -740,16 +740,16 @@ def test_parent_a_side_effect_component_cannot_be_duplicated(tmp_path):
 
 def test_parent_a_delete_component_cannot_be_duplicated(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "CACHE = {}\n"
         "del CACHE['stale']\n\n"
         "def decide(state):\n"
         "    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text("B_MARKER = True\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("B_MARKER = True\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "CACHE = {}\n"
         "del CACHE['stale']\n"
         "del CACHE['stale']\n\n"
@@ -774,16 +774,16 @@ def test_parent_a_delete_component_cannot_be_duplicated(tmp_path):
 
 def test_parent_b_function_component_cannot_be_reused(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def imported_component(state):\n    return state\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def decide(state):\n"
         "    return state\n\n"
         "def imported_component(state):\n"
@@ -808,16 +808,16 @@ def test_parent_b_function_component_cannot_be_reused(tmp_path):
 
 def test_parent_b_import_component_cannot_be_reused(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "from profile import imported_component\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "from profile import imported_component\n"
         "from profile import imported_component\n\n"
         "def decide(state):\n"
@@ -843,15 +843,15 @@ def test_parent_a_raw_and_normalized_forms_share_one_component_budget(
     monkeypatch,
 ):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "LIMIT = 1\n\n"
         "def decide(state):\n"
         "    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text("B_MARKER = True\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("B_MARKER = True\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "LIMIT = 1\n"
         "LIMIT = 2\n\n"
         "def decide(state):\n"
@@ -882,13 +882,13 @@ def test_parent_b_raw_and_normalized_forms_share_one_component_budget(
     monkeypatch,
 ):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(state):\n    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text("LIMIT = 1\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("LIMIT = 1\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "LIMIT = 1\n"
         "LIMIT = 2\n\n"
         "def decide(state):\n"
@@ -918,15 +918,15 @@ def test_single_parent_a_normalized_component_consumes_its_raw_slot(
     monkeypatch,
 ):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "LIMIT = 1\n\n"
         "def decide(state):\n"
         "    return state\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text("B_MARKER = True\n", encoding="utf-8")
+    (parent_b / "policy.py").write_text("B_MARKER = True\n", encoding="utf-8")
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "LIMIT = 2\n\n"
         "def decide(state):\n"
         "    return state\n\n"
@@ -947,16 +947,16 @@ def test_single_parent_a_normalized_component_consumes_its_raw_slot(
 
 def test_same_parent_b_callable_cannot_be_repeated_in_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def sample(ctx):\n    return ctx\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def decide(ctx):\n"
@@ -981,16 +981,16 @@ def test_same_parent_b_callable_cannot_be_repeated_in_glue(tmp_path):
 
 def test_repeated_bare_parent_b_calls_cannot_create_stochastic_policy(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def sample(ctx):\n    return ctx.draw()\n",
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx.draw()\n\n"
         "def decide(ctx):\n"
@@ -1016,11 +1016,11 @@ def test_repeated_bare_parent_b_calls_cannot_create_stochastic_policy(tmp_path):
 
 def test_bare_parent_b_call_expression_is_not_valid_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(ctx):\n"
@@ -1028,7 +1028,7 @@ def test_bare_parent_b_call_expression_is_not_valid_glue(tmp_path):
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(ctx):\n"
@@ -1054,11 +1054,11 @@ def test_bare_parent_b_call_expression_is_not_valid_glue(tmp_path):
 
 def test_parent_b_call_result_must_be_consumed_by_single_dataflow(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(ctx):\n"
@@ -1066,7 +1066,7 @@ def test_parent_b_call_result_must_be_consumed_by_single_dataflow(tmp_path):
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(ctx):\n"
@@ -1092,11 +1092,11 @@ def test_parent_b_call_result_must_be_consumed_by_single_dataflow(tmp_path):
 
 def test_parent_b_call_result_cannot_fan_out_in_glue(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(left, right):\n"
@@ -1104,7 +1104,7 @@ def test_parent_b_call_result_cannot_fan_out_in_glue(tmp_path):
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(left, right):\n"
@@ -1130,11 +1130,11 @@ def test_parent_b_call_result_cannot_fan_out_in_glue(tmp_path):
 
 def test_distinct_parent_b_calls_can_form_single_linear_glue_chain(tmp_path):
     parent_a, parent_b, child = _roots(tmp_path)
-    (parent_a / "strategy.py").write_text(
+    (parent_a / "policy.py").write_text(
         "def decide(ctx):\n    return fallback(ctx)\n",
         encoding="utf-8",
     )
-    (parent_b / "strategy.py").write_text(
+    (parent_b / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(value):\n"
@@ -1142,7 +1142,7 @@ def test_distinct_parent_b_calls_can_form_single_linear_glue_chain(tmp_path):
         encoding="utf-8",
     )
     baseline = python_source_snapshot(parent_a)
-    (child / "strategy.py").write_text(
+    (child / "policy.py").write_text(
         "def sample(ctx):\n"
         "    return ctx\n\n"
         "def select(value):\n"

@@ -26,17 +26,17 @@ SKILL_LAYERS: dict[str, SkillLayer] = {
     "protocol": SkillLayer(
         layer_id="protocol",
         poker_skill_ref="P1 rules/output format",
-        description="Botzone JSON contract and national TCP wire-compatibility boundaries.",
+        description="Official delimiter-free raw-TCP stream decoding, state transitions, and wire-action boundaries.",
         required_spot_fields=("legal_actions", "raise_min", "raise_max", "to_call"),
-        forbidden_patterns=("tcp_text_stdout", "wire_bet_token", "positive_allin"),
-        gate_metrics=("protected_contract_ok", "national_protocol_ok", "national_acceptance_ok"),
+        forbidden_patterns=("newline_framing", "wire_bet_token", "unsolicited_action"),
+        gate_metrics=("national_native_contract_ok", "national_protocol_ok", "national_acceptance_ok"),
     ),
-    "action_sanitizer": SkillLayer(
-        layer_id="action_sanitizer",
-        poker_skill_ref="P1 action grounding",
-        description="Integer action encoding, raise-to-total legality, all-in representation, call/check mapping.",
+    "action_intent": SkillLayer(
+        layer_id="action_intent",
+        poker_skill_ref="P1 typed action intent",
+        description="Policy selection among pass/fold/all-in/exact raise-to intents; the system socket owner alone maps and validates wire actions.",
         required_spot_fields=("legal_actions", "raise_min", "raise_max", "to_call", "street"),
-        forbidden_patterns=("raise_by_increment", "below_min_raise", "postflop_check_check"),
+        forbidden_patterns=("raise_by_increment", "below_min_raise", "direct_call_check_intent", "candidate_wire_send"),
         gate_metrics=("decision_pass_rate", "clamped_raises", "allin_conversions"),
     ),
     "preflop_range": SkillLayer(
@@ -93,7 +93,7 @@ SKILL_LAYERS: dict[str, SkillLayer] = {
         poker_skill_ref="P4 opponent-conditioned strategy",
         description="Per-opponent aggression, fold, showdown, and sizing adaptation.",
         required_spot_fields=("opponent_profile", "street", "line_template"),
-        gate_metrics=("h2h_delta", "exploitability_delta"),
+        gate_metrics=("h2h_delta", "opponent_profile_consumed"),
     ),
     "runtime_architecture": SkillLayer(
         layer_id="runtime_architecture",
@@ -108,7 +108,7 @@ SKILL_LAYERS: dict[str, SkillLayer] = {
         poker_skill_ref="Space-for-time lookup",
         description="Bounded immutable lookup tables and caches for pure card, texture, range, and evaluator facts.",
         required_spot_fields=("cache_name", "max_entries", "build_phase"),
-        forbidden_patterns=("build_large_table_in_get_action", "runtime_file_cache", "uncapped_cache_growth"),
+        forbidden_patterns=("build_large_table_in_policy_decision", "runtime_file_cache", "uncapped_cache_growth"),
         gate_metrics=("import_time_ms", "decision_latency_p95", "cache_hit_rate"),
     ),
     "match_memory": SkillLayer(
@@ -126,35 +126,37 @@ SKILL_LAYERS: dict[str, SkillLayer] = {
         required_spot_fields=("skill_layer", "street", "action_family"),
         gate_metrics=("telemetry_fidelity_ok", "reachability_ok"),
     ),
-    "adapter": SkillLayer(
-        layer_id="adapter",
-        poker_skill_ref="Protocol bridge",
-        description="National TCP adapter card/action conversion and THP-facing compliance.",
-        required_spot_fields=("street", "position", "legal_actions"),
-        forbidden_patterns=("suit_mapping_reuse", "wire_bet_token", "check_check_after_postflop_check"),
-        gate_metrics=("national_acceptance_ok", "adapter_telemetry_clean"),
-    ),
     "native_tcp": SkillLayer(
         layer_id="native_tcp",
-        poker_skill_ref="National native client",
-        description="Direct national TCP client entrypoint, line protocol state tracking, and wire action emission.",
+        poker_skill_ref="National policy/context boundary",
+        description="Consumption of the system-owned national decision context and typed action-intent ABI.",
         required_spot_fields=("street", "position", "legal_actions", "to_call"),
-        forbidden_patterns=("bot_adapter_import", "json_response_stdout", "wire_bet_token", "check_check_after_postflop_check"),
+        forbidden_patterns=("candidate_socket_access", "json_transport", "wire_bet_token", "candidate_action_sanitizer"),
         gate_metrics=("national_native_contract_ok", "national_acceptance_ok", "native_tcp_smoke_ok"),
-    ),
-    "map_elites": SkillLayer(
-        layer_id="map_elites",
-        poker_skill_ref="Evolution archive",
-        description="Behavior niche exploration and frontier diversity.",
-        required_spot_fields=("niche_id", "behavior_fingerprint"),
-        gate_metrics=("coverage", "niche_elite_score"),
     ),
     "novelty": SkillLayer(
         layer_id="novelty",
-        poker_skill_ref="Evolution archive",
-        description="Safe exploration of non-dominant but diverse candidate mechanisms.",
-        required_spot_fields=("niche_id", "parent_ids", "diff_hash"),
-        gate_metrics=("selection_score", "children_count"),
+        poker_skill_ref="Frozen structural proposal contract",
+        description=(
+            "Falsifiable exploration identified by a frozen proposal, reachable "
+            "producer-to-consumer call chain, control, and socket-intent evidence."
+        ),
+        required_spot_fields=(
+            "proposal_id",
+            "structural_call_chain",
+            "falsifier",
+            "consumer_trace_digest",
+        ),
+        forbidden_patterns=(
+            "mutable_evolution_archive",
+            "niche_child_count_authority",
+            "threshold_only_novelty",
+        ),
+        gate_metrics=(
+            "structural_diff_present",
+            "consumer_trace_verified",
+            "counterfactual_intent_changed",
+        ),
     ),
 }
 

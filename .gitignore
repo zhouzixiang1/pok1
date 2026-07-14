@@ -6,12 +6,9 @@ __pycache__/
 dist/
 build/
 
-# Bot battle results (engine output)
+# One-time pre-policy-epoch runtime debris. Active code never writes this root;
+# the acknowledged epoch reset archives any existing JSON before v143 starts.
 results/*.json
-
-# Evolution results — only LLM logs and round outputs excluded
-evolution_workspace/results/**/logs/
-evolution_workspace/results/round_*/
 
 # Runtime data (daemon writes, battle results, LLM logs)
 web/core/results/
@@ -22,16 +19,11 @@ web/logs/
 # Frontend build output
 web/server/static/
 
-# Bot worker backup files
-**/main_backup.py
-
-# Bot graveyard
-bots/graveyard/
-
 # Bot sentinel files (local-only, daemon uses to track active bots)
 *.completed
 
-# Claude Code worktrees
+# Claude Code worktrees are separate local tool checkouts, like Codex
+# worktrees; they are never active protocol/evidence inputs.
 .claude/worktrees/
 
 # Codex task worktrees. These are separate Git worktrees and must be managed
@@ -65,12 +57,24 @@ archive/clutter/
 archive/evolution_epochs/*/
 !archive/evolution_epochs/
 !archive/evolution_epochs/README.md
+# `national_native_v1` is now a committed source/docs/tests quarantine rather
+# than a runtime-results dump. Keep other epoch payloads ignored, but make every
+# retired authority file in this epoch visible to review and Git.
+!archive/evolution_epochs/national_native_v1/
+!archive/evolution_epochs/national_native_v1/**
+# The negation above exposes retired source for review; keep generated Python
+# caches excluded inside that now-visible archive tree.
+archive/evolution_epochs/national_native_v1/**/__pycache__/
+archive/evolution_epochs/national_native_v1/**/*.py[cod]
+# One-time runtime epoch-reset payloads are local forensic data, not reviewed
+# source quarantine. Keep them available on disk without dirtying either
+# checkout or making them eligible for prompts/ratings.
+archive/evolution_epochs/national_native_v1/runtime_legacy_untrusted/
 
-# Local third-party reference checkouts. Keep these repos on disk for research,
-# but do not stage their nested git histories or vendored source trees.
+# Explicit local third-party quarantines. These may exist in the operator
+# checkout, remain untracked, and have zero active import/prompt/evidence
+# authority. Active architecture tests enforce that boundary separately.
 ref/llm_evolution/
-
-# Local-only third-party contribution (lll/). Kept on disk but never committed.
 lll/
 
 # OS
@@ -85,6 +89,3 @@ Thumbs.db
 
 # LLM credentials
 .env
-rl/checkpoints/
-rl/checkpoints/
-rl/checkpoints/

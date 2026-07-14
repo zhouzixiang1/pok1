@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run official Windows-platform compliance checks for native national TCP bots."""
+"""Run low-level official Windows-EXE diagnostics for raw national TCP bots.
+
+This command retains compliance evidence but never issues a formal certificate
+and never produces strength/rating evidence. Publication authority belongs only
+to the signed official-full-v5 path in scripts/official_certify.py.
+"""
 
 from __future__ import annotations
 
@@ -39,7 +44,13 @@ def _write_json(path: Path, payload: dict) -> None:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=(
+            "Diagnostic only: use `official_certify.py full` (5+3 rounds, "
+            "70 hands each) for formal publication. EXE chips never affect ratings."
+        ),
+    )
     parser.add_argument("--candidate", help="Candidate bot directory or script.")
     parser.add_argument("--opponent", help="Opponent bot directory or script for non-self-play rounds.")
     parser.add_argument("--self-play-rounds", type=int, default=1, help="Candidate-vs-candidate official rounds.")

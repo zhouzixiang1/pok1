@@ -10,13 +10,58 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from pathlib import Path
 import socket
 import stat
+import sys
 
 
 PRECONNECTED_FD_ENV = "POK_PRECONNECTED_SOCKET_FD"
 PRECONNECTED_HOST_ENV = "POK_PRECONNECTED_SOCKET_HOST"
 PRECONNECTED_PORT_ENV = "POK_PRECONNECTED_SOCKET_PORT"
+
+_STDLIB_MODULE_NAMES = frozenset(
+    set(getattr(sys, "stdlib_module_names", ()))
+    | set(sys.builtin_module_names)
+)
+
+
+def stdlib_shadow_errors(artifact_root: str | Path) -> list[str]:
+    """Reject top-level artifact entries that can replace Python's stdlib.
+
+    Managed native bots deliberately make their artifact importable so the
+    exact system runtime can load strategy/state modules.  Without this static
+    boundary, a candidate ``argparse.py`` (or package directory) runs while the
+    trusted wire runtime imports its own dependencies, changing formal and
+    local execution semantics despite an exact ``national_bot.py`` digest.
+    """
+
+    root = Path(artifact_root)
+    try:
+        entries = sorted(root.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        return [
+            "managed_bot_stdlib_shadow_scan_error:"
+            f"{type(exc).__name__}:{str(exc)[:160]}"
+        ]
+    errors: list[str] = []
+    for entry in entries:
+        # A top-level package uses its complete directory name.  Importable
+        # files use the portion before the first suffix (``argparse.py``,
+        # extension modules, cached modules).  Applying the same conservative
+        # rule to other files is harmless and avoids version-specific suffix
+        # gaps between the controller and the isolated Python runtime.
+        module_name = (
+            entry.name
+            if entry.is_dir()
+            else entry.name.split(".", 1)[0]
+        )
+        if module_name in _STDLIB_MODULE_NAMES:
+            errors.append(
+                "managed_bot_stdlib_shadow_forbidden:"
+                f"{entry.name}:{module_name}"
+            )
+    return errors
 
 
 SANDBOX_BOOTSTRAP = r"""

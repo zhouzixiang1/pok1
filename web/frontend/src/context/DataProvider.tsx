@@ -3,8 +3,8 @@ import { createContext, useContext, useState, useEffect, useRef, type ReactNode 
 import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog,
   MatchSummary, DaemonStatus, RateLimitStatus, BotSummary, H2HEntry, BotStatsEntry,
-  SchedulerStatus,
 } from "../api/types";
+import { useControlStatus } from "../hooks/useControlStatus";
 
 export type DataStore = {
   ratings: BotRating[];
@@ -13,9 +13,6 @@ export type DataStore = {
   rateLimit: RateLimitStatus | null;
   bots: {
     active: BotSummary[];
-    graveyard: BotSummary[];
-    history?: BotSummary[];
-    counts?: Record<string, number>;
   };
   matches: MatchSummary[];
   matrix: MatchMatrix | null;
@@ -23,7 +20,6 @@ export type DataStore = {
   generations: GenerationLog[];
   h2h: Record<string, H2HEntry>;
   botStats: Record<string, BotStatsEntry>;
-  scheduler: SchedulerStatus | null;
 };
 
 const initial: DataStore = {
@@ -31,14 +27,13 @@ const initial: DataStore = {
   stats: null,
   daemon: null,
   rateLimit: null,
-  bots: { active: [], graveyard: [] },
+  bots: { active: [] },
   matches: [],
   matrix: null,
   history: [],
   generations: [],
   h2h: {},
   botStats: {},
-  scheduler: null,
 };
 
 const DataContext = createContext<DataStore>(initial);
@@ -47,9 +42,18 @@ const SetDataContext = createContext<((partial: Partial<DataStore>) => void) | n
 export function DataProvider({ children }: { children: ReactNode }) {
   const [store, setStore] = useState<DataStore>(initial);
   const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { status: epochStatus } = useControlStatus(5_000);
 
   useEffect(() => {
+    if (!epochStatus?.epoch_initialized) {
+      // The browser store is only a cache. Drop every prior SSE projection on
+      // reset/recovery/control-read failure so a later page cannot flash stale
+      // ratings or replays while the canonical epoch is unavailable.
+      setStore(initial);
+      return;
+    }
     let currentSource: EventSource | null = null;
+    let authorityBlocked = false;
 
     const connect = () => {
       currentSource = new EventSource("/api/data/stream");
@@ -66,7 +70,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
         history: (data) => setStore((s) => ({ ...s, history: data as HistoryEntry[] })),
         h2h: (data) => setStore((s) => ({ ...s, h2h: data as Record<string, H2HEntry> })),
         bot_stats: (data) => setStore((s) => ({ ...s, botStats: data as Record<string, BotStatsEntry> })),
-        scheduler: (data) => setStore((s) => ({ ...s, scheduler: data as SchedulerStatus })),
       };
 
       Object.entries(handlers).forEach(([event, handler]) => {
@@ -75,9 +78,21 @@ export function DataProvider({ children }: { children: ReactNode }) {
         });
       });
 
+      currentSource.addEventListener("epoch_blocked", () => {
+        authorityBlocked = true;
+        setStore(initial);
+        currentSource?.close();
+        currentSource = null;
+        if (reconnectRef.current) {
+          clearTimeout(reconnectRef.current);
+          reconnectRef.current = null;
+        }
+      });
+
       currentSource.onerror = () => {
         currentSource?.close();
         currentSource = null;
+        if (authorityBlocked) return;
         reconnectRef.current = setTimeout(connect, 5000);
       };
     };
@@ -88,7 +103,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       if (reconnectRef.current) clearTimeout(reconnectRef.current);
       currentSource?.close();
     };
-  }, []);
+  }, [epochStatus?.epoch_initialized]);
 
   const updateData = (partial: Partial<DataStore>) => setStore((s) => ({ ...s, ...partial }));
 
@@ -110,5 +125,4 @@ export const useHistory = () => useContext(DataContext).history;
 export const useGenerations = () => useContext(DataContext).generations;
 export const useH2H = () => useContext(DataContext).h2h;
 export const useBotStats = () => useContext(DataContext).botStats;
-export const useSchedulerStatus = () => useContext(DataContext).scheduler;
 export const useUpdateData = () => useContext(SetDataContext)!;

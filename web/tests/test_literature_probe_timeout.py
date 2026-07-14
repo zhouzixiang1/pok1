@@ -1,7 +1,27 @@
 import asyncio
 import json
+from types import SimpleNamespace
 
+import checkpoint_schema
+import pytest
 from core import tool_planning
+
+
+@pytest.fixture(autouse=True)
+def _strict_parent_authority(monkeypatch):
+    def resolve(label, **_kwargs):
+        version = int(str(label).rsplit("_v", 1)[1])
+        return SimpleNamespace(
+            eligible=True,
+            version=version,
+            issues=(),
+            runtime_manifest={"epoch": "national_tcp_policy_v1"},
+            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
+            publication_identity={"published": True, "version": version},
+            certificate_digest="a" * 64,
+        )
+
+    monkeypatch.setattr(checkpoint_schema, "resolve_national_bot_spec", resolve)
 
 
 class _DummyUI:

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
-import json
 import os
 from pathlib import Path
 import shutil
@@ -20,10 +19,7 @@ from managed_bot_executor import (
     ManagedProcess,
     launch_managed_bot,
 )
-from national_protocol_quarantine import (
-    ProtocolQuarantineError,
-    quarantined_native_entry_sources,
-)
+from national_runtime_authority import current_system_native_runtime_errors
 from official_execution_profile import load_execution_profile
 
 
@@ -34,15 +30,6 @@ class SealedBotArtifact:
     entry_relative: str
     artifact_hash: str
     manifest_digest: str
-
-
-@dataclass(frozen=True)
-class OfficialBootstrapLaunchAuthorization:
-    root_id: str
-    artifact_hash: str
-    selection_digest: str
-    selection_json: str
-    candidate_path: str
 
 
 def _copy_verified_file(
@@ -170,7 +157,6 @@ def launch_sandboxed_bot(
     log_path: Path | None,
     supports_log: bool,
     extra_args: tuple[str, ...] = (),
-    quarantine_authorization: OfficialBootstrapLaunchAuthorization | None = None,
     stdin: int | IO[bytes] | None = subprocess.DEVNULL,
     stdout: int | IO[bytes] | None = subprocess.PIPE,
     stderr: int | IO[bytes] | None = subprocess.PIPE,
@@ -180,58 +166,12 @@ def launch_sandboxed_bot(
 
     if hash_path(artifact.root) != artifact.artifact_hash:
         raise RuntimeError("official_sealed_artifact_changed_before_launch")
-    try:
-        quarantine_matches = quarantined_native_entry_sources(artifact.root)
-    except ProtocolQuarantineError as exc:
+    runtime_errors = current_system_native_runtime_errors(artifact.root)
+    if runtime_errors:
         raise RuntimeError(
-            "protocol_quarantine_authority_unavailable:official:"
-            f"{type(exc).__name__}:{str(exc)[:180]}"
-        ) from exc
-    if quarantine_matches:
-        expected_root = "national-v141-official-full-v5-signed-ledger-root"
-        expected_v141_hash = (
-            "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796"
+            "non_system_owned_native_runtime_forbidden:official:"
+            f"{runtime_errors[0]}"
         )
-        selection: dict[str, Any] | None = None
-        try:
-            decoded = json.loads(
-                quarantine_authorization.selection_json
-                if quarantine_authorization is not None
-                else "null"
-            )
-            selection = decoded if isinstance(decoded, dict) else None
-        except Exception:
-            selection = None
-        valid_authorization = (
-            quarantine_authorization is not None
-            and quarantine_authorization.root_id == expected_root
-            and quarantine_authorization.artifact_hash == expected_v141_hash
-            and artifact.artifact_hash == expected_v141_hash
-            and selection is not None
-            and canonical_digest(selection)
-            == quarantine_authorization.selection_digest
-            and bool(quarantine_authorization.candidate_path)
-        )
-        if valid_authorization:
-            try:
-                from official_bootstrap import (
-                    validate_signed_v5_ledger_bootstrap_selection,
-                )
-
-                validation = validate_signed_v5_ledger_bootstrap_selection(
-                    selection,
-                    expected_root,
-                    quarantine_authorization.candidate_path,
-                    allow_consumed=False,
-                )
-                valid_authorization = validation.get("valid") is True
-            except Exception:
-                valid_authorization = False
-        if not valid_authorization:
-            raise RuntimeError(
-                "protocol_quarantined_native_entry_forbidden:official:"
-                f"matches={','.join(quarantine_matches)}"
-            )
     profile = load_execution_profile()
     tools = profile["tools"]
     runtime = ExecutorRuntime.discover(
@@ -267,7 +207,6 @@ def launch_sandboxed_bot(
 
 
 __all__ = [
-    "OfficialBootstrapLaunchAuthorization",
     "SealedBotArtifact",
     "launch_sandboxed_bot",
     "seal_bot_artifact",

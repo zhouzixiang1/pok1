@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run the official Windows platform through a raw TCP diagnostic proxy."""
+"""Run the official Windows platform through a raw TCP diagnostic proxy.
+
+Wire-probe output is diagnostic only: it cannot certify or rate a bot.
+"""
 
 from __future__ import annotations
 
@@ -52,8 +55,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate", required=True, help="Candidate bot directory/script.")
     parser.add_argument("--opponent", required=True, help="Opponent bot directory/script.")
-    parser.add_argument("--candidate-kind", choices=("native", "sample"), default="native")
-    parser.add_argument("--opponent-kind", choices=("native", "sample"), default="native")
     parser.add_argument("--target-hands", type=int, default=70)
     parser.add_argument("--results-dir", default=str(ROOT / "web" / "core" / "results" / "official_wire_probe"))
     parser.add_argument("--exe", default=str(base.exe_path))
@@ -98,35 +99,12 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 def _build_bot_command(
     *,
     bot_path: Path,
-    kind: str,
     name: str,
     seat: str,
     host: str,
     port: int,
     log_path: Path,
 ) -> tuple[list[str], Path]:
-    if kind == "sample":
-        runner = ROOT / "scripts" / "run_national_sample.py"
-        return (
-            [
-                sys.executable,
-                str(runner),
-                "--script",
-                str(bot_path),
-                "--host",
-                host,
-                "--port",
-                str(port),
-                "--name",
-                name,
-                "--seat",
-                seat,
-                "--log",
-                str(log_path),
-            ],
-            runner.parent,
-        )
-
     entry = resolve_bot_entry(bot_path)
     return (
         [
@@ -183,8 +161,6 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
         "target_hands": max(1, min(70, int(args.target_hands))),
         "candidate": str(Path(args.candidate).expanduser().resolve()),
         "opponent": str(Path(args.opponent).expanduser().resolve()),
-        "candidate_kind": args.candidate_kind,
-        "opponent_kind": args.opponent_kind,
         "config": _jsonable(cfg),
         "environment": env_report,
         "artifacts": {"round_dir": str(round_dir)},
@@ -251,7 +227,6 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
             opponent_path = Path(args.opponent).expanduser().resolve()
             cmd_a, cwd_a = _build_bot_command(
                 bot_path=candidate_path,
-                kind=args.candidate_kind,
                 name="Candidate",
                 seat="upper",
                 host=cfg.host,
@@ -260,7 +235,6 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
             )
             cmd_b, cwd_b = _build_bot_command(
                 bot_path=opponent_path,
-                kind=args.opponent_kind,
                 name="Opponent",
                 seat="lower",
                 host=cfg.host,

@@ -22,7 +22,17 @@ sys.path.insert(0, str(PROJECT_ROOT / "web" / "server"))
 # Import server.app to create module-level broadcaster and web_ui
 # (some endpoints do `from server.app import web_ui` inside handlers)
 import server.app  # noqa: F401
-from bot_namespace import ACTIVE_BOT_PREFIX, parse_bot_version
+from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
+    FIRST_STRICT_POLICY_VERSION,
+    NATIONAL_ENTRYPOINT,
+    NATIONAL_RUNTIME_MANIFEST,
+    POLICY_ENTRYPOINT,
+    POLICY_EPOCH_RECEIPT,
+    PRECOMPUTE_ENTRYPOINT,
+    parse_bot_version,
+    resolve_national_bot_spec,
+)
 
 from server.routes.ratings import router as ratings_router
 from server.routes.matches import router as matches_router
@@ -34,7 +44,6 @@ from server.routes.certification import router as certification_router
 from server.routes.pipeline import router as pipeline_router
 from server.routes.prompts import router as prompts_router
 from server.routes.data_stream import router as data_stream_router
-from server.routes.scheduler import router as scheduler_router
 from server.routes.national_arena import router as national_arena_router
 
 # --- Bot detection for conditional test skipping ---
@@ -43,7 +52,6 @@ from server.routes.national_arena import router as national_arena_router
 # collection time — before any fixtures execute.
 
 _has_active_bot = False
-_has_graveyard_bot = False
 
 
 def _tagged_test_bot_versions() -> list[int]:
@@ -76,10 +84,10 @@ def _tagged_test_bot_versions() -> list[int]:
         if object_type != "tag" or not separator:
             continue
         version = parse_bot_version(tag.replace("national-bot-v", "national_v", 1))
-        if version is None:
+        if version is None or version < FIRST_STRICT_POLICY_VERSION:
             continue
         bot_dir = PROJECT_ROOT / "bots" / f"national_v{version}"
-        if bot_dir.is_dir() and (bot_dir / "main.py").is_file():
+        if resolve_national_bot_spec(bot_dir, repo_root=PROJECT_ROOT).eligible:
             versions.append(version)
     return sorted(set(versions))
 
@@ -90,9 +98,6 @@ def pytest_configure(config):
         "markers", "requires_active_bot: skip if no active bots found"
     )
     config.addinivalue_line(
-        "markers", "requires_graveyard_bot: skip if no graveyard bots found"
-    )
-    config.addinivalue_line(
         # Slow tests run real bot subprocesses; deselected by default via
         # pytest.ini addopts `-m "not slow"`. Run with: pytest -m slow
         "markers", "slow: deselect by default (real subprocess, multi-second)"
@@ -100,33 +105,16 @@ def pytest_configure(config):
 
     # Detect bots at configure time (before collection) so
     # pytest_collection_modifyitems can use the results.
-    global _has_active_bot, _has_graveyard_bot
-    bots_dir = PROJECT_ROOT / "bots"
+    global _has_active_bot
     _has_active_bot = bool(_tagged_test_bot_versions())
-
-    gy = bots_dir / "graveyard"
-    if gy.exists():
-        graveyard = [
-            d for d in gy.iterdir() if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)
-        ]
-        _has_graveyard_bot = len(graveyard) > 0
-    else:
-        _has_graveyard_bot = False
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip tests marked requires_active_bot / requires_graveyard_bot when absent."""
+    """Skip tests marked requires_active_bot when no published fixture exists."""
     for item in items:
         if item.get_closest_marker("requires_active_bot") and not _has_active_bot:
             item.add_marker(
                 pytest.mark.skip(reason="No active bots in environment")
-            )
-        if (
-            item.get_closest_marker("requires_graveyard_bot")
-            and not _has_graveyard_bot
-        ):
-            item.add_marker(
-                pytest.mark.skip(reason="No graveyard bots in environment")
             )
 
 
@@ -146,7 +134,7 @@ def app():
     for r in [
         ratings_router, matches_router, evolution_router, logs_router,
         control_router, bots_router, certification_router, pipeline_router, prompts_router,
-        data_stream_router, scheduler_router,
+        data_stream_router,
         national_arena_router,
     ]:
         test_app.include_router(r)
@@ -156,15 +144,16 @@ def app():
 @pytest.fixture
 def client(app):
     """Synchronous test client -- no lifespan, no orchestrator."""
-    return TestClient(app)
-
-
-@pytest.fixture
-def temp_experience(tmp_path):
-    """Temp experience_pool.md for write isolation."""
-    f = tmp_path / "experience_pool.md"
-    f.write_text("## Test\n- Lesson 1\n")
-    return f
+    # Operator mutation routes require the same boundary as production: an
+    # actual loopback peer and an explicit same-origin browser Origin.  Keep
+    # ordinary route tests realistic while adversarial tests override either
+    # value deliberately.
+    return TestClient(
+        app,
+        base_url="http://127.0.0.1",
+        headers={"Origin": "http://127.0.0.1"},
+        client=("127.0.0.1", 50_000),
+    )
 
 
 @pytest.fixture
@@ -181,18 +170,18 @@ def temp_prompt_dir(tmp_path):
 @pytest.fixture
 def sample_ratings():
     return {
-        "national_v35": {"r": 1600, "rd": 50, "sigma": 0.06, "last_period": "p10"},
-        "national_v30": {"r": 1550, "rd": 80, "sigma": 0.06, "last_period": "p10"},
-        "national_v10": {"r": 1500, "rd": 100, "sigma": 0.06, "last_period": "p9"},
+        "national_v145": {"r": 1600, "rd": 50, "sigma": 0.06, "last_period": "p10"},
+        "national_v144": {"r": 1550, "rd": 80, "sigma": 0.06, "last_period": "p10"},
+        "national_v143": {"r": 1500, "rd": 100, "sigma": 0.06, "last_period": "p9"},
     }
 
 
 @pytest.fixture
 def sample_h2h():
     return {
-        "national_v35 vs national_v30": {"games": 50, "a_wins": 30, "b_wins": 20, "win_rate": 0.6},
-        "national_v35 vs national_v10": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
-        "national_v30 vs national_v10": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
+        "national_v145 vs national_v144": {"games": 50, "a_wins": 30, "b_wins": 20, "win_rate": 0.6},
+        "national_v145 vs national_v143": {"games": 50, "a_wins": 35, "b_wins": 15, "win_rate": 0.7},
+        "national_v144 vs national_v143": {"games": 50, "a_wins": 28, "b_wins": 22, "win_rate": 0.56},
     }
 
 
@@ -200,21 +189,6 @@ def sample_h2h():
 def active_bot_version():
     versions = _tagged_test_bot_versions()
     return versions[-1] if versions else None
-
-
-@pytest.fixture(scope="session")
-def graveyard_bot_version():
-    main_bots = PROJECT_ROOT / "bots"
-    graveyard = main_bots / "graveyard"
-    main_names = set()
-    if main_bots.exists():
-        main_names = {d.name for d in main_bots.iterdir() if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX)}
-    if graveyard.exists():
-        for d in sorted(graveyard.iterdir(), reverse=True):
-            version = parse_bot_version(d.name)
-            if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX) and d.name not in main_names and version is not None:
-                return version
-    return None
 
 
 # --- Full isolation fixture ---
@@ -225,9 +199,9 @@ def isolate_state(tmp_path, monkeypatch):
     """Redirect ALL persistent state to tmp so tests never touch real data files.
 
     Patches:
-    - evolution_infra constants (RESULTS_DIR, BOTS_DIR, GRAVEYARD_DIR, all *_FILE)
+        - evolution_infra constants (RESULTS_DIR, BOTS_DIR, all *_FILE)
     - server.route module-level constants (PROJECT_ROOT-derived paths)
-    - system_log.SYSTEM_EVENTS_FILE
+    - event_bus.EVENTS_FILE
     - app_state._config_file
     - Clears server cache to prevent stale reads
     - Suppresses pok logger output during tests
@@ -236,7 +210,6 @@ def isolate_state(tmp_path, monkeypatch):
     import logging
 
     from server.state import app_state
-    import system_log
 
     monkeypatch.setenv(
         "POK_OFFICIAL_VERDICT_LEDGER",
@@ -275,8 +248,6 @@ def isolate_state(tmp_path, monkeypatch):
 
     bots_dir = iso / "bots"
     bots_dir.mkdir()
-    graveyard_dir = bots_dir / "graveyard"
-    graveyard_dir.mkdir()
 
     # Materialize one small, regular-file bot fixture.  Artifact identity rejects
     # symlink roots by design, and tests must never read through into or mutate a
@@ -288,7 +259,13 @@ def isolate_state(tmp_path, monkeypatch):
         source = real_bots / f"national_v{fixture_version}"
         target = bots_dir / source.name
         target.mkdir()
-        for filename in ("main.py", "national_bot.py"):
+        for filename in (
+            NATIONAL_ENTRYPOINT,
+            POLICY_ENTRYPOINT,
+            PRECOMPUTE_ENTRYPOINT,
+            NATIONAL_RUNTIME_MANIFEST,
+            POLICY_EPOCH_RECEIPT,
+        ):
             (target / filename).write_bytes((source / filename).read_bytes())
         (target / ".completed").write_text("isolated test fixture\n", encoding="utf-8")
 
@@ -322,7 +299,6 @@ def isolate_state(tmp_path, monkeypatch):
 
     # --- Snapshot real state for restoration ---
     real_config = app_state._config_file
-    real_events = system_log.SYSTEM_EVENTS_FILE
     snapshot = {
         "running": app_state.running,
         "daemon_enabled": app_state.daemon_enabled,
@@ -335,7 +311,6 @@ def isolate_state(tmp_path, monkeypatch):
 
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-    monkeypatch.setattr(evolution_infra, "GRAVEYARD_DIR", graveyard_dir)
     monkeypatch.setattr(evolution_infra, "RATINGS_FILE", results_dir / "glicko_ratings.json")
     monkeypatch.setattr(evolution_infra, "STATS_FILE", results_dir / "elo_daemon_stats.json")
     monkeypatch.setattr(evolution_infra, "H2H_FILE", results_dir / "head_to_head.json")
@@ -347,19 +322,37 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", results_dir / "archive")
     monkeypatch.setattr(evolution_infra, "LLM_COSTS_FILE", results_dir / "llm_costs.jsonl")
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results_dir / "rating_history.jsonl")
-    monkeypatch.setattr(evolution_infra, "CROSS_GEN_EXHAUSTED_HISTORY", results_dir / "cross_gen_exhausted_history.jsonl")
-    monkeypatch.setattr(evolution_infra, "EXPERIENCE_FILE", iso / "experience_pool.md")
     # Publication/official eligibility is covered by dedicated tests.  Generic
     # route and helper tests operate on the isolated tag-backed artifact above.
     monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _path: True)
 
-    # --- 2. Patch system_log module constant ---
-    monkeypatch.setattr(system_log, "SYSTEM_EVENTS_FILE", iso / "system_events.jsonl")
+    # Generic tests run inside a synthetic, already-initialized runtime.  The
+    # launch-boundary suite overrides this canonical guard explicitly to cover
+    # reset_required, malformed reset evidence, fresh-bootstrap-ready, and
+    # strict-published states.  Keep policy_epoch_initialization itself real so
+    # epoch projection/receipt tests continue to exercise its validator.
+    import epoch_authority
 
-    # --- 2b. Patch event_bus (Phase 0 log redesign): redirect events.jsonl to
+    monkeypatch.setattr(
+        epoch_authority,
+        "require_policy_epoch_initialized",
+        lambda operation: {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "fresh_bootstrap_ready",
+            "initialized": True,
+            "strict_published": False,
+            "reset_receipt_valid": True,
+            "reset_receipt_digest": "a" * 64,
+            "operator_action": None,
+            "operator_command": None,
+            "test_operation": operation,
+        },
+    )
+
+    # --- 2. Patch event_bus: redirect the sole event ledger to
     # tmp and reset correlation context so emit() never touches real results/.
-    # Every log_system_event call now dual-writes through emit(), so this matters
-    # for ALL tests, not just event_bus's own. ---
+    # Every log_system_event call forwards through emit(), so this matters for
+    # ALL tests, not just event_bus's own. ---
     import event_bus
     monkeypatch.setattr(event_bus, "EVENTS_FILE", results_dir / "events.jsonl")
     event_bus.reset_for_test()
@@ -381,12 +374,11 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(_ds, "HISTORY_FILE", results_dir / "rating_history.jsonl")
     monkeypatch.setattr(_ds, "MATCH_HISTORY_FILE", results_dir / "match_history.jsonl")
 
-    # ratings: PROJECT_ROOT, RESULTS_DIR, EXPERIENCE_FILE, RATINGS_FILE, STATS_FILE,
+    # ratings: PROJECT_ROOT, RESULTS_DIR, RATINGS_FILE, STATS_FILE,
     #          H2H_FILE, BOT_STATS_FILE, HISTORY_FILE, MATCH_HISTORY_FILE
     import server.routes.ratings as _rt
     monkeypatch.setattr(_rt, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_rt, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(_rt, "EXPERIENCE_FILE", iso / "experience_pool.md")
     monkeypatch.setattr(_rt, "RATINGS_FILE", results_dir / "glicko_ratings.json")
     monkeypatch.setattr(_rt, "STATS_FILE", results_dir / "elo_daemon_stats.json")
     monkeypatch.setattr(_rt, "H2H_FILE", results_dir / "head_to_head.json")
@@ -432,6 +424,7 @@ def isolate_state(tmp_path, monkeypatch):
     import server.routes.control as _ctrl
     monkeypatch.setattr(_ctrl, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_ctrl, "WEB_DIR", iso / "web")
+    monkeypatch.setattr(_ctrl, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(_ctrl, "ORCHESTRATOR_SESSION_FILE", results_dir / "orchestrator_session.json")
 
     # prompts: PROJECT_ROOT, PROMPTS_DIR
@@ -446,12 +439,6 @@ def isolate_state(tmp_path, monkeypatch):
             (prompts_dst / f.name).write_text(f.read_text())
     monkeypatch.setattr(_pr, "PROJECT_ROOT", iso)
     monkeypatch.setattr(_pr, "PROMPTS_DIR", prompts_dst)
-
-    # battle_scheduler: module-level constants computed from RESULTS_DIR at import time
-    import battle_scheduler
-    monkeypatch.setattr(battle_scheduler, "BATTLE_JOBS_FILE", results_dir / "battle_jobs.jsonl")
-    monkeypatch.setattr(battle_scheduler, "BATTLE_CLAIMED_FILE", results_dir / "battle_jobs.claimed")
-    monkeypatch.setattr(battle_scheduler, "BATTLE_RESULTS_FILE", results_dir / "battle_results.jsonl")
 
     # --- 5. Clear server cache ---
     from server.cache import _CACHE

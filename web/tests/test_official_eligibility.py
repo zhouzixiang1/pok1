@@ -1,269 +1,118 @@
-from pathlib import Path
-import json
+from types import SimpleNamespace
+import hashlib
 
 import official_eligibility
-import pytest
 
 
-@pytest.fixture(autouse=True)
-def _healthy_epoch_registry(monkeypatch):
-    monkeypatch.setattr(
-        official_eligibility,
-        "epoch_lifecycle_eligibility",
-        lambda version: {"eligible": True, "reason": "national_epoch_active", "version": version},
-    )
-    monkeypatch.setattr(
-        official_eligibility,
-        "current_target_version",
-        lambda requested=None: int(requested or 143),
-    )
+def test_active_role_policy_is_strict_and_grant_free():
+    policy = official_eligibility.load_official_role_policy()
 
-
-def _policy(artifact_hash="abc"):
-    return {
-        "schema_version": 1,
-        "policy_id": "test-transition",
-        "new_candidate_cutoff": 143,
-        "sunset_version": 160,
-        "grants": [
-            {
-                "bot": "national_v142",
-                "artifact_hash": artifact_hash,
-                "roles": ["parent_source", "rating_pool", "official_opponent"],
-                "role_sunset_versions": {"official_opponent": 145},
-                "reason": "test",
-            }
-        ],
-    }
-
-
-def _identity(path, *, artifact_hash="abc", published=True):
-    return {
-        "label": Path(path).name,
-        "version": 142,
-        "path": str(path),
-        "artifact_hash": artifact_hash,
-        "published": published,
-        "issues": [] if published else ["not published"],
-    }
-
-
-def test_transition_policy_keeps_v142_nonformal_roles_only():
-    policy = official_eligibility.load_grandfather_policy()
-    v142 = next(grant for grant in policy["grants"] if grant["bot"] == "national_v142")
-
-    assert set(v142["roles"]) == {"parent_source", "rating_pool"}
-    assert "official_opponent" not in v142["roles"]
-
-
-def test_grandfather_grant_is_bound_to_artifact_role_and_sunset(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v142"
-    monkeypatch.setattr(
-        official_eligibility,
-        "published_bot_identity",
-        lambda path: _identity(path),
-    )
-
-    allowed = official_eligibility.grandfather_eligibility(
-        bot,
-        "official_opponent",
-        target_version=143,
-        policy=_policy(),
-    )
-    expired = official_eligibility.grandfather_eligibility(
-        bot,
-        "official_opponent",
-        target_version=146,
-        policy=_policy(),
-    )
-
-    assert allowed["eligible"] is True
-    assert allowed["reason"] == "content_bound_grandfather_grant"
-    assert expired["eligible"] is False
-    assert expired["reason"] == "grandfather_grant_expired"
-
-
-def test_grandfather_grant_fails_closed_on_hash_or_publication(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v142"
-    monkeypatch.setattr(
-        official_eligibility,
-        "published_bot_identity",
-        lambda path: _identity(path, artifact_hash="changed"),
-    )
-    mismatch = official_eligibility.grandfather_eligibility(
-        bot,
-        "rating_pool",
-        target_version=143,
-        policy=_policy(),
-    )
-    monkeypatch.setattr(
-        official_eligibility,
-        "published_bot_identity",
-        lambda path: _identity(path, published=False),
-    )
-    unpublished = official_eligibility.grandfather_eligibility(
-        bot,
-        "rating_pool",
-        target_version=143,
-        policy=_policy(),
-    )
-
-    assert mismatch["reason"] == "grandfather_artifact_hash_mismatch"
-    assert unpublished["reason"] == "not_published_artifact"
-
-
-def test_official_opponent_grant_sunsets_by_certified_readiness_not_version(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v142"
-    monkeypatch.setattr(official_eligibility, "published_bot_identity", lambda path: _identity(path))
-    policy = _policy()
-    policy.update({
-        "schema_version": 2,
-        "readiness_rules": {
-            "official_opponent": {"minimum_certified_alternatives": 2},
-        },
-    })
-
-    still_needed = official_eligibility.grandfather_eligibility(
-        bot,
-        "official_opponent",
-        target_version=999,
-        policy=policy,
-        readiness={"certified_alternatives": 1},
-    )
-    migrated = official_eligibility.grandfather_eligibility(
-        bot,
-        "official_opponent",
-        target_version=143,
-        policy=policy,
-        readiness={"certified_alternatives": 2},
-    )
-
-    assert still_needed["eligible"] is True
-    assert still_needed["minimum_certified_alternatives"] == 2
-    assert migrated["eligible"] is False
-    assert migrated["reason"] == "grandfather_readiness_satisfied"
-
-
-def test_new_candidate_cannot_receive_legacy_grant(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v143"
-    monkeypatch.setattr(
-        official_eligibility,
-        "published_bot_identity",
-        lambda path: {
-            **_identity(path),
-            "label": "national_v143",
-            "version": 143,
-        },
-    )
-
-    result = official_eligibility.grandfather_eligibility(
-        bot,
+    assert policy["epoch"] == "national_tcp_policy_v1"
+    assert policy["transitional_grants"] == "forbidden"
+    assert set(policy["roles"]) == {
         "parent_source",
-        target_version=143,
-        policy=_policy(),
+        "rating_pool",
+        "official_opponent",
+    }
+    assert all(
+        "signed_official-full-v5" in contract["required"]
+        for contract in policy["roles"].values()
+    )
+    assert policy["historical_signed_ledger_root"] == {
+        "status": "retired",
+        "active_role_authority": False,
+        "executable": False,
+    }
+    assert policy["first_strict_control"] == {
+        "control_id": "first_strict_control_v1",
+        "authority": "system_first_strict_control",
+        "formal_bootstrap_scope": "first_policy_bot_empty_pool_only",
+        "normal_official_opponent": False,
+        "one_time": True,
+        "strength_weight": 0,
+        "rating_weight": 0,
+    }
+
+
+def test_retired_authorization_is_preserved_only_in_archive():
+    root = official_eligibility.ROOT
+    assert not (root / "web/core/official_grandfathering.json").exists()
+    archived = (
+        root
+        / "archive/evolution_epochs/national_native_v1/authorization"
+        / "official_grandfathering.json"
+    )
+    assert archived.is_file()
+    assert hashlib.sha256(archived.read_bytes()).hexdigest() == (
+        "473849bda17fe3856466907a9e28171dbd8c98afce99b422f5fdd77fc40df75e"
     )
 
-    assert result["eligible"] is False
-    assert result["reason"] == "new_candidate_cannot_be_grandfathered"
 
-
-def test_grandfather_grant_fails_closed_when_epoch_registry_is_unavailable(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v142"
-    monkeypatch.setattr(official_eligibility, "published_bot_identity", lambda path: _identity(path))
+def test_pre_policy_version_is_rejected_without_registry_or_archive_read(monkeypatch):
     monkeypatch.setattr(
         official_eligibility,
-        "epoch_lifecycle_eligibility",
-        lambda _version: {"eligible": False, "reason": "national_epoch_registry_unavailable"},
+        "_registry_state",
+        lambda: (_ for _ in ()).throw(AssertionError("registry must not be read")),
     )
 
-    result = official_eligibility.grandfather_eligibility(
-        bot,
-        "rating_pool",
-        target_version=143,
-        policy=_policy(),
-    )
+    result = official_eligibility.epoch_lifecycle_eligibility(142)
 
     assert result["eligible"] is False
-    assert result["reason"] == "national_epoch_registry_unavailable"
+    assert result["reason"] == "pre_policy_epoch_archived"
+    assert result["first_strict_version"] == 143
 
 
-def test_monotonic_epoch_target_prevents_expired_grant_revival(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v142"
-    monkeypatch.setattr(official_eligibility, "published_bot_identity", lambda path: _identity(path))
+def test_strict_epoch_lifecycle_uses_durable_reap_registry(monkeypatch):
     monkeypatch.setattr(
         official_eligibility,
-        "current_target_version",
-        lambda requested=None: max(int(requested or 1), 161),
+        "_registry_state",
+        lambda: SimpleNamespace(
+            available=True,
+            reaped_versions=frozenset({144}),
+            source="durable_tags",
+            diagnostics=(),
+        ),
     )
 
-    result = official_eligibility.grandfather_eligibility(
-        bot,
-        "rating_pool",
-        target_version=143,
-        policy=_policy(),
+    active = official_eligibility.epoch_lifecycle_eligibility(143)
+    reaped = official_eligibility.epoch_lifecycle_eligibility(144)
+
+    assert active["eligible"] is True
+    assert active["reason"] == "national_tcp_policy_epoch_active"
+    assert reaped["eligible"] is False
+    assert reaped["reason"] == "national_bot_reaped"
+
+
+def test_target_version_has_v143_floor(monkeypatch):
+    monkeypatch.setattr(official_eligibility, "_registry_state", lambda: object())
+    monkeypatch.setattr(
+        official_eligibility,
+        "effective_target_version",
+        lambda requested, **_kwargs: requested,
     )
 
-    assert result["eligible"] is False
-    assert result["reason"] == "grandfather_grant_expired"
-    assert result["target_version"] == 161
+    assert official_eligibility.current_target_version(1) == 143
 
 
-def test_schema3_grant_is_bound_to_tag_object_and_completion_tree(monkeypatch, tmp_path):
-    bot = tmp_path / "national_v142"
-    identity = {
-        **_identity(bot, artifact_hash="a" * 64),
-        "tag_object": "b" * 40,
-        "completion_tree_oid": "c" * 40,
-    }
-    monkeypatch.setattr(official_eligibility, "published_bot_identity", lambda _path: identity)
-    policy = {
-        "schema_version": 3,
-        "policy_id": "bound-transition",
-        "new_candidate_cutoff": 143,
-        "grants": [{
-            "bot": "national_v142",
-            "artifact_hash": "a" * 64,
-            "tag_object": "b" * 40,
-            "completion_tree_oid": "c" * 40,
-            "roles": ["official_opponent"],
-        }],
-    }
+def test_strict_role_eligibility_delegates_to_single_resolver(monkeypatch, tmp_path):
+    seen = {}
 
-    allowed = official_eligibility.grandfather_eligibility(
-        bot, "official_opponent", policy=policy, target_version=143
-    )
-    policy["grants"][0]["tag_object"] = "d" * 40
-    rejected = official_eligibility.grandfather_eligibility(
-        bot, "official_opponent", policy=policy, target_version=143
-    )
+    class FakeSpec:
+        eligible = True
 
-    assert allowed["eligible"] is True
-    assert rejected["reason"] == "grandfather_tag_object_mismatch"
+        def as_dict(self):
+            return {"eligible": True, "issues": []}
 
+    def resolve(candidate, role, *, repo_root):
+        seen.update(candidate=candidate, role=role, repo_root=repo_root)
+        return FakeSpec()
 
-def test_policy_loader_rejects_duplicate_grants(tmp_path):
-    policy = {
-        "schema_version": 3,
-        "policy_id": "duplicate-transition",
-        "grants": [
-            {
-                "bot": "national_v142",
-                "artifact_hash": "a" * 64,
-                "tag_object": "b" * 40,
-                "completion_tree_oid": "c" * 40,
-                "roles": ["official_opponent"],
-            },
-            {
-                "bot": "national_v142",
-                "artifact_hash": "d" * 64,
-                "tag_object": "e" * 40,
-                "completion_tree_oid": "f" * 40,
-                "roles": ["rating_pool"],
-            },
-        ],
-    }
-    path = tmp_path / "policy.json"
-    path.write_text(json.dumps(policy), encoding="utf-8")
+    monkeypatch.setattr(official_eligibility, "resolve_national_bot_spec", resolve)
+    bot = tmp_path / "national_v143"
 
-    with pytest.raises(ValueError, match="duplicate"):
-        official_eligibility.load_grandfather_policy(path)
+    result = official_eligibility.strict_role_eligibility(bot, "parent_source")
+
+    assert result["eligible"] is True
+    assert result["reason"] == "strict_policy_bot_signed_full_certified"
+    assert seen["candidate"] == bot
+    assert seen["role"] == "parent_source"

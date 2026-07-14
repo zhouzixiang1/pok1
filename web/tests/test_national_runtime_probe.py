@@ -1,624 +1,574 @@
+import copy
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 import national_runtime_probe
 import national_runtime_probe_worker
-from national_native import NATIVE_BOT_TEMPLATE
-from national_runtime_probe_scenarios import DECISION_SCENARIOS, LINE_SCENARIO_PAIRS
+import runtime_architecture_policy
+from output_schema import RuntimeContract
+from strategy_reference_pack import (
+    reference_pack_ids,
+    validate_reference_selection,
+)
+from national_native import (
+    NATIVE_BOT_TEMPLATE,
+    NATIVE_PRECOMPUTE_TEMPLATE,
+    NATIONAL_DECISION_RUNTIME_VERSION,
+)
+from national_runtime_probe_scenarios import DECISION_SCENARIOS
 
 
-def _write_probe_bot(root: Path) -> Path:
+BOOTSTRAP_POLICY_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "core"
+    / "bootstrap_assets"
+    / "strict_v1"
+    / "policy.py"
+)
+
+
+TYPED_POLICY = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    line = context["line"]
+    opponent = context["opponent"]
+    hand = context["hand"]
+    kinds = set(legal["policy_kinds"])
+    if (line["can_donk"] or line["can_delayed_probe"]) and "raise" in kinds:
+        return {"kind": "raise", "raise_to": legal["min_raise_to"]}
+    if opponent.get("confidence", 0.0) > 2.0 and "allin" in kinds:
+        return {"kind": "allin"}
+    if betting["to_call"] > 0 and "pass" in kinds:
+        return {"kind": "pass"}
+    if hand["position"] in {"small_blind", "big_blind"} and "pass" in kinds:
+        return {"kind": "pass"}
+    return {"kind": "fold"}
+
+
+def iter_decisions(context, baseline, deadline):
+    if context["deadline"] and deadline < 0:
+        yield {"decision": baseline, "sample_count": 1}
+    return
+'''
+
+REFINING_POLICY = TYPED_POLICY.replace(
+    '''def iter_decisions(context, baseline, deadline):
+    if context["deadline"] and deadline < 0:
+        yield {"decision": baseline, "sample_count": 1}
+    return
+''',
+    '''def iter_decisions(context, baseline, deadline):
+    kinds = set(context["legal"]["policy_kinds"])
+    for step in range(8):
+        accumulator = 0
+        for value in range(100000):
+            accumulator = (accumulator + value + step) % 1000003
+        if "fold" in kinds and baseline.get("kind") != "fold":
+            decision = {"kind": "fold"}
+        elif "allin" in kinds and baseline.get("kind") != "allin":
+            decision = {"kind": "allin"}
+        elif "raise" in kinds:
+            decision = {
+                "kind": "raise",
+                "raise_to": context["legal"]["min_raise_to"],
+            }
+        else:
+            decision = baseline
+        if step % 2:
+            decision = baseline
+        yield {
+            "decision": decision,
+            "sample_count": accumulator,
+            "complete": step == 7,
+        }
+''',
+)
+
+PROFILE_POLICY = TYPED_POLICY.replace(
+    '''    if (line["can_donk"] or line["can_delayed_probe"]) and "raise" in kinds:
+        return {"kind": "raise", "raise_to": legal["min_raise_to"]}
+''',
+    '''    if (line["can_donk"] or line["can_delayed_probe"]) and "raise" in kinds:
+        aggression = opponent.get("rates", {}).get("aggression", 0.5)
+        target = legal["min_raise_to"] + int(100 * aggression)
+        return {
+            "kind": "raise",
+            "raise_to": min(legal["max_raise_to"], target),
+        }
+''',
+)
+
+
+def _write_typed_bot(root: Path, policy: str = TYPED_POLICY) -> Path:
     root.mkdir(parents=True)
     (root / "national_bot.py").write_text(NATIVE_BOT_TEMPLATE, encoding="utf-8")
-    (root / "main.py").write_text(
-        "def sanitize_action(action, state, chips): return int(action)\n",
+    (root / "precompute.py").write_text(
+        NATIVE_PRECOMPUTE_TEMPLATE,
         encoding="utf-8",
     )
-    (root / "state.py").write_text(
-        "def reconstruct_state(req): return dict(req)\n"
-        "def infer_remaining_hands_from_requests(requests): return 1\n",
-        encoding="utf-8",
-    )
-    (root / "strategy.py").write_text(
-        "import time\n"
-        "POSTFLOP_TABLE = {i: i / 31.0 for i in range(32)}\n"
-        "def _choose(req):\n"
-        "    profile = req.get('opponent_runtime', {})\n"
-        "    hand = req.get('hand_runtime', {})\n"
-        "    if req.get('public_cards'):\n"
-        "        POSTFLOP_TABLE.get(12, 0.0)\n"
-        "    if hand.get('can_donk'):\n"
-        "        return 600\n"
-        "    if hand.get('can_delayed_probe'):\n"
-        "        return 500\n"
-        "    if profile.get('fold_to_jam_samples', 0) >= 10:\n"
-        "        pressure = profile.get('fold_to_raise', 0.0) + profile.get('fold_to_jam_rate', 0.0) - profile.get('river_overcall_freq', 0.0)\n"
-        "        return -2 if pressure > 0.5 else 0\n"
-        "    revealed = profile.get('showdown_range', {})\n"
-        "    if (revealed.get('selection_scope') == 'reached_showdown_only' and revealed.get('confidence', 0.0) > 0.1 and revealed.get('adaptation_weight', 0.0) > 0.0 and revealed.get('samples', 0) >= 10 and revealed.get('tightness', 0.0) > 0.30):\n"
-        "        return -1\n"
-        "    if profile.get('adaptation_weight', 0.0) > 0.1 and profile.get('vpip', 0.0) > 0.5:\n"
-        "        return -2\n"
-        "    return 0\n"
-        "def get_action(req, current_request_view):\n"
-        "    return _choose(req)\n"
-        "def get_baseline_action(req, current_request_view):\n"
-        "    return _choose(req)\n"
-        "def iter_refinements(req, current_request_view, baseline, deadline):\n"
-        "    refined = -1 if baseline == 0 and req.get('to_call', 0) > 0 else baseline\n"
-        "    for samples in range(1, 17):\n"
-        "        if time.monotonic() >= deadline:\n"
-        "            return\n"
-        "        work = 0\n"
-        "        for outer in range(100):\n"
-        "            for unit in range(100):\n"
-        "                for lane in range(4):\n"
-        "                    work += (outer * unit * samples + lane) % 17\n"
-        "        if work < 0:\n"
-        "            refined = baseline\n"
-        "        yield {'action': refined, 'sample_count': samples, 'confidence': samples / 16.0, 'complete': samples == 16}\n",
-        encoding="utf-8",
-    )
+    (root / "policy.py").write_text(policy, encoding="utf-8")
     return root
 
 
-def _artifact_request():
-    return [{
-        "location": "strategy.py:1",
-        "name": "POSTFLOP_TABLE",
-        "kind": "module_mapping",
-    }]
-
-
-def _write_value_sensitive_probe_bot(root: Path) -> Path:
-    """Make the existing small mapping change a real postflop wire action."""
-    bot = _write_probe_bot(root)
-    strategy_path = bot / "strategy.py"
-    source = strategy_path.read_text(encoding="utf-8")
-    source = source.replace(
-        "        POSTFLOP_TABLE.get(12, 0.0)\n",
-        "        score = POSTFLOP_TABLE.get(len(req.get('public_cards') or []), 0.0)\n"
-        "        if score > 0.0:\n"
-        "            return 600\n",
-    )
-    strategy_path.write_text(source, encoding="utf-8")
-    return bot
-
-
-def _write_packed_value_sensitive_probe_bot(root: Path) -> Path:
-    """Use a packed row, matching the planned preflop-equity asset shape."""
-    bot = _write_probe_bot(root)
-    strategy_path = bot / "strategy.py"
-    source = strategy_path.read_text(encoding="utf-8")
-    source = source.replace(
-        "POSTFLOP_TABLE = {i: i / 31.0 for i in range(32)}",
-        "POSTFLOP_TABLE = {i: bytes([i + 1]) for i in range(32)}",
-    )
-    source = source.replace(
-        "        POSTFLOP_TABLE.get(12, 0.0)\n",
-        "        packed = POSTFLOP_TABLE.get(len(req.get('public_cards') or []), b'\\x00')\n"
-        "        if packed and packed[0] > 128:\n"
-        "            return 600\n",
-    )
-    strategy_path.write_text(source, encoding="utf-8")
-    return bot
-
-
-def _write_fixed_key_value_sensitive_probe_bot(root: Path) -> Path:
-    """A table whose values matter, but whose lookup is a fake constant."""
-    bot = _write_probe_bot(root)
-    strategy_path = bot / "strategy.py"
-    source = strategy_path.read_text(encoding="utf-8")
-    source = source.replace(
-        "POSTFLOP_TABLE = {i: i / 31.0 for i in range(32)}",
-        "POSTFLOP_TABLE = {i: 1 for i in range(32)}",
-    )
-    source = source.replace(
-        "        POSTFLOP_TABLE.get(12, 0.0)\n",
-        "        score = POSTFLOP_TABLE.get(0, 0)\n"
-        "        if score > 0:\n"
-        "            return 600\n",
-    )
-    strategy_path.write_text(source, encoding="utf-8")
-    return bot
-
-
-@pytest.mark.parametrize(
-    ("baseline_ms", "expected_issue"),
-    [
-        (251.0, "strategy_baseline_slower_than_250ms"),
-        (None, "strategy_baseline_never_published"),
-    ],
-)
-def test_baseline_latency_or_absence_does_not_poison_killable_safety(
-    monkeypatch,
-    baseline_ms,
-    expected_issue,
-):
-    class FakeBot:
-        def _ensure_strategy_worker(self):
-            return None
-
-    strategy = SimpleNamespace(
-        get_action=lambda *_args: 0,
-        get_baseline_action=lambda *_args: 0,
-        iter_refinements=lambda *_args: iter(()),
-    )
-    imports = SimpleNamespace(load=lambda name: strategy)
-    metric = {
-        "runtime_version": 7,
-        "socket_fallback_ready_ms": 1.0,
-        "baseline_published_ms": baseline_ms,
+def _worker_spec() -> dict:
+    return {
+        "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
+        "expected_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+        "spec_digest": "unit-spec",
+        "code_fingerprint": "unit-fingerprint",
     }
-    strategy_result = {
-        "rows": [{"baseline": {"runtime_metrics": metric}}],
-    }
-    actions = iter([
-        {
-            "wire": "fold",
-            "runtime_metrics": {
-                "trusted_refinement_steps": 8,
-                "trusted_refinement_elapsed_ms": 8.0,
-                "refinement_action_changes": 1,
-            },
-        },
-        {
-            "wire": "fold",
-            "runtime_metrics": {
-                "trusted_refinement_steps": 16,
-                "trusted_refinement_elapsed_ms": 16.0,
-                "refinement_action_changes": 1,
-            },
-        },
-        {
-            "wire": "fold",
-            "runtime_metrics": {
-                "decision_id": 3,
-                "worker_generation": 1,
-                "timed_out": True,
-                "worker_terminated": True,
-            },
-        },
-        {
-            "wire": "check",
-            "runtime_metrics": {
-                "decision_id": 4,
-                "worker_generation": 2,
-                "timed_out": False,
-            },
-        },
-    ])
-    monkeypatch.setattr(
-        national_runtime_probe_worker,
-        "_new_native_bot",
-        lambda _imports: (None, FakeBot()),
-    )
-    monkeypatch.setattr(
-        national_runtime_probe_worker,
-        "_timed_formal_action",
-        lambda *_args, **_kwargs: next(actions),
-    )
-
-    result = national_runtime_probe_worker._probe_decision_runtime(
-        imports,
-        strategy_result,
-        expected_runtime_version=7,
-    )
-
-    assert result["safety_ok"] is True
-    assert result["safety_issues"] == []
-    assert result["baseline_ok"] is False
-    assert result["baseline_issues"] == [expected_issue]
-    assert result["refinement_ok"] is True
-    assert result["issues"] == [expected_issue]
-    assert result["ok"] is False
 
 
-def test_runtime_scenario_bank_uses_coherent_national_transcripts():
-    by_id = {scenario["id"]: scenario for scenario in DECISION_SCENARIOS}
+def test_scenario_bank_is_raw_delimiter_free_official_wire():
     for scenario in DECISION_SCENARIOS:
-        hero_blind = 50 if scenario["is_sb"] else 100
-        opponent_blind = 100 if scenario["is_sb"] else 50
-        committed = [hero_blind, opponent_blind]
-        rounds = []
-        for record in scenario["history"]:
-            assert record["player_id"] in {0, 1}
-            rounds.append(record["round"])
-            committed[record["player_id"]] += int(record.get("committed", 0) or 0)
-        assert rounds == sorted(rounds)
-        assert sum(committed) == scenario["pot"], scenario["id"]
-        assert max(0, scenario["opponent_stage_bet"] - scenario["my_stage_bet"]) >= 0
-
-    for pair in LINE_SCENARIO_PAIRS:
-        positive = by_id[pair["positive"]]
-        negative = by_id[pair["negative"]]
-        assert positive["stage"] == negative["stage"]
-        assert positive["my_cards"] == negative["my_cards"]
-        assert positive["public_cards"] == negative["public_cards"]
-        assert positive["pot"] == negative["pot"]
-        assert positive["expected_hand_runtime"][pair["flag"]] is True
-        assert negative["expected_hand_runtime"][pair["flag"]] is False
+        assert "messages" in scenario
+        assert "history" not in scenario
+        assert "my_cards" not in scenario
+        for message in scenario["messages"]:
+            assert "\n" not in message
+            assert "\r" not in message
+            assert not message.startswith("{")
+        for intent in scenario["setup_intents"]:
+            assert set(intent).issubset({"kind", "raise_to"})
+            assert intent["kind"] in {"pass", "fold", "allin", "raise"}
 
 
-def test_probe_measures_postflop_consumer_across_scenario_bank_and_caches(tmp_path):
-    bot = _write_probe_bot(tmp_path / "national_v1")
-    national_runtime_probe.clear_runtime_probe_cache()
+def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot")
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
 
-    first = national_runtime_probe.run_national_runtime_probe(
-        bot,
-        static_artifacts=_artifact_request(),
-    )
-    second = national_runtime_probe.run_national_runtime_probe(
-        bot,
-        static_artifacts=_artifact_request(),
-    )
-
-    assert first["failure_class"] != "probe_infra"
-    assert first["evidence_integrity_ok"] is first["repeatability_ok"]
-    if not first["repeatability_ok"]:
-        assert "runtime_probe_non_repeatable" in first["issues"]
-    migration_repeatability = first["migration_evidence_repeatability"]
-    assert migration_repeatability["candidate_fingerprint_unchanged"] is True
+    assert result["ok"] is True, result["issues"]
+    rows = result["official_transcript_decisions"]
+    assert {row["id"] for row in rows} == {
+        scenario["id"] for scenario in DECISION_SCENARIOS
+    }
+    assert all(row["context"]["schema_version"] == 1 for row in rows)
     assert all(
-        row["stable"] is True
-        for row in migration_repeatability["dimensions"].values()
+        row["context"]["cards"]["encoding"] == "national_tcp_suit_rank_v1"
+        for row in rows
     )
-    assert all(
-        row["authority_tier"] == "baseline"
-        for row in migration_repeatability["dimensions"].values()
+    assert all(row["decision"]["kind"] in {"pass", "fold", "allin", "raise"} for row in rows)
+    assert all("\n" not in row["wire"] and "\r" not in row["wire"] for row in rows)
+    assert result["line_reachability"]["dimensions"]["donk"]["ok"] is True
+    assert result["line_reachability"]["dimensions"]["delayed_probe"]["ok"] is True
+    assert result["line_reachability"]["dimensions"]["donk"][
+        "socket_validated"
+    ] is True
+    delayed_row = next(
+        row
+        for row in rows
+        if row["id"] == "turn_delayed_probe_vs_opponent_pfr"
     )
-    assert first["cache_hit"] is False
-    assert second["ok"] is first["ok"]
-    assert second["cache_hit"] is True
-    assert second["cache_key"] == first["cache_key"]
-    multifidelity = first["decision_runtime"]["budget_scaling"]
-    assert multifidelity["probe_kind"] == "sampled_multifidelity_2s_vs_8s"
-    assert multifidelity["short_budget"]["hard_deadline_sec"] == 2.0
-    assert multifidelity["long_budget"]["hard_deadline_sec"] == 8.0
-    assert multifidelity["worker_seed_equal"] is True
-
-    artifact = first["artifacts"][0]
-    assert artifact["entries"] == 32
-    assert len(artifact["consumer_scenarios"]) == len(DECISION_SCENARIOS)
-    assert artifact["consumer_scenarios"][0]["reads"] == 0
-    assert artifact["consumer_scenarios"][1]["reads"] == 0
-    assert artifact["consumer_scenarios"][2]["reads"] > 0
-    assert artifact["fallback_ok"] is True
-    assert len(artifact["fallback_scenarios"]) == len(DECISION_SCENARIOS)
-    assert all("error" not in row for row in artifact["fallback_scenarios"])
-    assert artifact["value_affects_final_wire"] is False
-    assert national_runtime_probe.validate_dynamic_precompute_contract(
-        first,
-        name="POSTFLOP_TABLE",
-        owner_file="strategy.py",
-        build_phase="module_import",
-        max_build_ms=2_500,
-        max_entries=65_536,
-        max_bytes=8 * 1024 * 1024,
-        key_shape="int",
-        fallback="legal_baseline",
-        require_action_influence=True,
-    ) == ["dynamic_precompute_value_no_final_wire_influence"]
-
-
-def test_probe_requires_value_sensitive_final_wire_counterfactual_for_primary(tmp_path):
-    bot = _write_value_sensitive_probe_bot(tmp_path / "national_v_value_sensitive")
-    national_runtime_probe.clear_runtime_probe_cache()
-
-    result = national_runtime_probe.run_national_runtime_probe(
-        bot,
-        static_artifacts=_artifact_request(),
+    assert any(
+        action.get("inferred") is True
+        and action.get("inference_boundary") == "street:turn"
+        for action in delayed_row["context"]["history"]["actions"]
     )
-
-    # This fixture deliberately changes the existing generic strategy's line
-    # controls, so its unrelated strategy-influence gate can fail.  The
-    # artifact assertion below is intentionally scoped to the precompute
-    # counterfactual contract.
-    assert result["failure_class"] != "probe_infra"
-    artifact = result["artifacts"][0]
-    assert artifact["value_affects_final_wire"] is True
-    assert artifact["action_influence_scenarios"]
-    assert artifact["lookup_key_varies_across_consumer_scenarios"] is True
-    assert national_runtime_probe.validate_dynamic_precompute_contract(
-        result,
-        name="POSTFLOP_TABLE",
-        owner_file="strategy.py",
-        build_phase="module_import",
-        max_build_ms=2_500,
-        max_entries=65_536,
-        max_bytes=8 * 1024 * 1024,
-        key_shape="int",
-        fallback="legal_baseline",
-        require_action_influence=True,
-    ) == []
+    memory = result["persistent_memory"]
+    assert memory["terminal_response"]["fold"] == 1
+    assert memory["terminal_response"]["call"] == 1
+    assert memory["showdown_range"]["samples"] == 1
+    assert memory["showdown_range"]["selection_scope"] == "reached_showdown_only"
 
 
-def test_probe_rejects_constant_key_lookup_even_when_mutated_values_change_wire(tmp_path):
-    bot = _write_fixed_key_value_sensitive_probe_bot(tmp_path / "national_v_fixed_key")
-    national_runtime_probe.clear_runtime_probe_cache()
-
-    result = national_runtime_probe.run_national_runtime_probe(
-        bot,
-        static_artifacts=_artifact_request(),
+def test_worker_rejects_non_typed_policy_output(tmp_path):
+    policy = TYPED_POLICY.replace(
+        'return {"kind": "pass"}',
+        "return 0",
     )
-
-    assert result["failure_class"] != "probe_infra"
-    artifact = result["artifacts"][0]
-    assert artifact["value_affects_final_wire"] is True
-    assert artifact["lookup_key_varies_across_consumer_scenarios"] is False
-    assert national_runtime_probe.validate_dynamic_precompute_contract(
-        result,
-        name="POSTFLOP_TABLE",
-        owner_file="strategy.py",
-        build_phase="module_import",
-        max_build_ms=2_500,
-        max_entries=65_536,
-        max_bytes=8 * 1024 * 1024,
-        key_shape="int",
-        fallback="legal_baseline",
-        require_action_influence=True,
-        require_key_variation=True,
-    ) == ["dynamic_precompute_lookup_key_static"]
-
-
-def test_probe_counterfactual_mutates_packed_bytes_rows_for_live_action_proof(tmp_path):
-    bot = _write_packed_value_sensitive_probe_bot(tmp_path / "national_v_packed_value")
-    national_runtime_probe.clear_runtime_probe_cache()
-
-    result = national_runtime_probe.run_national_runtime_probe(
-        bot,
-        static_artifacts=_artifact_request(),
-    )
-
-    assert result["failure_class"] != "probe_infra"
-    artifact = result["artifacts"][0]
-    assert artifact["value_affects_final_wire"] is True
-    assert artifact["action_influence_scenarios"]
-    assert artifact["lookup_key_varies_across_consumer_scenarios"] is True
-    assert national_runtime_probe.validate_dynamic_precompute_contract(
-        result,
-        name="POSTFLOP_TABLE",
-        owner_file="strategy.py",
-        build_phase="module_import",
-        max_build_ms=2_500,
-        max_entries=65_536,
-        max_bytes=8 * 1024 * 1024,
-        key_shape="int",
-        fallback="legal_baseline",
-        require_action_influence=True,
-    ) == []
-
-
-def test_probe_infrastructure_failure_is_never_cached(monkeypatch, tmp_path):
-    bot = _write_probe_bot(tmp_path / "national_v2")
-    national_runtime_probe.clear_runtime_probe_cache()
-    calls = []
-
-    def _infra(*_args, **_kwargs):
-        calls.append(True)
-        return {
-            "ok": False,
-            "failure_class": "probe_infra",
-            "issues": ["bwrap unavailable"],
-        }
-
-    monkeypatch.setattr(national_runtime_probe, "_run_once", _infra)
-
-    first = national_runtime_probe.run_national_runtime_probe(bot)
-    second = national_runtime_probe.run_national_runtime_probe(bot)
-
-    assert first["failure_class"] == "probe_infra"
-    assert second["failure_class"] == "probe_infra"
-    assert first["repeatability_ok"] is False
-    assert first["evidence_integrity_ok"] is False
-    assert not any(
-        row["stable"]
-        for row in first["migration_evidence_repeatability"]["dimensions"].values()
-    )
-    assert len(calls) == 2
-
-
-def test_global_probe_jitter_preserves_repeatable_donk_baseline_evidence(
-    monkeypatch,
-    tmp_path,
-):
-    bot = _write_probe_bot(tmp_path / "national_v_global_jitter")
-    national_runtime_probe.clear_runtime_probe_cache()
-    calls = []
-
-    def _candidate_result(_root, spec, _timeout):
-        trusted_steps = 8 if not calls else 0
-        calls.append(trusted_steps)
-        return {
-            "ok": True,
-            "failure_class": "none",
-            "issues": [],
-            "schema_version": 2,
-            "worker_version": 1,
-            "scenario_version": 1,
-            "scenario_digest": spec["scenario_digest"],
-            "spec_digest": spec["spec_digest"],
-            "code_fingerprint": spec["code_fingerprint"],
-            "artifacts": [],
-            "tracker": {},
-            "decision_runtime": {
-                "budget_scaling": {
-                    "probe_kind": "unrelated_wall_clock_probe",
-                    "short": {"trusted_steps": trusted_steps},
-                    "long": {"trusted_steps": 8},
-                },
-            },
-            "strategy_influence": {
-                "dimensions": {
-                    "semantic_lines": {
-                        "rows": [{
-                            "dimension": "donk",
-                            "scenario_id": "flop_donk_vs_opponent_pfr",
-                            "control_kind": "same_scenario_flag_false",
-                            "flag": "can_donk",
-                            "tiers": {
-                                "baseline": {
-                                    "positive": {"wire": "raise 600"},
-                                    "negative": {"wire": "check"},
-                                    "changed": True,
-                                },
-                            },
-                        }],
-                    },
-                },
-            },
-        }
-
-    monkeypatch.setattr(national_runtime_probe, "_run_once", _candidate_result)
-
-    result = national_runtime_probe.run_national_runtime_probe(bot)
-
-    assert calls == [8, 0]
-    assert result["repeatability_ok"] is False
-    assert result["evidence_integrity_ok"] is False
-    donk = result["migration_evidence_repeatability"]["dimensions"]["donk"]
-    assert donk["stable"] is True
-    assert donk["authority_tier"] == "baseline"
-    assert donk["evidence"][0]["left_wire"] == "raise 600"
-    assert donk["evidence"][0]["right_wire"] == "check"
-
-
-def test_nonrepeatable_nested_strategy_evidence_is_marked_untrusted(
-    monkeypatch,
-    tmp_path,
-):
-    bot = _write_probe_bot(tmp_path / "national_v_nonrepeatable")
-    national_runtime_probe.clear_runtime_probe_cache()
-    calls = []
-
-    def _candidate_result(_root, spec, _timeout):
-        wire = "raise 600" if not calls else "check"
-        calls.append(wire)
-        return {
-            "ok": True,
-            "failure_class": "none",
-            "issues": [],
-            "schema_version": 2,
-            "worker_version": 1,
-            "scenario_version": 1,
-            "scenario_digest": spec["scenario_digest"],
-            "spec_digest": spec["spec_digest"],
-            "code_fingerprint": spec["code_fingerprint"],
-            "artifacts": [],
-            "tracker": {},
-            "strategy_influence": {
-                "dimensions": {
-                    "semantic_lines": {
-                        "rows": [{
-                            "dimension": "donk",
-                            "scenario_id": "flop_donk_vs_opponent_pfr",
-                            "control_kind": "same_scenario_flag_false",
-                            "flag": "can_donk",
-                            "tiers": {
-                                "baseline": {
-                                    "positive": {"wire": wire},
-                                    "negative": {"wire": "fold"},
-                                    "changed": wire != "fold",
-                                }
-                            },
-                        }]
-                    }
-                }
-            },
-        }
-
-    monkeypatch.setattr(national_runtime_probe, "_run_once", _candidate_result)
-
-    result = national_runtime_probe.run_national_runtime_probe(bot)
-
-    assert calls == ["raise 600", "check"]
-    assert result["repeatability_ok"] is False
-    assert result["evidence_integrity_ok"] is False
-    assert "runtime_probe_non_repeatable" in result["issues"]
-    assert result["ok"] is False
-    donk = result["migration_evidence_repeatability"]["dimensions"]["donk"]
-    assert donk["stable"] is False
-    assert donk["observations_identical"] is False
-    assert donk["evidence"] == []
-
-
-def test_probe_classifies_candidate_output_limit_without_internal_error(
-    monkeypatch, tmp_path
-):
-    bot = _write_probe_bot(tmp_path / "national_v_output_limit")
-    strategy = bot / "strategy.py"
-    strategy.write_text(
-        "import os\nos.write(1, b'runtime-probe-noise')\n"
-        + strategy.read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
-    spec = national_runtime_probe.build_runtime_probe_spec(
-        bot,
-        static_artifacts=_artifact_request(),
-    )
-    monkeypatch.setattr(national_runtime_probe, "RUNTIME_PROBE_MAX_OUTPUT_BYTES", 1)
-
-    result = national_runtime_probe._run_once(bot, spec, timeout_sec=30.0)
+    bot = _write_typed_bot(tmp_path / "bot", policy)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
 
     assert result["ok"] is False
+    assert any(
+        "typed_intent_not_closed_mapping" in issue
+        for issue in result["issues"]
+    )
+
+
+def test_worker_rejects_non_typed_refinement_output(tmp_path):
+    policy = TYPED_POLICY.replace(
+        '''    if context["deadline"] and deadline < 0:
+        yield {"decision": baseline, "sample_count": 1}
+    return
+''',
+        '''    yield 0
+    return
+''',
+    )
+    bot = _write_typed_bot(tmp_path / "bot", policy)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
     assert result["failure_class"] == "candidate_contract"
-    assert result["issues"] == ["runtime_probe_output_limit_exceeded"]
+    assert any(
+        "candidate_policy_refinement:typed_intent_not_closed_mapping" in issue
+        for issue in result["candidate_issues"]
+    )
 
 
-def test_probe_cache_is_bound_to_code_fingerprint(monkeypatch, tmp_path):
-    bot = _write_probe_bot(tmp_path / "national_v3")
-    national_runtime_probe.clear_runtime_probe_cache()
+def test_worker_measures_trusted_short_long_refinement(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot", REFINING_POLICY)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["ok"] is True, result["issues"]
+    scaling = result["budget_scaled_refinement"]
+    assert scaling["ok"] is True, scaling
+    assert scaling["worker_seed_equal"] is True
+    assert scaling["long"]["trusted_steps"] == 8
+    assert scaling["long"]["trusted_cpu_ms"] >= 5.0
+    assert scaling["changes_sanitized_decision"] is True
+    states = runtime_architecture_policy._dynamic_probe_states(result)
+    assert states["incremental_refinement_protocol"] is True
+    assert states["budget_scaled_refinement"] is True
+
+
+def test_profile_counterfactual_reaches_socket_validated_wire(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot", PROFILE_POLICY)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["ok"] is True, result["issues"]
+    action_profile = result["policy_counterfactuals"]["dimensions"][
+        "action_profile"
+    ]
+    assert action_profile["socket_validated"] is True
+    assert action_profile["changed"] is True
+    assert action_profile["left_wire"] != action_profile["right_wire"]
+    states = runtime_architecture_policy._dynamic_probe_states(result)
+    assert states["incremental_opponent_model"] is True
+
+
+def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
+    tmp_path,
+):
+    bot = _write_typed_bot(
+        tmp_path / "bot",
+        BOOTSTRAP_POLICY_PATH.read_text(encoding="utf-8"),
+    )
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["ok"] is True, result["issues"]
+    dimensions = result["policy_counterfactuals"]["dimensions"]
+    assert set(dimensions) == {
+        "action_profile",
+        "terminal_response",
+        "showdown_range",
+    }
+    for dimension in dimensions.values():
+        assert dimension["scenario"] == "flop_donk_vs_opponent_pfr"
+        assert dimension["socket_validated"] is True
+        assert dimension["changed"] is True
+        assert dimension["left_wire"].startswith("raise ")
+        assert dimension["right_wire"].startswith("raise ")
+        assert dimension["left_wire"] != dimension["right_wire"]
+
+    states = runtime_architecture_policy._dynamic_probe_states(result)
+    assert states["incremental_opponent_model"] is True
+    assert states["terminal_response_adaptation"] is True
+    assert states["showdown_range_adaptation"] is True
+
+
+def _fake_worker_result(spec: dict) -> dict:
+    return {
+        "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
+        "worker_version": 14,
+        "scenario_version": national_runtime_probe.RUNTIME_PROBE_SCENARIO_VERSION,
+        "scenario_digest": national_runtime_probe.RUNTIME_PROBE_SCENARIO_DIGEST,
+        "spec_digest": spec["spec_digest"],
+        "code_fingerprint": spec["code_fingerprint"],
+        "ok": True,
+        "failure_class": "none",
+        "issues": [],
+        "official_transcript_decisions": [],
+        "line_reachability": {"ok": True, "issues": [], "dimensions": {}},
+        "persistent_memory": {"ok": True, "issues": []},
+        "policy_counterfactuals": {"ok": True, "issues": [], "dimensions": {}},
+        "budget_scaled_refinement": {
+            "probe_kind": "trusted_multifidelity_2s_vs_8s",
+            "ok": False,
+            "active": False,
+            "system_issues": [],
+            "capability_issues": ["not_selected"],
+            "short": {},
+            "long": {},
+        },
+    }
+
+
+def test_orchestrator_requires_repeatability_and_caches_by_artifact(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
     calls = []
 
-    def _passing(_root, spec, _timeout):
-        calls.append(spec["code_fingerprint"])
-        return {
-            "ok": True,
-            "failure_class": "none",
-            "issues": [],
-            "schema_version": 2,
-            "worker_version": 1,
-            "scenario_version": 1,
-            "scenario_digest": spec["scenario_digest"],
-            "spec_digest": spec["spec_digest"],
-            "code_fingerprint": spec["code_fingerprint"],
-            "artifacts": [],
-            "tracker": {},
-            "strategy_influence": {},
-        }
+    def run_once(_root, spec, _timeout):
+        calls.append(spec["spec_digest"])
+        return copy.deepcopy(_fake_worker_result(spec))
 
-    monkeypatch.setattr(national_runtime_probe, "_run_once", _passing)
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(national_runtime_probe, "_run_once", run_once)
     first = national_runtime_probe.run_national_runtime_probe(bot)
     cached = national_runtime_probe.run_national_runtime_probe(bot)
-    (bot / "strategy.py").write_text(
-        (bot / "strategy.py").read_text(encoding="utf-8") + "\nNEW_POLICY = 1\n",
-        encoding="utf-8",
-    )
-    changed = national_runtime_probe.run_national_runtime_probe(bot)
 
-    assert first["cache_hit"] is False
+    assert first["ok"] is True
     assert first["repeatability_ok"] is True
-    assert first["evidence_integrity_ok"] is True
+    assert first["policy_abi"] == "decision_context_v1_typed_intent_v1"
+    assert len(calls) == 2
     assert cached["cache_hit"] is True
-    assert changed["cache_hit"] is False
-    assert first["code_fingerprint"] != changed["code_fingerprint"]
+    assert len(calls) == 2
+
+    (bot / "policy.py").write_text(TYPED_POLICY + "\n# changed\n", encoding="utf-8")
+    changed = national_runtime_probe.run_national_runtime_probe(bot)
+    assert changed["ok"] is True
     assert len(calls) == 4
+    assert changed["code_fingerprint"] != first["code_fingerprint"]
 
 
-def test_probe_cache_fingerprint_covers_nested_binary_artifacts(tmp_path):
-    import national_runtime_probe
+def test_active_probe_sources_contain_no_retired_wrapper_calls():
+    core = Path(national_runtime_probe.__file__).parent
+    combined = "\n".join(
+        (core / name).read_text(encoding="utf-8")
+        for name in (
+            "national_runtime_probe.py",
+            "national_runtime_probe_worker.py",
+            "national_runtime_probe_scenarios.py",
+        )
+    )
+    forbidden = (
+        "def _" + "request(",
+        "._" + "request()",
+        "_strategy_" + "action",
+        "_action_" + "to_tcp",
+        "hand_" + "runtime",
+        "opponent_" + "runtime",
+    )
+    assert not [token for token in forbidden if token in combined]
 
-    bot = tmp_path / "national_v1"
-    bot.mkdir()
-    (bot / "strategy.py").write_text("VALUE = 1\n", encoding="utf-8")
-    tables = bot / "tables"
-    tables.mkdir()
-    policy = tables / "equity.bin"
-    policy.write_bytes(b"\x00\xffpolicy-one")
 
-    before = national_runtime_probe._bot_code_fingerprint(bot)
-    policy.write_bytes(b"\x00\xffpolicy-two")
+def _gate_capabilities() -> dict:
+    required = set(runtime_architecture_policy.RUNTIME_FLOOR_CHECKS)
+    advisory = {
+        "incremental_refinement_protocol",
+        "budget_scaled_refinement",
+        "incremental_opponent_model",
+        "terminal_response_adaptation",
+        "showdown_range_adaptation",
+        "donk_line_reachability",
+        "delayed_probe_line_reachability",
+    }
+    checks = [
+        {
+            "check_id": check_id,
+            "name": check_id,
+            "passed": True,
+            "required": check_id in required,
+            "guidance": check_id,
+            "evidence": {},
+        }
+        for check_id in sorted(required | advisory)
+    ]
+    return {
+        "schema_version": 2,
+        "epoch": runtime_architecture_policy.ACTIVE_EPOCH,
+        "conclusive": True,
+        "ok": True,
+        "outcome": "passed",
+        "checks": checks,
+        "checks_by_id": {item["check_id"]: item for item in checks},
+        "required_checks": sorted(required),
+        "required_failures": [],
+        "advisory_warnings": [],
+        "infrastructure_failures": [],
+    }
 
-    assert national_runtime_probe._bot_code_fingerprint(bot) != before
+
+def _passing_gate_probe() -> dict:
+    return {
+        "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
+        "orchestrator_version": (
+            national_runtime_probe.RUNTIME_PROBE_ORCHESTRATOR_VERSION
+        ),
+        "scenario_digest": national_runtime_probe.RUNTIME_PROBE_SCENARIO_DIGEST,
+        "limits_digest": national_runtime_probe.RUNTIME_PROBE_LIMITS_DIGEST,
+        "probe_identity_digest": national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST,
+        "managed_isolation_digest": "a" * 64,
+        "ok": True,
+        "failure_class": "none",
+        "issues": [],
+        "official_transcript_decisions": [],
+        "policy_counterfactuals": {
+            "dimensions": {
+                "action_profile": {"changed": False},
+                "terminal_response": {"changed": False},
+                "showdown_range": {"changed": False},
+            }
+        },
+        "line_reachability": {
+            "dimensions": {
+                "donk": {"ok": True, "policy_changed": False},
+                "delayed_probe": {"ok": True, "policy_changed": False},
+            }
+        },
+        "budget_scaled_refinement": {"ok": False, "long": {}},
+    }
+
+
+def test_gate_classifies_candidate_and_system_probe_failures(monkeypatch, tmp_path):
+    probe = _passing_gate_probe()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: copy.deepcopy(probe),
+    )
+    merged, _observed, infrastructure = (
+        runtime_architecture_policy._apply_typed_runtime_probe(
+            _gate_capabilities(),
+            tmp_path,
+            runtime_contract_ledger=None,
+        )
+    )
+    assert merged["ok"] is True
+    assert infrastructure == []
+    assert merged["checks_by_id"]["typed_runtime_probe"]["passed"] is True
+    assert (
+        merged["checks_by_id"]["terminal_response_adaptation"]["required"]
+        is False
+    )
+
+    probe.update({
+        "ok": False,
+        "failure_class": "candidate_contract",
+        "issues": ["candidate_policy_baseline:typed_intent_kind_invalid"],
+    })
+    merged, _observed, infrastructure = (
+        runtime_architecture_policy._apply_typed_runtime_probe(
+            _gate_capabilities(),
+            tmp_path,
+            runtime_contract_ledger=None,
+        )
+    )
+    assert merged["conclusive"] is True
+    assert merged["ok"] is False
+    assert infrastructure == []
+    assert merged["checks_by_id"]["typed_runtime_probe"]["passed"] is False
+
+    probe.update({
+        "failure_class": "probe_infra",
+        "issues": ["official_transcript_runtime_fault"],
+    })
+    merged, _observed, infrastructure = (
+        runtime_architecture_policy._apply_typed_runtime_probe(
+            _gate_capabilities(),
+            tmp_path,
+            runtime_contract_ledger=None,
+        )
+    )
+    assert merged["conclusive"] is False
+    assert merged["outcome"] == "infrastructure_failure"
+    assert infrastructure[0]["side"] == "system"
+
+
+def test_counterfactual_is_hard_only_when_frozen_in_runtime_ledger(
+    monkeypatch,
+    tmp_path,
+):
+    capabilities = _gate_capabilities()
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "_lineage_capabilities",
+        lambda _path: copy.deepcopy(capabilities),
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "evaluate_national_capabilities",
+        lambda _path: copy.deepcopy(capabilities),
+    )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "build_architecture_policy",
+        lambda *_args, **_kwargs: {
+            "effective_baseline_checks": {},
+            "baseline_passed_checks": [],
+            "selected_focus": {
+                "required_checks": ["incremental_opponent_model"]
+            },
+        },
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "run_national_runtime_probe",
+        lambda *_args, **_kwargs: _passing_gate_probe(),
+    )
+
+    advisory = runtime_architecture_policy.evaluate_architecture_transition(
+        tmp_path,
+        tmp_path,
+    )
+    assert advisory["ok"] is True
+    assert advisory["unresolved_focus_checks"] == [
+        "incremental_opponent_model"
+    ]
+    assert advisory["blocking_focus_checks"] == []
+
+    ledger = runtime_architecture_policy.build_runtime_contract_ledger({
+        "tasks": [{
+            "worker_id": "terminal-primary",
+            "runtime_contract": {
+                "state_learning": {
+                    "profile_dimensions": ["terminal_response"],
+                    "oracle_refs": list(
+                        runtime_architecture_policy.STATE_LEARNING_ORACLE_REFS
+                    ),
+                }
+            },
+        }]
+    })
+    selected = runtime_architecture_policy.evaluate_architecture_transition(
+        tmp_path,
+        tmp_path,
+        runtime_contract_ledger=ledger,
+    )
+    assert selected["ok"] is False
+    assert selected["selected_dynamic_checks"] == [
+        "terminal_response_adaptation"
+    ]
+    assert selected["selected_dynamic_failures"] == [
+        "terminal_response_adaptation"
+    ]
+
+
+def test_precompute_primary_is_deferred_and_never_selected():
+    assert "lead_sizing_geometry_v1" not in reference_pack_ids()
+    assert "reusable_precompute" not in {
+        item["focus_id"]
+        for item in runtime_architecture_policy.architecture_focus_specs()
+    }
+    errors = validate_reference_selection(
+        "lead_sizing_geometry_v1",
+        "bounded_precompute_lookup",
+    )
+    assert errors and "primary_unavailable" in errors[0]
+    with pytest.raises(ValueError):
+        RuntimeContract.model_validate({
+            "state_learning": {
+                "work_primitive": "bounded_precompute_lookup",
+                "oracle_refs": list(
+                    runtime_architecture_policy.STATE_LEARNING_ORACLE_REFS
+                ),
+            },
+            "reference_pack_id": "lead_sizing_geometry_v1",
+        })
+
+    states = {
+        "incremental_opponent_model": True,
+        "incremental_refinement_protocol": False,
+        "budget_scaled_refinement": False,
+        "precompute_lookup_path": False,
+        "precompute_runtime_influence": False,
+    }
+    selected = runtime_architecture_policy._select_architecture_focus_from_state(
+        states
+    )
+    assert selected["focus_id"] == "deadline_refinement"

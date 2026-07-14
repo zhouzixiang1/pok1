@@ -1,10 +1,11 @@
 """Generation-scoped evidence snapshots for LLM planning/audit.
 
 The rating daemon keeps updating live result files while Master and audit LLMs
-run. A plan that cites live H2H counts can become "stale" minutes later even if
-the cited numbers were correct when the Master read them. This module creates a
-stable per-generation H2H snapshot so Master and MasterPlanAudit validate
-against the same evidence contract.
+run. A plan that cites live H2H counts or reopens replay files can become stale
+minutes later even if those bytes were correct when planning began. This module
+creates one stable per-generation snapshot for strength rows, action evidence,
+match-history cutoffs, and deterministic replay spotlight citations so every
+planning/audit stage validates the same content-addressed contract.
 """
 
 from __future__ import annotations
@@ -33,8 +34,9 @@ ACTION_STATS_SNAPSHOT_FILENAME = "bot_action_stats.json"
 ACTION_STATS_PER_OPP_SNAPSHOT_FILENAME = "bot_action_stats_per_opp.json"
 ACTION_STATS_SOURCE_FILENAME = "bot_action_stats_source.json"
 MATCH_HISTORY_INDEX_FILENAME = "match_history_index.json"
+REPLAY_SPOTLIGHT_FILENAME = "replay_spotlight.json"
 MANIFEST_FILENAME = "manifest.json"
-SNAPSHOT_SCHEMA_VERSION = 7
+SNAPSHOT_SCHEMA_VERSION = 8
 SNAPSHOT_FILES = {
     "h2h": H2H_SNAPSHOT_FILENAME,
     "bot_stats": BOT_STATS_SNAPSHOT_FILENAME,
@@ -44,6 +46,7 @@ SNAPSHOT_FILES = {
     "action_stats_per_opp": ACTION_STATS_PER_OPP_SNAPSHOT_FILENAME,
     "action_stats_source": ACTION_STATS_SOURCE_FILENAME,
     "match_history_index": MATCH_HISTORY_INDEX_FILENAME,
+    "replay_spotlight": REPLAY_SPOTLIGHT_FILENAME,
 }
 
 
@@ -114,10 +117,12 @@ def _snapshot_payload_paths(next_v: int | str) -> dict[str, Path]:
 
 
 def _payload_entries(role: str, parsed: dict[str, Any]) -> int:
-    if role in {"selection", "match_history_index"}:
+    if role in {"selection", "match_history_index", "replay_spotlight"}:
         rows = parsed.get("rows")
         if role == "match_history_index":
             rows = parsed.get("entries")
+        elif role == "replay_spotlight":
+            rows = parsed.get("citations")
         return len(rows) if isinstance(rows, list) else -1
     return len(parsed)
 
@@ -197,7 +202,12 @@ def _write_file_durable(path: Path, payload: bytes) -> None:
         os.fsync(handle.fileno())
 
 
-def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) -> dict[str, Any]:
+def ensure_generation_h2h_snapshot(
+    next_v: int | str,
+    *,
+    force: bool = False,
+    spotlight_bot: str | None = None,
+) -> dict[str, Any]:
     """Create or return the stable, same-cycle evaluation snapshot for ``next_v``."""
     infra = _infra()
     snapshot_dir, snapshot_path, manifest_path = _snapshot_paths(next_v)
@@ -206,6 +216,13 @@ def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) ->
     with _snapshot_lock(next_v):
         if snapshot_dir.exists() and not force:
             manifest, issues = _validate_existing_snapshot(next_v)
+            if (
+                manifest is not None
+                and spotlight_bot is not None
+                and manifest.get("spotlight_bot") != spotlight_bot
+            ):
+                issues.append("snapshot_spotlight_bot_mismatch")
+                manifest = None
             if manifest is None:
                 return {
                     "available": False,
@@ -350,6 +367,36 @@ def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) ->
         ).encode("utf-8")
         raw_files["match_history_index"] = history_payload
         parsed_files["match_history_index"] = history_index
+        from replay_spotlight import build_critical_hands_evidence
+
+        if spotlight_bot:
+            with evaluation_cycle_lock(infra.RESULTS_DIR, exclusive=False):
+                replay_spotlight = build_critical_hands_evidence(
+                    spotlight_bot,
+                    infra.RESULTS_DIR / "match_replay",
+                    max_hands=10,
+                    recent_n_files=20,
+                    allowed_replay_ids=history_index["replay_ids"],
+                    expected_evaluation_identity_digest=cycle_identity,
+                )
+        else:
+            replay_spotlight = {
+                "schema_version": 2,
+                "epoch": "national_tcp_policy_v1",
+                "execution_mode": "native_tcp",
+                "evaluation_identity_digest": cycle_identity,
+                "bot": "",
+                "text": "",
+                "citations": [],
+                "source_replays": {},
+            }
+        replay_spotlight_payload = json.dumps(
+            replay_spotlight,
+            indent=2,
+            ensure_ascii=False,
+        ).encode("utf-8")
+        raw_files["replay_spotlight"] = replay_spotlight_payload
+        parsed_files["replay_spotlight"] = replay_spotlight
         snapshot_dir.parent.mkdir(parents=True, exist_ok=True)
         temporary_dir = Path(tempfile.mkdtemp(
             prefix=f".{SNAPSHOT_DIRNAME}-",
@@ -384,7 +431,11 @@ def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) ->
                 "match_history_index_relpath": _repo_rel(
                     payload_paths["match_history_index"]
                 ),
+                "replay_spotlight_relpath": _repo_rel(
+                    payload_paths["replay_spotlight"]
+                ),
                 "manifest_relpath": _repo_rel(manifest_path),
+                "spotlight_bot": spotlight_bot or "",
                 # Bind the identity that the cycle manifest proved while the
                 # shared cycle lock was held. Re-reading the current identity
                 # here would allow a concurrent migration to relabel old bytes
@@ -446,6 +497,7 @@ def ensure_generation_h2h_snapshot(next_v: int | str, *, force: bool = False) ->
         "action_stats_path": str(payload_paths["action_stats"]),
         "action_stats_per_opp_path": str(payload_paths["action_stats_per_opp"]),
         "match_history_index_path": str(payload_paths["match_history_index"]),
+        "replay_spotlight_path": str(payload_paths["replay_spotlight"]),
         "manifest_path": str(manifest_path),
     }
 

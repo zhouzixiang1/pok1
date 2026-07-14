@@ -153,6 +153,7 @@ class TestBuildMatchMatrixH2H:
         h2h = {"a vs b": {"win_rate": 0.6, "games": 10}}
         result = build_match_matrix(h2h, {}, {})
         assert result["source"] == "h2h"
+        assert result["evidence_available"] is True
 
     def test_draws_score_half_even_when_stored_rate_is_stale(self):
         from server.routes._helpers import build_match_matrix
@@ -173,42 +174,30 @@ class TestBuildMatchMatrixH2H:
         assert result["matrix"][b][a] == 0.5
 
 
-class TestBuildMatchMatrixLegacy:
-    def test_symmetry(self):
-        from server.routes._helpers import build_match_matrix
-        stats = {"pairs": {"a vs b": 10, "b vs c": 5}}
-        ratings = {"a": {"r": 1500}, "b": {"r": 1500}, "c": {"r": 1500}}
-        result = build_match_matrix(None, ratings, stats)
-        bots = result["bots"]
-        matrix = result["matrix"]
-        for i in range(len(bots)):
-            for j in range(len(bots)):
-                assert matrix[i][j] == matrix[j][i]
-
-    def test_diagonal_is_zero(self):
+class TestBuildMatchMatrixMissingCurrentEvidence:
+    def test_pair_counters_and_ratings_are_not_strength_fallbacks(self):
         from server.routes._helpers import build_match_matrix
         stats = {"pairs": {"a vs b": 10}}
         ratings = {"a": {"r": 1500}, "b": {"r": 1500}}
-        result = build_match_matrix(None, ratings, stats)
-        for i in range(len(result["bots"])):
-            assert result["matrix"][i][i] == 0
 
-    def test_pairs_with_unknown_bots_dropped(self):
-        from server.routes._helpers import build_match_matrix
-        stats = {"pairs": {"a vs unknown": 10, "a vs b": 5}}
-        ratings = {"a": {"r": 1500}, "b": {"r": 1500}}
         result = build_match_matrix(None, ratings, stats)
-        assert len(result["bots"]) == 2
-        # unknown should not appear
-        for row in result["matrix"]:
-            assert len(row) == 2
 
-    def test_no_source_key(self):
+        assert result == {
+            "bots": [],
+            "matrix": [],
+            "source": "h2h",
+            "evidence_available": False,
+        }
+
+    def test_empty_h2h_dict_is_also_no_evidence(self):
         from server.routes._helpers import build_match_matrix
-        stats = {"pairs": {"a vs b": 10}}
-        ratings = {"a": {"r": 1500}, "b": {"r": 1500}}
-        result = build_match_matrix(None, ratings, stats)
-        assert "source" not in result
+
+        result = build_match_matrix({}, {"a": {"r": 1500}}, {"pairs": {"a vs b": 7}})
+
+        assert result["bots"] == []
+        assert result["matrix"] == []
+        assert result["source"] == "h2h"
+        assert result["evidence_available"] is False
 
 
 # ── _helpers.py: build_match_stats() ──
@@ -241,19 +230,139 @@ class TestBuildBotSummary:
 
     def test_no_py_files(self, tmp_path):
         from server.routes._helpers import build_bot_summary
-        bot_dir = tmp_path / "claude_v1"
+        bot_dir = tmp_path / "national_v143"
         bot_dir.mkdir()
         (bot_dir / "readme.txt").write_text("hello")
-        result = build_bot_summary(bot_dir, "claude_v1", {}, {}, {})
+        result = build_bot_summary(bot_dir, "national_v143", {}, {}, {})
         assert result["total_lines"] == 0
         assert result["files"] == []
 
     def test_missing_r_data_defaults(self, tmp_path):
         from server.routes._helpers import build_bot_summary
-        bot_dir = tmp_path / "claude_v1"
+        bot_dir = tmp_path / "national_v143"
         bot_dir.mkdir()
-        result = build_bot_summary(bot_dir, "claude_v1", {}, {}, {})
+        result = build_bot_summary(bot_dir, "national_v143", {}, {}, {})
         assert result["rating"] is None
+
+    def test_projects_backend_validated_full_v5_authority(self, tmp_path, monkeypatch):
+        import official_certification
+        from server.routes._helpers import build_bot_summary
+
+        bot_dir = tmp_path / "national_v143"
+        bot_dir.mkdir()
+        status = {
+            "bot": "national_v143",
+            "status": "official-certified",
+            "mode": "full",
+            "policy_id": "official-full-v5",
+            "official_deterministic_receipt": {
+                "spec": {
+                    "self_play_rounds": 5,
+                    "opponent_rounds": 3,
+                    "target_hands": 70,
+                },
+                "verdict": {
+                    "passed": True,
+                    "rounds_requested": 8,
+                    "rounds_run": 8,
+                },
+            },
+        }
+        monkeypatch.setattr(official_certification, "status_payload", lambda _path: status)
+        monkeypatch.setattr(
+            official_certification,
+            "official_full_certified",
+            lambda payload, candidate, *, require_published: (
+                payload is status
+                and candidate == bot_dir
+                and require_published is True
+            ),
+        )
+
+        result = build_bot_summary(bot_dir, "national_v143", {}, {}, {})
+        certification = result["official_certification"]
+
+        assert certification["formal_certified"] is True
+        assert certification["formal_authority"] == "signed_full_v5"
+        assert certification["formal_summary"] == {
+            "self_play_rounds": 5,
+            "opponent_rounds": 3,
+            "target_hands": 70,
+            "rounds_requested": 8,
+            "rounds_run": 8,
+            "passed_rounds": 8,
+            "failed_rounds": 0,
+        }
+
+    def test_never_projects_unvalidated_certificate_as_formal(self, tmp_path, monkeypatch):
+        import official_certification
+        from server.routes._helpers import build_bot_summary
+
+        bot_dir = tmp_path / "national_v143"
+        bot_dir.mkdir()
+        monkeypatch.setattr(
+            official_certification,
+            "status_payload",
+            lambda _path: {
+                "bot": "national_v143",
+                "status": "official-certified",
+                "summary": {"self_play_rounds": 5, "opponent_rounds": 3},
+            },
+        )
+        monkeypatch.setattr(
+            official_certification,
+            "official_full_certified",
+            lambda *_args, **_kwargs: False,
+        )
+
+        certification = build_bot_summary(
+            bot_dir, "national_v143", {}, {}, {}
+        )["official_certification"]
+
+        assert certification["formal_certified"] is False
+        assert certification["formal_authority"] == "none"
+        assert certification["formal_summary"] is None
+
+    def test_projects_complete_strength_order_row(self, tmp_path, monkeypatch):
+        import official_certification
+        from server.routes._helpers import build_bot_summary
+
+        bot_dir = tmp_path / "national_v143"
+        bot_dir.mkdir()
+        monkeypatch.setattr(
+            official_certification,
+            "status_payload",
+            lambda _path: {"bot": "national_v143", "status": "official-uncertified"},
+        )
+        monkeypatch.setattr(
+            official_certification,
+            "official_full_certified",
+            lambda *_args, **_kwargs: False,
+        )
+        row = {
+            "name": "national_v143",
+            "selection_score": 0.8123,
+            "selection_penalty": 0.02,
+            "primary_70_hand_match_score": 0.75,
+            "secondary_net_chips_total": 1200,
+            "secondary_net_chips_mean": 150,
+            "strength_sample_count": 8,
+            "strength_order_contract": ["match_outcome", "net_chips_tiebreak"],
+            "strength_note": "current immutable cycle",
+        }
+
+        result = build_bot_summary(
+            bot_dir,
+            "national_v143",
+            {},
+            {},
+            {},
+            {"national_v143": row},
+        )
+
+        for key, value in row.items():
+            if key != "name":
+                assert result[key] == value
 
 
 # ── _helpers.py: count_lines() ──
@@ -346,7 +455,7 @@ class TestDownsampleLogic:
 class TestBotSortKey:
     def test_standard_name(self):
         from server.routes._helpers import _bot_sort_key
-        assert _bot_sort_key("claude_v30") == 30  # testing the parsing logic, not a real bot
+        assert _bot_sort_key("national_v173") == 173
 
     def test_no_digits(self):
         from server.routes._helpers import _bot_sort_key
@@ -392,19 +501,24 @@ class TestComputeH2HAvgWinrateLogic:
         assert compute_h2h_avg_winrate("b", h2h) == 0.45
 
 
-# ── tool_helpers.py: _bot_main() ──
+# ── tool_helpers.py: _bot_entry() ──
 
-class TestBotMainLogic:
-    @pytest.mark.requires_graveyard_bot
-    def test_graveyard_fallback(self, graveyard_bot_version):
-        from tool_helpers import _bot_main
-        path = _bot_main(f"national_v{graveyard_bot_version}")
-        assert path.exists()
-        assert "graveyard" in str(path)
+class TestBotEntryLogic:
+    def test_archived_version_is_not_an_entrypoint_fallback(self):
+        from tool_helpers import _bot_entry
+        path = _bot_entry("national_v142")
+        expected = (
+            Path(__file__).resolve().parents[2]
+            / "bots"
+            / "national_v142"
+            / "national_bot.py"
+        )
+        assert path == expected
+        assert "archive" not in path.parts
 
     @pytest.mark.requires_active_bot
     def test_valid_version(self, active_bot_version):
-        from tool_helpers import _bot_main
-        path = _bot_main(f"national_v{active_bot_version}")
-        assert path.name == "main.py"
+        from tool_helpers import _bot_entry
+        path = _bot_entry(f"national_v{active_bot_version}")
+        assert path.name == "national_bot.py"
         assert f"national_v{active_bot_version}" in str(path)

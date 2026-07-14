@@ -21,7 +21,7 @@ DECIDE_START_RE = re.compile(
     r"DECIDE start .*?\bhand=(?P<hand>\d+)\s+stage=(?P<stage>[a-zA-Z0-9_]+)"
 )
 DECIDE_DONE_RE = re.compile(
-    r"DECIDE done action=(?P<action>.*?)\s+elapsed=(?P<elapsed>[0-9.]+)s"
+    r"DECIDE done (?:action|decision)=(?P<decision>.*?)\s+elapsed=(?P<elapsed>[0-9.]+)s"
 )
 SEND_RE = re.compile(
     r"SEND .*?\bhand=(?P<hand>\d+)\s+stage=(?P<stage>[a-zA-Z0-9_]+).*?\bmsg=(?P<msg>.+)$"
@@ -31,7 +31,7 @@ OFFICIAL_DELAY_RE = re.compile(
 )
 REFINEMENT_RE = re.compile(
     r"DECIDE refinement decision_id=(?P<decision_id>\d+) sequence=(?P<sequence>\d+) "
-    r"action=(?P<action>-?\d+) elapsed=(?P<elapsed>[0-9.]+)s "
+    r"(?:action|decision)=(?P<decision>.*?) elapsed=(?P<elapsed>[0-9.]+)s "
     r"trusted_step=(?P<trusted_step>\d+|None) "
     r"trusted_cpu_ms=(?P<trusted_cpu>[0-9.]+|None)"
     r"(?P<reported_tail>.*)$"
@@ -40,7 +40,7 @@ REPORTED_SAMPLES_RE = re.compile(r"\breported_samples=(?P<value>[^\s]+)")
 REPORTED_CONFIDENCE_RE = re.compile(r"\breported_confidence=(?P<value>[^\s]+)")
 WORKER_DONE_RE = re.compile(
     r"DECIDE worker_done decision_id=(?P<decision_id>\d+) sequence=(?P<sequence>\d+) "
-    r"latest_safe=(?P<action>-?\d+) elapsed=(?P<elapsed>[0-9.]+)s "
+    r"latest_safe=(?P<decision>.*?) elapsed=(?P<elapsed>[0-9.]+)s "
     r"trusted_steps=(?P<trusted_steps>\d+) "
     r"trusted_cpu_ms=(?P<trusted_cpu>[0-9.]+) "
     r"iterator_exhausted=(?P<exhausted>True|False) "
@@ -209,7 +209,7 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
             refinements.append({
                 "decision_id": int(refinement.group("decision_id")),
                 "sequence": int(refinement.group("sequence")),
-                "action": int(refinement.group("action")),
+                "decision": refinement.group("decision").strip(),
                 "elapsed_sec": float(refinement.group("elapsed")),
                 "trusted_step": _optional_number(
                     refinement.group("trusted_step"), int
@@ -253,7 +253,7 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
         if done:
             row = dict(pending or {})
             row.update({
-                "action": done.group("action").strip(),
+                "decision": done.group("decision").strip(),
                 "elapsed_sec": float(done.group("elapsed")),
             })
             decisions.append(row)

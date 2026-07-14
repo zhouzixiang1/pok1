@@ -1,11 +1,5 @@
 """Logic-level tests for MCP tools — verifies data transformations and invariants."""
 
-import json
-from pathlib import Path
-
-import pytest
-
-
 # ── tool_helpers.py: compute_h2h_avg_winrate() via pure import ──
 
 class TestComputeH2HLogic:
@@ -43,44 +37,144 @@ class TestComputeH2HLogic:
 # ── tool_helpers.py: load_h2h_avg_winrates() fallback logic ──
 
 class TestLoadH2HAvgWinratesFallback:
-    @pytest.mark.requires_active_bot
-    def test_returns_dict_for_known_bots(self):
-        from tool_helpers import load_h2h_avg_winrates
-        result = load_h2h_avg_winrates()
-        assert isinstance(result, dict)
-        # Should have entries for active bots
-        assert len(result) > 0
+    def test_uses_canonical_strength_rows(self, monkeypatch):
+        import tool_helpers
 
-    def test_values_in_valid_range(self):
-        from tool_helpers import load_h2h_avg_winrates
-        result = load_h2h_avg_winrates()
-        for name, wr in result.items():
-            assert 0.0 <= wr <= 1.0, f"{name} has invalid winrate: {wr}"
+        monkeypatch.setattr(
+            tool_helpers,
+            "_rating_rows_for_active",
+            lambda: [
+                {"name": "national_v143", "h2h_avg_wr": 0.625},
+                {"name": "national_v144", "h2h_avg_wr": None, "win_rate": 0.375},
+            ],
+        )
+
+        assert tool_helpers.load_h2h_avg_winrates() == {
+            "national_v143": 0.625,
+            "national_v144": 0.375,
+        }
 
 
 # ── tool_helpers.py: _select_precommit_opponents() ──
 
-@pytest.mark.requires_active_bot
 class TestSelectPrecommitOpponents:
-    def test_returns_list_of_dicts(self, active_bot_version):
-        from tool_helpers import _select_precommit_opponents
-        result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
-        assert isinstance(result, list)
-        for opp in result:
-            assert "name" in opp
-            assert "reason" in opp
+    @staticmethod
+    def _snapshot():
+        active = ["national_v143", "national_v144", "national_v145", "national_v146"]
+        scores = {
+            "national_v143": 0.40,
+            "national_v144": 0.90,
+            "national_v145": 0.80,
+            "national_v146": 0.10,
+        }
+        return {
+            "available": True,
+            "selection": {
+                "active_bots": active,
+                "rows": [
+                    {
+                        "name": name,
+                        "selection_score": score,
+                        "leaderboard_score": score,
+                    }
+                    for name, score in scores.items()
+                ],
+            },
+            "h2h": {
+                "national_v143 vs national_v144": {
+                    "games": 10,
+                    "a_wins": 5,
+                    "b_wins": 5,
+                    "draws": 0,
+                },
+                "national_v143 vs national_v146": {
+                    "games": 10,
+                    "a_wins": 2,
+                    "b_wins": 8,
+                    "draws": 0,
+                }
+            },
+            "manifest": {"manifest_digest": "frozen-manifest"},
+        }
 
-    def test_no_duplicates(self, active_bot_version):
-        from tool_helpers import _select_precommit_opponents
-        result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
-        names = [o["name"] for o in result]
-        assert len(names) == len(set(names))
+    def test_missing_frozen_snapshot_fails_closed(self, monkeypatch):
+        import evidence_snapshot
+        import tool_helpers
 
-    def test_parent_included(self, active_bot_version):
-        from tool_helpers import _select_precommit_opponents
-        result = _select_precommit_opponents(active_bot_version + 1, active_bot_version)
-        names = [o["name"] for o in result]
-        assert f"national_v{active_bot_version}" in names
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: {"available": False, "reason": "missing"},
+        )
+        monkeypatch.setattr(
+            tool_helpers,
+            "_bot_entry",
+            lambda _name: (_ for _ in ()).throw(AssertionError("live bot lookup")),
+        )
+
+        assert tool_helpers._select_precommit_opponents(147, 143) == []
+
+    def test_invalid_frozen_pool_fails_closed(self, monkeypatch):
+        import evidence_snapshot
+        import tool_helpers
+
+        snapshot = self._snapshot()
+        snapshot["selection"]["rows"] = snapshot["selection"]["rows"][:-1]
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: snapshot,
+        )
+
+        assert tool_helpers._select_precommit_opponents(147, 143) == []
+
+    def test_selection_comes_only_from_frozen_snapshot(self, tmp_path, monkeypatch):
+        import evidence_snapshot
+        import tool_helpers
+
+        snapshot = self._snapshot()
+        entries = {}
+        for name in snapshot["selection"]["active_bots"]:
+            entry = tmp_path / name / "national_bot.py"
+            entry.parent.mkdir()
+            entry.write_text("# immutable fixture\n", encoding="utf-8")
+            entries[name] = entry
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: snapshot,
+        )
+        monkeypatch.setattr(tool_helpers, "_bot_entry", lambda name: entries[name])
+        monkeypatch.setattr(
+            tool_helpers,
+            "get_active_bots",
+            lambda: (_ for _ in ()).throw(AssertionError("live active pool reopened")),
+        )
+
+        assert tool_helpers._select_precommit_opponents(147, 143) == [
+            {"name": "national_v143", "reason": "parent"},
+            {"name": "national_v144", "reason": "top_strength"},
+            {"name": "national_v145", "reason": "top_strength"},
+            {"name": "national_v146", "reason": "source_h2h_weakness"},
+        ]
+
+    def test_nonexecutable_frozen_parent_fails_closed(self, tmp_path, monkeypatch):
+        import evidence_snapshot
+        import tool_helpers
+
+        snapshot = self._snapshot()
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: snapshot,
+        )
+        monkeypatch.setattr(
+            tool_helpers,
+            "_bot_entry",
+            lambda name: tmp_path / name / "national_bot.py",
+        )
+
+        assert tool_helpers._select_precommit_opponents(147, 143) == []
 
 
 # ── evolution_infra.py: parse_json_output() ──
@@ -110,94 +204,37 @@ class TestParseJsonOutput:
         assert result == {"a": 1}
 
 
-# ── MCP tool: get_status via API ──
+# ── MCP tools are Orchestrator-only, never an HTTP capability ──
 
-class TestMCPGetStatusLogic:
-    def test_has_required_fields(self, client):
-        resp = client.post("/api/control/tool/get_status", json={"args": {}})
-        assert resp.status_code == 200
-        result = json.loads(resp.json()["result"])
-        assert "current_v" in result
-        assert "next_v" in result
-        assert "active_bots_count" in result
+def test_no_mcp_or_live_analysis_side_door_is_registered_over_http(client):
+    forbidden = {
+        "get_status",
+        "get_bot_info",
+        "get_match_history",
+        "get_h2h",
+        "get_bot_stats",
+        "run_match_analysis",
+        "run_performance_verification",
+        "analyze_stagnation",
+        "diagnose_environment",
+        "prepare_next_gen",
+        "execute_workers",
+        "run_quality_gates",
+        "run_precommit_eval",
+        "commit_bot",
+    }
 
-    def test_current_v_positive(self, client):
-        resp = client.post("/api/control/tool/get_status", json={"args": {}})
-        result = json.loads(resp.json()["result"])
-        assert result["current_v"] > 0
+    response = client.get("/api/control/tools")
 
-    def test_active_bots_count_non_negative(self, client):
-        resp = client.post("/api/control/tool/get_status", json={"args": {}})
-        result = json.loads(resp.json()["result"])
-        assert result["active_bots_count"] >= 0
-
-
-# ── MCP tool: get_bot_info via API ──
-
-@pytest.mark.requires_active_bot
-class TestMCPGetBotInfoLogic:
-    def test_existing_bot_has_files(self, client, active_bot_version):
-        resp = client.post("/api/control/tool/get_bot_info",
-                           json={"args": {"version": active_bot_version}})
-        assert resp.status_code == 200
-        result = json.loads(resp.json()["result"])
-        assert result.get("exists") is not False
-        assert "files" in result
-        assert len(result["files"]) > 0
-
-    def test_version_matches_request(self, client, active_bot_version):
-        resp = client.post("/api/control/tool/get_bot_info",
-                           json={"args": {"version": active_bot_version}})
-        result = json.loads(resp.json()["result"])
-        assert result.get("version") == active_bot_version
+    assert response.status_code == 200
+    assert forbidden.isdisjoint(response.json()["tools"])
 
 
-# ── MCP tool: get_match_history via API ──
-
-@pytest.mark.requires_active_bot
-class TestMCPGetMatchHistoryLogic:
-    def test_respects_n_limit(self, client, active_bot_version):
-        resp = client.post("/api/control/tool/get_match_history",
-                           json={"args": {"version": active_bot_version, "n": 2}})
-        assert resp.status_code == 200
-        result = json.loads(resp.json()["result"])
-        if "matches" in result:
-            assert len(result["matches"]) <= 2
-
-    def test_matches_are_dicts(self, client, active_bot_version):
-        resp = client.post("/api/control/tool/get_match_history",
-                           json={"args": {"version": active_bot_version, "n": 3}})
-        result = json.loads(resp.json()["result"])
-        if "matches" in result:
-            for m in result["matches"]:
-                assert isinstance(m, dict)
-
-
-# ── MCP tool: get_h2h via API ──
-
-class TestMCPGetH2HLogic:
-    @pytest.mark.requires_active_bot
-    def test_opponents_have_win_rate(self, client, active_bot_version):
-        resp = client.post("/api/control/tool/get_h2h",
-                           json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
-        assert resp.status_code == 200
-        result = json.loads(resp.json()["result"])
-        if "opponents" in result and result["opponents"]:
-            # opponents is a dict: {opp_name: {wins, losses, games, win_rate, tag}}
-            for opp_name, opp_data in result["opponents"].items():
-                assert "win_rate" in opp_data
-                assert "tag" in opp_data
-                assert opp_data["tag"] in ("STRENGTH", "WEAKNESS", "neutral")
-
-
-# ── MCP tool: get_bot_stats via API ──
-
-class TestMCPGetBotStatsLogic:
-    @pytest.mark.requires_active_bot
-    def test_has_games_and_win_rate(self, client, active_bot_version):
-        resp = client.post("/api/control/tool/get_bot_stats",
-                           json={"args": {"bot_name": f"claude_v{active_bot_version}"}})
-        assert resp.status_code == 200
-        result = json.loads(resp.json()["result"])
-        if "error" not in result:
-            assert "games" in result or "win_rate" in result
+def test_former_read_only_mcp_http_calls_are_also_retired(client):
+    for name in (
+        "get_status", "get_bot_info", "get_match_history", "get_h2h",
+        "get_bot_stats",
+    ):
+        response = client.post(f"/api/control/tool/{name}", json={"args": {}})
+        assert response.status_code == 410
+        assert response.json()["detail"]["code"] == "control_tool_executor_retired"

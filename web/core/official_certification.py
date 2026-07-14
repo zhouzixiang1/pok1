@@ -1,4 +1,4 @@
-"""Official EXE certification, signed evidence, and legacy queue helpers.
+"""Official EXE certification and signed evidence validation.
 
 The fast national-native gates own strength tracking and regression. This module
 tracks slower official Windows platform evidence separately as a compliance
@@ -23,8 +23,8 @@ import time
 from typing import Any, Callable, Literal
 
 from bot_artifact import canonical_digest, hash_path, published_bot_identity
-from bot_namespace import bot_name, parse_bot_version
-from official_eligibility import epoch_lifecycle_eligibility, grandfather_eligibility
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, parse_bot_version
+from official_eligibility import epoch_lifecycle_eligibility, strict_role_eligibility
 from official_platform_harness import (
     OfficialPlatformConfig,
     _copy_config,
@@ -70,13 +70,16 @@ PUBLISHED_ATTESTATION_SCHEMA_VERSION = 2
 DETERMINISTIC_RECEIPT_SCHEMA_VERSION = 3
 DETERMINISTIC_STATUS_RECEIPT_SCHEMA_VERSION = 1
 OPPONENT_ELIGIBILITY_RECEIPT_SCHEMA_VERSION = 1
+RETIRED_BOOTSTRAP_SPEC_FIELDS = frozenset({
+    "bootstrap_root_id",
+    "bootstrap_root_receipt",
+})
 
 STATUS_LOCAL_PASS = "local-pass"
 STATUS_SMOKE_PASS = "official-smoke-pass"
 STATUS_COMPLIANCE_PASS = "official-compliance-pass"
 STATUS_PENDING = "official-pending"
 STATUS_CERTIFIED = "official-certified"
-STATUS_GRANDFATHERED = "official-grandfathered"
 STATUS_INCONCLUSIVE = "official-inconclusive"
 STATUS_FAILED = "official-failed"
 STATUS_UNCERTIFIED = "official-uncertified"
@@ -166,21 +169,20 @@ class CertificationSpec:
     target_hands: int
     round_timeout_sec: float
     no_progress_timeout_sec: float
-    # The normal formal path deliberately leaves this unset.  A value is only
-    # legal for the explicit, operator-acknowledged signed-ledger bootstrap.
-    bootstrap_root_id: str | None = None
+    # The normal formal path deliberately leaves this unset.  The only legal
+    # value identifies the current system-owned first-strict control.
+    bootstrap_control_id: str | None = None
 
 
 def spec_record(spec: CertificationSpec) -> dict[str, Any]:
     """Serialize a spec without changing legacy v5 identity bytes.
 
-    Old full-v5 certificates and durable requests predate the bootstrap field.
-    Omitting its ``None`` default keeps their identity/spec payload exactly
-    compatible; an explicit bootstrap root is identity-bearing instead.
+    Omitting the ``None`` default keeps ordinary full-v5 identities compact;
+    an explicit first-strict control authorization is identity-bearing.
     """
     record = asdict(spec)
-    if record.get("bootstrap_root_id") is None:
-        record.pop("bootstrap_root_id", None)
+    if record.get("bootstrap_control_id") is None:
+        record.pop("bootstrap_control_id", None)
     return record
 
 
@@ -213,14 +215,6 @@ def certificate_dir() -> Path:
 
 def published_certificate_path(candidate: str | Path) -> Path:
     return PUBLISHED_CERTIFICATE_DIR / f"{_safe_label(candidate)}.json"
-
-
-def queue_path() -> Path:
-    return certification_root() / "queue.jsonl"
-
-
-def queue_lock_path() -> Path:
-    return certification_root() / "queue.lock"
 
 
 def _jsonable(value: Any) -> Any:
@@ -287,18 +281,6 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(path)
-
-
-@contextmanager
-def _queue_lock(*, blocking: bool = True):
-    queue_lock_path().parent.mkdir(parents=True, exist_ok=True)
-    with queue_lock_path().open("a+", encoding="utf-8") as lock_fp:
-        flags = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
-        fcntl.flock(lock_fp.fileno(), flags)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock_fp.fileno(), fcntl.LOCK_UN)
 
 
 def _safe_label(path_or_token: str | Path) -> str:
@@ -407,7 +389,7 @@ def build_spec(
     target_hands: int | None = None,
     round_timeout_sec: float | None = None,
     no_progress_timeout_sec: float | None = None,
-    bootstrap_root_id: str | None = None,
+    bootstrap_control_id: str | None = None,
 ) -> CertificationSpec:
     defaults = _mode_defaults(mode)
     requested = {
@@ -447,8 +429,10 @@ def build_spec(
         no_progress_timeout_sec=float(
             no_progress_timeout_sec if no_progress_timeout_sec is not None else defaults["no_progress_timeout_sec"]
         ),
-        bootstrap_root_id=(
-            str(bootstrap_root_id).strip() if bootstrap_root_id is not None else None
+        bootstrap_control_id=(
+            str(bootstrap_control_id).strip()
+            if bootstrap_control_id is not None
+            else None
         ),
     )
     validate_spec(spec)
@@ -462,11 +446,17 @@ def validate_spec(spec: CertificationSpec) -> None:
         raise ValueError("official certification rounds cannot be negative")
     if spec.self_play_rounds + spec.opponent_rounds <= 0:
         raise ValueError("official certification must run at least one round")
-    if spec.bootstrap_root_id is not None:
+    if spec.bootstrap_control_id is not None:
         if spec.mode != "full":
-            raise ValueError("bootstrap root is valid only for immutable full certification")
-        if not isinstance(spec.bootstrap_root_id, str) or not spec.bootstrap_root_id.strip():
-            raise ValueError("bootstrap root id must be a non-empty string")
+            raise ValueError("bootstrap control is valid only for immutable full certification")
+        from first_strict_control import CONTROL_ID
+
+        if spec.bootstrap_control_id != CONTROL_ID:
+            raise ValueError("unknown first-strict bootstrap control id")
+        if parse_bot_version(Path(spec.candidate).name) != FIRST_STRICT_POLICY_VERSION:
+            raise ValueError(
+                "first-strict bootstrap control is valid only for national_v143"
+            )
     if spec.mode == "full":
         defaults = MODE_CONFIG["full"]
         valid = (
@@ -1260,7 +1250,7 @@ def read_status(candidate: str | Path) -> dict[str, Any]:
     authoritative_context = bool(
         published
         or payload.get("mode") == "full"
-        or payload.get("status") in {STATUS_CERTIFIED, STATUS_GRANDFATHERED}
+        or payload.get("status") == STATUS_CERTIFIED
     )
     try:
         candidate_hash = hash_path(Path(candidate).expanduser().resolve())
@@ -1397,23 +1387,6 @@ def record_local_pass(candidate: str | Path, *, source: str = "quality_gates") -
     if current.get("status") == STATUS_FAILED and official_failure_blocks_parent(current):
         return current
     return write_status(candidate, STATUS_LOCAL_PASS, source=source, issues=[])
-
-
-def record_grandfathered(
-    candidate: str | Path,
-    *,
-    reason: str,
-    source: str = "official_transition",
-) -> dict[str, Any]:
-    """Reject mutable status-based grandfathering.
-
-    Transitional grants are policy, not platform evidence. They must be added
-    to ``official_grandfathering.json`` with an immutable artifact hash.
-    """
-    raise RuntimeError(
-        "mutable official grandfather status is disabled; add a content-bound "
-        "role grant to web/core/official_grandfathering.json"
-    )
 
 
 def _official_issue_strings(status: dict[str, Any]) -> list[str]:
@@ -1594,16 +1567,6 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
             "inconclusive": False,
             "violation": False,
             "issues": issues,
-        }
-    if status_value == STATUS_GRANDFATHERED:
-        return {
-            "ok": True,
-            "blocking": False,
-            "classification": "grandfathered",
-            "inconclusive": False,
-            "violation": False,
-            "issues": issues,
-            "grandfathered": True,
         }
     if status_value == STATUS_INCONCLUSIVE:
         return {
@@ -1887,6 +1850,12 @@ def _deterministic_receipt_issues(
 
 
 def _spec_from_mapping(data: dict[str, Any]) -> CertificationSpec:
+    retired = sorted(RETIRED_BOOTSTRAP_SPEC_FIELDS.intersection(data))
+    if retired:
+        raise ValueError(
+            "retired signed-ledger bootstrap spec fields are forbidden: "
+            + ", ".join(retired)
+        )
     mode = str(data.get("mode") or "")
     spec = CertificationSpec(
         mode=mode,
@@ -1901,9 +1870,9 @@ def _spec_from_mapping(data: dict[str, Any]) -> CertificationSpec:
         target_hands=int(data.get("target_hands", 0) or 0),
         round_timeout_sec=float(data.get("round_timeout_sec", 0.0) or 0.0),
         no_progress_timeout_sec=float(data.get("no_progress_timeout_sec", 0.0) or 0.0),
-        bootstrap_root_id=(
-            str(data.get("bootstrap_root_id")).strip()
-            if data.get("bootstrap_root_id") is not None
+        bootstrap_control_id=(
+            str(data.get("bootstrap_control_id")).strip()
+            if data.get("bootstrap_control_id") is not None
             else None
         ),
     )
@@ -1972,56 +1941,58 @@ def _opponent_selection_issues(
     if str(opponent.get("artifact_hash") or "") != str(identity.get("opponent_hash") or ""):
         issues.append("certificate_official_opponent_hash_mismatch")
     reason = opponent.get("reason")
-    if spec.bootstrap_root_id is not None:
-        # This is the only path that can use the historic signed-ledger root.
-        # It is bound into the spec/identity and must reproduce every receipt
-        # field from the selector.  A normal full spec never enters here.
-        if selection.get("bootstrap_root_id") != spec.bootstrap_root_id:
-            issues.append("certificate_bootstrap_root_id_mismatch")
-        if reason != "signed_v5_ledger_bootstrap_root":
-            issues.append("certificate_bootstrap_root_reason_invalid")
+    if spec.bootstrap_control_id is not None:
+        # The first strict run uses current system-owned typed-policy bytes,
+        # never an archived bot.  Every selection/receipt field is revalidated.
+        if selection.get("bootstrap_control_id") != spec.bootstrap_control_id:
+            issues.append("certificate_bootstrap_control_id_mismatch")
+        if reason != "first_strict_control_bootstrap":
+            issues.append("certificate_bootstrap_control_reason_invalid")
         try:
             if _validated_ledger_entries is None:
                 from official_bootstrap import (
-                    validate_signed_v5_ledger_bootstrap_selection,
+                    validate_first_strict_control_selection,
                 )
 
-                validation = validate_signed_v5_ledger_bootstrap_selection(
+                validation = validate_first_strict_control_selection(
                     selection,
-                    spec.bootstrap_root_id,
+                    spec.bootstrap_control_id,
                     spec.candidate,
-                    # The certificate is validated again after its successful
-                    # append consumes the one-time root.  That historical check
-                    # must validate the same receipt without reauthorizing a run.
                     allow_consumed=allow_consumed_bootstrap,
+                    allow_published=allow_consumed_bootstrap,
                 )
             else:
                 from official_bootstrap import (
-                    validate_signed_v5_ledger_bootstrap_selection_from_entries,
+                    validate_first_strict_control_selection_from_entries,
                 )
 
                 validation = (
-                    validate_signed_v5_ledger_bootstrap_selection_from_entries(
+                    validate_first_strict_control_selection_from_entries(
                         selection,
-                        spec.bootstrap_root_id,
+                        spec.bootstrap_control_id,
                         spec.candidate,
                         _validated_ledger_entries,
                         allow_consumed=allow_consumed_bootstrap,
+                        allow_published=allow_consumed_bootstrap,
                     )
                 )
             if not validation.get("valid"):
                 issues.extend(
                     f"certificate_{item}"
-                    for item in (validation.get("issues") or ["bootstrap_root_selection_invalid"])
+                    for item in (
+                        validation.get("issues")
+                        or ["bootstrap_control_selection_invalid"]
+                    )
                 )
         except Exception as exc:
             issues.append(
-                f"certificate_bootstrap_root_validation_error:{type(exc).__name__}:{str(exc)[:160]}"
+                "certificate_bootstrap_control_validation_error:"
+                f"{type(exc).__name__}:{str(exc)[:160]}"
             )
         return list(dict.fromkeys(issues))
 
-    if selection.get("bootstrap_root_id") is not None:
-        issues.append("certificate_bootstrap_root_unexpected")
+    if selection.get("bootstrap_control_id") is not None:
+        issues.append("certificate_bootstrap_control_unexpected")
     # A full EXE certificate is the only production authorization for an
     # official opponent.  Content-bound migration grants remain available for
     # parent/rating-pool history, but must never validate a formal opponent
@@ -2589,40 +2560,14 @@ def _official_verdict_ledger_issues() -> list[str]:
     return list(validation.get("issues") or ["official_verdict_ledger_invalid"])
 
 
-def _grandfather_ledger_issues() -> list[str]:
-    return _official_verdict_ledger_issues()
-
-
 def parent_eligible(candidate: str | Path) -> bool:
-    version = parse_bot_version(Path(candidate).name)
-    if version is None or not epoch_lifecycle_eligibility(version).get("eligible"):
-        return False
-    status = read_status(candidate)
-    if official_failure_blocks_parent(status):
-        return False
-    if official_full_certified(status, candidate, require_published=True):
-        return True
-    if _grandfather_ledger_issues():
-        return False
-    return bool(
-        grandfather_eligibility(candidate, "parent_source").get("eligible")
-    )
+    return bool(strict_role_eligibility(candidate, "parent_source").get("eligible"))
 
 
 def active_pool_eligible(candidate: str | Path) -> bool:
-    version = parse_bot_version(Path(candidate).name)
-    if version is None or not epoch_lifecycle_eligibility(version).get("eligible"):
-        return False
-    status = read_status(candidate)
-    if official_failure_blocks_parent(status):
-        return False
-    if official_full_certified(status, candidate, require_published=True):
-        return True
-    if _grandfather_ledger_issues():
-        return False
-    parent_grant = grandfather_eligibility(candidate, "parent_source")
-    rating_grant = grandfather_eligibility(candidate, "rating_pool")
-    return bool(parent_grant.get("eligible") and rating_grant.get("eligible"))
+    parent = strict_role_eligibility(candidate, "parent_source")
+    rating = strict_role_eligibility(candidate, "rating_pool")
+    return bool(parent.get("eligible") and rating.get("eligible"))
 
 
 def _digest_bound_receipt(payload: dict[str, Any]) -> dict[str, Any]:
@@ -2642,26 +2587,6 @@ def _official_certificate_opponent_receipt(
         "artifact_hash": str(identity.get("artifact_hash") or ""),
         "policy_id": str(status.get("policy_id") or ""),
         "certificate_digest": str(status.get("certificate_digest") or ""),
-    })
-
-
-def _grandfathered_opponent_receipt(grant: dict[str, Any]) -> dict[str, Any]:
-    identity = grant.get("identity") if isinstance(grant.get("identity"), dict) else {}
-    grant_payload = grant.get("grant") if isinstance(grant.get("grant"), dict) else {}
-    return _digest_bound_receipt({
-        "schema_version": OPPONENT_ELIGIBILITY_RECEIPT_SCHEMA_VERSION,
-        "kind": "content_bound_grandfather_grant",
-        "role": "official_opponent",
-        "bot": str(identity.get("label") or ""),
-        "artifact_hash": str(identity.get("artifact_hash") or ""),
-        "policy_id": str(grant.get("policy_id") or ""),
-        "policy_digest": str(grant.get("policy_digest") or ""),
-        "grant_digest": canonical_digest(grant_payload),
-        "target_version": int(grant.get("target_version") or 0),
-        "sunset_version": int(grant.get("sunset_version") or 0),
-        "minimum_certified_alternatives": int(
-            grant.get("minimum_certified_alternatives") or 0
-        ),
     })
 
 
@@ -2692,17 +2617,31 @@ def stable_official_opponent_selection(
     # Keep ordinary v5 selection records byte-compatible.  Bootstrap fields
     # exist only on the explicit one-time path and are part of its job/cert
     # identity, not a fallback for normal opponent selection.
-    bootstrap_root_id = selection.get("bootstrap_root_id", selection.get("root_id"))
-    if bootstrap_root_id is not None:
+    bootstrap_control_id = selection.get("bootstrap_control_id")
+    if bootstrap_control_id is not None:
         stable["eligible"] = bool(selection.get("eligible"))
         stable["reason"] = selection.get("reason")
-        stable["bootstrap_root_id"] = str(bootstrap_root_id or "")
-        stable["bootstrap_root_receipt"] = selection.get("bootstrap_root_receipt")
+        stable["kind"] = selection.get("kind")
+        stable["bootstrap_control_id"] = str(bootstrap_control_id or "")
+        stable["bootstrap_control_receipt"] = selection.get(
+            "bootstrap_control_receipt"
+        )
         stable["candidate_binding"] = selection.get("candidate_binding")
         stable["operator_bootstrap_authorization"] = selection.get(
             "operator_bootstrap_authorization"
         )
-        stable["opponent"]["completion_tree_oid"] = opponent.get("completion_tree_oid")
+        # These negative-authority flags are part of the control receipt, not
+        # optional diagnostics.  Dropping them while freezing a durable job
+        # would make the later exact selector validator compare ``None`` with
+        # ``False`` and, more importantly, would lose the zero-strength role
+        # boundary from the certificate identity.
+        for key in (
+            "authority",
+            "normal_official_opponent",
+            "strength_admitted",
+            "rating_eligible",
+        ):
+            stable["opponent"][key] = opponent.get(key)
     return stable
 
 
@@ -2740,6 +2679,27 @@ def official_opponent_eligibility(
             "status": status.get("status"),
             "mode": status.get("mode"),
             "verdict": verdict,
+        }
+    authorization = strict_role_eligibility(candidate, "official_opponent")
+    if not authorization.get("eligible"):
+        issues = list(authorization.get("issues") or [])
+        certificate_missing = any(
+            issue in {
+                "signed_full_official_certificate_required",
+                "official_certificate_digest_invalid",
+            }
+            for issue in issues
+        )
+        return {
+            "eligible": False,
+            "reason": (
+                "official_full_certificate_required"
+                if certificate_missing
+                else authorization.get("reason") or "strict_national_bot_spec_required"
+            ),
+            "authorization": authorization,
+            "bootstrap_requested_but_disabled": bool(allow_bootstrap_grandfather),
+            "grandfathered": False,
         }
     if official_full_certified(status, candidate, require_published=True):
         reason = "official_certified"
@@ -2902,8 +2862,14 @@ def select_official_opponent(
             continue
         try:
             from national_native import check_native_contract
+            from national_runtime_authority import (
+                current_system_native_runtime_errors,
+            )
 
-            native_errors = check_native_contract(path)
+            native_errors = [
+                *current_system_native_runtime_errors(path),
+                *check_native_contract(path),
+            ]
         except Exception as exc:
             native_errors = [f"native_contract_check_error:{type(exc).__name__}:{str(exc)[:200]}"]
         if native_errors:
@@ -2995,15 +2961,26 @@ def resolve_managed_certification_spec(
     """
     if spec.opponent_rounds <= 0:
         return spec, None
-    if spec.bootstrap_root_id is not None:
-        # Bootstrap is opt-in at spec creation and never falls back to the
-        # active-pool selector.  A job resume replays this exact root receipt.
-        from official_bootstrap import select_signed_v5_ledger_bootstrap_root
-
-        selection = select_signed_v5_ledger_bootstrap_root(
-            spec.bootstrap_root_id,
-            candidate_path=spec.candidate,
+    if spec.bootstrap_control_id is not None:
+        # Bootstrap is opt-in and never falls back to an active or archived bot.
+        from official_bootstrap import (
+            authorize_operator_bootstrap_selection,
+            select_first_strict_control,
         )
+
+        selection = select_first_strict_control(
+            spec.bootstrap_control_id,
+            spec.candidate,
+        )
+        if selection.get("selected"):
+            authorization = authorize_operator_bootstrap_selection(
+                selection,
+                spec.bootstrap_control_id,
+                spec.candidate,
+            )
+            if authorization.get("valid") is not True:
+                return None, authorization
+            selection = authorization["selection"]
     else:
         selection = select_official_opponent(
             spec.candidate,
@@ -3025,7 +3002,7 @@ def resolve_managed_certification_spec(
         target_hands=spec.target_hands,
         round_timeout_sec=spec.round_timeout_sec,
         no_progress_timeout_sec=spec.no_progress_timeout_sec,
-        bootstrap_root_id=spec.bootstrap_root_id,
+        bootstrap_control_id=spec.bootstrap_control_id,
     )
     return resolved, selection
 
@@ -3033,134 +3010,6 @@ def resolve_managed_certification_spec(
 def official_lock_busy(config: OfficialPlatformConfig | None = None) -> bool:
     cfg = config or OfficialPlatformConfig()
     return official_platform_busy(cfg.lock_path)
-
-
-def _read_queue_entries() -> list[dict[str, Any]]:
-    path = queue_path()
-    if not path.exists():
-        return []
-    entries: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict) and payload.get("status", "pending") == "pending":
-            entries.append(payload)
-    return entries
-
-
-def _write_queue_entries(entries: list[dict[str, Any]]) -> None:
-    path = queue_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    if entries:
-        text = "\n".join(json.dumps(_jsonable(entry), ensure_ascii=False) for entry in entries) + "\n"
-    else:
-        text = ""
-    tmp.write_text(text, encoding="utf-8")
-    tmp.replace(path)
-
-
-def _spec_from_queue_entry(entry: dict[str, Any]) -> CertificationSpec:
-    data = entry.get("spec") or {}
-    mode = data.get("mode")
-    if mode not in MODE_CONFIG:
-        raise ValueError(f"invalid certification mode in queue entry: {mode!r}")
-    spec = CertificationSpec(
-        mode=mode,
-        policy_id=str(
-            data.get("policy_id")
-            or (FULL_POLICY_ID if mode == "full" else f"official-{mode}-v1")
-        ),
-        candidate=str(data["candidate"]),
-        opponent=str(data["opponent"]) if data.get("opponent") else None,
-        self_play_rounds=int(data["self_play_rounds"]),
-        opponent_rounds=int(data["opponent_rounds"]),
-        target_hands=int(data["target_hands"]),
-        round_timeout_sec=float(data["round_timeout_sec"]),
-        no_progress_timeout_sec=float(data["no_progress_timeout_sec"]),
-        bootstrap_root_id=(
-            str(data.get("bootstrap_root_id")).strip()
-            if data.get("bootstrap_root_id") is not None
-            else None
-        ),
-    )
-    validate_spec(spec)
-    return spec
-
-
-def queue_snapshot() -> dict[str, Any]:
-    with _queue_lock(blocking=True):
-        entries = _read_queue_entries()
-    return {
-        "queue_path": str(queue_path()),
-        "pending": len(entries),
-        "entries": entries,
-    }
-
-
-def enqueue_certification(
-    spec: CertificationSpec,
-    *,
-    reason: str = "requested",
-    config: OfficialPlatformConfig | None = None,
-) -> dict[str, Any]:
-    validate_spec(spec)
-    identity = certification_identity(spec, config)
-    key = cache_key(spec, config)
-    current = read_status(spec.candidate)
-    current_identity = current.get("certification_identity") or {}
-    same_candidate_artifact = (
-        bool(current_identity.get("candidate_hash"))
-        and current_identity.get("candidate_hash") == identity.get("candidate_hash")
-    )
-    if current.get("cache_key") == key and current.get("status") in {
-        STATUS_SMOKE_PASS,
-        STATUS_COMPLIANCE_PASS,
-        STATUS_CERTIFIED,
-    }:
-        return current
-    if (
-        same_candidate_artifact
-        and current.get("status") == STATUS_CERTIFIED
-        and spec.mode in {"smoke", "compliance"}
-    ):
-        return current
-    if (
-        same_candidate_artifact
-        and current.get("status") == STATUS_COMPLIANCE_PASS
-        and spec.mode == "smoke"
-    ):
-        return current
-    entry = {
-        "cache_key": key,
-        "queued_at": now_iso(),
-        "request_started_ns": time.time_ns(),
-        "reason": reason,
-        "spec": spec_record(spec),
-        "status": "pending",
-    }
-    with _queue_lock(blocking=True):
-        entries = _read_queue_entries()
-        if not any(item.get("cache_key") == key for item in entries):
-            entries.append(entry)
-            _write_queue_entries(entries)
-    return write_status(
-        spec.candidate,
-        STATUS_PENDING,
-        mode=spec.mode,
-        policy_id=spec.policy_id,
-        cache_key=key,
-        certification_identity=identity,
-        reason=reason,
-        queued=True,
-        request_started_ns=entry["request_started_ns"],
-        issues=[],
-    )
 
 
 def _evidence_path_for_result(spec: CertificationSpec, summary: dict[str, Any], cache_key_value: str) -> Path:
@@ -3290,7 +3139,7 @@ def official_feedback_summary(*, limit: int = 8, max_chars: int = 6000) -> str:
             or verdict.get("inconclusive")
             or repair_guidance
             or prompt_feedback
-            or payload.get("status") in {STATUS_FAILED, STATUS_INCONCLUSIVE, STATUS_GRANDFATHERED}
+            or payload.get("status") in {STATUS_FAILED, STATUS_INCONCLUSIVE}
         )
         if not has_signal:
             continue
@@ -3619,7 +3468,6 @@ def _run_certification_impl(
     *,
     config: OfficialPlatformConfig | None = None,
     force: bool = False,
-    queue_on_busy: bool = True,
     runner: Runner,
     runner_provenance: str,
     enforce_opponent_selection: bool,
@@ -3724,8 +3572,6 @@ def _run_certification_impl(
                 job_envelope=job_envelope,
                 test_only=test_only,
             )
-    if queue_on_busy and official_lock_busy(cfg):
-        return enqueue_certification(spec, reason="official_platform_busy", config=cfg)
     if spec.mode == "full":
         from official_certificate_signing import signing_environment_report
 
@@ -3785,7 +3631,6 @@ def run_certification(
     *,
     config: OfficialPlatformConfig | None = None,
     force: bool = False,
-    queue_on_busy: bool = False,
     suite_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run the production certification path with mandatory opponent governance."""
@@ -3797,7 +3642,6 @@ def run_certification(
         spec,
         config=config,
         force=force,
-        queue_on_busy=queue_on_busy,
         suite_dir=suite_dir,
     )
 
@@ -3868,7 +3712,6 @@ def run_identity_bound_certification_job(
     return _run_certification_impl(
         spec,
         force=force,
-        queue_on_busy=False,
         runner=_PRODUCTION_CERTIFICATION_RUNNER,
         runner_provenance=PRODUCTION_RUNNER_PROVENANCE,
         enforce_opponent_selection=False,
@@ -3884,7 +3727,6 @@ def _run_production_certification(
     *,
     config: OfficialPlatformConfig | None = None,
     force: bool = False,
-    queue_on_busy: bool = False,
     request_started_ns: int | None = None,
     suite_dir: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -3897,7 +3739,6 @@ def _run_production_certification(
         spec,
         config=config,
         force=force,
-        queue_on_busy=queue_on_busy,
         runner=runner,
         runner_provenance=PRODUCTION_RUNNER_PROVENANCE,
         enforce_opponent_selection=True,
@@ -3913,7 +3754,6 @@ def _run_certification_with_runner_for_test(
     runner: Runner,
     config: OfficialPlatformConfig | None = None,
     force: bool = False,
-    queue_on_busy: bool = True,
     request_started_ns: int | None = None,
     opponent_selection: dict[str, Any] | None = None,
     job_envelope: dict[str, Any] | None = None,
@@ -3960,7 +3800,6 @@ def _run_certification_with_runner_for_test(
         spec,
         config=config,
         force=force,
-        queue_on_busy=queue_on_busy,
         runner=bound_test_runner,
         runner_provenance=TEST_ONLY_RUNNER_PROVENANCE,
         enforce_opponent_selection=False,
@@ -3968,109 +3807,6 @@ def _run_certification_with_runner_for_test(
         opponent_selection=opponent_selection,
         job_envelope=job_envelope,
         test_only=True,
-    )
-
-
-def _process_certification_queue_impl(
-    *,
-    limit: int = 1,
-    config: OfficialPlatformConfig | None = None,
-    force: bool = False,
-    certify: Callable[..., dict[str, Any]],
-) -> dict[str, Any]:
-    processed: list[dict[str, Any]] = []
-    errors: list[str] = []
-    limit = max(1, int(limit))
-    selected: list[dict[str, Any]] = []
-    try:
-        with _queue_lock(blocking=False):
-            entries = _read_queue_entries()
-            if not entries:
-                return {"processed": 0, "remaining": 0, "lock_busy": False, "results": []}
-            if official_lock_busy(config):
-                return {
-                    "processed": 0,
-                    "remaining": len(entries),
-                    "lock_busy": True,
-                    "results": [],
-                }
-            selected = entries[:limit]
-            _write_queue_entries(entries[limit:])
-    except BlockingIOError:
-        return {"processed": 0, "remaining": None, "lock_busy": True, "results": []}
-
-    requeue: list[dict[str, Any]] = []
-    for entry in selected:
-        try:
-            spec = _spec_from_queue_entry(entry)
-            result = certify(
-                spec,
-                config=config,
-                force=force,
-                queue_on_busy=False,
-                request_started_ns=entry.get("request_started_ns"),
-            )
-            processed.append({
-                "cache_key": entry.get("cache_key"),
-                "candidate": spec.candidate,
-                "mode": spec.mode,
-                "status": result.get("status"),
-            })
-            if result.get("status") == STATUS_PENDING:
-                requeue.append(entry)
-        except Exception as exc:
-            errors.append(f"{type(exc).__name__}: {str(exc)[:300]}")
-            requeue.append(entry)
-
-    if requeue:
-        with _queue_lock(blocking=True):
-            current = _read_queue_entries()
-            existing_keys = {item.get("cache_key") for item in current}
-            merged = [entry for entry in requeue if entry.get("cache_key") not in existing_keys] + current
-            _write_queue_entries(merged)
-
-    with _queue_lock(blocking=True):
-        remaining_count = len(_read_queue_entries())
-    return {
-        "processed": len(processed),
-        "remaining": remaining_count,
-        "lock_busy": False,
-        "results": processed,
-        "errors": errors,
-    }
-
-
-def process_certification_queue(
-    *,
-    limit: int = 1,
-    config: OfficialPlatformConfig | None = None,
-    force: bool = False,
-) -> dict[str, Any]:
-    """Consume queued work through the same governed production entry point."""
-    return _process_certification_queue_impl(
-        limit=limit,
-        config=config,
-        force=force,
-        certify=_run_production_certification,
-    )
-
-
-def _process_certification_queue_with_runner_for_test(
-    *,
-    runner: Runner,
-    limit: int = 1,
-    config: OfficialPlatformConfig | None = None,
-    force: bool = False,
-) -> dict[str, Any]:
-    """Unit-test queue seam; production callers cannot inject a harness runner."""
-    def certify(spec: CertificationSpec, **kwargs: Any) -> dict[str, Any]:
-        return _run_certification_with_runner_for_test(spec, runner=runner, **kwargs)
-
-    return _process_certification_queue_impl(
-        limit=limit,
-        config=config,
-        force=force,
-        certify=certify,
     )
 
 

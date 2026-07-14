@@ -1,0 +1,40 @@
+{
+  "allowed_falsifiers": [
+    "delayed_probe_line_reachability",
+    "donk_line_reachability",
+    "fast_policy_baseline",
+    "incremental_opponent_model",
+    "incremental_refinement_protocol",
+    "showdown_range_adaptation",
+    "terminal_response_adaptation"
+  ],
+  "bundle_id": "national-tcp-policy-bootstrap-v1",
+  "epoch": "national_tcp_policy_v1",
+  "executor": "system_policy_bootstrap_v1",
+  "files": {
+    "policy.py": "ba3d6cce332c4b4ba0429841aa1b68d5e5ff9daa9f981c3c116144dbc6e8f1a6",
+    "prepared_policy.py": "28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816"
+  },
+  "mode": "fresh_national_policy_bootstrap",
+  "official_oracles": {
+    "docs/official-raise-boundary-oracle-2026-07-11.md": "a83a1ec2680577d71ddb985ddba00c5bcda40817ef2fb92c0c41938dccef3756",
+    "docs/official-terminal-settlement-oracle-2026-07-11.md": "ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9"
+  },
+  "official_policy_id": "official-full-v5",
+  "output_artifact_hash": "91ecd6caeb7056b945b354f50367c2c839788214ea32eee4c9e134e1f12ed11c",
+  "prepared_artifact_hash": "ccb8de0d57440ddecbec28ed95c61cf06d2256eb091c367fe643da2fe320a243",
+  "schema_version": 2,
+  "system_runtime": {
+    "decision_runtime_version": 9,
+    "national_bot_sha256": "795413ecab9bbc0856a53c2d297693196e99c078ba52d020d0b0afeedf719570",
+    "precompute_sha256": "5cc33ee3e79bc90a59ecb387442d838fa8eb919620f7302328bc43dfe9c526b5",
+    "stream_decoder_version": 2
+  },
+  "target_version": 143,
+  "version_authority": {
+    "archived_high_water": 142,
+    "first_strict_version": 143,
+    "kind": "national-tcp-policy-version-floor",
+    "schema_version": 1
+  }
+}

@@ -5,15 +5,18 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SEVER = ROOT / "sever"
-sys.path.insert(0, str(SEVER))
+sys.path.insert(0, str(ROOT))
 
-from engine.deck import Deck
-from engine.game import GameEngine
-from engine.thp_recorder import THPRecorder
-from engine.validator import validate_action
-from server.protocol import parse_action
-from server.tcp_server import MatchManager
+from sever.engine.deck import Deck
+from sever.engine.game import GameEngine
+from sever.engine.thp_recorder import THPRecorder
+from sever.engine.validator import validate_action
+from sever.server.protocol import (
+    parse_action,
+    split_client_actions,
+    split_server_messages,
+)
+from sever.server.tcp_server import ClientConnection, MatchManager
 
 
 def _state(**overrides):
@@ -39,6 +42,146 @@ def test_parse_action_requires_exact_raise_spacing():
     assert parse_action(" raise 200") == ("unknown", None)
     assert parse_action("raise 200 ") == ("unknown", None)
     assert parse_action("bet 100") == ("bet", None)
+
+
+def test_client_action_tokenizer_handles_sticky_and_defers_numeric_boundary():
+    messages, rest = split_client_actions(
+        "raise 200call",
+        flush_boundary=False,
+    )
+    assert messages == ["raise 200"]
+    assert rest == "call"
+
+    messages, rest = split_client_actions(rest, flush_boundary=True)
+    assert messages == ["call"]
+    assert rest == ""
+
+    messages, rest = split_client_actions(
+        "callraise 400fold",
+        flush_boundary=True,
+    )
+    assert messages == ["call", "raise 400", "fold"]
+    assert rest == ""
+
+    assert split_client_actions("raise 2", flush_boundary=False) == (
+        [],
+        "raise 2",
+    )
+    assert split_client_actions("raise 200", flush_boundary=True) == (
+        ["raise 200"],
+        "",
+    )
+
+
+def test_client_action_tokenizer_preserves_illegal_spacing_and_trailing_bytes():
+    for raw in ("raise  200", "raise\t200", "callx", "fold ", "\ncall"):
+        assert split_client_actions(raw, flush_boundary=True) == ([], raw)
+
+
+def test_server_message_tokenizer_handles_fragmented_and_sticky_raw_tokens():
+    raw = "earnChips -100preflop|SMALLBLIND|<0,3><1,12>raise 200call"
+    messages, rest = split_server_messages(raw, flush_boundary=True)
+    assert messages == [
+        "earnChips -100",
+        "preflop|SMALLBLIND|<0,3><1,12>",
+        "raise 200",
+        "call",
+    ]
+    assert rest == ""
+
+
+class _MemoryWriter:
+    def __init__(self):
+        self.writes = []
+        self.closed = False
+
+    def write(self, data):
+        self.writes.append(data)
+
+    async def drain(self):
+        return None
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        return None
+
+
+def test_raw_client_connection_accepts_no_newline_and_bytewise_fragmentation():
+    async def run():
+        reader = asyncio.StreamReader()
+        writer = _MemoryWriter()
+        connection = ClientConnection(reader, writer, idle_flush_sec=0.01)
+        pending = asyncio.create_task(connection.recv_action(timeout=1.0))
+        for byte in b"raise 200":
+            reader.feed_data(bytes([byte]))
+            await asyncio.sleep(0)
+        result = await pending
+        await connection.send_message("call")
+        return result, writer.writes
+
+    result, writes = asyncio.run(run())
+    assert result == "raise 200"
+    assert writes == [b"call"]
+
+
+def test_raw_client_connection_does_not_reuse_unsolicited_sticky_action():
+    async def run():
+        reader = asyncio.StreamReader()
+        writer = _MemoryWriter()
+        connection = ClientConnection(reader, writer, idle_flush_sec=0.005)
+        pending = asyncio.create_task(connection.recv_action(timeout=1.0))
+        reader.feed_data(b"raise 200call")
+        first = await pending
+        second = await connection.recv_action(timeout=0.02)
+        return first, second
+
+    first, second = asyncio.run(run())
+    assert first == "protocol_multiple_actions:raise 200|call"
+    assert parse_action(first) == ("unknown", None)
+    assert second is None
+
+
+def test_raw_client_connection_name_handshake_uses_idle_not_newline():
+    async def run():
+        reader = asyncio.StreamReader()
+        connection = ClientConnection(reader, _MemoryWriter(), idle_flush_sec=0.01)
+        pending = asyncio.create_task(connection.recv_name(timeout=1.0))
+        for fragment in (b"Nat", b"ional", b"Bot"):
+            reader.feed_data(fragment)
+            await asyncio.sleep(0)
+        return await pending
+
+    assert asyncio.run(run()) == "NationalBot"
+
+
+def test_raw_client_connection_reassembles_fragmented_utf8_team_name():
+    async def run():
+        reader = asyncio.StreamReader()
+        connection = ClientConnection(reader, _MemoryWriter(), idle_flush_sec=0.01)
+        pending = asyncio.create_task(connection.recv_name(timeout=1.0))
+        encoded = "底牌码农".encode("utf-8")
+        for fragment in (encoded[:2], encoded[2:7], encoded[7:]):
+            reader.feed_data(fragment)
+            await asyncio.sleep(0)
+        return await pending
+
+    assert asyncio.run(run()) == "底牌码农"
+
+
+def test_raw_client_connection_does_not_idle_flush_inside_utf8_codepoint():
+    async def run():
+        reader = asyncio.StreamReader()
+        connection = ClientConnection(reader, _MemoryWriter(), idle_flush_sec=0.01)
+        pending = asyncio.create_task(connection.recv_name(timeout=1.0))
+        encoded = "国赛".encode("utf-8")
+        reader.feed_data(encoded[:4])  # complete 国 + first byte of 赛
+        await asyncio.sleep(0.03)      # longer than the idle boundary
+        reader.feed_data(encoded[4:])
+        return await pending
+
+    assert asyncio.run(run()) == "国赛"
 
 
 def test_postflop_after_check_requires_call_not_second_check():
@@ -163,6 +306,79 @@ def test_game_engine_action_event_records_server_wait_and_timeout_budget():
     assert event["timeout_budget_sec"] == 60.0
 
 
+def test_game_engine_matches_official_omitted_street_closers():
+    async def run_round(stage, first_idx, second_idx, first_bet, second_bet, actions):
+        sent = []
+        events = []
+
+        async def send(player_idx, message):
+            sent.append((player_idx, message))
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.hand_num = 1
+        engine.players[0].blind_type = "SMALLBLIND"
+        engine.players[1].blind_type = "BIGBLIND"
+
+        async def recv_action(player_idx):
+            return actions[player_idx].pop(0)
+
+        engine._recv_action = recv_action
+        await engine._betting_round(
+            stage=stage,
+            first_idx=first_idx,
+            second_idx=second_idx,
+            first_bet=first_bet,
+            second_bet=second_bet,
+            pot=first_bet + second_bet,
+            community=[],
+            deck=Deck(seed=7),
+        )
+        return sent, events
+
+    preflop_sent, preflop_events = asyncio.run(run_round(
+        "preflop", 0, 1, 50, 100, {0: ["call"], 1: ["check"]},
+    ))
+    assert preflop_sent == [(1, "call")]
+    assert [event["wire_relayed"] for event in preflop_events if event["type"] == "action"] == [True, False]
+
+    postflop_sent, postflop_events = asyncio.run(run_round(
+        "flop", 1, 0, 0, 0, {0: ["call"], 1: ["check"]},
+    ))
+    assert postflop_sent == [(0, "check")]
+    assert [event["wire_relayed"] for event in postflop_events if event["type"] == "action"] == [True, False]
+
+
+def test_game_engine_matches_official_hand_70_wire_settlement_boundary():
+    async def settle(hand_num):
+        sent = []
+        events = []
+
+        async def send(player_idx, message):
+            sent.append((player_idx, message))
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.hand_num = hand_num
+        engine.players[0].chips = 19_950
+        engine.players[1].chips = 19_900
+        result = await engine._settle_fold(winner_idx=1, pot=150, community=[])
+        return result, sent, events
+
+    _result_69, sent_69, events_69 = asyncio.run(settle(69))
+    result_70, sent_70, events_70 = asyncio.run(settle(70))
+
+    assert sent_69 == [(0, "earnChips -50"), (1, "earnChips 50")]
+    assert sent_70 == []
+    assert result_70.earnings == (-50, 50)
+    assert next(event for event in events_69 if event["type"] == "settle")["wire_settlement_relayed"] is True
+    assert next(event for event in events_70 if event["type"] == "settle")["wire_settlement_relayed"] is False
+
+
 def test_game_engine_observer_hole_cards_do_not_change_tcp_payloads():
     async def run():
         sent = []
@@ -262,8 +478,8 @@ def test_match_manager_auto_starts_after_second_client_connects():
         try:
             assert manager._match_task is not None
             assert not manager._match_task.done()
-            assert writers[0].writes == [b"name\n"]
-            assert writers[1].writes == [b"name\n"]
+            assert writers[0].writes == [b"name"]
+            assert writers[1].writes == [b"name"]
         finally:
             manager._match_task.cancel()
             try:

@@ -3,7 +3,7 @@
 严格遵循国赛协议：
   - 平台为服务器端，引擎为客户端
   - 端口 10001
-  - 行分隔文本协议
+  - 原始短消息，无换行/长度分隔，不依赖 TCP 包边界
   - 60 秒超时 → fold
 """
 from __future__ import annotations
@@ -13,66 +13,15 @@ import re
 try:
     from ..engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
     from ..engine.thp_recorder import THPRecorder
+    from .transport import NationalProtocolError, NationalTCPClient
 except ImportError:  # Standalone ``cd sever`` compatibility.
     from engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
     from engine.thp_recorder import THPRecorder
+    from server.transport import NationalProtocolError, NationalTCPClient
 
 logger = logging.getLogger(__name__)
 
-
-class ClientConnection:
-    """管理单个 TCP 客户端连接。"""
-
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        self.reader = reader
-        self.writer = writer
-        self.name = ""
-        self._buffer = ""
-        self._closed = False
-
-    async def send_line(self, msg: str) -> bool:
-        """发送一行消息，返回是否成功。"""
-        if self._closed:
-            return False
-        try:
-            self.writer.write((msg + "\n").encode("utf-8"))
-            await self.writer.drain()
-            return True
-        except (ConnectionResetError, BrokenPipeError, OSError):
-            self._closed = True
-            return False
-
-    async def recv_line(self, timeout: float = TIMEOUT_SECONDS) -> str | None:
-        """接收一行消息，超时返回 None。"""
-        if self._closed:
-            return None
-        try:
-            # 检查缓冲区
-            if "\n" in self._buffer:
-                line, self._buffer = self._buffer.split("\n", 1)
-                return line.rstrip("\r")
-
-            # 等待数据
-            async with asyncio.timeout(timeout):
-                while "\n" not in self._buffer:
-                    data = await self.reader.read(4096)
-                    if not data:
-                        self._closed = True
-                        return None
-                    self._buffer += data.decode("utf-8")
-
-            line, self._buffer = self._buffer.split("\n", 1)
-            return line.rstrip("\r")
-        except (asyncio.TimeoutError, ConnectionResetError, OSError):
-            return None
-
-    async def close(self):
-        self._closed = True
-        try:
-            self.writer.close()
-            await self.writer.wait_closed()
-        except OSError:
-            pass
+ClientConnection = NationalTCPClient
 
 
 class MatchManager:
@@ -91,10 +40,13 @@ class MatchManager:
         logger.info(f"Client connected from {addr}")
 
         if len(self.clients) >= 2:
-            # 已有 2 个连接，拒绝
-            writer.write(b"error: match full\n")
-            await writer.drain()
+            # 官方消息集合没有错误文本 token；第三个连接直接关闭，避免
+            # 本地平台制造正式 EXE 永远不会发送的线格式。
             writer.close()
+            try:
+                await writer.wait_closed()
+            except OSError:
+                pass
             return
 
         client = ClientConnection(reader, writer)
@@ -120,11 +72,15 @@ class MatchManager:
         c0, c1 = self.clients[0], self.clients[1]
 
         # 交换名称
-        await c0.send_line("name")
-        await c1.send_line("name")
+        await c0.send_message("name")
+        await c1.send_message("name")
 
-        name0 = await c0.recv_line(timeout=30)
-        name1 = await c1.recv_line(timeout=30)
+        try:
+            name0 = await c0.recv_name(timeout=30)
+            name1 = await c1.recv_name(timeout=30)
+        except NationalProtocolError as exc:
+            logger.error("Invalid national name handshake: %s", exc)
+            return
 
         if name0 is None or name1 is None:
             logger.error("Failed to get player names")
@@ -196,12 +152,12 @@ class MatchManager:
     async def _send_to_client(self, player_idx: int, message: str):
         """GameEngine 调用此方法发送消息给指定玩家。"""
         if player_idx < len(self.clients):
-            await self.clients[player_idx].send_line(message)
+            await self.clients[player_idx].send_message(message)
 
     async def _recv_action(self, player_idx: int) -> str | None:
         """GameEngine 调用此方法接收指定玩家的行为。"""
         if player_idx < len(self.clients):
-            return await self.clients[player_idx].recv_line(timeout=TIMEOUT_SECONDS)
+            return await self.clients[player_idx].recv_action(timeout=TIMEOUT_SECONDS)
         return None
 
     async def reset(self):

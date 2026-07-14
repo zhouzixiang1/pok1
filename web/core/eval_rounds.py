@@ -1,16 +1,17 @@
-"""Cycle-Based Deterministic Evaluation Rounds for the Glicko daemon.
+"""Cycle-based deterministic scheduling diagnostics for the Glicko daemon.
 
 Periodically triggers evaluation rounds where ALL bot pairs are played in
 deterministic alphabetical order (instead of the usual 60/40 stochastic
-selection).  Results are stored in append-only JSONL and summarized for
-injection into the Master Architect prompt, giving it comparable cross-
-generation performance data.
+selection). Each counted sample is one complete compliant 70-hand native TCP
+match. The append-only ``eval_rounds.jsonl`` summary is local scheduler
+diagnostics only: it is not included in the immutable evaluation bundle and
+must never be injected into Master or used as a strength-evidence fallback.
 
 Design principles:
-  - OPTIONAL and additive: failures never block the normal daemon loop.
+  - OPTIONAL scheduling: failures never relax normal native match admission.
   - Deterministic pairing: sorted alphabetically → comparable across rounds.
-  - Same battle mechanism (mirror_battle) as regular daemon games.
-  - Compact summary (<2000 chars) for Master prompt injection.
+  - Same strict raw-TCP 70-hand runner as ordinary daemon samples.
+  - No independent rating, selection, prompt, or epoch authority.
 """
 
 import json
@@ -29,10 +30,10 @@ log = logging.getLogger("pok.eval_rounds")
 
 EVAL_ROUNDS_FILE = RESULTS_DIR / "eval_rounds.jsonl"
 
-# Trigger a new round every N daemon games (total across all pairs)
+# Trigger a new round every N complete daemon strength samples (all pairs).
 EVAL_ROUND_GAMES = 500
 
-# Minimum games per opponent-pair for a round to be considered "complete"
+# Minimum complete 70-hand samples per pair for this scheduling diagnostic.
 EVAL_ROUND_MIN_OPP_GAMES = 10
 
 
@@ -244,14 +245,14 @@ class EvalRoundManager:
         self.round_pairs_remaining = set()
 
     # ──────────────────────────────────────────
-    # Summary for Master prompt injection
+    # Human diagnostic summary (never a Master evidence source)
     # ──────────────────────────────────────────
 
     def get_last_round_summary(self, bot_name: str, max_chars: int = 2000) -> str:
         """Get a compact summary of the most recent round for a specific bot.
 
-        Returns a formatted table suitable for injection into the Master prompt,
-        or empty string if no round data is available.
+        Returns a compact human-readable diagnostic, or an empty string if no
+        round data is available. Active planning deliberately does not call it.
         """
         last_round = self._load_last_round()
         if not last_round:

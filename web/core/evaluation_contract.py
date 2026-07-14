@@ -17,21 +17,22 @@ from typing import Any, Iterable
 
 from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath, parse_bot_version
 from evolution_scope import (
-    CRITICAL_ENGINE_EXACT,
     CRITICAL_EVALUATION_GATE_EXACT,
     CRITICAL_EXACT,
     CRITICAL_GENERATION_EXACT,
-    CRITICAL_LEGACY_ADAPTER_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
     CRITICAL_PREFIXES,
     CRITICAL_PROMPT_EXACT,
+    CRITICAL_FIRST_STRICT_CONTROL_EXACT,
+    CRITICAL_LLM_CONTROL_EXACT,
+    CRITICAL_SYSTEM_BOOTSTRAP_EXACT,
     NON_CONTRACT_PREFIXES,
     RUNTIME_PREFIXES,
     changed_paths_between_heads,
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 11
+CONTRACT_VERSION = 26
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -43,8 +44,11 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/blocking_runtime.py",
     "web/core/bot_artifact.py",
     "web/core/bot_namespace.py",
+    "web/core/candidate_sandbox.py",
+    "web/core/checkpoint_schema.py",
     "web/core/evaluation_contract.py",
     "web/core/evaluation_data_identity.py",
+    "web/core/epoch_authority.py",
     "web/core/evolution_infra.py",
     "web/core/evolution_scope.py",
     "web/core/managed_bot_executor.py",
@@ -53,9 +57,8 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_runtime_telemetry.py",
-    "web/core/national_transport.py",
-    "web/core/national_protocol_quarantine.py",
-    "web/core/national_protocol_quarantine.json",
+    "sever/server/transport.py",
+    "web/core/national_runtime_authority.py",
     "web/core/official_attribution.py",
     "web/core/official_certificate_signing.py",
     "web/core/official_certification.py",
@@ -64,13 +67,16 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/official_certifier_trust_policy.json",
     "web/core/official_bot_sandbox.py",
     "web/core/official_bootstrap.py",
-    "web/core/official_bootstrap_roots.json",
+    "web/core/official_bootstrap_control.json",
+    "web/core/first_strict_control.py",
+    "web/core/bootstrap_assets/first_strict_control_v1/manifest.json",
+    "web/core/bootstrap_assets/first_strict_control_v1/policy.py",
     "web/core/official_execution_profile.py",
     "web/core/official_execution_profile.json",
     "web/core/official_eligibility.py",
     "web/core/official_evidence.py",
     "web/core/official_evidence_archive.py",
-    "web/core/official_grandfathering.json",
+    "web/core/official_role_policy.json",
     "web/core/official_job_envelope.py",
     "web/core/official_llm_analysis.py",
     "web/core/official_platform_harness.py",
@@ -79,24 +85,32 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/official_wire_probe.py",
     "scripts/official_certify.py",
     "web/core/orchestrator.py",
+    "web/core/orchestrator_context.py",
     "web/core/orchestrator_cost_policy.py",
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_infrastructure.py",
     "web/core/pipeline_state.py",
     "web/core/publish_reconcile.py",
+    "web/core/publication_transaction.py",
     "web/core/repo_state.py",
     "web/core/tool_runtime_guard.py",
     "web/core/runtime_capacity.py",
     "web/core/workflow_profiles.py",
     "web/core/workflow_kernel.py",
     "web/core/worker_workflow.py",
-})
+}).union(
+    # The deterministic first-strict migration remains relevant through commit:
+    # publication revalidates its worker/review/critic receipts against these
+    # exact checked-in bytes.  LLM availability modules are restart authority,
+    # so drift must not be reconciled under older in-memory pause semantics.
+    CRITICAL_SYSTEM_BOOTSTRAP_EXACT,
+    CRITICAL_FIRST_STRICT_CONTROL_EXACT,
+    CRITICAL_LLM_CONTROL_EXACT,
+)
 
 EVALUATION_RUNTIME_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
-    CRITICAL_ENGINE_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
-    CRITICAL_LEGACY_ADAPTER_EXACT,
     CRITICAL_EVALUATION_GATE_EXACT,
 )
 
@@ -110,9 +124,9 @@ PREPARE_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     {
         "web/core/agent_review.py",  # owns crossover implementation helpers
+        "web/core/crossover_projection.py",
+        "web/core/crossover_synthesis.py",
         "web/core/audit_agents.py",
-        "web/core/crossover_compat.py",
-        "web/core/fix_injection.py",
         "web/core/generation_scheduler.py",
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
@@ -145,14 +159,10 @@ MASTER_STAGE_EXACT = frozenset().union(
     {
         "web/core/agent_master.py",
         "web/core/audit_agents.py",
-        "web/core/battle_experience.py",
-        "web/core/battle_memory.py",
-        "web/core/behavior_diversity.py",
         "web/core/bot_action_stats.py",
         "web/core/combined_analyst.py",
+        "web/core/cycle_archivist.py",
         "web/core/evidence_snapshot.py",
-        "web/core/experience_attribution.py",
-        "web/core/experience_pool.py",
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
         "web/core/output_schema.py",
@@ -161,25 +171,14 @@ MASTER_STAGE_EXACT = frozenset().union(
         "web/core/plan_compiler.py",
         "web/core/research_governance.py",
         "web/core/skill_library.py",
-        "web/core/spot_analyzer.py",
-        "web/core/stagnation_analyzer.py",
         "web/core/tool_helpers.py",
         "web/core/tool_planning.py",
-        "web/core/prompts/battle_experience_incremental.md",
-        "web/core/prompts/battle_experience_update.md",
         "web/core/prompts/combined_analyst.md",
         "web/core/prompts/degeneration_diagnosis.md",
-        "web/core/prompts/dynamic_test_generator.md",
-        "web/core/prompts/experience_pool_audit.md",
-        "web/core/prompts/h2h_anomaly_analysis.md",
-        "web/core/prompts/initial_prompt.md",
+        "web/core/prompts/cycle_archivist.md",
         "web/core/prompts/literature_probe_prompt.md",
         "web/core/prompts/master_plan_audit.md",
         "web/core/prompts/master_prompt.md",
-        "web/core/prompts/match_analyst.md",
-        "web/core/prompts/performance_analyst.md",
-        "web/core/prompts/spot_analyzer.md",
-        "web/core/prompts/stagnation_analyzer.md",
     },
 )
 
@@ -188,7 +187,6 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
     {
         "web/core/agent_workers.py",
         "web/core/failure_classification.py",
-        "web/core/fix_injection.py",
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
         "web/core/output_schema.py",
@@ -206,23 +204,20 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
 QUALITY_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
-    CRITICAL_LEGACY_ADAPTER_EXACT,
     {
         "web/core/candidate_hygiene.py",
+        "web/core/candidate_sandbox.py",
         "web/core/code_verification.py",
-        "web/core/decision_tester.py",
+        "web/core/national_decision_tester.py",
         "web/core/eval_stats.py",
-        "web/core/fix_verification.py",
         "web/core/gate_execution.py",
         "web/core/national_capability_contract.py",
         "web/core/national_native.py",
         "web/core/national_runtime_probe.py",
         "web/core/national_runtime_probe_scenarios.py",
         "web/core/national_runtime_probe_worker.py",
-        "web/core/protected_contracts.py",
         "web/core/runtime_architecture_policy.py",
         "web/core/strategy_reference_pack.py",
-        "web/core/smoke_tester.py",
         "web/core/tool_gates.py",
         "web/core/worker_boundary.py",
     },
@@ -253,9 +248,7 @@ CRITIC_STAGE_EXACT = frozenset().union(
 PRECOMMIT_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     CRITICAL_NATIONAL_PLATFORM_EXACT,
-    CRITICAL_LEGACY_ADAPTER_EXACT,
     {
-        "web/core/battle_scheduler.py",
         "web/core/elo_daemon.py",
         "web/core/eval_stats.py",
         "web/core/gate_execution.py",
@@ -282,7 +275,6 @@ COMMIT_STAGE_EXACT = frozenset().union(
         "web/core/official_certificate_signing.py",
         "web/core/official_certification_job.py",
         "web/core/official_evidence_archive.py",
-        "web/core/protected_contracts.py",
         "web/core/tool_commit.py",
     },
 )
@@ -305,23 +297,26 @@ _STAGE_EXACT = {
     "verified": COMMIT_STAGE_EXACT,
     "official_bootstrap_required": COMMIT_STAGE_EXACT,
     "official_certifying": COMMIT_STAGE_EXACT,
+    "publishing": COMMIT_STAGE_EXACT,
 }
 
-NATIVE_TCP_EXCLUDED_EXACT = frozenset(CRITICAL_ENGINE_EXACT).union({
-    # Used only by the legacy local JSON smoke subprocess. The national_native
-    # quality gate runs a direct TCP smoke through national_native.py instead.
-    "web/core/smoke_tester.py",
-}, CRITICAL_LEGACY_ADAPTER_EXACT)
+NATIVE_TCP_EXCLUDED_EXACT = frozenset()
 
 
 def _active_national_execution_mode(explicit: str | None = None) -> str:
     if explicit:
-        return str(explicit)
-    try:
+        mode = str(explicit)
+    else:
         from workflow_profiles import get_workflow_profile
-        return str(getattr(get_workflow_profile(), "national_execution_mode", "adapter") or "adapter")
-    except Exception:
-        return "adapter"
+
+        mode = str(
+            getattr(get_workflow_profile(), "national_execution_mode", "") or ""
+        )
+    if mode != "native_tcp":
+        raise ValueError(
+            f"invalid national execution mode {mode!r}; only native_tcp is active"
+        )
+    return mode
 
 
 def _stage_exact_for_mode(stage_exact: frozenset[str], national_execution_mode: str) -> frozenset[str]:

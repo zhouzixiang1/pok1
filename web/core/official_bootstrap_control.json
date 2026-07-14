@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "kind": "official-first-strict-control-bootstrap-policy",
+  "policy_id": "official-first-strict-control-bootstrap-v1",
+  "epoch": "national_tcp_policy_v1",
+  "candidate": {
+    "label": "national_v143",
+    "version": 143,
+    "source_version_authority": 142
+  },
+  "control": {
+    "control_id": "first_strict_control_v1",
+    "authority": "system_first_strict_control",
+    "normal_official_opponent": false,
+    "strength_admitted": false,
+    "rating_eligible": false
+  },
+  "formal_suite": {
+    "policy_id": "official-full-v5",
+    "self_play_rounds": 5,
+    "opponent_rounds": 3,
+    "hands_per_round": 70
+  },
+  "authorization": {
+    "requires_empty_active_policy_pool": true,
+    "requires_empty_strict_publication_pool": true,
+    "max_successful_consumptions": 1,
+    "operator_acknowledgement_required": true
+  },
+  "historical_v141_root": {
+    "status": "retired_validation_history_only",
+    "executable": false,
+    "selectable": false
+  }
+}

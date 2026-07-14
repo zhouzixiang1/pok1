@@ -3,8 +3,11 @@ import type {
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   PipelineCheckpoint, WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
   H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
-  ArenaBot, ArenaCreatePayload, ArenaEvent, ArenaSession, ArenaWireRecord,
+  OfficialCertificationJobsProjection,
+  ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
+  ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
 } from "./types";
+import { withOperatorControlHeader } from "./operatorControl";
 
 const BASE = "/api";
 const FETCH_TIMEOUT = 30_000;
@@ -17,7 +20,12 @@ async function extractError(res: Response): Promise<never> {
   let msg = `HTTP ${res.status}`;
   try {
     const b = await res.json();
-    if (b.detail) msg += `: ${b.detail}`;
+    if (b.detail) {
+      const detail = typeof b.detail === "string"
+        ? b.detail
+        : b.detail.message || b.detail.code || JSON.stringify(b.detail);
+      msg += `: ${detail}`;
+    }
   } catch {
     // Keep the status-only message when the error body is not JSON.
   }
@@ -42,32 +50,10 @@ async function fetchText(url: string, signal?: AbortSignal): Promise<string> {
   return res.text();
 }
 
-async function putJSON<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: abortSignal(),
-  });
-  if (!res.ok) return extractError(res);
-  return res.json();
-}
-
-async function postJSON<T>(url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: abortSignal(),
-  });
-  if (!res.ok) return extractError(res);
-  return res.json();
-}
-
 async function arenaPostJSON<T>(url: string, body: unknown, controlToken = ""): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["Content-Type"] = "application/json";
-  if (controlToken) headers["X-Arena-Token"] = controlToken;
+  if (controlToken) headers["X-Control-Token"] = controlToken;
   const res = await fetch(url, {
     method: "POST",
     headers,
@@ -78,8 +64,22 @@ async function arenaPostJSON<T>(url: string, body: unknown, controlToken = ""): 
   return res.json();
 }
 
+function expectArenaSession(value: ArenaSession | ArenaSessionUnavailable): ArenaSession {
+  if (value && typeof value === "object" && "session_id" in value && typeof value.session_id === "string") {
+    return value;
+  }
+  const state = value && typeof value === "object" && "epoch_authority" in value
+    ? value.epoch_authority.state
+    : "unavailable";
+  throw new Error(`Arena session is unavailable for the current strict epoch (${state})`);
+}
+
 async function deleteReq<T>(url: string): Promise<T> {
-  const res = await fetch(url, { method: "DELETE", signal: abortSignal() });
+  const res = await fetch(url, {
+    method: "DELETE",
+    headers: withOperatorControlHeader(),
+    signal: abortSignal(),
+  });
   if (!res.ok) return extractError(res);
   return res.json();
 }
@@ -101,7 +101,6 @@ export const api = {
   matchStats: () => fetchJSON<MatchStats>(`${BASE}/matches/stats`),
   recentMatches: (limit = 100) => fetchJSON<MatchSummary[]>(`${BASE}/matches/recent?limit=${limit}`),
   matchReplay: (id: string) => fetchJSON<MatchReplayData>(`${BASE}/matches/replay/${id}`),
-  matchCommentary: (id: string) => fetchJSON<Record<string, string>>(`${BASE}/matches/commentary/${id}`),
 
   // H2H & Bot Stats
   h2h: (botName?: string) => fetchJSON<Record<string, H2HEntry>>(
@@ -124,7 +123,7 @@ export const api = {
     type?: string;
     category?: string;
     severity?: string;
-    source?: "legacy" | "structured";
+    source?: "structured";
     run_id?: string;
     stage?: string;
     since?: number;
@@ -155,24 +154,11 @@ export const api = {
     return fetchJSON<WorkerFailuresResponse>(`${BASE}/logs/worker-failures?${p}`, signal);
   },
 
-  // Experience pool
-  experience: () => fetchText(`${BASE}/experience`),
-  updateExperience: (content: string) => putJSON<{ saved: boolean; lines: number; chars: number }>(`${BASE}/experience`, { content }),
-  appendExperience: (lesson: string) => postJSON<{ appended: boolean; lesson: string; total_chars: number }>(`${BASE}/experience/append`, { lesson }),
-
   // Daemon
   daemonStatus: () => fetchJSON<DaemonStatus>(`${BASE}/daemon/status`),
 
   // Bots
-  listBots: (includeGraveyard = false, includeHistory = false) => {
-    const params = new URLSearchParams();
-    if (includeGraveyard) params.set("include_graveyard", "true");
-    if (includeHistory) params.set("include_history", "true");
-    const suffix = params.toString() ? `?${params}` : "";
-    return fetchJSON<{ active: BotSummary[]; graveyard: BotSummary[]; history?: BotSummary[]; counts?: Record<string, number> }>(
-      `${BASE}/bots${suffix}`
-    );
-  },
+  listBots: () => fetchJSON<{ active: BotSummary[] }>(`${BASE}/bots`),
   botDetail: (version: number) => fetchJSON<BotDetail>(`${BASE}/bots/${version}`),
   botCode: (version: number, filename: string) =>
     fetchText(`${BASE}/bots/${version}/code/${encodeURIComponent(filename)}`),
@@ -203,13 +189,14 @@ export const api = {
     URL.revokeObjectURL(url);
   },
   certificationStatus: (version: number) => fetchJSON<OfficialCertification>(`${BASE}/certification/${version}`),
-  enqueueCertification: (version: number, mode: "smoke" | "compliance" | "full" = "compliance") =>
-    postJSON<OfficialCertification>(`${BASE}/certification/${version}/enqueue?mode=${mode}`),
+  certificationJobs: () => fetchJSON<OfficialCertificationJobsProjection>(`${BASE}/certification/jobs`),
 
   // National Web Arena. These matches are local diagnostics and never certify a bot.
-  arenaBots: () => fetchJSON<{ bots: ArenaBot[]; result_authority: "diagnostic_only"; selection_authority: "official_windows_exe" }>(`${BASE}/national-arena/bots`),
-  arenaSessions: () => fetchJSON<{ sessions: ArenaSession[] }>(`${BASE}/national-arena/sessions`),
-  arenaSession: (sessionId: string) => fetchJSON<ArenaSession>(`${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}`),
+  arenaBots: () => fetchJSON<ArenaBotsResponse>(`${BASE}/national-arena/bots`),
+  arenaSessions: () => fetchJSON<ArenaSessionsResponse>(`${BASE}/national-arena/sessions`),
+  arenaSession: async (sessionId: string) => expectArenaSession(
+    await fetchJSON<ArenaSession | ArenaSessionUnavailable>(`${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}`),
+  ),
   createArenaSession: (payload: ArenaCreatePayload, controlToken = "") =>
     arenaPostJSON<ArenaSession>(`${BASE}/national-arena/sessions`, payload, controlToken),
   startArenaSession: (sessionId: string, controlToken = "") =>
@@ -217,11 +204,11 @@ export const api = {
   stopArenaSession: (sessionId: string, controlToken = "") =>
     arenaPostJSON<ArenaSession>(`${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/stop`, undefined, controlToken),
   arenaEventHistory: (sessionId: string, afterEventId = 0, limit = 5000) =>
-    fetchJSON<{ events: ArenaEvent[]; high_watermark: number; next_after_event_id: number }>(
+    fetchJSON<ArenaEventHistoryResponse>(
       `${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/events/history?after_event_id=${afterEventId}&limit=${limit}`,
     ),
   arenaWireHistory: (sessionId: string, afterSequence = 0, limit = 1000) =>
-    fetchJSON<{ records: ArenaWireRecord[]; complete: boolean }>(
+    fetchJSON<ArenaWireHistoryResponse>(
       `${BASE}/national-arena/sessions/${encodeURIComponent(sessionId)}/wire/history?after_sequence=${afterSequence}&limit=${limit}`,
     ),
 
@@ -232,15 +219,9 @@ export const api = {
   // Prompts
   listPrompts: () => fetchJSON<PromptInfo[]>(`${BASE}/prompts`),
   getPrompt: (name: string) => fetchText(`${BASE}/prompts/${name}`),
-  updatePrompt: (name: string, content: string) =>
-    putJSON<{ saved: boolean; name: string; lines: number }>(`${BASE}/prompts/${name}`, { content }),
-  resetPrompt: (name: string) =>
-    postJSON<{ reset: boolean; name: string }>(`${BASE}/prompts/${name}/reset`),
 
   // Orchestrator session
   orchestratorSession: () => fetchJSON<OrchestratorSession>(`${BASE}/control/orchestrator/session`),
   clearOrchestratorSession: () => deleteReq<{ cleared: boolean; message: string }>(`${BASE}/control/orchestrator/session`),
 
-  // Evolution reset
-  resetEvolution: () => postJSON<{ status: string; details?: Record<string, unknown>; warning?: string }>(`${BASE}/control/reset`),
 };

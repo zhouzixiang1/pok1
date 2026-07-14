@@ -205,8 +205,8 @@ class WorkflowProfile(BaseModel):
     profile_id: str
     description: str = ""
     max_workers: int = Field(default=3, ge=1, le=3)
-    evaluation_protocol: Literal["local_json", "national"] = "local_json"
-    rating_protocol: Literal["local_json", "national"] = "local_json"
+    evaluation_protocol: Literal["national"] = "national"
+    rating_protocol: Literal["national"] = "national"
     national_acceptance_hands: int = Field(default=20, ge=1, le=70)
     national_acceptance_hard: bool = True
     national_acceptance_timeout_sec: int = Field(default=300, ge=30, le=3600)
@@ -214,7 +214,7 @@ class WorkflowProfile(BaseModel):
     national_precommit_matches: int = Field(default=1, ge=1, le=8)
     national_rating_hands: int = Field(default=70, ge=1, le=70)
     national_rating_matches: int = Field(default=1, ge=1, le=8)
-    national_execution_mode: Literal["adapter", "native_tcp"] = "adapter"
+    national_execution_mode: Literal["native_tcp"] = "native_tcp"
     eval_wait_min_games: int = Field(default=100, ge=1, le=1000)
     eval_wait_rd_threshold: float = Field(default=90.0, ge=1, le=350)
     eval_wait_rd_min_games: int = Field(default=30, ge=1, le=1000)

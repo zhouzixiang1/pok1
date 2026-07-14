@@ -11,8 +11,9 @@ class TestPipelineCheckpoint:
         data = resp.json()
         assert data is None, f"Expected no pipeline checkpoint in test, got: {data}"
 
-    def test_has_expected_fields(self, client, monkeypatch):
-        # Write a sample pipeline_state.json so the endpoint has data to return
+    def test_legacy_checkpoint_is_not_presented_as_current(self, client):
+        # A pre-policy shape is operator archive/reset evidence, not a current
+        # national_tcp_policy_v1 checkpoint.
         from server.routes import pipeline
 
         sample = {
@@ -25,11 +26,7 @@ class TestPipelineCheckpoint:
 
         resp = client.get("/api/pipeline/checkpoint")
         assert resp.status_code == 200
-        data = resp.json()
-        assert data is not None
-        assert "stage" in data
-        assert "next_v" in data
-        assert "source_v" in data
+        assert resp.json() is None
 
 
 class TestPipelineFailures:
@@ -43,8 +40,9 @@ class TestPipelineFailures:
         assert resp.status_code == 200
         assert len(resp.json()) <= 5
 
-    def test_failure_entry_fields(self, client):
-        # Write sample worker_failures.jsonl so the endpoint has data to return
+    def test_unbound_failure_row_is_hidden(self, client):
+        # Generation numbers are not an epoch/workflow identity and must never
+        # be upgraded by the reader.
         from server.routes import pipeline
 
         sample_entry = json.dumps({
@@ -57,9 +55,4 @@ class TestPipelineFailures:
 
         resp = client.get("/api/pipeline/failures?limit=1")
         assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) >= 1
-        entry = data[0]
-        assert "gen" in entry
-        assert "worker_id" in entry
-        assert "error" in entry
+        assert resp.json() == []

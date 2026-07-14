@@ -1,26 +1,19 @@
-"""Regression test for the v107–v127 Master deadlock root cause.
+"""Master success/failure coverage for ``national_tcp_policy_v1``.
 
-BUG (fixed): `_run_master_analysis` had no `return data` on the success path.
-When the Master LLM produced a plan that parsed (had `tasks`), carried no
-`branch_from` override, and passed `validate_agent_output` with no errors,
-execution fell through to the `ui.log_history("Master output malformed JSON")`
-branch, burned all MAX_MASTER_RETRIES, and returned None. Every valid Master
-plan for 11+ generations was silently discarded — misdiagnosed the entire time
-as schema / SDK-signature / direction-audit failures.
-
-This test feeds a VALID plan through the analysis function (with run_claude_query
-mocked) and asserts:
-  1. the plan is returned (not None), and
-  2. the LLM is called exactly ONCE (success on first try) — before the fix it
-     was called 3× (every valid plan retried) and still returned None.
+The fixtures use the checked-in strict Master example: target v143+,
+candidate-owned ``policy.py`` only, and typed decision-context intents.  The
+fresh v143 bootstrap case additionally exercises the current durable authority
+dispatch and no-strength receipt boundary.
 """
 
 import json
 import asyncio
-import hashlib
 from pathlib import Path
 
 import pytest
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 BOUND_TARGETED_FAILURE = (
     "The selected evidence-bound mechanism fixes one reachable parent decision failure."
@@ -32,10 +25,16 @@ BOUND_PROPOSAL = {
     "counterfactual": "Hold cards, seed, state, and legality fixed while toggling only the mechanism.",
     "measurement": "Run paired positive and control decisions before the native regression gate.",
     "why_not_threshold_tuning": "The change replaces state flow and its consumer rather than one numeric cutoff.",
-    "expected_diff": "The existing get_action to choose_action path consumes the new mechanism.",
-    "target_files": ["strategy.py"],
-    "source_symbols": ["strategy.py:get_action", "strategy.py:choose_action"],
-    "reachable_chain": ["strategy.py:get_action", "strategy.py:choose_action"],
+    "expected_diff": "The existing get_baseline_decision to _choose_intent path consumes the new mechanism.",
+    "target_files": ["policy.py"],
+    "source_symbols": [
+        "policy.py:get_baseline_decision",
+        "policy.py:_choose_intent",
+    ],
+    "reachable_chain": [
+        "policy.py:get_baseline_decision",
+        "policy.py:_choose_intent",
+    ],
     "falsifier": {
         "test_name": "test_selected_mechanism",
         "control": "The frozen parent keeps the original decision on the paired state.",
@@ -43,37 +42,121 @@ BOUND_PROPOSAL = {
         "expected_observation": "The intervention changes the target action and control does not.",
     },
     "evidence_refs": [
-        "source:strategy.py:get_action",
-        "source:strategy.py:choose_action",
+        "source:policy.py:get_baseline_decision",
+        "source:policy.py:_choose_intent",
     ],
     "risks": "Sparse evidence can overfit, so the mechanism and fallback remain bounded.",
 }
-PROPOSAL_ID = hashlib.sha256(json.dumps(
-    BOUND_PROPOSAL,
-    sort_keys=True,
-    ensure_ascii=False,
-    separators=(",", ":"),
-).encode("utf-8")).hexdigest()[:16]
-BOUND_PROPOSAL["proposal_id"] = PROPOSAL_ID
+PROPOSAL_ID = "set-by-stable-generation-evidence-fixture"
 
-VALID_PLAN = {
-    "analysis": "Deliver the check_raise_freq detector to fix the 0%-fold leak.",
-    "targeted_failure": BOUND_TARGETED_FAILURE,
-    "expected_behavior_change": "Bot folds marginal one-pair hands facing a live check-raise.",
-    "do_not_touch": ["card_utils.py", "constants.py"],
-    "measurement_plan": "Mirror battles vs v109/v93; paired net-chips CI lower bound > 0.",
-    "tasks": [
-        {
-            "worker_id": 1,
-            "role": "Algorithmic Logic Architect",
-            "target_files": ["opponent.py", "strategy.py"],
-            "difficulty": "medium",
-            "skill_layer": "spr",
-            "worker_prompt": "Add check_raise_trap_severity() to opponent.py and wire into strategy.py fold sites.",
+
+def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
+    import hashlib
+
+    from system_strict_bootstrap import record_llm_invocation_evidence
+
+    directions = ("mechanism", "counterfactual", "compute_memory")
+    structural_changes = (
+        selected_proposal["structural_change"],
+        "Add a bounded state accumulator before the same reachable decision consumer.",
+        "Add a deterministic paired-feature path into the same reachable decision consumer.",
+    )
+    proposals = []
+    for index, (direction, structural_change) in enumerate(
+        zip(directions, structural_changes), start=1
+    ):
+        proposal = json.loads(json.dumps(selected_proposal))
+        proposal["direction"] = direction
+        proposal["structural_change"] = structural_change
+        if index > 1:
+            proposal["expected_diff"] = (
+                f"Independent alternative {index} reaches the existing decision consumer."
+            )
+            proposal["falsifier"]["test_name"] = (
+                f"test_alternative_{index}_mechanism"
+            )
+        proposal["proposal_id"] = agent_master._proposal_identity(proposal)
+        proposals.append(proposal)
+    proposal_ids = [proposal["proposal_id"] for proposal in proposals]
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    def invocation(index, *, purpose, role, role_result):
+        return record_llm_invocation_evidence(
+            invocation_id=f"{index:032x}",
+            purpose=purpose,
+            role=role,
+            prompt_digest=hashlib.sha256(f"prompt:{index}".encode()).hexdigest(),
+            raw_output_digest=hashlib.sha256(f"output:{index}".encode()).hexdigest(),
+            result_digest=hashlib.sha256(f"result:{index}".encode()).hexdigest(),
+            role_result=role_result,
+            log_file=log_dir / f"invocation_{index}.txt",
+        )
+
+    proposal_invocations = {
+        proposal["proposal_id"]: invocation(
+            index,
+            purpose=f"master_proposal_scout:{proposal['direction']}",
+            role=f"MASTER PROPOSAL {proposal['direction']}",
+            role_result=proposal,
+        )
+        for index, proposal in enumerate(proposals, start=1)
+    }
+    reviews = []
+    proposal_id_set = set(proposal_ids)
+    for index, critic_id in enumerate(("falsification", "scope"), start=4):
+        raw_review = {
+            "ballots": [
+                {
+                    "proposal_id": proposal_id,
+                    "scores": {
+                        criterion: 5
+                        for criterion in agent_master._PROPOSAL_CRITIC_CRITERIA
+                    },
+                    "reject": False,
+                    "reason": "The proposal is traceable, reachable, bounded, and falsifiable.",
+                }
+                for proposal_id in proposal_ids
+            ]
         }
-    ],
-    "selected_proposal_id": PROPOSAL_ID,
-}
+        review = agent_master._validated_proposal_critique(
+            json.dumps(raw_review), proposal_id_set
+        )
+        assert review is not None
+        review["critic_id"] = critic_id
+        review["invocation_evidence"] = invocation(
+            index,
+            purpose=f"master_proposal_critic:{critic_id}",
+            role=f"MASTER PROPOSAL CRITIC {critic_id}",
+            role_result={key: value for key, value in review.items() if key != "critic_id"},
+        )
+        reviews.append(review)
+    return {
+        "schema_version": "master-proposal-packet-v2",
+        "valid": True,
+        "authority": "advisory_only",
+        "context_digest": "c" * 64,
+        "source_code_digest": "d" * 64,
+        "proposal_count": 3,
+        "valid_critic_count": 2,
+        "critic_criteria": agent_master._PROPOSAL_CRITIC_CRITERIA,
+        "allowed_proposal_ids": proposal_ids,
+        "ordered_proposals": proposals,
+        "proposal_invocations": proposal_invocations,
+        "critic_reviews": reviews,
+    }
+
+def _strict_prompt_plan() -> dict:
+    prompt = (ROOT / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    plan = json.loads(prompt[start:end])
+    plan["targeted_failure"] = BOUND_TARGETED_FAILURE
+    plan["selected_proposal_id"] = PROPOSAL_ID
+    return plan
+
+
+VALID_PLAN = _strict_prompt_plan()
 
 
 def _mock_llm_output():
@@ -109,10 +192,10 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
     manifest_path.write_text("{}", encoding="utf-8")
     identity = {
         "available": True,
-        "h2h_relpath": "web/core/results/v127/evidence_snapshot/head_to_head.json",
-        "selection_relpath": "web/core/results/v127/evidence_snapshot/selection_snapshot.json",
+        "h2h_relpath": "web/core/results/v144/evidence_snapshot/head_to_head.json",
+        "selection_relpath": "web/core/results/v144/evidence_snapshot/selection_snapshot.json",
         "manifest_path": str(manifest_path),
-        "manifest_relpath": "web/core/results/v127/evidence_snapshot/manifest.json",
+        "manifest_relpath": "web/core/results/v144/evidence_snapshot/manifest.json",
         "manifest_digest": "a" * 64,
         "sha256": "b" * 64,
         "cycle": {"manifest_digest": "c" * 64, "save_num": 1},
@@ -127,19 +210,20 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
         "h2h_snapshot_contract_text",
         lambda *_args, **_kwargs: "Stable test evaluation snapshot contract.",
     )
+    BOUND_PROPOSAL["direction"] = "mechanism"
+    BOUND_PROPOSAL["proposal_id"] = agent_master._proposal_identity(BOUND_PROPOSAL)
+    global PROPOSAL_ID
+    PROPOSAL_ID = BOUND_PROPOSAL["proposal_id"]
+    VALID_PLAN["selected_proposal_id"] = PROPOSAL_ID
+
     async def no_ensemble(*_args, **_kwargs):
-        return json.dumps({
-            "schema_version": "master-proposal-packet-v2",
-            "valid": True,
-            "authority": "advisory_only",
-            "context_digest": "c" * 64,
-            "source_code_digest": "d" * 64,
-            "proposal_count": 1,
-            "valid_critic_count": 2,
-            "allowed_proposal_ids": [PROPOSAL_ID],
-            "ordered_proposals": [BOUND_PROPOSAL],
-            "critic_reviews": [],
-        })
+        return json.dumps(
+            _valid_proposal_packet(
+                agent_master,
+                BOUND_PROPOSAL,
+                tmp_path / "proposal_invocations",
+            )
+        )
 
     monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", no_ensemble)
 
@@ -161,7 +245,7 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
 
     ui = _MockUI()
     result = await agent_master._run_master_analysis(
-        source_v=111, next_v=127, stagnation_info="declining", ui=ui
+        source_v=143, next_v=144, stagnation_info="declining", ui=ui
     )
 
     # 1. A valid plan must be returned (was None before the fix).
@@ -179,30 +263,95 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     assert "{master_plan_executable_contract}" not in rendered_prompt
     assert "System-owned executable Master-plan contract" in rendered_prompt
     assert "tasks: 1..3 items" in rendered_prompt
-    assert "task.target_files: 1..3 files (never more than 3)" in rendered_prompt
+    assert 'writable scope is exactly ["policy.py"]' in rendered_prompt
     assert 'build_phase="module_import"' in rendered_prompt
     assert "runtime_contract.match_memory" in rendered_prompt
-    assert '"memory", "confidence", "opponent_runtime"' in rendered_prompt
+    assert 'snapshot_field="opponent"' in rendered_prompt
 
 
 @pytest.mark.asyncio
 async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history(
     monkeypatch,
+    tmp_path,
 ):
     import agent_master
     import evidence_snapshot
+    import evolution_infra
     import official_certification
+    import strict_authority_workflow
+    from claude_agent_sdk import ResultMessage
+    from runtime_architecture_policy import native_policy_runtime_contract
+    from system_strict_bootstrap import build_fresh_bootstrap_receipt
+    from workflow_kernel import WorkflowStore
 
     captured = []
 
     async def fake_run_claude_query(prompt, *_args, **_kwargs):
         captured.append(prompt)
-        return _mock_llm_output(), 0.0, {}
+        output = _mock_llm_output()
+        strict_call = _kwargs.get("strict_authority")
+        if strict_call is not None:
+            strict_authority_workflow.dispatch_call(
+                strict_call,
+                full_prompt=prompt,
+                tools=["Read"],
+                owner="pytest",
+            )
+            provider_result = ResultMessage(
+                subtype="success",
+                duration_ms=10,
+                duration_api_ms=10,
+                is_error=False,
+                num_turns=1,
+                session_id="master-strength-quarantine-session",
+                total_cost_usd=0.0,
+                usage={},
+                result=output,
+            )
+            strict_authority_workflow._observe_provider_result(
+                provider_result,
+                invocation_id=strict_call["invocation_id"],
+                effect_id=strict_call["effect_id"],
+            )
+            strict_authority_workflow.complete_provider_call(
+                strict_call,
+                raw_output=output,
+                provider_results=[provider_result],
+            )
+        return output, 0.0, {}
 
     def forbidden_loader(*_args, **_kwargs):
         raise AssertionError("protocol bootstrap strength loader was called")
 
     monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    store = WorkflowStore(tmp_path / "strict-authority.sqlite3")
+    monkeypatch.setattr(strict_authority_workflow, "_store", lambda: store)
+    bootstrap_receipt = build_fresh_bootstrap_receipt(
+        active_bots=(), epoch_reset_receipt_digest="a" * 64
+    )
+    strict_checkpoint = {
+        "workflow_run_id": "master-strength-quarantine-test",
+        "source_v": 142,
+        "next_v": 143,
+        "stage": "direction_audited",
+        "checkpoint_revision": 7,
+        "audit_context": {
+            "protocol_bootstrap": bootstrap_receipt,
+            "selection": {
+                "bootstrap_without_strength_evidence": True,
+                "strategy": "fresh_policy_bootstrap",
+            },
+            "prepared_artifact_contract": {
+                "contract_digest": "b" * 64,
+                "prepared_artifact_hash": "c" * 64,
+            },
+        },
+    }
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: strict_checkpoint,
+    )
     monkeypatch.setattr(
         evidence_snapshot,
         "load_generation_snapshot_identity",
@@ -220,16 +369,22 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         "performance_verification": "FORBIDDEN_CRITIC_CONCLUSION",
         "replay_spotlight": "FORBIDDEN_REPLAY",
         "bot_action_stats": "FORBIDDEN_ACTION_PROFILE",
-        "battle_experience": "FORBIDDEN_BATTLE_EXPERIENCE",
-        "exploitability_weaknesses": "FORBIDDEN_EXPLOITABILITY",
         "opponent_profiles": "FORBIDDEN_OPPONENT_PROFILE",
         "research_proposals": "FORBIDDEN_MATCH_DERIVED_RESEARCH",
     }
+    # Exercise the real final-Master deterministic projection.  Strict
+    # production calls always carry the system architecture policy; an empty
+    # test policy would now (correctly) fail closed before role acceptance.
+    architecture_policy = {
+        "epoch": "national_tcp_policy_v1",
+        "policy_abi": native_policy_runtime_contract()["policy_abi"],
+    }
     result = await agent_master._run_master_analysis(
         source_v=142,
-        next_v=150,
+        next_v=143,
         ui=_MockUI(),
-        protocol_bootstrap={"receipt_digest": "a" * 64},
+        protocol_bootstrap=bootstrap_receipt,
+        architecture_policy=architecture_policy,
         **sentinels,
     )
 
@@ -263,8 +418,8 @@ async def test_master_fails_closed_without_generation_evidence(monkeypatch):
     ui = _MockUI()
 
     result = await agent_master._run_master_analysis(
-        source_v=111,
-        next_v=127,
+        source_v=143,
+        next_v=144,
         stagnation_info="declining",
         ui=ui,
     )
@@ -290,7 +445,7 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
     structured_plan["targeted_failure"] = BOUND_TARGETED_FAILURE
     structured_plan["selected_proposal_id"] = PROPOSAL_ID
     structured_plan["tasks"][0]["worker_prompt"] = (
-        "Implement the selected valid structured runtime mechanism in strategy.py "
+        "Implement the selected valid structured runtime mechanism in policy.py "
         "and run only the declared checks."
     )
     call_count = {"n": 0}
@@ -307,7 +462,7 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
         "Do not invent custom worker terms like range_weighted_candidate_batch_v1."
     )
     result = await agent_master._run_master_analysis(
-        source_v=142,
+        source_v=143,
         next_v=146,
         stagnation_info=contradictory_context,
         ui=_MockUI(),
@@ -349,7 +504,7 @@ async def test_master_does_not_bind_invalid_work_primitive(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
 
     result = await agent_master._run_master_analysis(
-        source_v=142,
+        source_v=143,
         next_v=146,
         stagnation_info="stagnant",
         ui=_MockUI(),
@@ -377,7 +532,7 @@ async def test_master_retries_on_genuinely_malformed_json(monkeypatch):
 
     ui = _MockUI()
     result = await agent_master._run_master_analysis(
-        source_v=111, next_v=127, stagnation_info="declining", ui=ui
+        source_v=143, next_v=144, stagnation_info="declining", ui=ui
     )
 
     assert result is None, "Genuinely malformed output should yield None"
@@ -404,8 +559,8 @@ async def test_master_fails_closed_after_structured_schema_errors(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
 
     result = await agent_master._run_master_analysis(
-        source_v=111,
-        next_v=127,
+        source_v=143,
+        next_v=144,
         stagnation_info="declining",
         ui=_MockUI(),
     )
@@ -425,12 +580,12 @@ async def test_master_transport_failure_is_not_an_invalid_plan(monkeypatch):
 
     with pytest.raises(agent_master.MasterInfrastructureError) as caught:
         await agent_master._run_master_analysis(
-            source_v=111,
-            next_v=127,
+            source_v=143,
+            next_v=144,
             stagnation_info="declining",
             ui=_MockUI(),
         )
 
-    assert caught.value.source_v == 111
-    assert caught.value.next_v == 127
+    assert caught.value.source_v == 143
+    assert caught.value.next_v == 144
     assert len(caught.value.prompt_digest) == 64

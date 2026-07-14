@@ -370,13 +370,21 @@ class GameEngine:
                 bets[current_idx] += actual
                 pot += actual
                 actions.append(("call", None))
-                await self.send(waiting_idx, "call")
+                # The official 2021 EXE does not relay a call that itself
+                # closes the street.  The peer observes the following street,
+                # showdown, or settlement boundary and must infer that unique
+                # response.  Mirror that behavior locally so native strength
+                # evaluation exercises the same state-repair path.
+                closes_street = allin_occurred or action_counts[waiting_idx] > 0
+                if not closes_street:
+                    await self.send(waiting_idx, "call")
                 if self.recorder:
                     self.recorder.on_action(current_idx, "call")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "call",
                     "amount": actual, "stage": stage, "hand": self.hand_num,
                     "pot": pot,
+                    "wire_relayed": not closes_street,
                     **decision_timing,
                 })
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} "
@@ -401,20 +409,31 @@ class GameEngine:
             # ── Check ──
             if action_type == "check":
                 actions.append(("check", None))
-                await self.send(waiting_idx, "check")
+                # A preflop BB check after the SB limp closes the street and is
+                # likewise omitted by the official EXE.  Other legal checks
+                # require a peer response and remain visible on the wire.
+                closes_street = (
+                    stage == "preflop"
+                    and is_bb
+                    and action_counts[current_idx] == 1
+                    and len(actions) >= 2
+                    and actions[-2][0] == "call"
+                )
+                if not closes_street:
+                    await self.send(waiting_idx, "check")
                 if self.recorder:
                     self.recorder.on_action(current_idx, "check")
                 await self._emit("action", {
                     "player_idx": current_idx, "action": "check",
                     "stage": stage, "hand": self.hand_num,
+                    "wire_relayed": not closes_street,
                     **decision_timing,
                 })
                 logger.info(f"[Hand {self.hand_num}] {stage}: {current.name} checks")
 
                 # preflop BB check 且 SB 已 call → 阶段结束
-                if stage == "preflop" and is_bb and action_counts[current_idx] == 1:
-                    if len(actions) >= 2 and actions[-2][0] == "call":
-                        break
+                if closes_street:
+                    break
 
                 current_idx, waiting_idx = waiting_idx, current_idx
                 continue
@@ -485,8 +504,10 @@ class GameEngine:
         earnings[winner_idx] = winner_final - INITIAL_CHIPS
         earnings[loser_idx] = loser_final - INITIAL_CHIPS
 
-        await self.send(0, format_earn_chips(earnings[0]))
-        await self.send(1, format_earn_chips(earnings[1]))
+        wire_settlement_relayed = self.hand_num != HANDS_PER_MATCH
+        if wire_settlement_relayed:
+            await self.send(0, format_earn_chips(earnings[0]))
+            await self.send(1, format_earn_chips(earnings[1]))
 
         if self.recorder:
             self.recorder.on_settle(earnings)
@@ -495,6 +516,7 @@ class GameEngine:
             "hand": self.hand_num, "is_showdown": False,
             "winner_idx": winner_idx, "pot": pot,
             "earnings": list(earnings),
+            "wire_settlement_relayed": wire_settlement_relayed,
             "reason": f"{self.players[loser_idx].name} folded",
         })
         logger.info(f"[Hand {self.hand_num}] {self.players[winner_idx].name} "
@@ -535,9 +557,13 @@ class GameEngine:
         earnings[sb_idx] = sb_final - INITIAL_CHIPS
         earnings[bb_idx] = bb_final - INITIAL_CHIPS
 
-        # 发送 earnChips（按 player index）
-        await self.send(0, format_earn_chips(earnings[0]))
-        await self.send(1, format_earn_chips(earnings[1]))
+        # The official EXE omits the natural hand-70 earnChips pair while its
+        # THP still contains state 69 and the complete footer result.  Keep the
+        # internal result/THP authoritative but mirror that wire boundary.
+        wire_settlement_relayed = self.hand_num != HANDS_PER_MATCH
+        if wire_settlement_relayed:
+            await self.send(0, format_earn_chips(earnings[0]))
+            await self.send(1, format_earn_chips(earnings[1]))
 
         # THP: 记录 showdown 结算
         if self.recorder:
@@ -562,6 +588,7 @@ class GameEngine:
             "community": [c.to_str() for c in community],
             "sb_hand": hand_name(sb_rank),
             "bb_hand": hand_name(bb_rank),
+            "wire_settlement_relayed": wire_settlement_relayed,
         })
         logger.info(f"[Hand {self.hand_num}] Showdown: SB({sb.name})={hand_name(sb_rank)}, "
                      f"BB({bb.name})={hand_name(bb_rank)}, pot={pot}")

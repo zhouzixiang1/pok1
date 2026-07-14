@@ -1,90 +1,119 @@
-# Poker Bot Evolution Framework
+# Poker Bot Evolution — National TCP Policy
 
-A heads-up No-Limit Texas Hold'em bot AI framework that builds, evaluates, and evolves bots for the national (Chinese Computer Game Championship) TCP platform. It has four code paths that should not be collapsed into one mental model:
+This repository evolves heads-up No-Limit Texas Hold'em bots for the national
+competition platform. The sole active protocol is the raw national TCP
+protocol. The active epoch is `national_tcp_policy_v1`.
 
-- **`engine/`** — local Botzone-style subprocess battle engine for Python bots (JSON on stdin/stdout).
-- **`web/`** — unified LLM-driven evolution system, FastAPI backend, and React dashboard.
-- **`sever/`** — national competition TCP self-play platform (the official competition transport).
-- **`rl/`** — reinforcement-learning experiments that wrap the local Hold'em engine.
+## Active architecture
 
-Two protocol families coexist: the **Botzone/local** family (Python subprocesses exchanging JSON, owned by `engine/`) and the **national TCP** family (AI engines connect to a TCP server and exchange raw short socket messages such as `preflop|SMALLBLIND|<0,3><1,3>`, `raise 200`, `call`, `fold`, `allin`; owned by `sever/`). The active evolution epoch is `national_native_v1`: new evolved bots live under `bots/national_v<N>/` and are complete only when tagged `national-bot-v<N>`. Old `claude_v*` directories and `bot-v*` tags are legacy history.
+- `sever/` implements the national rules engine, validator, TCP server, THP
+  recorder, and diagnostic dashboard.
+- `web/` implements the evolution control plane, native TCP evaluation,
+  evidence snapshots, quality gates, official certification, and dashboard.
+- `bots/national_v<N>/` contains active strict-policy candidates after they are
+  prepared. A candidate owns only `policy.py`; the
+  system-owned runtime owns TCP, protocol state, deadlines, action
+  sanitization, and the only socket send path.
+- `scripts/official_certify.py` runs content-bound official Windows EXE
+  certification.
+- `archive/` contains retired engines, adapters, bots, experiments, tests, and
+  evidence. It is historical storage, never an active import or evidence root.
 
-## Repo Layout
+The former subprocess JSON engine, TCP adapter, RL experiments, mixed-ABI
+national bots, and their analyses have been retired. Active code must not add
+`archive/` to `PYTHONPATH`, import it dynamically, copy a retired bot into the
+active pool, or inject retired ratings/experience into prompts.
 
-```text
-.
-├── engine/          # Local JSON battle engine: judge.py, battle.py, ladder.py, aivat.py
-├── bots/            # Active bots/national_v<N>/ + neural_national_lab/ experiments
-├── web/             # Evolution system: web/core (pipeline+daemon), web/server (API), web/frontend (React)
-├── sever/           # National TCP platform: 国赛平台/ docs, engine/, server/, web/ dashboard
-├── rl/              # DMC/RL training (DanLM-inspired, wraps engine/judge.py)
-├── scripts/         # Botzone upload, official EXE certification, reset utilities
-├── docs/            # Architecture, oracle, audit, and design documents (+ docs/archive/)
-├── ref/             # Botzone refs + DanLM / neuron_poker reference code
-├── archive/         # Deprecated or preserved historical code/logs
-├── results/         # Fresh-epoch local competition outputs (gitignored)
-└── ladder_results/  # Fresh-epoch ladder outputs (gitignored)
-```
+Version numbering preserves only the annotated completion-tag high-water.
+`national-bot-v142` is the retired numeric high-water, so the first strict
+target is `national_v143`; an untagged old-wrapper directory such as
+`national_v155` is stale debris and cannot advance the version, join the pool,
+or provide source/evidence bytes.
 
-Module entry points: `engine/judge.py` (stateless judge), `web/main.py` (web app launcher), `sever/main.py` (TCP `:10001` + Web `:18080`), `rl/scripts/train.py` (RL training).
+## Candidate boundary
 
-## Quick Start
+`policy.py` receives a versioned authoritative `decision_context` and returns a
+typed intent: `pass`, `fold`, `allin`, or `raise` with integer `raise_to`.
+Candidate code never parses the socket stream, reconstructs requests/responses,
+returns an integer action, or decides whether `pass` becomes wire `call` or
+`check`.
+
+The system runtime:
+
+- sends and splits raw TCP tokens with no `\n`/`\r\n`, without treating recv
+  boundaries as message boundaries;
+- is exercised locally against the same omitted street-closing call/check and
+  hand-70 settlement wire boundaries observed from the official EXE;
+- completes only street-closing actions proven by a new-street or settlement
+  boundary;
+- records terminal fold/call and showdown information in the connection-lived
+  opponent tracker;
+- maintains authoritative pot, contributions, stacks, SPR, pot odds, and legal
+  raise-to bounds;
+- computes an always-legal fallback, targets a 250 ms policy baseline, permits
+  bounded refinement until 54 seconds, and returns by a 55 second hard
+  deadline before the official 60 second timeout;
+- owns the official-safe action delay and emits exactly one legal wire action.
+
+See [National TCP Policy Epoch](docs/national-tcp-policy-epoch.md) and
+[Runtime Architecture Policy](docs/national-runtime-architecture-policy.md).
+
+## Quick start
 
 ```bash
-# Evolution web app (orchestrator + rating daemon + React dashboard) on :8000
+# Web/evolution app
 python web/main.py
-python web/main.py --view-only        # Dashboard/API only; evolution stays stopped
-
-# Native national TCP platform: start server, then connect two clients to begin a match
-cd sever && python main.py
-cd sever && python test_client.py 127.0.0.1 10001 BotA   # in one shell
-cd sever && python test_client.py 127.0.0.1 10001 BotB   # in another shell
-
-# Local JSON battle between two bots (70 hands per game)
-python engine/battle.py <bot_a>/main.py <bot_b>/main.py -n 50 -v
+python web/main.py --view-only
 
 # Tests
-cd web && python -m pytest tests/ -v     # evolution / backend regression
-python -m pytest sever/tests -q          # national TCP protocol alignment
+python -m pytest sever/tests -q
+cd web && python -m pytest tests -q
 
-# RL training (MLP Q-network; --model transformer for the Transformer variant)
-python -m rl.scripts.train
-```
+# Local national TCP platform
+cd sever && python main.py
 
-Formal bot certification is required before every `commit_bot`/tag. It runs the signed official Windows EXE under Wine/Xvfb:
+# One native diagnostic session (never strength/certification authority)
+python scripts/national_arena.py run --mode managed \
+  --top-bot national_v<N> --bottom-bot national_v<M> --hands 70 --wait
 
-```bash
+# Official protocol acceptance oracle
+python scripts/official_platform_acceptance.py \
+  --candidate bots/national_v<N> --opponent bots/national_v<M> \
+  --self-play-rounds 1 --opponent-rounds 1 --target-hands 70
+
+# Required signed full certification before commit/tag
 python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
+
+# One-time first strict publication, only while the active pool is empty
+python scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
+  --control-id first_strict_control_v1 \
+  --acknowledge-one-time-first-strict-control --wait-if-busy
+
+# Post-sync operator check: real Agent SDK, 3 Read + 2 exact Bash calls.
+# It prints one JSON receipt and never exposes write/network/MCP tools.
+python scripts/claude_sdk_operator_probe.py --timeout-seconds 300 --pretty
 ```
 
-## Strength & Evaluation Model
+Local strength evidence is one complete 70-hand native TCP match. The sign of
+final net chips determines win/loss/draw; magnitude is only a secondary
+tie-breaker. Arena and official EXE chip results have zero rating weight.
 
-One strength sample is exactly **one complete 70-hand local native TCP match** (20,000 chips reset per hand, blinds 50/100, 60s decision limit). The primary outcome is the **sign of final net chips**: positive = win, negative = loss, zero = draw. Glicko-2 ratings, head-to-head results, and `selection_score` are all derived from those match outcomes and are the primary ranking evidence. Final **net-chip magnitude is secondary** and may only break an equal primary score.
+## Official protocol anchors
 
-The **official Windows EXE and the local Web Arena have zero strength weight.** The EXE is compliance-only: it certifies protocol legality (five 70-hand self-play rounds plus three 70-hand rounds against an eligible opponent; a signed certificate is required for every commit). The Web Arena (`/arena`) is presentation/diagnostics only and never updates Glicko, certifies a bot, or satisfies an evolution gate.
+The exact official-EXE findings in these files are evaluation-critical and
+SHA-256 pinned:
 
-The active pool is capped at 30 bots. Reaping sorts by **conservative Glicko rating** (`r - 2*rd`) as the primary cull key; H2H average win rate is reported as context, not the reap key.
+- `docs/official-raise-boundary-oracle-2026-07-11.md`
+- `docs/official-terminal-settlement-oracle-2026-07-11.md`
 
-## Dual-Checkout Runtime
+Exact `raise 400` after `raise 200` is legal. The EXE may omit a
+street-closing peer call/check and may omit the final hand-70 `earnChips` pair;
+the runtime and formal certificate follow the oracle contracts rather than
+inventing messages.
 
-There are two local checkouts under `/home/zzx/project/pok`, and the split is intentional:
+## Two checkouts
 
-- `/home/zzx/project/pok` — the **operator/infrastructure checkout** (this one). Make code, prompt, test, and documentation changes here.
-- `/home/zzx/project/pok/.evolution_pok` — the **long-running autonomous evolution checkout**. The active `web/main.py`, rating daemon, live candidate bot directories, and runtime result files belong there.
-
-The two checkouts synchronize **only through `origin/main`**; never copy files between them. Infrastructure changes are pushed from here, then fetched/merged into `.evolution_pok` at a safe point. Completed bots are pushed from `.evolution_pok` with their `national-bot-v{N}` tags, then fetched/merged back. Do not develop infrastructure inside `.evolution_pok` while a generation is running. Full policy: `docs/evolution-dual-checkout-sync-policy.md`.
-
-## Where To Learn More
-
-- **`AGENTS.md`** — the working map for AI coding agents (start here; most complete).
-- **`CLAUDE.md`** — detailed project instructions, module maps, constants, and conventions.
-- **`ONBOARDING.md`** — teammate usage guide and workflow breakdown.
-- **`SETUP_GUIDE.md`** — remote deployment tutorial.
-- **`docs/`** — active references, including:
-  - `docs/evolution-dual-checkout-sync-policy.md` — dual-checkout sync policy.
-  - `docs/national-platform-alignment-report.md` — authoritative national TCP platform alignment.
-  - `docs/official-exe-platform-analysis.md`, `docs/official-wire-probe.md`, `docs/official-platform-harness.md` — official Windows EXE behavior and wire analysis.
-  - `docs/rating_strength_alignment_report.md` — strength / evaluation model.
-  - `docs/llm-stages.md`, `docs/multi_ai_bot_design.md` — evolution runtime data flow and design.
-  - `docs/holdem_rl_design.md`, `docs/rl_improvement_research.md` — RL design and research.
-  - `docs/archive/` — superseded audits, implemented fix plans, and pre-GRU version-history reports (kept for historical context).
+Use `/home/zzx/project/pok` for infrastructure work and
+`/home/zzx/project/pok/.evolution_pok` only for the running evolution service.
+Synchronize them through `origin/main`; never copy files between them. See
+[Dual-checkout sync policy](docs/evolution-dual-checkout-sync-policy.md).

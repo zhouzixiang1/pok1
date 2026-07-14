@@ -247,7 +247,7 @@ def _pipeline_route_guard(
             "route": route,
             "directive": (
                 "The candidate is parked for explicit operator bootstrap. Run "
-                "bootstrap-full outside the orchestrator; commit_bot remains blocked "
+                "bootstrap-first-strict outside the orchestrator; commit_bot remains blocked "
                 "until the complete content-bound certificate validates."
             ),
         }
@@ -282,6 +282,47 @@ def _pipeline_route_guard(
         payload,
     )
     return False, payload
+
+
+def _absorb_committed_crossover_intent_before_route() -> tuple[bool, dict[str, Any]]:
+    """Reduce a committed crossover journal before stage routing can hide it."""
+
+    checkpoint = read_pipeline_checkpoint()
+    crossover = (
+        ((checkpoint or {}).get("audit_context") or {}).get("crossover")
+        if isinstance(checkpoint, dict)
+        else None
+    )
+    if not isinstance(crossover, dict) or not isinstance(
+        crossover.get("projection"), dict
+    ):
+        return True, {}
+    try:
+        from crossover_projection import absorb_committed_crossover_projection
+        from evolution_infra import RESULTS_DIR, get_bot_dir
+        from workflow_kernel import WorkflowStore
+
+        store = WorkflowStore(RESULTS_DIR / "workflow" / "events.sqlite3")
+        result = absorb_committed_crossover_projection(
+            checkpoint=checkpoint,
+            target_dir=get_bot_dir(int(checkpoint["next_v"])),
+            workflow_store=store,
+        )
+    except Exception as exc:
+        return False, {
+            "blocked": True,
+            "reason": "crossover_projection_absorber_error",
+            "message": f"{type(exc).__name__}: {str(exc)[:240]}",
+        }
+    if not isinstance(result, dict):
+        return True, {}
+    if result.get("outcome") == "infrastructure_failure":
+        return False, {
+            "blocked": True,
+            "reason": "crossover_projection_absorber_failed",
+            "projection_result": result,
+        }
+    return True, result
 
 
 def _entry_allowed(line: str, candidate_v: int | None) -> bool:
@@ -794,6 +835,24 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         _log_guard_event("repo.runtime_guard_blocked", "error", "Runtime git guard blocked unexpected worktree entries", payload)
         return False, payload
 
+    absorbed_ok, absorbed_payload = (
+        _absorb_committed_crossover_intent_before_route()
+    )
+    if not absorbed_ok:
+        payload = {
+            "error": "pipeline_crossover_projection_recovery_blocked",
+            "tool": tool_name,
+            "candidate_v": candidate_v,
+            **absorbed_payload,
+        }
+        _log_guard_event(
+            "pipeline.crossover_projection_absorber_blocked",
+            "error",
+            "Runtime guard could not reconcile a committed crossover intent",
+            payload,
+        )
+        return False, payload
+
     route_ok, route_payload = _pipeline_route_guard(
         tool_name=tool_name,
         args=args,
@@ -814,6 +873,11 @@ def ensure_runtime_git_guard(tool_name: str, args: dict[str, Any] | None = None)
         "branch_head_drift_unrelated_allowed": branch_head_drift_unrelated_allowed,
         "ignored_entries": ignored[:40],
         "ignored_count": len(ignored),
+        **(
+            {"crossover_projection_absorber": absorbed_payload}
+            if absorbed_payload
+            else {}
+        ),
         **head_drift_allowance,
     }
 

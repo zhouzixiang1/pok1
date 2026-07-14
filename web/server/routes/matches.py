@@ -1,13 +1,15 @@
-"""Match endpoints — match matrix, stats, replays, and commentary."""
+"""Match endpoints for national-native strength evidence and replays."""
 
-import fcntl
-import json
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
 
-from server.cache import cached_read, read_locked
-from server.routes._helpers import build_match_matrix, build_match_stats, read_jsonl
+from server.cache import read_locked
+from server.routes._helpers import (
+    build_match_matrix,
+    build_match_stats,
+    load_strict_strength_snapshot,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
@@ -20,23 +22,29 @@ MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 router = APIRouter(prefix="/api", tags=["matches"])
 
 
+def _snapshot() -> dict:
+    snapshot = load_strict_strength_snapshot(RESULTS_DIR)
+    return snapshot if snapshot.get("available") is True else {}
+
+
 @router.get("/matches/matrix")
 async def match_matrix():
-    h2h = cached_read("matches_h2h", H2H_FILE)
-    ratings = cached_read("ratings", RATINGS_FILE)
-    stats = cached_read("stats", STATS_FILE)
-    return build_match_matrix(h2h, ratings, stats)
+    snapshot = _snapshot()
+    return build_match_matrix(
+        snapshot.get("h2h") or {},
+        snapshot.get("ratings") or {},
+        snapshot.get("daemon_stats") or {},
+    )
 
 
 @router.get("/matches/stats")
 async def match_stats():
-    stats = cached_read("stats", STATS_FILE)
-    return build_match_stats(stats)
+    return build_match_stats(_snapshot().get("daemon_stats"))
 
 
 @router.get("/matches/recent")
 async def recent_matches(limit: int = Query(50, le=200)):
-    return read_jsonl(MATCH_HISTORY_FILE, limit=limit)
+    return list(_snapshot().get("match_history") or [])[:limit]
 
 
 @router.get("/matches/replay/{match_id}")
@@ -44,34 +52,46 @@ async def match_replay(match_id: str):
     path = (REPLAY_DIR / match_id).resolve()
     if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
         raise HTTPException(status_code=404, detail="Match not found")
-    return read_locked(path)
-
-
-@router.get("/matches/commentary/{match_id}")
-async def match_commentary(match_id: str):
-    path = (REPLAY_DIR / match_id).resolve()
-    if not path.is_relative_to(REPLAY_DIR.resolve()) or not path.is_file():
-        raise HTTPException(status_code=404, detail="Match not found")
-
-    COMMENTARY_DIR = RESULTS_DIR / "commentary"
-    cache_path = (COMMENTARY_DIR / match_id).resolve()
-    if cache_path.is_file() and cache_path.is_relative_to(COMMENTARY_DIR.resolve()):
-        try:
-            return read_locked(cache_path)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    replay = read_locked(path)
-    from commentary import generate_match_commentary
-    import asyncio
-    commentary = await asyncio.get_running_loop().run_in_executor(None, generate_match_commentary, replay)
-
+    snapshot = _snapshot()
+    admitted_match = next(
+        (
+            row
+            for row in (snapshot.get("match_history") or [])
+            if isinstance(row, dict) and row.get("id") == match_id
+        ),
+        None,
+    )
+    if admitted_match is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Replay is not admitted by the current strict evaluation cycle",
+        )
     try:
-        COMMENTARY_DIR.mkdir(parents=True, exist_ok=True)
-        from evolution_infra import locked_file
-        with locked_file(cache_path, "w") as f:
-            json.dump(commentary, f)
-    except OSError:
-        pass
+        replay = read_locked(path)
+        from replay_analysis import validate_native_replay
 
-    return commentary
+        identity = snapshot["evaluation_identity_digest"]
+        validation = validate_native_replay(
+            replay,
+            expected_evaluation_identity_digest=identity,
+            expected_replay_id=match_id,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Current national replay identity is unavailable",
+        ) from None
+    if not validation.accepted:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Replay is not current national_tcp_policy_v1 evidence: {validation.reason}",
+        )
+    admitted_players = (admitted_match.get("bot0"), admitted_match.get("bot1"))
+    replay_players = (replay.get("bot0"), replay.get("bot1"))
+    active_bots = set(snapshot.get("active_bots") or [])
+    if replay_players != admitted_players or not set(replay_players).issubset(active_bots):
+        raise HTTPException(
+            status_code=409,
+            detail="Replay players are not the current published match identity",
+        )
+    return replay

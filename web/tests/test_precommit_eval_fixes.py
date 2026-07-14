@@ -6,6 +6,7 @@ P3: Stage-aware timeout skip for verified/critic_checked stages (orchestrator.py
 """
 
 import inspect
+import json
 import logging
 import os
 from pathlib import Path
@@ -14,28 +15,39 @@ import pytest
 
 
 def _write_native_bot_contract(bot_dir: Path) -> None:
-    """Create a minimal native-national bot that passes static active-pool checks."""
+    """Create a minimal strict national TCP policy artifact."""
 
+    from bot_namespace import (
+        NATIONAL_RUNTIME_MANIFEST,
+        POLICY_EPOCH_RECEIPT,
+        build_policy_epoch_receipt,
+        build_runtime_manifest,
+        parse_bot_version,
+    )
     from national_native import ensure_native_entry
 
-    (bot_dir / "main.py").write_text(
-        "def sanitize_action(action, state, my_chips):\n"
-        "    return int(action)\n",
-        encoding="utf-8",
-    )
-    (bot_dir / "state.py").write_text(
-        "def infer_remaining_hands_from_requests(requests):\n"
-        "    return max(0, 70 - len(requests))\n\n"
-        "def reconstruct_state(req):\n"
-        "    return dict(req)\n",
-        encoding="utf-8",
-    )
-    (bot_dir / "strategy.py").write_text(
-        "def get_action(req, requests):\n"
-        "    return 0\n",
+    version = parse_bot_version(bot_dir.name)
+    assert version is not None and version >= 143
+    (bot_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def iter_decisions(context, baseline, deadline):\n"
+        "    return ()\n",
         encoding="utf-8",
     )
     ensure_native_entry(bot_dir, overwrite=True)
+    manifest = build_runtime_manifest(bot_dir)
+    (bot_dir / NATIONAL_RUNTIME_MANIFEST).write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
+    receipt = build_policy_epoch_receipt(
+        bot_dir,
+        version,
+        parent_versions=() if version == 143 else (143,),
+    )
+    (bot_dir / POLICY_EPOCH_RECEIPT).write_text(
+        json.dumps(receipt, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def test_national_precommit_rejects_one_sample():
@@ -119,14 +131,19 @@ class TestP0ReapSignalOrder:
         )
 
     def test_completed_before_reap_signal(self):
+        import tool_commit
+
         source = self._get_commit_bot_body()
-        completed_pos = source.find(".completed")
+        publication_pos = source.find("_resume_publication_transaction")
         reap_pos = source.find(".reap_signal")
-        assert completed_pos >= 0, ".completed not found in commit_bot source"
+        assert publication_pos >= 0, "publication transaction not found in commit_bot source"
         assert reap_pos >= 0, ".reap_signal not found in commit_bot source"
-        assert completed_pos < reap_pos, (
-            f".completed (pos {completed_pos}) must appear BEFORE .reap_signal (pos {reap_pos})"
+        assert publication_pos < reap_pos, (
+            "publication transaction must complete before .reap_signal: "
+            f"publication={publication_pos}, reap={reap_pos}"
         )
+        resume_source = inspect.getsource(tool_commit._resume_publication_transaction)
+        assert "_write_completed_sentinel_durable" in resume_source
 
 
 # ── P1: Time-Based Bot Refresh ───────────────────────────────────────
@@ -142,27 +159,27 @@ class TestP1TimeBasedRefresh:
         # Create a fake bot dir with .completed
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
         _write_native_bot_contract(bot_dir)
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\n")
         monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
-        assert "national_v99" in result
+        assert "national_v143" in result
 
     def test_get_active_bots_skips_legacy_newline_native_contract(self, tmp_path, monkeypatch):
-        """Tagged old newline/readline TCP bots are not active in national_native_v1."""
+        """A tagged newline/readline artifact is not active in the policy epoch."""
         from elo_daemon import get_active_bots
         import evolution_infra
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
         (bot_dir / "national_bot.py").write_text(
@@ -171,12 +188,12 @@ class TestP1TimeBasedRefresh:
         )
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\n")
         monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
-        assert "national_v99" not in result
+        assert "national_v143" not in result
 
     def test_get_active_bots_skips_old_position_semantics(self, tmp_path, monkeypatch):
         """Tagged bots with Botzone-era dealer/SB math are not active parents."""
@@ -185,7 +202,7 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
         _write_native_bot_contract(bot_dir)
@@ -201,10 +218,10 @@ class TestP1TimeBasedRefresh:
         )
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\n")
 
         result = get_active_bots()
-        assert "national_v99" not in result
+        assert "national_v143" not in result
 
     def test_get_active_bots_skips_untagged_completed(self, tmp_path, monkeypatch):
         """get_active_bots does NOT trust .completed without a national-bot-vN tag."""
@@ -213,7 +230,7 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
 
@@ -221,7 +238,7 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "")
 
         result = get_active_bots()
-        assert "national_v99" not in result
+        assert "national_v143" not in result
 
     def test_get_active_bots_restores_missing_completed_for_tagged_bot(self, tmp_path, monkeypatch):
         """A tagged bot dir missing gitignored .completed is restored and treated active."""
@@ -230,17 +247,17 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         _write_native_bot_contract(bot_dir)
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\n")
         monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
-        assert result == ["national_v99"]
+        assert result == ["national_v143"]
         assert (bot_dir / ".completed").exists()
 
     def test_read_only_active_bot_catalog_never_repairs_missing_sentinel(
@@ -250,7 +267,7 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         _write_native_bot_contract(bot_dir)
 
@@ -258,7 +275,7 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(
             evolution_infra,
             "_git",
-            lambda *args, **kwargs: "national-bot-v99\n",
+            lambda *args, **kwargs: "national-bot-v143\n",
         )
         monkeypatch.setattr(
             evolution_infra,
@@ -277,7 +294,7 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         _write_native_bot_contract(bot_dir)
 
@@ -285,7 +302,7 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(
             evolution_infra,
             "_git",
-            lambda *args, **kwargs: "national-bot-v99\n",
+            lambda *args, **kwargs: "national-bot-v143\n",
         )
         monkeypatch.setattr(
             evolution_infra,
@@ -294,7 +311,7 @@ class TestP1TimeBasedRefresh:
         )
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
-        assert evolution_infra.get_published_active_bots_read_only() == ["national_v99"]
+        assert evolution_infra.get_published_active_bots_read_only() == ["national_v143"]
         assert not (bot_dir / ".completed").exists()
 
     def test_get_active_bots_does_not_rescan_existing_completed_in_restore_pass(self, tmp_path, monkeypatch):
@@ -304,7 +321,7 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         (bot_dir / ".completed").touch()
 
@@ -315,15 +332,15 @@ class TestP1TimeBasedRefresh:
             return True
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\n")
         monkeypatch.setattr(evolution_infra, "is_active_bot_protocol_eligible", _eligible)
         monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set())
 
         result = get_active_bots()
 
-        assert result == ["national_v99"]
-        assert calls == [99]
+        assert result == ["national_v143"]
+        assert calls == [143]
 
     def test_get_active_bots_does_not_restore_reaped_tagged_bot(self, tmp_path, monkeypatch):
         """A deliberately reaped tagged bot remains inactive across discovery calls."""
@@ -332,19 +349,19 @@ class TestP1TimeBasedRefresh:
 
         bots_dir = tmp_path / "bots"
         bots_dir.mkdir()
-        bot_dir = bots_dir / "national_v99"
+        bot_dir = bots_dir / "national_v143"
         bot_dir.mkdir()
         results_dir = tmp_path / "results"
         results_dir.mkdir()
         (results_dir / "reaped_bots.jsonl").write_text(
-            '{"bot":"national_v99","version":99,"reason":"test"}\n',
+            '{"bot":"national_v143","version":143,"reason":"test"}\n',
             encoding="utf-8",
         )
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", results_dir / "reaped_bots.jsonl")
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v99\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\n")
 
         result = get_active_bots()
         assert result == []
@@ -359,23 +376,23 @@ class TestP1TimeBasedRefresh:
         bots_dir = tmp_path / "bots"
         results_dir = tmp_path / "web" / "core" / "results"
         replay_dir = results_dir / "match_replay"
+        bots_dir.mkdir()
         results_dir.mkdir(parents=True)
         replay_dir.mkdir()
-        (bots_dir / "graveyard").mkdir(parents=True)
-        for version in (1, 2):
+        for version in (143, 144):
             bot_dir = bots_dir / f"national_v{version}"
             bot_dir.mkdir()
             _write_native_bot_contract(bot_dir)
             (bot_dir / ".completed").touch()
         (results_dir / "bot_stats.json").write_text(
-            '{"national_v1":{"games":1000},"national_v2":{"games":1000}}\n',
+            '{"national_v143":{"games":1000},"national_v144":{"games":1000}}\n',
             encoding="utf-8",
         )
 
         monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots_dir)
         monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
         monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", results_dir / "reaped_bots.jsonl")
-        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v1\nnational-bot-v2\n")
+        monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\nnational-bot-v144\n")
         monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
         reaped_versions = set()
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set(reaped_versions))
@@ -392,22 +409,22 @@ class TestP1TimeBasedRefresh:
             tbm,
             "load_ratings",
             lambda: {
-                "national_v1": tbm.Glicko2Player(r=1200, rd=50),
-                "national_v2": tbm.Glicko2Player(r=1600, rd=50),
+                "national_v143": tbm.Glicko2Player(r=1200, rd=50),
+                "national_v144": tbm.Glicko2Player(r=1600, rd=50),
             },
         )
-        monkeypatch.setattr(tbm, "load_h2h_avg_winrates", lambda: {"national_v1": 0.4})
-        monkeypatch.setattr(tbm, "load_strength_scores", lambda: {"national_v1": 0.4})
+        monkeypatch.setattr(tbm, "load_h2h_avg_winrates", lambda: {"national_v143": 0.4})
+        monkeypatch.setattr(tbm, "load_strength_scores", lambda: {"national_v143": 0.4})
 
         result = await tbm._do_reap_weakest(quiet=True)
 
         assert result["reaped"] is True
-        assert result["culled"] == "national_v1"
+        assert result["culled"] == "national_v143"
         assert result["reap_mode"] == "deactivate_completed_sentinel"
-        assert (bots_dir / "national_v1" / "main.py").exists()
-        assert not (bots_dir / "national_v1" / ".completed").exists()
-        assert not (bots_dir / "graveyard" / "national_v1").exists()
-        assert evolution_infra.get_active_bots() == ["national_v2"]
+        assert (bots_dir / "national_v143" / "national_bot.py").exists()
+        assert not (bots_dir / "national_v143" / ".completed").exists()
+        assert {path.name for path in bots_dir.iterdir()} == {"national_v143", "national_v144"}
+        assert evolution_infra.get_active_bots() == ["national_v144"]
 
     def test_refresh_timer_variable_exists(self):
         """Daemon source contains the last_bot_refresh_time variable."""

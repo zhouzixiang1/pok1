@@ -174,9 +174,15 @@ def _startup_recovery(ui=None) -> dict:
     # and we're at a recoverable stage, treat as stale session and force new LLM session.
     # The classification is owned by pipeline_state so official-certification and
     # future stages cannot drift from this recovery path.
-    from pipeline_state import session_recoverable_stages
+    from pipeline_state import (
+        pipeline_runtime_activity_ts,
+        session_recoverable_stages,
+    )
     recoverable_stages = session_recoverable_stages()
-    last_stage_ts = checkpoint.get("last_stage_change_ts", 0.0)
+    last_stage_ts = max(
+        float(checkpoint.get("last_stage_change_ts") or 0.0),
+        pipeline_runtime_activity_ts(checkpoint),
+    )
     if stage in recoverable_stages and last_stage_ts > 0:
         from evolution_infra import WATCHDOG_TIMEOUT
         elapsed = time.time() - last_stage_ts

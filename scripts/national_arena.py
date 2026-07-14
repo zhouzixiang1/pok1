@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI for the FastAPI-backed national Web Arena."""
+"""CLI for the diagnostic-only FastAPI-backed national Web Arena."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class ArenaAPI:
             data = json.dumps(payload).encode("utf-8")
             headers["Content-Type"] = "application/json"
         if self.token:
-            headers["X-Arena-Token"] = self.token
+            headers["X-Control-Token"] = self.token
         request = Request(
             self.base_url + path,
             data=data,
@@ -53,7 +53,7 @@ class ArenaAPI:
         return json.loads(body.decode("utf-8"))
 
     def download(self, path: str, output: Path, *, timeout: float = 120.0) -> None:
-        headers = {"X-Arena-Token": self.token} if self.token else {}
+        headers = {"X-Control-Token": self.token} if self.token else {}
         request = Request(self.base_url + path, headers=headers, method="GET")
         try:
             with urlopen(request, timeout=timeout) as response:
@@ -64,7 +64,7 @@ class ArenaAPI:
 
 
 def _client(args) -> ArenaAPI:
-    return ArenaAPI(args.api, args.token or os.environ.get("POK_ARENA_CONTROL_TOKEN", ""))
+    return ArenaAPI(args.api, args.token or os.environ.get("POK_CONTROL_TOKEN", ""))
 
 
 def _create_payload(args) -> dict:
@@ -213,7 +213,14 @@ def command_serve(args) -> int:
 
 def _add_connection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--api", default="http://127.0.0.1:8000")
-    parser.add_argument("--token", default="")
+    parser.add_argument(
+        "--token",
+        default="",
+        help=(
+            "Shared operator token (POK_CONTROL_TOKEN / X-Control-Token); "
+            "there is no Arena-specific token"
+        ),
+    )
 
 
 def _add_match_args(parser: argparse.ArgumentParser) -> None:
@@ -234,7 +241,11 @@ def _add_match_args(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="National Web Arena CLI")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Diagnostic-only National Web Arena CLI; results never certify or rate a bot"
+        )
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser("serve")

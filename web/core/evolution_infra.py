@@ -15,6 +15,7 @@ import re
 import asyncio
 import threading
 import uuid
+import hashlib
 
 
 # Phase 4 feature flag (default OFF). PSRO = Pipeline Policy Response Operator
@@ -32,14 +33,18 @@ log = logging.getLogger("pok.infra")
 
 # Local module imports (same directory)
 from glicko2 import Glicko2Player, update_rating_period
-from experience_pool import trim_experience_pool
 from evaluation_contract import build_evaluation_contract
 from evolution_scope import classify_status_entries
 from publish_reconcile import reconcile_push_refs
 from bot_namespace import (
     ACTIVE_BOT_PREFIX,
     ACTIVE_TAG_PREFIX,
+    ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
+    FIRST_STRICT_POLICY_VERSION,
+    NATIONAL_ENTRYPOINT,
+    ROLE_CANDIDATE,
+    ROLE_PARENT_SOURCE,
     active_bot_glob,
     bot_name,
     bot_relpath,
@@ -48,6 +53,7 @@ from bot_namespace import (
     format_version,
     parse_bot_version,
     parse_tag_version,
+    resolve_national_bot_spec,
     strip_bot_path_prefix,
     version_sort_key,
 )
@@ -63,9 +69,6 @@ CANDIDATE_COPY_IGNORE_NAMES = frozenset({"__pycache__", ".completed", ".task_con
 PROMPTS_DIR = CORE_DIR / "prompts"
 RESULTS_DIR = CORE_DIR / "results"
 BOTS_DIR = PROJECT_ROOT / "bots"
-EXPERIENCE_FILE = CORE_DIR / "experience_pool.md"
-REFERENCE_DIR = CORE_DIR / "reference_bots"
-GRAVEYARD_DIR = BOTS_DIR / "graveyard"
 RATINGS_FILE = RESULTS_DIR / "glicko_ratings.json"
 STATS_FILE = RESULTS_DIR / "elo_daemon_stats.json"
 H2H_FILE = RESULTS_DIR / "head_to_head.json"
@@ -79,9 +82,6 @@ LLM_COSTS_FILE = RESULTS_DIR / "llm_costs.jsonl"
 RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 ABANDONED_VERSIONS_FILE = RESULTS_DIR / "abandoned_versions.jsonl"
 REAPED_BOTS_FILE = RESULTS_DIR / "reaped_bots.jsonl"
-# fix-5: cross-gen direction pivot — tracks exhausted directions per generation
-# so consecutive same-axis exhaustion can force a structural pivot.
-CROSS_GEN_EXHAUSTED_HISTORY = RESULTS_DIR / "cross_gen_exhausted_history.jsonl"
 
 MAX_ACTIVE_BOTS = 30
 
@@ -89,18 +89,18 @@ MAX_ACTIVE_BOTS = 30
 DAEMON_EVAL_TIMEOUT = 600
 MIN_GAMES_FOR_EVAL = 100
 EVAL_WAIT_PROGRESS_INTERVAL_SEC = int(os.environ.get("POK_EVAL_WAIT_PROGRESS_INTERVAL_SEC", "30"))
-MAX_LINES_PER_FILE = 2000       # Core strategy files (strategy.py, postflop.py) — base limit
-MAX_LINES_HELPER = 1500         # All other .py files — base limit
+MAX_LINES_PER_FILE = 2000       # Candidate-owned policy.py — base limit
+MAX_LINES_HELPER = 1500         # System-owned runtime modules — base limit
 MAX_LINES_HARD_CAP = 2500       # Hard cap: no .py file may exceed this, even with adaptive budget
 LINE_GROWTH_BUDGET = 0.15       # Adaptive limit = max(base, source_lines * (1 + budget))
 
 # Strip a trailing status annotation the LLM may append to target_files entries,
-# e.g. "bet_size_profile.py (NEW)" or "strategy.py [CREATE]". Requires a BARE
-# keyword inside the brackets so legitimate names like "report(2).py" survive.
+# e.g. "policy.py (MODIFIED)". Requires a bare keyword inside the brackets so
+# legitimate names like "report(2).py" survive.
 _TARGET_ANNOTATION_RE = re.compile(
     r"\s*[\(\[](?:NEW|CREATE|DELETE|MODIFIED)[\)\]]\s*$", re.IGNORECASE
 )
-CORE_STRATEGY_FILES = {"strategy.py", "postflop.py"}
+CORE_STRATEGY_FILES = {"policy.py"}
 MIN_DECISION_PASS_RATE = 0.7
 MIN_CROSSOVER_DECISION_RATE = 0.6
 MAX_WORKER_RETRIES = 4
@@ -257,6 +257,24 @@ def locked_file(path, mode='r', lock_type=None, encoding=None):
             encoding=encoding,
         ) as handle:
             yield handle
+
+
+def _fsync_directory(path):
+    """Durably publish a directory-entry mutation.
+
+    File ``fsync`` plus ``os.replace`` is atomic for readers, but the rename or
+    unlink is not power-loss durable until the containing directory is synced.
+    Publication/checkpoint code deliberately lets an ``OSError`` escape here:
+    claiming a durable state after a failed directory sync would be unsafe.
+    """
+
+    directory = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def read_locked_json(path, default=None):
@@ -476,6 +494,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reset_runtime_contract_ledger=False,
                                expected_runtime_contract_ledger_digest=None,
                                runtime_contract_ledger_reset_reason=None,
+                               publication_intent=None,
                                expected_checkpoint_revision=None,
                                expected_checkpoint_stage=None,
                                expected_workflow_run_id=None,
@@ -487,14 +506,13 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
     contract ledgers remain append-only unless a state-machine-authorized plan
     rejection supplies an explicit reset reason and expected ledger digest.
     """
-    try:
-        from workflow_profiles import get_workflow_profile
-        _profile = get_workflow_profile()
-        current_workflow_profile_id = getattr(_profile, "profile_id", "")
-        current_national_execution_mode = getattr(_profile, "national_execution_mode", "adapter")
-    except Exception:
-        current_workflow_profile_id = ""
-        current_national_execution_mode = ""
+    from workflow_profiles import get_workflow_profile
+
+    _profile = get_workflow_profile()
+    current_workflow_profile_id = getattr(_profile, "profile_id", "")
+    current_national_execution_mode = getattr(
+        _profile, "national_execution_mode", "native_tcp"
+    )
 
     # Single exclusive lock covers read-merge-write-rename to prevent TOCTOU
     checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
@@ -530,6 +548,23 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 log.error("Checkpoint infrastructure normalization failed closed: %s", exc)
                 return False
             active_stage = existing.get("stage")
+            if active_stage not in {
+                None,
+                "timed_out",
+                "archived",
+                "abandoned",
+            }:
+                from checkpoint_schema import checkpoint_epoch_errors
+
+                epoch_errors = checkpoint_epoch_errors(existing)
+                if epoch_errors:
+                    log.error(
+                        "Refusing implicit epoch/schema upgrade of active "
+                        "checkpoint at %s; operator archive/reset is required: %s",
+                        active_stage,
+                        epoch_errors,
+                    )
+                    return False
             try:
                 active_revision = int(existing.get("checkpoint_revision") or 0)
             except (TypeError, ValueError):
@@ -609,6 +644,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_infra_failure = None
         existing_official_job = None
         existing_repair_baseline_artifact_hash = None
+        existing_publication_intent = None
+        existing_epoch_binding = None
         existing_workflow_run_id = ""
         requested_workflow_run_id = str(workflow_run_id or "").strip()
         existing_checkpoint_revision = 0
@@ -658,6 +695,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_repair_baseline_artifact_hash = existing.get(
                 "repair_baseline_artifact_hash"
             )
+            existing_publication_intent = existing.get("publication_intent")
+            existing_epoch_binding = existing.get("epoch_binding")
             existing_workflow_run_id = str(
                 existing.get("workflow_run_id")
                 or expected_workflow_run_id
@@ -675,7 +714,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             )
         elif existing:
             active_stage = existing.get("stage")
-            dead_stages = {None, "timed_out", "infra_timed_out", "archived", "abandoned"}
+            dead_stages = {None, "timed_out", "archived", "abandoned"}
             if active_stage not in dead_stages:
                 log.warning(
                     "Refusing checkpoint identity mismatch: active v%s/source v%s stage=%s, attempted v%s/source v%s stage=%s",
@@ -723,6 +762,24 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_direction_audit = direction_audit
         if audit_context is not None:
             existing_audit_context.update(audit_context)
+        if existing_epoch_binding is None:
+            try:
+                from checkpoint_schema import build_checkpoint_epoch_binding
+
+                existing_epoch_binding = build_checkpoint_epoch_binding(
+                    next_v=next_v,
+                    source_v=source_v,
+                    parent2_v=existing_parent2_v,
+                    audit_context=existing_audit_context,
+                    repo_root=PROJECT_ROOT,
+                )
+            except Exception as exc:
+                errors = list(getattr(exc, "errors", ()) or ())
+                log.error(
+                    "Refusing checkpoint without a valid strict epoch binding: %s",
+                    errors or f"{type(exc).__name__}: {exc}",
+                )
+                return False
         if literature_probe is not None:
             existing_literature_probe = literature_probe
         if prepare_scope_files is not None:
@@ -740,6 +797,60 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 log.error("Invalid repair baseline artifact hash")
                 return False
             existing_repair_baseline_artifact_hash = repair_hash
+
+        # Publication is a one-way, immutable transaction.  Persist its intent
+        # under the same checkpoint CAS before any Git mutation, then preserve
+        # the exact object through every recovery attempt.  A generic checkpoint
+        # rewrite must never replace or silently drop it.
+        if publication_intent is not None:
+            try:
+                from publication_transaction import (
+                    publication_intent_structure_errors,
+                )
+
+                publication_errors = publication_intent_structure_errors(
+                    publication_intent
+                )
+            except Exception as exc:
+                log.error(
+                    "Publication intent validation failed closed: %s", exc
+                )
+                return False
+            if publication_errors:
+                log.error(
+                    "Refusing invalid publication intent: %s",
+                    publication_errors,
+                )
+                return False
+            if stage != "publishing":
+                log.error("Publication intent requires the publishing stage")
+                return False
+            if existing_publication_intent is not None:
+                if existing_publication_intent != publication_intent:
+                    log.error("Refusing publication intent replacement")
+                    return False
+            else:
+                old_stage = existing.get("stage") if isinstance(existing, dict) else ""
+                if publication_intent.get("origin_checkpoint_stage") != old_stage:
+                    log.error("Publication intent origin stage mismatch")
+                    return False
+                if int(publication_intent.get("origin_checkpoint_revision") or 0) != int(
+                    existing_checkpoint_revision
+                ):
+                    log.error("Publication intent origin revision mismatch")
+                    return False
+                if str(publication_intent.get("workflow_run_id") or "") != str(
+                    existing_workflow_run_id
+                ):
+                    log.error("Publication intent workflow identity mismatch")
+                    return False
+                existing_publication_intent = dict(publication_intent)
+        if existing_publication_intent is not None and stage != "publishing":
+            log.error("A live publication intent cannot leave the publishing stage")
+            return False
+        if stage == "publishing" and existing_publication_intent is None:
+            log.error("Publishing stage requires an immutable publication intent")
+            return False
 
         if infra_failure is not None or clear_infra_failure:
             from pipeline_infrastructure import infrastructure_failure_digest
@@ -1036,7 +1147,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 include_hash=True,
             )
 
+        from checkpoint_schema import (
+            CHECKPOINT_SCHEMA_VERSION,
+            checkpoint_epoch_errors,
+        )
+
         state = {
+            "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "evaluation_epoch": EVALUATION_EPOCH,
+            "epoch_binding": existing_epoch_binding,
             "next_v": next_v, "source_v": source_v, "stage": stage,
             "run_id": run_id,
             "workflow_run_id": existing_workflow_run_id,
@@ -1062,10 +1181,20 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "infra_failure": existing_infra_failure,
             "official_job": existing_official_job,
             "repair_baseline_artifact_hash": existing_repair_baseline_artifact_hash,
+            "publication_intent": existing_publication_intent,
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
         }
+
+        epoch_errors = checkpoint_epoch_errors(state)
+        if epoch_errors:
+            log.error(
+                "Refusing checkpoint whose strict epoch binding does not match "
+                "the final CAS projection: %s",
+                epoch_errors,
+            )
+            return False
 
         # Atomic write: tmp + fsync + rename, all under the same lock
         tmp = PIPELINE_STATE_FILE.with_suffix(".tmp")
@@ -1074,6 +1203,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             f.flush()
             os.fsync(f.fileno())
         os.replace(str(tmp), str(PIPELINE_STATE_FILE))
+        _fsync_directory(PIPELINE_STATE_FILE.parent)
 
         # RC2/RC6: refresh event_bus last-known correlation so events emitted
         # after this stage advance — and especially after clear_pipeline_checkpoint
@@ -1182,6 +1312,7 @@ def clear_pipeline_checkpoint(
         # Unlink under the stable sidecar lock so writers cannot race a retired
         # checkpoint inode.
         PIPELINE_STATE_FILE.unlink(missing_ok=True)
+        _fsync_directory(PIPELINE_STATE_FILE.parent)
     try:
         from event_bus import emit
         next_v = previous.get("next_v") if previous else None
@@ -1265,13 +1396,13 @@ def pair_key(a, b):
 
 
 def get_bot_dir(version):
-    primary = BOTS_DIR / bot_name(version)
-    if primary.exists():
-        return primary
-    graveyard = GRAVEYARD_DIR / bot_name(version)
-    if graveyard.exists():
-        return graveyard
-    return primary
+    """Return only the canonical active-namespace directory.
+
+    Archived/reaped trees are never a transparent source, candidate or
+    opponent fallback.  Audit callers must address an archive explicitly.
+    """
+
+    return BOTS_DIR / bot_name(version)
 
 
 def get_logs_dir(version):
@@ -1281,11 +1412,15 @@ def get_logs_dir(version):
 
 
 def _tagged_bot_versions():
-    """Return versions backed by authoritative active-epoch git tags."""
+    """Return strict-policy versions backed by completion tags.
+
+    Completion tags through the archived high-water remain immutable audit
+    evidence, but they are not members of ``national_tcp_policy_v1``.
+    """
     tag_versions = set()
     for tag in _git("tag", "-l", bot_tag_glob(), check=False).strip().splitlines():
         version = parse_tag_version(tag)
-        if version is not None:
+        if version is not None and version >= FIRST_STRICT_POLICY_VERSION:
             tag_versions.add(version)
     return tag_versions
 
@@ -1353,6 +1488,130 @@ def record_reaped_bot(bot_name, *, reason="", data=None):
     return entry
 
 
+_REMOTE_PUBLICATION_CACHE_LOCK = threading.RLock()
+_REMOTE_PUBLICATION_CACHE = {
+    "key": None,
+    "checked_at": 0.0,
+    "versions": frozenset(),
+}
+
+
+def _clear_remote_publication_cache():
+    with _REMOTE_PUBLICATION_CACHE_LOCK:
+        _REMOTE_PUBLICATION_CACHE.update({
+            "key": None,
+            "checked_at": 0.0,
+            "versions": frozenset(),
+        })
+
+
+def _remote_published_completion_versions(tag_versions) -> set[int]:
+    """Return versions whose exact completion/high-water refs are on origin.
+
+    In the long-running evolution checkout a local annotated tag is only a
+    recoverable intermediate state.  It must not restore ``.completed`` or
+    enter the active pool until origin independently exposes both annotated
+    refs and its main branch contains the peeled publication commit.
+    """
+
+    versions = tuple(sorted({int(item) for item in tag_versions}))
+    if not versions:
+        return set()
+    local_rows = []
+    for version in versions:
+        completion = bot_tag(version)
+        high_water = f"national-high-water-v{version}"
+        local_rows.append((
+            version,
+            _git("rev-parse", f"refs/tags/{completion}", check=False).strip(),
+            _git(
+                "rev-parse",
+                f"refs/tags/{completion}^{{commit}}",
+                check=False,
+            ).strip(),
+            _git("rev-parse", f"refs/tags/{high_water}", check=False).strip(),
+            _git(
+                "rev-parse",
+                f"refs/tags/{high_water}^{{commit}}",
+                check=False,
+            ).strip(),
+        ))
+    cache_key = tuple(local_rows)
+    now = time.monotonic()
+    with _REMOTE_PUBLICATION_CACHE_LOCK:
+        if (
+            _REMOTE_PUBLICATION_CACHE.get("key") == cache_key
+            and now - float(_REMOTE_PUBLICATION_CACHE.get("checked_at") or 0.0)
+            <= 5.0
+        ):
+            return set(_REMOTE_PUBLICATION_CACHE.get("versions") or ())
+    try:
+        raw = _git(
+            "ls-remote",
+            "origin",
+            "refs/heads/main",
+            f"refs/tags/{ACTIVE_TAG_PREFIX}*",
+            "refs/tags/national-high-water-v*",
+        )
+        remote: dict[str, str] = {}
+        for line in raw.splitlines():
+            oid, separator, ref = line.partition("\t")
+            if separator and oid and ref:
+                remote[ref] = oid
+        remote_main = remote.get("refs/heads/main", "")
+        if len(remote_main) != 40:
+            raise RuntimeError("remote main ref is missing")
+        current_remote_tracking = _git(
+            "rev-parse", "refs/remotes/origin/main", check=False
+        ).strip()
+        if current_remote_tracking != remote_main:
+            _git(
+                "fetch",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            )
+        verified: set[int] = set()
+        for version, tag_object, commit_oid, water_object, water_commit in local_rows:
+            completion = bot_tag(version)
+            high_water = f"national-high-water-v{version}"
+            if not all((tag_object, commit_oid, water_object, water_commit)):
+                continue
+            if _git(
+                "cat-file", "-t", f"refs/tags/{completion}", check=False
+            ).strip() != "tag":
+                continue
+            if _git(
+                "cat-file", "-t", f"refs/tags/{high_water}", check=False
+            ).strip() != "tag":
+                continue
+            if (
+                remote.get(f"refs/tags/{completion}") != tag_object
+                or remote.get(f"refs/tags/{completion}^{{}}") != commit_oid
+                or remote.get(f"refs/tags/{high_water}") != water_object
+                or remote.get(f"refs/tags/{high_water}^{{}}") != water_commit
+                or water_commit != commit_oid
+                or not _git_command_succeeds(
+                    "merge-base", "--is-ancestor", commit_oid, remote_main
+                )
+            ):
+                continue
+            verified.add(version)
+    except Exception as exc:
+        log.error(
+            "Remote publication proof unavailable; active pool fails closed: %s",
+            exc,
+        )
+        verified = set()
+    with _REMOTE_PUBLICATION_CACHE_LOCK:
+        _REMOTE_PUBLICATION_CACHE.update({
+            "key": cache_key,
+            "checked_at": now,
+            "versions": frozenset(verified),
+        })
+    return verified
+
+
 def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versions=None):
     """Restore local .completed sentinels for bot dirs that already have tags.
 
@@ -1403,12 +1662,64 @@ def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versio
     return restored
 
 
+def _incomplete_checkpoint_publication_versions(tag_versions) -> set[int]:
+    """Keep a locally tagged in-flight publication out of the active pool.
+
+    A completion tag can exist before the publication transaction has proven
+    its remote refs (when required), materialized the durable sentinel, and
+    cleared the checkpoint.  In particular, local-only deployments must not
+    let the generic tag-to-sentinel repair path skip those final transaction
+    phases after a crash.  Once the exact intent-bound sentinel exists, the
+    candidate may be observed as complete while the final checkpoint CAS is
+    retried.
+    """
+
+    versions = {int(item) for item in (tag_versions or set())}
+    if not versions:
+        return set()
+    try:
+        checkpoint = read_pipeline_checkpoint()
+    except Exception:
+        return set()
+    if not isinstance(checkpoint, dict) or checkpoint.get("stage") != "publishing":
+        return set()
+    try:
+        version = int(checkpoint.get("next_v"))
+    except (TypeError, ValueError):
+        return set()
+    if version not in versions:
+        return set()
+
+    intent = checkpoint.get("publication_intent")
+    try:
+        from publication_transaction import publication_intent_checkpoint_errors
+
+        intent_errors = publication_intent_checkpoint_errors(intent, checkpoint)
+    except Exception:
+        intent_errors = ["publication_intent_validation_unavailable"]
+    publication_id = (
+        str(intent.get("publication_id") or "")
+        if isinstance(intent, dict)
+        else ""
+    )
+    sentinel = BOTS_DIR / bot_name(version) / ".completed"
+    try:
+        sentinel_matches = (
+            bool(publication_id)
+            and sentinel.is_file()
+            and not sentinel.is_symlink()
+            and sentinel.read_text(encoding="utf-8")
+            == f"publication_id={publication_id}\n"
+        )
+    except OSError:
+        sentinel_matches = False
+    return {version} if intent_errors or not sentinel_matches else set()
+
+
 def active_native_contract_filter_enabled() -> bool:
-    # The national-native epoch has no operator escape hatch: disabling this
-    # check would immediately repopulate ratings/opponents with quarantined raw
-    # runtimes. The environment flag remains only for non-national legacy test
-    # profiles where no national executable authority exists.
-    if EVALUATION_EPOCH == "national_native_v1":
+    # The policy epoch has no compatibility escape hatch.  An environment flag
+    # cannot reintroduce archived Botzone/strategy artifacts into active roles.
+    if EVALUATION_EPOCH == "national_tcp_policy_v1":
         return True
     raw = os.environ.get("POK_ACTIVE_NATIVE_CONTRACT_FILTER")
     if raw is None:
@@ -1450,54 +1761,34 @@ def active_bot_protocol_errors(
 ) -> list[str]:
     """Return active-pool protocol errors for a tagged bot version.
 
-    Historical active-epoch tags are retained for auditability, but the current
-    national-native runtime must not schedule old newline/readline TCP entries
-    or old Botzone position-semantics bots as rating opponents or evolution
-    sources.
+    The strict namespace resolver is the first authority.  It never searches
+    the archive and requires the raw-TCP runtime manifest, typed policy ABI and
+    epoch receipt before the implementation-level native checks run.
     """
 
     if not active_native_contract_filter_enabled():
         return []
-    try:
-        from national_protocol_quarantine import (
-            is_quarantined_version,
-            protocol_quarantine_health,
-        )
-
-        quarantine = (
-            quarantine_health
-            if quarantine_health is not None
-            else protocol_quarantine_health()
-        )
-    except Exception as exc:
-        return [
-            "protocol_quarantine_check_error: "
-            f"{type(exc).__name__}: {str(exc)[:200]}"
-        ]
-    if not quarantine.get("valid"):
-        detail = "; ".join(
-            str(item) for item in (quarantine.get("issues") or [])[:5]
-        )
-        return [f"protocol_quarantine_policy_invalid: {detail}"]
     bot_dir = BOTS_DIR / bot_name(version)
     fingerprint = _bot_protocol_fingerprint(bot_dir)
     cache_key = (
         int(version),
         str(bot_dir.resolve()),
         fingerprint,
-        str(quarantine.get("policy_digest") or ""),
+        EVALUATION_EPOCH,
     )
     cached = _ACTIVE_BOT_PROTOCOL_CACHE.get(cache_key)
     if cached is not None:
         return list(cached)
 
-    if is_quarantined_version(version, health=quarantine):
-        errors = [
-            "protocol_quarantined_historical_artifact: published strategy is "
-            "non-executable under the current stream/decision runtime contract"
-        ]
-    else:
-        errors = []
+    spec = resolve_national_bot_spec(
+        bot_dir,
+        ROLE_CANDIDATE,
+        repo_root=BOTS_DIR.parent,
+        require_completion=False,
+        require_certificate=False,
+    )
+    errors = list(spec.issues)
+    if not errors:
         try:
             from national_native import check_native_contract
             errors.extend(
@@ -1509,11 +1800,6 @@ def active_bot_protocol_errors(
             )
         except Exception as exc:
             errors.append(f"native_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
-        try:
-            from national_position_contract import detect_position_semantics_errors
-            errors.extend(detect_position_semantics_errors(bot_dir))
-        except Exception as exc:
-            errors.append(f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}")
     stale_keys = [
         key for key in _ACTIVE_BOT_PROTOCOL_CACHE
         if key[0] == int(version) and key[1] == str(bot_dir.resolve())
@@ -1580,36 +1866,24 @@ def _discover_active_bots(
     it is exactly how a "ghost bot" like v107 (completed-but-untagged) leaked
     into find_latest_active_v() and was used as an evolution source.
 
-    In the national-native epoch, static native TCP contract compliance is also
-    required. Old tagged newline/readline bots remain in git history but must
-    not be scheduled as rating opponents or selected as evolution sources.
+    In the national TCP policy epoch, the typed manifest/receipt ABI and a full
+    signed official certificate are also mandatory.  Archived bot directories
+    are never traversed.
 
     Collecting all tags once here (instead of calling git_has_tag per bot)
     keeps this O(1 git call) regardless of bot count, plus local file checks for
     protocol eligibility.
     """
-    quarantine_health = None
-    if active_native_contract_filter_enabled():
-        try:
-            from national_protocol_quarantine import protocol_quarantine_health
-
-            quarantine_health = protocol_quarantine_health()
-        except Exception as exc:
-            quarantine_health = {
-                "valid": False,
-                "issues": [
-                    f"protocol_quarantine_check_error:{type(exc).__name__}:"
-                    f"{str(exc)[:200]}"
-                ],
-            }
-        if not quarantine_health.get("valid"):
-            log.error(
-                "National protocol quarantine unavailable; active pool fails closed: %s",
-                quarantine_health.get("issues"),
-            )
-            return []
-
     tag_versions = _tagged_bot_versions()
+    if evolution_git_push_required():
+        # Never allow a local-only recovery tag to manufacture lifecycle
+        # completion while required origin publication is still pending.
+        tag_versions = set(tag_versions).intersection(
+            _remote_published_completion_versions(tag_versions)
+        )
+    tag_versions = set(tag_versions).difference(
+        _incomplete_checkpoint_publication_versions(tag_versions)
+    )
     try:
         reaped_versions = load_reaped_bot_versions()
     except Exception as exc:
@@ -1642,7 +1916,7 @@ def _discover_active_bots(
                 if (
                     v in tag_versions
                     and v not in reaped_versions
-                    and _protocol_eligible_for_discovery(v, quarantine_health)
+                    and _protocol_eligible_for_discovery(v, None)
                     and _official_parent_eligible(BOTS_DIR / d)
                 ):
                     bots.append(d)
@@ -1681,9 +1955,18 @@ def get_published_active_bots_read_only():
 
 def _official_parent_eligible(bot_dir: Path) -> bool:
     try:
-        from official_certification import active_pool_eligible
-
-        return bool(active_pool_eligible(bot_dir))
+        spec = resolve_national_bot_spec(
+            bot_dir,
+            ROLE_PARENT_SOURCE,
+            repo_root=BOTS_DIR.parent,
+        )
+        if not spec.eligible:
+            log.warning(
+                "Strict parent eligibility rejected %s: %s",
+                bot_dir.name,
+                list(spec.issues),
+            )
+        return spec.eligible
     except Exception as exc:
         log.error(
             "Official active-pool eligibility failed closed for %s: %s",
@@ -1694,45 +1977,29 @@ def _official_parent_eligible(bot_dir: Path) -> bool:
 
 
 def find_current_v():
-    """Find the latest completed bot version.
+    """Return the immutable version-authority high-water.
 
-    Cascading sources: active-epoch git tags > .completed sentinel files (backed by tag) > directory names.
-    .completed files without a corresponding git tag are NOT trusted as complete.
+    The archived completion/high-water tag namespace fixes the first strict
+    target at v143.  Directory names and runtime sentinels are never numbering
+    authority, so stale or abandoned worktrees cannot skip/reuse a version.
     """
-    versions = set()
-    tag_versions = set()
 
-    # Source 1: git tags (most authoritative)
-    tags = _git("tag", "-l", bot_tag_glob(), check=False).strip().splitlines()
-    for tag in tags:
-        v = parse_tag_version(tag)
-        if v is not None:
-            versions.add(v)
-            tag_versions.add(v)
-
-    # Source 2: .completed sentinel files — only trust if backed by a git tag
-    if BOTS_DIR.exists():
-        for d in os.listdir(BOTS_DIR):
-            v = parse_bot_version(d)
-            if v is not None and d.startswith(ACTIVE_BOT_PREFIX) and (BOTS_DIR / d / ".completed").exists():
-                if v in tag_versions:
-                    versions.add(v)
-
-    if versions:
-        return max(versions)
-
-    # Source 3: any active-epoch bot directory (fallback for version numbering only)
-    if BOTS_DIR.exists():
-        for d in os.listdir(BOTS_DIR):
-            v = parse_bot_version(d)
-            if v is not None and d.startswith(ACTIVE_BOT_PREFIX) and os.path.isdir(BOTS_DIR / d):
-                versions.add(v)
-
-    return max(versions) if versions else 0
+    versions = {ARCHIVED_VERSION_HIGH_WATER}
+    for tag in _git("tag", "-l", bot_tag_glob(), check=False).splitlines():
+        version = parse_tag_version(tag.strip())
+        if version is not None:
+            versions.add(version)
+    for tag in _git(
+        "tag", "-l", "national-high-water-v*", check=False
+    ).splitlines():
+        match = re.fullmatch(r"national-high-water-v([1-9][0-9]*)", tag.strip())
+        if match:
+            versions.add(int(match.group(1)))
+    return max(versions)
 
 
 def find_latest_active_v():
-    """Find the highest version among ACTIVE bots (not graveyard).
+    """Find the highest version in the strict published active pool.
     Returns 0 if no active bots exist.
     """
     active = get_active_bots()
@@ -2081,7 +2348,7 @@ def ensure_publish_ready_for_new_generation() -> tuple[bool, dict]:
             "reason": "evolution_git_push_disabled",
             "directive": (
                 "Long-running evolution requires EVOLUTION_GIT_PUSH=1 so bot "
-                "commits, tags, and experience updates publish through origin/main."
+                "commits and tags publish through origin/main."
             ),
         })
         return False, payload
@@ -2192,7 +2459,12 @@ def _git_ensure_main_branch():
 
 
 def git_has_tag(version):
-    """Check if the active-epoch tag exists (authoritative completion proof)."""
+    """Check for a strict-policy completion tag.
+
+    Pre-policy tags are audit/version-authority records only.
+    """
+    if int(version) < FIRST_STRICT_POLICY_VERSION:
+        return False
     return bool(_git("tag", "-l", bot_tag(version), check=False).strip())
 
 
@@ -2227,20 +2499,25 @@ def find_max_committed_v():
 
     Implementation: a SINGLE `git ls-files bots/{active prefix}*` call (not one
     subprocess per directory) keeps this O(1 git call)/generation regardless
-    of how many bot dirs (~125 incl. graveyard) exist.
+    of how many direct strict bot artifacts exist.
     """
     try:
         out = _git("ls-files", "--", f"bots/{active_bot_glob()}", check=False)
     except Exception:
         return 0
-    max_v = 0
+    max_v = ARCHIVED_VERSION_HIGH_WATER
     for line in out.splitlines():
         # line like "bots/national_v001/card_utils.py" — extract the dir version
         parts = line.split("/")
         if len(parts) < 2 or not parts[1].startswith(ACTIVE_BOT_PREFIX):
             continue
         v = parse_bot_version(parts[1])
-        if v is None:
+        if v is None or v < FIRST_STRICT_POLICY_VERSION:
+            continue
+        # A tracked strict epoch receipt is the minimum proof that this is a
+        # consumed policy version rather than unrelated/stale source debris.
+        receipt_path = f"bots/{bot_name(v)}/policy_epoch_receipt.json"
+        if not _git("ls-files", "--error-unmatch", receipt_path, check=False).strip():
             continue
         if v > max_v:
             max_v = v
@@ -2248,7 +2525,22 @@ def find_max_committed_v():
 
 
 def find_abandoned_version_floor():
-    """Max abandoned bot version that must not be reused for a future generation."""
+    """Max abandoned version in the initialized strict policy epoch.
+
+    Before the one-time reset, the file at this path belongs to the retired
+    ``national_native_v1`` runtime.  It is audit material, not numbering
+    authority; allowing it to reserve v143..v167 is how stale v155 state made
+    status and prepare incorrectly announce v168.
+    """
+    try:
+        from epoch_authority import policy_epoch_initialization
+
+        if not policy_epoch_initialization()["initialized"]:
+            return 0
+    except Exception as exc:
+        # Failure to prove epoch ownership must not promote mutable legacy data.
+        log.warning("policy epoch initialization unavailable; abandoned floor ignored: %s", exc)
+        return 0
     floor = 0
     try:
         if ABANDONED_VERSIONS_FILE.exists():
@@ -2551,8 +2843,7 @@ def git_commit_bot(
             f"v{version}: staging {len(commit_staged_files)} file(s) for commit",
             {"version": version, "source_v": source_v,
              "staged_files": commit_staged_files[:30],
-             "external_staged_preserved": outside_staged[:30],
-             "experience_added": False},
+             "external_staged_preserved": outside_staged[:30]},
         )
     except Exception:
         pass
@@ -2562,14 +2853,18 @@ def git_commit_bot(
     high_water_mutation = _advance_national_epoch_high_water(version)
     high_water_refs = list(high_water_mutation.created_tags)
     tag = bot_tag(version)
-    _git("tag", "-d", tag, check=False)
+    if _git("tag", "-l", tag, check=False).strip():
+        raise RuntimeError(
+            f"Refusing to delete or recreate immutable completion tag {tag}; "
+            "resume through the durable publication transaction"
+        )
     tag_message = f"National bot v{format_version(version)}: {strategy_tag}"
     tag_message += (
         f"\n\nofficial-certificate: {certificate_digest}"
         f"\nofficial-candidate-hash: {expected_bot_hash}"
         f"\nofficial-policy: {certificate_policy}"
     )
-    _git("tag", tag, "-m", tag_message)
+    _git("tag", "-a", tag, "HEAD", "-m", tag_message)
     from bot_artifact import validate_completion_tag
 
     tag_validation = validate_completion_tag(
@@ -2582,7 +2877,6 @@ def git_commit_bot(
         certificate_path=certificate_path,
     )
     if not tag_validation.get("valid"):
-        _git("tag", "-d", tag, check=False)
         raise RuntimeError(
             "new completion tag failed structural validation: "
             + ", ".join(tag_validation.get("issues") or [])
@@ -2608,6 +2902,805 @@ def git_commit_bot(
         push_ok = git_push_refs("main", tag, *high_water_refs)
         publish_runtime_expected_head("bot_commit_push", version=version)
     return push_ok
+
+
+def _git_command_succeeds(*args: str) -> bool:
+    """Run a Git predicate while retaining its return code."""
+
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _git_blob_bytes(ref: str, relative_path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "cat-file", "blob", f"{ref}:{relative_path}"],
+        cwd=str(PROJECT_ROOT),
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"Git blob unavailable at {ref}:{relative_path}: "
+            + result.stderr.decode("utf-8", "replace")[:300]
+        )
+    return bytes(result.stdout)
+
+
+def _publication_commit_paths(intent: dict) -> tuple[str, str]:
+    return (
+        bot_relpath(int(intent["version"])),
+        str(intent["certificate_relative_path"]),
+    )
+
+
+def _validate_publication_certificate_file(intent: dict) -> None:
+    from publication_transaction import file_sha256
+
+    relative = str(intent.get("certificate_relative_path") or "")
+    path = PROJECT_ROOT / relative
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("publication certificate attestation is missing or not regular")
+    if file_sha256(path) != intent.get("certificate_file_sha256"):
+        raise RuntimeError("publication certificate attestation bytes drifted")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"publication certificate attestation is unreadable: {type(exc).__name__}"
+        ) from exc
+    if payload.get("attestation_digest") != intent.get(
+        "certificate_attestation_digest"
+    ):
+        raise RuntimeError("publication certificate attestation digest drifted")
+    if payload.get("certificate_digest") != intent.get(
+        "official_certificate_digest"
+    ):
+        raise RuntimeError("publication certificate digest drifted")
+
+
+def _validate_existing_publication_commit(intent: dict, commit_oid: str) -> None:
+    """Prove a recovered commit is the sole scoped effect after the intent."""
+
+    from bot_artifact import canonical_digest, git_tree_artifact_manifest
+    from publication_transaction import file_sha256
+
+    baseline = str(intent.get("baseline_head") or "")
+    bot_path, certificate_path = _publication_commit_paths(intent)
+    if not _git_command_succeeds(
+        "merge-base", "--is-ancestor", baseline, commit_oid
+    ):
+        raise RuntimeError("publication commit is not descended from intent baseline")
+    if not _git_command_succeeds(
+        "merge-base", "--is-ancestor", commit_oid, "refs/heads/main"
+    ):
+        raise RuntimeError("publication commit is not reachable from local main")
+    changed = [
+        item
+        for item in _git(
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            commit_oid,
+            check=False,
+        ).splitlines()
+        if item
+    ]
+    bot_prefix = bot_path.rstrip("/") + "/"
+    if (
+        certificate_path not in changed
+        or not any(item.startswith(bot_prefix) for item in changed)
+        or any(
+            item != certificate_path and not item.startswith(bot_prefix)
+            for item in changed
+        )
+    ):
+        raise RuntimeError(
+            "publication commit changed paths outside candidate/certificate scope: "
+            + ", ".join(changed[:20])
+        )
+    manifest = git_tree_artifact_manifest(
+        get_bot_dir(int(intent["version"])),
+        commit_oid,
+        repo_root=PROJECT_ROOT,
+    )
+    if canonical_digest(manifest) != intent.get("candidate_artifact_hash"):
+        raise RuntimeError("publication commit candidate tree hash mismatch")
+    certificate_bytes = _git_blob_bytes(commit_oid, certificate_path)
+    if hashlib.sha256(certificate_bytes).hexdigest() != intent.get(
+        "certificate_file_sha256"
+    ):
+        raise RuntimeError("publication commit certificate blob hash mismatch")
+    try:
+        certificate_payload = json.loads(certificate_bytes.decode("utf-8"))
+    except Exception as exc:
+        raise RuntimeError(
+            f"publication commit certificate blob is invalid: {type(exc).__name__}"
+        ) from exc
+    if certificate_payload.get("attestation_digest") != intent.get(
+        "certificate_attestation_digest"
+    ):
+        raise RuntimeError("publication commit attestation digest mismatch")
+    if certificate_payload.get("certificate_digest") != intent.get(
+        "official_certificate_digest"
+    ):
+        raise RuntimeError("publication commit official certificate mismatch")
+    message = _git("show", "-s", "--format=%B", commit_oid, check=False).strip()
+    if message != str(intent.get("commit_message") or "").strip():
+        raise RuntimeError("publication commit message does not match frozen intent")
+
+
+def _resolve_existing_publication_commit(intent: dict) -> str:
+    baseline = str(intent.get("baseline_head") or "")
+    bot_path, certificate_path = _publication_commit_paths(intent)
+    for relative in (bot_path, certificate_path):
+        if _git_command_succeeds(
+            "cat-file", "-e", f"{baseline}:{relative}"
+        ):
+            raise RuntimeError(
+                f"publication path already existed at intent baseline: {relative}"
+            )
+    commits = [
+        item
+        for item in _git(
+            "rev-list",
+            "--reverse",
+            f"{baseline}..refs/heads/main",
+            "--",
+            bot_path,
+            certificate_path,
+            check=False,
+        ).splitlines()
+        if item
+    ]
+    if len(commits) > 1:
+        raise RuntimeError(
+            "multiple commits touched frozen publication paths after intent"
+        )
+    if not commits:
+        return ""
+    commit_oid = commits[0]
+    _validate_existing_publication_commit(intent, commit_oid)
+    return commit_oid
+
+
+def _git_with_index(index_path: Path, *args: str) -> str:
+    """Run one Git index operation against a transaction-private index."""
+
+    environment = os.environ.copy()
+    environment["GIT_INDEX_FILE"] = str(index_path)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=str(PROJECT_ROOT),
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"git {args[0]} with publication index failed: "
+            + result.stderr.strip()[:500]
+        )
+    return result.stdout.strip()
+
+
+def _publication_commit_object(tree_oid: str, parent_oid: str, message: str) -> str:
+    """Create an immutable commit object without consulting the worktree."""
+
+    result = subprocess.run(
+        ["git", "commit-tree", tree_oid, "-p", parent_oid],
+        cwd=str(PROJECT_ROOT),
+        input=message,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    commit_oid = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", commit_oid):
+        raise RuntimeError(
+            "git commit-tree failed for frozen publication tree: "
+            + result.stderr.strip()[:500]
+        )
+    return commit_oid
+
+
+def _validate_frozen_publication_tree(
+    intent: dict,
+    *,
+    tree_oid: str,
+    parent_oid: str,
+) -> None:
+    """Prove the private-index tree contains only the frozen publication."""
+
+    from bot_artifact import canonical_digest, git_tree_artifact_manifest
+
+    bot_path, certificate_path = _publication_commit_paths(intent)
+    changed = [
+        item
+        for item in _git(
+            "diff",
+            "--name-only",
+            parent_oid,
+            tree_oid,
+            "--",
+            check=False,
+        ).splitlines()
+        if item
+    ]
+    bot_prefix = bot_path.rstrip("/") + "/"
+    if (
+        certificate_path not in changed
+        or not any(item.startswith(bot_prefix) for item in changed)
+        or any(
+            item != certificate_path and not item.startswith(bot_prefix)
+            for item in changed
+        )
+    ):
+        raise RuntimeError(
+            "frozen publication tree changed paths outside candidate/certificate scope: "
+            + ", ".join(changed[:20])
+        )
+    manifest = git_tree_artifact_manifest(
+        get_bot_dir(int(intent["version"])),
+        tree_oid,
+        repo_root=PROJECT_ROOT,
+    )
+    if canonical_digest(manifest) != intent.get("candidate_artifact_hash"):
+        raise RuntimeError("private-index candidate tree differs from frozen intent")
+    certificate_bytes = _git_blob_bytes(tree_oid, certificate_path)
+    if hashlib.sha256(certificate_bytes).hexdigest() != intent.get(
+        "certificate_file_sha256"
+    ):
+        raise RuntimeError("private-index certificate differs from frozen intent")
+
+
+def _create_publication_commit(intent: dict) -> str:
+    """CAS a commit built from an immutable private-index tree onto main."""
+
+    from bot_artifact import hash_path, validate_staged_artifact
+
+    version = int(intent["version"])
+    bot_path, certificate_path = _publication_commit_paths(intent)
+    expected_hash = str(intent["candidate_artifact_hash"])
+    preexisting_staged = [
+        item
+        for item in _git("diff", "--cached", "--name-only", check=False).splitlines()
+        if item
+    ]
+    preexisting_scope = classify_status_entries(
+        [f"?? {path}" for path in preexisting_staged],
+        version,
+    )
+    blocking = [
+        *list(preexisting_scope.get("critical_entries") or []),
+        *list(preexisting_scope.get("foreign_bot_entries") or []),
+    ]
+    if blocking:
+        raise RuntimeError(
+            "Refusing publication commit with pre-existing blocking staged files: "
+            + ", ".join(blocking[:10])
+        )
+    _git("add", "--", bot_path, certificate_path, check=False)
+    ref_updated = False
+    index_path = RESULTS_DIR / (
+        f".publication-index.{os.getpid()}.{uuid.uuid4().hex}"
+    )
+    index_lock_path = Path(str(index_path) + ".lock")
+    try:
+        if hash_path(get_bot_dir(version)) != expected_hash:
+            raise RuntimeError("candidate changed while staging publication intent")
+        staged = validate_staged_artifact(
+            get_bot_dir(version),
+            repo_root=PROJECT_ROOT,
+        )
+        if (
+            staged.get("valid") is not True
+            or staged.get("working_hash") != expected_hash
+            or staged.get("staged_hash") != expected_hash
+        ):
+            raise RuntimeError(
+                "staged Git blobs do not reproduce frozen publication candidate"
+            )
+        staged_files = [
+            item
+            for item in _git(
+                "diff", "--cached", "--name-only", check=False
+            ).splitlines()
+            if item
+        ]
+        bot_prefix = bot_path.rstrip("/") + "/"
+        scoped = [
+            item
+            for item in staged_files
+            if item == certificate_path or item.startswith(bot_prefix)
+        ]
+        outside = [item for item in staged_files if item not in scoped]
+        outside_scope = classify_status_entries(
+            [f"?? {path}" for path in outside], version
+        )
+        unexpected = [
+            *list(outside_scope.get("critical_entries") or []),
+            *list(outside_scope.get("foreign_bot_entries") or []),
+        ]
+        if not any(item.startswith(bot_prefix) for item in scoped):
+            raise RuntimeError("publication commit has no staged candidate files")
+        if certificate_path not in scoped:
+            raise RuntimeError("publication commit has no staged certificate")
+        if unexpected:
+            raise RuntimeError(
+                "publication commit observed unexpected staged files: "
+                + ", ".join(unexpected[:10])
+            )
+        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        parent_oid = _git("rev-parse", "refs/heads/main").strip()
+        _git_with_index(index_path, "read-tree", parent_oid)
+        _git_with_index(
+            index_path,
+            "add",
+            "-A",
+            "--",
+            bot_path,
+            certificate_path,
+        )
+        tree_oid = _git_with_index(index_path, "write-tree")
+        if not re.fullmatch(r"[0-9a-f]{40}", tree_oid):
+            raise RuntimeError("private publication index did not produce a tree")
+        _validate_frozen_publication_tree(
+            intent,
+            tree_oid=tree_oid,
+            parent_oid=parent_oid,
+        )
+        commit_oid = _publication_commit_object(
+            tree_oid,
+            parent_oid,
+            str(intent["commit_message"]),
+        )
+        # The tree and parent are now fixed objects. update-ref is the only
+        # branch mutation and refuses a concurrently moved main ref.
+        _git(
+            "update-ref",
+            "refs/heads/main",
+            commit_oid,
+            parent_oid,
+        )
+        ref_updated = True
+    except Exception:
+        if not ref_updated:
+            _git(
+                "restore",
+                "--staged",
+                "--",
+                bot_path,
+                certificate_path,
+                check=False,
+            )
+        raise
+    finally:
+        index_path.unlink(missing_ok=True)
+        index_lock_path.unlink(missing_ok=True)
+    publish_runtime_expected_head("bot_publication_commit", version=version)
+    _validate_existing_publication_commit(intent, commit_oid)
+    return commit_oid
+
+
+def _validate_local_publication_refs(intent: dict, commit_oid: str) -> dict:
+    tag = str(intent["completion_tag"])
+    high_water = str(intent["high_water_tag"])
+    issues = []
+    refs: dict[str, dict[str, str]] = {}
+    for name in (tag, high_water):
+        ref = f"refs/tags/{name}"
+        tag_type = _git("cat-file", "-t", ref, check=False).strip()
+        object_oid = _git("rev-parse", ref, check=False).strip()
+        peeled_oid = _git("rev-parse", f"{ref}^{{commit}}", check=False).strip()
+        refs[name] = {
+            "type": tag_type,
+            "object_oid": object_oid,
+            "peeled_commit_oid": peeled_oid,
+        }
+        if tag_type != "tag":
+            issues.append(f"local_ref_not_annotated:{name}")
+        if peeled_oid != commit_oid:
+            issues.append(f"local_ref_commit_mismatch:{name}")
+    contents = _git(
+        "for-each-ref",
+        "--format=%(contents)",
+        f"refs/tags/{tag}",
+        check=False,
+    ).strip()
+    if contents != str(intent.get("tag_message") or "").strip():
+        issues.append("completion_tag_message_mismatch")
+    if issues:
+        raise RuntimeError("invalid local publication refs: " + "; ".join(issues))
+    return refs
+
+
+def remote_completion_ref_snapshot() -> dict[str, str]:
+    """Return the exact remote active-epoch completion-tag namespace."""
+
+    raw = _git("ls-remote", "origin", "refs/tags/national-bot-v*")
+    refs: dict[str, str] = {}
+    for line in raw.splitlines():
+        oid, separator, ref = line.partition("\t")
+        if (
+            separator
+            and len(oid) == 40
+            and ref.startswith("refs/tags/national-bot-v")
+        ):
+            refs[ref] = oid
+    return dict(sorted(refs.items()))
+
+
+@contextmanager
+def _publication_checkpoint_linearization_lock():
+    """Fence publishing checkpoint writers across authority-check + push."""
+
+    checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
+        PIPELINE_STATE_FILE.suffix + ".lock"
+    )
+    with locked_file(checkpoint_lock, "a+", lock_type=fcntl.LOCK_EX):
+        yield
+
+
+def _push_first_strict_publication(
+    intent: dict,
+    commit_oid: str,
+    local_refs: dict,
+    *,
+    pre_push_authority,
+) -> bool:
+    """CAS the first strict publication without any reconcile/merge window.
+
+    The first strict bot changes the authority regime from the migration seed
+    to the normal strict pool.  Its frozen ``origin/main`` is therefore a
+    compare-and-swap precondition, not a merge base.  The completion and
+    high-water tags use ordinary create-only refspecs; no force option ever
+    applies to a tag.  ``--atomic`` makes a concurrent main/tag change reject
+    the complete ref set with no partial remote effects.
+    """
+
+    if list(intent.get("prepublication_strict_bots") or []):
+        raise RuntimeError("first-strict publication CAS used for a non-first bot")
+    if not callable(pre_push_authority):
+        raise RuntimeError("first-strict publication requires a pre-push authority check")
+    baseline = str(intent.get("baseline_remote_main") or "")
+    completion = str(intent.get("completion_tag") or "")
+    high_water = str(intent.get("high_water_tag") or "")
+    local_main = _git("rev-parse", "refs/heads/main", check=False).strip()
+    if not (
+        len(baseline) == 40
+        and len(local_main) == 40
+        and _git_command_succeeds("merge-base", "--is-ancestor", baseline, local_main)
+        and _git_command_succeeds("merge-base", "--is-ancestor", commit_oid, local_main)
+    ):
+        raise RuntimeError(
+            "first-strict publication local main is not a fast-forward of the frozen remote baseline"
+        )
+
+    # Fetch is read-only with respect to the remote.  It makes a strict bot
+    # published since intent creation visible to the authority callback, while
+    # the later main lease closes the fetch/check/push race.
+    _git("fetch", "origin", "--prune", "--tags")
+    wanted = (
+        "refs/heads/main",
+        "refs/tags/national-bot-v*",
+        f"refs/tags/{high_water}",
+    )
+    raw = _git("ls-remote", "origin", *wanted)
+    remote_refs: dict[str, str] = {}
+    for line in raw.splitlines():
+        oid, separator, ref = line.partition("\t")
+        if separator and oid and ref:
+            remote_refs[ref] = oid
+    if remote_refs.get("refs/heads/main") != baseline:
+        raise RuntimeError(
+            "first-strict publication blocked: origin/main changed after intent baseline"
+        )
+    remote_completion_refs = dict(sorted(
+        (ref, oid)
+        for ref, oid in remote_refs.items()
+        if ref.startswith("refs/tags/national-bot-v")
+    ))
+    if remote_completion_refs != dict(
+        intent.get("baseline_remote_completion_refs") or {}
+    ):
+        raise RuntimeError(
+            "first-strict publication blocked: remote strict completion refs "
+            "changed after intent baseline"
+        )
+    occupied = [
+        ref for ref in (
+            f"refs/tags/{completion}",
+            f"refs/tags/{high_water}",
+        )
+        if remote_refs.get(ref)
+    ]
+    if occupied:
+        raise RuntimeError(
+            "first-strict publication blocked: create-only remote tag already exists: "
+            + ", ".join(occupied)
+        )
+
+    with _publication_checkpoint_linearization_lock():
+        # The callback re-reads the checkpoint while this stable sidecar lock
+        # excludes every normal checkpoint writer.  Keep the lock until the
+        # atomic remote ref transaction has linearized.
+        pre_push_authority()
+
+        # A callback must not be able to move any frozen local source ref.
+        # Remote races are handled by the leases below.
+        if _git("rev-parse", "refs/heads/main", check=False).strip() != local_main:
+            raise RuntimeError("first-strict publication local main changed during authority check")
+        for name in (completion, high_water):
+            expected = str((local_refs.get(name) or {}).get("object_oid") or "")
+            current = _git("rev-parse", f"refs/tags/{name}", check=False).strip()
+            if not expected or current != expected:
+                raise RuntimeError(
+                    f"first-strict publication local tag changed during authority check: {name}"
+                )
+
+        refspecs = (
+            "refs/heads/main:refs/heads/main",
+            f"refs/tags/{completion}:refs/tags/{completion}",
+            f"refs/tags/{high_water}:refs/tags/{high_water}",
+        )
+        try:
+            _git(
+                "push",
+                "--atomic",
+                f"--force-with-lease=refs/heads/main:{baseline}",
+                "origin",
+                *refspecs,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                "first-strict publication atomic lease failed; no publication refs were accepted: "
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+    return True
+
+
+def ensure_bot_git_publication(
+    publication_intent: dict,
+    *,
+    official_certificate: dict,
+    pre_push_authority=None,
+) -> dict:
+    """Idempotently converge intent_recorded -> committed -> local refs -> push.
+
+    Existing completion tags are immutable: this function never deletes,
+    recreates, or force-updates one.  Recovery reconstructs progress from Git
+    rather than trusting a caller-supplied phase.
+    """
+
+    from bot_artifact import hash_path, validate_completion_tag
+    from official_certification import FULL_POLICY_ID
+    from publication_transaction import publication_intent_structure_errors
+
+    intent = dict(publication_intent or {})
+    errors = publication_intent_structure_errors(intent)
+    if errors:
+        raise RuntimeError("invalid publication intent: " + "; ".join(errors))
+    version = int(intent["version"])
+    certificate = dict(official_certificate or {})
+    expected_certificate = {
+        "certificate_digest": intent.get("official_certificate_digest"),
+        "candidate_hash": intent.get("candidate_artifact_hash"),
+        "policy_id": intent.get("official_policy_id"),
+    }
+    for field, expected in expected_certificate.items():
+        if certificate.get(field) != expected:
+            raise RuntimeError(f"official certificate {field} differs from publication intent")
+    if certificate.get("policy_id") != FULL_POLICY_ID:
+        raise RuntimeError("publication intent is not bound to the full official policy")
+    if hash_path(get_bot_dir(version)) != intent.get("candidate_artifact_hash"):
+        raise RuntimeError("candidate changed after publication intent was recorded")
+    _validate_publication_certificate_file(intent)
+    _require_national_epoch_registry_for_commit()
+    _git_ensure_main_branch()
+
+    publication_lock = RESULTS_DIR / ".bot_publication.lock"
+    with locked_file(publication_lock, "a+", lock_type=fcntl.LOCK_EX):
+        commit_oid = _resolve_existing_publication_commit(intent)
+        if not commit_oid:
+            commit_oid = _create_publication_commit(intent)
+
+        _advance_national_epoch_high_water(version)
+        tag = str(intent["completion_tag"])
+        if _git("tag", "-l", tag, check=False).strip():
+            # Create-only semantics: an existing tag is evidence to validate,
+            # never mutable state to repair in place.
+            existing_target = _git(
+                "rev-parse", f"refs/tags/{tag}^{{commit}}", check=False
+            ).strip()
+            if existing_target != commit_oid:
+                raise RuntimeError("existing completion tag points at a different commit")
+        else:
+            _git(
+                "tag",
+                "-a",
+                tag,
+                commit_oid,
+                "-m",
+                str(intent["tag_message"]),
+            )
+
+        local_refs = _validate_local_publication_refs(intent, commit_oid)
+        tag_validation = validate_completion_tag(
+            get_bot_dir(version),
+            expected_metadata={
+                "official-certificate": str(
+                    intent["official_certificate_digest"]
+                ),
+                "official-candidate-hash": str(
+                    intent["candidate_artifact_hash"]
+                ),
+                "official-policy": str(intent["official_policy_id"]),
+            },
+            certificate_path=str(intent["certificate_relative_path"]),
+        )
+        if tag_validation.get("valid") is not True:
+            raise RuntimeError(
+                "completion tag failed frozen publication validation: "
+                + ", ".join(tag_validation.get("issues") or [])
+            )
+        push_attempted = bool(
+            intent.get("remote_publication_enabled")
+            or intent.get("remote_publication_required")
+        )
+        push_ok = False
+        already_remote = False
+        if push_attempted:
+            provisional_state = {
+                "publication_id": intent["publication_id"],
+                "version": version,
+                "commit_oid": commit_oid,
+                "local_refs": local_refs,
+            }
+            existing_remote = verify_remote_bot_publication(
+                intent,
+                local_state=provisional_state,
+            )
+            already_remote = existing_remote.get("valid") is True
+            if already_remote:
+                push_ok = True
+            elif not list(intent.get("prepublication_strict_bots") or []):
+                push_ok = _push_first_strict_publication(
+                    intent,
+                    commit_oid,
+                    local_refs,
+                    pre_push_authority=pre_push_authority,
+                )
+            else:
+                if not callable(pre_push_authority):
+                    raise RuntimeError(
+                        "publication requires a pre-push authority check"
+                    )
+                with _publication_checkpoint_linearization_lock():
+                    pre_push_authority()
+                    push_ok = git_push_refs(
+                        "main",
+                        tag,
+                        str(intent["high_water_tag"]),
+                    )
+            publish_runtime_expected_head(
+                "bot_publication_push", version=version
+            )
+            _clear_remote_publication_cache()
+        return {
+            "publication_id": intent["publication_id"],
+            "version": version,
+            "commit_oid": commit_oid,
+            "local_refs": local_refs,
+            "local_valid": True,
+            "push_attempted": push_attempted,
+            "push_ok": bool(push_ok),
+            "already_remote": already_remote,
+        }
+
+
+def verify_remote_bot_publication(
+    publication_intent: dict,
+    *,
+    local_state: dict | None = None,
+) -> dict:
+    """Independently prove remote tag objects, peeled commits, and main reachability."""
+
+    intent = dict(publication_intent or {})
+    version = int(intent.get("version") or -1)
+    commit_oid = str((local_state or {}).get("commit_oid") or "")
+    if not commit_oid:
+        try:
+            commit_oid = _git(
+                "rev-parse",
+                f"refs/tags/{intent['completion_tag']}^{{commit}}",
+                check=False,
+            ).strip()
+        except Exception:
+            commit_oid = ""
+    tag_names = [
+        str(intent.get("completion_tag") or ""),
+        str(intent.get("high_water_tag") or ""),
+    ]
+    wanted = ["refs/heads/main"]
+    for name in tag_names:
+        wanted.extend((f"refs/tags/{name}", f"refs/tags/{name}^{{}}"))
+    try:
+        raw = _git("ls-remote", "origin", *wanted)
+    except Exception as exc:
+        return {
+            "valid": False,
+            "version": version,
+            "issues": [f"remote_refs_unavailable:{type(exc).__name__}"],
+        }
+    remote_refs: dict[str, str] = {}
+    for line in raw.splitlines():
+        oid, separator, ref = line.partition("\t")
+        if separator and oid and ref:
+            remote_refs[ref] = oid
+    issues: list[str] = []
+    remote_main = remote_refs.get("refs/heads/main", "")
+    if len(remote_main) != 40:
+        issues.append("remote_main_missing")
+    local_refs = (local_state or {}).get("local_refs") or {}
+    for name in tag_names:
+        local_object = str(
+            (local_refs.get(name) or {}).get("object_oid")
+            or _git("rev-parse", f"refs/tags/{name}", check=False).strip()
+        )
+        local_peeled = str(
+            (local_refs.get(name) or {}).get("peeled_commit_oid")
+            or _git(
+                "rev-parse", f"refs/tags/{name}^{{commit}}", check=False
+            ).strip()
+        )
+        if remote_refs.get(f"refs/tags/{name}") != local_object:
+            issues.append(f"remote_tag_object_mismatch:{name}")
+        if remote_refs.get(f"refs/tags/{name}^{{}}") != local_peeled:
+            issues.append(f"remote_tag_peeled_mismatch:{name}")
+        if local_peeled != commit_oid:
+            issues.append(f"local_tag_commit_mismatch:{name}")
+    if not issues:
+        try:
+            _git(
+                "fetch",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            )
+        except Exception as exc:
+            issues.append(f"remote_main_fetch_failed:{type(exc).__name__}")
+        else:
+            fetched = _git("rev-parse", "refs/remotes/origin/main", check=False).strip()
+            if fetched != remote_main:
+                issues.append("remote_main_fetch_identity_mismatch")
+            elif not _git_command_succeeds(
+                "merge-base", "--is-ancestor", commit_oid, remote_main
+            ):
+                issues.append("publication_commit_not_on_remote_main")
+    return {
+        "valid": not issues,
+        "version": version,
+        "publication_id": intent.get("publication_id"),
+        "commit_oid": commit_oid,
+        "remote_main_oid": remote_main,
+        "remote_refs": remote_refs,
+        "issues": list(dict.fromkeys(issues)),
+    }
 
 
 def git_get_parent(version):
@@ -2652,6 +3745,36 @@ def archive_generation(version, source_v, ckpt):
         "evaluation_epoch": EVALUATION_EPOCH,
         "bot_name": bot_name(version),
     }
+
+    audit_context = (ckpt or {}).get("audit_context") or {}
+    selection = audit_context.get("selection") or {}
+    if (
+        int(version) == FIRST_STRICT_POLICY_VERSION
+        and isinstance(audit_context.get("protocol_bootstrap"), dict)
+    ):
+        snapshot["strength_evidence_identity"] = {
+            "schema_version": 1,
+            "mode": "empty_first_strict_bootstrap",
+            "strength_evidence_admitted": False,
+            "reason": "strict_policy_pool_empty",
+        }
+    else:
+        evidence = selection.get("evaluation_evidence") or {}
+        cutoffs = evidence.get("cutoffs") or {}
+        snapshot["strength_evidence_identity"] = {
+            "schema_version": 1,
+            "mode": "frozen_native_evaluation",
+            "strength_evidence_admitted": True,
+            "generation_snapshot_manifest_digest": str(
+                cutoffs.get("generation_snapshot_manifest_digest") or ""
+            ),
+            "cycle_manifest_digest": str(cutoffs.get("cycle_manifest_digest") or ""),
+            "h2h_snapshot_manifest_digest": str(
+                selection.get("h2h_snapshot_manifest_digest") or ""
+            ),
+            "h2h_snapshot_sha256": str(selection.get("h2h_snapshot_sha256") or ""),
+            "selection_view_digest": str(evidence.get("selection_view_digest") or ""),
+        }
 
     try:
         snapshot["git_commit"] = _git("rev-parse", "--short", bot_tag(version), check=False)
@@ -2837,10 +3960,8 @@ def archive_rotate_files(version):
         (WORKER_FAILURES_FILE, 200),
         (MATCH_HISTORY_FILE, 500),
         (RATING_HISTORY_FILE, 100),
-        (None, 1000),  # placeholder — resolved below
+        (RESULTS_DIR / "events.jsonl", 1000),
     ]
-    from system_log import SYSTEM_EVENTS_FILE
-    rotation_rules[3] = (SYSTEM_EVENTS_FILE, 1000)
     if LLM_COSTS_FILE.exists():
         rotation_rules.append((LLM_COSTS_FILE, 200))
 
@@ -2918,5 +4039,5 @@ from rate_limiter import rate_limiter, RateLimiter  # noqa: F401, E402
 from code_verification import (  # noqa: F401, E402
     verify_code, check_code_size, run_smoke_test,
     run_decision_test_details, run_national_protocol_tests,
-    run_import_contract_test, seed_initial_bots,
+    run_import_contract_test,
 )

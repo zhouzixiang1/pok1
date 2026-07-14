@@ -40,11 +40,9 @@ _RESET_TIME_RE = re.compile(
     r'限额将在\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*重置'
 )
 
-# Fallback: detect 429 even without a reset timestamp
+# Detect a 429 even without a reset timestamp. Detection alone is not resume
+# authority; the durable availability store requires manual acknowledgement.
 _429_INDICATOR_RE = re.compile(r'Request rejected \(429\)')
-
-# Default wait when no reset time can be parsed (5 minutes)
-_DEFAULT_WAIT_SECONDS = 300
 
 # How often to check shutdown during wait (seconds)
 _SHUTDOWN_CHECK_INTERVAL = 30
@@ -62,8 +60,10 @@ class RateLimiter:
     def parse_429(self, error_text: str) -> bool:
         """Parse reset timestamp from 429 error text.
 
-        Returns True if a reset time was extracted (or a default was set).
-        Returns False if the text doesn't look like a 429 error.
+        Returns True only when an explicit reset time was extracted. A bare 429
+        returns False: guessing a five-minute window caused unsafe retries
+        against multi-hour provider quota caps. The LLM availability pause owns
+        manual recovery for that case.
         """
         if not error_text or len(error_text) > 2000:
             return False
@@ -87,19 +87,17 @@ class RateLimiter:
                 except ValueError:
                     pass
 
-            # Fallback: detect 429 without reset time
+            # A recognized 429 without reset evidence deliberately remains
+            # unprojected here. The durable availability store will mark it as
+            # manual; this legacy helper must never invent an auto-resume time.
             if _429_INDICATOR_RE.search(error_text):
-                self._reset_time = time.time() + _DEFAULT_WAIT_SECONDS
-                self._save_state()
-                log.info("429 detected (no reset time). Defaulting to %ds wait.", _DEFAULT_WAIT_SECONDS)
-                return True
+                log.warning("429 detected without provider reset evidence; no automatic retry")
+                return False
 
             # Check for Chinese-only pattern without "Request rejected"
             if "已达到" in error_text and "使用上限" in error_text:
-                self._reset_time = time.time() + _DEFAULT_WAIT_SECONDS
-                self._save_state()
-                log.info("429 detected (Chinese pattern). Defaulting to %ds wait.", _DEFAULT_WAIT_SECONDS)
-                return True
+                log.warning("quota limit detected without provider reset evidence; no automatic retry")
+                return False
 
             return False
 

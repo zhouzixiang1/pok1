@@ -1,189 +1,155 @@
 <national_native_profile>
-This generation's formal submission is `national_bot.py`, a direct client for
-the official national TCP server. It must not depend on
-`sever/bot_adapter.py`, newline framing, Botzone request/response JSON, or a
-legacy subprocess entry. A legacy `main.py` may remain for strategy reuse, but
-it is neither the pass condition nor a substitute for native verification.
+This generation belongs only to `national_tcp_policy_v1` and produces a raw
+native national-competition TCP bot. The
+formal submission is the system-owned `national_bot.py`; candidate strategy
+code lives behind the versioned `policy.py` ABI. The candidate has exactly one
+transport owner and exactly one typed policy ABI.
 
-The Web Arena is only a local debugging and presentation harness. Do not depend
-on Arena modules and do not claim Arena success proves official compliance. The
-standalone formal entry must still pass the official Windows EXE suite.
+The Web Arena is diagnostic only. Local native matches provide strength
+samples only when a complete 70-hand TCP match finishes. Official Windows EXE
+runs provide compliance evidence only. Arena and official chip totals never
+enter Glicko, H2H, source selection, planning evidence, or precommit strength.
 
-Strength is separate from compliance. One strength sample is one complete
-70-hand local native TCP match. A positive final net-chip result is a win, a
-negative result is a loss, and zero is a draw. Optimize and report the primary
-positive/negative/draw outcome first; net-chip magnitude is secondary. Never
-use official EXE or Web Arena chip outcomes as strength evidence.
-
-<national_tcp_compatibility>
-- Send exactly one raw action for the current pending decision: `raise <amount>`,
-  `fold`, `call`, `check`, or `allin`, with no trailing newline or stdout text.
-  Never emit a JSON `response` object from the formal entrypoint and never send
-  wire token `bet`.
-- The EXE uses a TCP byte stream without message boundaries. Preserve a sticky
-  packet splitter for concatenated messages such as
-  `earnChips -100preflop|...`; fragmented reads must also reassemble safely.
-- The EXE may omit a street-closing `call` or `check`. Before processing a new
-  street, showdown, settlement, or hand reset, the wrapper must infer only the
-  forced missing closer and apply it exactly once to pot, stacks, street bets,
-  history, and opponent tracking. If the closer was relayed, do not infer or
-  count it again. Complete this repair before clearing street state and before
-  building the next strategy request; strategy code must never guess it.
-- Preserve `POK_OFFICIAL_ACTION_DELAY`, `_send_wire_action`, and the official
-  default near 0.30 seconds. Local strength evaluation may override the delay
-  to zero; strategy code must not bypass or relocate wire throttling.
-- Never add timeout-rescue loops or unsolicited `call`/`check` sends. After an
-  all-in is called, do not act again before settlement.
-- A match is 70 hands. Each hand resets both stacks to 20000 with 50/100 blinds.
-  Dealer is SB; BB is `1 - dealer_id`. SB acts first preflop; BB acts first on
-  flop/turn/river; roles alternate each hand.
-- `raise <amount>` is raise-to-total. First preflop raise-to is at least 200,
-  first postflop raise-to at least 100, and each re-raise is at least
-  `prev * 2` inclusively. The official EXE accepts exact 2x; `prev * 2 + 1`
-  may be retained as conservative sizing headroom. A raise must exceed the
-  current street bet and fit the stack; a raise using all remaining chips
-  becomes `allin`.
-- Preserve formal policy `official-full-v5` and both content-pinned 2026-07-11
-  oracle boundaries. Exact consecutive 2x
-  is legal; `2x + 1` is only conservative headroom. For a natural 70-hand
-  official finish, starts 1..70 plus paired TCP settlements 1..69 are complete
-  only with no pending action/wire issue and a new strict THP proving
-  `STATE:0..69`, the cross-bound first-69 earnings, final zero-sum earnings, and
-  footer total. Never fabricate hand-70 `earnChips` and never treat 69
-  settlements alone as complete. Official/THP chips and winners remain
-  compliance-only and must not enter Glicko, H2H, precommit strength, source
-  selection, or experience.
-  The exact sources are
+<national_tcp_contract>
+- The wire is a delimiter-free raw TCP byte stream. Reads may split one
+  platform token or coalesce several tokens. The incremental runtime decoder
+  must emit complete protocol tokens before changing state.
+- Send exactly one canonical action for the pending decision: `raise <amount>`,
+  `fold`, `call`, `check`, or `allin`. The socket owner emits one exact token
+  only while the platform is awaiting that decision.
+- `raise <amount>` is raise-to-total. The first preflop raise-to is at least
+  200, the first postflop raise-to at least 100, and a re-raise is at least
+  exactly 2x the preceding raise-to. Exact 2x is legal; `2x + 1` is optional
+  strategy headroom. A stack-consuming raise is encoded as `allin`.
+- Postflop first pass is `check`; after the first postflop action a pass is
+  `call`. After an SB limp, BB passes with `check`. After an all-in, the peer
+  may only call or fold and the bot must not act during the runout.
+- Preserve the system wire throttle: `POK_OFFICIAL_ACTION_DELAY`, default near
+  0.30 seconds, is applied by `_send_wire_action`. Policy code never sleeps or
+  sends bytes.
+- The official EXE may omit a forced street-closing peer call/check. The socket
+  reducer repairs only a boundary-proven closer, exactly once, before clearing
+  street contributions or publishing the next decision context. A relayed
+  closer suppresses inference.
+- Formal completion policy is `official-full-v5`: five 70-hand self-play rounds
+  plus three 70-hand rounds against an eligible opponent. A natural hand 70 may
+  omit its TCP settlement; completion then requires starts 1..70, settlements
+  1..69, no pending action/wire issue, and a fresh strict THP proving
+  `STATE:0..69`, cross-bound first-69 earnings, final zero-sum earnings, and the
+  footer. Never synthesize hand-70 `earnChips`.
+- Exact oracle inputs are
   `docs/official-raise-boundary-oracle-2026-07-11.md` and
   `docs/official-terminal-settlement-oracle-2026-07-11.md`.
-- Postflop first action cannot be `call`. After any first postflop action,
-  `check` is illegal. If the first player checks, the second passes with
-  `call`. Preflop BB after an SB limp checks, raises, or folds, never calls.
-- After one all-in, the opponent may only call or fold; consecutive all-ins are
-  illegal.
-</national_tcp_compatibility>
+</national_tcp_contract>
 
-<national_runtime_architecture>
-- Use `time.monotonic`. The socket layer owns a 55,000 ms hard deadline and a
-  immediately available socket-safe fallback: fold while facing a positive
-  amount, otherwise pass with action `0`. Strategy must publish a sanitized
-  baseline by 250 ms; bounded refinement may continue only until the 54,000 ms
-  refinement deadline. Deadline/error paths return the latest sanitized
-  candidate and discard late results.
-- The socket-owning process must never execute candidate strategy code. The
-  provided persistent strategy worker is a non-daemon, killable child process,
-  so a declared bounded fixed CPU pool may use multiple cores. Its descendants
-  inherit a POSIX process group or Windows process tree; a missed deadline
-  terminates the entire tree and the next decision starts a clean worker.
-  Do not replace this boundary with a thread, an executor future, or a
-  permanently poisoned fallback mode.
-- New national-native strategy code must implement both
-  `get_baseline_action(req, current_request_view)` and
-  `iter_refinements(req, current_request_view, baseline, deadline)`. The
-  iterator yields increasingly informed candidate actions and checks the
-  monotonic deadline before every expensive unit. The second argument is a
-  bounded current-hand compatibility view, never complete match history.
-  Cross-hand evidence comes only from `req['opponent_runtime']`.
-  Local native strength evaluation, including precommit, uses a 2.0 s action /
-  1.8 s refinement envelope and a 420 s match timeout, while the formal entry
-  retains 55 s/54 s. Terminate
-  cheap and low-uncertainty decisions early; reserve long formal work for
-  ambiguous spots where more batches can change EV/action.
-- When the active focus is `national_runtime_v4_legacy_consumer_migration`, the
-  four wrapper-to-strategy consumers are one universal ABI migration: terminal
-  responses, showdown range, donk, and delayed probe must all influence separate
-  final sanitized-action controls in the same generation. This is the only task
-  in that generation; none is advisory and no ordinary `state_learning`, river,
-  tuning, or support task is allowed beside it. After that focus closes, a
-  v4 state-learning task again selects exactly one ordinary primary innovation
-  and preserves all passing migration capabilities.
-- For all line/history-derived decisions, consume authoritative
-  `req['hand_runtime']`: `preflop_aggressor`, `preflop_spot`, `hero_position`,
-  `previous_street` (`checked_through`/`opponent_checked_back`), `can_donk`,
-  `can_delayed_probe`, `street_open`, `spr`, and `pot_odds`. Do not reconstruct
-  these values from `current_request_view`, archived `requests`, or ad hoc
-  action scans. Do not scan complete match history during a decision.
-- Consume the standard `precompute.py` pure-fact tables before adding another
-  artifact. It builds all 1,326 hole-combination facts, 8,192 straight-mask
-  lookups, and 21 five-of-seven index tuples once per worker lifetime. Never
-  rebuild these spaces in a decision. Prefer additional bounded module-import precomputation
-  in inspectable mappings for domain facts such as preflop
-  buckets, board masks, range weights, and evaluator shortcuts.
-  A formal artifact declares key shape, exact `module.function` consumer,
-  module-import build phase, maximum entries/bytes/build time, and
-  `legal_baseline` behavior when empty. Opaque LRU caches, warmed-on-first-use
-  work, dead consumers, network/file I/O, and large decision-time table builds
-  do not satisfy the contract.
-- When a state-learning work primitive is selected, the injected Runtime
-  Contract contains a binding local strategy reference card. Implement that
-  exact card rather than inventing a generic table or copying poker prose. A
-  pure foundation table is not an innovation: for a precompute primary, a
-  same-shaped/different-value counterfactual must change at least one final
-  sanitized wire action while an empty mapping still takes a legal baseline.
-  For a candidate-batch primary, the card's fixed-seed posterior/budget control
-  must show trusted work and a final-action difference. Keep `strategy.py` as
-  thin orchestration when it is near its line cap; place a cohesive mechanism
-  in its named helper module instead of piling more logic into it.
-- The process persists for all 70 hands. Maintain bounded match-level opponent
-  state incrementally from opponent actions, `oppo_hands`, and `earnChips`.
-  Hand state resets each hand; match state resets only on a new TCP connection.
-  Persist every terminal opponent fold/call, whether relayed or inferred, even
-  if no later hero decision occurs in that hand. Do not let hand reset discard
-  an unflushed opportunity/response counter.
-  Use explicit priors, context-specific confidence, and a capped adaptation
-  weight. Context at minimum distinguishes street, position, facing-action
-  kind, and size bucket. Sparse contexts stay close to the parent action; a
-  high global sample count must not create false confidence in an unseen river
-  or large-bet context.
-- A showdown is not merely a log row. Update bounded
-  `req['opponent_runtime']['showdown_range']` weights from the pinned uniform
-  1,326-combination prior, effective sample count/confidence, showdown reach
-  rate, and capped adaptation weight. Preserve the explicit
-  `reached_showdown_only` scope and selection-bias guard: revealed hands are a
-  selected subset.
-  Wire the posterior into a reachable range/equity/action consumer; raw
-  showdown counts or telemetry with no action influence are incomplete.
-- Every new or materially changed strategy module needs dynamic evidence for
-  `producer -> consumer -> sanitized action -> telemetry`: name the functions,
-  replay a real national transcript, declare the exact firing tuple, compare a
-  one-predicate control, and show both an action difference and nonzero consumed
-  telemetry. A helper that passes only an isolated unit test is still dead.
-- Donk reachability transcript: hero BB observes an SB raise, calls, and acts
-  first on the flop. Use `hand_runtime.preflop_aggressor`, `hero_position`,
-  `street_open`, and `can_donk`; the control changes only the aggressor/line
-  predicate. Delayed-probe reachability transcript: hero BB calls an SB raise,
-  checks the flop, the in-position aggressor passes with official wire `call`
-  (possibly inferred when the EXE omits it), and hero acts first on the turn.
-  Use `previous_street.checked_through`,
-  `previous_street.opponent_checked_back`, and `can_delayed_probe`; never require
-  a literal postflop `check/check` or hero in-position for this line.
-- The legal baseline must complete strictly under 250 ms. Compare fixed-seed
-  budget tiers. The system worker—not
-  candidate metadata—records iterator steps, worker CPU/elapsed time, true
-  `StopIteration`, termination reason, and each sanitized action trajectory.
-  Candidate `sample_count`, confidence, and `complete` are reported diagnostics
-  only. A selected staged-compute primary needs at least eight trusted steps and
-  5 ms measured long-tier work, then either larger-budget scaling or true equal
-  finite exhaustion. At least one predeclared scenario must change after
-  sanitization into the hypothesized improved action. `iter_refinements` may not yield the unmodified input baseline,
-  emit empty candidates, repeat cached output, or rely on self-reported
-  completion as evidence.
-- Do not rescan complete history, perform external I/O, write files, build
-  unbounded tables, or run unbounded simulation in a decision. Every expensive
-  loop requires a hard cap and deadline check.
-- If official EXE feedback is cited, fix the identified protocol,
-  communication, state-machine, timeout, or obvious decision error before any
-  strategy tuning. EXE win/loss is not strength evidence.
-</national_runtime_architecture>
+<policy_abi>
+The complete candidate decision surface is `policy.py`. The system runtime
+imports exactly that module and owns every other artifact in the five-file
+submission ABI: `national_bot.py`, `precompute.py`,
+`national_runtime_manifest.json`, and `policy_epoch_receipt.json`.
 
-<profile_verification>
-Run all of these without writing probe artifacts:
+`policy.py` implements:
+
+```python
+def get_baseline_decision(decision_context): ...
+
+def iter_decisions(decision_context, baseline, deadline):
+    ...
+    yield candidate
+```
+
+Both entrypoint functions are mandatory. The baseline must finish strictly
+under 250 ms; refinement yields are optional, bounded, and
+monotonic-deadline-aware. The iterator checks `time.monotonic()` before every
+expensive unit and yields only after new work.
+
+A decision is a strict primitive mapping:
+
+- `{"kind": "pass"}` — the socket owner maps this to official `call` or
+  `check` from authoritative state.
+- `{"kind": "fold"}`
+- `{"kind": "allin"}`
+- `{"kind": "raise", "raise_to": <positive integer>}`
+
+No other fields or kinds are valid. In particular, policy must not return
+`call`, `check`, a bare string, or an integer. The socket owner validates the
+mapping again, rejects illegal raise targets, maps `pass`, and emits
+the canonical wire token. `RAISE_TO(400)` must mean exactly `raise 400`; no
+layer may add the current street contribution again. Exact stack commitment
+must use `{"kind": "allin"}`; a stack-consuming `raise` is invalid.
+
+`decision_context` is a bounded schema-versioned snapshot produced once by the
+socket reducer. Consume its declared sections and names directly:
+
+- `cards.encoding`, `cards.hole`, and `cards.board`;
+- `hand.number`, `total_hands`, `remaining_including_current`, `street`,
+  `street_index`, `position`, and `acts_first_postflop`;
+- `betting.pot`, both stacks and street bets, `effective_stack`, `to_call`,
+  `spr`, and `pot_odds`;
+- bounded semantic `history.actions` and `history.truncated_count`;
+- `line.preflop_aggressor`, `preflop_spot`, `street_open`,
+  `responding_to_check`, `can_donk`, `can_delayed_probe`, and current/previous
+  street summaries;
+- `legal.policy_kinds`, `pass_wire_kind`, exact `min_raise_to`/
+  `max_raise_to`, and `raise_boundary`;
+- bounded `opponent`, including `terminal_response` and selection-aware
+  `showdown_range` evidence;
+- `deadline.hard_monotonic`, `refinement_monotonic`, and trusted budget values.
+
+Do not reconstruct these values from raw TCP text, rescan full-match history,
+or infer omitted actions in policy code.
+</policy_abi>
+
+<runtime_architecture>
+- The socket-owning process never executes candidate policy. A persistent,
+  killable, non-daemon worker owns policy imports and any declared fixed CPU
+  pool. A missed deadline terminates the complete process group/tree before a
+  clean worker is started.
+- The socket owner has an immediately available typed fallback: fold while
+  facing a positive amount, otherwise pass. Formal timing uses a 55 s hard
+  deadline and 54 s refinement budget; local native strength uses a 2.0 s
+  action / 1.8 s refinement envelope and 420 s match timeout.
+- Candidate imports and decisions may not perform network access, external
+  process execution, candidate-owned file I/O, unbounded allocation, or
+  unbounded simulation. Expensive loops need a hard cap and a deadline check.
+- `precompute.py` is system-owned, read-only pure import-time data. Reuse its 1,326 hole
+  combinations, 8,192 rank masks, and 21 five-of-seven selections before
+  doing equivalent work. Candidate-owned tables/assets and candidate file I/O
+  are outside this epoch ABI; a proposal that needs a new asset is blocked on
+  an infrastructure-owned packager/manifest change, not a Worker edit.
+- Match-level opponent state persists for one TCP connection and updates
+  incrementally from actions, inferred terminal responses, showdown cards, and
+  settlement. Hand state resets each hand. Sparse contexts retain explicit
+  priors and capped influence.
+- Showdown observations are selected evidence, not an unbiased range sample.
+  Keep `reached_showdown_only`, effective sample/confidence, prior, and capped
+  adaptation explicit, then prove a reachable decision consumer.
+- Donk reachability: hero BB calls an SB raise and acts first on the flop.
+  Delayed probe reachability: hero BB calls an SB raise, checks flop, the
+  in-position aggressor passes (wire `call`, possibly boundary-inferred), and
+  hero acts first on turn. Use reducer-owned
+  `decision_context.line.previous_street.checked_through`,
+  `opponent_checked_back`, and `decision_context.line.can_delayed_probe`;
+  never look for an official-invalid postflop `check/check`.
+- A staged-compute primary must show at least eight trusted refinement steps,
+  at least 5 ms measured long-tier work, and a predeclared socket-validated intent
+  difference or true equal finite exhaustion. Candidate-reported confidence or
+  sample counts are diagnostics, not trusted work evidence.
+</runtime_architecture>
+
+<verification>
+Workers may inspect code and run read-only probes, but the trusted quality gate
+owns candidate execution. Required checks are:
+
 1. `python -m py_compile {candidate_path}/*.py`
-2. `(cd {candidate_path} && python -B -c "import national_bot")`
+2. `(cd {candidate_path} && python -B -c "import policy")`
 3. `PYTHONPATH=web/core python -B -c "from national_native import check_native_contract; e=check_native_contract('{candidate_path}', require_current_stream_decoder=True, require_current_decision_runtime=True); print(e); raise SystemExit(bool(e))"`
-4. Inspect the formal native diff and confirm no adapter import, JSON response,
-   newline-framed socket read, stdout diagnostic, or full-history decision scan.
-The trusted quality gate owns the sandbox runtime capability probe and local
-70-hand TCP battle; do not replace either with a Botzone `main.py` smoke.
-</profile_verification>
+4. Inspect the full candidate diff and confirm that only `policy.py` changed,
+   every system artifact is byte-identical, and the import graph is exactly the
+   system runtime calling the typed policy ABI.
+
+Local Arena output is diagnostic only and cannot certify strategy semantics.
+The quality gate replays delimiter-free fragmented and coalesced TCP
+transcripts and checks typed-intent causal effects.
+</verification>
 </national_native_profile>

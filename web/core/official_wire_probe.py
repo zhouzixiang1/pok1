@@ -10,6 +10,7 @@ and replays enough betting state to classify protocol problems.
 from __future__ import annotations
 
 import asyncio
+import codecs
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
@@ -18,11 +19,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sever.server.protocol import (
+    take_client_action as _official_take_client_action,
+    take_server_message as _official_take_server_message,
+)
 
-CARD_RE = re.compile(r"<(\d+),(\d+)>")
-SERVER_ACTION_RE = re.compile(r"^(raise|bet)\s+(\d+)")
+
+SERVER_ACTION_RE = re.compile(r"^(raise) ([0-9]+)$")
 CLIENT_RAISE_RE = re.compile(r"^raise [1-9]\d*")
-EARN_RE = re.compile(r"^earnChips\s+(-?\d+)")
+EARN_RE = re.compile(r"^earnChips (-?[0-9]+)$")
 SMALL_BLIND = 50
 BIG_BLIND = 100
 INITIAL_CHIPS = 20000
@@ -32,47 +37,12 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
 
 
-def _take_card_message(buffer: str, prefix: str, count: int) -> tuple[str | None, str]:
-    if not buffer.startswith(prefix):
-        return None, buffer
-    pos = len(prefix)
-    for _ in range(count):
-        match = CARD_RE.match(buffer, pos)
-        if match is None:
-            return None, buffer
-        pos = match.end()
-    return buffer[:pos], buffer[pos:]
-
-
 def take_server_message(buffer: str, *, flush_numeric: bool = True) -> tuple[str | None, str]:
     """Take one official server-to-client message from a raw stream buffer."""
-    buffer = buffer.lstrip("\r\n\t ")
-    if not buffer:
-        return None, ""
-    if buffer.startswith("name"):
-        return "name", buffer[4:]
-    for blind in ("SMALLBLIND", "BIGBLIND"):
-        msg, rest = _take_card_message(buffer, f"preflop|{blind}|", 2)
-        if msg is not None:
-            return msg, rest
-    for prefix, count in (("flop|", 3), ("turn|", 1), ("river|", 1), ("oppo_hands|", 2)):
-        msg, rest = _take_card_message(buffer, prefix, count)
-        if msg is not None:
-            return msg, rest
-    match = EARN_RE.match(buffer)
-    if match:
-        if match.end() == len(buffer) and not flush_numeric:
-            return None, buffer
-        return buffer[: match.end()], buffer[match.end() :]
-    match = SERVER_ACTION_RE.match(buffer)
-    if match:
-        if match.end() == len(buffer) and not flush_numeric:
-            return None, buffer
-        return buffer[: match.end()], buffer[match.end() :]
-    for word in ("allin", "check", "call", "fold"):
-        if buffer.startswith(word):
-            return word, buffer[len(word) :]
-    return None, buffer
+    return _official_take_server_message(
+        buffer,
+        flush_boundary=flush_numeric,
+    )
 
 
 def split_server_messages(buffer: str, *, flush_numeric: bool = True) -> tuple[list[str], str]:
@@ -97,20 +67,20 @@ def take_client_message(
     Bot actions are intentionally stricter than server action parsing: the
     official EXE rejects leading/trailing whitespace, tabs, and ``raise  200``.
     """
-    buffer = buffer.lstrip("\r\n")
     if not buffer:
         return None, ""
-    for word in ("allin", "check", "call", "fold"):
-        if buffer.startswith(word):
-            return word, buffer[len(word) :]
-    match = CLIENT_RAISE_RE.match(buffer)
-    if match:
-        if match.end() == len(buffer) and not flush_numeric:
-            return None, buffer
-        return buffer[: match.end()], buffer[match.end() :]
-    if allow_name and buffer and not buffer.startswith(("raise", "bet")):
-        return buffer.strip(), ""
-    return None, buffer
+    if allow_name:
+        # Team names have no lexical terminator. Commit only at the proxy's
+        # idle/EOF boundary and preserve Unicode/whitespace exactly so the
+        # replay cannot turn a malformed handshake into a valid one.
+        return (buffer, "") if flush_numeric else (None, buffer)
+    message, remainder = _official_take_client_action(
+        buffer,
+        flush_boundary=flush_numeric,
+    )
+    if message is None and flush_numeric:
+        return buffer, ""
+    return message, remainder
 
 
 def split_client_messages(
@@ -315,6 +285,14 @@ class OfficialWireReplay:
                 "remaining": remaining,
                 "details": event.get("details") or {},
             })
+        elif event_type == "stream_encoding_error":
+            self.issues.append({
+                "kind": "wire_stream_encoding_error",
+                "conn": label,
+                "direction": direction,
+                "remaining": remaining,
+                "details": event.get("details") or {},
+            })
         elif event_type == "stream_eof" and remaining:
             self.issues.append({
                 "kind": "wire_stream_eof_remainder",
@@ -406,6 +384,15 @@ class OfficialWireReplay:
     def _consume_client(self, label: str, message: str, t: float, event: dict[str, Any]) -> None:
         seat = self._seat(label)
         if seat.awaiting_name and message not in {"call", "check", "fold", "allin"} and not message.startswith("raise "):
+            if not message or any(ord(char) < 0x20 or ord(char) == 0x7f for char in message):
+                self._add_issue(
+                    "wire_name_format",
+                    seat,
+                    message,
+                    event,
+                    reason="official raw team names must not contain framing/control characters",
+                )
+                return
             seat.name = message
             seat.awaiting_name = False
             seat.clear_expectation(t)
@@ -641,7 +628,11 @@ class WireEventRecorder:
             "conn": conn,
             "direction": direction,
             "event_type": event_type,
-            "raw_repr": raw.decode("utf-8", "replace"),
+            # Keep each raw chunk independently inspectable without inventing
+            # U+FFFD when a valid UTF-8 code point spans TCP reads.  The
+            # incrementally decoded protocol token is recorded in ``messages``
+            # and ``raw_hex`` remains the exact byte authority.
+            "raw_repr": raw.decode("utf-8", "backslashreplace"),
             "raw_hex": raw.hex(),
             "messages": messages,
             "remaining": remaining,
@@ -661,6 +652,7 @@ class TcpWireProbe:
         self._servers: list[asyncio.AbstractServer] = []
         self._tasks: set[asyncio.Task] = set()
         self._buffers: dict[tuple[str, str], str] = {}
+        self._decoders: dict[tuple[str, str], codecs.IncrementalDecoder] = {}
         self._awaiting_name: dict[str, bool] = {"A": True, "B": True}
 
     async def start(self, host: str = "127.0.0.1") -> dict[str, int]:
@@ -729,6 +721,10 @@ class TcpWireProbe:
         writer: asyncio.StreamWriter,
     ) -> None:
         key = (label, direction)
+        decoder = self._decoders.setdefault(
+            key,
+            codecs.getincrementaldecoder("utf-8")("strict"),
+        )
         try:
             while True:
                 buffered = self._buffers.get(key, "")
@@ -738,6 +734,13 @@ class TcpWireProbe:
                     else:
                         raw = await reader.read(4096)
                 except asyncio.TimeoutError:
+                    # An idle gap is not a message boundary in the middle of a
+                    # UTF-8 code point.  Keep waiting for the missing bytes so
+                    # a fragmented official team name is never rewritten with
+                    # a replacement character.
+                    pending_bytes, _decoder_flag = decoder.getstate()
+                    if pending_bytes:
+                        continue
                     if direction == "server_to_bot":
                         messages, remaining = split_server_messages(buffered, flush_numeric=True)
                     else:
@@ -761,6 +764,19 @@ class TcpWireProbe:
                     continue
                 if not raw:
                     buffered = self._buffers.get(key, "")
+                    try:
+                        buffered += decoder.decode(b"", final=True)
+                    except UnicodeDecodeError as exc:
+                        self.recorder.record(
+                            conn=label,
+                            direction=direction,
+                            raw=b"",
+                            messages=[],
+                            remaining=buffered,
+                            event_type="stream_encoding_error",
+                            details={"error": f"UnicodeDecodeError: {str(exc)[:300]}"},
+                        )
+                        return
                     if direction == "server_to_bot":
                         messages, remaining = split_server_messages(buffered, flush_numeric=True)
                     else:
@@ -781,7 +797,19 @@ class TcpWireProbe:
                     return
                 writer.write(raw)
                 await writer.drain()
-                text = raw.decode("utf-8", "replace")
+                try:
+                    text = decoder.decode(raw, final=False)
+                except UnicodeDecodeError as exc:
+                    self.recorder.record(
+                        conn=label,
+                        direction=direction,
+                        raw=raw,
+                        messages=[],
+                        remaining=self._buffers.get(key, ""),
+                        event_type="stream_encoding_error",
+                        details={"error": f"UnicodeDecodeError: {str(exc)[:300]}"},
+                    )
+                    return
                 buffer = self._buffers.get(key, "") + text
                 if direction == "server_to_bot":
                     messages, remaining = split_server_messages(buffer, flush_numeric=False)

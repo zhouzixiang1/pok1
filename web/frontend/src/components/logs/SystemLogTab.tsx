@@ -19,7 +19,6 @@ const CATEGORY_MAP: Record<string, string> = {
   "bot.": "Bot 生命周期",
   "repo.": "Git/工作区",
   "control.": "控制台",
-  "battle_exp.": "对局经验",
 };
 
 function formatTime(ts: number): string {
@@ -30,9 +29,9 @@ function EventCard({ event }: { event: SystemEvent }) {
   const [expanded, setExpanded] = useState(false);
   const cfg = SEVERITY_CONFIG[event.severity] ?? SEVERITY_CONFIG.info;
   const typeParts = event.type.split(".");
-  // Phase 2+3: correlation fields mirrored to top level by the backend reader
-  // (also present inside event.data). Prefer the top-level mirror, fall back to
-  // the raw data so old records (or records that only carry data.*) still show.
+  // Current strict rows may mirror correlation fields to the top level while
+  // retaining them in data.*. The backend filters by exact epoch/workflow
+  // identity; this fallback never upgrades an old record into the view.
   const runId = event.run_id ?? (event.data?.run_id as string | undefined);
   const stage = event.stage ?? (event.data?.stage as string | null | undefined);
   const category = event.category ?? (event.data?.category as string | undefined);
@@ -92,6 +91,7 @@ export default function SystemLogTab() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [authorityStatus, setAuthorityStatus] = useState<string>("");
   const [severity, setSeverity] = useState("");
   const [category, setCategory] = useState("");
   const [eventType, setEventType] = useState("");
@@ -121,6 +121,7 @@ export default function SystemLogTab() {
       if (controller.signal.aborted) return;
       setEvents(res.events);
       setTotal(res.total);
+      setAuthorityStatus(res.authority_status || "");
     } catch (e) {
       if (controller.signal.aborted) return;
       setEvents([]);
@@ -197,7 +198,11 @@ export default function SystemLogTab() {
             <button onClick={fetchEvents} className="mt-2 text-xs text-blue-500 hover:underline">重试</button>
           </div>
         ) : events.length === 0 ? (
-          <div className="text-sm text-gray-400 text-center py-8">暂无系统事件</div>
+          <div className="text-sm text-gray-400 text-center py-8">
+            {authorityStatus === "policy_epoch_not_initialized"
+              ? "epoch 尚未初始化；旧系统事件不会进入当前视图。"
+              : "当前严格 epoch 暂无系统事件。"}
+          </div>
         ) : (
           <div className="space-y-0.5">
             {events.map((ev, i) => (
