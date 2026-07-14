@@ -5,9 +5,12 @@ This isolated package contains two clean-room research candidates:
 - A1: ReBeL-like public-belief and counterfactual-value experiments;
 - A2: DecisionHoldem-like blueprint and later safe-resolving experiments.
 
-The current gate is **M4**. A1 remains at its exact Kuhn/Leduc M3 gate. A2 now
-has a real, low-budget HUNL blueprint-only vertical slice. “Real HUNL” here
-means the 20,000-chip, 50/100-blind, four-street game is traversed through the
+The package now contains two separately bounded frozen gates. A2 remains at
+its **M4** real-HUNL blueprint-only vertical slice. A1 has advanced to **M5a**,
+an exact-oracle PBS and value-label contract correctness gate. M5a is not the
+later neural-value or online-search milestone.
+
+A2's “real HUNL” claim means the 20,000-chip, 50/100-blind, four-street game is traversed through the
 separately owned Common `NationalGameState`, `Action`, `LegalActionSet`, card
 evaluator, and terminal utility. It does not mean the 32-iteration smoke
 blueprint is strong, submission-ready, or a reproduction of DecisionHoldem's
@@ -17,6 +20,70 @@ deterministic deals and 64 player traversals.
 No DecisionHoldem AGPL code was copied. The papers and public repository were
 used for algorithm, symbol, availability, and license audits only. Source
 identities and downloaded-paper hashes are in `manifests/sources.json`.
+
+## A1 M5a PBS and exact-label gate
+
+`rebel_like/hunl_pbs.py` defines the HUNL public belief state over Common's
+fixed 1,326-combination order. Its two 1,326-vectors are explicitly **reach
+factors**, not true private-hand marginals. For board `B`, the true joint and
+projected marginals are derived from
+
+```text
+J(h0,h1) = K_B(h0,h1) * beta0(h0) * beta1(h1) / Z.
+```
+
+`K_B` enforces public-board and cross-player card removal. A public action
+multiplies and normalizes only the actor's factor; both projected marginals can
+still change. The factor normalizer and blocker-aware public event probability
+are separate quantities. Legal, positive-factor, and label-valid masks are
+exported explicitly.
+
+HUNL construction accepts only the exact nonterminal Common
+`hand_public_dict()` schema after terminal fields are removed. Direct payloads
+must survive a Common history replay and byte-equivalent public round trip;
+unknown fields, bool-as-player aliases, invalid boards/histories, private
+cards, outcome, match context, seed, timing, and future-card data fail closed.
+Uniform factors may be initialized only at a true new-hand root. Later states
+must come from proven action/chance transitions or explicitly validated
+factors. Public-node identity, mathematical PBS identity, and path provenance
+are separate: the value-net-shaped PBS identity contains public state plus the
+two factors, while the policy/action trace is audit metadata and never a model
+feature.
+
+Observed HUNL raises are included at the exact Common raise-to amount or
+rejected; no nearest-action translation exists. A relayed street-closing action
+and the same uniquely inferred official boundary update the PBS exactly once.
+
+The committed `artifacts/m5a_exact_label_fixture.json` covers every frozen
+public decision node under the four-iteration exact average policies: 4 Kuhn
+and 96 Leduc nodes. Its public-family split is 80 train, 15 validation, and 5
+test examples, with the complete identity-list digest frozen in
+`configs/m5a_pbs_label_contract.json`. Every example keeps three different
+namespaces:
+
+- posterior-normalized on-policy private values for both fixed players;
+- posterior-normalized forced-action conditional Q for the actor;
+- standard unnormalized CFR action values, which omit own reach.
+
+Label weighting uses blocker-aware projected marginals, never reach factors.
+The validator retrains the frozen exact LCFR solvers, compares embedded
+checkpoint/current/average-profile payloads and hashes, replays every public
+action to reconstruct factors, conditions Leduc public chance, then recomputes
+all three label namespaces from complete terminal trees. A second test oracle
+does not call the production PBS label helpers and brute-forces all 100
+examples independently. Every example must also exhibit a nonzero Q/CFV
+separation.
+
+The artifact binds its config, solver and both policy variants, exact critical
+source closure, full mathematical PBS digest, separate trace provenance, and
+exact recomputation certificate. Strict JSON, duplicate-key/nonfinite
+rejection, deterministic rebuild, and before/after source verification are
+part of the gate.
+
+M5a does **not** generate HUNL value labels, train a value or policy network,
+implement CFR/CFR-D/CFR-AVG depth-limited search, run online resolving, or
+claim a ReBeL root value. All corresponding config and artifact flags are
+false.
 
 ## A2 M4 vertical slice
 
@@ -139,7 +206,7 @@ python -m bots.research_native_lab.rebel_decisionholdem.decisionholdem_like.hunl
   --blueprint bots/research_native_lab/rebel_decisionholdem/artifacts/hunl_m4_smoke_blueprint.json
 
 python -m pytest bots/research_native_lab/rebel_decisionholdem/tests -q
-python -m bots.research_native_lab.rebel_decisionholdem.tools.milestone_manifest
+python -m bots.research_native_lab.rebel_decisionholdem.tools.m5a_manifest
 ```
 
 The default fixed workspace is under the package's ignored `checkpoints/`
@@ -147,10 +214,36 @@ directory. If its run journal already exists, start with `--resume <journal>`
 or choose a different output/workspace; the CLI never silently overwrites a
 prior run. Large intermediate files must not be committed.
 
+## Reproduce A1 M5a
+
+From the repository root:
+
+```bash
+# Rebuild the complete 100-node exact fixture.
+python -m bots.research_native_lab.rebel_decisionholdem.tools.build_m5a_label_fixture
+
+# Revalidate config, source closure, solver/profile payloads, all labels and
+# the frozen complete-tree identity/split contract without writing.
+python -m bots.research_native_lab.rebel_decisionholdem.tools.build_m5a_label_fixture \
+  --verify
+
+python -m pytest \
+  bots/research_native_lab/rebel_decisionholdem/tests/test_m5a_hunl_pbs.py \
+  bots/research_native_lab/rebel_decisionholdem/tests/test_m5a_label_contract.py -q
+
+# Verify the additive M5a manifest and its unchanged historical M4 anchors.
+python -m bots.research_native_lab.rebel_decisionholdem.tools.m5a_manifest
+```
+
+Building to a second path with `--output` must produce byte-identical JSON.
+The fixture is a small exact correctness artifact, not a training dataset or
+authorization for a large job.
+
 ## Honest stage boundary
 
 M4 proves a runnable blueprint-only HUNL path and its correctness/resume/resource
-contracts. It does not prove equilibrium quality, exploitability in HUNL,
+contracts. M5a separately proves a public-belief and exact-label contract. They
+do not prove equilibrium quality, exploitability in HUNL,
 DecisionHoldem fidelity beyond the named clean-room algorithms, official EXE
 acceptance, online safe resolving, off-tree translation, neural leaf values, or
 match strength.

@@ -1,0 +1,65 @@
+{
+  "artifact_gate": {
+    "canonical_json": true,
+    "duplicate_keys_rejected": true,
+    "nonfinite_rejected": true,
+    "require_all_splits": true,
+    "required_games": [
+      "kuhn",
+      "leduc"
+    ],
+    "schema": "route-a1-m5a-exact-label-artifact-v1"
+  },
+  "common_contract_version": "national-research-contract-v1",
+  "coverage_contract": {
+    "identity_manifest_sha256": "ef1be544a7aff691d791c2935a2c0342684005735c08c61f24d1a5e86015afe0",
+    "kuhn_public_decision_nodes": 4,
+    "leduc_public_decision_nodes": 96,
+    "minimum_cfr_q_max_abs_separation": 0.000001,
+    "schema": "route-a1-m5a-complete-public-tree-coverage-v1",
+    "split_counts": {
+      "test": 5,
+      "train": 80,
+      "validation": 15
+    },
+    "total_public_decision_nodes": 100
+  },
+  "data_root_seed": 2026071405,
+  "exact_oracle_profiles": {
+    "belief_policy_kind": "average_policy",
+    "kuhn_lcfr_iterations": 4,
+    "label_profile_kind": "average_policy",
+    "leduc_lcfr_iterations": 4
+  },
+  "future_search_variants": {
+    "cfr": false,
+    "cfr_avg": false,
+    "cfr_d": false
+  },
+  "hunl_combo_order": "common-all-hole-combinations-lexicographic-v1",
+  "hunl_combo_registry_sha256": "59a53ca8f0a82e12a77de78885d6ce8f4e816c3d7b2d35fb06a7cba12e3133c3",
+  "hunl_pbs_schema": "route-a1-hunl-reach-factor-pbs-v1",
+  "large_training_authorized": false,
+  "label_contract_schema": "route-a1-m5a-value-label-v1",
+  "network_init_seed": 2026071407,
+  "network_training_started": false,
+  "online_search_implemented": false,
+  "policy_sampling_seed": 2026071406,
+  "schema": "route-a1-m5a-pbs-label-config-v1",
+  "split": {
+    "group_contract": "public-family-suit-isomorphic-v1",
+    "seed": 2026071408,
+    "test_basis_points": 1000,
+    "train_basis_points": 8000,
+    "validation_basis_points": 1000
+  },
+  "stage": "M5a PBS and exact-label contract correctness gate only",
+  "value_label_semantics": {
+    "oracle_forced_action_conditional_q": "posterior_normalized_forced_action_v1",
+    "oracle_on_policy_private_values": "posterior_normalized_on_policy_continuation_v1",
+    "oracle_unnormalized_cfr_action_values": "unnormalized_omit_own_reach_v1",
+    "payoff_origin": "per_hand_net_from_initial_contribution_v1",
+    "player_perspective": "fixed_player_index_v1",
+    "utility_unit": "chips"
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "artifact": {
+    "body_sha256": "3c07efb96f256c2466fcd140a2967032ca1d0cf2edf474c540733d179f39387f",
+    "bytes": 1107756,
+    "config_file_sha256": "064fec9e3278d418dba7bb9317eb7bdb65a7be88d1b5832fc7399cee6c1aedf6",
+    "coverage_identity_manifest_sha256": "ef1be544a7aff691d791c2935a2c0342684005735c08c61f24d1a5e86015afe0",
+    "example_count": 100,
+    "example_sha256": "3a5158dd7818553a7abc2d015e838dac6a438fc6264c2d68c8b11974155f9266",
+    "game_counts": {
+      "kuhn": 4,
+      "leduc": 96
+    },
+    "generator_bindings": {
+      "kuhn": {
+        "average_profile_sha256": "3f6aa4fd07cca6e7338c07816134a7cc0d929b865cc7da7110f409624af65987",
+        "current_profile_sha256": "f484ff9f3d021f8d5f0a7003da1cb5efc8e9a41e0d4cb613981fed8324547433",
+        "solver_checkpoint_sha256": "15bc1b64a0c1d8cbe801e1a5f25a5e0c0899221fa1ca5e9883f90ad1e7a3fe46",
+        "solver_iterations": 4
+      },
+      "leduc": {
+        "average_profile_sha256": "9763e606bb1e8ae0cfcc724546dd9fcc4e08a0b29a3247efc406be116288577b",
+        "current_profile_sha256": "a7fceb96438075c1d1a7c22b79642ae1cafb0a4c17e98709a9ebcfc3e3fb5530",
+        "solver_checkpoint_sha256": "9cbf5504ddd994aedf2700aba92441795c5f5deadbd73e2b191e15ec83515f3a",
+        "solver_iterations": 4
+      }
+    },
+    "generator_bindings_sha256": "db2715827242feec9ebcdf0c259ad5acc6fbf72b709553d5cd2fa11106fac591",
+    "hunl_combo_registry_sha256": "59a53ca8f0a82e12a77de78885d6ce8f4e816c3d7b2d35fb06a7cba12e3133c3",
+    "large_training_authorized": false,
+    "network_training_started": false,
+    "online_search_implemented": false,
+    "oracle_bundles_sha256": "47fcb963219c628fec564beb8ba0cf8d905e03e3c686773473891c7e9b1ecc58",
+    "raw_sha256": "ae4e8eca65d2c99429f0a7f064abfac9f468347903ab3dd131959865c7ff8797",
+    "schema": "route-a1-m5a-exact-label-artifact-v1",
+    "source_snapshot_sha256": "941d18e36b39cb674c2cdc9da672858a0e013f077a5b3597e34ad069bdcb99ae",
+    "split_counts": {
+      "test": 5,
+      "train": 80,
+      "validation": 15
+    }
+  },
+  "base_m4_commit": "0e751feea37177b724151ecb77115455dab8467e",
+  "claim_boundary": {
+    "exact_pbs_and_label_correctness_gate_complete": true,
+    "hunl_labels_generated": false,
+    "large_training_authorized": false,
+    "network_training_started": false,
+    "neural_leaf_value_implemented": false,
+    "official_exe_certified": false,
+    "online_search_implemented": false,
+    "strength_claimed": false,
+    "submission_bot_claimed": false
+  },
+  "created_at": "2026-07-14T00:00:00+08:00",
+  "frozen_m4": {
+    "algorithm": "sha256-selected-frozen-files-v1",
+    "file_count": 5,
+    "files": {
+      "artifacts/hunl_m4_smoke_blueprint.json": "aa50b89b5b3d9822712c4f6a93a25448437526071aec3f9760c8abcdb4600539",
+      "evidence/m4_scale_gate.json": "b54419b35d2f3148d08d83dcc303121828fcbc6b6d2180b1676689096d7239ed",
+      "evidence/m4_sever_tcp_70h.json": "1e1cceafa466946354e0a58ebf7c921a41f0f607350422fb3ca731e8e0eb42de",
+      "manifests/milestone_m0_m4.json": "ad453b1d444396678d14b0929369f6a589a78aa6df9887a27ebcb8a748bda99e",
+      "reports/m4-hunl-blueprint-validation.md": "9e1d6f43772607d653e979af7be7f843498a62d50816819ffed0e7b7cf7b268a"
+    },
+    "files_sha256": "80fe78f53b7f14dcd79fdc8ad87e30f86ec444d53a35df968c529cad320bf8a3",
+    "historical_common_tree_sha256": "03935cff7071cf236ca0ea9876e7c45eda08b79cb40be7bf678fbda694156cf4",
+    "historical_manifest_schema": "route-a-milestone-manifest-v9",
+    "historical_route_file_count": 65,
+    "historical_route_tree_sha256": "e4d455e9c1536bd87eab858b7033a849a4d2dde19282ace8cc08e5b06caad947",
+    "policy": "anchor_historical_bytes_without_rewriting_m4"
+  },
+  "import_audit": {
+    "algorithm": "complete-route-python-ast-import-audit-v1",
+    "forbidden_imports": {},
+    "forbidden_modules": [
+      "engine",
+      "engine.*",
+      "sever.bot_adapter"
+    ],
+    "legacy_adapter_imported": false,
+    "python_file_count": 57,
+    "python_files_sha256": "5873ab7ea7d1c10491a2c0db7d9ff3397653e2d92b9025b04fafb53ce44da26a",
+    "test_function_count": 184,
+    "test_python_file_count": 19,
+    "top_level_engine_imported": false
+  },
+  "m5a_files": {
+    "algorithm": "sha256-selected-m5a-files-v1",
+    "excluded_self": "manifests/milestone_m5a.json",
+    "file_count": 10,
+    "files": {
+      "README.md": "4e687870f8cb5ed43b158526358ecb64b67c000489b0bcfd6317295292567918",
+      "configs/m5a_pbs_label_contract.json": "064fec9e3278d418dba7bb9317eb7bdb65a7be88d1b5832fc7399cee6c1aedf6",
+      "rebel_like/hunl_pbs.py": "fca1fdfb85b9b32bb49fa2144c2cb3c1a8a6e049ad50941be9eb53edaed0726b",
+      "rebel_like/label_contract.py": "c4e1729fe1156dcecc6b1d140e2cdf2b76c2fd4015c19d436442a9144491d237",
+      "reports/m5a-pbs-label-contract-validation.md": "72eeca7ba0546a4d5443c1d2c255a1835cc3e18c0474a9cb42dcb320c3fb47f4",
+      "tests/test_m5a_hunl_pbs.py": "4c4a5de22c4bd211d0abf0ed0f2b98854f06a8f31f0fbf305cda1c7a3226db57",
+      "tests/test_m5a_label_contract.py": "207189ccae0b43e1dd40adb1d51d0b74951925aca59c50ba5f7cd97e157ced12",
+      "tests/test_manifest.py": "d49bc9720922d93609a05a3903f3fba6718a87eb08605d067d078028cd6bf624",
+      "tools/build_m5a_label_fixture.py": "9430828554297699b732db723ec769e694188feae51d5c2e00ea0ed4fb7bf289",
+      "tools/m5a_manifest.py": "713ee291ed8c3b158ce25d7959ee167a8a520bf2aa421db3ef0f308747237871"
+    },
+    "files_sha256": "d981b5c4ef1843c8acfe7ed24d304f2f4082f00d7572d92e9b2cbfddf4a4a886"
+  },
+  "schema": "route-a1-m5a-additive-manifest-v1",
+  "stage": "M5a PBS and exact-label contract correctness gate only",
+  "validation": {
+    "additional_compatibility_regression": {
+      "authority": "additional_only_not_the_national_native_formal_gate",
+      "command": "python -m pytest bots/research_native_lab/common_contracts/tests sever/tests/test_national_platform_alignment.py sever/tests/test_national_alignment.py -q",
+      "result": "290 passed, 1 skipped in 178.10s"
+    },
+    "deterministic_artifact_rebuild": {
+      "comparison": "byte-identical cmp against a second output path",
+      "raw_sha256": "ae4e8eca65d2c99429f0a7f064abfac9f468347903ab3dd131959865c7ff8797",
+      "result": "passed"
+    },
+    "m5a_targeted": {
+      "command": "python -m pytest bots/research_native_lab/rebel_decisionholdem/tests/test_m5a_hunl_pbs.py bots/research_native_lab/rebel_decisionholdem/tests/test_m5a_label_contract.py -q",
+      "result": "44 passed in 18.89s"
+    },
+    "national_native_formal": {
+      "authority": "national_native_protocol_regression",
+      "command": "python -m pytest sever/tests/test_national_platform_alignment.py -q",
+      "legacy_adapter_shard_counted": false,
+      "result": "10 passed in 0.01s"
+    },
+    "route_a_full_no_cache": {
+      "authority": "complete_route_a_source_tree_regression",
+      "collected": 246,
+      "command": "PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider bots/research_native_lab/rebel_decisionholdem/tests -q",
+      "result": "246 passed"
+    }
+  }
+}
