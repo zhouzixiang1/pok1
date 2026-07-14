@@ -1119,7 +1119,12 @@ async def _run_master_proposal_ensemble(
             "writable source file; national_bot.py and precompute.py are system-owned "
             "read-only files, and candidate helper modules/assets are forbidden. Propose "
             "a causally distinct policy mechanism over decision_context that returns only "
-            "typed pass/fold/allin/raise intents (raise uses raise_to)."
+            "typed pass/fold/allin/raise intents (raise uses raise_to). "
+            "IMPORTANT: falsifier.test_name MUST be exactly one of: fast_policy_baseline, "
+            "incremental_refinement_protocol, incremental_opponent_model, "
+            "terminal_response_adaptation, showdown_range_adaptation, "
+            "donk_line_reachability, delayed_probe_line_reachability. "
+            "Choose the one that best matches your proposed mechanism."
         )
         code_scope = (
             f"Read only the prepared target code at {bot_relpath(next_v)}/ and "
