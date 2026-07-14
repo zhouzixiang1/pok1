@@ -50,6 +50,13 @@ web/server/static/
 
 # Archived runtime/log data — preserved on disk, NOT tracked (origins were the
 # gitignored web/logs/ and web/core/results/). Keeping them out of git avoids
+
+# THP match output from local national TCP platform
+records/
+sever/records/
+
+# Research H2H evaluation results
+scripts/research_eval/results/
 # committing bulky logs/replays/.bak into history.
 archive/logs/
 archive/forensic/

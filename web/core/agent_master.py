@@ -223,6 +223,46 @@ def _normalize_source_symbol(value: object) -> str | None:
     return f"{filename}:{symbol}"
 
 
+def _fuzzy_resolve_symbol(symbol: str, source_graph: dict) -> str | None:
+    """Resolve a source symbol that may have a minor naming error.
+
+    The system injects the exact call index into every scout prompt, but weak
+    models still misspell function names (e.g. ``_hole_ids`` instead of
+    ``_card_ids``).  This resolver corrects unambiguous within-file mismatches
+    without weakening the existence guarantee: the resolved symbol must still
+    be a real entry in the frozen source graph.
+    """
+    if symbol in source_graph:
+        return symbol
+    file_part, _, leaf = symbol.rpartition(":")
+    if not file_part or not leaf:
+        return None
+    candidates = []
+    for key in source_graph:
+        key_file, _, key_leaf = key.rpartition(":")
+        if key_file == file_part:
+            candidates.append((key, key_leaf.rsplit(".", 1)[-1]))
+    if not candidates:
+        return None
+    bare_leaf = leaf.rsplit(".", 1)[-1]
+    exact = [k for k, cl in candidates if cl == bare_leaf]
+    if len(exact) == 1:
+        return exact[0]
+    import difflib
+    close = difflib.get_close_matches(
+        bare_leaf, [cl for _, cl in candidates], n=1, cutoff=0.5)
+    if not close:
+        return None
+    matches = [k for k, cl in candidates if cl == close[0]]
+    if len(matches) == 1:
+        from system_log import log_system_event
+        log_system_event("proposal.fuzzy_symbol_resolution", "info",
+            f"fuzzy resolved {symbol} to {matches[0]}",
+            {"claimed": symbol, "resolved": matches[0]})
+        return matches[0]
+    return None
+
+
 def _validated_snapshot_reference(value: object, snapshot_dir: Path | None) -> str | None:
     text = str(value or "").strip()
     if not text.startswith("snapshot:") or "#" not in text:
@@ -347,12 +387,13 @@ def _validated_master_proposal(
     source_symbols: list[str] = []
     for raw_symbol in raw_symbols:
         symbol = _normalize_source_symbol(raw_symbol)
-        if (
-            symbol is None
-            or symbol in source_symbols
-            or (source_graph is not None and symbol not in source_graph)
-        ):
+        if symbol is None or symbol in source_symbols:
             return None
+        if source_graph is not None and symbol not in source_graph:
+            resolved = _fuzzy_resolve_symbol(symbol, source_graph)
+            if resolved is None or resolved in source_symbols:
+                return None
+            symbol = resolved
         source_symbols.append(symbol)
     normalized["source_symbols"] = source_symbols
 
@@ -362,7 +403,13 @@ def _validated_master_proposal(
     chain: list[str] = []
     for raw_symbol in raw_chain:
         symbol = _normalize_source_symbol(raw_symbol)
-        if symbol is None or symbol not in source_symbols:
+        if symbol is None:
+            return None
+        if symbol not in source_symbols and source_graph is not None:
+            resolved = _fuzzy_resolve_symbol(symbol, source_graph)
+            if resolved is not None and resolved in source_symbols:
+                symbol = resolved
+        if symbol not in source_symbols:
             return None
         chain.append(symbol)
     if len(set(chain)) != len(chain):
@@ -425,9 +472,14 @@ def _validated_master_proposal(
                     if idx > 0:
                         remainder = remainder[:idx].strip()
                 symbol = _normalize_source_symbol(remainder)
-                if symbol is not None and symbol in source_symbols:
-                    normalized_ref = f"source:{symbol}"
-                    source_ref_symbols.add(symbol)
+                if symbol is not None:
+                    if symbol not in source_symbols and source_graph is not None:
+                        resolved = _fuzzy_resolve_symbol(symbol, source_graph)
+                        if resolved is not None and resolved in source_symbols:
+                            symbol = resolved
+                    if symbol in source_symbols:
+                        normalized_ref = f"source:{symbol}"
+                        source_ref_symbols.add(symbol)
                 break
         if not matched_source and text.startswith("snapshot:"):
             normalized_ref = _validated_snapshot_reference(text, snapshot_dir)
