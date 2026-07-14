@@ -25,6 +25,11 @@ if __package__:
         map_observed_raise_to,
         tcp_card_id,
     )
+    from .realtime_resolver import (
+        ResolveConfig,
+        resolve_public_state,
+        should_resolve,
+    )
 else:
     from a2_runtime import (
         ActionContext,
@@ -33,6 +38,11 @@ else:
         legal_action_specs,
         map_observed_raise_to,
         tcp_card_id,
+    )
+    from realtime_resolver import (
+        ResolveConfig,
+        resolve_public_state,
+        should_resolve,
     )
 
 
@@ -179,6 +189,9 @@ class A2BlueprintClient:
         self.fold_seen = False
         self.responding_to_check = False
         self.last_off_tree = None
+        self.resolve_enabled = os.environ.get("A2_RESOLVE", "1") == "1"
+        self.resolve_iterations = int(os.environ.get("A2_RESOLVE_ITERS", "10"))
+        self.resolve_depth = int(os.environ.get("A2_RESOLVE_DEPTH", "2"))
 
     def _log(self, text: str) -> None:
         if self.log is not None:
@@ -272,6 +285,64 @@ class A2BlueprintClient:
         context = self._context()
         fallback = self._fallback(context)
         self.decision_number += 1
+
+        # Try real-time resolving if enabled and beneficial
+        if self.resolve_enabled and self.street != "preflop":
+            remaining_ms = (self.decision_deadline - (time.monotonic() - started)) * 1000
+            if remaining_ms > 500:
+                try:
+                    from .hunl_abstraction import HUNLInformationAbstraction
+                    from .a2_runtime import hand_bucket, normalize_action_specs, ActionSpec
+                    from .a2_runtime import information_key
+
+                    # Build blueprint strategy for current infoset
+                    bucket = hand_bucket(self.private_cards, self.board)
+                    infoset_key = information_key(self.street, bucket, tuple(self.stage_actions))
+                    bp_lookup = self.blueprint.lookup(
+                        street=self.street,
+                        bucket=bucket,
+                        stage_actions=tuple(self.stage_actions),
+                    )
+                    bp_strategy = {}
+                    if bp_lookup and bp_lookup.matched_strategy:
+                        for spec, prob in zip(
+                            normalize_action_specs(context),
+                            bp_lookup.matched_strategy,
+                        ):
+                            bp_strategy[spec.action_id] = prob
+
+                    if bp_strategy:
+                        resolve_cfg = ResolveConfig(
+                            iterations=self.resolve_iterations,
+                            depth=self.resolve_depth,
+                            seed=self.seed + self.decision_number,
+                            method="plain",
+                        )
+                        # Resolve is computationally expensive — only run if time permits
+                        resolve_result = resolve_public_state(
+                            state=None,  # resolver uses abstraction-based evaluation
+                            config=resolve_cfg,
+                            blueprint_strategy=bp_strategy,
+                            abstraction=None,
+                        )
+                        # Pick action from resolved strategy
+                        import random as _rng
+                        rng = _rng.Random(self._random_unit())
+                        cumulative = 0.0
+                        roll = rng.random()
+                        for action_id, prob in zip(resolve_result.actions, resolve_result.resolved_strategy):
+                            cumulative += prob
+                            if roll <= cumulative:
+                                # Map action_id to wire action
+                                specs = {s.action_id: s for s in legal_action_specs(context)}
+                                if action_id in specs:
+                                    action = specs[action_id].wire_action
+                                    self._log(f"resolved_action={action} method=resolve")
+                                    return action
+                except Exception as exc:
+                    self._log(f"resolve_error={type(exc).__name__}:{str(exc)[:200]}")
+
+        # Blueprint fallback
         try:
             chosen = choose_blueprint_action(
                 self.blueprint,
