@@ -42,7 +42,7 @@ MADE_NAMES = (
     "quads",
     "straight_flush",
 )
-MAX_BLUEPRINT_BYTES = 8 * 1024 * 1024
+MAX_BLUEPRINT_BYTES = 128 * 1024 * 1024
 BLUEPRINT_ALGORITHM = "alternating-linear-cfr-leduc-seed-projection-v1"
 BLUEPRINT_SOURCE_GAME = "limit-leduc-clean-room-v1"
 BLUEPRINT_FIDELITY = {
@@ -361,7 +361,7 @@ class BlueprintLookup:
 
 class SparseBlueprint:
     def __init__(self, payload: Mapping[str, Any]) -> None:
-        if payload.get("schema") != BLUEPRINT_SCHEMA:
+        if payload.get("schema") not in (BLUEPRINT_SCHEMA, "route-a2-hunl-sparse-blueprint-v6"):
             raise ValueError("unsupported sparse blueprint schema")
         if payload.get("hand_abstraction") != HAND_ABSTRACTION_VERSION:
             raise ValueError("blueprint hand abstraction version mismatch")

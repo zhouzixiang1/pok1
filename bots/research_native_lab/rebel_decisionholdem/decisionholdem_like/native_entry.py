@@ -39,11 +39,10 @@ else:
         map_observed_raise_to,
         tcp_card_id,
     )
-    from realtime_resolver import (
-        ResolveConfig,
-        resolve_public_state,
-        should_resolve,
-    )
+    # Resolver not available in standalone mode — disable
+    ResolveConfig = None
+    resolve_public_state = None
+    should_resolve = None
 
 
 NATIONAL_STREAM_DECODER_VERSION = 3
