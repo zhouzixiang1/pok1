@@ -17,6 +17,7 @@ import opponent_multitask_ensemble_runtime_v3 as v3_ensemble  # noqa: E402
 import opponent_multitask_ensemble_runtime_v4 as runtime  # noqa: E402
 import opponent_multitask_model_v3 as v3_models  # noqa: E402
 import opponent_multitask_model_v4 as models  # noqa: E402
+import select_opponent_multitask_v4_policy as torch_selector  # noqa: E402
 import win_first_policy_v4 as win_first  # noqa: E402
 
 
@@ -298,6 +299,126 @@ def test_v4_ensemble_selection_is_disabled_without_bound_policy() -> None:
     assert ensemble.select_candidate(
         values, outcomes, [{"label_id": 3}], rule_label_id=2
     ) is None
+
+
+def test_torch_prepared_selector_matches_stdlib_runtime_per_action() -> None:
+    ensemble = runtime.OpponentMultiTaskEnsembleRuntimeV4(_payload())
+    policy = _selected_policy()
+
+    def values(
+        hand: list[float], tail: list[float], match: list[float]
+    ) -> dict:
+        return {
+            "delta_vs_rule": {"lower": hand},
+            "tail_delta_vs_rule": {"lower": tail},
+            "match_delta_vs_rule": {"lower": match},
+        }
+
+    def assert_parity(
+        outcomes: dict,
+        predictions: dict,
+        candidates: list[dict],
+        *,
+        rule_label_id: int,
+    ) -> dict | None:
+        prepared = {
+            "outcomes": outcomes,
+            "values": predictions,
+            "candidates": candidates,
+            "rule_id": rule_label_id,
+        }
+        torch_selected = torch_selector.select_win_first_candidate(
+            prepared, policy
+        )
+        stdlib_selected = ensemble.select_candidate(
+            predictions,
+            outcomes,
+            candidates,
+            rule_label_id=rule_label_id,
+        )
+        assert stdlib_selected == torch_selected
+        return torch_selected
+
+    boundary_cases = [
+        # LCB == 0.5 is allowed.
+        (0, 1, 0.5, 0.2, 1.0, 1.0, 1.0, True),
+        # Candidate LCB must be strictly greater than the rule UCB.
+        (1, 2, 0.5, 0.5, 1_000.0, 1_000.0, 1_000.0, False),
+        # Immediate-hand LCB == 0 is allowed when the chip score is positive.
+        (2, 3, 0.8, 0.2, 0.0, 1.0, 1.0, True),
+        # A negative immediate-hand epsilon is not allowed.
+        (3, 4, 0.8, 0.2, -1.0e-12, 10.0, 10.0, False),
+        # Chip score equal to the zero margin is not allowed.
+        (4, 5, 0.8, 0.2, 0.0, 0.0, 0.0, False),
+        # A positive chip-score epsilon is allowed.
+        (5, 0, 0.8, 0.2, 0.0, 0.0, 2.0e-12, True),
+    ]
+    for (
+        label_id,
+        rule_label_id,
+        candidate_probability,
+        rule_probability,
+        hand,
+        tail,
+        match,
+        eligible,
+    ) in boundary_cases:
+        probabilities = [0.1] * len(v3_models.LABELS)
+        probabilities[label_id] = candidate_probability
+        probabilities[rule_label_id] = rule_probability
+        outcomes = win_first.aggregate_member_probabilities(
+            [list(probabilities) for _ in range(3)],
+            uncertainty_std_weight=1.0,
+        )
+        hand_values = [0.0] * len(v3_models.LABELS)
+        tail_values = [0.0] * len(v3_models.LABELS)
+        match_values = [0.0] * len(v3_models.LABELS)
+        hand_values[label_id] = hand
+        tail_values[label_id] = tail
+        match_values[label_id] = match
+        selected = assert_parity(
+            outcomes,
+            values(hand_values, tail_values, match_values),
+            [{"label_id": label_id, "action": 100 + label_id}],
+            rule_label_id=rule_label_id,
+        )
+        assert (selected is not None) is eligible
+
+    generator = torch.Generator().manual_seed(20260714)
+    for trial in range(8):
+        outcomes = win_first.aggregate_member_probabilities(
+            torch.rand(3, len(v3_models.LABELS), generator=generator).tolist(),
+            uncertainty_std_weight=1.0,
+        )
+        random_values = values(*[
+            (
+                torch.rand(len(v3_models.LABELS), generator=generator) * 80.0
+                - 20.0
+            ).tolist()
+            for _ in range(3)
+        ])
+        for label_id in range(len(v3_models.LABELS)):
+            rule_label_id = (
+                label_id + 1 + trial % (len(v3_models.LABELS) - 1)
+            ) % len(v3_models.LABELS)
+            assert_parity(
+                outcomes,
+                random_values,
+                [{"label_id": label_id, "trial": trial}],
+                rule_label_id=rule_label_id,
+            )
+
+        rule_label_id = trial % len(v3_models.LABELS)
+        assert_parity(
+            outcomes,
+            random_values,
+            [
+                {"label_id": label_id, "trial": trial}
+                for label_id in reversed(range(len(v3_models.LABELS)))
+                if label_id != rule_label_id
+            ],
+            rule_label_id=rule_label_id,
+        )
 
 
 def test_v4_ensemble_rejects_member_or_calibration_drift() -> None:

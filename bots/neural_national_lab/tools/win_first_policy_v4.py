@@ -317,7 +317,6 @@ def select_candidate(
             scored["candidate_probability_lcb"],
             scored["probability_uplift_lcb"],
             scored["chip_score"],
-            -label_id,
         )
         if best is None or key > best[0]:
             best = (key, dict(candidate), scored)
