@@ -970,7 +970,17 @@ def validate_bootstrap_checkpoint(
     if require_direction_audit:
         direction = checkpoint.get("direction_audit")
         if not isinstance(direction, dict) or direction.get("approved") is not True:
-            errors.append("system_bootstrap_direction_audit_missing_or_rejected")
+            # Protocol bootstrap direction audits are deterministic system
+            # receipts (no LLM), so they carry protocol_bootstrap_no_strength
+            # with a binding receipt_digest instead of an LLM "approved" flag.
+            # Accept that binding as the equivalent of approval so Master can
+            # proceed without a chicken-and-egg dependency on the plan it has
+            # not yet produced.
+            if not (
+                direction.get("protocol_bootstrap_no_strength") is True
+                and direction.get("receipt_digest")
+            ):
+                errors.append("system_bootstrap_direction_audit_missing_or_rejected")
     return list(dict.fromkeys(errors))
 
 
