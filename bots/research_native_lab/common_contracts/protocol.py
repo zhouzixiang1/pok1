@@ -176,6 +176,8 @@ class NationalProtocolSession:
         self._last_hero_small_blind: bool | None = None
         self._decision_serial = 0
         self._pending_decision_id: int | None = None
+        self._name_request_pending = False
+        self._name_response_sent = False
 
     def _assert_owner(self) -> None:
         if threading.get_ident() != self._owner_thread:
@@ -191,6 +193,10 @@ class NationalProtocolSession:
 
     def name_response(self) -> str:
         self._assert_owner()
+        if not self._name_request_pending or self._name_response_sent:
+            raise ProtocolStateError("name response is stale or unsolicited")
+        self._name_request_pending = False
+        self._name_response_sent = True
         return self.bot_name
 
     def _refresh_pending(self) -> int | None:
@@ -212,7 +218,19 @@ class NationalProtocolSession:
     def receive(self, token: str) -> ProtocolEvent:
         self._assert_owner()
         if token == "name":
+            if (
+                self._name_request_pending
+                or self._name_response_sent
+                or self.current is not None
+                or self.hands_started != 0
+            ):
+                raise ProtocolStateError("duplicate or out-of-order name request")
+            self._name_request_pending = True
             return ProtocolEvent("name_requested")
+        if self._name_request_pending:
+            raise ProtocolStateError("platform state arrived before the name response")
+        if not self._name_response_sent:
+            raise ProtocolStateError("platform state arrived before the name handshake")
         if token.startswith("preflop|"):
             return self._receive_preflop(token)
         if token.startswith(("flop|", "turn|", "river|")):
@@ -409,6 +427,8 @@ class NationalProtocolSession:
         """Consume the current one-shot decision lease on the owner thread."""
 
         self._assert_owner()
+        if type(decision_id) is not int:
+            raise ProtocolStateError("decision id must be an exact integer")
         if decision_id != self._pending_decision_id:
             raise ProtocolStateError("stale, duplicate or unsolicited action")
         if self.current is None or self.current.actor != 0:

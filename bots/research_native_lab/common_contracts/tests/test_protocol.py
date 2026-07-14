@@ -32,6 +32,13 @@ TOKENS = [
 ]
 
 
+def _handshaken_session(name: str) -> NationalProtocolSession:
+    session = NationalProtocolSession(name)
+    assert session.receive("name").kind == "name_requested"
+    assert session.name_response() == name
+    return session
+
+
 def test_stream_decoder_handles_every_single_split_and_sticky_packets() -> None:
     wire = "".join(TOKENS)
     for split in range(len(wire) + 1):
@@ -87,9 +94,23 @@ def test_stream_decoder_rejects_incomplete_or_unknown_tail() -> None:
         decoder.finish()
 
 
+def test_sticky_name_and_preflop_flow_through_the_ordered_session_handshake() -> None:
+    decoder = StreamDecoder()
+    tokens = decoder.feed("namepreflop|SMALLBLIND|<0,12><1,11>")
+    assert tokens == ["name", "preflop|SMALLBLIND|<0,12><1,11>"]
+
+    session = NationalProtocolSession("StickyHandshake")
+    name_event = session.receive(tokens[0])
+    assert name_event.kind == "name_requested"
+    assert session.name_response() == "StickyHandshake"
+    preflop_event = session.receive(tokens[1])
+    assert preflop_event.kind == "hand_started"
+    assert preflop_event.payload["decision_id"] == 1
+    assert session.pending_decision_id == 1
+
+
 def test_session_reconstructs_suppressed_preflop_close_and_showdown() -> None:
-    session = NationalProtocolSession("ResearchA")
-    assert session.receive("name").kind == "name_requested"
+    session = _handshaken_session("ResearchA")
     start = session.receive("preflop|SMALLBLIND|<0,12><1,11>")
     decision = start.payload["decision_id"]
     session.submit_action(decision, "call")
@@ -118,7 +139,7 @@ def test_session_reconstructs_suppressed_preflop_close_and_showdown() -> None:
 
 
 def test_session_infers_only_opponent_closing_action_at_stage_boundary() -> None:
-    session = NationalProtocolSession("ResearchB")
+    session = _handshaken_session("ResearchB")
     session.receive("preflop|BIGBLIND|<0,12><1,11>")
     event = session.receive("call")
     session.submit_action(event.payload["decision_id"], "check")
@@ -131,7 +152,7 @@ def test_session_infers_only_opponent_closing_action_at_stage_boundary() -> None
 
 
 def test_session_rejects_unsolicited_duplicate_and_non_owner_actions() -> None:
-    session = NationalProtocolSession("ResearchC")
+    session = _handshaken_session("ResearchC")
     start = session.receive("preflop|SMALLBLIND|<0,12><1,11>")
     ticket = start.payload["decision_id"]
     session.submit_action(ticket, "fold")
@@ -153,8 +174,52 @@ def test_session_rejects_unsolicited_duplicate_and_non_owner_actions() -> None:
     assert isinstance(failures[0], ProtocolStateError)
 
 
+@pytest.mark.parametrize("forged_id", (True, False, 1.0, "1"))
+def test_session_rejects_non_exact_integer_decision_ids_without_consuming_lease(
+    forged_id: object,
+) -> None:
+    session = _handshaken_session("StrictDecisionId")
+    start = session.receive("preflop|SMALLBLIND|<0,12><1,11>")
+    decision_id = start.payload["decision_id"]
+    assert decision_id == 1
+
+    with pytest.raises(ProtocolStateError, match="exact integer"):
+        session.submit_action(forged_id, "fold")  # type: ignore[arg-type]
+
+    assert session.pending_decision_id == decision_id
+    event = session.submit_action(decision_id, "fold")
+    assert event.kind == "hero_action"
+
+
+def test_name_response_is_one_shot_and_name_requests_are_ordered() -> None:
+    unsolicited = NationalProtocolSession("StrictName")
+    with pytest.raises(ProtocolStateError, match="unsolicited"):
+        unsolicited.name_response()
+
+    pending = NationalProtocolSession("StrictName")
+    assert pending.receive("name").kind == "name_requested"
+    with pytest.raises(ProtocolStateError, match="before the name response"):
+        pending.receive("preflop|SMALLBLIND|<0,12><1,11>")
+    with pytest.raises(ProtocolStateError, match="duplicate"):
+        pending.receive("name")
+    assert pending.name_response() == "StrictName"
+    with pytest.raises(ProtocolStateError, match="stale"):
+        pending.name_response()
+    with pytest.raises(ProtocolStateError, match="duplicate"):
+        pending.receive("name")
+
+    missing = NationalProtocolSession("StrictName")
+    with pytest.raises(ProtocolStateError, match="before the name handshake"):
+        missing.receive("preflop|SMALLBLIND|<0,12><1,11>")
+    assert missing.receive("name").kind == "name_requested"
+    assert missing.name_response() == "StrictName"
+    missing.receive("preflop|SMALLBLIND|<0,12><1,11>")
+    with pytest.raises(ProtocolStateError, match="duplicate"):
+        missing.receive("name")
+
+
 def test_official_hand70_shape_requires_independent_thp_proof() -> None:
-    session = NationalProtocolSession("ResearchD")
+    session = _handshaken_session("ResearchD")
     session.hands_started = 70
     session.settlements_received = 69
     session.current = NationalGameState.new_hand(70, small_blind=0).apply_action(
@@ -167,7 +232,7 @@ def test_official_hand70_shape_requires_independent_thp_proof() -> None:
 
 
 def test_session_rejects_early_or_impossible_settlement() -> None:
-    session = NationalProtocolSession("AdversarialEarn")
+    session = _handshaken_session("AdversarialEarn")
     session.receive("preflop|BIGBLIND|<0,12><1,11>")
     with pytest.raises(ProtocolStateError, match="before a terminal"):
         session.receive("earnChips 100")
@@ -178,7 +243,7 @@ def test_session_rejects_early_or_impossible_settlement() -> None:
 
 
 def test_showdown_before_earn_is_cross_checked_when_earn_arrives() -> None:
-    session = NationalProtocolSession("ShowdownFirst")
+    session = _handshaken_session("ShowdownFirst")
     start = session.receive("preflop|SMALLBLIND|<0,12><1,11>")
     session.submit_action(start.payload["decision_id"], "call")
     session.receive("flop|<2,0><3,1><0,2>")
@@ -197,7 +262,7 @@ def test_showdown_before_earn_is_cross_checked_when_earn_arrives() -> None:
 
 
 def test_new_hand_requires_showdown_disclosure_and_blinds_alternate() -> None:
-    session = NationalProtocolSession("Lifecycle")
+    session = _handshaken_session("Lifecycle")
     start = session.receive("preflop|SMALLBLIND|<0,12><1,11>")
     session.submit_action(start.payload["decision_id"], "fold")
     session.receive("earnChips -50")
@@ -206,7 +271,7 @@ def test_new_hand_requires_showdown_disclosure_and_blinds_alternate() -> None:
 
     # A fresh session reaches showdown and receives earn but not oppo_hands;
     # the next hand cannot silently discard that missing disclosure.
-    showdown_session = NationalProtocolSession("MissingDisclosure")
+    showdown_session = _handshaken_session("MissingDisclosure")
     start = showdown_session.receive("preflop|SMALLBLIND|<0,12><1,11>")
     showdown_session.submit_action(start.payload["decision_id"], "allin")
     showdown_session.receive("call")
@@ -219,7 +284,7 @@ def test_new_hand_requires_showdown_disclosure_and_blinds_alternate() -> None:
 
 
 def test_strict_action_spacing_is_not_sanitized() -> None:
-    session = NationalProtocolSession("ResearchE")
+    session = _handshaken_session("ResearchE")
     start = session.receive("preflop|SMALLBLIND|<0,12><1,11>")
     for invalid in ("raise  200", "raise\t200", " raise 200", "raise 200 "):
         with pytest.raises(ValueError):
