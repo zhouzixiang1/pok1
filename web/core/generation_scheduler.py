@@ -653,6 +653,42 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
+    # If the checkpoint is already past the prepare/selected stage (e.g.
+    # direction_audited or master_planned), return a generation context from
+    # the existing checkpoint instead of trying to re-prepare from scratch.
+    # Re-preparing would attempt an illegal backwards stage transition.
+    try:
+        from evolution_infra import read_pipeline_checkpoint
+        _existing_ckpt = read_pipeline_checkpoint()
+        if _existing_ckpt and _existing_ckpt.get("stage") not in (
+            None, "selected", "preparing",
+        ):
+            _next_v = _existing_ckpt.get("next_v")
+            _source_v = _existing_ckpt.get("source_v")
+            if _next_v is not None and _source_v is not None:
+                _parent2_v = _existing_ckpt.get("parent2_v")
+                _strategy = "crossover" if _parent2_v else "master"
+                log_system_event(
+                    "pipeline.prepare_skipped_existing_checkpoint",
+                    "info",
+                    f"Prepare skipped: checkpoint already at {_existing_ckpt.get('stage')}",
+                    {
+                        "next_v": _next_v,
+                        "source_v": _source_v,
+                        "stage": _existing_ckpt.get("stage"),
+                    },
+                )
+                return GenerationContext(
+                    current_v=_source_v,
+                    next_v=_next_v,
+                    strategy=_strategy,
+                    source_v=_source_v,
+                    crossover_parents=(_source_v, _parent2_v) if _parent2_v else (),
+                    gen_count=0,
+                )
+    except Exception:
+        pass
+
     try:
         from workflow_profiles import get_workflow_profile
 
