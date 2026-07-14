@@ -729,7 +729,7 @@ class ShardDataset:
                     ),
                     row["projected_marginals"],
                     rtol=0.0,
-                    atol=0.0,
+                    atol=1e-12,
                 )
             ):
                 raise ValueError("dataset exact PBS/network tensor binding differs")

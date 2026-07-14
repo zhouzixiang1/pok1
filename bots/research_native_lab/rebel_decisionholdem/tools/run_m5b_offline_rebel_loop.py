@@ -295,7 +295,7 @@ def _train_network(
     train_cfg = config["training"]
     seeds = config["seeds"]
 
-    device = torch.device("cuda" if torch.cuda.is_available() and train_cfg.get("device_required") == "cuda" else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() and train_cfg.get("device_required") == "cuda" else "cpu")
     if train_cfg.get("device_required") == "cuda" and device.type != "cuda":
         fallback = train_cfg.get("fallback_policy", "")
         if "fail_closed" in fallback and "cpu" not in fallback:
