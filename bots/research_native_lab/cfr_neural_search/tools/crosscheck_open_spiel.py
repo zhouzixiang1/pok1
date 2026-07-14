@@ -244,7 +244,7 @@ def _trained_leduc_crosscheck(game) -> dict[str, object]:
         seed=23,
         samples_per_player=1,
     )
-    state = SolverState(route_game.name, config)
+    state = SolverState.new_for_game(route_game, config)
     train_batches(route_game, state, batches=500, shard_count=1)
     route_policy = average_policy(state)
     if len(route_policy) != 288:

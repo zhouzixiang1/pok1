@@ -57,8 +57,8 @@ class ExternalSamplingReferenceTest(unittest.TestCase):
 
     def test_external_sampling_mean_matches_independent_full_tree_delta(self):
         game = KuhnPoker()
-        state = SolverState(
-            game.name,
+        state = SolverState.new_for_game(
+            game,
             SolverConfig(seed=314159, samples_per_player=1),
         )
         sample_count = 20_000

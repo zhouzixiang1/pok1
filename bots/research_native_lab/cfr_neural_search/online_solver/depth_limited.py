@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..blueprint.evaluation import (
@@ -21,6 +22,12 @@ from ..blueprint.evaluation import (
     validate_behavior_policy,
 )
 from ..core.game import Action, CHANCE_PLAYER, ExtensiveGame, GameState, TERMINAL_PLAYER
+from ..core.identity import (
+    GAME_IDENTITY_SCHEMA,
+    file_sha256,
+    game_identity_sha256,
+    payload_sha256,
+)
 
 LeafEvaluator = Callable[[GameState], tuple[float, float]]
 
@@ -427,6 +434,24 @@ class DepthLimitedGame:
     @property
     def name(self) -> str:
         return f"{self.game.name}:depth={self.max_depth}:leaf={self.leaf.identity}"
+
+    def identity_sha256(self) -> str:
+        route_root = Path(__file__).parents[1]
+        return payload_sha256(
+            {
+                "schema": GAME_IDENTITY_SCHEMA,
+                "game": self.name,
+                "semantics": "exact-depth-limited-wrapper-v2",
+                "base_game_identity": game_identity_sha256(self.game),
+                "max_depth": self.max_depth,
+                "leaf_identity": self.leaf.identity,
+                "leaf_game_binding": self.leaf.game_binding,
+                "source": file_sha256(Path(__file__)),
+                "core_identity_source": file_sha256(
+                    route_root / "core" / "identity.py"
+                ),
+            }
+        )
 
     def new_initial_state(self) -> DepthLimitedState:
         return DepthLimitedState(

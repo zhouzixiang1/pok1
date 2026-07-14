@@ -49,11 +49,11 @@ class CommonAdapterTest(unittest.TestCase):
     def test_common_dependency_content_binding_has_not_drifted(self):
         self.assertEqual(
             COMMON_CONTRACT_COMMIT,
-            "cc8beed256024fadd1cf89b0e40dcdea6a5c959d",
+            "a938d7cbc36016cb7b5cb444a7eb2e0f00cae73e",
         )
         self.assertEqual(
             COMMON_CONTRACT_GIT_TREE,
-            "9cfa297b8c61024154990c775962d67aa3f0543b",
+            "8066a0741bfefc42026d098f0ffc46cbfb424f45",
         )
         package_root = Path(common_contracts_package.__file__).resolve().parent
         for relative_path, expected_sha256 in COMMON_RUNTIME_FILE_SHA256:

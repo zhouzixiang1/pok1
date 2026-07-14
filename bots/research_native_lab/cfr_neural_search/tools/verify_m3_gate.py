@@ -507,7 +507,7 @@ def _cached_frozen_training_runs(route_root_text: str, input_digest: str) -> str
     rows: list[dict[str, Any]] = []
     for relative_path in FROZEN_CONFIGS:
         game, config, batches, shards = _load_experiment(route_root, relative_path)
-        state = SolverState(game.name, config)
+        state = SolverState.new_for_game(game, config)
         train_batches(game, state, batches=batches, shard_count=shards)
         result = exploitability(game, average_policy(state))
         expected_digest = EXPECTED_FROZEN_STATE_SHA256[relative_path]
@@ -547,7 +547,7 @@ def _derive_state_fixtures() -> list[dict[str, Any]]:
         spec = copy.deepcopy(raw_spec)
         game = make_game(spec["game"])
         config = SolverConfig.from_payload(spec["config"])
-        state = SolverState(game.name, config)
+        state = SolverState.new_for_game(game, config)
         train_batches(game, state, spec["batches"], spec["shards"])
         fixture_id = spec["id"]
         observed[fixture_id] = state.digest
@@ -577,7 +577,7 @@ def _cached_trained_leduc_route(input_digest: str) -> str:
         seed=23,
         samples_per_player=1,
     )
-    state = SolverState(game.name, config)
+    state = SolverState.new_for_game(game, config)
     train_batches(game, state, batches=500, shard_count=1)
     policy = average_policy(state)
     result = exploitability(game, policy)

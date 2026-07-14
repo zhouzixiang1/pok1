@@ -124,7 +124,7 @@ class DepthLimitedTest(unittest.TestCase):
             rollout_leaf({}, game=game, label="second"),
         )
         self.assertNotEqual(first.name, second.name)
-        state = SolverState(first.name, SolverConfig())
+        state = SolverState.new_for_game(first, SolverConfig())
         with self.assertRaisesRegex(ValueError, "state is for"):
             train_batches(second, state, batches=1)
 
@@ -231,8 +231,8 @@ class DepthLimitedTest(unittest.TestCase):
             rollout_leaf({}, game=base_game, label="uniform-kuhn-v1"),
         )
         baseline = exploitability(game, {}).exploitability
-        state = SolverState(
-            game.name,
+        state = SolverState.new_for_game(
+            game,
             SolverConfig(
                 update_rule="linear",
                 seed=31,

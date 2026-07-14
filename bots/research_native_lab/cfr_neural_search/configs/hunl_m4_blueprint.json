@@ -1,0 +1,139 @@
+{
+  "schema": "route-b-hunl-m4-config-v2",
+  "training": {
+    "abstraction": {
+      "preflop_mode": "class169",
+      "equity_samples": 48,
+      "equity_buckets": 10
+    },
+    "solver": {
+      "update_rule": "linear",
+      "averaging_mode": "sampled",
+      "seed": 2026071401,
+      "samples_per_player": 1,
+      "cfr_plus_delay": 0,
+      "dcfr_alpha": 1.5,
+      "dcfr_beta": 0.0,
+      "dcfr_gamma": 2.0
+    },
+    "batches": 32,
+    "shard_count": 1,
+    "max_workers": 1,
+    "checkpoint_every_complete_batches": 1
+  },
+  "diagnostic_evidence": {
+    "hands": 70,
+    "deck_root_seed": 2026071499001,
+    "policy_seeds": [2026071501001, 2026071501002],
+    "seed_domains_must_be_distinct_from_training": true,
+    "local_wire_mode": "local-sever-lf",
+    "local_action_delay_sec": 0.0,
+    "result_authority": "diagnostic_only",
+    "chip_result_acceptance_weight": 0
+  },
+  "influence_gate": {
+    "material_l1_tolerance": 1e-06,
+    "required_material_rows": 1,
+    "required_material_decisions_per_side": 1,
+    "allowed_material_sources": ["exact", "backoff"]
+  },
+  "scale_gate": {
+    "schema": "route-b-hunl-training-only-scale-v1",
+    "candidate_batches": [2, 4, 8, 16, 32, 64],
+    "selection_metric": "materially_nonuniform_all_rows",
+    "selection_threshold": 1,
+    "selection_rule": "first_candidate_meeting_threshold",
+    "input_authority": "training_only",
+    "forbidden_inputs": [
+      "diagnostic_tcp_results",
+      "chip_results",
+      "diagnostic_deck_seed",
+      "external_policy_seeds"
+    ],
+    "selection_status": "frozen_first_pass",
+    "frozen_observations": [
+      {
+        "backoff_row_count": 4044,
+        "batches": 2,
+        "exact_row_count": 3718,
+        "materially_nonuniform_all_rows": 0,
+        "materially_nonuniform_backoff_rows": 0,
+        "materially_nonuniform_exact_rows": 0,
+        "max_l1_from_uniform": 1.942890293094024e-16,
+        "passed": false,
+        "solver_information_rows": 5491,
+        "solver_sha256": "428f8552b069f5a577c5d0c3a20e7f5be476808177901c28e570700ff1d1a90d",
+        "training_node_touches": 11845,
+        "training_trajectories": 4
+      },
+      {
+        "backoff_row_count": 4716,
+        "batches": 4,
+        "exact_row_count": 4220,
+        "materially_nonuniform_all_rows": 0,
+        "materially_nonuniform_backoff_rows": 0,
+        "materially_nonuniform_exact_rows": 0,
+        "max_l1_from_uniform": 1.942890293094024e-16,
+        "passed": false,
+        "solver_information_rows": 6223,
+        "solver_sha256": "e649793f0488bc2cb2a0818fcd93751b3583b07410072a3f953819c34b6f02ef",
+        "training_node_touches": 13637,
+        "training_trajectories": 8
+      },
+      {
+        "backoff_row_count": 8415,
+        "batches": 8,
+        "exact_row_count": 7685,
+        "materially_nonuniform_all_rows": 0,
+        "materially_nonuniform_backoff_rows": 0,
+        "materially_nonuniform_exact_rows": 0,
+        "max_l1_from_uniform": 1.942890293094024e-16,
+        "passed": false,
+        "solver_information_rows": 11287,
+        "solver_sha256": "bc8a069952ff475b630564be57bcf70ed6b98ad0ceb46a7d154cef98913fa36c",
+        "training_node_touches": 24791,
+        "training_trajectories": 16
+      },
+      {
+        "backoff_row_count": 14981,
+        "batches": 16,
+        "exact_row_count": 14301,
+        "materially_nonuniform_all_rows": 0,
+        "materially_nonuniform_backoff_rows": 0,
+        "materially_nonuniform_exact_rows": 0,
+        "max_l1_from_uniform": 1.942890293094024e-16,
+        "passed": false,
+        "solver_information_rows": 21039,
+        "solver_sha256": "2a614da4eb5673ea5a095e6e94d32b50bbfd6d13c500328e9535a9ab7f060120",
+        "training_node_touches": 46249,
+        "training_trajectories": 32
+      },
+      {
+        "backoff_row_count": 34311,
+        "batches": 32,
+        "exact_row_count": 37237,
+        "materially_nonuniform_all_rows": 7,
+        "materially_nonuniform_backoff_rows": 5,
+        "materially_nonuniform_exact_rows": 2,
+        "max_l1_from_uniform": 1.6666666666666667,
+        "passed": true,
+        "solver_information_rows": 54773,
+        "solver_sha256": "b5b063fce594de37231d9dc8c116409156fec6e974765048f2996110c6fe8a52",
+        "training_node_touches": 118485,
+        "training_trajectories": 64
+      }
+    ],
+    "frozen_selected_batches": 32,
+    "large_training_forbidden_until": [
+      "common_and_route_tests_pass",
+      "one_vs_n_shard_digest_equal",
+      "checkpoint_resume_digest_equal",
+      "strict_corruption_and_stale_identity_rejected",
+      "training_only_first_pass_trace_frozen",
+      "fixed_70_hand_both_side_influence_pass",
+      "fixed_70_hand_semantic_replay_equal"
+    ],
+    "correctness_gate_max_batches": 64,
+    "correctness_gate_max_samples_per_player": 1
+  }
+}

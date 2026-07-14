@@ -1,94 +1,96 @@
-# CFR + Neural Leaf + Online Search：B 路线研究包
+# CFR + Neural Leaf + Online Search：Route B 研究包
 
-本目录独立实现项目原生 B 路线。当前工作树把 Common M0-M2 固定合同 `cc8beed2` 接入 M3 小型博弈正确性底座；尚未实现国赛 HUNL 蓝图、神经叶值、可扩展在线搜索、对手后验或 native TCP Bot。
+本目录是项目原生 Route B。当前里程碑 M4 已把 M3 小型博弈正确性底座扩展为一个真实国赛 HUNL 的 blueprint-only native vertical slice；神经叶值与可扩展在线搜索仍是后续里程碑，不能把当前交付描述成完整的 DecisionHoldem/ReBeL。
 
-## 当前能力
+## M4 当前能力
 
-- clean-room Kuhn 与 limit Leduc 游戏树；
-- external-sampling MCCFR；
-- 分离的 cumulative regret 与 average-strategy accumulator；
-- `vanilla`、Linear CFR、CFR+、DCFR；
-- sample-id 派生 RNG、冻结 batch、确定性 shard 与 canonical merge；
-- SHA-256 绑定的原子 checkpoint/shard 文件；
-- exact behavioral-policy value、best response、NashConv 和 exploitability；
-- exact evaluator 对非空 profile 要求完整 infoset/action schema，拒绝缺行、垃圾行、bool/字符串、负值、非有限值和非归一概率；
-- best response 的逐信息集 counterfactual value 证书，以及 Kuhn 纯策略穷举对拍；
-- Kuhn full-tree CFR delta 对 External-Sampling 采样均值的独立无偏性检查；
-- 哈希绑定 leaf identity 的 depth-limited game wrapper；收据穷举绑定 actor、infoset、合法动作顺序、chance 概率、子节点转移和终局收益；
-- Kuhn `check → bet` 公共子树的 `OracleCertifiedKuhnResolveCertificate`：局部 CBV 约束与完整树 exploitability oracle 分开记录；
-- 严格 JSON checkpoint/shard schema：SHA 只证明完整性，载入后仍拒绝类型强转、负 average accumulator 和不完整 action delta；
-- 受 Common commit/tree/关键文件 SHA 绑定的 NationalGameState/Action/LegalActionSet 策略入口；
-- 可选 OpenSpiel 审计工具，对拍 Kuhn/Leduc 树、非均匀策略值和 exploitability；
-- Python stdlib-only，可在 Python 3.12/3.14 运行。
+- 真实 2 人无限注：每手 20,000，盲注 50/100，preflop/flop/turn/river；下注合法性、街道闭合、all-in runout 和终局收益全部由共享 Common `NationalGameState` 决定。
+- 169 类 preflop 抽象，同时保留完整 1,326 手牌组合索引；postflop 使用牌移除正确、花色同构、确定性的 equity bucket，并包含 board texture、SPR 与有序公共行动历史。
+- exact infoset 使用 perfect-recall v2：当前抽象观测之外，还编码按顺序的“过去本人抽象观测 + 本人 action-id”；`inferred_from_boundary` 仅是审计元数据，不进入策略键。
+- Common-only 动作集：fold/check/call/min raise/0.5 pot/1 pot/1.5 pot/all-in，经 Common 验证并按真实 raise-to 值去重。
+- 同步 external-sampling MCCFR，累计 regret 与 average-strategy mass 分离。两位 traverser 在同一 batch 共享 chance CRN；不同 batch 使用独立 counter 域，不为了 influence gate 重放上一批牌。
+- 独立进程 shard 从同一冻结状态重建；完整规则、Common、抽象、后端、formal run config、CLI 和源树快照由摘要绑定，canonical reducer 验证精确 sample 覆盖后事务合并。
+- 稀疏压缩 blueprint：只保存正 average mass；运行时顺序为 exact → 由原始 average mass 聚合的层级 backoff → uniform emergency，并分别计数。
+- native TCP bot 自己持有 socket/decoder/Common session/decision lease/final send。官方模式发送无分隔符 raw action，默认延迟 0.30 秒；本地 `sever` 模式必须显式选择 LF 和 delay 0。
+- 真实本地 `sever` 70 手双边诊断，固定牌序与外部 policy seeds，要求两次完整 semantic projection 相同、双边均受非均匀 blueprint 实质影响、零非法/超时/崩溃。筹码结果记录但验收权重恒为 0。
 
-同步 batch 是明确的工程适配：所有 shard 从同一冻结策略采样，再按 `(traverser, sample_id)` 规范顺序合并。它保证 shard 调度不改变结果，但不声称与每条 trajectory 后立即更新策略的串行 MCCFR 逐位相同。
+## 训练规模选择
 
-## 运行
+版本化 config 预注册候选 `2, 4, 8, 16, 32, 64`，唯一规则是选择首个 `materially_nonuniform_all_rows >= required_material_rows` 的训练 batch。selector 只读取训练状态与编译后的策略行统计，显式禁止 TCP 结果、筹码、诊断牌序 seed 和外部 policy seed。
 
-从仓库根目录执行：
+2026-07-14 的受审计 batch-0 发现及独立重放均得到同一 first-pass：`2/4/8/16` 的 material row 均为 0，`32` 首次得到 7 行（exact 2、backoff 5，最大 L1 为 `1.6666666666666667`）。Config 现为 `frozen_first_pass`，完整保存五行 observation，`frozen_selected_batches` 与正式训练 target 均为 32；`--discover` 会被拒绝。正式 selector 必须从 batch 0 重跑逐行对拍，正式训练到冻结 target 后还必须让 solver digest 与最后一行全部训练统计完全相等，才能生成 blueprint。
 
-```bash
-python -m unittest discover \
-  -s bots/research_native_lab/cfr_neural_search/tests \
-  -p 'test_*.py' -v
+Selector 每个完整 batch 先原子 checkpoint，再发布不可覆盖的
+`events/000000000000.json` SHA 链并更新 hashed heartbeat。Heartbeat 的
+completed batch/checkpoint 必须精确投影它所指 authoritative event；resume
+只信最后 event tip。内存中尚未 checkpoint 的 batch 与 replay 进度只写入
+event details。主机中断留下的 event tmp 不会被截断或删除：resume 保留并
+绑定其 SHA，再从 durable checkpoint 生成 recovery event。`events.jsonl`
+是每次原子重建的审计视图，不是恢复权威。
 
-python -m bots.research_native_lab.cfr_neural_search.tools.train_small_game \
-  --config bots/research_native_lab/cfr_neural_search/configs/kuhn_m3_linear.json
+任何失效 selector workspace 都先获得不可覆盖的 `INVALIDATED.json`，再把
+同一 marker、workspace 身份和 checkpoint/trace 摘要登记到受源快照约束的
+`manifests/invalidated_selector_runs/`。入口、resume、正式训练与发布都会
+同时检查 marker 和永久 registry；即使 runtime marker 被删，registry 仍
+阻断复用。发布还会在读取前后及写 manifest 前复查，最终 manifest 记录
+registry 的完整文件清单与摘要。
+Invalidator、publish、render、write 与 verify 还共享
+`runtime_outputs/.m4-publication-invalidation.lock` 的进程/跨进程独占租约，
+把 registry 变更和发布事务线性化；长训练不持有该锁，仍在 batch 边界主动
+检查失效状态。
 
-python -m bots.research_native_lab.cfr_neural_search.tools.train_small_game \
-  --config bots/research_native_lab/cfr_neural_search/configs/leduc_m3_linear.json \
-  --checkpoint /tmp/leduc-m3-checkpoint.json
-```
+## 可复现命令
 
-OpenSpiel 只作为隔离审计依赖，不进入训练或交付运行时：
-
-```bash
-PYTHONPATH=/tmp/pok-open-spiel-1.6.15 /usr/bin/python3 -m \
-  bots.research_native_lab.cfr_neural_search.tools.crosscheck_open_spiel \
-  --expected-version 1.6.15
-```
-
-续训必须使用完全相同的 config：
+从仓库根目录执行。所有 workspace 必须预先创建在本目录的 `runtime_outputs/` 下；checkpoint、heartbeat、CANCEL 和临时 artifact 均不提交。
 
 ```bash
-python -m bots.research_native_lab.cfr_neural_search.tools.train_small_game \
-  --config bots/research_native_lab/cfr_neural_search/configs/leduc_m3_linear.json \
-  --checkpoint /tmp/leduc-m3-checkpoint.json --resume
+# frozen config 从 0 正式重放 selector；可在完整 batch 边界续跑
+python -m bots.research_native_lab.cfr_neural_search.tools.select_hunl_scale \
+  --workspace bots/research_native_lab/cfr_neural_search/runtime_outputs/m4-selector-final
+python -m bots.research_native_lab.cfr_neural_search.tools.select_hunl_scale \
+  --workspace bots/research_native_lab/cfr_neural_search/runtime_outputs/m4-selector-final \
+  --resume
+
+# 正式 blueprint 训练；每个完整 batch 原子 checkpoint + heartbeat
+python -m bots.research_native_lab.cfr_neural_search.tools.train_hunl_blueprint \
+  --workspace bots/research_native_lab/cfr_neural_search/runtime_outputs/m4-training
+python -m bots.research_native_lab.cfr_neural_search.tools.train_hunl_blueprint \
+  --workspace bots/research_native_lab/cfr_neural_search/runtime_outputs/m4-training \
+  --resume
+
+# 发布 compact artifact/selector/native evidence，并原子写入当前 M4 manifest
+python -m bots.research_native_lab.cfr_neural_search.tools.verify_m4_gate \
+  --publish \
+  --training-workspace bots/research_native_lab/cfr_neural_search/runtime_outputs/m4-training \
+  --selector-workspace bots/research_native_lab/cfr_neural_search/runtime_outputs/m4-selector-final
+
+# 不重新跑对局，只严格验证所有内容绑定
+python -m bots.research_native_lab.cfr_neural_search.tools.verify_m4_gate
 ```
 
-CLI 的 `batches` 表示本次新增 batch 数，而 checkpoint 内保存累计 `batch_index`。
-
-M3 清单由工具重算本地动态证据和完整文件表；不要手填 artifact SHA。工具只接受当前 imported route 根下的默认清单，绑定所有参与重算模块的精确 `__file__`，并在长计算前后复验 route/Common 双快照；`--write` 漂移时回滚旧清单：
+测试：
 
 ```bash
-# 只验证已签入清单
-python -m bots.research_native_lab.cfr_neural_search.tools.verify_m3_gate
-
-# 重算冻结训练/状态夹具/Common 绑定/route 文件表，原子写入后立即验证
-python -m bots.research_native_lab.cfr_neural_search.tools.verify_m3_gate --write
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -p no:cacheprovider \
+  bots/research_native_lab/cfr_neural_search/tests -q
 ```
 
-## 目录边界
+## 输出与权限边界
 
-- `core/`：本路线小型 extensive-game 接口；
-- `blueprint/`：小型游戏、MCCFR、checkpoint 和 exact evaluation；
-- `online_solver/`：depth-limited leaf 合同与小型 exact safe-resolve 证书；
-- `native_runtime/`：仅有 M3 Common-typed 策略入口和 stale-action 绑定；没有 TCP loop；
-- `configs/`：冻结的 M3 实验配置；
-- `manifests/`：来源/版本/许可证 registry；
-- `reports/`：M0/M3 证据；
-- `tools/`：可复现 CLI；
-- `tests/`：规则、收敛、best response、shard/checkpoint 测试。
+- `runtime_outputs/`：忽略的 crash-safe 工作区；永不作为交付证据。
+- `artifacts/m4/blueprint.rbbp`：受审计 compact blueprint。
+- `artifacts/m4/training_scale_selection.json`：正式 selector 的 hashed evidence envelope。
+- `artifacts/m4/local_native_evidence.json`：两次真实 70 手 TCP 的 hashed diagnostic envelope。
+- `artifacts/m4/selector_events/`：正式 selector 的完整权威 no-clobber event 文件树。
+- `artifacts/m4/selector_events.jsonl`、`selector_heartbeat.json`：由权威链逐字节重建的视图，以及精确指向链尖的最终 completed heartbeat。
+- `manifests/invalidated_selector_runs/`：不可覆盖的失效运行永久注册表；属于源输入，不是生成输出。
+- `manifests/m4_gate_20260714.json`：当前唯一 M4 本地门权威；显式声明没有 official EXE certification 和 strength 权重。
+- `manifests/m3_gate_20260714.json`：M3 历史快照，不再描述当前能力或当前源树。
 
-`common_contracts/`、`comparison/`、`.evolution_pok` 和 `national_v*` 不属于本路线写权限。
+顶层 `engine/`、Botzone JSON stdin/stdout、Web Arena 和 official EXE 筹码都不得进入本路线 M4 强度或正确性结论。正式比赛资格仍须走仓库既有的 signed official EXE full certification 流程。
 
-## 下一阶段前的硬门
+发布覆盖现有 M4 输出前会稳定备份全部标量文件及权威 event tree。任一
+blueprint/event/selection/JSONL/heartbeat/evidence/manifest 阶段失败，都会
+原子恢复旧集合，并逐字节和逐树复验；旧 manifest 最后恢复。
 
-1. Common `national-research-contract-v1` 已合并且内容绑定；任何绑定文件漂移都会重新打开 M3 集成门；
-2. 将 M3 per-sample JSON delta 替换为经证明等价的压缩/并行 reducer 后，才扩大 CFR 状态；
-3. M4 先交付 blueprint-only native vertical slice，再考虑神经叶值大资产；
-4. 当前 resolver 是 exact Kuhn oracle-filter functional adaptation，不证明局部约束可推广；HUNL 必须另行实现并验证 public-range gadget；
-5. `invoke_route_policy` 还没有 HUNL policy 实现，也没有接入 Common decision lease、deadline/resource receipt 或 TCP wire capture，因此不能参赛。
-6. 后续 M4 和任何比赛评测只能使用 `sever/` 国赛 TCP/raw socket，或 Common `native_harness`（底层 `sever/engine`）；禁止顶层 `engine/`、`engine/battle.py` 和 Botzone JSON stdin/stdout 对局后端。
-
-来源与许可证见 `reports/m0_research_license_matrix.md`。初始历史结果见 `reports/m3_small_game_report.md`，2026-07-13 复核见 `reports/m3_audit_2026-07-13.md`；Common 集成后的当前门结论、命令和内容哈希见 `reports/m3_common_integration_gate_2026-07-14.md` 与 `manifests/m3_gate_20260714.json`。
+设计、来源和已知限制见 `reports/m4_hunl_blueprint_native_2026-07-14.md`。

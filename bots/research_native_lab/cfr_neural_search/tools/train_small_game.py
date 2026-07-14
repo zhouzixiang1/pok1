@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         if state.game_name != game.name or state.config != config:
             raise ValueError("checkpoint game/config differs from requested experiment")
     else:
-        state = SolverState(game_name=game.name, config=config)
+        state = SolverState.new_for_game(game, config)
 
     started = perf_counter()
     train_batches(game, state, batches=batches, shard_count=shards)

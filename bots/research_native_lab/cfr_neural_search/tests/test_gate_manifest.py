@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import tempfile
@@ -13,14 +12,10 @@ from bots.research_native_lab.cfr_neural_search.blueprint import mccfr as mccfr_
 from bots.research_native_lab.cfr_neural_search.tools import verify_m3_gate as gate_module
 
 from bots.research_native_lab.cfr_neural_search.tools.verify_m3_gate import (
-    EXPECTED_FIXTURE_STATE_SHA256,
-    EXPECTED_FROZEN_STATE_SHA256,
-    EXPECTED_REFERENCE_STATE_SHA256,
     M3GateVerificationError,
     render_m3_gate_manifest,
     verify_artifact_map,
     verify_m3_gate_manifest,
-    verify_m3_gate_payload,
     write_m3_gate_manifest,
 )
 
@@ -118,50 +113,22 @@ class GateManifestTest(unittest.TestCase):
             manifest_path.read_bytes(),
         )
 
-    def test_renderer_rebuilds_dynamic_evidence_then_verifies(self):
+    def test_historical_m3_renderer_rejects_changed_solver_semantics(self):
         manifest = (
             Path(__file__).parents[1] / "manifests" / "m3_gate_20260714.json"
         )
-        rendered = render_m3_gate_manifest(manifest)
-        receipt = verify_m3_gate_payload(rendered, manifest)
-        self.assertGreater(receipt.files_verified, 40)
-        self.assertEqual(receipt.state_fixtures, EXPECTED_FIXTURE_STATE_SHA256)
-        self.assertIn("tools/verify_m3_gate.py", rendered["artifact_scope"]["files"])
-        self.assertIn("tests/test_gate_manifest.py", rendered["artifact_scope"]["files"])
+        with self.assertRaisesRegex(
+            M3GateVerificationError,
+            "frozen training state drifted",
+        ):
+            render_m3_gate_manifest(manifest)
 
-        files = rendered["artifact_scope"]["files"]
-        first_path = next(iter(files))
-        mutations = []
-        missing = copy.deepcopy(rendered)
-        del missing["artifact_scope"]["files"][first_path]
-        mutations.append(missing)
-        extra = copy.deepcopy(rendered)
-        extra["artifact_scope"]["files"]["absent.file"] = "0" * 64
-        mutations.append(extra)
-        drift = copy.deepcopy(rendered)
-        drift["artifact_scope"]["files"][first_path] = "0" * 64
-        mutations.append(drift)
-        for index, payload in enumerate(mutations):
-            with self.subTest(mutation=index):
-                with self.assertRaises(M3GateVerificationError):
-                    verify_m3_gate_payload(payload, manifest)
-
-    def test_real_manifest_binds_route_common_and_state_evidence(self):
+    def test_historical_m3_manifest_fails_closed_on_current_m4_tree(self):
         manifest = (
             Path(__file__).parents[1] / "manifests" / "m3_gate_20260714.json"
         )
-        receipt = verify_m3_gate_manifest(manifest)
-        self.assertGreater(receipt.files_verified, 40)
-        self.assertEqual(
-            receipt.common_git_tree,
-            "9cfa297b8c61024154990c775962d67aa3f0543b",
-        )
-        self.assertEqual(receipt.state_fixtures, EXPECTED_FIXTURE_STATE_SHA256)
-        self.assertEqual(receipt.frozen_state_sha256, EXPECTED_FROZEN_STATE_SHA256)
-        self.assertEqual(
-            receipt.reference_state_sha256,
-            EXPECTED_REFERENCE_STATE_SHA256,
-        )
+        with self.assertRaisesRegex(M3GateVerificationError, "file set mismatch"):
+            verify_m3_gate_manifest(manifest)
 
     def test_artifact_map_rejects_extra_missing_and_drift(self):
         with tempfile.TemporaryDirectory() as directory:

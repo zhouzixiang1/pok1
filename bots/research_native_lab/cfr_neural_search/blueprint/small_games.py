@@ -8,9 +8,11 @@ net of each player's contributions and are exactly zero sum.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import ClassVar
 
 from ..core.game import Action, CHANCE_PLAYER, TERMINAL_PLAYER
+from ..core.identity import GAME_IDENTITY_SCHEMA, file_sha256, payload_sha256
 
 CHECK = "check"
 BET = "bet"
@@ -25,6 +27,19 @@ _KUHN_TERMINALS = {
     (CHECK, BET, CALL),
     (CHECK, BET, FOLD),
 }
+
+
+def _small_game_source_hashes() -> dict[str, str]:
+    route_root = Path(__file__).parents[1]
+    paths = (
+        Path(__file__),
+        route_root / "core" / "game.py",
+        route_root / "core" / "identity.py",
+    )
+    return {
+        path.relative_to(route_root).as_posix(): file_sha256(path)
+        for path in paths
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +117,20 @@ class KuhnPoker:
 
     def new_initial_state(self) -> KuhnState:
         return KuhnState()
+
+    def identity_sha256(self) -> str:
+        return payload_sha256(
+            {
+                "schema": GAME_IDENTITY_SCHEMA,
+                "game": self.name,
+                "semantics": "three-card-kuhn-ante1-bet1-v1",
+                "deck": [0, 1, 2],
+                "actions": [CHECK, BET, CALL, FOLD],
+                "terminals": [list(history) for history in sorted(_KUHN_TERMINALS)],
+                "utility": "net-contribution-zero-sum",
+                "sources": _small_game_source_hashes(),
+            }
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,6 +334,22 @@ class LeducPoker:
 
     def new_initial_state(self) -> LeducState:
         return LeducState(max_raises=self.max_raises)
+
+    def identity_sha256(self) -> str:
+        return payload_sha256(
+            {
+                "schema": GAME_IDENTITY_SCHEMA,
+                "game": self.name,
+                "semantics": "six-card-two-rank-copy-limit-leduc-v1",
+                "max_raises": self.max_raises,
+                "antes": [1, 1],
+                "bet_increments": [2, 4],
+                "actions": [CHECK, CALL, FOLD, RAISE],
+                "chance": "physical-six-card-with-rank-only-information",
+                "utility": "net-contribution-zero-sum",
+                "sources": _small_game_source_hashes(),
+            }
+        )
 
 
 def make_game(name: str):

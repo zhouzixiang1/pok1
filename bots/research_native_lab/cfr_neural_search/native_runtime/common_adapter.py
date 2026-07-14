@@ -27,15 +27,15 @@ from bots.research_native_lab.common_contracts import (
 # state/action/protocol drift reopens this M3 integration gate instead of being
 # silently accepted.  The complete Common tree binding is recorded separately
 # in the route M3 manifest.
-COMMON_CONTRACT_COMMIT = "cc8beed256024fadd1cf89b0e40dcdea6a5c959d"
-COMMON_CONTRACT_GIT_TREE = "9cfa297b8c61024154990c775962d67aa3f0543b"
+COMMON_CONTRACT_COMMIT = "a938d7cbc36016cb7b5cb444a7eb2e0f00cae73e"
+COMMON_CONTRACT_GIT_TREE = "8066a0741bfefc42026d098f0ffc46cbfb424f45"
 COMMON_RUNTIME_FILE_SHA256 = (
     ("__init__.py", "5b843901602df8299f3fd845b346385fa6ff87c9aa807ef0023abf55ff8ff384"),
     ("actions.py", "69d1f5667f35ef7db3092f8afc358d8fa14f26f430246983caac8d1ac43dacaa"),
     ("cards.py", "492e89baf3b1db4f9b87f62d5f63964e22fdc998e27928c8bcb75bec6df52bce"),
     ("constants.py", "8f7116becae35ccbdf6d1ff5004a7b07dec7b6ac793ecb6d55bd05ffc8818783"),
     ("national_state.py", "6bdb467fcedf114948843419ffdf58abd8c5e545243fb6b63a15d6be6d02dbc4"),
-    ("protocol.py", "ec325068ebf905b7dcd30f180e4b6dc941b1260bba788800b48ca7ba798c5a0c"),
+    ("protocol.py", "0009ef501cb00e303d530dfb254695bde9076071c3c01de552eaf364ed1ddd2e"),
     (
         "contracts/national_game_v1.json",
         "e23831c0e83349a576658938b450b044cf527a1c4452284b6efa21445c09ffab",

@@ -21,8 +21,10 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from ..core.game import Action, CHANCE_PLAYER, ExtensiveGame, GameState, TERMINAL_PLAYER
+from ..core.identity import game_identity_sha256 as compute_game_identity
+from ..core.identity import require_sha256
 
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 UPDATE_RULES = frozenset({"vanilla", "linear", "cfr_plus", "dcfr"})
 AVERAGING_MODES = frozenset({"sampled", "full"})
 
@@ -216,6 +218,7 @@ class SolverState:
 
     game_name: str
     config: SolverConfig
+    game_identity_sha256: str
     batch_index: int = 0
     actions: ActionTable = field(default_factory=dict)
     regrets: VectorTable = field(default_factory=dict)
@@ -227,6 +230,7 @@ class SolverState:
         return {
             "format_version": FORMAT_VERSION,
             "game_name": self.game_name,
+            "game_identity_sha256": self.game_identity_sha256,
             "config": self.config.to_payload(),
             "batch_index": self.batch_index,
             "actions": {key: list(actions) for key, actions in sorted(self.actions.items())},
@@ -250,6 +254,7 @@ class SolverState:
                 {
                     "format_version",
                     "game_name",
+                    "game_identity_sha256",
                     "config",
                     "batch_index",
                     "actions",
@@ -268,6 +273,10 @@ class SolverState:
             config=SolverConfig.from_payload(
                 _json_object(payload["config"], "config")
             ),
+            game_identity_sha256=_json_string(
+                payload["game_identity_sha256"],
+                "game_identity_sha256",
+            ),
             batch_index=_json_integer(payload["batch_index"], "batch_index"),
             actions=_parse_action_table(payload["actions"], "actions"),
             regrets=_parse_vector_table(payload["regrets"], "regrets"),
@@ -283,6 +292,7 @@ class SolverState:
     def validate(self) -> None:
         if type(self.game_name) is not str or not self.game_name:
             raise ValueError("game_name must be a nonempty string")
+        require_sha256(self.game_identity_sha256, "solver game identity")
         if not isinstance(self.config, SolverConfig):
             raise TypeError("config must be SolverConfig")
         for name, value in (
@@ -345,6 +355,28 @@ class SolverState:
     def digest(self) -> str:
         return _sha256(self.to_payload())
 
+    @classmethod
+    def new_for_game(
+        cls,
+        game: ExtensiveGame,
+        config: SolverConfig,
+    ) -> "SolverState":
+        return cls(
+            game_name=game.name,
+            config=config,
+            game_identity_sha256=compute_game_identity(game),
+        )
+
+
+def _assert_state_game_identity(game: ExtensiveGame, state: SolverState) -> None:
+    if state.game_name != game.name:
+        raise ValueError(f"state is for {state.game_name}, game is {game.name}")
+    expected = compute_game_identity(game)
+    if state.game_identity_sha256 != expected:
+        raise ValueError(
+            "solver checkpoint game identity differs from current rules/semantics"
+        )
+
 
 def _string_actions(actions: tuple[Action, ...]) -> tuple[str, ...]:
     if any(not isinstance(action, str) for action in actions):
@@ -395,8 +427,17 @@ def _sample(distribution: Iterable[tuple[Action, float]], rng: random.Random) ->
     return last_action
 
 
-def _derived_seed(base_seed: int, batch_index: int, player: int, sample_id: int) -> int:
-    material = f"m3:{base_seed}:{batch_index}:{player}:{sample_id}".encode("ascii")
+def _derived_seed(
+    domain: str,
+    base_seed: int,
+    batch_index: int,
+    player: int,
+    sample_id: int,
+) -> int:
+    material = (
+        f"route-b-esmccfr-v1:{domain}:{base_seed}:{batch_index}:"
+        f"{player}:{sample_id}"
+    ).encode("ascii")
     return int.from_bytes(hashlib.blake2b(material, digest_size=16).digest(), "big")
 
 
@@ -519,8 +560,29 @@ def _external_sample(
     traverser: int,
     sample_id: int,
 ) -> SampleDelta:
-    rng = random.Random(
-        _derived_seed(state.config.seed, state.batch_index, traverser, sample_id)
+    policy_rng = random.Random(
+        _derived_seed(
+            "policy",
+            state.config.seed,
+            state.batch_index,
+            traverser,
+            sample_id,
+        )
+    )
+    # Both traverser passes in one synchronous batch share the same chance
+    # stream.  Different batches have independent counter domains.  This is
+    # the standard within-iteration common-random-number pairing only; training
+    # scale and influence acceptance must never force a future batch to revisit
+    # an earlier physical deal.  Action sampling remains independent and can
+    # never perturb the chance stream.
+    chance_rng = random.Random(
+        _derived_seed(
+            "chance-within-batch-crn",
+            state.config.seed,
+            state.batch_index,
+            0,
+            sample_id,
+        )
     )
     action_sets: ActionTable = {}
     regret_delta: VectorTable = {}
@@ -534,7 +596,7 @@ def _external_sample(
         if actor == TERMINAL_PLAYER:
             return node.returns()[traverser]
         if actor == CHANCE_PLAYER:
-            action = _sample(node.chance_outcomes(), rng)
+            action = _sample(node.chance_outcomes(), chance_rng)
             return traverse(node.child(action))
 
         key = node.information_state_key(actor)
@@ -544,8 +606,12 @@ def _external_sample(
         if actor != traverser:
             if state.config.averaging_mode == "sampled":
                 for action in legal:
+                    # In two-player external sampling, opponent reach is the
+                    # sampling distribution and cancels from the simple
+                    # average estimator (Lanctot 2009 / OpenSpiel's standard
+                    # two-player SIMPLE rule).
                     _add_value(strategy_delta, key, action, policy[action])
-            sampled_action = _sample(tuple(policy.items()), rng)
+            sampled_action = _sample(tuple(policy.items()), policy_rng)
             return traverse(node.child(sampled_action))
 
         action_values: dict[str, float] = {}
@@ -586,6 +652,7 @@ def build_shard(
     if shard_count <= 0 or not 0 <= shard_index < shard_count:
         raise ValueError("invalid shard index/count")
     state.validate()
+    _assert_state_game_identity(game, state)
     samples: list[SampleDelta] = []
     for traverser in (0, 1):
         for sample_id in range(shard_index, state.config.samples_per_player, shard_count):
@@ -862,8 +929,7 @@ def apply_shards(
 ) -> SolverState:
     """Validate and canonically apply one complete synchronous batch."""
 
-    if state.game_name != game.name:
-        raise ValueError(f"state is for {state.game_name}, game is {game.name}")
+    _assert_state_game_identity(game, state)
     state.validate()
     samples = _ordered_samples(state, shards)
     _validate_sample_deltas(state, samples)
@@ -936,8 +1002,7 @@ def train_batches(
 ) -> SolverState:
     """Train for ``batches`` complete deterministic synchronous batches."""
 
-    if state.game_name != game.name:
-        raise ValueError(f"state is for {state.game_name}, game is {game.name}")
+    _assert_state_game_identity(game, state)
     if type(batches) is not int or type(shard_count) is not int:
         raise TypeError("batches/shard_count must be exact integers")
     if batches < 0:

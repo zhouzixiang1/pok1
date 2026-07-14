@@ -38,8 +38,8 @@ def _payload_bytes(state: SolverState) -> bytes:
 class CheckpointShardTest(unittest.TestCase):
     def test_direct_in_memory_type_confusion_is_rejected_transactionally(self):
         game = KuhnPoker()
-        state = SolverState(
-            game.name,
+        state = SolverState.new_for_game(
+            game,
             SolverConfig(seed=908, samples_per_player=2),
         )
         train_batches(game, state, batches=1)
@@ -93,7 +93,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_public_training_boundaries_reject_bool_integer_aliases(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         with self.assertRaisesRegex(TypeError, "exact integers"):
             build_shard(game, state, False, 1)
         with self.assertRaisesRegex(TypeError, "exact integers"):
@@ -105,7 +105,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_rehashed_checkpoint_rejects_coerced_json_types_and_schema_drift(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(seed=88))
+        state = SolverState.new_for_game(game, SolverConfig(seed=88))
         train_batches(game, state, batches=1)
         base = state.to_payload()
         first_key = next(iter(base["actions"]))
@@ -158,7 +158,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_rehashed_shard_rejects_bool_sample_identity(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         shard = build_shard(game, state, 0, 1)
         payload = shard.to_payload()
         payload["samples"][0]["sample_id"] = False
@@ -171,7 +171,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_rehashed_shard_cannot_drop_one_present_action_delta(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         shard = build_shard(game, state, 0, 1)
         payload = shard.to_payload()
         sample_payload = next(
@@ -190,7 +190,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_negative_strategy_sum_is_never_clipped_or_exported(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         train_batches(game, state, batches=1)
         before = _payload_bytes(state)
         key = next(iter(state.strategy_sum))
@@ -204,7 +204,7 @@ class CheckpointShardTest(unittest.TestCase):
             average_policy(state)
         shard = build_shard(
             game,
-            SolverState(game.name, SolverConfig(samples_per_player=2)),
+            SolverState.new_for_game(game, SolverConfig(samples_per_player=2)),
             0,
             1,
         )
@@ -217,7 +217,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_rehashed_checkpoint_with_negative_strategy_sum_is_rejected(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig())
+        state = SolverState.new_for_game(game, SolverConfig())
         train_batches(game, state, batches=1)
         payload = state.to_payload()
         key = next(iter(payload["strategy_sum"]))
@@ -232,8 +232,8 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_shard_layout_is_digest_invariant(self):
         game = KuhnPoker()
-        base = SolverState(
-            game.name,
+        base = SolverState.new_for_game(
+            game,
             SolverConfig(seed=41, samples_per_player=8, update_rule="dcfr"),
         )
         one = _clone(base)
@@ -251,8 +251,8 @@ class CheckpointShardTest(unittest.TestCase):
             samples_per_player=8,
             update_rule="linear",
         )
-        one = SolverState(game.name, config)
-        many = SolverState(game.name, config)
+        one = SolverState.new_for_game(game, config)
+        many = SolverState.new_for_game(game, config)
         train_batches(game, one, batches=40, shard_count=1)
         train_batches(game, many, batches=40, shard_count=4)
         self.assertEqual(one.to_payload(), many.to_payload())
@@ -261,8 +261,8 @@ class CheckpointShardTest(unittest.TestCase):
     def test_checkpoint_resume_matches_uninterrupted(self):
         game = KuhnPoker()
         config = SolverConfig(seed=88, samples_per_player=3, update_rule="cfr_plus")
-        uninterrupted = SolverState(game.name, config)
-        resumed = SolverState(game.name, config)
+        uninterrupted = SolverState.new_for_game(game, config)
+        resumed = SolverState.new_for_game(game, config)
         train_batches(game, uninterrupted, batches=80, shard_count=3)
         train_batches(game, resumed, batches=30, shard_count=3)
 
@@ -284,8 +284,8 @@ class CheckpointShardTest(unittest.TestCase):
                     samples_per_player=8,
                     update_rule=rule,
                 )
-                uninterrupted = SolverState(game.name, config)
-                resumed = SolverState(game.name, config)
+                uninterrupted = SolverState.new_for_game(game, config)
+                resumed = SolverState.new_for_game(game, config)
                 train_batches(game, uninterrupted, batches=50, shard_count=2)
                 train_batches(game, resumed, batches=17, shard_count=1)
                 with tempfile.TemporaryDirectory() as directory:
@@ -298,7 +298,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_shard_round_trip_and_hash_tamper_detection(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         shard = build_shard(game, state, 0, 1)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shard.json"
@@ -312,7 +312,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_incomplete_or_duplicate_shards_are_rejected(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=4))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=4))
         shard = build_shard(game, state, 0, 2)
         with self.assertRaisesRegex(ValueError, "every unique shard"):
             apply_shards(game, state, [shard])
@@ -321,7 +321,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_sample_moved_to_wrong_deterministic_shard_is_rejected(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=4))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=4))
         shards = [build_shard(game, state, index, 2) for index in range(2)]
         bad_zero = replace(
             shards[0],
@@ -336,7 +336,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_rejected_action_drift_is_transactional(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         train_batches(game, state, batches=1)
         before = state.digest
         before_bytes = _payload_bytes(state)
@@ -354,7 +354,7 @@ class CheckpointShardTest(unittest.TestCase):
 
     def test_rejected_nan_delta_is_transactional(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(samples_per_player=2))
+        state = SolverState.new_for_game(game, SolverConfig(samples_per_player=2))
         train_batches(game, state, batches=1)
         before = state.digest
         before_bytes = _payload_bytes(state)
@@ -383,6 +383,7 @@ class CheckpointShardTest(unittest.TestCase):
                 state = SolverState(
                     game_name="kuhn",
                     config=SolverConfig(),
+                    game_identity_sha256=KuhnPoker().identity_sha256(),
                     actions={"known": ("a", "b")},
                     regrets={"known": {"a": 0.0, "b": 0.0}},
                     strategy_sum={"known": {"a": 0.0, "b": 0.0}},

@@ -66,9 +66,9 @@ class MCCFRTest(unittest.TestCase):
         for rule in ("linear", "cfr_plus", "dcfr"):
             with self.subTest(rule=rule):
                 game = KuhnPoker()
-                state = SolverState(
-                    game_name=game.name,
-                    config=SolverConfig(update_rule=rule, seed=17),
+                state = SolverState.new_for_game(
+                    game,
+                    SolverConfig(update_rule=rule, seed=17),
                 )
                 train_batches(game, state, batches=2000)
                 result = exploitability(game, average_policy(state))
@@ -84,7 +84,7 @@ class MCCFRTest(unittest.TestCase):
 
     def test_regret_and_average_strategy_are_separate(self):
         game = KuhnPoker()
-        state = SolverState(game.name, SolverConfig(seed=99))
+        state = SolverState.new_for_game(game, SolverConfig(seed=99))
         train_batches(game, state, batches=10)
         self.assertIsNot(state.regrets, state.strategy_sum)
         self.assertEqual(set(state.regrets), set(state.strategy_sum))
@@ -97,8 +97,8 @@ class MCCFRTest(unittest.TestCase):
         uniform = exploitability(game, {}).exploitability
         for rule in ("linear", "cfr_plus", "dcfr"):
             with self.subTest(rule=rule):
-                state = SolverState(
-                    game.name,
+                state = SolverState.new_for_game(
+                    game,
                     SolverConfig(update_rule=rule, seed=23),
                 )
                 train_batches(game, state, batches=1000)
