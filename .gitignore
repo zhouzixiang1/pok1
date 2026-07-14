@@ -70,6 +70,9 @@ archive/evolution_epochs/*/
 # but do not stage their nested git histories or vendored source trees.
 ref/llm_evolution/
 
+# Local-only third-party contribution (lll/). Kept on disk but never committed.
+lll/
+
 # OS
 .DS_Store
 Thumbs.db
