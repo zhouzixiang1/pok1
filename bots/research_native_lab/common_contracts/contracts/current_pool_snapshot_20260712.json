@@ -1,0 +1,88 @@
+{
+  "active_bots": [
+    {
+      "artifact_hash": "ce981fd06835f5109d6c5dd2ab784ea651d260dfa67aa6cbaff0752d8d1dd8ad",
+      "bot": "national_v111",
+      "commit": "9b49a83d4a7e20182e611261225a8aa1852e2286",
+      "tag": "national-bot-v111",
+      "tag_object": "aeca77f87c777df3f1c201b4e69ac42a8eb04522"
+    },
+    {
+      "artifact_hash": "4d159a06a8ad377873e784d982f4bc7fd782e8c2233f89c7d306cd21148eea20",
+      "bot": "national_v112",
+      "commit": "8c1cf8e4a32cf313fde4e1a651c6972244053618",
+      "tag": "national-bot-v112",
+      "tag_object": "4c7689813640da46c7514ea894acaa7dbcd8d95e"
+    },
+    {
+      "artifact_hash": "baa02a179ab0a5e94e21eeb784569dc1c114597cd6ac22cfaddb33bd0ed79a8d",
+      "bot": "national_v114",
+      "commit": "0ae6781e07c763786e62abeca3845cd55895f400",
+      "tag": "national-bot-v114",
+      "tag_object": "cf6a8c2e5ec35da0c1e70a9477fd346a480488dc"
+    },
+    {
+      "artifact_hash": "84ddb54b562b156272a18a8490a6c84525ede387534165ec84af70dd0465e134",
+      "bot": "national_v119",
+      "commit": "d503876d1f037c371f6d99da8bb6f90710f38ed8",
+      "tag": "national-bot-v119",
+      "tag_object": "d9874ddc8eb58f9e92b729f1fcc431c3da798155"
+    },
+    {
+      "artifact_hash": "bad994bcb05338632e4ad8417a80cf4a3ca2118718c20868b66707f3ef870d38",
+      "bot": "national_v120",
+      "commit": "ae5d74c2526169b89ad0a794992f3732962f5f55",
+      "tag": "national-bot-v120",
+      "tag_object": "09edb9be50a9369a696a935de1c3cc8dcd84bd50"
+    },
+    {
+      "artifact_hash": "557f5c4be891bf8e0fecbebf543057b466d83cde1a92c253146f46520e2665a2",
+      "bot": "national_v121",
+      "commit": "aa361acc2c6afea71ddb9719a2ecc60b956a94ab",
+      "tag": "national-bot-v121",
+      "tag_object": "84d8dda280a5ee6694ad3a3cc74ff22629c075dd"
+    },
+    {
+      "artifact_hash": "d5a5a6e02446aeff227dcaf9c8bb9a9819ac080f02ec38b1c1acc5d3226abe08",
+      "bot": "national_v122",
+      "commit": "af2f436124587f7198c264a20c2fbee440acb0e2",
+      "tag": "national-bot-v122",
+      "tag_object": "95c9be53c37558d9bb5769e8c7e91e50170ffa82"
+    },
+    {
+      "artifact_hash": "57c942f88dc32159f5fd2d208ad28f266f5b2b0ade93c38b601fa10eafcac820",
+      "bot": "national_v123",
+      "commit": "96171fc5c753dd0fc55caee70b9eacc235085e4e",
+      "tag": "national-bot-v123",
+      "tag_object": "6edc13195ec18ba0976f6cad302c4ed82e1560d5"
+    },
+    {
+      "artifact_hash": "c107986788bb6319dc4c727e48abb182be572f4f5116cd15689a9c2ae98dfe28",
+      "bot": "national_v135",
+      "commit": "3a7c3771d404f15b1a9c52fc2d2bb200c59bd088",
+      "tag": "national-bot-v135",
+      "tag_object": "4aaf3493e52740feb6cb96b551c889d7adde6f4e"
+    },
+    {
+      "artifact_hash": "67cd6059e17afdb333137a37a051764ccef405d03072addb92ebaa5a39631796",
+      "bot": "national_v141",
+      "commit": "1c24c6485bb6c10f0e45d1961be38e8bfc9fa341",
+      "tag": "national-bot-v141",
+      "tag_object": "b5105699c24cdbce8afc8e137b4a55f074b8b5e5"
+    },
+    {
+      "artifact_hash": "3c00fb7fa6bb963d35925d350c71dc9cdc228c1a31c557eeb3b0a634a99f1517",
+      "bot": "national_v142",
+      "commit": "67c254dd9a5ef71f81c5fbc7143e75adbeb8e3bb",
+      "tag": "national-bot-v142",
+      "tag_object": "e0cdf8c655e3f5c700f248f2354b55a01ee0469d"
+    }
+  ],
+  "base_sha": "6ee160c93cee8d0afdad111c4c82bc6ddb6012ca",
+  "cycle_digest": "919072d9da5b602836dd3f79d1661b9caeba789fb72b1e1a12500910478e0e12",
+  "evaluation_identity_digest": "02ddc50ea8532bc6d9633d7a259d6c5f529a647e99a7e18e033438d16a51b9f7",
+  "manifest_digest": "19f2476dbc324a71c727b311d9ce4c86d33d6d29008fd697d09589236a103ea4",
+  "save_num": 19,
+  "source": ".evolution_pok/web/core/results/evaluation_cycle_manifest.json",
+  "strength_use": "visible_reference_and_post_freeze_heldout_universe_not_itself_blind"
+}

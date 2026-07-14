@@ -1,0 +1,169 @@
+{
+  "artifact_identity": {
+    "content_fields": [
+      "sealed_tree_manifest_digest",
+      "launch_contract_digest",
+      "launch_command_digest",
+      "base_environment_digest",
+      "model_digest",
+      "config_digest",
+      "action_set_digest",
+      "dependency_digest",
+      "runtime_digest"
+    ],
+    "display_label_is_non_semantic": true,
+    "display_label_may_not_equal_any_identity_digest": true
+  },
+  "bootstrap": {
+    "cluster": "paired_seed_block",
+    "confidence": 0.95,
+    "minimum_resamples": 10000,
+    "report_raw_percentile": true,
+    "superiority_gate_interval": "raw_cluster_percentile_union_distribution_free_Hoeffding_boundary_guard"
+  },
+  "candidate_bundle": {
+    "binds_before_future_entropy": [
+      "research_candidate_content_identities",
+      "opponent_universe_content_identities",
+      "common_contract_tree",
+      "rules_and_oracle_fixtures",
+      "resource_profiles",
+      "evaluation_harness_and_replay_verifier",
+      "every_planned_stratum",
+      "exact_paired_block_count_per_stratum",
+      "stopping_retry_analysis_and_bootstrap_parameters"
+    ],
+    "development_scope": "development_pair",
+    "legacy_scope": "formal_three_candidate_matrix_disabled",
+    "formal_scope": "CompleteFormalMatrix_root_covering_12_main_artifacts_all_ablations_and_every_planned_cell",
+    "formal_status": "legacy_exactly_three_identity_bundle_is_not_formal_authority; FormalEvaluationPlanBridge is issued from the complete matrix projection per cell",
+    "research_candidate_and_external_opponent_roles_are_distinct": true
+  },
+  "candidate_failure_policy": "replay_attested_crash_timeout_illegal_protocol_or_resource_overrun_is_a_loss_and_seed_is_not_replaced",
+  "controlled_comparison": {
+    "same_action_set_digest": true,
+    "same_deck_and_identity_bound_policy_seeds": true,
+    "same_process_cpu_gpu_ram_limits": true
+  },
+  "evidence_chain": [
+    "CompleteFormalMatrix",
+    "FormalMatrixProjection",
+    "FormalEvaluationPlanBridge",
+    "FormalEvaluationPlan",
+    "BlockPlan",
+    "LegPlan",
+    "ExecutionReceipt_per_bot",
+    "ResourceReceipt_per_bot",
+    "ReplayVerificationReceipt",
+    "MatchObservation",
+    "RetryLedger",
+    "externally_signed_closed_supervisor_attempt_journal",
+    "PairedBlock",
+    "AggregateResult",
+    "FormalCellResult",
+    "FormalMatrixResultLedger"
+  ],
+  "final_metric": {
+    "draw": "final_net_chips_eq_0",
+    "loss": "final_net_chips_lt_0",
+    "match_score": "(wins + 0.5 * draws) / matches",
+    "secondary_only": "final_net_chip_magnitude",
+    "win": "final_net_chips_gt_0"
+  },
+  "formal_minimum_paired_blocks": {
+    "candidate_direct_h2h_per_pair": 400,
+    "per_current_pool_or_heldout_opponent": 100,
+    "per_representative_time_budget": 100
+  },
+  "formal_time_budgets_ms": [
+    250,
+    5000,
+    20000,
+    50000
+  ],
+  "hands_per_strength_sample": 70,
+  "hypothesis_contract": {
+    "alternative": "two_sided_by_default_or_greater_only_when_preregistered",
+    "estimand": "mean paired-block match-score difference within_one_exact_frozen_stratum",
+    "multiplicity_family": "all_candidate-pair_x_time-budget_x_declared-opponent-family_promotion_claims",
+    "null_margin": 0.0,
+    "p_value": "paired_block_sign-flip_randomization",
+    "promotion_requires": "guarded_paired_CI_excludes_zero_and_Holm-adjusted_p_below_preregistered_alpha"
+  },
+  "infrastructure_retry": {
+    "candidate_faults_are_never_retryable": true,
+    "completed_results_cannot_be_relabelled": true,
+    "exact_leg_plan_launch_command_environment_deals_and_seeds": true,
+    "first_clean_result_only": true,
+    "formal_replay_bearing_attribution": "must_bind_the_exact_authorized_supervisor_leg_original_match_observation_and_closed_attempt_journal_row; infrastructure_classification_is_rederived_from_signed_fault_evidence",
+    "maximum_retries_per_leg": 2,
+    "no_replay_or_match_observation": "any_failed_attempt_without_replay_and_match_observation_invalidates_the_formal_scope; a_terminal_label_alone_never_authorizes_seed_replacement_or_retry",
+    "original_and_all_attempts_retained": true,
+    "prelaunch_to_postrun_continuity": "fixed-root supervisor signed append-only terminal row for every launch outcome, scope-local sequence starts at one with zero genesis, previous-entry chain is contiguous, and a signed closed head covers the full prefix; missing authority fails closed",
+    "requires_independent_typed_monitor_attribution": true,
+    "run_process_tree_cgroup_raw_evidence_and_time_intervals_are_globally_unique": true
+  },
+  "paired_design": {
+    "cluster_unit": "entire_two-leg_paired_block",
+    "complete_deal_sequence": "same_70_full-deck_commitments",
+    "policy_seed": "fixed_per_artifact_identity_and_follows_identity_across_swap",
+    "seat_rule": "connections_and_seats_fully_swapped"
+  },
+  "power_and_stopping": {
+    "minimums_are_floors_not_80_percent_power_claims": true,
+    "per_opponent_100_is_diagnostic_unless_pilot_justifies_more": true,
+    "preregister_before_formal_randomness": true,
+    "target_power": 0.8,
+    "variance_unit": "paired_block_within_declared_opponent_stratum",
+    "worst_case_example": "5_percentage_point_two-sided_effect_at_variance_0.25_needs_at_least_784_paired_blocks"
+  },
+  "replay_receipt": {
+    "attests": [
+      "raw_wire_and_replay_digests",
+      "exact_leg_ordered_content_identities_run_ids_process_trees_and_cgroups",
+      "resource_profile_and_250ms_5s_20s_50s_cell_budget",
+      "monotonic_request_compute_send_and_platform_deadlines",
+      "per_connection_decision_latency_search_nodes_fallback_and_snapshot_trace",
+      "official_send_delay",
+      "match_end_derived_result_finalization_time",
+      "full_deal_prefix",
+      "hands_and_settlements",
+      "zero_sum_net_result",
+      "typed_timeout_and_illegal_counts",
+      "typed_adjudicated_fault",
+      "hand70_evidence"
+    ],
+    "caller_supplied_result_fields_are_rejected": true,
+    "client_order_event_is_mandatory_and_exact": true,
+    "development_binding_cannot_satisfy_formal_strength": true,
+    "development_arrival_only_trace_marks_search_fallback_snapshot_telemetry_unavailable": true,
+    "formal_strength_requires_complete_trusted_worker_telemetry": true,
+    "normal_action_must_arrive_within_cell_budget_plus_frozen_send_delay": true,
+    "timeout_requires_monotonic_platform_deadline": true,
+    "raw_evidence_is_unique_within_each_typed_domain_across_all_formal_attempts": true,
+    "signed_supervisor_bridge_required": [
+      "launch_authorization",
+      "postrun_leg_receipt",
+      "capture_session_and_two_socket_identities",
+      "receipt_consumption_key_and_durable_ledger",
+      "decision_trace",
+      "cleanup_receipt"
+    ]
+  },
+  "resource_execution": {
+    "cgroup_v2_per_bot": true,
+    "concurrent_matches_per_profile": 1,
+    "decision_compute_stop_ms_max": 54000,
+    "formal_samples_sequential_or_strictly_isolated": true,
+    "opponent_time_pondering": false,
+    "platform_action_timeout_ms": 60000,
+    "swap_limit_bytes": 0
+  },
+  "result_authority": {
+    "development_diagnostic_only": "cannot_support_promotion_claims",
+    "formal_strength": "requires fixed independent freeze/future-block entropy authority, complete matrix-issued plan bridge, signed supervisor evidence, closed attempt journal, and exact preregistered paired evidence",
+    "official_exe": "compliance_only_zero_strength_weight",
+    "web_arena": "diagnostic_only_zero_strength_weight"
+  },
+  "schema_version": 3
+}

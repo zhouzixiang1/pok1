@@ -1,0 +1,45 @@
+{
+  "base_sha": "6ee160c93cee8d0afdad111c4c82bc6ddb6012ca",
+  "blinds": {
+    "big": 100,
+    "small": 50
+  },
+  "cards": {
+    "canonical": "rank_times_4_plus_local_suit",
+    "local_suits": {
+      "0": "Heart",
+      "1": "Diamond",
+      "2": "Spade",
+      "3": "Club"
+    },
+    "tcp_suits": {
+      "0": "Spade",
+      "1": "Heart",
+      "2": "Diamond",
+      "3": "Club"
+    }
+  },
+  "contract_version": "national-research-contract-v1",
+  "decision_timeout_sec": 60.0,
+  "hands_per_match": 70,
+  "initial_chips_per_hand": 20000,
+  "official_action_delay_sec": 0.3,
+  "raise": {
+    "consecutive_minimum": "inclusive_2x_previous_raise_to",
+    "first_postflop_minimum": 100,
+    "first_preflop_minimum": 200,
+    "semantic": "street_raise_to_total",
+    "use_allin_keyword_when_consuming_remaining_stack": true
+  },
+  "settlement": {
+    "earn_chips": "signed_per_hand_net_for_current_seat",
+    "hand_70_official_boundary": "70_starts_69_wire_settlements_plus_strict_THP_state_69",
+    "showdown_opponent_cards_only": true
+  },
+  "wire": {
+    "framing": "unframed_tcp_stream",
+    "only_socket_owner_sends": true,
+    "pending_decision_required": true,
+    "rescue_actions_forbidden": true
+  }
+}
