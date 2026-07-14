@@ -1374,6 +1374,9 @@ async def _run_master_proposal_ensemble(
             "Set reject=true only for a concrete evidence, reachability, or falsification "
             "defect; score is advisory and cannot waive deterministic validation.\n"
             f"Criteria: {criterion_contract}\n"
+            "IMPORTANT: Do NOT read, explore, or inspect any files. Do NOT use any tools. "
+            "Do NOT think step by step. Immediately score the proposals from their content "
+            "and return the JSON. You have no tools available.\n\n"
             "Return JSON exactly as {\"ballots\":[{\"proposal_id\":\"...\","
             "\"scores\":{every criterion: integer 1..5},\"reject\":false,"
             "\"reason\":\"criterion-grounded reason\"}, ...]}.\n\n"
@@ -1381,11 +1384,12 @@ async def _run_master_proposal_ensemble(
             + (
                 "\n\nYour previous ballot failed deterministic schema validation. "
                 "This is one schema-only repair attempt; score every ID and every "
-                "criterion exactly once."
+                "criterion exactly once. Return ONLY the JSON immediately."
                 if schema_retry else ""
             )
             + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ballots JSON in the supplied "
-            "proposal order; do not rank, repeat, or rewrite proposal claims."
+            "proposal order; do not rank, repeat, or rewrite proposal claims. "
+            "Output the JSON NOW without any preamble, thinking, or file inspection."
         )
         purpose = f"master_proposal_critic:{name}"
         prompt += (
