@@ -10,6 +10,7 @@ older self-contained export shell remains labelled an M4 projection prototype.
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -20,6 +21,15 @@ from ...common_contracts.protocol import (
 )
 from .a2_runtime import SparseBlueprint
 from .common_adapter import choose_blueprint_action_from_common_state
+from .hunl_abstraction import abstract_actions
+from .hunl_blueprint import (
+    HUNL_BLUEPRINT_SCHEMA,
+    HUNLBlueprint,
+    policy_l1_from_uniform,
+)
+from .hunl_common_adapter import choose_hunl_blueprint_action
+from .hunl_external_sampling import strict_json_loads
+from .secure_files import stable_read_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,15 +46,29 @@ class CommonDecisionTrace:
     available_policy_mass: float
     dropped_policy_mass: float
     legal_raise_bounds: tuple[int | None, int | None]
+    blueprint_schema: str = "route-a2-national-blueprint-v1"
+    lookup_source: str = "legacy_sparse_row"
+    abstraction_key: str = ""
+    policy_l1_from_uniform: float = 0.0
+    decision_compute_ns: int = 0
 
 
 class CommonA2StrategyRuntime:
     """Actual A2 policy entry over Common state/lease/action contracts."""
 
-    def __init__(self, name: str, blueprint: SparseBlueprint, seed: int = 0) -> None:
+    def __init__(
+        self,
+        name: str,
+        blueprint: SparseBlueprint | HUNLBlueprint,
+        seed: int = 0,
+    ) -> None:
+        if type(blueprint) not in (SparseBlueprint, HUNLBlueprint):
+            raise TypeError("blueprint must be an exact route-A2 blueprint type")
+        if type(seed) is not int or not 0 <= seed < 2**63:
+            raise ValueError("seed must be an unsigned 63-bit integer")
         self.session = NationalProtocolSession(name)
         self.blueprint = blueprint
-        self.seed = int(seed)
+        self.seed = seed
         self.decoder = StreamDecoder()
         self.decisions_completed = 0
         self.trace: list[CommonDecisionTrace] = []
@@ -56,7 +80,12 @@ class CommonA2StrategyRuntime:
         blueprint_path: str | Path,
         seed: int = 0,
     ) -> "CommonA2StrategyRuntime":
-        return cls(name, SparseBlueprint.load(blueprint_path), seed)
+        payload = strict_json_loads(stable_read_path(blueprint_path))
+        if isinstance(payload, dict) and payload.get("schema") == HUNL_BLUEPRINT_SCHEMA:
+            blueprint: SparseBlueprint | HUNLBlueprint = HUNLBlueprint(payload)
+        else:
+            blueprint = SparseBlueprint(payload)
+        return cls(name, blueprint, seed)
 
     def _random_unit(
         self,
@@ -79,17 +108,46 @@ class CommonA2StrategyRuntime:
             raise AssertionError("Common opened an A2 lease without a hero state")
         decision_number = self.decisions_completed + 1
         information_state_id = state.information_state_id(0)
-        selected = choose_blueprint_action_from_common_state(
-            self.blueprint,
-            state=state,
-            hero=0,
-            random_unit=self._random_unit(information_state_id, decision_number),
-        )
+        started_ns = time.perf_counter_ns()
+        if type(self.blueprint) is HUNLBlueprint:
+            selected = choose_hunl_blueprint_action(
+                self.blueprint,
+                state=state,
+                hero=0,
+                random_unit=self._random_unit(information_state_id, decision_number),
+            )
+            route_lookup_key = selected.lookup.matched_key or selected.lookup.requested_key
+            lookup_source = selected.lookup.source
+            used_fallback = selected.lookup.matched_key is None
+            available_mass = sum(selected.lookup.probabilities.values())
+            dropped_mass = 0.0
+            policy_l1_distance = policy_l1_from_uniform(
+                selected.lookup.probabilities
+            )
+            abstraction_key = selected.abstraction.key
+            blueprint_schema = HUNL_BLUEPRINT_SCHEMA
+            legal_wires = tuple(spec.wire_action for spec in abstract_actions(state))
+        else:
+            selected = choose_blueprint_action_from_common_state(
+                self.blueprint,
+                state=state,
+                hero=0,
+                random_unit=self._random_unit(information_state_id, decision_number),
+            )
+            route_lookup_key = selected.route_decision.lookup.matched_key
+            lookup_source = "legacy_sparse_row"
+            used_fallback = selected.route_decision.used_legality_fallback
+            available_mass = selected.route_decision.available_policy_mass
+            dropped_mass = selected.route_decision.dropped_policy_mass
+            policy_l1_distance = 0.0
+            abstraction_key = selected.route_decision.lookup.requested_key
+            blueprint_schema = "route-a2-national-blueprint-v1"
+            legal_wires = tuple(
+                candidate.to_wire()
+                for candidate in selected.legal_actions.representative_actions()
+            )
+        compute_ns = time.perf_counter_ns() - started_ns
         action = selected.action.to_wire()
-        legal_wires = tuple(
-            candidate.to_wire()
-            for candidate in selected.legal_actions.representative_actions()
-        )
         selected.assert_fresh(self.session.current, hero=0)
         self.session.submit_action(decision_id, action)
         self.decisions_completed = decision_number
@@ -101,15 +159,20 @@ class CommonA2StrategyRuntime:
                 information_state_id=information_state_id,
                 action=action,
                 legal_actions=legal_wires,
-                lookup_key=selected.route_decision.lookup.matched_key,
+                lookup_key=route_lookup_key,
                 full_state_id=selected.full_state_id,
-                used_legality_fallback=selected.route_decision.used_legality_fallback,
-                available_policy_mass=selected.route_decision.available_policy_mass,
-                dropped_policy_mass=selected.route_decision.dropped_policy_mass,
+                used_legality_fallback=used_fallback,
+                available_policy_mass=available_mass,
+                dropped_policy_mass=dropped_mass,
                 legal_raise_bounds=(
                     selected.legal_actions.min_raise_to,
                     selected.legal_actions.max_raise_to,
                 ),
+                blueprint_schema=blueprint_schema,
+                lookup_source=lookup_source,
+                abstraction_key=abstraction_key,
+                policy_l1_from_uniform=policy_l1_distance,
+                decision_compute_ns=compute_ns,
             )
         )
         return action

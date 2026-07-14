@@ -63,6 +63,7 @@ def test_common_entry_sticky_decoder_and_one_shot_lease() -> None:
 
 def test_common_entry_does_not_act_during_allin_runout() -> None:
     runtime = _runtime("allin")
+    assert runtime.on_token("name")[1] == "A2Common"
     _, send = runtime.on_token("preflop|SMALLBLIND|<0,12><0,11>")
     assert send == "allin"
     _, send = runtime.on_token("call")

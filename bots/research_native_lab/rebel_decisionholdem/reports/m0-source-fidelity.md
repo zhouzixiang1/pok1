@@ -110,27 +110,27 @@ are in `../manifests/sources.json`.
 
 | Paper formula/section | Official source symbol or asset | Current implementation | Fidelity label | Verification | Falsifier / next gate |
 |---|---|---|---|---|---|
-| Section 2/Table 1 hand and action abstraction | game-tree headers exist; required cluster binaries mostly external | exact 169 preflop classes; postflop only nine made-hand categories; national action prototype is `F,C,min,0.5P,P,1.5P,A`, not the paper's `F,C,0.5P,P,2P,4P,A` | functional adaptation / unresolved real-cluster gap | 1,326-combination class count, five-to-seven-card category tests, differential national-action validation | nine postflop buckets and the changed sizes cannot be reported as DecisionHoldem abstraction fidelity |
+| Section 2/Table 1 hand and action abstraction | game-tree headers exist; required cluster binaries mostly external | real Common HUNL path enumerates all 1,326 exact combos as diagnostic metadata and uses 169 preflop policy classes; versioned postflop policy buckets combine exact made-hand category, strength band, board texture/connectivity and blockers; street-level legal-opponent-combo count is diagnostic only; actions are Common-legal `F,C,min,0.5P,P,1.5P,A`, not the paper's `F,C,0.5P,P,2P,4P,A` | clean-room functional HUNL adaptation / unresolved DecisionHoldem-cluster gap | exhaustive combo/class count, diagnostic card-removal golden cases, order/suit-isomorphism buckets, Common legality and exact `200 -> 400` | locally defined buckets and changed sizes cannot be reported as DecisionHoldem abstraction fidelity |
 | Section 2 says LCFR; README later says MCCFR; Brown/Sandholm 2019 defines LCFR weight `t` for regret and average-strategy updates | AGPL symbols `blueprint_cfr`, `dfs_discount`, `update_strategy` inspected only; tracked `BlueprintMCCFR.h`/`Multi_Blureprint.h` conflict with LCFR prose | independent alternating full-tree Kuhn and exact two-round Leduc `LinearCFR`, with a frozen policy across each chance-complete player update; Kuhn is differentially checked against a separate equation-oriented implementation | paper-faithful clean-room **toy LCFR**, but unresolved fidelity gap for the DecisionHoldem blueprint | exact formula-level regret/average accumulators, exact BR/exploitability, deterministic convergence and bit-exact checkpoint/resume; Leduc 120 deals/288 infosets | either toy solver can pass while strict reproduction remains blocked; frozen convergence thresholds remain falsifiers |
-| Approximately 200M iterations on abstract HUNL | external `blueprint_strategy.dat` and cluster files | no HUNL training; the package exports only a labelled Leduc-policy seed projection | unresolved fidelity gap; projection is a functional packaging prototype | content-bound export and policy-decision influence tests | the projection cannot satisfy M4 or be called a HUNL blueprint |
+| Approximately 200M iterations on abstract HUNL | external `blueprint_strategy.dat` and cluster files | preregistered low-budget external-sampling LCFR candidate selection on the real Common HUNL game; strict identity-bound sequential checkpoint segments, exact average-strategy rows, and fixed hierarchical backoff from aggregated linear iteration-weighted SIMPLE sampled `strategy_sums` | **M4 low-budget HUNL vertical slice only**; enormous training/fidelity gap remains | independent node equation, resume/segment-layout equality, Common/rules/source/asset drift rejection, strict corrupt checkpoint/segment tests, checkpoint-reloaded deterministic artifact rebuild and non-uniform trained-policy influence gate | no convergence, exploitability, held-out coverage or scale evidence permits extrapolating the selected smoke run to the reported 200M run |
 | Off-tree online search, 6k/10k iterations | `AlascasiaHoldem.so`; source absent | nearest-action diagnostic mapping only; no action injection or re-solve | unresolved fidelity gap / explicitly unsafe translation | exact/off-tree mapping tests | binary behavior cannot be inferred; nearest-only mapping fails the online-search requirement |
 | Safe depth-limited solving with diverse opponent ranges | paper defers DecisionHoldem details; Brown/Sandholm 2017 gives the public Coin Toss example | source-shaped functional fixture uses the paper blueprint's `3/4` vs `1/2` Play reach, so unsafe isolated solve always guesses Heads; a simplified per-type Sell-payoff constraint forces `q(H)=1/4` | **functional falsifier only**, not the paper's full Resolve augmented game and not DecisionHoldem | unsafe full-game loss delta `0.75`; constrained zero margin violation/delta; certificates recomputed and forged labels rejected | the simplified constraint uses Sell payoffs `(0.5,-0.5)`, not Figure-3 Resolve CBVs `(0,0.5)`, and cannot pass the HUNL safe-solving gate |
-| Blueprint-only interface | `blueprint.so`, but required blueprint asset is external | Common-authoritative M3 policy entry over `NationalProtocolSession` plus a separate content-bound legacy packaging prototype driven by a coarse Leduc seed projection | interface integration pass; functional packaging adaptation, **not M4 complete** | Common state/action/legal-set dependency, card mapping, one-shot leases, state-bound stale rejection, no hidden invalid probability mass, sticky framing/runout; the coarse projection is explicitly rejected for unavailable mass | no complete 70-hand match, socket/deadline product, HUNL-trained asset, or playable-candidate claim |
+| Blueprint-only interface | `blueprint.so`, but required blueprint asset is external | `CommonA2StrategyRuntime` consumes the strict HUNL artifact, exact Common legal signature, three content-bound average-strategy-mass backoff levels, then explicit uniform emergency; route-owned socket client defaults to official raw/no-delimiter plus 0.30 s delay | M4 clean-room runnable blueprint-only vertical slice; not DecisionHoldem binary reproduction | ordered one-shot name/decision leases, exact/coarse/emergency telemetry, independent RNG roots, non-uniform trained-policy influence gate, sticky/split and no-newline raw socket regression, all-in no-extra-send, and a separate complete 70-hand local sever GameEngine/TCP line-adapter diagnostic | local sever line framing is not official raw acceptance; one fixed smoke is not held-out coverage; no official EXE, strength, search, or dense-policy claim |
 
 ## National adaptation delta
 
-The rules below are owned by frozen Common M0--M2. The M3 A2 policy entry now
-consumes that state/action boundary, while full native productization remains a
-later stage:
+The rules below are owned by frozen Common M0--M2. The M4 A2 policy and training
+paths consume that state/action boundary directly:
 
 - The internal game must use 20,000 chips per player, 50/100 blinds, reset each
   hand, and exactly 70 hands per match.
 - National `raise X` is the current-street raise-to total. Exact `200 -> 400`
   is legal; `2x+1` may be a conservative policy but is not the legality rule.
 - The official postflop `call`/`check` street-closing semantics, all-in behavior,
-  sticky TCP framing, suppressed closing actions, suit mapping, and final-hand
-  THP proof belong in the shared national adapter, not in A1/A2 strategy code.
-  The M3 strategy entry imports those Common objects; it does not copy them.
+  sticky TCP framing, suppressed closing actions and suit mapping belong in the
+  shared Common adapter, not A1/A2 strategy code. M4 imports those objects. Its
+  local sever 70-hand result uses an explicitly named line adapter and does not
+  claim the official EXE's special hand-70 THP proof.
 - ReBeL's at-most-nine actions and DecisionHoldem's Table-1 actions are not
   automatically legal national actions. Every abstract action must be converted
   through the shared oracle, and the exact observed off-tree raise-to value must
@@ -153,8 +153,9 @@ later stage:
   linking, or distributing them requires a separate user decision and full
   license compliance. Until then the default is clean-room implementation from
   published algorithms.
-- OpenSpiel is an Apache-2.0 future differential oracle, not the national rules
-  source and not a dependency of this milestone.
+- OpenSpiel is the Apache-2.0 normative reference for the two-player
+  external-sampling SIMPLE average update semantics and remains a differential
+  oracle; it is not the national rules source or a runtime dependency.
 
 ## Gate conclusion
 
@@ -171,6 +172,12 @@ later stage:
   Common state/action/legal-set and one-shot session. It rejects stale/copied
   state, legality disagreement, and unavailable blueprint mass. This is an
   interface gate, not a complete TCP Bot or match result.
-- **A2 M4 prototype:** coarse Leduc-to-national projection and a native packaging
-  shell exist, but they are explicitly not a HUNL blueprint or complete Bot.
-- **HUNL training/native TCP completion:** not started.
+- **A2 M4 HUNL vertical slice:** pass at selected 32-iteration smoke scope. The strict
+  sparse artifact rebuilds from config, uses Common legality at every decision,
+  demonstrates non-uniform trained-derived policy use by both clients, and
+  completes a separate local sever GameEngine/TCP 70-hand diagnostic with zero
+  illegal actions/timeouts. Official raw framing has an independent socket
+  regression; it is not certified by the local line-framed match.
+- **Scale/strength/search:** not started beyond the bounded smoke. Parallel
+  mergeable shards, convergence, dense coverage, official EXE compliance,
+  strength evaluation, safe resolving, and neural values remain blockers.

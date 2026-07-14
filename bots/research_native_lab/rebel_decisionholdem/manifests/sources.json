@@ -55,6 +55,17 @@
       "role": "read-only availability and symbol audit; no code copied"
     },
     {
+      "id": "external-sampling-mccfr-paper",
+      "title": "Monte Carlo Sampling for Regret Minimization in Extensive Games",
+      "authors": "Marc Lanctot, Kevin Waugh, Martin Zinkevich, Michael Bowling",
+      "url": "https://papers.nips.cc/paper_files/paper/2009/hash/00411460f7c92d2124a67ea0f4cb5f85-Abstract.html",
+      "version": "NIPS 2009",
+      "artifact_url": "https://proceedings.neurips.cc/paper_files/paper/2009/file/00411460f7c92d2124a67ea0f4cb5f85-Paper.pdf",
+      "artifact_sha256": "c6ac5e6bf35111c9bd30f19282952e5b9ef7424174b8c5b473ce52102805ff43",
+      "license": "academic publication; no software license inferred",
+      "role": "external-sampling MCCFR traversal source; no code copied"
+    },
+    {
       "id": "cfr-paper",
       "title": "Regret Minimization in Games with Incomplete Information",
       "authors": "Martin Zinkevich, Michael Johanson, Michael Bowling, Carmelo Piccione",
@@ -93,7 +104,7 @@
       "license": "Apache-2.0",
       "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
       "availability": "Kuhn/Leduc, CFR, best-response and exploitability references available",
-      "role": "future differential oracle only; no code copied"
+      "role": "normative reference for two-player external-sampling MCCFR SIMPLE average update semantics and a differential oracle; no code copied"
     }
   ],
   "national_rule_sources": [

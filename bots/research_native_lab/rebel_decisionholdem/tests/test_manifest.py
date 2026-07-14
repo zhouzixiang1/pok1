@@ -12,8 +12,8 @@ def test_common_dependency_drift_invalidates_milestone_manifest(
 ) -> None:
     original = milestone_manifest.build_common_interface_snapshot
 
-    def drifted_snapshot() -> dict[str, object]:
-        return original() | {"package_tree_sha256": "0" * 64}
+    def drifted_snapshot(common_tree=None) -> dict[str, object]:
+        return original(common_tree) | {"package_tree_sha256": "0" * 64}
 
     monkeypatch.setattr(
         milestone_manifest,

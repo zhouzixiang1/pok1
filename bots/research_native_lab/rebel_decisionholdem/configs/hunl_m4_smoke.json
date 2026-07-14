@@ -1,0 +1,19 @@
+{
+  "artifact_path": "artifacts/hunl_m4_smoke_blueprint.json",
+  "scale_estimate_iterations": 1000,
+  "schema": "route-a2-hunl-m4-smoke-config-v4",
+  "source_commit": "59275e9bf63cfd03d66df9d8a232040586465e65",
+  "tcp_client_policy_seeds": [2026071403, 2026071404],
+  "tcp_deck_root_seed": 20260714,
+  "training": {
+    "iteration_candidates": [2, 4, 8, 16, 32],
+    "frozen_selected_iterations": 32,
+    "max_nodes_per_traversal": 250000,
+    "material_nonuniform_l1_threshold": 1e-6,
+    "minimum_each_backoff_nonuniform_rows": 1,
+    "minimum_exact_nonuniform_rows": 1,
+    "seed": 2026071402,
+    "shard_size": 1,
+    "utility_unit_chips": 100
+  }
+}
