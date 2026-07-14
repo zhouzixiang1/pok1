@@ -407,12 +407,25 @@ def _validated_master_proposal(
     for raw_ref in raw_refs:
         text = str(raw_ref or "").strip()
         normalized_ref = None
-        if text.startswith("source:"):
-            symbol = _normalize_source_symbol(text[len("source:"):])
-            if symbol in source_symbols:
-                normalized_ref = f"source:{symbol}"
-                source_ref_symbols.add(symbol)
-        elif text.startswith("snapshot:"):
+        # Accept source:, call_index:, code:, ref: prefixes as source references.
+        # Weak models frequently use the wrong prefix; the integrity guarantee
+        # is that the symbol exists in the frozen source graph, not the label.
+        matched_source = False
+        for prefix in ("source:", "call_index:", "code:", "ref:"):
+            if text.lower().startswith(prefix):
+                matched_source = True
+                remainder = text[len(prefix):].strip()
+                # Strip trailing descriptions that weak models append.
+                for sep in (" [", " \u2014", " -", " (", "\t"):
+                    idx = remainder.find(sep)
+                    if idx > 0:
+                        remainder = remainder[:idx].strip()
+                symbol = _normalize_source_symbol(remainder)
+                if symbol is not None and symbol in source_symbols:
+                    normalized_ref = f"source:{symbol}"
+                    source_ref_symbols.add(symbol)
+                break
+        if not matched_source and text.startswith("snapshot:"):
             normalized_ref = _validated_snapshot_reference(text, snapshot_dir)
         if normalized_ref is None or normalized_ref in evidence_refs:
             return None
