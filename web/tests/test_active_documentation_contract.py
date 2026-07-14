@@ -253,6 +253,8 @@ def test_active_document_tree_has_no_retired_operator_credentials_or_commands():
         if path not in excluded
         and "archive" not in path.relative_to(ROOT).parts
         and "node_modules" not in path.parts
+        and ".codex_worktrees" not in path.parts
+        and ".claude" not in path.parts
         and "frontend/dist" not in path.as_posix()
         and "server/static" not in path.as_posix()
     ]
