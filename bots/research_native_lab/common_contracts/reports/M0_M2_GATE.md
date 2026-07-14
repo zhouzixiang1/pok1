@@ -171,6 +171,23 @@ bootstrap/Holm/stopping logic, complete-matrix bindings, raw-evidence
 uniqueness, one-use supervisor capabilities, and attempt-journal anti-selection
 rules.
 
+### Post-M4 integration audit hardening
+
+A route-integration audit on 2026-07-14 found two Python/API state-machine
+aliases that the original M2 suite did not exercise.  `submit_action` now
+accepts only an exact `int` decision ID, so `True == 1`, floats, strings and
+integer subclasses cannot consume a one-shot lease.  Rejection occurs before
+action parsing or state mutation and leaves the valid pending lease intact.
+
+The connection handshake is now ordered and one-shot as well: platform state
+cannot be accepted before `name` is received and its response is consumed;
+duplicate, stale or unsolicited name requests/responses fail closed.  A
+combined decoder/session regression feeds the sticky raw byte sequence
+`namepreflop|...` and proves that the name response is authorized before the
+first hand opens decision lease 1.  These are Common protocol hardenings, not
+evidence of official EXE acceptance.  The local `sever` LF adapter and the
+official raw/no-delimiter transport remain separate test authorities.
+
 A positive integration test now starts from a real 70-hand socket capture,
 uses a test-only signed supervisor fixture that mocks only the unavailable fixed
 installation/signature/root-readback boundary, and exercises the production
@@ -204,13 +221,14 @@ lease/replay boundary, and none can be retried as infrastructure.
 
 ### Regression status
 
-The final post-hardening acceptance rerun completed after the v3 decision and
-retry-policy changes:
+The final acceptance rerun was repeated after the 2026-07-14 handshake and
+decision-ID hardening:
 
-- Python 3.12 with `POK_RUN_SLOW_M2=1`: 252 Common tests passed, zero skipped
-  and zero failed in 238.93 seconds.
-- Default Python 3.14.4 with `POK_RUN_SLOW_M2=1`: 252 Common tests passed,
-  zero skipped and zero failed in 224.86 seconds.
+- Python 3.12 with `POK_RUN_SLOW_M2=1`: 258 Common tests passed, zero skipped
+  and zero failed in 199.80 seconds; process peak RSS was 296,152 KiB.
+- Default Python 3.14.4 with `POK_RUN_SLOW_M2=1`: 258 Common tests passed,
+  zero skipped and zero failed in 191.40 seconds; process peak RSS was
+  306,108 KiB.
 - `sever/tests`: 33 tests passed under both interpreters, with zero skipped or
   failed.
 - All 41 Common Python files compiled under both interpreters with bytecode
