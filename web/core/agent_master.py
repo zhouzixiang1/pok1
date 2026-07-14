@@ -400,6 +400,10 @@ def _validated_master_proposal(
         normalized_falsifier[key] = value[:1000]
     normalized["falsifier"] = normalized_falsifier
     raw_refs = data.get("evidence_refs")
+    # Weak models sometimes produce evidence_refs as a dict instead of a list.
+    # Coerce dict values to a list so we don't reject otherwise valid proposals.
+    if isinstance(raw_refs, dict):
+        raw_refs = list(raw_refs.values())
     if not isinstance(raw_refs, list) or not 1 <= len(raw_refs) <= 10:
         return None
     evidence_refs: list[str] = []
@@ -1135,9 +1139,21 @@ async def _run_master_proposal_ensemble(
             + source_symbol_index
             + (
                 "\n\nYour previous response failed the deterministic JSON/evidence "
-                "contract. This is one schema-only repair attempt: keep the same "
-                "independent lens, reread the verified index, and emit a complete "
-                "object without commentary."
+                "contract. This is one schema-only repair attempt. Common failure "
+                "modes to fix:\n"
+                "1. evidence_refs MUST be a JSON list of strings, NOT a dict.\n"
+                "2. Each evidence_ref MUST start with exactly 'source:' "
+                "(not 'call_index:' or 'code:').\n"
+                "3. evidence_ref values must be bare symbol paths like "
+                "'source:policy.py:get_baseline_decision' with NO trailing "
+                "descriptions, line numbers, or brackets.\n"
+                "4. reachable_chain entries MUST be unique — do not repeat any "
+                "symbol in the chain.\n"
+                "5. Every source_symbol MUST have a matching evidence_ref.\n"
+                "6. source_symbols must use exact file.py:symbol spellings from "
+                "the SYSTEM-VERIFIED SOURCE CALL INDEX above.\n"
+                "Keep the same independent lens, reread the verified index, "
+                "and emit a complete object without commentary."
                 if schema_retry else ""
             )
             + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
