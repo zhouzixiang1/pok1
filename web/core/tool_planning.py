@@ -8013,7 +8013,13 @@ async def _run_durable_worker_effect(
             "next_v": next_v,
             "source_v": source_v,
         })
-    source_hash = _complete_artifact_fingerprint(get_bot_dir(source_v))
+    _eb = checkpoint.get("epoch_binding") or {}
+    _source_inherited = bool(_eb.get("source_artifact_inherited", True))
+    source_hash = (
+        _complete_artifact_fingerprint(next_dir)
+        if not _source_inherited
+        else _complete_artifact_fingerprint(get_bot_dir(source_v))
+    )
     if source_hash != str(envelope.get("source_artifact_hash") or ""):
         worker_workflow.abandon("worker_source_artifact_drift_before_claim")
         return _json_tool_result({
@@ -10944,8 +10950,12 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             source_stage=str(projection_ckpt.get("stage") or ""),
             prepared_artifact_hash=prepared_artifact_hash,
             prepared_snapshot_hash=prepared_snapshot_hash,
-            source_artifact_hash=_complete_artifact_fingerprint(
-                get_bot_dir(source_v)
+            source_artifact_hash=(
+                prepared_artifact_hash
+                if _system_bootstrap_executor
+                else _complete_artifact_fingerprint(
+                    get_bot_dir(source_v)
+                )
             ),
             tasks=tasks,
             reviewer_feedback=reviewer_feedback,
