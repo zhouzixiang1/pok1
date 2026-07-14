@@ -64,9 +64,9 @@ Each tool function receives an `args` dict, executes business logic (often spawn
 
 ### Pattern 2: Direct LLM Calls (Sub-agents)
 
-`run_claude_query()` in `evolution_infra.py` is the primitive for all non-Orchestrator LLM calls. It sends prompt + context files, streams `AssistantMessage`/`ResultMessage`, tracks cost, and handles 529 retries. Different agents get different tools:
+`run_claude_query()` in `llm_query.py` (re-exported by `evolution_infra.py`) is the primitive for all non-Orchestrator LLM calls. It sends prompt + context files, streams `AssistantMessage`/`ResultMessage`, tracks cost, and handles 529 retries. Different agents get different tools:
 
-- **Master** (`agent_master.py`): Bash, Read — analyzes ratings/experience/match data, produces worker task plan
+- **Master** (`agent_master.py`): Read — analyzes ratings/experience/match data, produces worker task plan
 - **Workers** (`agent_workers.py`): Bash, Read, Edit — directly modify bot source files
 - **Reviewer/Critic** (`agent_review.py`): Bash, Read — evaluate diffs
 - **Analysts** (stagnation, match, performance, experience consolidation): No tools — JSON-only output
