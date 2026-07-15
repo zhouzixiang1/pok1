@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import os
 try:
     from ..engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
     from ..engine.thp_recorder import THPRecorder
@@ -18,6 +19,15 @@ except ImportError:  # Standalone ``cd sever`` compatibility.
     from engine.game import GameEngine, HANDS_PER_MATCH, TIMEOUT_SECONDS
     from engine.thp_recorder import THPRecorder
     from server.transport import NationalProtocolError, NationalTCPClient
+
+_DECK_SEED_RAW = os.environ.get("POK_DECK_SEED_BASE", "")
+_deck_seed_base = int(_DECK_SEED_RAW) if _DECK_SEED_RAW.strip().isdigit() else None
+
+
+def _seeded_deck_factory(hand_num: int):
+    """Create a deterministic deck for paired seed block evaluation."""
+    from engine.deck import Deck
+    return Deck(seed=_deck_seed_base + hand_num if _deck_seed_base is not None else None)
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +119,7 @@ class MatchManager:
             send_func=self._send_to_client,
             broadcast_func=self.broadcast,
             recorder=recorder,
+            deck_factory=_seeded_deck_factory if _deck_seed_base is not None else None,
         )
         self.engine = engine
 
