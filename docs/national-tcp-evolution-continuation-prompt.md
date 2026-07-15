@@ -127,19 +127,20 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
   strict invocation/evidence implementation is
-  `baadaa821d979b4b651260852ebcc48ae0a6aba8`; query the branch for the later
-  documentation/runtime-record commit rather than guessing its SHA;
+  `baadaa821d979b4b651260852ebcc48ae0a6aba8`; tested delivery/documentation is
+  `1abd2108f8afef5f6478584969ccce472e730c5f`; query the branch for this later
+  runtime-record commit rather than guessing its SHA;
 - final frozen-tree verification after the strict invocation repair: Web
   `2580 passed, 20 skipped`; sever
   `31 passed`; frontend `15 passed` plus lint/build; active-source `py_compile`
   and `git diff --check` passed; official doctor is green on tracked execution
   profile v7. Final focused authority/Master/Reviewer/Critic/API coverage is
   `188 passed`; the strict child/root/fd-walk shard is `94 passed`;
-- `origin/main`: before this delivery push it is
-  `eea8e21193be1ae17f8d7b47a692975694744bb3`; runtime resume requires both
-  the implementation commit above and the commit carrying this document;
+- `origin/main`: delivery is merged through
+  `1abd2108f8afef5f6478584969ccce472e730c5f`; push this runtime-record commit
+  before resuming;
 - runtime HEAD: stopped and clean at
-  `eea8e21193be1ae17f8d7b47a692975694744bb3`; no evolution process is live;
+  `1abd2108f8afef5f6478584969ccce472e730c5f`; no evolution process is live;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
   drift. Workflow-v20 was canonically abandoned with receipt
@@ -161,10 +162,13 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   consecutive generation has run, so the live acceptance remains `0/10`;
 - legacy branch verdict: `fc7d62d30783d2ae8710dc8f331d717f3d902e36`
   is semantically superseded, history-only, and must not be cherry-picked;
-- current evaluation identity before the required post-repair rotation is
-  manifest `4193eb096dbbd1b9d15d7c1050dd67ee82f19335149c72be81684634a003ea5c`
+- current evaluation identity was explicitly rotated after runtime sync. The
+  previous manifest was archived under
+  `archive/evaluation_identity/20260716_042700`; the new manifest is
+  `2c8dbcb64ec2d8dfa4f293d2423868472e38761c33aacdfdee4e1972d58d09a5`
   / identity `ca708c5c01fff7310c89f6903de66b4289b24f2349a998f958d884b1f9546855`;
-  it must not be reused after the evaluation-critical code commit;
-- known next action: push the reviewed commits, fast-forward the stopped runtime,
-  archive/reinitialize evaluation identity, rerun doctor/status, then prepare
-  workflow-v22. No first-strict official operator action is yet available.
+  only the empty new instance may receive future native samples;
+- known next action: push/pull this documentation-only runtime record, then
+  prepare workflow-v22. Runtime doctor is green on profile v7 and the dry-run
+  projection is v142→v143, active_bots=0, fresh_bootstrap_ready. No first-strict
+  official operator action is yet available.

@@ -88,8 +88,8 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented at `baadaa821d979b4b651260852ebcc48ae0a6aba8`; per-invocation evidence/log/UI contract green | 19-role semantic-producer, provenance, poison/render/root/path/symlink/fd-walk/TOCTOU/hook/budget and accepted-effect/log tests |
 | P3 | Master stream/effect recovery and bounded retries | implemented; frozen phase, durable binding recovery, child tombstone and real/replay dispatch fence green | timeout/lease/replay/provider-termination/partial-packet/final-projection/abandon tests |
 | P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | source implementation and frontend/backend/actual-log parity green; live publication observation pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | frozen-tree verification complete for `baadaa821d979b4b651260852ebcc48ae0a6aba8`; documentation/push/runtime sync is the current delivery step | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | workflows v20/v21 canonically abandoned; no active checkpoint/candidate; fresh v22 awaits repaired HEAD sync and evaluation-identity rotation | tags, certificates, immutable cycles and live observation ledger |
+| P5 | full verification and merge to `origin/main` | implementation and delivery record merged/synchronized through `1abd2108f8afef5f6478584969ccce472e730c5f`; final runtime-record commit pending | full suites, Git and remote identities |
+| P6 | runtime recovery, v143/v144 publication and ten generations | workflows v20/v21 canonically abandoned; identity rotation complete; no active checkpoint/candidate; fresh v22 is next | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -1009,12 +1009,23 @@ documented defense-in-depth P3: active LLM roles have no result-tree write
 capability and final evidence reproof fails closed, but a future common dirfd
 writer can remove that residual assumption.
 
+The two reviewed commits were atomically pushed to both `origin/main` and the
+alignment ref, and the stopped clean runtime fast-forwarded to
+`1abd2108f8afef5f6478584969ccce472e730c5f`. The old manifest was explicitly
+archived under `archive/evaluation_identity/20260716_042700`; the empty new
+manifest digest is
+`2c8dbcb64ec2d8dfa4f293d2423868472e38761c33aacdfdee4e1972d58d09a5`
+with identity digest
+`ca708c5c01fff7310c89f6903de66b4289b24f2349a998f958d884b1f9546855`.
+Runtime official doctor remained green on profile v7. A dry-run projected only
+v142→v143, active_bots=0 and `fresh_bootstrap_ready`; it made no pipeline
+mutation and left no checkpoint.
+
 No complete three-proposal packet, ballots, selected mechanism, compiled Worker
 plan, strict v143/v144 publication, immutable new-pool rating cycle, or
 post-repair 10-generation observation has yet been accepted. The next runtime
-step is not a v21 retry: the reviewed commits must reach `origin/main`, the
-stopped runtime must fast-forward, and the evaluation identity must be archived
-and initialized again before preparing fresh workflow-v22.
+step is not a v21 retry: after this documentation-only runtime record reaches
+the stopped checkout, prepare fresh workflow-v22.
 The `fc7d62d30783d2ae8710dc8f331d717f3d902e36` verdict remains unchanged:
 semantically superseded, history-only, and not cherry-picked.
 
