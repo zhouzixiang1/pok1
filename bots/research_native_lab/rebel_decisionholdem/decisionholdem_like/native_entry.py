@@ -12,6 +12,13 @@ import socket
 import sys
 import time
 import traceback
+try:
+    _repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
+    from bots.research_native_lab.common_contracts.protocol import NationalProtocolSession  # noqa
+except Exception:
+    NationalProtocolSession = None
 
 # Keep the content-bound deployment directory immutable during execution.
 sys.dont_write_bytecode = True
@@ -188,9 +195,13 @@ class A2BlueprintClient:
         self.fold_seen = False
         self.responding_to_check = False
         self.last_off_tree = None
+        self.cumulative_earn = 0
         self.resolve_enabled = os.environ.get("A2_RESOLVE", "1") == "1"
         self.resolve_iterations = int(os.environ.get("A2_RESOLVE_ITERS", "10"))
         self.resolve_depth = int(os.environ.get("A2_RESOLVE_DEPTH", "2"))
+        self.resolve_method = os.environ.get("A2_RESOLVE_METHOD", "plain")
+        self._session = None  # will be initialized with NationalProtocolSession
+        self._session_state = None
 
     def _log(self, text: str) -> None:
         if self.log is not None:
@@ -315,14 +326,20 @@ class A2BlueprintClient:
                             iterations=self.resolve_iterations,
                             depth=self.resolve_depth,
                             seed=self.seed + self.decision_number,
-                            method="plain",
+                            method=self.resolve_method,
                         )
-                        # Resolve is computationally expensive — only run if time permits
+                        # Resolve with proper Common state if available
+                        resolve_state = self._session_state if self._session_state else None
                         resolve_result = resolve_public_state(
-                            state=None,  # resolver uses abstraction-based evaluation
+                            state=resolve_state,
                             config=resolve_cfg,
                             blueprint_strategy=bp_strategy,
-                            abstraction=None,
+                            abstraction=HUNLInformationAbstraction(
+                                key=infoset_key,
+                                street=self.street,
+                                bucket=bucket,
+                                actions=tuple(s.action_id for s in normalize_action_specs(context)),
+                            ) if resolve_state is not None else None,
                         )
                         # Pick action from resolved strategy
                         import random as _rng
@@ -451,6 +468,17 @@ class A2BlueprintClient:
 
     def on_message(self, message: str) -> str | None:
         self.last_platform_message_at = time.monotonic()
+        # Feed to NationalProtocolSession for authoritative state tracking
+        try:
+            if self._session is None and NationalProtocolSession:
+                self._session = NationalProtocolSession(self.name)
+            if self._session is not None:
+                event = self._session.receive(message)
+                if event.kind == "name_requested":
+                    self._session.name_response()
+                self._session_state = self._session.current
+        except Exception:
+            pass
         if message == "name":
             return self.name
         if message.startswith("preflop|"):
@@ -468,6 +496,10 @@ class A2BlueprintClient:
         if message.startswith("earnChips "):
             self._infer_peer_closure_at_boundary()
             self.in_allin_runout = False
+            try:
+                self.cumulative_earn += int(message.split(" ", 1)[1])
+            except (ValueError, IndexError):
+                pass
             return None
         if message.startswith("oppo_hands|"):
             self._infer_peer_closure_at_boundary()
@@ -535,6 +567,11 @@ def run_client(args: argparse.Namespace) -> int:
                     )
         return 0
     finally:
+        import sys as _sys
+        print(
+            f"A2_TELEMETRY {{\"bot_name\":\"{client.name}\",\"earnings\":{client.cumulative_earn},\"decisions\":{client.decision_number}}}",
+            file=_sys.stderr,
+        )
         try:
             sock.close()
         finally:
