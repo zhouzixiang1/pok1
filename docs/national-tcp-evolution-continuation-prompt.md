@@ -130,7 +130,8 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 - final frozen-tree verification after the strict-authority recovery repair: Web
   `2554 passed, 20 skipped`; sever
   `31 passed`; frontend `15 passed` plus lint/build; active-source `py_compile`
-  and `git diff --check` passed. The repair has `242 passed` across its focused
+  and `git diff --check` passed; official doctor is green on tracked execution
+  profile v7. The repair has `242 passed` across its focused
   authority/Master/role shards and `94 passed` across the final backend/frontend
   route and presentation-contract shard;
 - `origin/main`: before this repair is integrated it is

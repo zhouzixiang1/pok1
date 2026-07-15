@@ -924,7 +924,11 @@ failure terminates, waits, then kills/reaps if necessary, and every barrier,
 seccomp, inherited, and callback-owned descriptor is closed. No-owner launches
 keep their original argv, environment, and FD set. Unit tests cover command/FD
 binding, mismatch cleanup, and the no-owner path; the original dynamic race ran
-20/20 under concurrent load.
+20/20 under concurrent load. The managed identity therefore advances to
+`pok-managed-executor-identity-v3`, and the tracked formal profile advances to
+`official-exe-2021-wine9-managed-executor-v7`; the profile pins the new source
+hash and owner-barrier contract so `official_certify.py doctor` detects any
+future unsynchronized executor edit.
 
 Final frozen-tree combined verification after the implementation and stale
 fixture migrations was:
@@ -944,6 +948,9 @@ passed
 
 cd web/frontend && npm run build
 passed
+
+python scripts/official_certify.py doctor
+ok=true; execution_profile=official-exe-2021-wine9-managed-executor-v7
 ```
 
 The current strict-authority recovery repair tree is green: all suites, active-source

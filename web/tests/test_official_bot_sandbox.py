@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 import shutil
 import socket
@@ -115,6 +116,11 @@ def test_formal_sandbox_launch_uses_central_executor_and_single_log(
 def test_execution_profile_is_tracked_and_requires_sandbox():
     profile = load_execution_profile()
     identity = execution_profile_identity()
+    executor_source = (
+        Path(__file__).resolve().parents[1]
+        / "core"
+        / "managed_bot_executor.py"
+    )
 
     assert profile["official_exe"]["sha256"] == (
         "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
@@ -128,6 +134,16 @@ def test_execution_profile_is_tracked_and_requires_sandbox():
     assert profile["managed_executor"]["contract"]["managed_bot_source_mount"] == (
         "sealed-memfd-ro-bind-data-only"
     )
+    assert profile["profile_id"] == "official-exe-2021-wine9-managed-executor-v7"
+    assert profile["managed_executor"]["schema"] == (
+        "pok-managed-executor-identity-v3"
+    )
+    assert profile["managed_executor"]["contract"][
+        "host_process_environment"
+    ] == "optional-owner-marker-block-fd-verified-before-release"
+    assert profile["managed_executor"]["source"]["sha256"] == hashlib.sha256(
+        executor_source.read_bytes()
+    ).hexdigest()
     assert profile["sandbox"]["python_flags"] == ["-I", "-B"]
     assert len(identity["profile_sha256"]) == 64
     assert len(identity["profile_digest"]) == 64

@@ -1,6 +1,6 @@
 {
   "schema_version": 3,
-  "profile_id": "official-exe-2021-wine9-managed-executor-v6",
+  "profile_id": "official-exe-2021-wine9-managed-executor-v7",
   "official_exe": {
     "repository_path": "sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
     "sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
@@ -66,7 +66,7 @@
         "--unshare-uts",
         "--unshare-cgroup"
       ],
-      "host_process_environment": "optional-owner-marker-only",
+      "host_process_environment": "optional-owner-marker-block-fd-verified-before-release",
       "host_root_mounted": false,
       "managed_bot_python_flags": ["-I", "-B"],
       "managed_bot_source_mount": "sealed-memfd-ro-bind-data-only",
@@ -88,7 +88,7 @@
       "writable_outputs": "named-new-file-bind-fd-only"
     },
     "sandbox_bootstrap_sha256": "e16fd65d9dc90888972b97afe3db7e5124330fee3484318e5fc88a6c3e17a33a",
-    "schema": "pok-managed-executor-identity-v2",
+    "schema": "pok-managed-executor-identity-v3",
     "seccomp": {
       "bpf_sha256": "868cffd79ca7486a876c3f67b8ebf1f36893f8f0f95b77253be058b5498ffecc",
       "bpf_size": 672,
@@ -100,7 +100,7 @@
     },
     "source": {
       "path": "web/core/managed_bot_executor.py",
-      "sha256": "f44aef0d6e9be6c0c5655f4ba00639693fd809c2041950bbd36a4c8d9fb11368"
+      "sha256": "629a1654121236f4aa28a39e31ba07d0595dccf65bc9e38d3bc90c8422d6055b"
     },
     "tools": {
       "bwrap": {

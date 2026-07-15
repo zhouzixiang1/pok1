@@ -777,7 +777,10 @@ def test_managed_bot_rejects_stdlib_shadow_before_consuming_endpoint(tmp_path):
 
 def test_executor_identity_and_real_probe_bind_the_executable_policy():
     identity = managed_executor_identity()
-    assert identity["schema"] == "pok-managed-executor-identity-v2"
+    assert identity["schema"] == "pok-managed-executor-identity-v3"
+    assert identity["contract"]["host_process_environment"] == (
+        "optional-owner-marker-block-fd-verified-before-release"
+    )
     assert identity["contract"]["host_root_mounted"] is False
     assert identity["contract"]["namespaces"] == list(_NAMESPACES)
     assert identity["contract"]["writable_outputs"] == (

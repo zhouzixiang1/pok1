@@ -661,7 +661,9 @@ class IsolationIdentity:
     nested_userns: str = "disabled-and-asserted"
     capabilities: str = "drop-all"
     environment: str = "clear-and-allowlist"
-    host_process_environment: str = "optional-owner-marker-only"
+    host_process_environment: str = (
+        "optional-owner-marker-block-fd-verified-before-release"
+    )
     network: str = "isolated-netns-inherited-exact-peer-only"
     readonly_inputs: str = "named-ro-bind-only"
     writable_outputs: str = "named-new-file-bind-fd-only"
@@ -1694,7 +1696,7 @@ def managed_executor_identity(
             SANDBOX_BOOTSTRAP.encode("utf-8")
         ).hexdigest()
         return {
-            "schema": "pok-managed-executor-identity-v2",
+            "schema": "pok-managed-executor-identity-v3",
             "source": {
                 "path": "web/core/managed_bot_executor.py",
                 "sha256": _sha256_file(source_path),
@@ -1729,7 +1731,9 @@ def managed_executor_identity(
                 "nested_userns": "disabled-and-asserted",
                 "capabilities": "drop-all",
                 "environment": "clear-and-allowlist",
-                "host_process_environment": "optional-owner-marker-only",
+                "host_process_environment": (
+                    "optional-owner-marker-block-fd-verified-before-release"
+                ),
                 "network": "loopback-exact-peer-inherited-stream-only",
                 "managed_bot_sources": (
                     "content-bound-top-level-files-sealed-before-spawn"
