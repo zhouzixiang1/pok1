@@ -755,6 +755,7 @@ def test_runtime_code_has_no_local_absolute_project_paths():
         "bots/neural_national_lab/data/",
         "ladder_results/",
         "results/",
+        "scripts/research_eval/",
     )
     forbidden_tokens = (
         "/home/zzx/project/pok",

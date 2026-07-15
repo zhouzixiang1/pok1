@@ -204,53 +204,63 @@ def test_projection_rejection_is_not_replayed_as_poison(authority, monkeypatch):
 
 def test_terminal_sdk_output_and_projected_role_are_both_enforced(authority):
     module, _store = authority
-    checkpoint = _checkpoint()
-    call = module.new_call(
-        checkpoint,
-        slot="proposal:mechanism",
-        context_binding={"slot": "proposal:mechanism", "suffix": "binding"},
-    )
-    module.dispatch_call(
-        call,
-        full_prompt="binding prompt",
-        tools=module.SLOT_TOOLS["proposal:mechanism"],
-        owner="pytest",
-    )
-    result = ResultMessage(
-        subtype="success",
-        duration_ms=1,
-        duration_api_ms=1,
-        is_error=False,
-        num_turns=1,
-        session_id="binding-session",
-        total_cost_usd=0.01,
-        usage={},
-        result='{"provider":true}',
-    )
-    module._observe_provider_result(
-        result,
-        invocation_id=call["invocation_id"],
-        effect_id=call["effect_id"],
-    )
-    with pytest.raises(module.StrictAuthorityError, match="raw_result_mismatch"):
-        module.complete_provider_call(
-            call,
-            raw_output='{"caller":true}',
-            provider_results=[result],
+    # This test exercises the strict (non-tolerant) raw-result binding path.
+    import os
+    old_val = os.environ.get("POK_STRICT_AUTHORITY_TOLERANT")
+    os.environ["POK_STRICT_AUTHORITY_TOLERANT"] = "0"
+    try:
+        checkpoint = _checkpoint()
+        call = module.new_call(
+            checkpoint,
+            slot="proposal:mechanism",
+            context_binding={"slot": "proposal:mechanism", "suffix": "binding"},
         )
+        module.dispatch_call(
+            call,
+            full_prompt="binding prompt",
+            tools=module.SLOT_TOOLS["proposal:mechanism"],
+            owner="pytest",
+        )
+        result = ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="binding-session",
+            total_cost_usd=0.01,
+            usage={},
+            result='{"provider":true}',
+        )
+        module._observe_provider_result(
+            result,
+            invocation_id=call["invocation_id"],
+            effect_id=call["effect_id"],
+        )
+        with pytest.raises(module.StrictAuthorityError, match="raw_result_mismatch"):
+            module.complete_provider_call(
+                call,
+                raw_output='{"caller":true}',
+                provider_results=[result],
+            )
 
-    call, role_result, _receipt = _call(
-        module,
-        checkpoint,
-        "proposal:counterfactual",
-        accept=False,
-    )
-    with pytest.raises(module.StrictAuthorityError, match="projection_mismatch"):
-        module.accept_role_result(
-            call,
-            role_result={**role_result, "injected": True},
-            parse_contract=module.SLOT_PARSE_CONTRACTS["proposal:counterfactual"],
+        call, role_result, _receipt = _call(
+            module,
+            checkpoint,
+            "proposal:counterfactual",
+            accept=False,
         )
+        with pytest.raises(module.StrictAuthorityError, match="projection_mismatch"):
+            module.accept_role_result(
+                call,
+                role_result={**role_result, "injected": True},
+                parse_contract=module.SLOT_PARSE_CONTRACTS["proposal:counterfactual"],
+            )
+    finally:
+        if old_val is None:
+            os.environ.pop("POK_STRICT_AUTHORITY_TOLERANT", None)
+        else:
+            os.environ["POK_STRICT_AUTHORITY_TOLERANT"] = old_val
 
 
 def test_terminal_structured_output_is_bound_to_raw_and_projection(authority):
