@@ -452,6 +452,7 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
     monkeypatch, tmp_path
 ):
     import agent_master
+    import evolution_infra
     import strict_authority_workflow
 
     class CrashAfterDurableRejection(RuntimeError):
@@ -461,6 +462,9 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
     snapshot_dir.mkdir()
+    results_dir = tmp_path / "results"
+    log_dir = results_dir / "v143" / "logs"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
     accepted_by_slot = {}
     rejected_slots = set()
     observed_roles = []
@@ -473,6 +477,8 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
         call = {
             "slot": slot,
             "invocation_id": f"{invocation_counter:032x}",
+            "effect_id": "strict-llm-" + f"{invocation_counter:064x}",
+            "generation_binding": {"next_v": 143},
         }
         if slot in rejected_slots and slot not in accepted_by_slot:
             call.update({
@@ -535,7 +541,7 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
         source_v=142,
         next_v=143,
         ui=_UI(),
-        log_dir=tmp_path,
+        log_dir=log_dir,
         allowed_evidence_snapshot_dir=str(snapshot_dir),
         baseline_v=143,
         protocol_bootstrap_prepared_only=True,
@@ -557,6 +563,58 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
 
 
 @pytest.mark.asyncio
+async def test_strict_log_allocation_failure_remains_authority_error(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as authority
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    results_dir = tmp_path / "results"
+    log_dir = results_dir / "v143" / "logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "strict_invocations").write_text("collision\n")
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    counter = {"value": 0}
+
+    def fake_new_call(_checkpoint, *, slot, **_kwargs):
+        counter["value"] += 1
+        return {
+            "slot": slot,
+            "invocation_id": f"{counter['value']:032x}",
+            "generation_binding": {"next_v": 143},
+        }
+
+    async def forbidden_provider(*_args, **_kwargs):
+        raise AssertionError("provider must not run after log allocation failure")
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", forbidden_provider)
+    monkeypatch.setattr(authority, "new_call", fake_new_call)
+
+    with pytest.raises(
+        authority.StrictAuthorityError,
+        match="strict_authority_invocation_log_filesystem_invalid",
+    ):
+        await agent_master._run_master_proposal_ensemble(
+            planning_context="frozen planning context",
+            source_v=142,
+            next_v=143,
+            ui=_UI(),
+            log_dir=log_dir,
+            allowed_evidence_snapshot_dir=str(snapshot_dir),
+            baseline_v=143,
+            protocol_bootstrap_prepared_only=True,
+            strict_checkpoint={},
+        )
+
+
+@pytest.mark.asyncio
 async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     monkeypatch,
     tmp_path,
@@ -572,17 +630,22 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     _write_source(source_dir)
     snapshot_dir.mkdir()
     store = WorkflowStore(tmp_path / "strict-authority.sqlite3")
+    results_dir = tmp_path / "results"
+    log_dir = results_dir / "v143" / "logs"
     monkeypatch.setattr(authority, "_store", lambda: store)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: source_dir)
 
     provider_slots = []
+    provider_logs = []
     compute_calls = {"count": 0}
     provider_counter = {"value": 0}
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **kwargs):
         call = kwargs["strict_authority"]
         log_file = Path(_args[0])
+        provider_logs.append((call["invocation_id"], log_file))
         authority.dispatch_call(
             call,
             full_prompt=str(prompt),
@@ -666,7 +729,7 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         "source_v": 142,
         "next_v": 143,
         "ui": _UI(),
-        "log_dir": tmp_path,
+        "log_dir": log_dir,
         "allowed_evidence_snapshot_dir": str(snapshot_dir),
         "baseline_v": 143,
         "protocol_bootstrap_prepared_only": True,
@@ -707,6 +770,14 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     assert retry_provider_slots.count("proposal:compute_memory") == 1
     assert retry_provider_slots.count("ballot:falsification") == 1
     assert retry_provider_slots.count("ballot:scope") == 1
+    assert len({path for _invocation_id, path in provider_logs}) == len({
+        invocation_id for invocation_id, _path in provider_logs
+    })
+    assert all(
+        path.parent.name == invocation_id
+        and path.parent.parent.name == "strict_invocations"
+        for invocation_id, path in provider_logs
+    )
 
     _refs, errors = authority.validate_receipts(
         advanced_checkpoint,

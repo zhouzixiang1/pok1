@@ -1607,3 +1607,65 @@ def test_process_stream_parent_timeout_cancel_is_typed(monkeypatch, tmp_path):
     assert "parent timeout" in message
     assert fields["cancel_scope"] == "dynamic_test_gen"
     assert fields["cancel_reason"] == "parent_timeout"
+
+
+def test_role_log_metadata_preserves_nested_strict_invocation_identity():
+    import llm_query
+
+    path = (
+        "/tmp/results/v143/logs/strict_invocations/"
+        + "1" * 32
+        + "/master_proposal_mechanism_io.txt"
+    )
+    assert llm_query._role_log_metadata(path) == {
+        "log_file": path,
+        "version": 143,
+        "role_log": "master_proposal_mechanism",
+    }
+
+
+@pytest.mark.parametrize("path_kind", ["path", "string"])
+def test_role_log_rotation_accepts_path_and_replaces_backup(
+    monkeypatch,
+    tmp_path,
+    path_kind,
+):
+    monkeypatch.setattr(llm_query, "_ROLE_IO_MAX_BYTES", 1)
+    log_file = tmp_path / f"{path_kind}_io.txt"
+    log_file.write_text("old live bytes\n", encoding="utf-8")
+    rotated = Path(str(log_file) + ".1")
+    rotated.write_text("stale backup\n", encoding="utf-8")
+
+    llm_query._append_role_io(
+        log_file if path_kind == "path" else str(log_file),
+        "new live bytes\n",
+    )
+
+    assert rotated.read_text(encoding="utf-8") == "old live bytes\n"
+    live = log_file.read_text(encoding="utf-8")
+    assert "new live bytes" in live
+    assert "old live bytes" not in live
+
+
+def test_strict_invocation_log_never_rotates_evidence_bytes(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr(llm_query, "_ROLE_IO_MAX_BYTES", 1)
+    log_file = (
+        tmp_path
+        / "v143"
+        / "logs"
+        / "strict_invocations"
+        / ("8" * 32)
+        / "critic_io.txt"
+    )
+    log_file.parent.mkdir(parents=True)
+    log_file.write_text("sealed prefix\n", encoding="utf-8")
+
+    llm_query._append_role_io(log_file, "continued evidence\n")
+
+    assert not Path(str(log_file) + ".1").exists()
+    live = log_file.read_text(encoding="utf-8")
+    assert "sealed prefix" in live
+    assert "continued evidence" in live

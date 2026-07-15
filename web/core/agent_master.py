@@ -3,6 +3,7 @@
 import ast
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 
@@ -1494,11 +1495,20 @@ async def _run_master_proposal_ensemble(
         is_repair = bool(repair_kind)
         is_distinctness_repair = repair_kind == "distinctness"
         purpose = f"master_proposal_scout:{direction}"
-        log_file = log_dir / (
+        log_basename = (
             f"master_proposal_{direction}_{'distinctness' if is_distinctness_repair else 'schema'}_retry_io.txt"
             if is_repair
             else f"master_proposal_{direction}_io.txt"
         )
+        log_file = log_dir / log_basename
+        if strict_call is not None:
+            from strict_authority_workflow import strict_invocation_log_path
+
+            log_file = strict_invocation_log_path(
+                strict_call,
+                logs_dir=log_dir,
+                basename=log_basename,
+            )
         retry_label = (
             " DISTINCTNESS RETRY"
             if is_distinctness_repair
@@ -1561,6 +1571,10 @@ async def _run_master_proposal_ensemble(
     accepted_proposal_directions: dict[str, str] = {}
     for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
         if isinstance(result, BaseException):
+            from strict_authority_workflow import StrictAuthorityError
+
+            if isinstance(result, StrictAuthorityError):
+                raise result
             proposal_exceptions.append(result)
             invalid_proposal_specs.append(
                 (direction, _directive, {"kind": "schema"})
@@ -1627,6 +1641,10 @@ async def _run_master_proposal_ensemble(
             if isinstance(result, LLMAvailabilityBlocked):
                 raise result
             if isinstance(result, BaseException):
+                from strict_authority_workflow import StrictAuthorityError
+
+                if isinstance(result, StrictAuthorityError):
+                    raise result
                 proposal_exceptions.append(result)
                 continue
             output = result.get("output", "") if isinstance(result, dict) else ""
@@ -1722,11 +1740,20 @@ async def _run_master_proposal_ensemble(
             ).hexdigest()
         )
         purpose = f"master_proposal_critic:{name}"
-        log_file = log_dir / (
+        log_basename = (
             f"master_proposal_critic_{name}_schema_retry_io.txt"
             if schema_retry
             else f"master_proposal_critic_{name}_io.txt"
         )
+        log_file = log_dir / log_basename
+        if strict_call is not None:
+            from strict_authority_workflow import strict_invocation_log_path
+
+            log_file = strict_invocation_log_path(
+                strict_call,
+                logs_dir=log_dir,
+                basename=log_basename,
+            )
         critic_role = (
             f"MASTER PROPOSAL CRITIC {name}"
             f"{' SCHEMA RETRY' if schema_retry else ''}"
@@ -1784,6 +1811,10 @@ async def _run_master_proposal_ensemble(
     )
     for spec, result in zip(critic_specs, critic_results):
         if isinstance(result, BaseException):
+            from strict_authority_workflow import StrictAuthorityError
+
+            if isinstance(result, StrictAuthorityError):
+                raise result
             invalid_critics.append(spec)
             continue
         output = result.get("output", "") if isinstance(result, dict) else ""
@@ -1828,6 +1859,10 @@ async def _run_master_proposal_ensemble(
             if isinstance(result, LLMAvailabilityBlocked):
                 raise result
             if isinstance(result, BaseException):
+                from strict_authority_workflow import StrictAuthorityError
+
+                if isinstance(result, StrictAuthorityError):
+                    raise result
                 raise RuntimeError(
                     "proposal_critic_call_failed:"
                     f"{type(result).__name__}:{str(result)[:240]}"
@@ -2431,9 +2466,14 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     for attempt in range(MAX_MASTER_RETRIES):
         ui.clear_io()
         strict_final_call = None
+        final_log_file = master_log_file
         final_role = f"MASTER (Try {attempt+1})"
         if protocol_bootstrap_active:
-            from strict_authority_workflow import final_master_call_context, new_call
+            from strict_authority_workflow import (
+                final_master_call_context,
+                new_call,
+                strict_invocation_log_path,
+            )
 
             strict_final_call = new_call(
                 strict_checkpoint,
@@ -2451,6 +2491,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                         f"strict_final_master_replay_role_invalid:{replay_role}"
                     )
                 final_role = replay_role
+            final_log_file = strict_invocation_log_path(
+                strict_final_call,
+                logs_dir=master_log_file.parent,
+                basename=master_log_file.name,
+            )
         try:
             from llm_query import render_llm_prompt
 
@@ -2471,7 +2516,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             )
             output, _, _ = await run_claude_query(
                 rendered_prompt, [], ui,
-                final_role, master_log_file,
+                final_role, final_log_file,
                 tools=["Read"],
                 allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
                 allowed_read_dirs=(

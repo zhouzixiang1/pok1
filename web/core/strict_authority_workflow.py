@@ -170,7 +170,9 @@ def _consume_observed_provider_results(results: Iterable[Any]) -> None:
 
 
 def _store() -> WorkflowStore:
-    return WorkflowStore(Path(__file__).resolve().parent / "results" / "workflow" / "events.sqlite3")
+    from evolution_infra import RESULTS_DIR
+
+    return WorkflowStore(Path(RESULTS_DIR) / "workflow" / "events.sqlite3")
 
 
 def _plain_int(value: Any) -> bool:
@@ -194,6 +196,70 @@ def authority_run_id(workflow_run_id: str) -> str:
     if not workflow_run_id:
         raise StrictAuthorityError("strict_authority_workflow_run_id_missing")
     return f"{workflow_run_id}:{RUN_SUFFIX}"
+
+
+def abandon_authority(
+    checkpoint: dict[str, Any],
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Fence the strict child journal when its generation is abandoned."""
+
+    run_id = authority_run_id(str((checkpoint or {}).get("workflow_run_id") or ""))
+    store = _store()
+    payload = {
+        "reason": str(reason)[:1000],
+        "workflow_run_id": str(checkpoint.get("workflow_run_id") or ""),
+    }
+    instance = store.instance(run_id)
+    if not instance:
+        # new_call is intentionally side-effect free, so an abandon can race a
+        # descriptor that has not reached dispatch yet.  Publish an abandoned
+        # tombstone first: even a crash before the terminal event is appended
+        # then prevents ensure_instance/request_effect from resurrecting this
+        # child journal as running.  This uses the SQLite instance transaction,
+        # not a nested actor flock; callers already own the Worker actor lock.
+        store.ensure_instance(
+            run_id,
+            definition_version=DEFINITION_VERSION,
+            status="abandoned",
+        )
+        instance = store.instance(run_id)
+
+    terminal_events = [
+        event
+        for event in store.events(run_id)
+        if event.event_type == "StrictAuthorityAbandoned"
+    ]
+    if len(terminal_events) > 1:
+        raise WorkflowConflict(
+            f"multiple strict authority abandon events: {run_id}"
+        )
+    if instance.get("status") != "abandoned" or not terminal_events:
+        try:
+            store.terminal_transition(
+                run_id,
+                event_type="StrictAuthorityAbandoned",
+                payload=payload,
+                causation_id=(
+                    f"strict-authority-abandoned:{run_id}:"
+                    f"{content_digest(payload)}"
+                ),
+                expected_version=int(instance["stream_version"]),
+                status="abandoned",
+            )
+        except WorkflowConflict:
+            current = store.instance(run_id)
+            if current.get("status") != "abandoned":
+                raise
+    current = store.instance(run_id)
+    return {
+        "run_id": run_id,
+        "present": True,
+        "abandoned": current.get("status") == "abandoned",
+        "fence_epoch": int(current.get("fence_epoch") or 0),
+        "stream_version": int(current.get("stream_version") or 0),
+    }
 
 
 def generation_binding(checkpoint: dict[str, Any]) -> dict[str, Any]:
@@ -720,6 +786,8 @@ def render_gate_provider_prompt(call: dict[str, Any]):
             "producer_function_sha256": renderer.producer_function_sha256,
             "template_digests": _json_value(renderer.template_digests),
         }
+    except StrictAuthorityError:
+        raise
     except Exception as exc:
         raise StrictAuthorityError(
             "strict_authority_gate_render_receipt_invalid"
@@ -1307,9 +1375,16 @@ def _frozen_phase_checkpoint_revision(
     run_id = authority_run_id(binding["workflow_run_id"])
     store = _store()
     try:
-        if not store.instance(run_id):
+        instance = store.instance(run_id)
+        if not instance:
             return int(current_revision)
+        if instance.get("status") == "abandoned":
+            raise StrictAuthorityError(
+                f"strict_authority_phase_journal_abandoned:{phase_name}"
+            )
         events = store.events(run_id)
+    except StrictAuthorityError:
+        raise
     except Exception as exc:
         raise StrictAuthorityError(
             f"strict_authority_phase_revision_unavailable:{phase_name}:"
@@ -1498,6 +1573,12 @@ def dispatch_call(
 
     if not isinstance(call, dict) or call.get("schema_version") != 1:
         raise StrictAuthorityError("strict_authority_call_descriptor_invalid")
+    run_id = str(call.get("run_id") or "")
+    if not run_id:
+        raise StrictAuthorityError("strict_authority_dispatch_run_id_missing")
+    slot = str(call.get("slot") or "")
+    if slot not in SLOT_CONTRACTS:
+        raise StrictAuthorityError("strict_authority_call_slot_invalid")
     if call.get("replay_provider"):
         incoming_role = str(actual_role or call.get("role") or "")
         stable_role = str(call.get("role") or "")
@@ -1506,25 +1587,37 @@ def dispatch_call(
             or incoming_role.startswith(stable_role + " ")
         ):
             raise StrictAuthorityError("strict_authority_replay_role_mismatch")
-        if str(model) != "sonnet" or _json_value(tools) != SLOT_TOOLS[
-            str(call.get("slot") or "")
-        ]:
+        if str(model) != "sonnet" or _json_value(tools) != SLOT_TOOLS[slot]:
             raise StrictAuthorityError("strict_authority_replay_runtime_mismatch")
-        # An accepted schema-retry/Try-N result is the authority.  Restarting
-        # begins at Try-1, so its newly rendered attempt prompt is expected to
-        # differ.  The original prompt remains content-bound inside the
-        # completed effect; replay never replaces that digest.
-        call["replay_request_prompt_digest"] = hashlib.sha256(
-            str(full_prompt).encode("utf-8")
-        ).hexdigest()
-        call["dispatched"] = True
-        call["provider_completed"] = True
-        return call
+        store = _store()
+        try:
+            with store.command_lock(run_id, blocking=True):
+                instance = store.instance(run_id)
+                if instance.get("status") != "running":
+                    raise StrictAuthorityError(
+                        "strict_authority_dispatch_journal_abandoned"
+                        if instance.get("status") == "abandoned"
+                        else "strict_authority_dispatch_journal_not_running"
+                    )
+                # An accepted schema-retry/Try-N result is the authority.
+                # Restarting begins at Try-1, so its newly rendered attempt
+                # prompt may differ.  The original prompt remains bound inside
+                # the completed effect; replay never replaces that digest.
+                call["replay_request_prompt_digest"] = hashlib.sha256(
+                    str(full_prompt).encode("utf-8")
+                ).hexdigest()
+                call["dispatched"] = True
+                call["provider_completed"] = True
+                return call
+        except StrictAuthorityError:
+            raise
+        except Exception as exc:
+            raise StrictAuthorityError(
+                "strict_authority_dispatch_journal_unavailable:"
+                f"{type(exc).__name__}"
+            ) from exc
     if call.get("dispatched"):
         raise StrictAuthorityError("strict_authority_call_already_dispatched")
-    slot = str(call.get("slot") or "")
-    if slot not in SLOT_CONTRACTS:
-        raise StrictAuthorityError("strict_authority_call_slot_invalid")
     invocation_id = str(call.get("invocation_id") or "")
     if len(invocation_id) != 32:
         raise StrictAuthorityError("strict_authority_invocation_id_invalid")
@@ -1537,6 +1630,12 @@ def dispatch_call(
     normalized_tools = _json_value(tools)
     if normalized_tools != SLOT_TOOLS[slot]:
         raise StrictAuthorityError(f"strict_authority_tools_mismatch:{slot}")
+    try:
+        bounded_lease_seconds = float(lease_seconds)
+    except (TypeError, ValueError):
+        raise StrictAuthorityError("strict_authority_lease_seconds_invalid")
+    if not 1.0 <= bounded_lease_seconds <= 7200.0:
+        raise StrictAuthorityError("strict_authority_lease_seconds_invalid")
     prompt_digest = hashlib.sha256(str(full_prompt).encode("utf-8")).hexdigest()
     input_payload = {
         "schema_version": 1,
@@ -1562,29 +1661,39 @@ def dispatch_call(
         "prompt_digest": prompt_digest,
     })
     store = _store()
-    store.ensure_instance(
-        str(call.get("run_id") or ""),
-        definition_version=DEFINITION_VERSION,
-    )
-    store.request_effect(
-        run_id=str(call["run_id"]),
-        effect_id=effect_id,
-        kind=EFFECT_KIND,
-        input_payload=input_payload,
-        causation_id=f"strict-call-request:{invocation_id}",
-        max_attempts=1,
-    )
     try:
-        bounded_lease_seconds = float(lease_seconds)
-    except (TypeError, ValueError):
-        raise StrictAuthorityError("strict_authority_lease_seconds_invalid")
-    if not 1.0 <= bounded_lease_seconds <= 7200.0:
-        raise StrictAuthorityError("strict_authority_lease_seconds_invalid")
-    lease = store.claim_effect(
-        effect_id,
-        owner=str(owner),
-        lease_seconds=bounded_lease_seconds,
-    )
+        with store.command_lock(run_id, blocking=True):
+            store.ensure_instance(
+                run_id,
+                definition_version=DEFINITION_VERSION,
+            )
+            instance = store.instance(run_id)
+            if instance.get("status") != "running":
+                raise StrictAuthorityError(
+                    "strict_authority_dispatch_journal_abandoned"
+                    if instance.get("status") == "abandoned"
+                    else "strict_authority_dispatch_journal_not_running"
+                )
+            store.request_effect(
+                run_id=run_id,
+                effect_id=effect_id,
+                kind=EFFECT_KIND,
+                input_payload=input_payload,
+                causation_id=f"strict-call-request:{invocation_id}",
+                max_attempts=1,
+            )
+            lease = store.claim_effect(
+                effect_id,
+                owner=str(owner),
+                lease_seconds=bounded_lease_seconds,
+            )
+    except StrictAuthorityError:
+        raise
+    except Exception as exc:
+        raise StrictAuthorityError(
+            "strict_authority_dispatch_journal_unavailable:"
+            f"{type(exc).__name__}"
+        ) from exc
     call.update({
         "effect_id": effect_id,
         "lease_epoch": int(lease.lease_epoch),
@@ -2191,9 +2300,115 @@ def _invocation_evidence_log_name(slot: str, actual_role: str) -> str:
     )
 
 
+def _strict_generation_logs_root(subject: dict[str, Any]) -> Path:
+    """Derive the only log root admitted by one generation binding."""
+
+    binding = (subject or {}).get("generation_binding")
+    next_v = binding.get("next_v") if isinstance(binding, dict) else None
+    if not _plain_int(next_v) or int(next_v) < 1:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_log_generation_binding_invalid"
+        )
+    from evolution_infra import RESULTS_DIR
+
+    return Path(os.path.abspath(os.fspath(RESULTS_DIR))) / f"v{next_v}" / "logs"
+
+
+def strict_invocation_log_path(
+    call: dict[str, Any],
+    *,
+    logs_dir: str | Path,
+    basename: str,
+) -> Path:
+    """Allocate the immutable role log owned by one strict provider effect.
+
+    A version can be prepared repeatedly after canonical abandonment.  The
+    human-facing role name is therefore not a unique log identity: reusing
+    ``v<N>/logs/<role>_io.txt`` would append later provider calls and evidence
+    trailers to an earlier accepted call.  The strict invocation id is durable,
+    globally unique, and later bound into the provider effect, so isolate every
+    call beneath that id while preserving the conventional basename used by
+    observability and evidence validation.
+    """
+
+    invocation_id = str((call or {}).get("invocation_id") or "")
+    if not re.fullmatch(r"[0-9a-f]{32}", invocation_id):
+        raise StrictAuthorityError(
+            "strict_authority_invocation_log_invocation_id_invalid"
+        )
+    basename = str(basename or "")
+    if (
+        Path(basename).name != basename
+        or not re.fullmatch(r"[a-z0-9_]+_io\.txt", basename)
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_invocation_log_basename_invalid"
+        )
+
+    try:
+        root = Path(os.path.abspath(os.fspath(logs_dir)))
+        if root != _strict_generation_logs_root(call):
+            raise StrictAuthorityError(
+                "strict_authority_invocation_log_generation_root_mismatch"
+            )
+        chain = [root]
+        while chain[-1] != chain[-1].parent:
+            chain.append(chain[-1].parent)
+        for component in reversed(chain):
+            if not os.path.lexists(component):
+                continue
+            metadata = os.lstat(component)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(
+                metadata.st_mode
+            ):
+                raise StrictAuthorityError(
+                    "strict_authority_invocation_log_parent_invalid"
+                )
+        root.mkdir(parents=True, exist_ok=True)
+        for component in reversed(chain):
+            metadata = os.lstat(component)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(
+                metadata.st_mode
+            ):
+                raise StrictAuthorityError(
+                    "strict_authority_invocation_log_parent_invalid"
+                )
+        strict_root = root / "strict_invocations"
+        strict_root.mkdir(mode=0o700, exist_ok=True)
+        if strict_root.is_symlink() or not strict_root.is_dir():
+            raise StrictAuthorityError(
+                "strict_authority_invocation_log_root_invalid"
+            )
+        invocation_dir = strict_root / invocation_id
+        invocation_dir.mkdir(mode=0o700, exist_ok=True)
+        if invocation_dir.is_symlink() or not invocation_dir.is_dir():
+            raise StrictAuthorityError(
+                "strict_authority_invocation_log_invocation_dir_invalid"
+            )
+        path = invocation_dir / basename
+        if os.path.lexists(path):
+            metadata = os.lstat(path)
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise StrictAuthorityError(
+                    "strict_authority_invocation_log_path_invalid"
+                )
+        return path
+    except StrictAuthorityError:
+        raise
+    except OSError as exc:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_log_filesystem_invalid:"
+            f"{type(exc).__name__}"
+        ) from exc
+
+
 def _invocation_evidence_authority(
     call: dict[str, Any],
-) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+) -> tuple[Any, dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Re-open the exact accepted role and completed provider effect."""
 
     slot = str((call or {}).get("slot") or "")
@@ -2264,6 +2479,14 @@ def _invocation_evidence_authority(
             or call.get(field) != accepted_payload.get(field)
             for field in stable_fields
         )
+        or not isinstance(input_payload.get("generation_binding"), dict)
+        or content_digest(_json_value(input_payload.get("generation_binding")))
+        != accepted_payload.get("generation_binding_digest")
+        or (
+            "generation_binding" in call
+            and input_payload.get("generation_binding")
+            != call.get("generation_binding")
+        )
         or provider.get("raw_output_digest")
         != accepted_payload.get("raw_output_digest")
         or provider.get("result_digest")
@@ -2274,7 +2497,7 @@ def _invocation_evidence_authority(
         raise StrictAuthorityError(
             "strict_authority_invocation_evidence_effect_invalid"
         )
-    return accepted_event, accepted_payload, provider
+    return accepted_event, accepted_payload, provider, input_payload
 
 
 def _validate_bound_invocation_evidence(
@@ -2283,6 +2506,7 @@ def _validate_bound_invocation_evidence(
     call: dict[str, Any],
     accepted_payload: dict[str, Any],
     provider: dict[str, Any],
+    generation_binding: dict[str, Any],
 ) -> None:
     from system_strict_bootstrap import (
         llm_result_digest,
@@ -2298,6 +2522,15 @@ def _validate_bound_invocation_evidence(
         expected_log_name=_invocation_evidence_log_name(slot, actual_role),
     )
     if isinstance(evidence, dict):
+        evidence_path = Path(str(evidence.get("io_log_path") or ""))
+        expected_log_path = (
+            _strict_generation_logs_root({
+                "generation_binding": generation_binding,
+            })
+            / "strict_invocations"
+            / str(accepted_payload.get("invocation_id") or "")
+            / _invocation_evidence_log_name(slot, actual_role)
+        )
         expected = {
             "invocation_id": accepted_payload.get("invocation_id"),
             "prompt_digest": accepted_payload.get("prompt_digest"),
@@ -2313,6 +2546,10 @@ def _validate_bound_invocation_evidence(
             for field, value in expected.items()
             if evidence.get(field) != value
         )
+        if Path(os.path.abspath(os.fspath(evidence_path))) != expected_log_path:
+            errors.append(
+                "strict_authority_invocation_evidence_log_identity_mismatch"
+            )
     if errors:
         raise StrictAuthorityError(errors)
 
@@ -2322,9 +2559,12 @@ def bound_invocation_evidence(
 ) -> dict[str, Any] | None:
     """Return the exact journal-bound evidence and revalidate its live log."""
 
-    accepted_event, accepted_payload, provider = _invocation_evidence_authority(
-        call
-    )
+    (
+        accepted_event,
+        accepted_payload,
+        provider,
+        input_payload,
+    ) = _invocation_evidence_authority(call)
     store = _store()
     events = [
         event
@@ -2376,6 +2616,7 @@ def bound_invocation_evidence(
         call=call,
         accepted_payload=accepted_payload,
         provider=provider,
+        generation_binding=input_payload["generation_binding"],
     )
     return deepcopy(evidence)
 
@@ -2393,14 +2634,18 @@ def bind_invocation_evidence(
                 "strict_authority_invocation_evidence_rebind_mismatch"
             )
         return existing
-    accepted_event, accepted_payload, provider = _invocation_evidence_authority(
-        call
-    )
+    (
+        accepted_event,
+        accepted_payload,
+        provider,
+        input_payload,
+    ) = _invocation_evidence_authority(call)
     _validate_bound_invocation_evidence(
         evidence,
         call=call,
         accepted_payload=accepted_payload,
         provider=provider,
+        generation_binding=input_payload["generation_binding"],
     )
     payload = {
         "schema_version": 1,
@@ -2445,7 +2690,25 @@ def record_bound_invocation_evidence(
     existing = bound_invocation_evidence(call)
     if existing is not None:
         return existing
-    path = Path(log_file)
+    _accepted_event, accepted_payload, provider, input_payload = (
+        _invocation_evidence_authority(call)
+    )
+    path = Path(os.path.abspath(os.fspath(log_file)))
+    expected_path = (
+        _strict_generation_logs_root({
+            "generation_binding": input_payload["generation_binding"],
+        })
+        / "strict_invocations"
+        / str(accepted_payload.get("invocation_id") or "")
+        / _invocation_evidence_log_name(
+            str(call.get("slot") or ""),
+            str(accepted_payload.get("actual_role") or ""),
+        )
+    )
+    if path != expected_path:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_log_identity_mismatch"
+        )
     try:
         mode = path.lstat().st_mode
         if (
@@ -2458,9 +2721,6 @@ def record_bound_invocation_evidence(
         raise StrictAuthorityError(
             "strict_authority_invocation_evidence_provider_log_invalid"
         ) from exc
-    _accepted_event, accepted_payload, provider = (
-        _invocation_evidence_authority(call)
-    )
     from system_strict_bootstrap import (
         SystemStrictBootstrapError,
         llm_result_digest,
@@ -3084,6 +3344,7 @@ __all__ = [
     "MASTER_SLOTS",
     "StrictAuthorityError",
     "accept_role_result",
+    "abandon_authority",
     "authority_run_id",
     "authority_summary",
     "bind_invocation_evidence",
@@ -3108,6 +3369,7 @@ __all__ = [
     "render_gate_provider_prompt",
     "reject_duplicate_proposal",
     "schema_retry_prompt",
+    "strict_invocation_log_path",
     "validate_master_final_projection",
     "validate_receipts",
 ]

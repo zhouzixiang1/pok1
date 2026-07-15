@@ -198,13 +198,15 @@ def record_llm_invocation_evidence(
             "system_bootstrap_llm_invocation_log_symlink_forbidden"
         ])
     path = raw_path.resolve()
-    if recover_or_record:
-        try:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from evolution_infra import locked_file
+
+        with locked_file(path, "a+", encoding="utf-8") as handle:
             marker_count = 0
-            if path.exists():
-                if path.is_symlink() or not path.is_file():
-                    raise OSError("LLM recovery evidence log is not a regular file")
-                log_text = path.read_text(encoding="utf-8")
+            if recover_or_record:
+                handle.seek(0)
+                log_text = handle.read()
                 marker_count = log_text.count(_LLM_INVOCATION_LOG_MARKER)
                 if marker_count > 1:
                     raise ValueError("multiple LLM invocation evidence markers")
@@ -217,37 +219,29 @@ def record_llm_invocation_evidence(
                         raise ValueError(
                             "LLM recovery evidence trailer does not match"
                         )
-                    log_digest = _sha256_file(path)
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            if marker_count == 0:
+                handle.seek(0, os.SEEK_END)
+                handle.write(
+                    f"\n{_LLM_INVOCATION_LOG_MARKER}\n"
+                    + json.dumps(
+                        trailer,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            log_digest = _sha256_file(path)
+        if path.is_symlink() or not path.is_file():
+            raise OSError("LLM role log is not a regular file")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        if recover_or_record:
             raise SystemStrictBootstrapError([
                 "system_bootstrap_llm_invocation_recovery_evidence_invalid:"
                 f"{type(exc).__name__}"
             ]) from exc
-        if marker_count == 1:
-            return _receipt({
-                **trailer,
-                "io_log_path": str(path),
-                "io_log_digest": log_digest,
-            })
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(
-                f"\n{_LLM_INVOCATION_LOG_MARKER}\n"
-                + json.dumps(
-                    trailer,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            )
-            handle.flush()
-            os.fsync(handle.fileno())
-        if path.is_symlink() or not path.is_file():
-            raise OSError("LLM role log is not a regular file")
-        log_digest = _sha256_file(path)
-    except OSError as exc:
         raise SystemStrictBootstrapError([
             f"system_bootstrap_llm_invocation_log_error:{type(exc).__name__}"
         ]) from exc

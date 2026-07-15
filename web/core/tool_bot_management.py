@@ -1633,6 +1633,15 @@ async def _do_abandon_generation(
                 if latest_block and recorded_abandon_receipt is None:
                     return latest_block, None
                 workflow.abandon(reason)
+                from strict_authority_workflow import abandon_authority
+
+                strict_fence = abandon_authority(latest, reason=reason)
+                if strict_fence.get("present") and not strict_fence.get(
+                    "abandoned"
+                ):
+                    raise RuntimeError(
+                        "strict authority child journal was not abandoned"
+                    )
                 return None, latest
 
             if _actor_lock_owned:

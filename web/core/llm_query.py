@@ -4427,7 +4427,10 @@ def _emit_llm_event(category, severity, message, **fields):
 def _role_log_metadata(log_file_path):
     path = str(log_file_path or "")
     meta = {"log_file": path}
-    match = re.search(r"/v(\d+)/logs/([^/]+)_io\.txt$", path)
+    match = re.search(
+        r"/v(\d+)/logs/(?:[^/]+/)*([^/]+)_io\.txt$",
+        path,
+    )
     if match:
         meta["version"] = int(match.group(1))
         meta["role_log"] = match.group(2)
@@ -4477,9 +4480,10 @@ def _append_role_io(log_file_path, text):
 
       - fcntl LOCK_EX via ``evolution_infra.locked_file`` → cross-process +
         cross-thread safe when orchestrator roles append concurrently.
-      - Before writing: if the file exceeds ``_ROLE_IO_MAX_BYTES`` (20MB),
-        rename it to ``.1`` (single overwrite backup). Rotation is serialized by
-        ``_ROLE_IO_ROTATION_LOCK`` so two appenders can't race the rename.
+      - Before writing: if a non-strict file exceeds ``_ROLE_IO_MAX_BYTES``
+        (20MB), copy its locked bytes to ``.1`` (single overwrite backup), then
+        truncate the still-locked live inode. Strict invocation logs never
+        rotate because their complete bytes are immutable evidence.
       - Each appended chunk is prefixed with ``[<run_id>] `` (or ``[-]`` when
         no run_id is resolvable) so role-IO lines join app.log + events.jsonl
         on the same correlation key (RC6).
@@ -4488,6 +4492,7 @@ def _append_role_io(log_file_path, text):
     error (the underlying stream processing / return value is unaffected).
     """
     try:
+        log_file_path = os.fspath(log_file_path)
         # Resolve the current run_id for the correlation prefix. event_bus reads
         # the live checkpoint as fallback, so this works even in long-lived
         # worker threads that are not pinned to one generation.
@@ -4498,28 +4503,29 @@ def _append_role_io(log_file_path, text):
         except Exception:
             _rid = "-"
         chunk = f"[{_rid}] {text}" if not text.startswith("\n") else f"\n[{_rid}] " + text.lstrip("\n")
-        # Rotation check + rename (serialized; size read without a lock, which
-        # is best-effort — a concurrent writer can grow the file between the
-        # stat and the rename, but that only delays rotation by one cycle).
-        try:
-            if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > _ROLE_IO_MAX_BYTES:
-                with _ROLE_IO_ROTATION_LOCK:
-                    if os.path.exists(log_file_path) and os.path.getsize(log_file_path) > _ROLE_IO_MAX_BYTES:
-                        _rotated = log_file_path + ".1"
-                        try:
-                            if os.path.exists(_rotated):
-                                os.remove(_rotated)
-                        except Exception:
-                            pass
-                        try:
-                            os.rename(log_file_path, _rotated)
-                        except Exception:
-                            pass
-        except Exception:
-            pass
         from evolution_infra import locked_file
-        with locked_file(log_file_path, "a", encoding="utf-8") as lf:
-            lf.write(chunk)
+        with _ROLE_IO_ROTATION_LOCK:
+            with locked_file(log_file_path, "a+", encoding="utf-8") as lf:
+                lf.seek(0, os.SEEK_END)
+                strict_log = f"{os.sep}strict_invocations{os.sep}" in (
+                    os.path.abspath(log_file_path)
+                )
+                if lf.tell() > _ROLE_IO_MAX_BYTES and not strict_log:
+                    lf.seek(0)
+                    previous = lf.read()
+                    with locked_file(
+                        log_file_path + ".1",
+                        "w",
+                        encoding="utf-8",
+                    ) as rotated:
+                        rotated.write(previous)
+                        rotated.flush()
+                        os.fsync(rotated.fileno())
+                    lf.seek(0)
+                    lf.truncate()
+                lf.seek(0, os.SEEK_END)
+                lf.write(chunk)
+                lf.flush()
     except Exception:
         pass
 

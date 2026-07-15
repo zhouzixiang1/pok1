@@ -3454,6 +3454,26 @@ async def run_review(args):
     )
 
     log_file = get_logs_dir(v) / "reviewer_io.txt"
+    if _review_strict_call is not None:
+        from strict_authority_workflow import (
+            StrictAuthorityError,
+            strict_invocation_log_path,
+        )
+
+        try:
+            log_file = strict_invocation_log_path(
+                _review_strict_call,
+                logs_dir=log_file.parent,
+                basename=log_file.name,
+            )
+        except StrictAuthorityError as exc:
+            return _json_tool_result(
+                await _abandon_strict_gate_authority(
+                    ckpt,
+                    gate_name="review",
+                    error=exc,
+                )
+            )
 
     ui = _get_ui()
     try:
@@ -4021,7 +4041,24 @@ async def run_critic(args):
                 StrictAuthorityError,
                 accept_role_result,
                 record_bound_invocation_evidence,
+                strict_invocation_log_path,
             )
+
+            _critic_log_file = strict_invocation_log_path(
+                _critic_strict_call,
+                logs_dir=get_logs_dir(v),
+                basename="critic_io.txt",
+            )
+            if (
+                not isinstance(_critic_execution_material, dict)
+                or Path(str(
+                    _critic_execution_material.get("log_file") or ""
+                )).resolve()
+                != _critic_log_file.resolve()
+            ):
+                raise StrictAuthorityError(
+                    "strict_authority_critic_execution_log_mismatch"
+                )
 
             gate["llm_role_result"] = data
             gate["llm_authority_receipt"] = accept_role_result(
@@ -4031,7 +4068,7 @@ async def run_critic(args):
             )
             gate["llm_execution_evidence"] = record_bound_invocation_evidence(
                 _critic_strict_call,
-                log_file=get_logs_dir(v) / "critic_io.txt",
+                log_file=_critic_log_file,
             )
             gate["system_verifier_receipt"] = build_system_gate_receipt(
                 ckpt,

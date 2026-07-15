@@ -526,6 +526,13 @@ async def _run_critic(
 
     log_file = get_logs_dir(next_v) / "critic_io.txt"
     if strict_authority is not None:
+        from strict_authority_workflow import strict_invocation_log_path
+
+        log_file = strict_invocation_log_path(
+            strict_authority,
+            logs_dir=log_file.parent,
+            basename=log_file.name,
+        )
         execution_invocation_id = strict_authority.get("invocation_id")
     try:
         if strict_authority is not None:

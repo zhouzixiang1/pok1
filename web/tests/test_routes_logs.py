@@ -1,6 +1,7 @@
 """Tests for /api/logs/* endpoints."""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -57,6 +58,182 @@ class TestGenerationLogs:
         content = data["content"]
         lines = content.strip().split("\n")
         assert len(lines) <= 2
+
+    def test_strict_invocation_log_has_opaque_list_and_read_identity(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        from server.routes import _helpers, logs
+
+        invocation_id = "1" * 32
+        logs_dir = tmp_path / "v143" / "logs"
+        strict_log = (
+            logs_dir
+            / "strict_invocations"
+            / invocation_id
+            / "master_proposal_mechanism_io.txt"
+        )
+        strict_log.parent.mkdir(parents=True)
+        strict_log.write_text("strict line 1\nstrict line 2\n")
+        (logs_dir / "master_io.txt").write_text("flat log\n")
+        identifier = (
+            f"strict@{invocation_id}@master_proposal_mechanism_io.txt"
+        )
+        monkeypatch.setattr(logs, "RESULTS_DIR", tmp_path)
+        monkeypatch.setattr(
+            _helpers,
+            "strict_observable_generation_versions",
+            lambda *_args, **_kwargs: {143},
+        )
+
+        listed = client.get("/api/logs/generations")
+        assert listed.status_code == 200
+        assert listed.json() == [{
+            "version": "v143",
+            "files": ["master_io.txt", identifier],
+        }]
+        response = client.get(
+            f"/api/logs/generations/v143/{identifier}?tail=1"
+        )
+        assert response.status_code == 200
+        assert response.json() == {
+            "version": "v143",
+            "filename": identifier,
+            "content": "strict line 2\n",
+        }
+        assert not Path(str(strict_log) + ".lock").exists()
+
+    def test_strict_log_identity_rejects_symlink_and_traversal(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        from server.routes import _helpers, logs
+
+        invocation_id = "2" * 32
+        logs_dir = tmp_path / "v143" / "logs"
+        invocation_dir = logs_dir / "strict_invocations" / invocation_id
+        invocation_dir.mkdir(parents=True)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("must not be exposed\n")
+        (invocation_dir / "critic_io.txt").symlink_to(outside)
+        monkeypatch.setattr(logs, "RESULTS_DIR", tmp_path)
+        monkeypatch.setattr(
+            _helpers,
+            "strict_observable_generation_versions",
+            lambda *_args, **_kwargs: {143},
+        )
+        identifier = f"strict@{invocation_id}@critic_io.txt"
+
+        listed = client.get("/api/logs/generations")
+        assert listed.status_code == 200
+        assert listed.json() == [{"version": "v143", "files": []}]
+        assert client.get(
+            f"/api/logs/generations/v143/{identifier}"
+        ).status_code == 400
+        assert client.get(
+            "/api/logs/generations/v143/"
+            f"strict@{invocation_id}@..%2Foutside.txt"
+        ).status_code in {400, 404}
+
+    def test_generation_log_rejects_symlinked_version_parent(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+    ):
+        from server.routes import _helpers, logs
+
+        outside = tmp_path / "outside"
+        (outside / "logs").mkdir(parents=True)
+        (outside / "logs" / "master_io.txt").write_text("outside\n")
+        results = tmp_path / "results"
+        results.mkdir()
+        (results / "v143").symlink_to(outside, target_is_directory=True)
+        monkeypatch.setattr(logs, "RESULTS_DIR", results)
+        monkeypatch.setattr(
+            _helpers,
+            "strict_observable_generation_versions",
+            lambda *_args, **_kwargs: {143},
+        )
+
+        assert client.get("/api/logs/generations").json() == []
+        assert client.get(
+            "/api/logs/generations/v143/master_io.txt"
+        ).status_code == 400
+
+    @pytest.mark.parametrize("swap_level", ["version", "logs", "invocation"])
+    def test_generation_log_parent_swap_cannot_escape_results_tree(
+        self,
+        client,
+        tmp_path,
+        monkeypatch,
+        swap_level,
+    ):
+        from server.routes import _helpers, logs
+
+        invocation_id = "3" * 32
+        identifier = f"strict@{invocation_id}@critic_io.txt"
+        results = tmp_path / "results"
+        invocation_dir = (
+            results
+            / "v143"
+            / "logs"
+            / "strict_invocations"
+            / invocation_id
+        )
+        invocation_dir.mkdir(parents=True)
+        (invocation_dir / "critic_io.txt").write_text(
+            "safe in-tree bytes\n",
+            encoding="utf-8",
+        )
+        outside = tmp_path / f"outside-{swap_level}"
+        if swap_level == "version":
+            outside_target = (
+                outside / "logs" / "strict_invocations" / invocation_id
+            )
+            swap_path = results / "v143"
+        elif swap_level == "logs":
+            outside_target = outside / "strict_invocations" / invocation_id
+            swap_path = results / "v143" / "logs"
+        else:
+            outside_target = outside
+            swap_path = invocation_dir
+        outside_target.mkdir(parents=True)
+        (outside_target / "critic_io.txt").write_text(
+            "outside-secret-must-not-be-returned\n",
+            encoding="utf-8",
+        )
+
+        original_resolver = _helpers.generation_log_path
+        swapped = False
+
+        def resolve_then_swap(logs_dir, filename):
+            nonlocal swapped
+            path = original_resolver(logs_dir, filename)
+            if path is not None and not swapped:
+                held = swap_path.with_name(swap_path.name + ".held")
+                swap_path.rename(held)
+                swap_path.symlink_to(outside, target_is_directory=True)
+                swapped = True
+            return path
+
+        monkeypatch.setattr(logs, "RESULTS_DIR", results)
+        monkeypatch.setattr(
+            _helpers,
+            "strict_observable_generation_versions",
+            lambda *_args, **_kwargs: {143},
+        )
+        monkeypatch.setattr(_helpers, "generation_log_path", resolve_then_swap)
+
+        response = client.get(f"/api/logs/generations/v143/{identifier}")
+
+        assert swapped is True
+        assert response.status_code == 409
+        assert "outside-secret-must-not-be-returned" not in response.text
 
     def test_get_log_missing(self, client):
         resp = client.get("/api/logs/generations/v99999/nonexistent.txt")

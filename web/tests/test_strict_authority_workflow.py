@@ -27,9 +27,12 @@ def _checkpoint(*, stage="direction_audited", revision=10):
 @pytest.fixture
 def authority(monkeypatch, tmp_path):
     import strict_authority_workflow as module
+    import evolution_infra
     from workflow_kernel import WorkflowStore
 
-    store = WorkflowStore(tmp_path / "events.sqlite3")
+    results_dir = tmp_path / "results"
+    store = WorkflowStore(results_dir / "workflow" / "events.sqlite3")
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(module, "_store", lambda: store)
     monkeypatch.setattr(
         module,
@@ -98,6 +101,18 @@ def _call(
     return call, role_result, receipt
 
 
+def _strict_log(module, store, call, basename):
+    return module.strict_invocation_log_path(
+        call,
+        logs_dir=(
+            store.path.parent.parent
+            / f"v{call['generation_binding']['next_v']}"
+            / "logs"
+        ),
+        basename=basename,
+    )
+
+
 def test_provider_result_without_schema_acceptance_is_not_authority(authority):
     module, _store = authority
     checkpoint = _checkpoint()
@@ -109,6 +124,138 @@ def test_provider_result_without_schema_acceptance_is_not_authority(authority):
         require_no_other_accepted=True,
     )
     assert "strict_authority_proposal:mechanism_accepted_count:0" in errors
+
+
+def test_generation_abandon_fences_strict_child_journal(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    _call(module, checkpoint, "proposal:mechanism", accept=False)
+    run_id = module.authority_run_id(checkpoint["workflow_run_id"])
+    before = store.instance(run_id)
+    assert before["status"] == "running"
+
+    first = module.abandon_authority(checkpoint, reason="abandon_generation")
+    second = module.abandon_authority(checkpoint, reason="abandon_generation")
+
+    assert first["abandoned"] is True
+    assert first["fence_epoch"] == 1
+    assert second == first
+    assert store.instance(run_id)["status"] == "abandoned"
+    events = [
+        event
+        for event in store.events(run_id)
+        if event.event_type == "StrictAuthorityAbandoned"
+    ]
+    assert len(events) == 1
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_phase_journal_abandoned:master",
+    ):
+        module.new_call(
+            checkpoint,
+            slot="proposal:mechanism",
+            context_binding={"slot": "proposal:mechanism", "suffix": "one"},
+        )
+
+
+def test_generation_abandon_tombstone_blocks_predispatch_descriptor(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    call = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding={"slot": "proposal:mechanism", "suffix": "one"},
+    )
+    run_id = module.authority_run_id(checkpoint["workflow_run_id"])
+    assert store.instance(run_id) == {}
+
+    first = module.abandon_authority(checkpoint, reason="abandon_generation")
+    second = module.abandon_authority(checkpoint, reason="abandon_generation")
+
+    assert first["present"] is True
+    assert first["abandoned"] is True
+    assert first["fence_epoch"] == 1
+    assert second == first
+    assert store.instance(run_id)["status"] == "abandoned"
+    assert [
+        event.event_type
+        for event in store.events(run_id)
+        if event.event_type == "StrictAuthorityAbandoned"
+    ] == ["StrictAuthorityAbandoned"]
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_dispatch_journal_abandoned",
+    ):
+        module.dispatch_call(
+            call,
+            full_prompt="stale provider prompt",
+            tools=module.SLOT_TOOLS["proposal:mechanism"],
+            owner="stale-dispatch",
+        )
+    assert store.instance(run_id)["stream_version"] == first["stream_version"]
+
+
+def test_generation_abandon_recovers_preterminal_tombstone(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    run_id = module.authority_run_id(checkpoint["workflow_run_id"])
+    # Model a process death after the fail-closed tombstone transaction but
+    # before the terminal event/fence transaction.
+    store.ensure_instance(
+        run_id,
+        definition_version=module.DEFINITION_VERSION,
+        status="abandoned",
+    )
+    assert store.instance(run_id)["fence_epoch"] == 0
+    assert store.events(run_id) == []
+
+    recovered = module.abandon_authority(
+        checkpoint,
+        reason="abandon_generation",
+    )
+    repeated = module.abandon_authority(
+        checkpoint,
+        reason="abandon_generation",
+    )
+
+    assert recovered["abandoned"] is True
+    assert recovered["fence_epoch"] == 1
+    assert repeated == recovered
+    assert [event.event_type for event in store.events(run_id)] == [
+        "StrictAuthorityAbandoned"
+    ]
+
+
+def test_generation_abandon_blocks_accepted_provider_replay_dispatch(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    original, _role_result, _receipt = _call(
+        module,
+        checkpoint,
+        "proposal:mechanism",
+    )
+    replay = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding={"slot": "proposal:mechanism", "suffix": "one"},
+    )
+    assert replay["replay_provider"] is True
+    assert replay["effect_id"] == original["effect_id"]
+
+    module.abandon_authority(checkpoint, reason="abandon_generation")
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_dispatch_journal_abandoned",
+    ):
+        module.dispatch_call(
+            replay,
+            full_prompt="stale replay prompt",
+            tools=module.SLOT_TOOLS["proposal:mechanism"],
+            owner="stale-replay",
+        )
+    assert "replay_request_prompt_digest" not in replay
+    assert store.instance(replay["run_id"])["status"] == "abandoned"
 
 
 def test_completed_provider_before_accept_is_replayed_without_new_effect(authority):
@@ -1112,7 +1259,12 @@ def test_accept_before_evidence_record_recovers_once_and_binds(authority):
         checkpoint,
         "proposal:mechanism",
     )
-    log_file = store.path.parent / "master_proposal_mechanism_io.txt"
+    log_file = _strict_log(
+        module,
+        store,
+        original,
+        "master_proposal_mechanism_io.txt",
+    )
     with pytest.raises(
         module.StrictAuthorityError,
         match="strict_authority_invocation_evidence_provider_log_invalid",
@@ -1161,6 +1313,245 @@ def test_accept_before_evidence_record_recovers_once_and_binds(authority):
     assert len(bindings) == 1
 
 
+def test_strict_invocation_logs_are_isolated_across_reprepared_workflows(
+    authority,
+    tmp_path,
+):
+    module, _store = authority
+    first_checkpoint = _checkpoint()
+    second_checkpoint = {
+        **_checkpoint(),
+        "workflow_run_id": "strict-authority-test-run-reprepared",
+    }
+    first_call, first_result, _receipt = _call(
+        module,
+        first_checkpoint,
+        "proposal:mechanism",
+    )
+    second_call, second_result, _receipt = _call(
+        module,
+        second_checkpoint,
+        "proposal:mechanism",
+    )
+    logs_dir = tmp_path / "results" / "v155" / "logs"
+    first_log = module.strict_invocation_log_path(
+        first_call,
+        logs_dir=logs_dir,
+        basename="master_proposal_mechanism_io.txt",
+    )
+    second_log = module.strict_invocation_log_path(
+        second_call,
+        logs_dir=logs_dir,
+        basename="master_proposal_mechanism_io.txt",
+    )
+
+    assert first_log != second_log
+    assert first_log.parent.name == first_call["invocation_id"]
+    assert second_log.parent.name == second_call["invocation_id"]
+    assert first_log.name == second_log.name
+    assert module.strict_invocation_log_path(
+        first_call,
+        logs_dir=logs_dir,
+        basename=first_log.name,
+    ) == first_log
+
+    first_log.write_text("first workflow provider log\n", encoding="utf-8")
+    first_evidence = module.record_bound_invocation_evidence(
+        first_call,
+        log_file=first_log,
+    )
+    first_bytes = first_log.read_bytes()
+    second_log.write_text("second workflow provider log\n", encoding="utf-8")
+    second_evidence = module.record_bound_invocation_evidence(
+        second_call,
+        log_file=second_log,
+    )
+
+    assert first_log.read_bytes() == first_bytes
+    assert first_evidence["io_log_path"] != second_evidence["io_log_path"]
+    assert first_evidence["role_result_digest"] != ""
+    assert second_evidence["role_result_digest"] != ""
+    assert first_result == second_result
+    assert first_log.read_text(encoding="utf-8").count(
+        "[SYSTEM LLM INVOCATION EVIDENCE]"
+    ) == 1
+    assert second_log.read_text(encoding="utf-8").count(
+        "[SYSTEM LLM INVOCATION EVIDENCE]"
+    ) == 1
+
+
+def test_strict_invocation_log_rejects_symlinked_parent(tmp_path, monkeypatch):
+    import strict_authority_workflow as module
+    import evolution_infra
+
+    results_dir = tmp_path / "results"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (results_dir / "v155").mkdir(parents=True)
+    linked_logs = results_dir / "v155" / "logs"
+    linked_logs.symlink_to(outside, target_is_directory=True)
+    call = {
+        "invocation_id": "6" * 32,
+        "generation_binding": {"next_v": 155},
+    }
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_log_parent_invalid",
+    ):
+        module.strict_invocation_log_path(
+            call,
+            logs_dir=linked_logs,
+            basename="critic_io.txt",
+        )
+    assert not (outside / "strict_invocations").exists()
+
+    linked_parent = results_dir / "linked_parent"
+    linked_parent.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_log_generation_root_mismatch",
+    ):
+        module.strict_invocation_log_path(
+            call,
+            logs_dir=linked_parent / "v143" / "logs",
+            basename="critic_io.txt",
+        )
+    assert not (outside / "v143").exists()
+
+
+@pytest.mark.parametrize("collision", ["strict_root", "invocation", "log"])
+def test_strict_invocation_log_normalizes_filesystem_collisions(
+    tmp_path,
+    collision,
+    monkeypatch,
+):
+    import strict_authority_workflow as module
+    import evolution_infra
+
+    invocation_id = "7" * 32
+    results_dir = tmp_path / collision
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    logs_dir = results_dir / "v155" / "logs"
+    logs_dir.mkdir(parents=True)
+    strict_root = logs_dir / "strict_invocations"
+    if collision == "strict_root":
+        strict_root.write_text("not a directory\n")
+    else:
+        strict_root.mkdir()
+        invocation_dir = strict_root / invocation_id
+        if collision == "invocation":
+            invocation_dir.write_text("not a directory\n")
+        else:
+            invocation_dir.mkdir()
+            (invocation_dir / "reviewer_io.txt").mkdir()
+
+    with pytest.raises(module.StrictAuthorityError):
+        module.strict_invocation_log_path(
+            {
+                "invocation_id": invocation_id,
+                "generation_binding": {"next_v": 155},
+            },
+            logs_dir=logs_dir,
+            basename="reviewer_io.txt",
+        )
+
+
+def test_strict_invocation_log_rejects_arbitrary_or_wrong_version_root(
+    authority,
+):
+    module, store = authority
+    call, _role_result, _receipt = _call(
+        module,
+        _checkpoint(),
+        "proposal:mechanism",
+    )
+
+    for logs_dir in (
+        store.path.parent.parent / "unrelated" / "logs",
+        store.path.parent.parent / "v154" / "logs",
+    ):
+        with pytest.raises(
+            module.StrictAuthorityError,
+            match="strict_authority_invocation_log_generation_root_mismatch",
+        ):
+            module.strict_invocation_log_path(
+                call,
+                logs_dir=logs_dir,
+                basename="master_proposal_mechanism_io.txt",
+            )
+
+    foreign_log = (
+        store.path.parent.parent
+        / "unrelated"
+        / "logs"
+        / "strict_invocations"
+        / call["invocation_id"]
+        / "master_proposal_mechanism_io.txt"
+    )
+    foreign_log.parent.mkdir(parents=True)
+    foreign_log.write_text("foreign provider bytes\n", encoding="utf-8")
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_evidence_log_identity_mismatch",
+    ):
+        module.record_bound_invocation_evidence(call, log_file=foreign_log)
+    assert "[SYSTEM LLM INVOCATION EVIDENCE]" not in foreign_log.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_strict_evidence_rejects_flat_same_basename(authority):
+    module, store = authority
+    call, _role_result, _receipt = _call(
+        module,
+        _checkpoint(),
+        "proposal:mechanism",
+    )
+    flat_log = store.path.parent / "master_proposal_mechanism_io.txt"
+    flat_log.write_text("completed provider log\n", encoding="utf-8")
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_evidence_log_identity_mismatch",
+    ):
+        module.record_bound_invocation_evidence(
+            call,
+            log_file=flat_log,
+        )
+
+
+def test_invocation_evidence_recovery_append_is_atomic(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    from system_strict_bootstrap import record_llm_invocation_evidence
+
+    log_file = tmp_path / "strict-provider_io.txt"
+    log_file.write_text("completed provider log\n", encoding="utf-8")
+    kwargs = {
+        "invocation_id": "1" * 32,
+        "purpose": "master_proposal_scout:mechanism",
+        "role": "MASTER PROPOSAL mechanism",
+        "prompt_digest": "2" * 64,
+        "raw_output_digest": "3" * 64,
+        "result_digest": "4" * 64,
+        "role_result": {"proposal_id": "5" * 16},
+        "log_file": log_file,
+        "recover_or_record": True,
+    }
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        receipts = list(executor.map(
+            lambda _index: record_llm_invocation_evidence(**kwargs),
+            range(2),
+        ))
+
+    assert receipts[0] == receipts[1]
+    assert log_file.read_text(encoding="utf-8").count(
+        "[SYSTEM LLM INVOCATION EVIDENCE]"
+    ) == 1
+
+
 def test_gate_evidence_replay_is_stable_and_log_drift_fails(authority):
     module, store = authority
     checkpoint = _checkpoint(stage="quality_passed", revision=20)
@@ -1169,7 +1560,7 @@ def test_gate_evidence_replay_is_stable_and_log_drift_fails(authority):
         checkpoint,
         "review",
     )
-    log_file = store.path.parent / "reviewer_io.txt"
+    log_file = _strict_log(module, store, original, "reviewer_io.txt")
     log_file.write_text("completed provider log\n", encoding="utf-8")
     first = module.record_bound_invocation_evidence(
         original,
@@ -1225,7 +1616,12 @@ def test_invocation_evidence_prompt_digest_must_match_provider_effect(
             provider["provider_usage"],
         ),
         role_result=role_result,
-        log_file=store.path.parent / "master_proposal_mechanism_io.txt",
+        log_file=_strict_log(
+            module,
+            store,
+            call,
+            "master_proposal_mechanism_io.txt",
+        ),
     )
     assert evidence["prompt_digest"] != call["prompt_digest"]
     with pytest.raises(
@@ -1248,7 +1644,12 @@ def test_evidence_recovery_error_becomes_strict_authority(authority):
         record_llm_invocation_evidence,
     )
 
-    log_file = store.path.parent / "master_proposal_mechanism_io.txt"
+    log_file = _strict_log(
+        module,
+        store,
+        call,
+        "master_proposal_mechanism_io.txt",
+    )
     log_file.write_text("completed provider log\n", encoding="utf-8")
     kwargs = {
         "invocation_id": call["invocation_id"],

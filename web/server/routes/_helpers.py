@@ -6,7 +6,9 @@ Each caller retains control of its own cache keys.
 
 import hashlib
 import json
+import os
 import re
+import stat
 from pathlib import Path
 from typing import Any, Callable
 
@@ -750,23 +752,146 @@ def downsample(entries: list[dict], max_points: int = 200) -> list[dict]:
     return sampled
 
 
+_STRICT_GENERATION_LOG_ID = re.compile(
+    r"strict@(?P<invocation>[0-9a-f]{32})@"
+    r"(?P<basename>[a-z0-9_]+_io\.txt)"
+)
+_PLAIN_GENERATION_LOG_FILE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9_.-]*\.txt(?:\.1)?"
+)
+
+
+def strict_generation_log_id(invocation_id: str, basename: str) -> str:
+    identifier = f"strict@{invocation_id}@{basename}"
+    if _STRICT_GENERATION_LOG_ID.fullmatch(identifier) is None:
+        raise ValueError("invalid strict generation log identity")
+    return identifier
+
+
+def generation_log_parts(identifier: str) -> tuple[str, ...] | None:
+    """Decode one public log id into fixed relative path components."""
+
+    match = _STRICT_GENERATION_LOG_ID.fullmatch(str(identifier or ""))
+    if match is not None:
+        return (
+            "strict_invocations",
+            match.group("invocation"),
+            match.group("basename"),
+        )
+    if _PLAIN_GENERATION_LOG_FILE.fullmatch(str(identifier or "")) is not None:
+        return (str(identifier),)
+    return None
+
+
+def generation_log_path(logs_dir: Path, identifier: str) -> Path | None:
+    """Map one opaque API log id to its fixed safe on-disk path."""
+
+    logs_dir = Path(os.path.abspath(os.fspath(logs_dir)))
+    chain = [logs_dir]
+    while chain[-1] != chain[-1].parent:
+        chain.append(chain[-1].parent)
+    for component in reversed(chain):
+        if not os.path.lexists(component):
+            continue
+        metadata = os.lstat(component)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            return None
+    parts = generation_log_parts(identifier)
+    if parts is None:
+        return None
+    if len(parts) == 3:
+        strict_root = logs_dir / parts[0]
+        invocation_dir = strict_root / parts[1]
+        for parent in (strict_root, invocation_dir):
+            if not os.path.lexists(parent):
+                continue
+            metadata = os.lstat(parent)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                return None
+        path = invocation_dir / parts[2]
+    else:
+        path = logs_dir / parts[0]
+    if os.path.lexists(path):
+        metadata = os.lstat(path)
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            return None
+    return path
+
+
 def list_generation_dirs(
     results_dir: Path,
     *,
     allowed_versions: set[int] | None = None,
 ) -> list[dict]:
-    if not results_dir.exists():
+    if (
+        not results_dir.exists()
+        or results_dir.is_symlink()
+        or not results_dir.is_dir()
+    ):
         return []
     versions = []
     dirs = sorted(
-        (p for p in results_dir.iterdir()
-         if p.is_dir() and p.name.startswith("v") and (p / "logs").is_dir()),
+        (
+            p
+            for p in results_dir.iterdir()
+            if re.fullmatch(r"v[1-9][0-9]*", p.name)
+            and not p.is_symlink()
+            and p.is_dir()
+            and not (p / "logs").is_symlink()
+            and (p / "logs").is_dir()
+        ),
         key=lambda p: _bot_sort_key(p.name),
     )
     for p in dirs:
         version = int(p.name[1:])
         if allowed_versions is not None and version not in allowed_versions:
             continue
-        files = sorted(f.name for f in (p / "logs").iterdir() if f.is_file())
+        logs_dir = p / "logs"
+        files: list[str] = []
+        for file_path in logs_dir.iterdir():
+            if file_path.name == "strict_invocations":
+                continue
+            try:
+                metadata = file_path.lstat()
+            except OSError:
+                continue
+            if (
+                stat.S_ISREG(metadata.st_mode)
+                and metadata.st_nlink == 1
+                and _PLAIN_GENERATION_LOG_FILE.fullmatch(file_path.name)
+            ):
+                files.append(file_path.name)
+        strict_root = logs_dir / "strict_invocations"
+        if (
+            strict_root.exists()
+            and not strict_root.is_symlink()
+            and strict_root.is_dir()
+        ):
+            for invocation_dir in strict_root.iterdir():
+                if (
+                    re.fullmatch(r"[0-9a-f]{32}", invocation_dir.name) is None
+                    or invocation_dir.is_symlink()
+                    or not invocation_dir.is_dir()
+                ):
+                    continue
+                for file_path in invocation_dir.iterdir():
+                    try:
+                        metadata = file_path.lstat()
+                    except OSError:
+                        continue
+                    if (
+                        stat.S_ISREG(metadata.st_mode)
+                        and metadata.st_nlink == 1
+                        and re.fullmatch(r"[a-z0-9_]+_io\.txt", file_path.name)
+                    ):
+                        files.append(strict_generation_log_id(
+                            invocation_dir.name,
+                            file_path.name,
+                        ))
+        files.sort()
         versions.append({"version": p.name, "files": files})
     return versions

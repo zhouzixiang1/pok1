@@ -590,7 +590,13 @@ test("all production stream events have rejecting minimal runtime schemas", () =
       most_active_count: 1,
     },
     matches: [matchSummary()],
-    generations: [{ version: "v143", files: ["policy.py"] }],
+    generations: [{
+      version: "v143",
+      files: [
+        "master_io.txt",
+        `strict@${"1".repeat(32)}@critic_io.txt`,
+      ],
+    }],
     matrix: { bots: ["national_v143"], matrix: [[null]], source: "h2h", evidence_available: true },
     history: [{ period: 1, timestamp: "2026-07-15T00:00:00", ratings: {} }],
     h2h: { "national_v143 vs national_v144": { games: 1, a_wins: 1, b_wins: 0, draws: 0, win_rate: 1 } },
@@ -602,6 +608,14 @@ test("all production stream events have rejecting minimal runtime schemas", () =
   }
   assert.equal(validateDataStreamEvent("ratings", {}), false);
   assert.equal(validateDataStreamEvent("daemon", []), false);
+  assert.equal(validateDataStreamEvent("generations", [{
+    version: "v143",
+    files: ["critic_io.txt.lock"],
+  }]), false);
+  assert.equal(validateDataStreamEvent("generations", [{
+    version: "v143",
+    files: [`strict@${"1".repeat(32)}@../critic_io.txt`],
+  }]), false);
 
   const validEvolutionEvents = {
     history: { msg: "ok", status: "info", ts: 1 },

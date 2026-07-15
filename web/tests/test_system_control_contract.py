@@ -143,12 +143,16 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     tmp_path,
     monkeypatch,
 ):
+    import evolution_infra
     import strict_authority_workflow
     import system_strict_bootstrap
     import tool_gates
 
     candidate = tmp_path / "national_v143"
     candidate.mkdir()
+    results_dir = tmp_path / "results"
+    logs_dir = results_dir / "v143" / "logs"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
     checkpoint = {
         "next_v": 143,
         "source_v": 142,
@@ -166,7 +170,9 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     }
     strict_call = {
         "invocation_id": "1" * 32,
+        "effect_id": "strict-llm-" + "1" * 64,
         "prompt_digest": "",
+        "generation_binding": {"next_v": 143},
     }
     final_provider_prompt_digest = "a" * 64
     captured = {}
@@ -192,6 +198,7 @@ def test_first_strict_review_records_final_provider_prompt_authority(
         **_kwargs,
     ):
         assert strict_authority is strict_call
+        captured["provider_log_file"] = _log_file
         strict_authority["prompt_digest"] = final_provider_prompt_digest
         return (
             json.dumps({
@@ -234,6 +241,11 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(tool_gates, "_quality_gate_ok", lambda _checkpoint: True)
     monkeypatch.setattr(tool_gates, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(
+        tool_gates,
+        "get_logs_dir",
+        lambda _version: logs_dir,
+    )
     monkeypatch.setattr(tool_gates, "_get_ui", lambda: UI())
     monkeypatch.setattr(
         tool_gates,
@@ -294,11 +306,194 @@ def test_first_strict_review_records_final_provider_prompt_authority(
         final_provider_prompt_digest
     )
     assert captured["evidence_call"] is strict_call
+    assert captured["provider_log_file"] == captured["evidence_log_file"]
+    assert captured["evidence_log_file"] == (
+        logs_dir
+        / "strict_invocations"
+        / strict_call["invocation_id"]
+        / "reviewer_io.txt"
+    )
     assert captured["gate_name"] == "review"
     assert captured["stage"] == "reviewed"
     assert captured["gate"]["system_verifier_receipt"] == {
         "kind": "test-system-review-receipt"
     }
+
+
+@pytest.mark.parametrize("mismatched_log", [False, True])
+def test_strict_critic_execution_and_evidence_share_invocation_log(
+    tmp_path,
+    monkeypatch,
+    mismatched_log,
+):
+    import evolution_infra
+    import strict_authority_workflow
+    import system_strict_bootstrap
+    import tool_gates
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    results_dir = tmp_path / "results"
+    logs_dir = results_dir / "v143" / "logs"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    checkpoint = {
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "reviewed",
+        "checkpoint_revision": 12,
+        "workflow_run_id": "generation:143:critic-log-authority",
+        "master_plan": {"tasks": []},
+        "reviewer_feedback": "approved",
+        "gate_results": {
+            "quality": {"all_passed": True, "critical_scenarios_passed": True},
+            "review": {"approved": True, "passed": True},
+        },
+        "audit_context": {},
+    }
+    strict_call = {
+        "invocation_id": "3" * 32,
+        "effect_id": "strict-llm-" + "3" * 64,
+        "generation_binding": {"next_v": 143},
+    }
+    expected_log = (
+        logs_dir
+        / "strict_invocations"
+        / strict_call["invocation_id"]
+        / "critic_io.txt"
+    )
+    captured = {}
+
+    class UI:
+        def get_output(self):
+            return ""
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def critic_result(*_args, **_kwargs):
+        return {
+            "score": 8,
+            "approved": True,
+            "strategic_assessment": "bounded mechanism is reachable",
+            "evidence": {"h2h_weaknesses": [], "diff_refs": ["policy.py"]},
+            "feedback": "",
+            "local_optima_warning": False,
+            "local_optima_reason": None,
+            "_llm_execution_material": {
+                "log_file": str(
+                    logs_dir / "critic_io.txt"
+                    if mismatched_log
+                    else expected_log
+                ),
+            },
+        }
+
+    def record_evidence(call, *, log_file):
+        captured["evidence_call"] = call
+        captured["evidence_log_file"] = log_file
+        return {"kind": "test-critic-execution-evidence"}
+
+    def record_gate(_v, _source_v, gate_name, gate, **kwargs):
+        captured["gate_name"] = gate_name
+        captured["gate"] = gate
+        captured["stage"] = kwargs.get("stage")
+        return True
+
+    async def abandon(_checkpoint, *, reason, result):
+        captured["abandon_reason"] = reason
+        captured["abandon_result"] = result
+        return {**result, "abandoned": True}
+
+    monkeypatch.setattr(tool_gates, "_set_pipeline_status", lambda *_args: None)
+    monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_gates,
+        "_owned_infrastructure_failure",
+        lambda *_args: (None, None),
+    )
+    monkeypatch.setattr(
+        tool_gates,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted,
+    )
+    monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tool_gates, "_quality_gate_ok", lambda _checkpoint: True)
+    monkeypatch.setattr(tool_gates, "_review_gate_ok", lambda _checkpoint: True)
+    monkeypatch.setattr(tool_gates, "_critic_result_to_preserve", lambda _checkpoint: None)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_gates, "get_logs_dir", lambda _version: logs_dir)
+    monkeypatch.setattr(tool_gates, "_get_ui", lambda: UI())
+    monkeypatch.setattr(
+        tool_gates,
+        "_llm_gate_infrastructure_identity",
+        lambda **_kwargs: ("critic-attempt", {}),
+    )
+    monkeypatch.setattr(tool_gates, "_run_critic", critic_result)
+    monkeypatch.setattr(tool_gates, "_record_gate", record_gate)
+    monkeypatch.setattr(tool_gates, "log_system_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "build_system_gate_receipt",
+        lambda *_args, **_kwargs: {"kind": "test-system-critic-receipt"},
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "abandon_rejected_blueprint",
+        abandon,
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "gate_call_context",
+        lambda *_args, **_kwargs: {"candidate": "bound"},
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "new_call",
+        lambda *_args, **_kwargs: strict_call,
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "accept_role_result",
+        lambda *_args, **_kwargs: {"kind": "test-authority-receipt"},
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "record_bound_invocation_evidence",
+        record_evidence,
+    )
+
+    result = asyncio.run(tool_gates.run_critic.handler({
+        "version": 143,
+        "source_v": 142,
+        "plan": [],
+        "reviewer_feedback": "approved",
+        "force_advance": False,
+    }))
+    payload = json.loads(result["content"][0]["text"])
+
+    if mismatched_log:
+        assert payload["abandoned"] is True
+        assert captured["abandon_reason"] == (
+            "system_strict_bootstrap_critic_receipt_invalid"
+        )
+        assert "strict_authority_critic_execution_log_mismatch" in (
+            captured["abandon_result"]["validation_errors"]
+        )
+        assert "evidence_call" not in captured
+    else:
+        assert payload["approved"] is True
+        assert captured["evidence_call"] is strict_call
+        assert captured["evidence_log_file"] == expected_log
+        assert captured["gate_name"] == "critic"
+        assert captured["stage"] == "critic_checked"
+        assert captured["gate"]["system_verifier_receipt"] == {
+            "kind": "test-system-critic-receipt"
+        }
 
 
 @pytest.mark.parametrize(
@@ -394,6 +589,113 @@ def test_strict_gate_predispatch_authority_drift_canonically_abandons(
         f"system_strict_bootstrap_{gate_name}_authority_invalid"
     )
     assert captured["validation_errors"] == [f"{gate_name} context drift"]
+
+
+def test_strict_review_log_allocation_failure_canonically_abandons(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+    import strict_authority_workflow as authority
+    import system_strict_bootstrap
+    import tool_gates
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    results_dir = tmp_path / "results"
+    logs_dir = results_dir / "v143" / "logs"
+    logs_dir.mkdir(parents=True)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    (logs_dir / "strict_invocations").write_text("collision\n")
+    checkpoint = {
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "quality_passed",
+        "checkpoint_revision": 9,
+        "workflow_run_id": "generation:143:review-log-collision",
+        "master_plan": {"tasks": []},
+        "gate_results": {
+            "quality": {"all_passed": True, "critical_scenarios_passed": True},
+        },
+        "audit_context": {},
+    }
+    strict_call = {
+        "invocation_id": "4" * 32,
+        "generation_binding": {"next_v": 143},
+    }
+    captured = {}
+
+    async def no_exhaustion(*_args, **_kwargs):
+        return None
+
+    async def abandon(_checkpoint, *, reason, result):
+        captured.update({"reason": reason, **result})
+        return {**result, "action": "abandon_generation", "abandoned": True}
+
+    async def forbidden_provider(*_args, **_kwargs):
+        raise AssertionError("provider must not run after log allocation failure")
+
+    monkeypatch.setattr(tool_gates, "_set_pipeline_status", lambda *_args: None)
+    monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_gates,
+        "_owned_infrastructure_failure",
+        lambda *_args: (None, None),
+    )
+    monkeypatch.setattr(
+        tool_gates,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhaustion,
+    )
+    monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *_a, **_k: None)
+    monkeypatch.setattr(tool_gates, "_quality_gate_ok", lambda _checkpoint: True)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_gates, "get_logs_dir", lambda _version: logs_dir)
+    monkeypatch.setattr(
+        tool_gates,
+        "_llm_gate_infrastructure_identity",
+        lambda **_kwargs: ("attempt", {}),
+    )
+    monkeypatch.setattr(tool_gates, "run_claude_query", forbidden_provider)
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "abandon_rejected_blueprint",
+        abandon,
+    )
+    monkeypatch.setattr(
+        authority,
+        "gate_call_context",
+        lambda *_args, **_kwargs: {"candidate": "bound"},
+    )
+    monkeypatch.setattr(
+        authority,
+        "new_call",
+        lambda *_args, **_kwargs: strict_call,
+    )
+    monkeypatch.setattr(
+        authority,
+        "render_gate_provider_prompt",
+        lambda _call: "sealed reviewer prompt",
+    )
+
+    result = asyncio.run(tool_gates.run_review.handler({
+        "version": 143,
+        "source_v": 142,
+        "plan": [],
+    }))
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["error"] == "SYSTEM_STRICT_BOOTSTRAP_REVIEW_AUTHORITY_INVALID"
+    assert payload["abandoned"] is True
+    assert captured["reason"] == "system_strict_bootstrap_review_authority_invalid"
+    assert captured["validation_errors"] == [
+        "strict_authority_invocation_log_filesystem_invalid:FileExistsError"
+    ]
 
 
 def test_strict_reviewer_context_normalizes_and_seals_real_renderer(

@@ -22,6 +22,15 @@ function formatFileTime(mtime: number): string {
   return new Date(mtime * 1000).toLocaleDateString();
 }
 
+function generationLogLabel(identifier: string): string {
+  const strict = identifier.match(
+    /^strict@([0-9a-f]{32})@([a-z0-9_]+_io\.txt)$/,
+  );
+  return strict
+    ? `${strict[2]} · strict ${strict[1].slice(0, 8)}`
+    : identifier;
+}
+
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
 const FlagIcon = ({ className }: { className?: string }) => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
@@ -424,7 +433,7 @@ export default function Logs() {
                             : "text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/50"
                         }`}
                       >
-                        {file}
+                        {generationLogLabel(file)}
                       </button>
                     ))}
                   </div>

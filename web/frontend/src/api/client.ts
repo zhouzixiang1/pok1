@@ -100,7 +100,9 @@ export const api = {
   // Logs - generation
   generations: () => fetchJSON<GenerationLog[]>(`${BASE}/logs/generations`),
   logContent: (version: string, filename: string, tail = 0) =>
-    fetchJSON<LogContent>(`${BASE}/logs/generations/${version}/${filename}?tail=${tail}`),
+    fetchJSON<LogContent>(
+      `${BASE}/logs/generations/${encodeURIComponent(version)}/${encodeURIComponent(filename)}?tail=${tail}`
+    ),
 
   // Logs - orchestrator
   orchestratorLogs: () => fetchJSON<OrchestratorLogFile[]>(`${BASE}/logs/orchestrator`),

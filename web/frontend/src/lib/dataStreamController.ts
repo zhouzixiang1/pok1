@@ -85,6 +85,13 @@ const isInteger = (value: unknown): value is number => (
 const isStringArray = (value: unknown): value is string[] => (
   Array.isArray(value) && value.every((item) => typeof item === "string")
 );
+const isGenerationLogId = (value: unknown): value is string => (
+  typeof value === "string"
+  && (
+    /^[A-Za-z0-9][A-Za-z0-9_.-]*\.txt(?:\.1)?$/.test(value)
+    || /^strict@[0-9a-f]{32}@[a-z0-9_]+_io\.txt$/.test(value)
+  )
+);
 const isHexDigest = (value: unknown): value is string => (
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
 );
@@ -439,7 +446,9 @@ export function validateDataStreamEvent(eventType: string, value: unknown): bool
     case "generations":
       return isObjectArray(value)
         && value.every((item) => (
-          typeof item.version === "string" && isStringArray(item.files)
+          /^v[1-9][0-9]*$/.test(String(item.version || ""))
+          && Array.isArray(item.files)
+          && item.files.every(isGenerationLogId)
         ));
     case "matrix": {
       if (!isObject(value) || !isStringArray(value.bots) || !Array.isArray(value.matrix)) {

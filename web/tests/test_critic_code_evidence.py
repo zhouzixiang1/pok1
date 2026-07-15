@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -95,9 +96,13 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
     tmp_path,
 ):
     import agent_review
+    import evolution_infra
     import strict_authority_workflow
 
     captured = {}
+    results_dir = tmp_path / "results"
+    logs_dir = results_dir / "v143" / "logs"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(
         agent_review,
         "_critic_code_evidence",
@@ -113,7 +118,7 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
             ),
         },
     )
-    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _version: tmp_path)
+    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _version: logs_dir)
     monkeypatch.setattr(
         agent_review,
         "get_bot_dir",
@@ -122,6 +127,7 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
 
     async def fake_query(prompt, *_args, **kwargs):
         captured["prompt"] = prompt
+        captured["log_file"] = Path(_args[3])
         captured["tools"] = kwargs["tools"]
         captured["allowed_read_dirs"] = kwargs["allowed_read_dirs"]
         return json.dumps({
@@ -155,12 +161,22 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
         "{}",
         _UI(),
         execution_invocation_id="invocation-1",
-        strict_authority={"invocation_id": "invocation-1"},
+        strict_authority={
+            "invocation_id": "1" * 32,
+            "effect_id": "strict-llm-" + "1" * 64,
+            "generation_binding": {"next_v": 143},
+        },
     ))
 
-    assert result["approved"] is True
+    assert result["approved"] is True, result
     assert captured["tools"] == ["Read"]
     assert captured["allowed_read_dirs"] == [tmp_path / "national_v143"]
+    assert captured["log_file"] == (
+        logs_dir
+        / "strict_invocations"
+        / ("1" * 32)
+        / "critic_io.txt"
+    )
     assert "bots/national_v142" not in captured["prompt"]
     assert "national-bot-v142" not in captured["prompt"]
     assert "SYSTEM-SUPPLIED STRICT BOOTSTRAP POLICY" in captured["prompt"]
@@ -172,9 +188,13 @@ def test_strict_critic_renderer_authority_error_is_not_infrastructure(
     tmp_path,
 ):
     import agent_review
+    import evolution_infra
     import strict_authority_workflow as authority
 
-    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _version: tmp_path)
+    results_dir = tmp_path / "results"
+    logs_dir = results_dir / "v143" / "logs"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _version: logs_dir)
     monkeypatch.setattr(
         agent_review,
         "get_bot_dir",
@@ -198,7 +218,11 @@ def test_strict_critic_renderer_authority_error_is_not_infrastructure(
             "{}",
             _UI(),
             execution_invocation_id="1" * 32,
-            strict_authority={"invocation_id": "1" * 32},
+            strict_authority={
+                "invocation_id": "1" * 32,
+                "effect_id": "strict-llm-" + "1" * 64,
+                "generation_binding": {"next_v": 143},
+            },
         ))
 
 

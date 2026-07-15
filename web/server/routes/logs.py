@@ -1,7 +1,9 @@
 """Log endpoints — generation logs browsing, orchestrator logs, system events, and worker failures."""
 
 import json
+import os
 import re
+import stat
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,6 +16,91 @@ RESULTS_DIR = PROJECT_ROOT / "web" / "core" / "results"
 ORCHESTRATOR_LOGS_DIR = PROJECT_ROOT / "web" / "logs"
 
 router = APIRouter(prefix="/api", tags=["logs"])
+
+
+def _read_generation_log(
+    results_dir: Path,
+    *,
+    version: str,
+    identifier: str,
+    tail: int,
+) -> str:
+    """Read through a no-follow descriptor walk rooted at RESULTS_DIR.
+
+    Resolving a safe Path and opening it later is insufficient: any parent can
+    be renamed and replaced by a symlink between those operations.  Each path
+    component is therefore opened relative to the already verified parent
+    descriptor, so a concurrent rename can at most leave this read anchored to
+    the original in-tree directory; it can never redirect the read elsewhere.
+    """
+
+    from server.routes._helpers import generation_log_parts
+
+    parts = generation_log_parts(identifier)
+    if parts is None:
+        raise ValueError("invalid generation log identity")
+    directory_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    directory_flags |= getattr(os, "O_DIRECTORY", 0)
+    directory_flags |= getattr(os, "O_NOFOLLOW", 0)
+    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    file_flags |= getattr(os, "O_NOFOLLOW", 0)
+    directories: list[int] = []
+    descriptor = -1
+    try:
+        current = os.open(results_dir, directory_flags)
+        directories.append(current)
+        for component in (version, "logs", *parts[:-1]):
+            current = os.open(component, directory_flags, dir_fd=current)
+            if not stat.S_ISDIR(os.fstat(current).st_mode):
+                os.close(current)
+                raise OSError("generation log parent is not a directory")
+            directories.append(current)
+        descriptor = os.open(parts[-1], file_flags, dir_fd=current)
+        with os.fdopen(
+            descriptor,
+            "r",
+            encoding="utf-8",
+            errors="replace",
+        ) as handle:
+            descriptor = -1
+            opened = os.fstat(handle.fileno())
+            live = os.stat(
+                parts[-1],
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(live.st_mode)
+                or opened.st_nlink != 1
+                or live.st_nlink != 1
+                or (opened.st_dev, opened.st_ino)
+                != (live.st_dev, live.st_ino)
+            ):
+                raise OSError("generation log path is not the opened file")
+            if tail > 0:
+                content = "".join(handle.readlines()[-tail:])
+            else:
+                content = handle.read()
+            finished = os.fstat(handle.fileno())
+            live_after = os.stat(
+                parts[-1],
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if (
+                finished.st_nlink != 1
+                or live_after.st_nlink != 1
+                or (finished.st_dev, finished.st_ino)
+                != (live_after.st_dev, live_after.st_ino)
+            ):
+                raise OSError("generation log changed identity during read")
+            return content
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        for directory in reversed(directories):
+            os.close(directory)
 
 
 def _current_log_epoch_identity() -> dict | None:
@@ -56,7 +143,10 @@ async def list_generations():
 
 @router.get("/logs/generations/{version}/{filename}")
 async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
-    from server.routes._helpers import strict_observable_generation_versions
+    from server.routes._helpers import (
+        generation_log_path,
+        strict_observable_generation_versions,
+    )
 
     if re.fullmatch(r"v[1-9][0-9]*", version) is None:
         raise HTTPException(status_code=400, detail="Invalid generation")
@@ -66,19 +156,23 @@ async def get_log(version: str, filename: str, tail: int = Query(0, ge=0)):
     )
     if int(version[1:]) not in allowed:
         raise HTTPException(status_code=404, detail="Generation not observable")
-    # Resolve to prevent path traversal (e.g. version="../../etc")
-    resolved = (RESULTS_DIR / version / "logs" / filename).resolve()
-    if not resolved.is_relative_to(RESULTS_DIR.resolve()):
-        raise HTTPException(status_code=400, detail="Invalid path")
-    path = resolved
-    if not path.is_file():
+    path = generation_log_path(RESULTS_DIR / version / "logs", filename)
+    if path is None:
+        raise HTTPException(status_code=400, detail="Invalid log identity")
+    try:
+        content = _read_generation_log(
+            RESULTS_DIR,
+            version=version,
+            identifier=filename,
+            tail=tail,
+        )
+    except FileNotFoundError:
         return {"version": version, "filename": filename, "content": ""}
-    with open(path, "r") as f:
-        if tail > 0:
-            lines = f.readlines()
-            content = "".join(lines[-tail:])
-        else:
-            content = f.read()
+    except (OSError, UnicodeError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Log unavailable: {type(exc).__name__}",
+        ) from exc
     return {"version": version, "filename": filename, "content": content}
 
 

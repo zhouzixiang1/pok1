@@ -216,14 +216,16 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
     PROPOSAL_ID = BOUND_PROPOSAL["proposal_id"]
     VALID_PLAN["selected_proposal_id"] = PROPOSAL_ID
 
-    async def no_ensemble(*_args, **_kwargs):
-        return json.dumps(
-            _valid_proposal_packet(
-                agent_master,
-                BOUND_PROPOSAL,
-                tmp_path / "proposal_invocations",
-            )
+    frozen_packet = json.dumps(
+        _valid_proposal_packet(
+            agent_master,
+            BOUND_PROPOSAL,
+            tmp_path / "proposal_invocations",
         )
+    )
+
+    async def no_ensemble(*_args, **_kwargs):
+        return frozen_packet
 
     monkeypatch.setattr(agent_master, "_run_master_proposal_ensemble", no_ensemble)
 
@@ -292,6 +294,7 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
 
     captured = []
     captured_kwargs = []
+    captured_strict_logs = []
 
     async def fake_run_claude_query(prompt, *_args, **_kwargs):
         captured.append(prompt)
@@ -299,12 +302,23 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         output = _mock_llm_output()
         strict_call = _kwargs.get("strict_authority")
         if strict_call is not None:
+            captured_strict_logs.append((
+                strict_call["invocation_id"],
+                Path(_args[3]),
+            ))
             strict_authority_workflow.dispatch_call(
                 strict_call,
                 full_prompt=prompt,
                 tools=["Read"],
                 owner="pytest",
+                actual_role=str(_args[2]),
             )
+            if strict_call.get("replay_provider"):
+                return (
+                    strict_call["replay_raw_output"],
+                    float(strict_call.get("replay_cost_usd") or 0.0),
+                    strict_call.get("replay_usage") or {},
+                )
             provider_result = ResultMessage(
                 subtype="success",
                 duration_ms=10,
@@ -420,6 +434,25 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     assert "{source_selection_contract}" not in rendered
     assert "{target_path_contract}" not in rendered
     assert "Historical lineage source directory: quarantined" in rendered
+    assert len(captured_strict_logs) == 1
+    invocation_id, final_log = captured_strict_logs[0]
+    assert final_log == (
+        final_log.parents[2]
+        / "strict_invocations"
+        / invocation_id
+        / "master_io.txt"
+    )
+
+    replayed = await agent_master._run_master_analysis(
+        source_v=142,
+        next_v=143,
+        ui=_MockUI(),
+        protocol_bootstrap=bootstrap_receipt,
+        architecture_policy=architecture_policy,
+        **sentinels,
+    )
+    assert replayed is not None
+    assert captured_strict_logs[1] == captured_strict_logs[0]
 
 
 def test_master_official_feedback_requires_exact_current_artifact_identity(
