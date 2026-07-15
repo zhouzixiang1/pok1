@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import time
 from pathlib import Path
 
@@ -56,16 +55,131 @@ from worker_boundary import (
 from national_position_contract import detect_position_semantics_errors
 from blocking_runtime import run_blocking_isolated
 
+
+def _render_reviewer_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "master_plan", "source_v", "next_v", "strict_bootstrap",
+        "invocation_id", "focus_areas",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Reviewer renderer input contract mismatch")
+    master_plan = inputs["master_plan"]
+    focus_areas = inputs["focus_areas"]
+    if not isinstance(master_plan, dict) or not isinstance(focus_areas, list):
+        raise ValueError("Reviewer renderer typed input mismatch")
+    source_v = int(inputs["source_v"])
+    next_v = int(inputs["next_v"])
+    strict_bootstrap = bool(inputs["strict_bootstrap"])
+    text = (
+        Path(__file__).resolve().parent / "prompts" / "reviewer_prompt.md"
+    ).read_text(encoding="utf-8")
+    text = text.replace(
+        "{master_plan}",
+        json.dumps(master_plan, indent=2, ensure_ascii=False),
+    )
+    text = text.replace("{version}", str(next_v))
+    text = text.replace("{parent_version}", str(source_v))
+    if strict_bootstrap:
+        prompt_fields = {
+            "{review_tool_contract}": (
+                "Read the prepared target only; Bash and historical lineage are unavailable"
+            ),
+            "{review_lineage_contract}": (
+                f"Prepared `bots/national_v{next_v}/` is the sole readable code artifact. "
+                f"v{source_v} is numeric high-water only, not a parent or readable path."
+            ),
+            "{review_evaluation_step_one}": (
+                "Read the target functions named by the frozen Master plan; the "
+                "system Worker boundary already proved the five-file scope and preimage delta."
+            ),
+            "{review_size_baseline_contract}": (
+                "This prepared strict-bootstrap candidate has no readable historical "
+                "parent. Apply the 2000-line base and 2500-line hard cap to current "
+                "`policy.py`; the preceding quality gate already proved the exact "
+                "candidate size and scope receipt."
+            ),
+        }
+    else:
+        prompt_fields = {
+            "{review_tool_contract}": (
+                "Read source/target files; Bash is limited to direct, statically "
+                "bounded reads and source-to-target comparisons"
+            ),
+            "{review_lineage_contract}": (
+                f"Exact current-epoch source: `bots/national_v{source_v}/`; "
+                f"candidate: `bots/national_v{next_v}/`."
+            ),
+            "{review_evaluation_step_one}": (
+                f"Compare only explicit source/target files under "
+                f"`bots/national_v{source_v}/` and `bots/national_v{next_v}/`; "
+                "do not inspect Git history."
+            ),
+            "{review_size_baseline_contract}": (
+                "The quality gate's adaptive limit permits a child to match or "
+                "shrink, but not grow beyond, an inherited oversized source. Compare "
+                f"explicit `policy.py` line counts under `bots/national_v{source_v}/` "
+                f"and `bots/national_v{next_v}/`. Reject growth beyond an oversized source; "
+                "treat shrink/maintenance as marginal and flag it in `risk_areas`. "
+                "If the source is within limits and the child exceeds them, apply "
+                "the normal reject/marginal rule."
+            ),
+        }
+    for placeholder, value in prompt_fields.items():
+        text = text.replace(placeholder, value)
+    invocation_id = str(inputs["invocation_id"] or "")
+    if strict_bootstrap:
+        if not invocation_id:
+            raise ValueError("Reviewer strict invocation id missing")
+        text += (
+            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+            f"invocation_id={invocation_id}; "
+            "purpose=system_strict_bootstrap_gate:review."
+        )
+    if focus_areas:
+        text += (
+            "\n\n# Worker CoT Audit Findings (from execute_workers)\n"
+            "The Worker Chain-of-Thought audit detected these concerns.\n"
+            "Pay EXTRA attention to these areas during your review:\n"
+            + "".join(f"- {str(item)}\n" for item in focus_areas)
+            + "\n"
+        )
+    prompt_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="review_candidate_pair",
+        evidence_provenance={
+            "source_v": int(inputs["source_v"]),
+            "next_v": int(inputs["next_v"]),
+            "review_prompt_digest": prompt_digest,
+            "focus_areas_digest": hashlib.sha256(
+                json.dumps(
+                    focus_areas,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
 try:
-    from candidate_store import append_candidate_event
+    from candidate_store import (
+        append_candidate_event,
+        candidate_observability_identity,
+    )
 except Exception:  # pragma: no cover - import fallback for unusual test paths
     append_candidate_event = None
+    candidate_observability_identity = None
 
 
 QUALITY_INFRA_MAX_ATTEMPTS = max(
     1, int(os.environ.get("POK_QUALITY_INFRA_MAX_ATTEMPTS", "3"))
 )
-QUALITY_INFRA_CONTRACT_VERSION = 1
+QUALITY_INFRA_CONTRACT_VERSION = 2
 
 
 def _run_workflow_decision_tests(
@@ -95,6 +209,97 @@ def _run_workflow_decision_tests(
 
 def _env_enabled(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _national_acceptance_not_run(reason: str) -> tuple[bool, list[str], dict]:
+    """Return a truthful fail-closed projection for an unexecuted hard gate."""
+
+    normalized = str(reason or "national_acceptance_not_run")
+    return False, [normalized], {
+        "executed": False,
+        "skipped": True,
+        "passed": False,
+        "conclusive": False,
+        "outcome": "not_run",
+        "reason": normalized,
+        "issues": [normalized],
+    }
+
+
+def _national_acceptance_executed(
+    report: dict,
+    *,
+    expected_hands: int | None = None,
+) -> tuple[bool, list[str], dict]:
+    """Normalize native acceptance evidence without upgrading infra to pass."""
+
+    payload = dict(report or {})
+    outcome = str(payload.get("outcome") or "")
+    issues = [str(item) for item in (payload.get("issues") or [])]
+    coverage_ok = True
+    observed_hands: list[int] = []
+    if expected_hands is not None:
+        expected_hands = int(expected_hands)
+        if payload.get("acceptance_kind") == "first_strict_self_play_compliance":
+            result = payload.get("result") or {}
+            observed_hands = [int(result.get("hands_played") or 0)]
+            coverage_ok = (
+                int(payload.get("hands") or 0) == expected_hands
+                and observed_hands == [expected_hands]
+            )
+        else:
+            nested_report = payload.get("report") or {}
+            results = nested_report.get("results") or []
+            observed_hands = [
+                int(item.get("hands_played") or 0)
+                for item in results
+                if isinstance(item, dict)
+            ]
+            coverage_ok = bool(
+                int(payload.get("hands_per_pair") or 0) == expected_hands
+                and payload.get("opponents")
+                and observed_hands
+                and all(item == expected_hands for item in observed_hands)
+            )
+        if not coverage_ok:
+            issues.append(
+                "national_acceptance_incomplete_hand_coverage:"
+                f"expected={expected_hands}:observed={observed_hands}"
+            )
+    reported_passed = payload.get("passed") is True
+    report_consistent = bool(
+        outcome == "passed" and reported_passed and not issues
+        or outcome == "candidate_failure" and not reported_passed and issues
+        or outcome == "infrastructure_failure" and not reported_passed
+    )
+    if not report_consistent:
+        issues.append(
+            "national_acceptance_report_inconsistent:"
+            f"outcome={outcome or 'missing'}:"
+            f"reported_passed={reported_passed}:issues={len(issues)}"
+        )
+    passed = bool(
+        reported_passed
+        and outcome == "passed"
+        and coverage_ok
+        and report_consistent
+    )
+    payload.update({
+        "executed": True,
+        "skipped": False,
+        "passed": passed,
+        "conclusive": (
+            coverage_ok
+            and report_consistent
+            and outcome in {"passed", "candidate_failure"}
+        ),
+        "expected_hands": expected_hands,
+        "observed_hands": observed_hands,
+        "coverage_ok": coverage_ok,
+        "report_consistent": report_consistent,
+        "issues": issues,
+    })
+    return passed, issues, payload
 
 
 def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
@@ -526,9 +731,10 @@ def _bot_code_fingerprint(bot_dir):
     """Content hash of the complete decision artifact for gate cache validity.
 
     The persisted field name predates data/model-backed bots, but its value must
-    cover every artifact file that can affect a decision.  ``hash_path`` uses
-    the shared deterministic manifest and intentionally excludes only runtime
-    completion/cache artifacts such as ``.completed`` and ``__pycache__``.
+    cover every authorized source file that can affect a decision. ``hash_path``
+    uses the shared deterministic manifest; completion/control/cache products do
+    not contribute identity. Strict layout gates reject executable caches, and
+    managed launch mounts only the sealed content-bound source projection.
     """
     root = Path(bot_dir)
     if not root.exists():
@@ -559,6 +765,7 @@ def _llm_gate_infrastructure_identity(
     source_dir,
     prompt_text,
     checkpoint,
+    source_fingerprint_override=None,
 ):
     """Bind LLM-gate retries to code, prompt, backend, and runtime contract."""
     prompt_digest = hashlib.sha256(str(prompt_text).encode("utf-8")).hexdigest()
@@ -573,10 +780,14 @@ def _llm_gate_infrastructure_identity(
             "ANTHROPIC_BASE_URL",
         )
     }
+    candidate_fingerprint = _bot_code_fingerprint(candidate_dir)
+    source_fingerprint = str(source_fingerprint_override or "")
+    if not source_fingerprint:
+        source_fingerprint = _bot_code_fingerprint(source_dir)
     attempt_key = infrastructure_attempt_key(
         component=component,
-        candidate_fingerprint=_bot_code_fingerprint(candidate_dir),
-        source_fingerprint=_bot_code_fingerprint(source_dir),
+        candidate_fingerprint=candidate_fingerprint,
+        source_fingerprint=source_fingerprint,
         harness_identity=prompt_digest,
         contract_identity=contract_digest,
         extra={"role": role, "backend_contract": backend_contract},
@@ -584,8 +795,8 @@ def _llm_gate_infrastructure_identity(
     return attempt_key, {
         "role": role,
         "prompt_digest": prompt_digest,
-        "candidate_fingerprint": _bot_code_fingerprint(candidate_dir),
-        "source_fingerprint": _bot_code_fingerprint(source_dir),
+        "candidate_fingerprint": candidate_fingerprint,
+        "source_fingerprint": source_fingerprint,
         "runtime_contract_ledger_digest": contract_digest,
         "backend_contract": backend_contract,
     }
@@ -621,6 +832,14 @@ async def _finalize_strict_blueprint_quality_rejection(
             ),
         },
     )
+
+def _quality_source_dir(source_v, *, numeric_lineage_only: bool):
+    """Resolve a real parent only; fresh v143 has numeric lineage instead."""
+
+    if source_v is None or numeric_lineage_only:
+        return None
+    return get_bot_dir(source_v)
+
 
 @tool("run_quality_gates", "Run all quality gates on a bot: code_changed, declared_scope, compile/runtime import, protected contracts, smoke, national protocol/acceptance, decision, size, fix verification, telemetry fidelity, and reachability.", {"version": int, "source_v": int})
 async def run_quality_gates(args):
@@ -707,6 +926,18 @@ async def run_quality_gates(args):
     first_strict_control_receipt = None
     first_strict_control_path = None
     first_strict_control_required = False
+    declared_first_strict = False
+    protocol_bootstrap = (
+        (active_ckpt.get("audit_context") or {}).get("protocol_bootstrap")
+        if isinstance(active_ckpt, dict)
+        else None
+    )
+    fresh_numeric_lineage = bool(
+        isinstance(protocol_bootstrap, dict)
+        and protocol_bootstrap.get("mode")
+        == "fresh_national_policy_bootstrap"
+        and protocol_bootstrap.get("source_artifact_inherited") is False
+    )
     if native_tcp_mode and active_ckpt:
         try:
             from system_strict_bootstrap import is_declared_native_bootstrap
@@ -733,7 +964,26 @@ async def run_quality_gates(args):
                     "quality_opponent",
                     f"{type(exc).__name__}: {str(exc)[:500]}",
                 )
-    candidate_id = f"{bot_name(v)}_from_{bot_name(source_v)}" if source_v is not None else bot_name(v)
+    candidate_observability = (
+        candidate_observability_identity(v, source_v)
+        if candidate_observability_identity is not None
+        else {
+            "candidate_id": bot_name(v),
+            "parent_ids": [],
+            "lineage_kind": "unavailable",
+        }
+    )
+    candidate_id = str(candidate_observability["candidate_id"])
+    candidate_parent_ids = list(candidate_observability["parent_ids"])
+    candidate_lineage_metrics = {
+        key: candidate_observability[key]
+        for key in (
+            "lineage_kind",
+            "numeric_high_water_version",
+            "source_artifact_inherited",
+        )
+        if key in candidate_observability
+    }
     if append_candidate_event:
         try:
             append_candidate_event(
@@ -745,7 +995,8 @@ async def run_quality_gates(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="quality",
-                parent_ids=[bot_name(source_v)] if source_v is not None else [],
+                parent_ids=candidate_parent_ids,
+                metrics=candidate_lineage_metrics,
             )
         except Exception as e:
             _log.warning("candidate ledger quality_started write failed: %s", e)
@@ -758,9 +1009,11 @@ async def run_quality_gates(args):
     # from the source, and decision assets may be non-Python.
     source_python_changed = True
     changed_files_list = []
-    source_dir = None
-    if source_v is not None:
-        source_dir = get_bot_dir(source_v)
+    source_dir = _quality_source_dir(
+        source_v,
+        numeric_lineage_only=fresh_numeric_lineage,
+    )
+    if source_dir is not None:
         changed_files_list = [p for p in _py_files_changed_between(source_dir, bot_dir) if 'backup' not in p]
         source_python_changed = len(changed_files_list) > 0
     code_fingerprint = _bot_code_fingerprint(bot_dir)
@@ -965,6 +1218,29 @@ async def run_quality_gates(args):
                 },
             )
             return False
+        cached_acceptance = gate.get("national_acceptance") or {}
+        if native_tcp_mode and not (
+            gate.get("national_acceptance_ok") is True
+            and cached_acceptance.get("executed") is True
+            and cached_acceptance.get("skipped") is False
+            and cached_acceptance.get("passed") is True
+            and cached_acceptance.get("conclusive") is True
+        ):
+            log_system_event(
+                "pipeline.quality_cache_national_acceptance_stale",
+                "warn",
+                f"Quality gate cache stale for v{v}; native acceptance lacks "
+                "executed, conclusive pass evidence.",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "cached_national_acceptance_ok": gate.get(
+                        "national_acceptance_ok"
+                    ),
+                    "cached_national_acceptance": cached_acceptance,
+                },
+            )
+            return False
         if native_tcp_mode:
             try:
                 from national_capability_contract import NATIONAL_CAPABILITY_DETECTOR_VERSION
@@ -1129,7 +1405,7 @@ async def run_quality_gates(args):
                 native_contract_errors[0],
             )
     national_capability_contract = {
-        "schema_version": 2,
+        "schema_version": 3,
         "ok": True,
         "required_failures": [],
         "advisory_warnings": [],
@@ -1154,22 +1430,27 @@ async def run_quality_gates(args):
                 validate_runtime_contract_implementation,
             )
 
-            if source_dir is None:
+            if source_dir is None and not declared_first_strict:
                 raise RuntimeError("native candidate has no source directory for architecture transition")
             expected_architecture_policy = (
                 _master_plan_for_scope.get("architecture_policy")
                 if isinstance(_master_plan_for_scope, dict)
                 else None
             )
-            national_architecture_transition = evaluate_architecture_transition(
-                source_dir,
-                bot_dir,
-                expected_policy=expected_architecture_policy,
-                runtime_contract_ledger=(
+            transition_kwargs = {
+                "expected_policy": expected_architecture_policy,
+                "runtime_contract_ledger": (
                     _master_plan_for_scope.get("runtime_contract_ledger")
                     if isinstance(_master_plan_for_scope, dict)
                     else None
                 ),
+            }
+            if declared_first_strict:
+                transition_kwargs["lineage_source_bot"] = bot_name(source_v)
+            national_architecture_transition = evaluate_architecture_transition(
+                source_dir,
+                bot_dir,
+                **transition_kwargs,
             )
             national_capability_contract = national_architecture_transition["candidate_capabilities"]
             transition_infrastructure = (
@@ -1192,7 +1473,7 @@ async def run_quality_gates(args):
         except Exception as e:
             national_capability_ok = False
             national_capability_contract = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "ok": False,
                 "error": f"national_capability_contract_error: {type(e).__name__}: {str(e)[:200]}",
                 "required_failures": [],
@@ -1425,30 +1706,93 @@ async def run_quality_gates(args):
             "national_protocol",
             "; ".join(str(item) for item in national_protocol_errors[:3]),
         )
-    national_acceptance_ok = True
-    national_acceptance_errors = []
-    national_acceptance_payload = {}
-    national_acceptance_enabled = os.environ.get("POK_NATIONAL_ACCEPTANCE_GATE", "1") != "0"
-    national_acceptance_hands = int(
-        os.environ.get(
-            "POK_NATIONAL_ACCEPTANCE_HANDS",
-            str(workflow_profile.national_acceptance_hands),
-        )
+    (
+        national_acceptance_ok,
+        national_acceptance_errors,
+        national_acceptance_payload,
+    ) = _national_acceptance_not_run("national_acceptance_not_started")
+    national_acceptance_enabled = _env_enabled(
+        "POK_NATIONAL_ACCEPTANCE_GATE",
+        "1",
     )
-    national_acceptance_timeout_sec = float(
-        os.environ.get(
-            "POK_NATIONAL_ACCEPTANCE_TIMEOUT_SEC",
-            str(workflow_profile.national_acceptance_timeout_sec),
+    national_acceptance_contract_error = ""
+    try:
+        national_acceptance_hands = int(
+            os.environ.get(
+                "POK_NATIONAL_ACCEPTANCE_HANDS",
+                str(workflow_profile.national_acceptance_hands),
+            )
         )
+    except (TypeError, ValueError):
+        national_acceptance_hands = 0
+        national_acceptance_contract_error = (
+            "national_acceptance_hands_not_integer"
+        )
+    try:
+        national_acceptance_timeout_sec = float(
+            os.environ.get(
+                "POK_NATIONAL_ACCEPTANCE_TIMEOUT_SEC",
+                str(workflow_profile.national_acceptance_timeout_sec),
+            )
+        )
+    except (TypeError, ValueError):
+        national_acceptance_timeout_sec = 0.0
+        national_acceptance_contract_error = (
+            national_acceptance_contract_error
+            or "national_acceptance_timeout_not_numeric"
+        )
+    expected_acceptance_hands = int(
+        workflow_profile.national_acceptance_hands
     )
-    if national_acceptance_enabled and source_v is not None:
+    if (
+        not national_acceptance_contract_error
+        and national_acceptance_timeout_sec <= 0.0
+    ):
+        national_acceptance_contract_error = (
+            "national_acceptance_timeout_not_positive"
+        )
+    if (
+        not national_acceptance_contract_error
+        and (
+            expected_acceptance_hands != 70
+            or national_acceptance_hands != expected_acceptance_hands
+            or workflow_profile.national_acceptance_hard is not True
+        )
+    ):
+        national_acceptance_contract_error = (
+            "national_acceptance_strict_contract_mismatch:"
+            f"hands={national_acceptance_hands}:"
+            f"expected={expected_acceptance_hands}:"
+            f"hard={workflow_profile.national_acceptance_hard}"
+        )
+    if not national_acceptance_enabled:
+        (
+            national_acceptance_ok,
+            national_acceptance_errors,
+            national_acceptance_payload,
+        ) = _national_acceptance_not_run(
+            "national_acceptance_disabled_in_strict_native_mode"
+        )
+    elif national_acceptance_contract_error:
+        (
+            national_acceptance_ok,
+            national_acceptance_errors,
+            national_acceptance_payload,
+        ) = _national_acceptance_not_run(national_acceptance_contract_error)
+    elif source_v is None:
+        (
+            national_acceptance_ok,
+            national_acceptance_errors,
+            national_acceptance_payload,
+        ) = _national_acceptance_not_run(
+            "national_acceptance_source_identity_missing"
+        )
+    else:
         try:
             _bot_under_project_bots = bot_dir.resolve().is_relative_to((PROJECT_ROOT / "bots").resolve())
         except AttributeError:
             _bot_under_project_bots = str(bot_dir.resolve()).startswith(str((PROJECT_ROOT / "bots").resolve()))
         can_run_national_acceptance = (
-            not first_strict_control_required
-            and
             len(compile_errors) == 0
             and len(import_errors) == 0
             and len(protected_contract_errors) == 0
@@ -1460,28 +1804,59 @@ async def run_quality_gates(args):
         )
         if can_run_national_acceptance:
             try:
-                from national_native import run_native_acceptance_for_candidate
+                if first_strict_control_required:
+                    # The first strict artifact has no published strict
+                    # opponent.  A complete 70-hand candidate self-play is a
+                    # compliance-only acceptance sample (zero strength), so
+                    # v143 does not bypass the hard native gate.
+                    from national_native import run_native_tcp_smoke
 
-                _acceptance = await run_native_acceptance_for_candidate(
-                    bot_dir,
-                    source_v=source_v,
-                    opponent_tokens=(
-                        [first_strict_control_path]
-                        if first_strict_control_path
-                        else None
-                    ),
-                    hands=national_acceptance_hands,
-                    max_opponents=2,
-                    timeout_sec=national_acceptance_timeout_sec,
+                    _acceptance_report = await run_native_tcp_smoke(
+                        bot_dir,
+                        source_v=source_v,
+                        self_play=True,
+                        hands=national_acceptance_hands,
+                        timeout_sec=national_acceptance_timeout_sec,
+                    )
+                    _acceptance_report = {
+                        **_acceptance_report,
+                        "acceptance_kind": "first_strict_self_play_compliance",
+                        "strength_weight": 0,
+                        "summary": {
+                            "self_play": True,
+                            "hands": national_acceptance_hands,
+                            "passed_compliance": bool(
+                                _acceptance_report.get("passed")
+                            ),
+                        },
+                    }
+                else:
+                    from national_native import run_native_acceptance_for_candidate
+
+                    _acceptance = await run_native_acceptance_for_candidate(
+                        bot_dir,
+                        source_v=source_v,
+                        hands=national_acceptance_hands,
+                        max_opponents=2,
+                        timeout_sec=national_acceptance_timeout_sec,
+                    )
+                    _acceptance_report = _acceptance.model_dump()
+                (
+                    national_acceptance_ok,
+                    national_acceptance_errors,
+                    national_acceptance_payload,
+                ) = _national_acceptance_executed(
+                    _acceptance_report,
+                    expected_hands=national_acceptance_hands,
                 )
-                national_acceptance_ok = bool(_acceptance.passed)
-                national_acceptance_errors = _acceptance.issues[:5]
-                national_acceptance_payload = _acceptance.model_dump()
-                if getattr(_acceptance, "outcome", "") == "infrastructure_failure":
+                if not national_acceptance_payload.get("conclusive"):
                     mark_quality_infrastructure(
                         "national_acceptance_harness",
                         "national_acceptance",
-                        "; ".join(str(item) for item in _acceptance.issues[:5]),
+                        "; ".join(
+                            str(item) for item in national_acceptance_errors[:5]
+                        )
+                        or "national acceptance infrastructure failure",
                     )
                 log_system_event(
                     "pipeline.national_acceptance_passed" if national_acceptance_ok else "pipeline.national_acceptance_failed",
@@ -1495,15 +1870,33 @@ async def run_quality_gates(args):
                         "execution_mode": "native_tcp",
                         "hands": national_acceptance_hands,
                         "timeout_sec": national_acceptance_timeout_sec,
-                        "opponents": _acceptance.opponents,
+                        "opponents": national_acceptance_payload.get(
+                            "opponents",
+                            [],
+                        ),
                         "issues": national_acceptance_errors,
-                        "summary": _acceptance.summary,
+                        "summary": national_acceptance_payload.get(
+                            "summary",
+                            {},
+                        ),
+                        "executed": True,
+                        "conclusive": national_acceptance_payload.get(
+                            "conclusive"
+                        ),
                     },
                 )
             except Exception as e:
                 national_acceptance_ok = False
                 national_acceptance_errors = [f"national_acceptance_exception: {type(e).__name__}: {str(e)[:200]}"]
-                national_acceptance_payload = {"error": national_acceptance_errors[0]}
+                national_acceptance_payload = {
+                    "executed": True,
+                    "skipped": False,
+                    "passed": False,
+                    "conclusive": False,
+                    "outcome": "infrastructure_failure",
+                    "error": national_acceptance_errors[0],
+                    "issues": list(national_acceptance_errors),
+                }
                 mark_quality_infrastructure(
                     "national_acceptance_harness",
                     "national_acceptance",
@@ -1511,9 +1904,29 @@ async def run_quality_gates(args):
                 )
                 _log.warning("national acceptance gate failed to run for v%s: %s", v, e)
         else:
-            national_acceptance_ok = True
-            national_acceptance_errors = ["national_acceptance_skipped_due_to_failed_prerequisites"]
-            national_acceptance_payload = {"skipped": True, "reason": national_acceptance_errors[0]}
+            (
+                national_acceptance_ok,
+                national_acceptance_errors,
+                national_acceptance_payload,
+            ) = _national_acceptance_not_run(
+                "national_acceptance_skipped_due_to_failed_prerequisites"
+            )
+
+    if national_acceptance_payload.get("skipped"):
+        log_system_event(
+            "pipeline.national_acceptance_skipped",
+            "warn",
+            f"National native TCP acceptance was not executed for v{v}; "
+            "the hard quality gate remains failed.",
+            {
+                "version": v,
+                "source_v": source_v,
+                "reason": national_acceptance_payload.get("reason"),
+                "executed": False,
+                "passed": False,
+                "conclusive": False,
+            },
+        )
 
     official_smoke_ok = True
     official_smoke_errors: list[str] = []
@@ -1719,7 +2132,17 @@ async def run_quality_gates(args):
         components = sorted({str(item.get("component")) for item in quality_infra_issues})
         phases = sorted({str(item.get("phase") or "unknown") for item in quality_infra_issues})
         infra_component = components[0] if len(components) == 1 else "quality_harness_bundle"
-        source_fingerprint = _bot_code_fingerprint(source_dir) if source_dir else ""
+        source_fingerprint = (
+            hashlib.sha256(
+                f"numeric-high-water-lineage-only:v{int(source_v)}".encode(
+                    "ascii"
+                )
+            ).hexdigest()
+            if fresh_numeric_lineage and source_v is not None
+            else _bot_code_fingerprint(source_dir)
+            if source_dir
+            else ""
+        )
         harness_identity = hashlib.sha256(json.dumps({
             "quality_infra_contract_version": QUALITY_INFRA_CONTRACT_VERSION,
             "components": components,
@@ -1820,6 +2243,12 @@ async def run_quality_gates(args):
         "national_protocol_ok": len(national_protocol_errors) == 0,
         "national_protocol_errors": national_protocol_errors[:3] if national_protocol_errors else [],
         "national_acceptance_ok": national_acceptance_ok,
+        "national_acceptance_executed": (
+            national_acceptance_payload.get("executed") is True
+        ),
+        "national_acceptance_conclusive": (
+            national_acceptance_payload.get("conclusive") is True
+        ),
         "national_acceptance_errors": national_acceptance_errors[:5] if national_acceptance_errors else [],
         "national_acceptance": national_acceptance_payload,
         "first_strict_control_receipt": first_strict_control_receipt,
@@ -2007,6 +2436,12 @@ async def run_quality_gates(args):
         "national_protocol_ok": result["national_protocol_ok"],
         "national_protocol_errors": result["national_protocol_errors"],
         "national_acceptance_ok": result["national_acceptance_ok"],
+        "national_acceptance_executed": result[
+            "national_acceptance_executed"
+        ],
+        "national_acceptance_conclusive": result[
+            "national_acceptance_conclusive"
+        ],
         "national_acceptance_errors": result["national_acceptance_errors"],
         "national_acceptance": national_acceptance_payload,
         "first_strict_control_receipt": result.get(
@@ -2157,12 +2592,39 @@ async def run_quality_gates(args):
         artifacts={"report": smoke_payload} if smoke_payload else {},
     ))
     scorecard.add(GateResult.from_bool("national_protocol", len(national_protocol_errors) == 0, failures=national_protocol_errors[:3]))
-    scorecard.add(GateResult.from_bool(
-        "national_acceptance",
-        national_acceptance_ok,
+    acceptance_metrics = (
+        dict(national_acceptance_payload.get("summary") or {})
+        if isinstance(national_acceptance_payload, dict)
+        else {}
+    )
+    acceptance_metrics.update({
+        "executed": national_acceptance_payload.get("executed") is True,
+        "skipped": national_acceptance_payload.get("skipped") is True,
+        "passed": national_acceptance_payload.get("passed") is True,
+        "conclusive": national_acceptance_payload.get("conclusive") is True,
+        "outcome": national_acceptance_payload.get("outcome"),
+        "coverage_ok": national_acceptance_payload.get("coverage_ok") is True,
+        "report_consistent": (
+            national_acceptance_payload.get("report_consistent") is True
+        ),
+        "expected_hands": national_acceptance_payload.get("expected_hands"),
+        "observed_hands": national_acceptance_payload.get("observed_hands") or [],
+    })
+    scorecard.add(GateResult(
+        name="national_acceptance",
+        status=(
+            "passed"
+            if national_acceptance_ok
+            else "skipped"
+            if national_acceptance_payload.get("skipped") is True
+            else "failed"
+        ),
+        blocking=True,
         failures=national_acceptance_errors[:5],
-        metrics=national_acceptance_payload.get("summary", {}) if isinstance(national_acceptance_payload, dict) else {},
-        artifacts={"report": national_acceptance_payload} if national_acceptance_payload else {},
+        metrics=acceptance_metrics,
+        artifacts={"report": national_acceptance_payload}
+        if national_acceptance_payload
+        else {},
     ))
     scorecard.add(GateResult.from_bool(
         "official_smoke",
@@ -2315,7 +2777,7 @@ async def run_quality_gates(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage=quality_stage,
-                parent_ids=[bot_name(source_v)] if source_v is not None else [],
+                parent_ids=candidate_parent_ids,
                 changed_files=post_master_changed_files,
                 skill_layers=declared_skill_layers,
                 diff_hash=diff_hash,
@@ -2323,10 +2785,17 @@ async def run_quality_gates(args):
                 scorecard=scorecard,
                 gate_results=scorecard.gates,
                 metrics={
+                    **candidate_lineage_metrics,
                     "all_passed": all_passed,
                     "decision_pass_rate": round(decision_rate, 4),
                     "decision_skill_layers": decision_skill_layers,
                     "national_acceptance_ok": national_acceptance_ok,
+                    "national_acceptance_executed": (
+                        national_acceptance_payload.get("executed") is True
+                    ),
+                    "national_acceptance_conclusive": (
+                        national_acceptance_payload.get("conclusive") is True
+                    ),
                     "declared_scope_ok": declared_scope_ok,
                 },
                 failures=failed_gates_detail if not all_passed else [],
@@ -2355,10 +2824,15 @@ async def run_quality_gates(args):
         and quality_infrastructure["exhausted"]
         and result.get("checkpoint_recorded")
     ):
-        from tool_bot_management import _do_abandon_generation
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
 
+        abandon_checkpoint = _matching_checkpoint(v, source_v)
         abandon_result = await _do_abandon_generation(
-            reason=f"infrastructure_exhausted:{quality_infrastructure.get('component')}"
+            reason=f"infrastructure_exhausted:{quality_infrastructure.get('component')}",
+            **expected_abandon_identity(abandon_checkpoint),
         )
         result["abandon_result"] = abandon_result
         result["abandoned"] = bool(abandon_result.get("abandoned"))
@@ -2470,7 +2944,6 @@ async def prepare_next_gen(args):
     if not using_active_checkpoint and next_v > current_v + 10:
         return _json_tool_result({"error": f"next_v ({next_v}) is too far ahead of current_v ({current_v}). Use next_v = {current_v + 1}."})
 
-    source_dir = get_bot_dir(source_v)
     next_dir = get_bot_dir(next_v)
 
     source_checkpoint = _matching_checkpoint(next_v, source_v) or {}
@@ -2482,6 +2955,9 @@ async def prepare_next_gen(args):
         == "fresh_national_policy_bootstrap"
         and protocol_bootstrap_receipt.get("source_artifact_inherited") is False
     )
+    # In the empty-pool transition v142 is a numeric/tag high-water only.  Do
+    # not even resolve its bot path; stale local debris must be unobservable.
+    source_dir = None if fresh_policy_bootstrap else get_bot_dir(source_v)
 
     # Validate the transition authority before using its mode to bypass any
     # ordinary parent gate.  The one-time 142 -> 143 receipt binds an empty
@@ -2529,14 +3005,18 @@ async def prepare_next_gen(args):
                 ),
             })
 
-    if not fresh_policy_bootstrap and not source_dir.exists():
+    if not fresh_policy_bootstrap and (
+        source_dir is None or not source_dir.exists()
+    ):
         return _json_tool_result({"error": f"Source bot v{source_v} not found"})
 
     # Every inherited parent, including the one-bot singleton bootstrap, must
     # remain a normally published strict parent at prepare time.  Membership in
     # get_active_bots() revalidates the strict ABI, annotated completion tag,
     # signed full-v5 certificate, lifecycle, and parent-source role.
-    if not fresh_policy_bootstrap and not (source_dir / ".completed").exists():
+    if not fresh_policy_bootstrap and (
+        source_dir is None or not (source_dir / ".completed").exists()
+    ):
         return _json_tool_result({"error": f"Source bot v{source_v} is not marked completed. Cannot use incomplete code as source."})
     if not fresh_policy_bootstrap and not git_has_tag(source_v):
         return _json_tool_result({"error": f"Source bot v{source_v} has no git tag '{bot_tag(source_v)}'. Cannot evolve from uncommitted code. Try a different source version."})
@@ -2567,32 +3047,58 @@ async def prepare_next_gen(args):
     if _ckpt and _ckpt.get("stage") not in (None, "selected", "preparing", "prepared", "timed_out"):
         return _json_tool_result({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})
 
+    if next_dir.exists():
+        prepared_contract = (
+            ((_ckpt or {}).get("audit_context") or {}).get(
+                "prepared_artifact_contract"
+            )
+        )
+        if (_ckpt or {}).get("stage") == "prepared":
+            from prepared_baseline_contract import (
+                validate_prepared_artifact_contract,
+            )
+
+            retry_errors = validate_prepared_artifact_contract(
+                prepared_contract,
+                prepared_dir=next_dir,
+                source_v=int(source_v),
+                next_v=int(next_v),
+                verify_live_content=True,
+            )
+            if not retry_errors:
+                return _json_tool_result({
+                    "success": True,
+                    "resumed": True,
+                    "version": int(next_v),
+                    "source_v": int(source_v),
+                    "stage": "prepared",
+                    "prepared_artifact_hash": prepared_contract.get(
+                        "prepared_artifact_hash"
+                    ),
+                    "directive": (
+                        "Exact checkpoint-bound prepared artifact already exists; "
+                        "continue with run_direction_audit."
+                    ),
+                })
+        return _json_tool_result({
+            "error": "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON",
+            "version": int(next_v),
+            "source_v": int(source_v),
+            "stage": (_ckpt or {}).get("stage"),
+            "directive": (
+                "The existing target directory is not bound by this workflow's "
+                "exact prepared-artifact contract. Preserve it and run the "
+                "checkpoint-bound abandon/quarantine transaction; never rmtree "
+                "or adopt filename-matched bytes."
+            ),
+        })
+
     from evolution_infra import write_pipeline_checkpoint
     if not write_pipeline_checkpoint(next_v, source_v, "preparing", worker_failure_count=0):
         return _json_tool_result({
             "error": f"Failed to persist preparing checkpoint for v{next_v}; refusing to mutate bot directory."
         })
 
-    if next_dir.exists():
-        # Guard against silent cross-source overwrite. v107 (2026-06-16) was
-        # repeatedly re-prepared from DIFFERENT ancestors (106/105/102) because
-        # each crashed cycle reset the checkpoint, _matching_checkpoint(next_v,
-        # source_v) returned None for the new source, the stage guard was
-        # bypassed, and this rmtree silently destroyed the previous attempt's
-        # worker output. Refuse unless the existing dir was prepared from the
-        # SAME source (a legitimate same-generation retry) or explicitly cleared.
-        prior_ckpt = read_pipeline_checkpoint() or {}
-        prior_source = prior_ckpt.get("source_v")
-        if prior_source is not None and prior_source != source_v:
-            log_system_event(
-                "pipeline.prepare_cross_source_refused", "error",
-                f"Refusing to overwrite v{next_v}: dir was prepared from "
-                f"v{prior_source} but request is from v{source_v}. "
-                f"Call abandon_generation first to clear it.",
-                {"version": next_v, "source_v": source_v, "prior_source_v": prior_source},
-            )
-            return _json_tool_result({"error": f"Target v{next_v} already exists, prepared from v{prior_source} (not v{source_v}). Refusing silent cross-source overwrite. Call abandon_generation first."})
-        shutil.rmtree(next_dir)
     workflow_profile = get_workflow_profile()
     native_tcp = getattr(workflow_profile, "national_execution_mode", None) == "native_tcp"
     if fresh_policy_bootstrap:
@@ -2606,6 +3112,7 @@ async def prepare_next_gen(args):
             "artifact_hash": materialized["artifact_hash"],
         }
     else:
+        assert source_dir is not None
         copy_bot_tree_for_candidate(source_dir, next_dir)
 
         # The parent's receipt is version- and lineage-bound.  Copying it into
@@ -2696,6 +3203,7 @@ async def prepare_next_gen(args):
         sorted(path.name for path in next_dir.iterdir() if path.is_file())
         if fresh_policy_bootstrap
         else [
+            # ``source_dir`` is necessarily a published strict parent here.
             p for p in _py_files_changed_between(source_dir, next_dir)
             if 'backup' not in p
         ]
@@ -2837,14 +3345,6 @@ async def run_review(args):
             {"version": v, "source_v": source_v},
         )
 
-    prompts_dir = PROJECT_ROOT / "web" / "core" / "prompts"
-    reviewer_prompt = (prompts_dir / "reviewer_prompt.md").read_text()
-    reviewer_prompt = reviewer_prompt.replace(
-        "{master_plan}",
-        json.dumps(authoritative_plan, indent=2, ensure_ascii=False),
-    )
-    reviewer_prompt = reviewer_prompt.replace("{version}", str(v))
-    reviewer_prompt = reviewer_prompt.replace("{parent_version}", str(source_v))
     from system_strict_bootstrap import is_declared_native_bootstrap
 
     _strict_bootstrap = is_declared_native_bootstrap(ckpt)
@@ -2863,14 +3363,10 @@ async def run_review(args):
             ),
         )
         _review_invocation_id = _review_strict_call["invocation_id"]
-        reviewer_prompt += (
-            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
-            f"invocation_id={_review_invocation_id}; "
-            "purpose=system_strict_bootstrap_gate:review."
-        )
 
     # Inject Worker CoT audit_focus_areas into reviewer prompt
     _review_ckpt = _matching_checkpoint(v, source_v)
+    _focus_areas = []
     if _review_ckpt:
         _audit_context = _review_ckpt.get("audit_context", {}) or {}
         _focus_areas = _audit_context.get("worker_cot_focus_areas", [])
@@ -2878,24 +3374,38 @@ async def run_review(args):
             # Also check gate_results for audit_focus_areas stored by execute_workers
             _worker_gate = _review_ckpt.get("gate_results", {}).get("workers", {})
             _focus_areas = _worker_gate.get("audit_focus_areas", [])
-        if _focus_areas:
-            _focus_block = (
-                "\n\n# Worker CoT Audit Findings (from execute_workers)\n"
-                "The Worker Chain-of-Thought audit detected these concerns.\n"
-                "Pay EXTRA attention to these areas during your review:\n"
-            )
-            for _fa in _focus_areas:
-                _focus_block += f"- {_fa}\n"
-            _focus_block += "\n"
-            reviewer_prompt += _focus_block
 
+    # The registered producer, not this caller, is the provider prompt
+    # authority. It reopens the pinned template and reconstructs the exact
+    # strict/non-strict and CoT-focus structure from typed inputs.
+    from llm_query import render_llm_prompt
+
+    rendered_prompt = render_llm_prompt(
+        "LEAD CODE REVIEWER",
+        producer=_render_reviewer_provider_prompt,
+        renderer_inputs={
+            "master_plan": authoritative_plan,
+            "source_v": int(source_v),
+            "next_v": int(v),
+            "strict_bootstrap": bool(_strict_bootstrap),
+            "invocation_id": str(_review_invocation_id or ""),
+            "focus_areas": [str(item) for item in _focus_areas],
+        },
+    )
     _review_attempt_key, _review_infra_metadata = _llm_gate_infrastructure_identity(
         component="reviewer_llm",
         role="LEAD CODE REVIEWER",
         candidate_dir=get_bot_dir(v),
-        source_dir=get_bot_dir(source_v),
-        prompt_text=reviewer_prompt,
+        source_dir=None if _strict_bootstrap else get_bot_dir(source_v),
+        prompt_text=str(rendered_prompt),
         checkpoint=ckpt,
+        source_fingerprint_override=(
+            hashlib.sha256(
+                f"numeric-high-water-only:v{source_v}".encode("ascii")
+            ).hexdigest()
+            if _strict_bootstrap
+            else None
+        ),
     )
 
     log_file = get_logs_dir(v) / "reviewer_io.txt"
@@ -2903,12 +3413,17 @@ async def run_review(args):
     ui = _get_ui()
     try:
         output, _review_cost_usd, _review_usage = await run_claude_query(
-            reviewer_prompt,
+            rendered_prompt,
             [],
             ui,
             "LEAD CODE REVIEWER",
             log_file,
             tools=["Read"] if _strict_bootstrap else ["Bash", "Read"],
+            allowed_read_dirs=(
+                [get_bot_dir(v)]
+                if _strict_bootstrap
+                else [get_bot_dir(source_v), get_bot_dir(v)]
+            ),
             strict_authority=_review_strict_call,
         )
     except LLMAvailabilityBlocked:
@@ -3096,9 +3611,14 @@ async def run_review(args):
                         invocation_id=_review_invocation_id,
                         purpose="system_strict_bootstrap_gate:review",
                         role="LEAD CODE REVIEWER",
-                        prompt_digest=hashlib.sha256(
-                            reviewer_prompt.encode("utf-8")
-                        ).hexdigest(),
+                        # ``run_claude_query`` mutates the private strict call
+                        # only after binding the renderer output plus the
+                        # provider contract suffix.  Its digest is therefore
+                        # the exact provider-visible prompt authority; the old
+                        # caller-owned ``reviewer_prompt`` no longer exists.
+                        prompt_digest=str(
+                            _review_strict_call.get("prompt_digest") or ""
+                        ),
                         raw_output_digest=hashlib.sha256(
                             (output or "").encode("utf-8")
                         ).hexdigest(),
@@ -3201,7 +3721,7 @@ async def run_critic(args):
     v = int(v)
     source_v = int(source_v)
     supplied_plan = args.get("plan", [])
-    reviewer_feedback = args.get("reviewer_feedback", "")
+    supplied_reviewer_feedback = args.get("reviewer_feedback", "")
     force_advance = bool(args.get("force_advance", False))
 
     _set_pipeline_status(f"Critic evaluating v{v}")
@@ -3240,6 +3760,25 @@ async def run_critic(args):
             ckpt,
         )
 
+    # Reviewer feedback is checkpoint-owned evidence.  The tool argument is a
+    # convenience projection for weak controllers, not authority that may
+    # rewrite the reviewed checkpoint while the Critic runs.
+    reviewer_feedback = (
+        str(ckpt.get("reviewer_feedback") or "")
+        if isinstance(ckpt, dict)
+        else ""
+    )
+    if (
+        supplied_reviewer_feedback
+        and str(supplied_reviewer_feedback) != reviewer_feedback
+    ):
+        log_system_event(
+            "pipeline.critic_reviewer_feedback_argument_ignored",
+            "warn",
+            f"run_critic v{v} ignored reviewer feedback that differed from checkpoint authority",
+            {"version": v, "source_v": source_v},
+        )
+
     authoritative_plan = (
         ckpt.get("master_plan")
         if isinstance(ckpt, dict) and isinstance(ckpt.get("master_plan"), dict)
@@ -3263,18 +3802,25 @@ async def run_critic(args):
     critic_prompt_identity += "\n" + master_plan_str + "\n" + json.dumps(
         prev_critic or {}, sort_keys=True, ensure_ascii=False
     )
+    from system_strict_bootstrap import is_declared_native_bootstrap
+
+    _strict_bootstrap = is_declared_native_bootstrap(ckpt)
     _critic_attempt_key, _critic_infra_metadata = _llm_gate_infrastructure_identity(
         component="critic_llm",
         role="STRATEGY CRITIC",
         candidate_dir=get_bot_dir(v),
-        source_dir=get_bot_dir(source_v),
+        source_dir=None if _strict_bootstrap else get_bot_dir(source_v),
         prompt_text=critic_prompt_identity,
         checkpoint=ckpt,
+        source_fingerprint_override=(
+            hashlib.sha256(
+                f"numeric-high-water-only:v{source_v}".encode("ascii")
+            ).hexdigest()
+            if _strict_bootstrap
+            else None
+        ),
     )
     ui = _get_ui()
-    from system_strict_bootstrap import is_declared_native_bootstrap
-
-    _strict_bootstrap = is_declared_native_bootstrap(ckpt)
     _critic_invocation_id = None
     _critic_strict_call = None
     if _strict_bootstrap:

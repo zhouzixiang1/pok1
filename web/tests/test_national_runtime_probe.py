@@ -92,12 +92,18 @@ PROFILE_POLICY = TYPED_POLICY.replace(
 ''',
     '''    if (line["can_donk"] or line["can_delayed_probe"]) and "raise" in kinds:
         aggression = opponent.get("rates", {}).get("aggression", 0.5)
-        target = legal["min_raise_to"] + int(100 * aggression)
+        weight = opponent.get("adaptation_weight", 0.0)
+        target = legal["min_raise_to"] + int(100 * aggression * weight)
         return {
             "kind": "raise",
             "raise_to": min(legal["max_raise_to"], target),
         }
 ''',
+)
+
+UNGATED_PROFILE_POLICY = PROFILE_POLICY.replace(
+    'target = legal["min_raise_to"] + int(100 * aggression * weight)',
+    'target = legal["min_raise_to"] + int(100 * aggression)',
 )
 
 
@@ -234,9 +240,28 @@ def test_profile_counterfactual_reaches_socket_validated_wire(tmp_path):
     ]
     assert action_profile["socket_validated"] is True
     assert action_profile["changed"] is True
+    assert action_profile["negative_control_stable"] is True
+    assert action_profile["causal_passed"] is True
     assert action_profile["left_wire"] != action_profile["right_wire"]
     states = runtime_architecture_policy._dynamic_probe_states(result)
     assert states["incremental_opponent_model"] is True
+
+
+def test_profile_counterfactual_rejects_raw_signal_without_confidence_gate(
+    tmp_path,
+):
+    bot = _write_typed_bot(tmp_path / "bot", UNGATED_PROFILE_POLICY)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["ok"] is True, result["issues"]
+    action_profile = result["policy_counterfactuals"]["dimensions"][
+        "action_profile"
+    ]
+    assert action_profile["positive_wire_effect"] is True
+    assert action_profile["negative_control_stable"] is False
+    assert action_profile["causal_passed"] is False
+    states = runtime_architecture_policy._dynamic_probe_states(result)
+    assert states["incremental_opponent_model"] is False
 
 
 def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
@@ -259,6 +284,8 @@ def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
         assert dimension["scenario"] == "flop_donk_vs_opponent_pfr"
         assert dimension["socket_validated"] is True
         assert dimension["changed"] is True
+        assert dimension["negative_control_stable"] is True
+        assert dimension["causal_passed"] is True
         assert dimension["left_wire"].startswith("raise ")
         assert dimension["right_wire"].startswith("raise ")
         assert dimension["left_wire"] != dimension["right_wire"]
@@ -272,9 +299,18 @@ def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
 def _fake_worker_result(spec: dict) -> dict:
     return {
         "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
-        "worker_version": 14,
+        "orchestrator_version": (
+            national_runtime_probe.RUNTIME_PROBE_ORCHESTRATOR_VERSION
+        ),
+        "worker_version": national_runtime_probe.RUNTIME_PROBE_WORKER_VERSION,
         "scenario_version": national_runtime_probe.RUNTIME_PROBE_SCENARIO_VERSION,
         "scenario_digest": national_runtime_probe.RUNTIME_PROBE_SCENARIO_DIGEST,
+        "limits_digest": national_runtime_probe.RUNTIME_PROBE_LIMITS_DIGEST,
+        "worker_digest": national_runtime_probe.RUNTIME_PROBE_WORKER_DIGEST,
+        "probe_identity_digest": (
+            national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST
+        ),
+        "policy_abi": "decision_context_v1_typed_intent_v1",
         "spec_digest": spec["spec_digest"],
         "code_fingerprint": spec["code_fingerprint"],
         "ok": True,
@@ -324,6 +360,25 @@ def test_orchestrator_requires_repeatability_and_caches_by_artifact(
     assert changed["ok"] is True
     assert len(calls) == 4
     assert changed["code_fingerprint"] != first["code_fingerprint"]
+
+
+def test_orchestrator_fails_closed_when_worker_identity_is_missing(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+
+    def run_once(_root, spec, _timeout):
+        result = _fake_worker_result(spec)
+        result.pop("worker_digest")
+        return result
+
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(national_runtime_probe, "_run_once", run_once)
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert "runtime_probe_worker_digest_mismatch" in observed["issues"]
 
 
 def test_active_probe_sources_contain_no_retired_wrapper_calls():
@@ -400,9 +455,36 @@ def _passing_gate_probe() -> dict:
         "official_transcript_decisions": [],
         "policy_counterfactuals": {
             "dimensions": {
-                "action_profile": {"changed": False},
-                "terminal_response": {"changed": False},
-                "showdown_range": {"changed": False},
+                "action_profile": {
+                    "causal_passed": True,
+                    "positive_wire_effect": True,
+                    "negative_control_stable": True,
+                    "socket_validated": True,
+                    "left_wire": "raise 300",
+                    "right_wire": "raise 400",
+                    "negative_left_wire": "raise 350",
+                    "negative_right_wire": "raise 350",
+                },
+                "terminal_response": {
+                    "causal_passed": True,
+                    "positive_wire_effect": True,
+                    "negative_control_stable": True,
+                    "socket_validated": True,
+                    "left_wire": "raise 310",
+                    "right_wire": "raise 410",
+                    "negative_left_wire": "raise 350",
+                    "negative_right_wire": "raise 350",
+                },
+                "showdown_range": {
+                    "causal_passed": True,
+                    "positive_wire_effect": True,
+                    "negative_control_stable": True,
+                    "socket_validated": True,
+                    "left_wire": "raise 320",
+                    "right_wire": "raise 420",
+                    "negative_left_wire": "raise 350",
+                    "negative_right_wire": "raise 350",
+                },
             }
         },
         "line_reachability": {
@@ -470,7 +552,18 @@ def test_gate_classifies_candidate_and_system_probe_failures(monkeypatch, tmp_pa
     assert infrastructure[0]["side"] == "system"
 
 
-def test_counterfactual_is_hard_only_when_frozen_in_runtime_ledger(
+def test_dynamic_state_recomputes_wire_causality_instead_of_trusting_flag():
+    probe = _passing_gate_probe()
+    action = probe["policy_counterfactuals"]["dimensions"]["action_profile"]
+    action["right_wire"] = action["left_wire"]
+
+    states = runtime_architecture_policy._dynamic_probe_states(probe)
+
+    assert action["causal_passed"] is True
+    assert states["incremental_opponent_model"] is False
+
+
+def test_opponent_causal_floor_is_hard_and_selected_profile_adds_primary_gate(
     monkeypatch,
     tmp_path,
 ):
@@ -496,21 +589,31 @@ def test_counterfactual_is_hard_only_when_frozen_in_runtime_ledger(
             },
         },
     )
+    failing_probe = _passing_gate_probe()
+    failing_probe["policy_counterfactuals"]["dimensions"][
+        "action_profile"
+    ]["causal_passed"] = False
+    failing_probe["policy_counterfactuals"]["dimensions"][
+        "terminal_response"
+    ]["causal_passed"] = False
     monkeypatch.setattr(
         national_runtime_probe,
         "run_national_runtime_probe",
-        lambda *_args, **_kwargs: _passing_gate_probe(),
+        lambda *_args, **_kwargs: copy.deepcopy(failing_probe),
     )
 
-    advisory = runtime_architecture_policy.evaluate_architecture_transition(
+    baseline = runtime_architecture_policy.evaluate_architecture_transition(
         tmp_path,
         tmp_path,
     )
-    assert advisory["ok"] is True
-    assert advisory["unresolved_focus_checks"] == [
+    assert baseline["ok"] is False
+    assert baseline["unresolved_focus_checks"] == [
         "incremental_opponent_model"
     ]
-    assert advisory["blocking_focus_checks"] == []
+    assert baseline["blocking_focus_checks"] == []
+    assert [
+        item["check_id"] for item in baseline["runtime_floor_failures"]
+    ] == ["incremental_opponent_model"]
 
     ledger = runtime_architecture_policy.build_runtime_contract_ledger({
         "tasks": [{

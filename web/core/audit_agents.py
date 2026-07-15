@@ -21,7 +21,12 @@ import asyncio
 import stat
 from pathlib import Path
 
-from bot_namespace import bot_name, bot_tag
+from bot_namespace import (
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    parse_bot_version,
+)
 from evolution_infra import (
     PROMPTS_DIR, RESULTS_DIR,
     get_bot_dir, get_logs_dir,
@@ -35,6 +40,908 @@ from llm_availability import LLMAvailabilityBlocked
 from worker_boundary import is_binary_artifact_path, read_regular_file_bytes
 
 log = logging.getLogger("pok.audit")
+
+
+_FENCED_WORKER_OUTPUT_AUTHORITY = object()
+_FENCED_WORKER_OUTPUT_KEYS = frozenset({
+    "schema_version",
+    "kind",
+    "next_v",
+    "source_v",
+    "worker_id",
+    "workflow_run_id",
+    "envelope_digest",
+    "effect_id",
+    "lease_epoch",
+    "attempt",
+    "task_digest",
+    "worker_dispatch_receipt_digest",
+    "output_sha256",
+    "output_bytes",
+    "output_excerpt",
+    "output_excerpt_sha256",
+    "output_excerpt_mode",
+    "binding_digest",
+})
+
+
+class WorkerCoTEvidenceError(RuntimeError):
+    """The CoT audit was not given the current fenced Worker output."""
+
+
+class FencedWorkerOutput:
+    """In-process authority token for one exact Worker provider result."""
+
+    __slots__ = ("payload", "_authority")
+
+    def __init__(self, payload, authority):
+        self.payload = payload
+        self._authority = authority
+
+
+def _worker_output_payload_digest(payload):
+    from bot_artifact import canonical_digest
+
+    return canonical_digest({
+        key: value for key, value in payload.items() if key != "binding_digest"
+    })
+
+
+def _validate_fenced_worker_output_payload(
+    payload,
+    *,
+    task,
+    worker_id,
+    next_v,
+    source_v,
+):
+    from bot_artifact import canonical_digest
+
+    if not isinstance(payload, dict) or set(payload) != _FENCED_WORKER_OUTPUT_KEYS:
+        raise WorkerCoTEvidenceError("worker_output_evidence_fields_invalid")
+    if (
+        payload.get("schema_version") != 1
+        or payload.get("kind") != "fenced-worker-provider-output-v1"
+        or type(payload.get("next_v")) is not int
+        or payload.get("next_v") != int(next_v)
+        or type(payload.get("source_v")) is not int
+        or payload.get("source_v") != int(source_v)
+        or payload.get("worker_id") != str(worker_id)
+        or not isinstance(payload.get("workflow_run_id"), str)
+        or not payload.get("workflow_run_id")
+        or not isinstance(payload.get("effect_id"), str)
+        or not payload.get("effect_id")
+        or type(payload.get("lease_epoch")) is not int
+        or payload.get("lease_epoch") <= 0
+        or type(payload.get("attempt")) is not int
+        or payload.get("attempt") <= 0
+        or payload.get("task_digest") != canonical_digest(task)
+        or payload.get("output_excerpt_mode") != "utf8_tail_5000_chars"
+        or not isinstance(payload.get("output_excerpt"), str)
+        or len(payload.get("output_excerpt")) > 5000
+        or type(payload.get("output_bytes")) is not int
+        or payload.get("output_bytes") < len(
+            payload.get("output_excerpt").encode("utf-8")
+        )
+    ):
+        raise WorkerCoTEvidenceError("worker_output_evidence_subject_invalid")
+    for field in (
+        "envelope_digest",
+        "worker_dispatch_receipt_digest",
+        "output_sha256",
+        "output_excerpt_sha256",
+        "binding_digest",
+    ):
+        value = payload.get(field)
+        if (
+            not isinstance(value, str)
+            or len(value) != 64
+            or any(char not in "0123456789abcdef" for char in value)
+        ):
+            raise WorkerCoTEvidenceError(
+                f"worker_output_evidence_{field}_invalid"
+            )
+    if payload.get("output_excerpt_sha256") != hashlib.sha256(
+        payload["output_excerpt"].encode("utf-8")
+    ).hexdigest():
+        raise WorkerCoTEvidenceError("worker_output_excerpt_digest_mismatch")
+    if payload.get("binding_digest") != _worker_output_payload_digest(payload):
+        raise WorkerCoTEvidenceError("worker_output_binding_digest_mismatch")
+    return payload
+
+
+def bind_fenced_worker_output(
+    *,
+    task,
+    worker_id,
+    next_v,
+    source_v,
+    worker_effect_identity,
+    attempt,
+    dispatch_receipt_digest,
+    output,
+):
+    """Bind the current provider result to its Worker effect lease."""
+
+    from bot_artifact import canonical_digest
+
+    identity = worker_effect_identity
+    if not isinstance(identity, dict) or set(identity) != {
+        "workflow_run_id", "envelope_digest", "effect_id", "lease_epoch",
+    }:
+        raise WorkerCoTEvidenceError("worker_effect_identity_invalid")
+    text = str(output or "")
+    encoded = text.encode("utf-8")
+    excerpt = text[-5000:]
+    payload = {
+        "schema_version": 1,
+        "kind": "fenced-worker-provider-output-v1",
+        "next_v": int(next_v),
+        "source_v": int(source_v),
+        "worker_id": str(worker_id),
+        "workflow_run_id": str(identity.get("workflow_run_id") or ""),
+        "envelope_digest": str(identity.get("envelope_digest") or ""),
+        "effect_id": str(identity.get("effect_id") or ""),
+        "lease_epoch": identity.get("lease_epoch"),
+        "attempt": int(attempt),
+        "task_digest": canonical_digest(task),
+        "worker_dispatch_receipt_digest": str(dispatch_receipt_digest or ""),
+        "output_sha256": hashlib.sha256(encoded).hexdigest(),
+        "output_bytes": len(encoded),
+        "output_excerpt": excerpt,
+        "output_excerpt_sha256": hashlib.sha256(
+            excerpt.encode("utf-8")
+        ).hexdigest(),
+        "output_excerpt_mode": "utf8_tail_5000_chars",
+    }
+    payload["binding_digest"] = _worker_output_payload_digest(payload)
+    _validate_fenced_worker_output_payload(
+        payload,
+        task=task,
+        worker_id=worker_id,
+        next_v=next_v,
+        source_v=source_v,
+    )
+    return FencedWorkerOutput(payload, _FENCED_WORKER_OUTPUT_AUTHORITY)
+
+
+def _open_fenced_worker_output(
+    evidence,
+    *,
+    task,
+    worker_id,
+    next_v,
+    source_v,
+):
+    if (
+        not isinstance(evidence, FencedWorkerOutput)
+        or evidence._authority is not _FENCED_WORKER_OUTPUT_AUTHORITY
+    ):
+        raise WorkerCoTEvidenceError("fenced_worker_output_authority_missing")
+    return _validate_fenced_worker_output_payload(
+        evidence.payload,
+        task=task,
+        worker_id=worker_id,
+        next_v=next_v,
+        source_v=source_v,
+    )
+
+
+def _render_master_plan_audit_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "source_v", "next_v", "master_plan", "recent_commits",
+        "direction_audit", "h2h_snapshot_contract",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Master plan audit renderer input contract mismatch")
+    source_v = int(inputs["source_v"])
+    next_v = int(inputs["next_v"])
+    master_plan = inputs["master_plan"]
+    if not isinstance(master_plan, dict):
+        raise ValueError("Master plan audit input must be an object")
+    recent_commits = str(inputs["recent_commits"])
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "master_plan_audit.md"
+    ).read_text(encoding="utf-8")
+    text = substitute_template(template, {
+        "master_plan": json.dumps(master_plan, indent=2, ensure_ascii=False),
+        "recent_commits": (
+            recent_commits
+            or "No strict published completion commits are available."
+        ),
+        "direction_audit": str(inputs["direction_audit"]),
+        "source_v": str(source_v),
+        "next_v": str(next_v),
+        "h2h_snapshot_contract": str(inputs["h2h_snapshot_contract"]),
+        "branch_from_note": (
+            f"This generation evolves FROM v{source_v}. The source ancestor is "
+            "decided automatically by the system in prepare_generation; the Master "
+            "plan MUST NOT set 'branch_from' (it is a dead, rejected field). Only "
+            "flag a 'data staleness' problem if the plan's analysis references a "
+            f"version OTHER than v{source_v} as if it were the evolution base. Do NOT "
+            f"reject a plan just because it fixes bugs in v{source_v} that happen to "
+            f"already be fixed in a later version — evolution starts from v{source_v}, "
+            "not the latest version."
+        ),
+    })
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="compiled_plan_completion_history",
+        evidence_provenance={
+            "source_v": source_v,
+            "next_v": next_v,
+            "plan_digest": hashlib.sha256(
+                json.dumps(
+                    master_plan,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "history_digest": hashlib.sha256(
+                recent_commits.encode("utf-8")
+            ).hexdigest(),
+            "direction_audit_digest": hashlib.sha256(
+                str(inputs["direction_audit"]).encode("utf-8")
+            ).hexdigest(),
+            "h2h_snapshot_digest": hashlib.sha256(
+                str(inputs["h2h_snapshot_contract"]).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
+def _render_worker_cot_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "task", "worker_role", "worker_task", "worker_output_evidence",
+        "code_diff", "diff_metadata",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Worker CoT renderer input contract mismatch")
+    task = inputs["task"]
+    if not isinstance(task, dict):
+        raise ValueError("Worker CoT task must be an object")
+    evidence = inputs["worker_output_evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != _FENCED_WORKER_OUTPUT_KEYS:
+        raise ValueError("Worker CoT output evidence contract mismatch")
+    # Renderer replay revalidates the self-contained receipt. The private
+    # in-process authority token was consumed before renderer invocation.
+    _validate_fenced_worker_output_payload(
+        evidence,
+        task=task,
+        worker_id=evidence.get("worker_id"),
+        next_v=evidence.get("next_v"),
+        source_v=evidence.get("source_v"),
+    )
+    worker_output = evidence["output_excerpt"]
+    code_diff = str(inputs["code_diff"])
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "worker_cot_check.md"
+    ).read_text(encoding="utf-8")
+    text = substitute_template(template, {
+        "worker_role": str(inputs["worker_role"]),
+        "worker_task": str(inputs["worker_task"])[:2000],
+        "worker_output": worker_output[-3000:],
+        "code_diff": code_diff,
+        "diff_metadata": str(inputs["diff_metadata"]),
+    })
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="worker_output_diff",
+        evidence_provenance={
+            "task_digest": hashlib.sha256(
+                json.dumps(
+                    task,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "diff_digest": hashlib.sha256(code_diff.encode("utf-8")).hexdigest(),
+            "worker_output_digest": evidence["output_sha256"],
+            "worker_output_binding_digest": evidence["binding_digest"],
+            "worker_effect_id": evidence["effect_id"],
+            "worker_lease_epoch": evidence["lease_epoch"],
+            "worker_dispatch_receipt_digest": evidence[
+                "worker_dispatch_receipt_digest"
+            ],
+            "worker_role_digest": hashlib.sha256(
+                str(inputs["worker_role"]).encode("utf-8")
+            ).hexdigest(),
+            "worker_task_digest": hashlib.sha256(
+                str(inputs["worker_task"]).encode("utf-8")
+            ).hexdigest(),
+            "diff_metadata_digest": hashlib.sha256(
+                str(inputs["diff_metadata"]).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
+def _render_degeneration_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {"source_v", "recent_commits", "strategy_changes", "rating_curve"}
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Degeneration renderer input contract mismatch")
+    recent_commits = str(inputs["recent_commits"])
+    rating_curve = str(inputs["rating_curve"])
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "degeneration_diagnosis.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+    text = substitute_template(template, {
+        "generation_history": recent_commits[:3000],
+        "rating_curve": rating_curve[:2000],
+        "h2h_changes": (
+            "No per-opponent H2H delta rows were supplied to this advisory "
+            "role; opponent-specific attribution is unknown."
+        ),
+        "strategy_changes": str(inputs["strategy_changes"])[:3000],
+    })
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="frozen_degeneration_window",
+        evidence_provenance={
+            "source_v": int(inputs["source_v"]),
+            "history_digest": hashlib.sha256(
+                recent_commits.encode("utf-8")
+            ).hexdigest(),
+            "rating_digest": hashlib.sha256(
+                rating_curve.encode("utf-8")
+            ).hexdigest(),
+            "strategy_changes_digest": hashlib.sha256(
+                str(inputs["strategy_changes"]).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
+def _render_crossover_compat_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "parent_a_v", "parent_b_v", "parent_a_code", "parent_b_code",
+        "parent_a_rating", "parent_b_rating", "h2h_context",
+        "architecture_context", "parent_snapshot_receipt",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Crossover compatibility renderer input contract mismatch")
+    parent_a_v = int(inputs["parent_a_v"])
+    parent_b_v = int(inputs["parent_b_v"])
+    parent_a_code = inputs["parent_a_code"]
+    parent_b_code = inputs["parent_b_code"]
+    parent_snapshot_receipt = inputs["parent_snapshot_receipt"]
+    if not isinstance(parent_a_code, dict) or not isinstance(parent_b_code, dict):
+        raise ValueError("Crossover parent code inputs must be objects")
+    if not isinstance(parent_snapshot_receipt, dict):
+        raise ValueError("Crossover parent snapshot receipt must be an object")
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "crossover_compatibility.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+    text = substitute_template(template, {
+        "parent_a_version": str(parent_a_v),
+        "parent_b_version": str(parent_b_v),
+        "parent_a_code": json.dumps(
+            parent_a_code, indent=2, ensure_ascii=False
+        )[:5000],
+        "parent_b_code": json.dumps(
+            parent_b_code, indent=2, ensure_ascii=False
+        )[:5000],
+        "parent_a_rating": str(inputs["parent_a_rating"]),
+        "parent_b_rating": str(inputs["parent_b_rating"]),
+        "h2h_a_vs_b": str(inputs["h2h_context"]),
+        "architecture_context": json.dumps(
+            inputs["architecture_context"], indent=2, ensure_ascii=False
+        )[:8000],
+    })
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="crossover_parent_compatibility",
+        evidence_provenance={
+            "parent_a_v": parent_a_v,
+            "parent_b_v": parent_b_v,
+            "parent_code_digest": hashlib.sha256(
+                json.dumps(
+                    {"a": parent_a_code, "b": parent_b_code},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "rating_context_digest": hashlib.sha256(
+                json.dumps(
+                    {
+                        "parent_a_rating": inputs["parent_a_rating"],
+                        "parent_b_rating": inputs["parent_b_rating"],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "h2h_context_digest": hashlib.sha256(
+                str(inputs["h2h_context"]).encode("utf-8")
+            ).hexdigest(),
+            "architecture_context_digest": hashlib.sha256(
+                json.dumps(
+                    inputs["architecture_context"],
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "parent_snapshot_receipt_digest": str(
+                parent_snapshot_receipt.get("receipt_digest") or ""
+            ),
+        },
+    )
+
+
+class CrossoverParentSnapshotError(RuntimeError):
+    """The selected published parents could not be frozen without ambiguity."""
+
+
+_CROSSOVER_PARENT_SNAPSHOT_RECEIPT_KEYS = frozenset({
+    "schema_version",
+    "kind",
+    "target_v",
+    "parent_a_v",
+    "parent_b_v",
+    "workflow_run_id",
+    "checkpoint_revision",
+    "checkpoint_stage",
+    "checkpoint_digest",
+    "epoch_binding_digest",
+    "parents",
+    "receipt_digest",
+})
+_CROSSOVER_PARENT_SNAPSHOT_ENTRY_KEYS = frozenset({
+    "role",
+    "version",
+    "snapshot_artifact_hash",
+    "publication_identity",
+    "publication_identity_digest",
+})
+
+
+def _crossover_snapshot_fail(issue):
+    raise CrossoverParentSnapshotError(str(issue))
+
+
+def _crossover_snapshot_digest(payload):
+    from bot_artifact import canonical_digest
+
+    return canonical_digest(payload)
+
+
+def _crossover_checkpoint_subject_errors(
+    checkpoint,
+    *,
+    parent_a_v,
+    parent_b_v,
+    target_v,
+):
+    from checkpoint_schema import checkpoint_epoch_errors
+
+    errors = list(checkpoint_epoch_errors(checkpoint))
+    if not isinstance(checkpoint, dict):
+        return errors or ["crossover_parent_checkpoint_missing"]
+    if checkpoint.get("next_v") != int(target_v):
+        errors.append("crossover_parent_checkpoint_target_mismatch")
+    if checkpoint.get("source_v") != int(parent_a_v):
+        errors.append("crossover_parent_checkpoint_parent_a_mismatch")
+    if checkpoint.get("parent2_v") != int(parent_b_v):
+        errors.append("crossover_parent_checkpoint_parent_b_mismatch")
+    if checkpoint.get("stage") not in {"selected", "crossover_running"}:
+        errors.append("crossover_parent_checkpoint_stage_invalid")
+    if (
+        type(checkpoint.get("checkpoint_revision")) is not int
+        or checkpoint.get("checkpoint_revision") < 1
+    ):
+        errors.append("crossover_parent_checkpoint_revision_invalid")
+    if not str(checkpoint.get("workflow_run_id") or "").strip():
+        errors.append("crossover_parent_checkpoint_workflow_missing")
+    return list(dict.fromkeys(errors))
+
+
+def resolve_crossover_parent_snapshots(
+    receipt,
+    *,
+    checkpoint,
+    parent_a_v,
+    parent_b_v,
+    target_v,
+    artifact_store=None,
+):
+    """Resolve an exact compatibility receipt to immutable Worker snapshots.
+
+    This deliberately does not reopen ``bots/national_v*``.  Once compatibility
+    capture succeeds, synthesis and all retries consume only these two
+    content-addressed trees.
+    """
+
+    from crossover_projection import checkpoint_digest
+    from worker_workflow import WorkerArtifactStore
+
+    subject_errors = _crossover_checkpoint_subject_errors(
+        checkpoint,
+        parent_a_v=parent_a_v,
+        parent_b_v=parent_b_v,
+        target_v=target_v,
+    )
+    if subject_errors:
+        _crossover_snapshot_fail(subject_errors[0])
+    if not isinstance(receipt, dict):
+        _crossover_snapshot_fail("crossover_parent_snapshot_receipt_missing")
+    if set(receipt) != _CROSSOVER_PARENT_SNAPSHOT_RECEIPT_KEYS:
+        _crossover_snapshot_fail("crossover_parent_snapshot_receipt_fields_mismatch")
+    exact_checkpoint_binding = bool(
+        receipt.get("checkpoint_revision")
+        == checkpoint.get("checkpoint_revision")
+        and receipt.get("checkpoint_stage") == checkpoint.get("stage")
+        and receipt.get("checkpoint_digest") == checkpoint_digest(checkpoint)
+    )
+    projected_checkpoint_binding = False
+    if not exact_checkpoint_binding:
+        from workflow_kernel import content_digest
+
+        crossover = (
+            ((checkpoint.get("audit_context") or {}).get("crossover") or {})
+            if isinstance(checkpoint.get("audit_context"), dict)
+            else {}
+        )
+        projection = (
+            crossover.get("projection") if isinstance(crossover, dict) else None
+        )
+        projection_body = (
+            {key: value for key, value in projection.items() if key != "projection_id"}
+            if isinstance(projection, dict)
+            else {}
+        )
+        projected_checkpoint_binding = bool(
+            isinstance(projection, dict)
+            and projection.get("schema_version") == 1
+            and projection.get("workflow_run_id")
+            == checkpoint.get("workflow_run_id")
+            and projection.get("parent_a_v") == int(parent_a_v)
+            and projection.get("parent_b_v") == int(parent_b_v)
+            and projection.get("target_v") == int(target_v)
+            and projection.get("expected_checkpoint_digest")
+            == receipt.get("checkpoint_digest")
+            and projection.get("expected_checkpoint_revision")
+            == receipt.get("checkpoint_revision")
+            and projection.get("expected_checkpoint_stage")
+            == receipt.get("checkpoint_stage")
+            and int(checkpoint.get("checkpoint_revision") or -1)
+            >= int(projection.get("committed_revision") or 0)
+            and projection.get("projection_id") == content_digest(projection_body)
+            and (
+                ((projection.get("crossover_semantics") or {}).get(
+                    "compatibility"
+                ) or {}).get("parent_snapshot_receipt")
+                == receipt
+            )
+        )
+    if (
+        receipt.get("schema_version") != 1
+        or receipt.get("kind") != "crossover-published-parent-snapshots-v1"
+        or receipt.get("target_v") != int(target_v)
+        or receipt.get("parent_a_v") != int(parent_a_v)
+        or receipt.get("parent_b_v") != int(parent_b_v)
+        or receipt.get("workflow_run_id")
+        != checkpoint.get("workflow_run_id")
+        or not (exact_checkpoint_binding or projected_checkpoint_binding)
+        or receipt.get("epoch_binding_digest")
+        != ((checkpoint.get("epoch_binding") or {}).get("binding_digest"))
+    ):
+        _crossover_snapshot_fail("crossover_parent_snapshot_receipt_subject_mismatch")
+    unsigned = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    if receipt.get("receipt_digest") != _crossover_snapshot_digest(unsigned):
+        _crossover_snapshot_fail("crossover_parent_snapshot_receipt_digest_mismatch")
+
+    identities = (
+        (checkpoint.get("epoch_binding") or {}).get("published_parent_identities")
+    )
+    parents = receipt.get("parents")
+    if (
+        not isinstance(identities, list)
+        or len(identities) != 2
+        or not isinstance(parents, list)
+        or len(parents) != 2
+    ):
+        _crossover_snapshot_fail("crossover_parent_snapshot_identity_set_invalid")
+    expected = (
+        ("parent_a", int(parent_a_v), identities[0]),
+        ("parent_b", int(parent_b_v), identities[1]),
+    )
+    snapshot_hashes = []
+    for item, (role, version, identity) in zip(parents, expected):
+        if not isinstance(item, dict) or set(item) != _CROSSOVER_PARENT_SNAPSHOT_ENTRY_KEYS:
+            _crossover_snapshot_fail("crossover_parent_snapshot_entry_fields_mismatch")
+        if (
+            item.get("role") != role
+            or item.get("version") != version
+            or item.get("publication_identity") != identity
+            or item.get("publication_identity_digest")
+            != _crossover_snapshot_digest(identity)
+            or item.get("snapshot_artifact_hash")
+            != identity.get("tag_artifact_hash")
+        ):
+            _crossover_snapshot_fail(
+                f"crossover_parent_snapshot_{role}_identity_mismatch"
+            )
+        snapshot_hashes.append(str(item["snapshot_artifact_hash"]))
+
+    store = artifact_store or WorkerArtifactStore(
+        RESULTS_DIR / "workflow" / "artifacts"
+    )
+    try:
+        parent_a_dir = store.path_for(snapshot_hashes[0])
+        parent_b_dir = store.path_for(snapshot_hashes[1])
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_snapshot_store_mismatch:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    return {
+        "receipt": receipt,
+        "parent_a_artifact_hash": snapshot_hashes[0],
+        "parent_b_artifact_hash": snapshot_hashes[1],
+        "frozen_parent_a_dir": parent_a_dir,
+        "frozen_parent_b_dir": parent_b_dir,
+    }
+
+
+def capture_crossover_parent_snapshots(
+    parent_a_v,
+    parent_b_v,
+    target_v,
+    *,
+    checkpoint,
+    artifact_store=None,
+    checkpoint_reader=None,
+    repo_root=None,
+):
+    """Capture both exact published parents before compatibility dispatch."""
+
+    from bot_artifact import hash_path
+    from checkpoint_schema import live_checkpoint_parent_authority_errors
+    from crossover_projection import checkpoint_digest
+    from evolution_infra import read_pipeline_checkpoint
+    from worker_workflow import WorkerArtifactStore
+
+    subject_errors = _crossover_checkpoint_subject_errors(
+        checkpoint,
+        parent_a_v=parent_a_v,
+        parent_b_v=parent_b_v,
+        target_v=target_v,
+    )
+    if subject_errors:
+        _crossover_snapshot_fail(subject_errors[0])
+    reader = checkpoint_reader or read_pipeline_checkpoint
+    expected_checkpoint_digest = checkpoint_digest(checkpoint)
+
+    def _current_checkpoint_matches(label):
+        try:
+            current = reader()
+        except Exception as exc:
+            _crossover_snapshot_fail(
+                f"crossover_parent_checkpoint_{label}_read_failed:"
+                f"{type(exc).__name__}"
+            )
+        if checkpoint_digest(current) != expected_checkpoint_digest:
+            _crossover_snapshot_fail(
+                f"crossover_parent_checkpoint_{label}_drift"
+            )
+
+    def _live_authority_errors():
+        return live_checkpoint_parent_authority_errors(
+            checkpoint,
+            repo_root=(repo_root or Path(__file__).resolve().parents[2]),
+        )
+
+    _current_checkpoint_matches("before_capture")
+    live_errors = _live_authority_errors()
+    if live_errors:
+        _crossover_snapshot_fail(live_errors[0])
+
+    identities = checkpoint["epoch_binding"]["published_parent_identities"]
+    live_dirs = (get_bot_dir(parent_a_v), get_bot_dir(parent_b_v))
+    expected_hashes = tuple(
+        str(identity.get("tag_artifact_hash") or "") for identity in identities
+    )
+    try:
+        before_hashes = tuple(hash_path(path) for path in live_dirs)
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_snapshot_pre_capture_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    if before_hashes != expected_hashes:
+        _crossover_snapshot_fail("crossover_parent_snapshot_pre_capture_drift")
+
+    store = artifact_store or WorkerArtifactStore(
+        RESULTS_DIR / "workflow" / "artifacts"
+    )
+    try:
+        snapshot_hashes = tuple(store.capture(path) for path in live_dirs)
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_snapshot_capture_failed:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    if snapshot_hashes != expected_hashes:
+        _crossover_snapshot_fail("crossover_parent_snapshot_capture_hash_mismatch")
+
+    # A mutation after capture must not be hidden by the now-safe immutable
+    # snapshots: re-open the complete publication authority and live artifact
+    # identities once more before any provider can run.
+    live_errors = _live_authority_errors()
+    if live_errors:
+        _crossover_snapshot_fail(live_errors[0])
+    try:
+        after_hashes = tuple(hash_path(path) for path in live_dirs)
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_snapshot_post_capture_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    if after_hashes != expected_hashes:
+        _crossover_snapshot_fail("crossover_parent_snapshot_post_capture_drift")
+    _current_checkpoint_matches("after_capture")
+
+    parent_entries = []
+    for role, version, identity, snapshot_hash in zip(
+        ("parent_a", "parent_b"),
+        (int(parent_a_v), int(parent_b_v)),
+        identities,
+        snapshot_hashes,
+    ):
+        parent_entries.append({
+            "role": role,
+            "version": version,
+            "snapshot_artifact_hash": snapshot_hash,
+            "publication_identity": identity,
+            "publication_identity_digest": _crossover_snapshot_digest(identity),
+        })
+    body = {
+        "schema_version": 1,
+        "kind": "crossover-published-parent-snapshots-v1",
+        "target_v": int(target_v),
+        "parent_a_v": int(parent_a_v),
+        "parent_b_v": int(parent_b_v),
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "checkpoint_revision": checkpoint["checkpoint_revision"],
+        "checkpoint_stage": checkpoint["stage"],
+        "checkpoint_digest": expected_checkpoint_digest,
+        "epoch_binding_digest": checkpoint["epoch_binding"]["binding_digest"],
+        "parents": parent_entries,
+    }
+    receipt = {**body, "receipt_digest": _crossover_snapshot_digest(body)}
+    return resolve_crossover_parent_snapshots(
+        receipt,
+        checkpoint=checkpoint,
+        parent_a_v=parent_a_v,
+        parent_b_v=parent_b_v,
+        target_v=target_v,
+        artifact_store=store,
+    )
+
+
+def revalidate_crossover_parent_capture(
+    snapshot_bundle,
+    *,
+    checkpoint,
+    checkpoint_reader=None,
+    repo_root=None,
+):
+    """Recheck live parent authority immediately before compatibility dispatch."""
+
+    from bot_artifact import hash_path
+    from checkpoint_schema import live_checkpoint_parent_authority_errors
+    from crossover_projection import checkpoint_digest
+    from evolution_infra import read_pipeline_checkpoint
+
+    if not isinstance(snapshot_bundle, dict):
+        _crossover_snapshot_fail("crossover_parent_snapshot_bundle_invalid")
+    receipt = snapshot_bundle.get("receipt")
+    if not isinstance(receipt, dict):
+        _crossover_snapshot_fail("crossover_parent_snapshot_receipt_missing")
+    reader = checkpoint_reader or read_pipeline_checkpoint
+    try:
+        current = reader()
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_checkpoint_pre_dispatch_read_failed:"
+            f"{type(exc).__name__}"
+        )
+    if checkpoint_digest(current) != checkpoint_digest(checkpoint):
+        _crossover_snapshot_fail(
+            "crossover_parent_checkpoint_pre_dispatch_drift"
+        )
+    authority_errors = live_checkpoint_parent_authority_errors(
+        checkpoint,
+        repo_root=(repo_root or Path(__file__).resolve().parents[2]),
+    )
+    if authority_errors:
+        _crossover_snapshot_fail(authority_errors[0])
+    expected_hashes = tuple(
+        str(item.get("snapshot_artifact_hash") or "")
+        for item in receipt.get("parents") or []
+    )
+    try:
+        live_hashes = (
+            hash_path(get_bot_dir(receipt["parent_a_v"])),
+            hash_path(get_bot_dir(receipt["parent_b_v"])),
+        )
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_snapshot_pre_dispatch_live_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+    if live_hashes != expected_hashes:
+        _crossover_snapshot_fail(
+            "crossover_parent_snapshot_pre_dispatch_live_drift"
+        )
+
+
+def frozen_crossover_parent_architecture(snapshot_bundle):
+    """Derive compatibility/synthesis architecture only from frozen parents."""
+
+    from national_capability_contract import evaluate_national_capabilities
+    from runtime_architecture_policy import build_architecture_policy
+
+    if not isinstance(snapshot_bundle, dict):
+        _crossover_snapshot_fail("crossover_parent_snapshot_bundle_invalid")
+    parent_a_dir = Path(snapshot_bundle.get("frozen_parent_a_dir") or "")
+    parent_b_dir = Path(snapshot_bundle.get("frozen_parent_b_dir") or "")
+    try:
+        parent_a_capabilities = evaluate_national_capabilities(parent_a_dir)
+        parent_b_capabilities = evaluate_national_capabilities(parent_b_dir)
+        architecture_policy = build_architecture_policy(
+            parent_a_dir,
+            source_capabilities=parent_a_capabilities,
+        )
+    except Exception as exc:
+        _crossover_snapshot_fail(
+            "crossover_parent_frozen_architecture_failed:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+
+    def _compact(payload):
+        return {
+            "detector_version": payload.get("detector_version"),
+            "checks": {
+                item.get("check_id"): bool(item.get("passed"))
+                for item in payload.get("checks") or []
+                if item.get("check_id")
+            },
+            "decision_path_risks": {
+                key: (payload.get("decision_path_risks") or {}).get(key, [])[:5]
+                for key in ("external_io", "history_scans", "large_runtime_tables")
+            },
+        }
+
+    return {
+        "architecture_policy": architecture_policy,
+        "capability_context": {
+            bot_name(int(snapshot_bundle["receipt"]["parent_a_v"])): _compact(
+                parent_a_capabilities
+            ),
+            bot_name(int(snapshot_bundle["receipt"]["parent_b_v"])): _compact(
+                parent_b_capabilities
+            ),
+        },
+    }
 
 
 def _emit_audit_parse_failure(role, failure_mode, fields=None):
@@ -59,6 +966,39 @@ def _emit_audit_parse_failure(role, failure_mode, fields=None):
 # P0-1: Post-Master Plan Verification Audit
 # ──────────────────────────────────────────────
 
+
+def _strict_completion_commit_history(limit: int = 5) -> str:
+    """Return only exact commits behind published annotated strict tags.
+
+    Ordinary infrastructure commits, untagged candidate work, pre-epoch tags,
+    and mutable failure/review text are not direction evidence.  The published
+    resolver proves the complete strict ABI; this function independently keeps
+    only annotated tag objects and reads exactly their peeled commit bodies.
+    """
+
+    from evolution_infra import _git
+    from national_runtime_authority import strict_published_bot_names
+
+    versions = sorted({
+        version
+        for name in strict_published_bot_names()
+        if (version := parse_bot_version(name)) is not None
+        and version >= FIRST_STRICT_POLICY_VERSION
+    })
+    rows: list[str] = []
+    for version in versions[-max(0, int(limit)):]:
+        tag = bot_tag(version)
+        if _git("cat-file", "-t", f"refs/tags/{tag}", check=False).strip() != "tag":
+            continue
+        commit = _git("rev-parse", f"{tag}^{{commit}}", check=False).strip()
+        if len(commit) != 40:
+            continue
+        body = _git("show", "-s", "--format=%B", commit, check=False).strip()
+        if not body:
+            body = "(completion commit message unavailable)"
+        rows.append(f"v{version} [{tag}]\n{body[:1200]}")
+    return "\n\n".join(rows)
+
 async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
     """Verify Master plan coherence and alignment before Workers execute.
 
@@ -77,24 +1017,13 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
     }
 
     try:
-        template = (PROMPTS_DIR / "master_plan_audit.md").read_text()
-
-        # Load recent commit messages (last 5)
-        recent_commits = ""
+        # Completion history is an allowlist, not a generic Git window.  In
+        # particular, ``git log <latest-tag> -5`` also admits infrastructure
+        # commits and pre-publication attempts between completion identities.
         try:
-            from evolution_infra import find_latest_active_v
-            latest_v = find_latest_active_v()
-            if latest_v:
-                import subprocess
-                result = subprocess.run(
-                    ["git", "log", bot_tag(latest_v), "-5", "--format=%h %s"],
-                    capture_output=True, text=True, timeout=10,
-                    cwd=str(Path(__file__).resolve().parent.parent.parent),
-                )
-                if result.returncode == 0:
-                    recent_commits = result.stdout.strip()[:2000]
+            recent_commits = _strict_completion_commit_history(limit=5)
         except Exception:
-            pass
+            recent_commits = ""
 
         # Load direction audit from checkpoint
         direction_audit_text = "No direction audit available"
@@ -158,30 +1087,26 @@ async def _run_master_plan_audit(master_plan, source_v, ui, next_v=None):
                 "retry_recommended": True,
             }
 
-        prompt = substitute_template(template, {
-            "master_plan": json.dumps(master_plan, indent=2, ensure_ascii=False),
-            "recent_commits": recent_commits or "No recent commits",
-            "direction_audit": direction_audit_text,
-            "source_v": str(source_v),
-            "next_v": str(target_v),
-            "h2h_snapshot_contract": h2h_snapshot_contract,
-            "branch_from_note": (
-                f"This generation evolves FROM v{source_v}. The source ancestor is "
-                f"decided automatically by the system in prepare_generation; the Master "
-                f"plan MUST NOT set 'branch_from' (it is a dead, rejected field). Only "
-                f"flag a 'data staleness' problem if the plan's analysis references a "
-                f"version OTHER than v{source_v} as if it were the evolution base. Do NOT "
-                f"reject a plan just because it fixes bugs in v{source_v} that happen to "
-                f"already be fixed in a later version — evolution starts from v{source_v}, "
-                f"not the latest version."
-            ),
-        })
-
         log_version = target_v if isinstance(target_v, int) else source_v
         log_file = get_logs_dir(log_version) / "master_plan_audit_io.txt"
+        from llm_query import render_llm_prompt
+
+        rendered_prompt = render_llm_prompt(
+            "MASTER_PLAN_AUDIT",
+            producer=_render_master_plan_audit_provider_prompt,
+            renderer_inputs={
+                "source_v": int(source_v),
+                "next_v": int(target_v),
+                "master_plan": master_plan,
+                "recent_commits": str(recent_commits),
+                "direction_audit": direction_audit_text,
+                "h2h_snapshot_contract": h2h_snapshot_contract,
+            },
+        )
         output, _, _ = await run_claude_query(
-            prompt, [], ui,
+            rendered_prompt, [], ui,
             "MASTER_PLAN_AUDIT", log_file,
+            tools=[],
         )
 
         from llm_query import parse_json_output_with_mode
@@ -250,7 +1175,17 @@ def _cot_binary_metadata(label, present, content):
         f"{label}: {len(data)} bytes, sha256={hashlib.sha256(data).hexdigest()}"
     )
 
-async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, worker_snapshots, ui):
+async def _run_worker_cot_check(
+    task,
+    worker_idx,
+    next_v,
+    source_v,
+    next_dir,
+    worker_snapshots,
+    ui,
+    *,
+    worker_output_evidence=None,
+):
     """Check Worker output consistency: claimed changes vs actual diff.
 
     Returns WorkerCoTCheckResult dict.
@@ -267,15 +1202,16 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
     }
 
     try:
-        template = (PROMPTS_DIR / "worker_cot_check.md").read_text()
-
-        # Get worker output from log file
-        worker_log = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
-        worker_output = ""
-        if worker_log.exists():
-            worker_output = worker_log.read_text()[-5000:]
-
-        if not worker_output:
+        if worker_output_evidence is None:
+            return safe_default
+        fenced_output = _open_fenced_worker_output(
+            worker_output_evidence,
+            task=task,
+            worker_id=w_id,
+            next_v=next_v,
+            source_v=source_v,
+        )
+        if fenced_output["output_bytes"] == 0:
             return safe_default
 
         # Compute diff for this worker's target files using snapshots
@@ -337,18 +1273,30 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
 
         code_diff = "\n".join(diff_parts)[-6000:]
 
-        prompt = substitute_template(template, {
-            "worker_role": task.get("role", "Worker"),
-            "worker_task": task.get("worker_prompt", task.get("instruction", ""))[:2000],
-            "worker_output": worker_output[:3000],
-            "code_diff": code_diff,
-            "diff_metadata": "\n".join(diff_metadata) or "- no target file metadata",
-        })
-
         log_file = get_logs_dir(next_v) / f"worker_{w_id}_cot_audit_io.txt"
+        from llm_query import render_llm_prompt
+
+        cot_role = f"WORKER_COT_CHECK_{w_id}"
+        rendered_prompt = render_llm_prompt(
+            cot_role,
+            producer=_render_worker_cot_provider_prompt,
+            renderer_inputs={
+                "task": task,
+                "worker_role": task.get("role", "Worker"),
+                "worker_task": task.get(
+                    "worker_prompt", task.get("instruction", "")
+                ),
+                "worker_output_evidence": fenced_output,
+                "code_diff": code_diff,
+                "diff_metadata": (
+                    "\n".join(diff_metadata) or "- no target file metadata"
+                ),
+            },
+        )
         output, _, _ = await run_claude_query(
-            prompt, [], ui,
-            f"WORKER_COT_CHECK_{w_id}", log_file,
+            rendered_prompt, [], ui,
+            cot_role, log_file,
+            tools=[],
         )
 
         from llm_query import parse_json_output_with_mode
@@ -367,6 +1315,8 @@ async def _run_worker_cot_check(task, worker_idx, next_v, source_v, next_dir, wo
                                  {"worker_id": w_id, "discrepancies": data.get("discrepancies", [])[:3]})
             return data
 
+    except WorkerCoTEvidenceError:
+        raise
     except LLMAvailabilityBlocked:
         raise
     except Exception as e:
@@ -409,22 +1359,23 @@ async def _run_degeneration_diagnosis(source_v, recent_commits, strategy_changes
     }
 
     try:
-        template = (PROMPTS_DIR / "degeneration_diagnosis.md").read_text()
-
-        prompt = substitute_template(template, {
-            "generation_history": recent_commits[:3000],
-            "rating_curve": rating_curve[:2000],
-            "h2h_changes": (
-                "No per-opponent H2H delta rows were supplied to this advisory "
-                "role; opponent-specific attribution is unknown."
-            ),
-            "strategy_changes": strategy_changes[:3000],
-        })
-
         log_file = get_logs_dir(source_v) / "degeneration_diagnosis_io.txt"
+        from llm_query import render_llm_prompt
+
+        rendered_prompt = render_llm_prompt(
+            "DEGENERATION_DIAGNOSIS",
+            producer=_render_degeneration_provider_prompt,
+            renderer_inputs={
+                "source_v": int(source_v),
+                "recent_commits": str(recent_commits),
+                "strategy_changes": str(strategy_changes),
+                "rating_curve": str(rating_curve),
+            },
+        )
         output, _, _ = await run_claude_query(
-            prompt, [], ui,
+            rendered_prompt, [], ui,
             "DEGENERATION_DIAGNOSIS", log_file,
+            tools=[],
         )
 
         from llm_query import parse_json_output_with_mode
@@ -466,7 +1417,7 @@ async def _run_crossover_compatibility_audit(
     ui,
     *,
     target_v=None,
-    architecture_context=None,
+    authoritative_checkpoint=None,
 ):
     """Audit compatibility of two crossover parent bots.
 
@@ -482,24 +1433,53 @@ async def _run_crossover_compatibility_audit(
         "files_to_take_from_b": [],
     }
 
-    try:
-        template = (PROMPTS_DIR / "crossover_compatibility.md").read_text()
+    if target_v is None:
+        _crossover_snapshot_fail("crossover_parent_snapshot_target_missing")
+    if authoritative_checkpoint is None:
+        from evolution_infra import read_pipeline_checkpoint
 
+        authoritative_checkpoint = read_pipeline_checkpoint()
+    snapshot_bundle = capture_crossover_parent_snapshots(
+        parent_a_v,
+        parent_b_v,
+        target_v,
+        checkpoint=authoritative_checkpoint,
+    )
+    frozen_architecture = frozen_crossover_parent_architecture(snapshot_bundle)
+    snapshot_receipt = snapshot_bundle["receipt"]
+    system_result = {
+        "parent_snapshot_receipt": snapshot_receipt,
+        "frozen_architecture_policy": frozen_architecture["architecture_policy"],
+        "frozen_capability_context": frozen_architecture["capability_context"],
+    }
+
+    def _bound(result):
+        return {**result, **system_result}
+
+    try:
         # policy.py is the sole candidate-owned source artifact.  Runtime and
         # precompute bytes are system-owned and never crossover inputs.
-        core_files = ["policy.py"]
-        parent_a_code = {}
-        parent_b_code = {}
-        dir_a = get_bot_dir(parent_a_v)
-        dir_b = get_bot_dir(parent_b_v)
+        def _frozen_policy(root):
+            policy = Path(root) / "policy.py"
+            metadata = policy.lstat()
+            if not stat.S_ISREG(metadata.st_mode):
+                _crossover_snapshot_fail(
+                    "crossover_parent_snapshot_policy_not_regular"
+                )
+            return read_regular_file_bytes(
+                Path(root), policy, metadata
+            ).decode("utf-8", "strict")[:4000]
 
-        for fname in core_files:
-            fa = dir_a / fname
-            fb = dir_b / fname
-            if fa.exists():
-                parent_a_code[fname] = fa.read_text()[:4000]
-            if fb.exists():
-                parent_b_code[fname] = fb.read_text()[:4000]
+        parent_a_code = {
+            "policy.py": _frozen_policy(
+                snapshot_bundle["frozen_parent_a_dir"]
+            )
+        }
+        parent_b_code = {
+            "policy.py": _frozen_policy(
+                snapshot_bundle["frozen_parent_b_dir"]
+            )
+        }
 
         rating_a = "unknown"
         rating_b = "unknown"
@@ -536,25 +1516,52 @@ async def _run_crossover_compatibility_audit(
             except Exception as exc:
                 h2h_context = f"Stable H2H snapshot read failed: {type(exc).__name__}: {str(exc)[:160]}"
 
-        prompt = substitute_template(template, {
-            "parent_a_version": str(parent_a_v),
-            "parent_b_version": str(parent_b_v),
-            "parent_a_code": json.dumps(parent_a_code, indent=2, ensure_ascii=False)[:5000],
-            "parent_b_code": json.dumps(parent_b_code, indent=2, ensure_ascii=False)[:5000],
-            "parent_a_rating": str(rating_a),
-            "parent_b_rating": str(rating_b),
-            "h2h_a_vs_b": h2h_context,
-            "architecture_context": json.dumps(
-                architecture_context or {},
-                indent=2,
-                ensure_ascii=False,
-            )[:8000],
-        })
-
         log_file = get_logs_dir(parent_a_v) / f"crossover_compat_{parent_a_v}x{parent_b_v}_io.txt"
+        from llm_query import render_llm_prompt
+
+        compat_role = f"CROSSOVER_COMPAT_{parent_a_v}x{parent_b_v}"
+        # Detect corruption or replacement of either content-addressed tree
+        # after prompt material was read but before provider dispatch.
+        resolve_crossover_parent_snapshots(
+            snapshot_receipt,
+            checkpoint=authoritative_checkpoint,
+            parent_a_v=parent_a_v,
+            parent_b_v=parent_b_v,
+            target_v=target_v,
+        )
+        revalidate_crossover_parent_capture(
+            snapshot_bundle,
+            checkpoint=authoritative_checkpoint,
+        )
+        rendered_prompt = render_llm_prompt(
+            compat_role,
+            producer=_render_crossover_compat_provider_prompt,
+            renderer_inputs={
+                "parent_a_v": int(parent_a_v),
+                "parent_b_v": int(parent_b_v),
+                "parent_a_code": parent_a_code,
+                "parent_b_code": parent_b_code,
+                "parent_a_rating": str(rating_a),
+                "parent_b_rating": str(rating_b),
+                "h2h_context": h2h_context,
+                "architecture_context": {
+                    "architecture_policy": frozen_architecture[
+                        "architecture_policy"
+                    ],
+                    "parent_capabilities": frozen_architecture[
+                        "capability_context"
+                    ],
+                    "parent_snapshot_receipt_digest": snapshot_receipt[
+                        "receipt_digest"
+                    ],
+                },
+                "parent_snapshot_receipt": snapshot_receipt,
+            },
+        )
         output, _, _ = await run_claude_query(
-            prompt, [], ui,
-            f"CROSSOVER_COMPAT_{parent_a_v}x{parent_b_v}", log_file,
+            rendered_prompt, [], ui,
+            compat_role, log_file,
+            tools=[],
         )
 
         from llm_query import parse_json_output_with_mode
@@ -563,10 +1570,12 @@ async def _run_crossover_compatibility_audit(
             data, errors = validate_agent_output("crossover_compatibility", data)
             if errors:
                 log.warning("Crossover compatibility validation: %s", "; ".join(errors[:3]))
-                return safe_default
-            return data
+                return _bound(safe_default)
+            return _bound(data)
 
     except LLMAvailabilityBlocked:
+        raise
+    except CrossoverParentSnapshotError:
         raise
     except Exception as e:
         log.warning("Crossover compatibility audit failed: %s. Skipping.", e)
@@ -574,10 +1583,10 @@ async def _run_crossover_compatibility_audit(
             log_system_event("pipeline.crossover_compat_infra", "warn",
                              f"Crossover compat v{parent_a_v}xv{parent_b_v} LLM crashed (infra): {e}",
                              {"parent_a_v": parent_a_v, "parent_b_v": parent_b_v, "error": str(e)})
-            return {**safe_default, "llm_failed": True}
+            return _bound({**safe_default, "llm_failed": True})
 
     # Parse collapse: output failed to parse (NO_JSON/NO_FENCE/PARSE_ERROR) or an
     # exception skipped the parse. Previously this returned safe_default silently.
     _emit_audit_parse_failure("crossover_compatibility", locals().get("failure_mode", "EXCEPTION"),
                               {"parent_a_v": parent_a_v, "parent_b_v": parent_b_v})
-    return {**safe_default, "parse_failed": True}
+    return _bound({**safe_default, "parse_failed": True})

@@ -168,10 +168,12 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
     """The advisory degeneration role may not publish a selected generation."""
     import audit_agents
     import combined_analyst
+    import epoch_authority
     import evidence_snapshot
     import evolution_infra
     import generation_scheduler as scheduler
     import orchestrator_cost_policy
+    import post_publication_handoff
     import repo_state
     import tool_runtime_guard
     import workflow_profiles
@@ -190,6 +192,29 @@ def test_prepare_degeneration_availability_is_checkpoint_and_candidate_neutral(
         eval_wait_rd_threshold=90.0,
         eval_wait_rd_min_games=1,
         eval_wait_min_games=1,
+    )
+    epoch_projection = {
+        "initialized": True,
+        "current_v": 144,
+        "published_high_water": 144,
+        "abandoned_receipt_floor": 0,
+        "abandoned_receipt_head_digest": None,
+        "allocation_floor": 144,
+        "next_v": 145,
+        "next_v_authority": "paired_annotated_tag_high_water",
+        "active_bots": ["national_v143", "national_v144"],
+        "active_generation": None,
+        "ignored_checkpoint": None,
+    }
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: dict(epoch_projection),
     )
     monkeypatch.setattr(workflow_profiles, "get_workflow_profile", lambda: profile)
     monkeypatch.setattr(
@@ -639,6 +664,17 @@ def _tool_crossover_fixture(tmp_path, monkeypatch):
     parent_b = _write_strict_bot(tmp_path / "national_v149", completed=True)
     target = tmp_path / "national_v151"
     checkpoint = _checkpoint(151, 150, "selected", parent2_v=149)
+    checkpoint.update({
+        "checkpoint_schema_version": 2,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": {
+            "binding_digest": "e" * 64,
+            "published_parent_identities": [
+                {"tag_artifact_hash": hash_path(parent_a)},
+                {"tag_artifact_hash": hash_path(parent_b)},
+            ],
+        },
+    })
     checkpoint_file = tmp_path / "pipeline_state.json"
     before = _write_checkpoint_bytes(checkpoint_file, checkpoint)
 
@@ -783,19 +819,36 @@ def test_crossover_role_uses_isolated_workspace_before_availability_pause(
         encoding="utf-8",
     )
     checkpoint = _checkpoint(151, 150, "selected", parent2_v=149)
+    checkpoint.update({
+        "checkpoint_schema_version": 2,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": {
+            "binding_digest": "e" * 64,
+            "published_parent_identities": [
+                {"tag_artifact_hash": hash_path(parent_a)},
+                {"tag_artifact_hash": hash_path(parent_b)},
+            ],
+        },
+    })
     checkpoint_file = tmp_path / "pipeline_state.json"
     before = _write_checkpoint_bytes(checkpoint_file, checkpoint)
     target_before = hash_path(target)
     calls = 0
+    captured_prompt = ""
 
     def bot_dir(version):
         return {150: parent_a, 149: parent_b, 151: target}[int(version)]
 
-    async def unavailable(*_args, **kwargs):
-        nonlocal calls
+    async def unavailable(*args, **kwargs):
+        nonlocal calls, captured_prompt
         calls += 1
-        workspace = Path(kwargs["allowed_write_dir"])
-        (workspace / "policy.py").write_text("partial = True\n", encoding="utf-8")
+        captured_prompt = str(args[0])
+        write_scope = kwargs["allowed_write_dir"]
+        assert set(write_scope) == {"files"}
+        assert len(write_scope["files"]) == 1
+        policy_path = Path(kwargs["allowed_read_dirs"][-1]) / "policy.py"
+        assert write_scope == {"files": [policy_path]}
+        policy_path.write_text("partial = True\n", encoding="utf-8")
         raise _blocked("crossover")
 
     monkeypatch.setattr(agent_review, "PROMPTS_DIR", prompts)
@@ -819,8 +872,45 @@ def test_crossover_role_uses_isolated_workspace_before_availability_pause(
         lambda: SimpleNamespace(national_execution_mode="native_tcp"),
     )
 
+    import audit_agents
+    import checkpoint_schema
+    from worker_workflow import WorkerArtifactStore
+
+    monkeypatch.setattr(checkpoint_schema, "checkpoint_epoch_errors", lambda _c: [])
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "live_checkpoint_parent_authority_errors",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(audit_agents, "RESULTS_DIR", results)
+    monkeypatch.setattr(audit_agents, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(
+        audit_agents,
+        "frozen_crossover_parent_architecture",
+        lambda _bundle: {
+            "architecture_policy": {},
+            "capability_context": {},
+        },
+    )
+    snapshot_bundle = audit_agents.capture_crossover_parent_snapshots(
+        150,
+        149,
+        151,
+        checkpoint=checkpoint,
+        checkpoint_reader=lambda: checkpoint,
+        artifact_store=WorkerArtifactStore(results / "workflow" / "artifacts"),
+    )
+
     with pytest.raises(LLMAvailabilityBlocked):
-        asyncio.run(agent_review._run_crossover(150, 149, 151, _UI()))
+        asyncio.run(agent_review._run_crossover(
+            150,
+            149,
+            151,
+            _UI(),
+            compatibility={
+                "parent_snapshot_receipt": snapshot_bundle["receipt"],
+            },
+        ))
 
     assert calls == 1
     assert checkpoint_file.read_bytes() == before
@@ -828,6 +918,11 @@ def test_crossover_role_uses_isolated_workspace_before_availability_pause(
     assert checkpoint["generation_attempt"] == 0
     assert hash_path(target) == target_before
     assert "'value': 3" in (target / "policy.py").read_text(encoding="utf-8")
+    assert "provider-dispatch Runtime Path Contract" in captured_prompt
+    assert "exact lease policy.py write target" in captured_prompt
+    assert "system quality gate owns compilation" in captured_prompt
+    assert "py_compile" not in captured_prompt
+    assert "bots/national_v151/policy.py" not in captured_prompt
 
 
 def test_runtime_heartbeat_is_identity_bound_and_restart_stale(tmp_path, monkeypatch):

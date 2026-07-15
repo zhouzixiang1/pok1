@@ -610,12 +610,19 @@ def test_managed_bot_rejects_stdlib_shadow_before_consuming_endpoint(tmp_path):
 
 def test_executor_identity_and_real_probe_bind_the_executable_policy():
     identity = managed_executor_identity()
-    assert identity["schema"] == "pok-managed-executor-identity-v1"
+    assert identity["schema"] == "pok-managed-executor-identity-v2"
     assert identity["contract"]["host_root_mounted"] is False
     assert identity["contract"]["namespaces"] == list(_NAMESPACES)
     assert identity["contract"]["writable_outputs"] == (
         "named-new-file-bind-fd-only"
     )
+    assert identity["contract"]["managed_bot_sources"] == (
+        "content-bound-top-level-files-sealed-before-spawn"
+    )
+    assert identity["contract"]["managed_bot_source_mount"] == (
+        "sealed-memfd-ro-bind-data-only"
+    )
+    assert identity["contract"]["managed_bot_python_flags"] == ["-I", "-B"]
     for row in (
         identity["source"],
         identity["seccomp"],

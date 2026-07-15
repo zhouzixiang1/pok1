@@ -7,6 +7,8 @@ const stateLabels: Record<EpochState, string> = {
   reset_evidence_requires_recovery: "重置证据需要人工恢复",
   version_authority_requires_recovery: "版本权威需要人工恢复",
   epoch_authority_unavailable: "epoch 权威不可用",
+  runtime_reconciliation_in_progress: "运行时 reconciliation 正在进行",
+  publication_recovery_ready: "发布事务等待原位恢复",
   fresh_bootstrap_ready: "首个严格版本已就绪",
   strict_published: "严格国赛 epoch 已发布",
 };
@@ -16,6 +18,8 @@ const stateTone: Record<EpochState, string> = {
   reset_evidence_requires_recovery: "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/25",
   version_authority_requires_recovery: "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/25",
   epoch_authority_unavailable: "border-red-300 bg-red-50 dark:border-red-800 dark:bg-red-950/25",
+  runtime_reconciliation_in_progress: "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/25",
+  publication_recovery_ready: "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/25",
   fresh_bootstrap_ready: "border-blue-300 bg-blue-50 dark:border-blue-800 dark:bg-blue-950/25",
   strict_published: "border-emerald-300 bg-emerald-50 dark:border-emerald-800 dark:bg-emerald-950/25",
 };
@@ -81,8 +85,8 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
         <div className="mt-3 space-y-2 text-xs text-gray-600 dark:text-gray-300">
           {status.epoch_state === "reset_required" && (
             <p>
-              旧 checkpoint、abandoned floor、历史评分与未发布目录均不参与版本号、活跃池或强度证据。
-              一次性重置完成前，首个严格目标固定由数字高水位递增。
+              旧 checkpoint、abandoned floor、历史评分与未绑定目录不构成活跃池或强度证据。
+              版本号只由后端数字高水位和已验证 checkpoint/提交身份裁决；页面不会仅凭“未发布”断言编号仍可复用。
             </p>
           )}
           {status.epoch_state === "reset_evidence_requires_recovery" && (
@@ -100,6 +104,34 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
               后端无法验证 epoch 权威。所有启动和变更必须保持关闭，直到权威读取恢复。
             </p>
           )}
+          {status.epoch_state === "runtime_reconciliation_in_progress" && (
+            <div className="space-y-1 text-amber-800 dark:text-amber-300">
+              <p>
+                已存在持久化 reconciliation claim；它是进化、Daemon 与正式运行的启动屏障。
+                必须通过后端按 claim 种类给出的操作员命令恢复，不能手工删除 claim 后继续。
+              </p>
+              <p>
+                claim 类型：<span className="font-mono">{status.runtime_reconciliation_kind || "无法验证"}</span>
+                {status.runtime_reconciliation_claim_digest && (
+                  <> · 摘要 <span className="font-mono">{status.runtime_reconciliation_claim_digest.slice(0, 12)}…</span></>
+                )}
+              </p>
+              {!status.runtime_reconciliation_claim_valid && (
+                <p className="text-red-700 dark:text-red-300">
+                  claim 无法验证；后端仅允许人工检查，不会猜测或展示执行命令。
+                  {status.runtime_reconciliation_claim_issues.length > 0
+                    ? ` ${status.runtime_reconciliation_claim_issues.join("、")}`
+                    : ""}
+                </p>
+              )}
+            </div>
+          )}
+          {status.epoch_state === "publication_recovery_ready" && (
+            <p className="text-amber-800 dark:text-amber-300">
+              后端已证明仅缺一个 create-only 发布标签，且它绑定当前 publishing checkpoint、候选树与正式证书。
+              只允许原事务幂等补齐；不能新分配同一版本或启动另一代。
+            </p>
+          )}
           {status.epoch_state === "fresh_bootstrap_ready" && (
             <p>一次性重置 receipt 已验证；等待 v{nextVersion} 完成原生 TCP、本地门和正式 EXE 全量认证后发布。</p>
           )}
@@ -111,13 +143,14 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
 
           {debris.length > 0 && (
             <p className="rounded border border-amber-200 bg-white/60 px-2.5 py-2 text-amber-800 dark:border-amber-800 dark:bg-black/10 dark:text-amber-300">
-              未发布残骸：{debris.map((version) => `v${version}`).join("、")}。这些目录没有发布 tag/证书/池权限，不占版本号，也不能恢复成活跃代次。
+              未发布候选/残骸：{debris.map((version) => `v${version}`).join("、")}。它们没有发布 tag、证书或池权限；
+              其中是否存在已提交但未发布、因而已消耗编号的对象，必须服从后端版本权威，不能由此列表推断。
             </p>
           )}
 
           {status.ignored_checkpoint && (
             <p className="rounded border border-red-200 bg-white/60 px-2.5 py-2 text-red-700 dark:border-red-800 dark:bg-black/10 dark:text-red-300">
-              已忽略旧 checkpoint
+              当前 checkpoint/分配投影已隔离
               {status.ignored_checkpoint.next_v != null ? ` v${status.ignored_checkpoint.next_v}` : ""}：
               {status.ignored_checkpoint.issues.join("、") || status.ignored_checkpoint.reason}。
             </p>
@@ -137,9 +170,18 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
           {status.active_generation && (
             <p>
               权威活动代次：<span className="font-mono">v{status.active_generation.next_v}</span>
-              {status.active_generation.source_v != null && <> ← v{status.active_generation.source_v}</>}
+              {status.active_generation.source_v != null && <> · source_v=<span className="font-mono">v{status.active_generation.source_v}</span></>}
               <> · {status.active_generation.stage}</>
               <> · workflow <span className="font-mono">{status.active_generation.workflow_run_id || "—"}</span></>
+              {status.active_generation.recovery_kind === "recorded_abandon_checkpoint_finalize" && (
+                <> · 已记录 abandon receipt，等待完成 checkpoint/candidate 清理</>
+              )}
+              {status.active_generation.recovery_kind === "publication_reconciliation" && (
+                <> · 正在恢复同一发布事务</>
+              )}
+              {status.active_generation.next_v === 143 && status.active_generation.source_v === 142 && (
+                <> · v142 仅为数字高水位，不表示继承源 artifact</>
+              )}
             </p>
           )}
         </div>

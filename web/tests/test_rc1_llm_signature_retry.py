@@ -6,7 +6,7 @@ paths inherit the same handling as the initial query.
 """
 
 import pytest
-from claude_agent_sdk import ClaudeSDKError
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKError
 
 from core import llm_query
 
@@ -49,7 +49,7 @@ def test_retries_on_signature_error(monkeypatch):
 
     async def run():
         return await llm_query._run_stream_with_signature_retry(
-            "prompt", object(), "/tmp/none.log", None, "role")
+            "prompt", ClaudeAgentOptions(), "/tmp/none.log", None, "role")
 
     texts, cost_usd, usage = asyncio_run(run())
 
@@ -81,12 +81,57 @@ def test_reraises_on_non_signature_error(monkeypatch):
 
     async def run():
         return await llm_query._run_stream_with_signature_retry(
-            "prompt", object(), "/tmp/none.log", None, "role")
+            "prompt", ClaudeAgentOptions(), "/tmp/none.log", None, "role")
 
     with pytest.raises(ClaudeSDKError):
         asyncio_run(run())
 
     assert call_count["n"] == 1  # no retry on non-signature error
+
+
+def test_signature_retries_share_one_total_wall_clock_deadline(monkeypatch):
+    """Backoff and fresh SDK attempts cannot each reset total_timeout."""
+
+    call_count = {"n": 0}
+
+    async def fake_process_stream(query_gen, log_file_path, ui, role_name):
+        del query_gen, log_file_path, ui, role_name
+        call_count["n"] += 1
+        await llm_query.asyncio.sleep(0.02)
+        raise ClaudeSDKError(
+            "Missing required field in assistant message: signature"
+        )
+
+    def fake_claude_query(*_args, **_kwargs):
+        return _make_fake_generator()
+
+    events = []
+    monkeypatch.setattr(llm_query, "claude_query", fake_claude_query)
+    monkeypatch.setattr(llm_query, "_process_stream", fake_process_stream)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "0.05")
+
+    async def run():
+        return await llm_query._run_stream_with_signature_retry(
+            "prompt", ClaudeAgentOptions(), "/tmp/none.log", None, "MASTER"
+        )
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio_run(run())
+
+    assert exc.value.timeout_kind == "total"
+    assert call_count["n"] == 1
+    total_event = next(
+        event for event in events
+        if event[0] == "pipeline.llm_role_total_timeout"
+    )
+    assert total_event[3]["retry_phase"] == "sdk_signature_backoff"
 
 
 def asyncio_run(coro):

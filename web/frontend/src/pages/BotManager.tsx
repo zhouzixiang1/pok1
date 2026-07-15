@@ -25,6 +25,10 @@ interface CertificationView {
   tone: string;
 }
 
+const isDigest = (value: unknown): value is string => (
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+);
+
 function certificationView(certification?: OfficialCertification): CertificationView {
   if (!certification) {
     return {
@@ -38,15 +42,46 @@ function certificationView(certification?: OfficialCertification): Certification
   // The signed certificate, deterministic receipt, candidate content, and
   // verdict ledger are validated server-side.  Browser code must not create a
   // second, inevitably weaker certification oracle from raw JSON fields.
+  const ledgerEntry = certification.official_verdict_ledger_entry;
   const formal = certification.formal_certified === true
-    && certification.formal_authority === "signed_full_v5";
+    && certification.formal_authority === "signed_full_v5"
+    && certification.mode === "full"
+    && certification.policy_id === "official-full-v5"
+    && isDigest(certification.certificate_digest)
+    && isDigest(certification.certificate_signature_sha256)
+    && isDigest(certification.published_attestation_digest)
+    && isDigest(ledgerEntry?.entry_digest)
+    && ledgerEntry?.certificate_digest === certification.certificate_digest
+    && ledgerEntry?.policy_id === certification.policy_id
+    && ledgerEntry?.outcome === "official-certified";
 
   if (formal) {
+    const firstStrictControl = certification.certification_profile === "first_strict_control_v1"
+      && certification.opponent_authority === "system_control"
+      && certification.strength_evidence_weight === 0
+      && certification.strategy_evidence_weight === 0;
+    const normalFull = certification.certification_profile === "official-full-v5"
+      && certification.opponent_authority === "strict_published_pool"
+      && certification.formal_summary?.self_play_rounds === 5
+      && certification.formal_summary.opponent_rounds === 3
+      && certification.formal_summary.target_hands === 70
+      && certification.strength_evidence_weight === 0
+      && certification.strategy_evidence_weight === 0;
+    if (firstStrictControl || normalFull) {
+      return {
+        formal: true,
+        label: firstStrictControl ? "首代系统控制证书通过" : "正式认证通过",
+        detail: firstStrictControl
+          ? "first_strict_control_v1：system-control 仅证明官方协议合规；强度与策略证据权重均为 0。"
+          : "signed official-full-v5：5 轮自对弈 + 3 轮合格 strict 对手，每轮 70 手。",
+        tone: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300",
+      };
+    }
     return {
-      formal: true,
-      label: "正式认证通过",
-      detail: "signed official-full-v5：5 轮自对弈 + 3 轮合格对手，每轮 70 手。",
-      tone: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300",
+      formal: false,
+      label: "正式证书身份投影不完整",
+      detail: "formal_certified 存在，但 profile、对手权威、5/3/70 或零权重字段不匹配；不显示为正式通过，也不猜测为普通 5+3。",
+      tone: "border-red-200 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300",
     };
   }
 
@@ -174,6 +209,13 @@ function BotCard({
   const certification = detail?.official_certification ?? bot.official_certification;
   const certView = certificationView(certification);
   const formalSummary = certification?.formal_summary;
+  const ledgerEntry = certification?.official_verdict_ledger_entry;
+  const ledgerIdentity = ledgerEntry && (
+    ledgerEntry.entry_digest
+    ?? ledgerEntry.ledger_entry_digest
+    ?? ledgerEntry.digest
+    ?? ledgerEntry.sequence
+  );
   const opponents = useMemo(() => {
     const rows: Array<{ name: string; wins: number; losses: number; draws: number; games: number; wr: number }> = [];
     for (const [key, value] of Object.entries(h2hData)) {
@@ -240,8 +282,14 @@ function BotCard({
                     <span>policy: {certification.policy_id ?? "—"}</span>
                     <span>schema: {certification.certificate_schema_version ?? "—"}</span>
                     <span>rounds: {formalSummary?.self_play_rounds ?? "—"}+{formalSummary?.opponent_rounds ?? "—"} × {formalSummary?.target_hands ?? "—"} hands</span>
+                    <span>profile: {certification.certification_profile ?? "权威投影不可用"}</span>
+                    <span>opponent authority: {certification.opponent_authority ?? "权威投影不可用"}</span>
+                    <span>strength weight: {certification.strength_evidence_weight ?? "不可用"}</span>
+                    <span>strategy weight: {certification.strategy_evidence_weight ?? "不可用"}</span>
                     <span className="break-all sm:col-span-2">certificate: {certification.certificate_digest ?? "—"}</span>
                     <span className="break-all sm:col-span-2">signature sha256: {certification.certificate_signature_sha256 ?? "—"}</span>
+                    <span className="break-all sm:col-span-2">published attestation: {certification.published_attestation_digest ?? "权威投影不可用"}</span>
+                    <span className="break-all sm:col-span-2">verdict-ledger identity: {ledgerIdentity != null ? String(ledgerIdentity) : "权威投影不可用"}</span>
                   </div>
                 )}
                 {(certification?.issues?.length ?? 0) > 0 && (

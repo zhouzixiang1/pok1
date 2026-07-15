@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from bot_artifact import canonical_digest, hash_path
 from bot_namespace import (
     NATIONAL_RUNTIME_MANIFEST,
@@ -43,6 +45,44 @@ def _write_strict_bot(root: Path, version: int) -> Path:
     return bot
 
 
+def test_cancel_uses_the_checkpoint_data_sidecar(monkeypatch):
+    import fcntl
+    from contextlib import contextmanager
+
+    import evolution_infra
+    import server.routes.certification as route
+
+    observed = []
+
+    @contextmanager
+    def guard(path, *, lock_type):
+        observed.append((Path(path), lock_type))
+        yield
+
+    monkeypatch.setattr(evolution_infra, "_locked_state_sidecar", guard)
+    monkeypatch.setattr(
+        route,
+        "_projection",
+        lambda: {
+            "initialized": False,
+            "reset_receipt_valid": False,
+            "active_generation": None,
+        },
+    )
+
+    result = route._cancel_exact_job_sync(
+        "job-1",
+        workflow_run_id="generation:143:workflow-v1",
+        candidate_version=143,
+        checkpoint_revision=4,
+    )
+
+    assert result == {"state": "identity_mismatch", "job_id": "job-1"}
+    assert observed == [
+        (Path(evolution_infra.PIPELINE_STATE_FILE), fcntl.LOCK_EX)
+    ]
+
+
 def _projection(
     *,
     version: int = 144,
@@ -75,6 +115,18 @@ def _job_fixture(
 
     candidate = _write_strict_bot(tmp_path, 144)
     opponent = _write_strict_bot(tmp_path, 143)
+    eligibility_receipt = {
+        "schema_version": 1,
+        "kind": "official_full_certificate",
+        "role": "official_opponent",
+        "bot": opponent.name,
+        "artifact_hash": hash_path(opponent),
+        "policy_id": "official-full-v5",
+        "certificate_digest": "c" * 64,
+    }
+    eligibility_receipt["receipt_digest"] = canonical_digest(
+        eligibility_receipt
+    )
     selection = {
         "selected": True,
         "candidate": str(candidate.resolve()),
@@ -86,7 +138,7 @@ def _job_fixture(
             "tag_object": "a" * 40,
             "eligible": True,
             "reason": "official_certified",
-            "eligibility_receipt": {"receipt_digest": "b" * 64},
+            "eligibility_receipt": eligibility_receipt,
         },
     }
     spec = build_spec(mode, candidate, opponent=opponent)
@@ -129,6 +181,20 @@ def _job_fixture(
     )
     monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(tmp_path / "official-jobs"))
     monkeypatch.setattr(route, "BOTS_DIR", tmp_path / "bots")
+    monkeypatch.setattr(route, "published_bot_identity", lambda _path: {
+        "published": True,
+        "label": opponent.name,
+        "path": str(opponent.resolve()),
+        "artifact_hash": hash_path(opponent),
+        "tag": "national-bot-v143",
+        "tag_object": "a" * 40,
+        "issues": [],
+    })
+    monkeypatch.setattr(route, "official_opponent_eligibility", lambda _path: {
+        "eligible": True,
+        "reason": "official_certified",
+        "eligibility_receipt": eligibility_receipt,
+    })
 
     identity = request["identity"]
     attached = {
@@ -557,6 +623,98 @@ def test_smoke_status_is_projected_as_diagnostic_not_formal(
     }
 
 
+def test_certification_route_replaces_self_reported_profile_with_signed_projection(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from server.routes import certification as route
+
+    candidate = tmp_path / "bots" / "national_v144"
+    candidate.mkdir(parents=True)
+    monkeypatch.setattr(
+        route,
+        "_visible_subject",
+        lambda _version: (
+            candidate,
+            "strict_published",
+            _projection(),
+            None,
+        ),
+    )
+    monkeypatch.setattr(route, "status_payload", lambda _candidate: {
+        "status": "official-certified",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certification_profile": "FORGED",
+        "opponent_authority": "archive",
+        "strength_evidence_weight": 1,
+        "strategy_evidence_weight": 1,
+    })
+    monkeypatch.setattr(route, "official_full_certified", lambda *_a, **_k: True)
+    canonical = {
+        "certification_profile": "official-full-v5",
+        "opponent_authority": "strict_published_pool",
+        "strength_evidence_weight": 0,
+        "strategy_evidence_weight": 0,
+        "formal_summary": {
+            "self_play_rounds": 5,
+            "opponent_rounds": 3,
+            "target_hands": 70,
+            "rounds_requested": 8,
+            "rounds_run": 8,
+            "passed_rounds": 8,
+            "failed_rounds": 0,
+        },
+    }
+    monkeypatch.setattr(
+        route,
+        "official_certification_profile_projection",
+        lambda *_a, **_k: canonical,
+    )
+
+    payload = client.get("/api/certification/144").json()
+
+    assert payload["formal_certified"] is True
+    assert {key: payload[key] for key in canonical} == canonical
+
+
+def test_certification_route_removes_profile_when_signed_projection_is_unavailable(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from server.routes import certification as route
+
+    candidate = tmp_path / "bots" / "national_v144"
+    candidate.mkdir(parents=True)
+    monkeypatch.setattr(
+        route,
+        "_visible_subject",
+        lambda _version: (candidate, "strict_published", _projection(), None),
+    )
+    monkeypatch.setattr(route, "status_payload", lambda _candidate: {
+        "status": "official-certified",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certification_profile": "FORGED",
+        "opponent_authority": "archive",
+    })
+    monkeypatch.setattr(route, "official_full_certified", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        route,
+        "official_certification_profile_projection",
+        lambda *_a, **_k: {},
+    )
+
+    payload = client.get("/api/certification/144").json()
+
+    assert payload["formal_certified"] is False
+    assert payload["formal_authority"] == "none"
+    assert "certification_profile" not in payload
+    assert "opponent_authority" not in payload
+
+
 def test_exact_full_job_projects_epoch_workflow_and_candidate(
     client, monkeypatch, tmp_path
 ):
@@ -581,6 +739,290 @@ def test_exact_full_job_projects_epoch_workflow_and_candidate(
     assert payload["candidate_version"] == 144
     assert payload["formal_mode"] == "full"
     assert payload["formal_policy_id"] == "official-full-v5"
+    assert payload["certification_profile"] == "official-full-v5"
+    assert payload["opponent_authority"] == "strict_published_pool"
+    assert payload["formal_profile"] == {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+    }
+    assert payload["strength_evidence_weight"] == 0
+    assert payload["strategy_evidence_weight"] == 0
+
+
+def test_certification_get_routes_isolate_complete_read_projections(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    from server.routes import certification as route
+
+    request, context, _state = _job_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(route, "_official_prerequisite_issues", lambda _ctx: [])
+    monkeypatch.setattr(route, "_projection", lambda: context["projection"])
+    monkeypatch.setattr(
+        route,
+        "_current_candidate_context",
+        lambda _projection=None: context,
+    )
+    monkeypatch.setattr(
+        route,
+        "_visible_subject",
+        lambda _version: (
+            context["candidate"],
+            "active_candidate",
+            context["projection"],
+            context["workflow_run_id"],
+        ),
+    )
+    monkeypatch.setattr(route, "status_payload", lambda _candidate: {
+        "status": "official-uncertified",
+        "mode": None,
+        "policy_id": None,
+        "issues": [],
+    })
+    expected_jobs = route._jobs_payload()
+    expected_job = route._certification_job_payload(request["job_id"])
+    expected_status = route._certification_payload(144)
+    calls = []
+
+    async def isolated(function, *args, thread_name_prefix, **kwargs):
+        calls.append((function.__name__, args, thread_name_prefix))
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(route, "run_blocking_isolated", isolated)
+
+    jobs_response = client.get("/api/certification/jobs")
+    job_response = client.get(f"/api/certification/jobs/{request['job_id']}")
+    status_response = client.get("/api/certification/144")
+    missing_response = client.get(f"/api/certification/jobs/{'f' * 64}")
+    monkeypatch.setattr(
+        route,
+        "_visible_subject",
+        lambda _version: (_ for _ in ()).throw(
+            route.HTTPException(status_code=404, detail="Bot v999 not found")
+        ),
+    )
+    missing_status_response = client.get("/api/certification/999")
+
+    assert jobs_response.json() == expected_jobs
+    assert job_response.json() == expected_job
+    assert status_response.json() == expected_status
+    assert missing_response.status_code == 404
+    assert missing_status_response.status_code == 404
+    assert missing_status_response.json()["detail"] == "Bot v999 not found"
+    assert calls == [
+        ("_jobs_payload", (), "official-certification-jobs"),
+        (
+            "_certification_job_payload",
+            (request["job_id"],),
+            "official-certification-job",
+        ),
+        ("_certification_payload", (144,), "official-certification-status"),
+        (
+            "_certification_job_payload",
+            ("f" * 64,),
+            "official-certification-job",
+        ),
+        ("_certification_payload", (999,), "official-certification-status"),
+    ]
+
+
+def test_normal_job_requires_live_published_opponent_certificate_and_receipt(
+    monkeypatch,
+    tmp_path,
+):
+    from server.routes import certification as route
+
+    request, context, _state = _job_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(route, "_official_prerequisite_issues", lambda _ctx: [])
+
+    assert route._attached_job_view(context) is not None
+
+    monkeypatch.setattr(route, "published_bot_identity", lambda _path: {
+        "published": False,
+        "label": "national_v143",
+        "path": request["spec"]["opponent"],
+        "artifact_hash": request["identity"]["opponent_hash"],
+        "tag": "national-bot-v143",
+        "tag_object": "a" * 40,
+        "issues": ["missing_annotated_completion_tag"],
+    })
+    assert route._attached_job_view(context) is None
+
+    opponent = request["opponent_selection"]["opponent"]
+    monkeypatch.setattr(route, "published_bot_identity", lambda _path: {
+        "published": True,
+        "label": opponent["bot"],
+        "path": opponent["path"],
+        "artifact_hash": opponent["artifact_hash"],
+        "tag": opponent["tag"],
+        "tag_object": opponent["tag_object"],
+        "issues": [],
+    })
+    monkeypatch.setattr(route, "official_opponent_eligibility", lambda _path: {
+        "eligible": False,
+        "reason": "official_full_certificate_required",
+        "eligibility_receipt": request["opponent_selection"]["opponent"][
+            "eligibility_receipt"
+        ],
+    })
+    assert route._attached_job_view(context) is None
+
+    receipt = json.loads(json.dumps(
+        request["opponent_selection"]["opponent"]["eligibility_receipt"]
+    ))
+    receipt["certificate_digest"] = "e" * 64
+    receipt["receipt_digest"] = canonical_digest({
+        key: value for key, value in receipt.items() if key != "receipt_digest"
+    })
+    monkeypatch.setattr(route, "official_opponent_eligibility", lambda _path: {
+        "eligible": True,
+        "reason": "official_certified",
+        "eligibility_receipt": receipt,
+    })
+    assert route._attached_job_view(context) is None
+
+
+def test_normal_noncompleted_job_rejects_injected_status(monkeypatch, tmp_path):
+    from server.routes import certification as route
+
+    request, context, _state = _job_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(route, "_official_prerequisite_issues", lambda _ctx: [])
+    state_path = tmp_path / "official-jobs" / request["job_id"] / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["status"] = {
+        "status": "official-certified",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    assert route._attached_job_view(context) is None
+
+
+def test_normal_completed_status_is_exactly_bound_to_request_and_selection(
+    monkeypatch,
+    tmp_path,
+):
+    from official_job_envelope import build_job_envelope
+    from server.routes import certification as route
+
+    request, context, _state = _job_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(route, "_official_prerequisite_issues", lambda _ctx: [])
+    monkeypatch.setattr(route, "authoritative_verdict_status_issues", lambda _status: [])
+    directory = tmp_path / "official-jobs" / request["job_id"]
+    envelope = build_job_envelope(
+        request,
+        attempt=1,
+        attempt_nonce="a" * 64,
+        suite_dir=directory / "suite_attempt_01",
+    )
+    status = {
+        "status": "official-inconclusive",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certification_identity": request["identity"],
+        "opponent_selection": request["opponent_selection"],
+        "official_job_envelope": envelope,
+    }
+    _write_completed_result(directory, request, status)
+    assert route._attached_job_view(context) is not None
+
+    drifted = json.loads(json.dumps(status))
+    drifted["certification_identity"]["identity_digest"] = "f" * 64
+    _write_completed_result(directory, request, drifted)
+    assert route._attached_job_view(context) is None
+
+    drifted = json.loads(json.dumps(status))
+    drifted["opponent_selection"]["opponent"]["tag_object"] = "b" * 40
+    _write_completed_result(directory, request, drifted)
+    assert route._attached_job_view(context) is None
+
+    drifted = json.loads(json.dumps(status))
+    drifted["official_job_envelope"]["certification_identity_digest"] = "0" * 64
+    drifted["official_job_envelope"]["envelope_digest"] = canonical_digest({
+        key: value
+        for key, value in drifted["official_job_envelope"].items()
+        if key != "envelope_digest"
+    })
+    _write_completed_result(directory, request, drifted)
+    assert route._attached_job_view(context) is None
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ("official_certifying", "official_failed", "official_inconclusive", "publishing"),
+)
+def test_normal_attached_job_is_visible_in_all_owning_checkpoint_stages(
+    client,
+    monkeypatch,
+    tmp_path,
+    stage,
+):
+    from server.routes import certification as route
+    import tool_commit
+
+    request, context, _state = _job_fixture(tmp_path, monkeypatch)
+    context["checkpoint"]["stage"] = stage
+    context["projection"]["active_generation"]["stage"] = stage
+    monkeypatch.setattr(
+        tool_commit,
+        "validate_commit_gate_ledger",
+        lambda *_a, **_k: {
+            "ok": True,
+            "missing_gates": [],
+            "failed_gates": [],
+            "current_code_fingerprint": context["candidate_hash"],
+        },
+    )
+    monkeypatch.setattr(route, "_projection", lambda: context["projection"])
+    monkeypatch.setattr(
+        route,
+        "_current_candidate_context",
+        lambda _projection=None: context,
+    )
+
+    payload = client.get("/api/certification/jobs").json()
+
+    assert [row["job_id"] for row in payload["jobs"]] == [request["job_id"]]
+
+
+@pytest.mark.parametrize(
+    ("self_play_rounds", "opponent_rounds", "target_hands"),
+    ((4, 4, 70), (5, 3, 69)),
+)
+def test_normal_job_rejects_digest_consistent_nonformal_profile(
+    monkeypatch,
+    tmp_path,
+    self_play_rounds,
+    opponent_rounds,
+    target_hands,
+):
+    from server.routes import certification as route
+
+    request, context, _state = _job_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(route, "_official_prerequisite_issues", lambda _ctx: [])
+    request = json.loads(json.dumps(request))
+    request["spec"].update({
+        "self_play_rounds": self_play_rounds,
+        "opponent_rounds": opponent_rounds,
+        "target_hands": target_hands,
+    })
+    request["identity"]["spec"] = request["spec"]
+    request["identity"]["identity_digest"] = canonical_digest({
+        key: value
+        for key, value in request["identity"].items()
+        if key != "identity_digest"
+    })
+    request = _rekey_request(request)
+    _write_manager_job(tmp_path / "official-jobs", request)
+    context["checkpoint"]["official_job"].update({
+        "job_id": request["job_id"],
+        "identity_digest": request["identity"]["identity_digest"],
+    })
+
+    assert route._attached_job_view(context) is None
 
 
 def test_normal_full_job_with_corrupt_progress_is_not_visible(
@@ -742,10 +1184,100 @@ def test_exact_manual_v143_bootstrap_job_is_read_only_visible(
     assert payload["candidate_version"] == 143
     assert payload["workflow_run_id"] == context["workflow_run_id"]
     assert payload["formal_authority"] == "operator_bootstrap_full_v5_job"
+    assert payload["certification_profile"] == "first_strict_control_v1"
+    assert payload["opponent_authority"] == "system_control"
+    assert payload["formal_profile"] == {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+    }
+    assert payload["strength_evidence_weight"] == 0
+    assert payload["strategy_evidence_weight"] == 0
     assert payload["read_only"] is True
     assert payload["cancel_allowed"] is False
+    transition = jobs_response.json()["operator_transition"]
+    assert transition["state"] == "bootstrap_running"
+    assert transition["job_id"] == request["job_id"]
+    assert transition["command"] is None
     # Cancellation deliberately resolves only checkpoint-attached normal jobs.
     assert cancel.status_code == 404
+
+
+def test_bootstrap_transition_requires_operator_start_when_no_job_exists(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    request, _context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
+    directory = root / request["job_id"]
+    for path in directory.iterdir():
+        path.unlink()
+    directory.rmdir()
+
+    payload = client.get("/api/certification/jobs").json()
+
+    assert payload["jobs"] == []
+    transition = payload["operator_transition"]
+    assert transition["state"] == "bootstrap_required"
+    assert transition.get("job_id") is None
+    assert "bootstrap-first-strict" in transition["command"]
+    assert "--force" not in transition["command"]
+
+
+@pytest.mark.parametrize("corruption", ("invalid_digest", "partial_request"))
+def test_malformed_bootstrap_attempt_never_reopens_nonforce_start(
+    client,
+    monkeypatch,
+    tmp_path,
+    corruption,
+):
+    request, _context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
+    request_path = root / request["job_id"] / "request.json"
+    if corruption == "invalid_digest":
+        payload = json.loads(request_path.read_text(encoding="utf-8"))
+        payload["manager_sha256"] = "e" * 64
+        request_path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        request_path.unlink()
+
+    payload = client.get("/api/certification/jobs").json()
+
+    assert payload["jobs"] == []
+    transition = payload["operator_transition"]
+    assert transition["state"] == "bootstrap_failed"
+    assert transition["reason"] == "authorized_bootstrap_job_validation_failed"
+    assert transition["command"].endswith(" --force")
+
+
+def test_failed_bootstrap_job_projects_explicit_force_retry(
+    client,
+    monkeypatch,
+    tmp_path,
+):
+    request, _context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
+    state_path = root / request["job_id"] / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "state": "failed",
+        "phase": "failed",
+        "failure": {
+            "code": "official_exe_failed",
+            "message": "deterministic failure",
+        },
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    payload = client.get("/api/certification/jobs").json()
+
+    assert [row["job_id"] for row in payload["jobs"]] == [request["job_id"]]
+    assert any(
+        item.startswith("failure_code:official_exe_failed")
+        for item in payload["jobs"][0]["issues"]
+    )
+    transition = payload["operator_transition"]
+    assert transition["state"] == "bootstrap_failed"
+    assert transition["job_id"] == request["job_id"]
+    assert transition["command"].endswith(" --force")
 
 
 def test_retired_jsonl_queue_route_is_absent(client):
@@ -761,7 +1293,10 @@ def test_bootstrap_job_hides_invalid_parked_digest_and_selection(
     parked = context["checkpoint"]["audit_context"]["official_bootstrap_request"]
     parked["candidate_hash"] = "d" * 64
 
-    assert client.get("/api/certification/jobs").json()["jobs"] == []
+    drifted_projection = client.get("/api/certification/jobs").json()
+    assert drifted_projection["jobs"] == []
+    assert drifted_projection["operator_transition"]["state"] == "bootstrap_failed"
+    assert drifted_projection["operator_transition"]["command"].endswith(" --force")
     assert client.get(
         f"/api/certification/jobs/{request['job_id']}"
     ).status_code == 404
@@ -782,7 +1317,10 @@ def test_bootstrap_job_hides_invalid_parked_digest_and_selection(
     drifted = _rekey_request(request)
     _write_manager_job(_root, drifted)
 
-    assert client.get("/api/certification/jobs").json()["jobs"] == []
+    projection = client.get("/api/certification/jobs").json()
+    assert projection["jobs"] == []
+    assert projection["operator_transition"]["state"] == "bootstrap_failed"
+    assert projection["operator_transition"]["command"].endswith(" --force")
 
 
 def test_bootstrap_job_hides_candidate_hash_drift_even_with_valid_outer_digests(
@@ -803,7 +1341,10 @@ def test_bootstrap_job_hides_candidate_hash_drift_even_with_valid_outer_digests(
     original.rmdir()
     _write_manager_job(root, drifted)
 
-    assert client.get("/api/certification/jobs").json()["jobs"] == []
+    payload = client.get("/api/certification/jobs").json()
+    assert payload["jobs"] == []
+    assert payload["operator_transition"]["state"] == "bootstrap_failed"
+    assert payload["operator_transition"]["command"].endswith(" --force")
     assert client.get(
         f"/api/certification/jobs/{drifted['job_id']}"
     ).status_code == 404
@@ -835,7 +1376,12 @@ def test_bootstrap_projection_fails_closed_on_multiple_exact_authorized_jobs(
         lambda *_a, **_k: {"valid": True, "issues": []},
     )
 
-    assert client.get("/api/certification/jobs").json()["jobs"] == []
+    projection = client.get("/api/certification/jobs").json()
+    assert projection["jobs"] == []
+    assert projection["operator_transition"]["state"] == "bootstrap_failed"
+    assert projection["operator_transition"]["reason"] == (
+        "multiple_authorized_bootstrap_jobs"
+    )
     assert client.get(
         f"/api/certification/jobs/{request['job_id']}"
     ).status_code == 404
@@ -893,6 +1439,7 @@ def test_completed_bootstrap_job_requires_exact_envelope_and_certificate_identit
         "status": "official-certified",
         "mode": "full",
         "policy_id": "official-full-v5",
+        "certificate_digest": "d" * 64,
         "certification_identity": request["identity"],
         "opponent_selection": request["opponent_selection"],
         "official_job_envelope": envelope,
@@ -906,6 +1453,12 @@ def test_completed_bootstrap_job_requires_exact_envelope_and_certificate_identit
         ),
     )
     monkeypatch.setattr(route, "official_full_certified", lambda *_a, **_k: True)
+    monkeypatch.setattr(route, "official_compliance_verdict", lambda _status: {
+        "ok": True,
+        "classification": "pass",
+        "blocking": False,
+        "inconclusive": False,
+    })
     monkeypatch.setattr(
         official_bootstrap,
         "validate_completed_operator_bootstrap_authorization",
@@ -920,6 +1473,12 @@ def test_completed_bootstrap_job_requires_exact_envelope_and_certificate_identit
 
     exact = client.get(f"/api/certification/jobs/{request['job_id']}")
     assert exact.status_code == 200
+    queue = client.get("/api/certification/jobs").json()
+    assert queue["operator_transition"]["state"] == "ready_to_finalize"
+    assert "finalize-first-strict" in queue["operator_transition"]["command"]
+    assert queue["operator_transition"]["certificate_digest"] == (
+        exact.json()["certificate_digest"]
+    )
 
     # A result file can be internally digest-consistent and still not belong
     # to this durable request.  The read projection must reject that state.

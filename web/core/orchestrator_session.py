@@ -1,12 +1,12 @@
-"""Orchestrator session persistence and startup recovery.
+"""Orchestrator startup recovery without provider-history persistence.
 
-Handles saving/loading/clearing the orchestrator session ID for crash recovery,
-log rotation, and rate-limit detection.
+Pipeline recovery is reconstructed from the durable, validated checkpoint.  A
+provider session identifier is deliberately never persisted or resumed because
+the remote conversation is not content-addressed by the checkpoint, rendered
+prompt, MCP projection, or policy epoch.  Legacy sidecars are deleted on sight.
 """
 
-import json
 import logging
-import os
 import time
 from pathlib import Path
 
@@ -36,34 +36,33 @@ from llm_query import _is_rate_limited  # noqa: E402
 
 
 def _save_orchestrator_session(session_id: str):
-    """Persist session_id so a killed process can resume the exact conversation."""
-    tmp = ORCHESTRATOR_SESSION_FILE.with_suffix(".tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
-    try:
-        os.write(fd, json.dumps({"session_id": session_id}).encode())
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-    os.replace(str(tmp), str(ORCHESTRATOR_SESSION_FILE))
+    """Discard provider session identity; recovery always starts a fresh stream."""
+
+    # Keep the argument for the ResultMessage call boundary, but never serialize
+    # it.  Even a schema-rich local wrapper cannot prove which server-side
+    # messages the provider will replay for that opaque identifier.
+    had_legacy_sidecar = ORCHESTRATOR_SESSION_FILE.exists()
+    ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
     try:
         from system_log import log_system_event
         log_system_event(
-            "orchestrator.session_saved", "info",
-            f"Saved orchestrator session {session_id[:8]}",
-            {"session_id_prefix": session_id[:8]},
+            "orchestrator.session_resume_forbidden", "info",
+            "Provider session identity was not persisted; checkpoint recovery uses a fresh stream",
+            {
+                "provider_session_observed": bool(session_id),
+                "legacy_sidecar_removed": had_legacy_sidecar,
+                "history_policy": "fresh_provider_session_from_checkpoint_projection_only",
+            },
         )
     except Exception:
         pass
 
 
 def _load_orchestrator_session() -> "str | None":
-    """Return saved session_id, or None."""
-    if not ORCHESTRATOR_SESSION_FILE.exists():
-        return None
-    try:
-        return json.loads(ORCHESTRATOR_SESSION_FILE.read_text())["session_id"]
-    except Exception:
-        return None
+    """Delete any legacy opaque-session sidecar and always return ``None``."""
+
+    ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
+    return None
 
 
 def _clear_orchestrator_session(reason="completed_or_reset"):
@@ -84,17 +83,56 @@ def _clear_orchestrator_session(reason="completed_or_reset"):
 def _startup_recovery(ui=None) -> dict:
     """Assess interrupted state on startup. Returns recovery action dict.
 
-    Decision matrix:
-        checkpoint + session → Case C: resume LLM conversation + pipeline
-        checkpoint + no session → Case B: new LLM session, resume from checkpoint stage
-        no checkpoint + session → Case D: stale session, clear and start fresh
-        no checkpoint + no session → Case A: fresh start
+    A valid checkpoint resumes its deterministic pipeline stage with a fresh
+    provider session.  Opaque provider conversation history is never recovery
+    authority.
     """
     from evolution_core import read_pipeline_checkpoint, clear_pipeline_checkpoint
     checkpoint = read_pipeline_checkpoint()
     session_id = _load_orchestrator_session()
 
     if not checkpoint:
+        try:
+            from post_publication_handoff import (
+                pending_handoff_route,
+                pending_handoff_route_checkpoint,
+            )
+
+            handoff = pending_handoff_route()
+        except Exception as exc:
+            handoff = {
+                "status": "blocked",
+                "issues": [f"handoff_discovery_failed:{type(exc).__name__}"],
+            }
+        if handoff.get("status") == "blocked":
+            return {
+                "action": "blocked",
+                "reason": "post_publication_handoff_ambiguous_or_invalid",
+                "diagnostics": {
+                    "issues": handoff.get("issues") or [],
+                    "post_publication_handoff": True,
+                },
+            }
+        if handoff.get("status") == "pending":
+            route_checkpoint = pending_handoff_route_checkpoint(handoff)
+            message = (
+                f"[Recovery] Published v{handoff['version']} has a durable "
+                "post-publication handoff; run_archivist must finish before "
+                "the next generation."
+            )
+            if ui:
+                ui.log_history(message, "warn")
+            else:
+                log.warning(message)
+            return {
+                "action": "resume",
+                "checkpoint": route_checkpoint,
+                "session_id": None,
+                "stage": "archived",
+                "next_v": handoff["version"],
+                "source_v": handoff["source_v"],
+                "post_publication_handoff": True,
+            }
         if session_id:
             if ui:
                 ui.log_history("[Recovery] Stale session file (no pipeline checkpoint). Clearing.", "warn")
@@ -188,8 +226,8 @@ def _startup_recovery(ui=None) -> dict:
         elapsed = time.time() - last_stage_ts
         if elapsed > WATCHDOG_TIMEOUT:
             msg = (f"[Watchdog Recovery] v{next_v} at stage '{stage}' with no progress "
-                   f"for {elapsed:.0f}s (>{WATCHDOG_TIMEOUT}s). Clearing stale session, "
-                   f"will resume from checkpoint with new LLM session.")
+                   f"for {elapsed:.0f}s (>{WATCHDOG_TIMEOUT}s). The next fresh "
+                   f"provider stream will resume from the validated checkpoint.")
             if ui:
                 ui.log_history(msg, "warn")
             else:
@@ -198,10 +236,9 @@ def _startup_recovery(ui=None) -> dict:
             log_system_event("pipeline.watchdog_recovery", "warn", msg,
                              {"next_v": next_v, "stage": stage, "elapsed_s": round(elapsed, 1),
                               "watchdog_timeout": WATCHDOG_TIMEOUT})
-            # Clear session to force new LLM conversation, but keep checkpoint for stage resume
+            # Remove any legacy sidecar; the checkpoint remains the only recovery input.
             _clear_orchestrator_session(reason="watchdog_recovery")
-            session_id = None  # file is gone — force fresh LLM session (Case B below)
-            # Fall through to recovery below — session_id is None → Case B
+            session_id = None
 
     # timed_out and archived are terminal. Early stages such as selected,
     # preparing, prepared, and crossover_running are recoverable generation
@@ -330,10 +367,10 @@ def _startup_recovery(ui=None) -> dict:
         "next_v": next_v,
         "source_v": checkpoint.get("source_v"),
     }
-    if session_id:
-        msg = f"[Recovery] Resuming v{next_v} at '{stage}' with session {session_id[:8]}..."
-    else:
-        msg = f"[Recovery] Resuming v{next_v} at '{stage}' (new LLM session)."
+    msg = (
+        f"[Recovery] Resuming v{next_v} at '{stage}' from its validated "
+        "checkpoint with a fresh provider stream."
+    )
     if ui:
         ui.log_history(msg, "warn")
         log.warning(msg)
@@ -342,9 +379,9 @@ def _startup_recovery(ui=None) -> dict:
         log_system_event(
             "orchestrator.recovery_decision", "warn",
             msg,
-            {"case": "resume_same_session" if session_id else "resume_new_session",
+            {"case": "resume_fresh_provider_session",
              "next_v": next_v, "source_v": checkpoint.get("source_v"),
-             "stage": stage, "session_present": bool(session_id)},
+             "stage": stage, "session_present": False},
         )
     except Exception:
         pass

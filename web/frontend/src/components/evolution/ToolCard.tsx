@@ -12,6 +12,7 @@ export interface ConvMsg {
   toolArgs?: Record<string, unknown>;
   toolOutput: string[];
   toolDone: boolean;
+  interrupted?: boolean;
 }
 
 function formatToolSummary(toolName: string, args?: Record<string, unknown>): string {
@@ -48,18 +49,18 @@ export function ToolCard({ msg }: { msg: ConvMsg }) {
         className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-cyan-950/40 transition-colors"
       >
         <span className="flex items-center gap-2 min-w-0">
-          <GearIcon className={`text-cyan-400 shrink-0 ${!msg.toolDone ? "animate-spin" : ""}`} />
+          <GearIcon className={`text-cyan-400 shrink-0 ${!msg.toolDone && !msg.interrupted ? "animate-spin" : ""}`} />
           <span className="text-cyan-300 text-xs font-mono font-medium truncate">{summary}</span>
         </span>
         <span className="flex items-center gap-1.5 text-xs text-gray-500 shrink-0 ml-2">
-          {!msg.toolDone && (
+          {!msg.toolDone && !msg.interrupted && (
             <span className="flex gap-0.5">
               <span className="w-1 h-1 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "0ms" }} />
               <span className="w-1 h-1 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "150ms" }} />
               <span className="w-1 h-1 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: "300ms" }} />
             </span>
           )}
-          {msg.toolDone ? "完成" : "运行中"}
+          {msg.toolDone ? "完成" : msg.interrupted ? "状态未知（流中断）" : "运行中"}
           {expanded ? " ▲" : " ▼"}
         </span>
       </button>
@@ -106,7 +107,7 @@ export function ToolCard({ msg }: { msg: ConvMsg }) {
   );
 }
 
-export function ThinkingBlock({ text, done }: { text: string; done: boolean }) {
+export function ThinkingBlock({ text, done, interrupted = false }: { text: string; done: boolean; interrupted?: boolean }) {
   const [expanded, setExpanded] = useState(true);
 
   useEffect(() => {
@@ -114,7 +115,9 @@ export function ThinkingBlock({ text, done }: { text: string; done: boolean }) {
   }, [done]);
 
   const charCount = text.length;
-  const label = done
+  const label = interrupted
+    ? `💭 状态未知（流中断，已接收 ${charCount} 字）`
+    : done
     ? `💭 思考完成 (${charCount > 999 ? `${(charCount / 1000).toFixed(1)}k` : charCount} 字)`
     : "💭 思考中...";
 
@@ -124,7 +127,7 @@ export function ThinkingBlock({ text, done }: { text: string; done: boolean }) {
         onClick={() => setExpanded(!expanded)}
         className="flex items-center gap-1.5 text-xs text-amber-400/70 hover:text-amber-300 transition-colors"
       >
-        <span className={done ? "" : "italic"}>{label}</span>
+        <span className={done || interrupted ? "" : "italic"}>{label}</span>
         <span className="text-[10px]">{expanded ? "▲" : "▼"}</span>
       </button>
       {expanded && text && (

@@ -43,9 +43,13 @@ from strength_order import (
 )
 
 try:
-    from candidate_store import append_candidate_event
+    from candidate_store import (
+        append_candidate_event,
+        candidate_observability_identity,
+    )
 except Exception:  # pragma: no cover
     append_candidate_event = None
+    candidate_observability_identity = None
 
 from logging_config import get_logger
 log = get_logger("tool_eval")
@@ -326,6 +330,26 @@ async def _run_national_precommit_backend(
     checkpoint_revision: int = 0,
 ):
     """Run the sole active 70-hand native TCP precommit backend."""
+    candidate_observability = (
+        candidate_observability_identity(v, source_v)
+        if candidate_observability_identity is not None
+        else {
+            "candidate_id": candidate_id,
+            "parent_ids": [],
+            "lineage_kind": "unavailable",
+        }
+    )
+    candidate_id = str(candidate_observability["candidate_id"])
+    candidate_parent_ids = list(candidate_observability["parent_ids"])
+    candidate_lineage_metrics = {
+        key: candidate_observability[key]
+        for key in (
+            "lineage_kind",
+            "numeric_high_water_version",
+            "source_artifact_inherited",
+        )
+        if key in candidate_observability
+    }
     settings = precommit_plan.get("settings") or {}
     national_hands = int(settings.get("hands_per_match") or 0)
     national_matches = int(settings.get("matches_per_opponent") or 0)
@@ -830,11 +854,12 @@ async def _run_national_precommit_backend(
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="verified" if passed else "precommit_failed",
-                parent_ids=[active_bot_name(source_v)],
+                parent_ids=candidate_parent_ids,
                 gate="precommit_eval",
                 scorecard=scorecard,
                 gate_results=scorecard.gates,
                 metrics={
+                    **candidate_lineage_metrics,
                     "passed": passed,
                     "evaluation_protocol": execution_protocol,
                     "national_execution_mode": "native_tcp",
@@ -1051,7 +1076,26 @@ async def run_precommit_eval(args):
 
     _set_pipeline_status(f"Pre-commit eval for v{v}")
 
-    candidate_id = f"{candidate_name}_from_v{source_v}"
+    candidate_observability = (
+        candidate_observability_identity(v, source_v)
+        if candidate_observability_identity is not None
+        else {
+            "candidate_id": candidate_name,
+            "parent_ids": [],
+            "lineage_kind": "unavailable",
+        }
+    )
+    candidate_id = str(candidate_observability["candidate_id"])
+    candidate_parent_ids = list(candidate_observability["parent_ids"])
+    candidate_lineage_metrics = {
+        key: candidate_observability[key]
+        for key in (
+            "lineage_kind",
+            "numeric_high_water_version",
+            "source_artifact_inherited",
+        )
+        if key in candidate_observability
+    }
     if append_candidate_event:
         try:
             append_candidate_event(
@@ -1063,9 +1107,12 @@ async def run_precommit_eval(args):
                 workflow_profile_id=workflow_profile.profile_id,
                 run_id=f"{v}#0",
                 stage="precommit_eval",
-                parent_ids=[active_bot_name(source_v)],
+                parent_ids=candidate_parent_ids,
                 gate="precommit_eval",
-                metrics={"n_games": n_games},
+                metrics={
+                    **candidate_lineage_metrics,
+                    "n_games": n_games,
+                },
             )
         except Exception as e:
             log.warning("candidate ledger precommit_started write failed: %s", e)

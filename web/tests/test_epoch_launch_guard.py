@@ -99,7 +99,7 @@ def test_control_hides_retired_session_and_exposes_tool_blocking(
     assert session.json()["active"] is False
     assert session.json()["blocked"] is True
     assert session.json()["epoch_state"] == "reset_required"
-    assert clear.status_code == 409
+    assert clear.status_code == 410
     assert control.ORCHESTRATOR_SESSION_FILE.exists()
     catalog = tools.json()
     assert catalog["epoch_initialized"] is False
@@ -364,9 +364,11 @@ def test_fresh_bootstrap_receipt_allows_web_orchestrator_launch(monkeypatch):
     from server.state import app_state
 
     started = asyncio.Event()
+    release = asyncio.Event()
 
     async def fake_loop(*_args, **_kwargs):
         started.set()
+        await release.wait()
 
     async def noop(*_args, **_kwargs):
         return None
@@ -388,5 +390,6 @@ def test_fresh_bootstrap_receipt_allows_web_orchestrator_launch(monkeypatch):
         async with app_module.lifespan(app_module.app):
             await asyncio.wait_for(started.wait(), timeout=1)
             assert app_state.to_dict()["running"] is True
+            release.set()
 
     asyncio.run(exercise())

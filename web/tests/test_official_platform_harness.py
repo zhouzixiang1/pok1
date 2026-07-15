@@ -14,7 +14,6 @@ from official_platform_harness import (
     BotLaunchConfig,
     OfficialPlatformConfig,
     OfficialWireCapture,
-    build_bot_command,
     parse_bot_log,
     run_official_acceptance_sync,
     summarize_round_logs,
@@ -291,24 +290,35 @@ def test_sent_action_issue_accepts_exact_official_wire_actions():
         assert _sent_action_issue(message) is None
 
 
-def test_build_bot_command_uses_native_launch_contract(tmp_path):
-    bot_dir = tmp_path / "national_v1"
-    bot_dir.mkdir()
-    (bot_dir / "national_bot.py").write_text("pass\n", encoding="utf-8")
+def test_official_harness_exposes_only_managed_bot_launch_boundary():
+    assert not hasattr(harness, "resolve_bot_entry")
+    assert not hasattr(harness, "build_bot_command")
+    source = __import__("inspect").getsource(harness._launch_bot)
+    assert "EndpointLease.connect(" in source
+    assert "seal_bot_artifact(" in source
+    assert "launch_sandboxed_bot(" in source
+    assert "subprocess.Popen(" not in source
 
-    cmd = build_bot_command(
-        BotLaunchConfig(bot_dir, name="BotA", seat="upper", python="/usr/bin/python3"),
-        host="127.0.0.1",
-        port=10001,
-        log_path=tmp_path / "botA.log",
-    )
 
-    assert cmd[:2] == ["/usr/bin/python3", str(bot_dir / "national_bot.py")]
-    assert "--host" in cmd and "127.0.0.1" in cmd
-    assert "--port" in cmd and "10001" in cmd
-    assert "--name" in cmd and "BotA" in cmd
-    assert "--seat" in cmd and "upper" in cmd
-    assert "--log" in cmd and str(tmp_path / "botA.log") in cmd
+def test_official_diagnostic_rejects_script_symlink_and_outside_namespace(
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    (repo / "bots").mkdir(parents=True)
+    script = repo / "arbitrary.py"
+    script.write_text("raise SystemExit('host execution')\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="strict_bot_directory"):
+        harness._validate_active_diagnostic_bot(script, repo_root=repo)
+
+    outside = repo / "outside" / "national_v143"
+    outside.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="outside_active_namespace"):
+        harness._validate_active_diagnostic_bot(outside, repo_root=repo)
+
+    alias = repo / "bots" / "national_v143"
+    alias.symlink_to(outside, target_is_directory=True)
+    with pytest.raises(RuntimeError, match="strict_bot_directory"):
+        harness._validate_active_diagnostic_bot(alias, repo_root=repo)
 
 
 def test_low_authority_bot_launch_still_uses_central_executor(
@@ -956,6 +966,11 @@ def test_formal_full_reruns_user_writable_passed_receipt_in_fresh_directory(
     monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", fake_production_round)
     monkeypatch.setattr(
         harness,
+        "_validate_active_diagnostic_bot",
+        lambda path: Path(path).resolve(),
+    )
+    monkeypatch.setattr(
+        harness,
         "validate_execution_profile",
         lambda *_a, **_k: {"ok": True, "issues": []},
     )
@@ -1149,6 +1164,26 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
         tampered,
         70,
     )
+
+
+def test_natural_terminal_mode_rejects_paired_70_wire_settlements():
+    paired = {
+        "log_summary": {"hands_started_min": 70, "settlements_min": 70},
+        "wire_replay_summary": {
+            "hands_started_min": 70,
+            "settlements_min": 70,
+            "pending_expected_actions": [],
+        },
+    }
+
+    # Manual/non-EXE diagnostic acceptance retains its generic completion
+    # shape, but a formal fixed-EXE run cannot use it for full-v5 authority.
+    assert round_completion_issues(paired, 70) == []
+    assert round_completion_issues(
+        paired,
+        70,
+        natural_terminal_only=True,
+    ) == ["official_terminal_socket_boundary_invalid"]
 
 
 def test_terminal_thp_rejects_wire_prefix_and_footer_mismatches(tmp_path):

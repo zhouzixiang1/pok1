@@ -1,5 +1,8 @@
 """Direction Auditor over immutable strict-policy publication history."""
 
+import hashlib
+from pathlib import Path
+
 from bot_namespace import (
     FIRST_STRICT_POLICY_VERSION,
     bot_tag,
@@ -15,6 +18,35 @@ from output_schema import validate_agent_output
 from llm_availability import LLMAvailabilityBlocked
 
 
+def _render_direction_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    if not isinstance(inputs, dict) or set(inputs) != {
+        "generation_history", "source_v",
+    }:
+        raise ValueError("Direction Auditor renderer input contract mismatch")
+
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "direction_auditor_prompt.md"
+    ).read_text(
+        encoding="utf-8"
+    )
+    text = template.replace(
+        "{generation_history}",
+        str(inputs["generation_history"]),
+    )
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="annotated_completion_direction_history",
+        evidence_provenance={
+            "source_v": int(inputs["source_v"]),
+            "generation_history_digest": hashlib.sha256(
+                str(inputs["generation_history"]).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
 async def _run_direction_audit(source_v, ui):
     """Run Direction Auditor to detect repetitive evolution directions.
 
@@ -26,7 +58,9 @@ async def _run_direction_audit(source_v, ui):
                      suggested_direction, confidence, last_directions}.
     Returns a safe no-repetition default on failure.
     """
-    audit_prompt_path = PROMPTS_DIR / "direction_auditor_prompt.md"
+    audit_prompt_path = (
+        Path(__file__).resolve().parent / "prompts" / "direction_auditor_prompt.md"
+    )
     if not audit_prompt_path.exists():
         ui.log_history("Direction Auditor prompt not found — skipping audit.", "warn")
         return {"repetition_detected": False, "exhausted_directions": [],
@@ -86,13 +120,21 @@ async def _run_direction_audit(source_v, ui):
         gen_history += "No strict published generation history available.\n"
 
     # ── Call LLM ──
-    audit_prompt = audit_prompt_path.read_text()
-    audit_prompt = audit_prompt.replace("{generation_history}", gen_history)
-
     log_file = get_logs_dir(source_v) / "direction_audit_io.txt"
     try:
+        from llm_query import render_llm_prompt
+
+        rendered_prompt = render_llm_prompt(
+            "DIRECTION AUDITOR",
+            producer=_render_direction_provider_prompt,
+            renderer_inputs={
+                "generation_history": gen_history,
+                "source_v": int(source_v),
+            },
+        )
         output, _, _ = await run_claude_query(
-            audit_prompt, [], ui, "DIRECTION AUDITOR", log_file,
+            rendered_prompt, [], ui, "DIRECTION AUDITOR", log_file,
+            tools=[],
         )
         from llm_query import parse_json_output_with_mode
         data, failure_mode = parse_json_output_with_mode(output)

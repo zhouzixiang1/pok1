@@ -19,6 +19,8 @@ from types import SimpleNamespace
 import checkpoint_schema
 import pytest
 
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
+
 import event_bus
 
 

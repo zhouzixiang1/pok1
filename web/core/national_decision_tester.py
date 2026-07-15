@@ -31,6 +31,8 @@ from managed_bot_executor import (
     ManagedExecutorError,
     launch_managed_bot,
 )
+from bot_artifact import hash_path
+from bot_namespace import STRICT_ARTIFACT_FILES
 from national_native import NATIVE_BOT_TEMPLATE, NATIVE_ENTRY, check_native_contract
 
 
@@ -449,6 +451,8 @@ def _run_policy_fixture(
                 stderr=stderr_file,
                 start_new_session=True,
                 host_process_owner="national-decision-fixture",
+                expected_artifact_hash=hash_path(bot_dir),
+                required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
             )
         server_sock.sendall(b"name")
         observed_name = _recv_until_idle(server_sock, timeout=3.0)

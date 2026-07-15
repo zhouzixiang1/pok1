@@ -874,6 +874,7 @@ async def abandon_rejected_blueprint(
             expected_next_v=int(checkpoint.get("next_v")),
             expected_source_v=int(checkpoint.get("source_v")),
             expected_checkpoint_revision=int(checkpoint.get("checkpoint_revision") or 0),
+            expected_checkpoint_stage=str(checkpoint.get("stage") or ""),
         )
     except Exception as exc:
         abandon_result = {

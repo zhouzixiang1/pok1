@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
+
 
 def _strict_artifact(root, version, *, action="pass"):
     from bot_namespace import refresh_policy_identity_documents
@@ -54,6 +56,9 @@ def _strict_checkpoint(next_v, source_v, stage, **extra):
         source_v=source_v,
         parent2_v=extra.get("parent2_v"),
         audit_context=audit_context,
+        published_high_water=next_v - 1,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
         parent_resolver=_resolve_published_parent,
     )
     return {
@@ -235,13 +240,19 @@ def test_H3_bare_commit_recovery_blocks_stale_code_fingerprint(tmp_path, monkeyp
 
 
 def test_post_generation_cleanup_skips_uncommitted_before_side_effects(monkeypatch):
-    """Abandoned/uncommitted generations must not run post-commit side effects."""
+    """Phase 3 only verifies handoff completion; it owns no cleanup effects."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
     import generation_scheduler as gs
     import evolution_infra
+    import post_publication_handoff
 
     events = []
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
     monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
     monkeypatch.setattr(
         evolution_infra,
@@ -254,13 +265,16 @@ def test_post_generation_cleanup_skips_uncommitted_before_side_effects(monkeypat
     asyncio.run(gs.post_generation_cleanup(None, None, ctx))
 
     event_types = [event[0] for event in events]
-    assert "pipeline.post_cleanup_skipped_uncommitted" in event_types
-    assert "pipeline.post_cleanup_done" in event_types
+    assert event_types == [
+        "pipeline.post_cleanup_start",
+        "pipeline.post_cleanup_done",
+    ]
+    assert events[-1][3]["status"] == "skipped"
+    assert events[-1][3]["reason"] == "not_committed_or_abandoned"
 
 
 def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):
-    """_cleanup_incomplete must NOT rmtree a git-tracked dir without a tag,
-    even when .completed is missing. It should attempt finalize instead."""
+    """Cleanup discovery reports bytes but owns no mutation/finalize authority."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
     import generation_scheduler as gs
@@ -275,22 +289,24 @@ def test_H3_cleanup_incomplete_preserves_bare_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(ei, "PROJECT_ROOT", tmp_path, raising=False)
     monkeypatch.setattr(ei, "git_has_tag", lambda v: False, raising=False)
     monkeypatch.setattr(ei, "git_dir_is_committed", lambda v: True, raising=False)
-    # No pipeline checkpoint file -> finalize will lack source_v -> returns False
     monkeypatch.setattr(ei, "RESULTS_DIR", tmp_path / "results", raising=False)
 
-    # Patch _finalize_bare_commit to a sentinel so we don't depend on git state.
+    # Publication recovery and canonical abandon are the only mutation owners;
+    # directory discovery must not infer either operation from Git shape.
     called = {"finalize": False}
     def fake_finalize(v, ckpt=None):
         called["finalize"] = True
-        return False   # simulate "cannot finalize"
+        raise AssertionError("cleanup discovery attempted publication recovery")
     monkeypatch.setattr(gs, "_finalize_bare_commit", fake_finalize, raising=False)
 
-    gs._cleanup_incomplete()
+    observed = gs._cleanup_incomplete()
 
-    # H3 invariant: the dir is preserved (NOT rmtrued) because it's git-tracked.
+    # H3 invariant: the dir is preserved and only reported. A caller must use
+    # the durable publishing checkpoint or exact abandon transaction.
     assert fake_v_dir.exists(), "bare-commit dir must NOT be removed"
     assert (fake_v_dir / "policy.py").exists(), "bare-commit code must survive"
-    assert called["finalize"] is True, "finalize must be attempted for bare commits"
+    assert observed == [888]
+    assert called["finalize"] is False
 
 
 # ──────────────────────────────────────────────

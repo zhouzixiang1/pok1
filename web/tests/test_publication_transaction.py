@@ -1,4 +1,3 @@
-import hashlib
 import json
 import subprocess
 
@@ -33,6 +32,8 @@ def _intent(
     remote_required=True,
     remote_enabled=True,
     prepublication_strict_bots=(),
+    version=2,
+    source_v=1,
 ):
     from bot_artifact import hash_path
     from publication_transaction import (
@@ -40,13 +41,13 @@ def _intent(
         file_sha256,
     )
 
-    candidate = repo / "bots" / "national_v2"
-    certificate = repo / "official_certificates" / "national_v2.json"
+    candidate = repo / "bots" / f"national_v{version}"
+    certificate = repo / "official_certificates" / f"national_v{version}.json"
     checkpoint = {
-        "next_v": 2,
-        "source_v": 1,
+        "next_v": version,
+        "source_v": source_v,
         "parent2_v": None,
-        "workflow_run_id": "generation:2:test",
+        "workflow_run_id": f"generation:{version}:test",
         "checkpoint_revision": 9,
         "stage": "verified",
     }
@@ -57,7 +58,7 @@ def _intent(
         certificate_digest=payload["certificate_digest"],
         certificate_policy_id="official-full-v5",
         official_status={"status": "certified", "certificate_digest": "b" * 64},
-        certificate_relative_path="official_certificates/national_v2.json",
+        certificate_relative_path=f"official_certificates/national_v{version}.json",
         certificate_file_sha256=file_sha256(certificate),
         certificate_attestation_digest=payload["attestation_digest"],
         final_gate_ledger_digest="d" * 64,
@@ -72,11 +73,11 @@ def _intent(
     )
 
 
-def _write_candidate_and_certificate(repo):
-    candidate = repo / "bots" / "national_v2"
+def _write_candidate_and_certificate(repo, *, version=2):
+    candidate = repo / "bots" / f"national_v{version}"
     candidate.mkdir(parents=True)
     (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
-    certificate = repo / "official_certificates" / "national_v2.json"
+    certificate = repo / "official_certificates" / f"national_v{version}.json"
     certificate.parent.mkdir()
     certificate.write_text(
         json.dumps({
@@ -926,18 +927,26 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
 ):
     import national_runtime_authority
     import official_certification
+    import post_publication_handoff
     import publication_transaction
     import tool_commit
 
     repo = tmp_path / "repo"
     _init_repo(repo)
     baseline = _git(repo, "rev-parse", "HEAD")
-    candidate, _certificate = _write_candidate_and_certificate(repo)
+    version = 144
+    source_v = 143
+    candidate, _certificate = _write_candidate_and_certificate(
+        repo,
+        version=version,
+    )
     intent = _intent(
         repo,
         baseline,
         remote_required=False,
         remote_enabled=False,
+        version=version,
+        source_v=source_v,
     )
     official_status = {
         "status": "certified",
@@ -948,10 +957,10 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
         },
     }
     checkpoint = {
-        "next_v": 2,
-        "source_v": 1,
+        "next_v": version,
+        "source_v": source_v,
         "parent2_v": None,
-        "workflow_run_id": "generation:2:test",
+        "workflow_run_id": f"generation:{version}:test",
         "checkpoint_revision": 10,
         "stage": "publishing",
         "publication_intent": intent,
@@ -960,6 +969,11 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     clear_calls = []
     ensure_calls = []
     sentinel_calls = []
+    handoff_calls = []
+    monkeypatch.setenv(
+        "POK_ALLOW_LOCAL_ONLY_POST_PUBLICATION_HANDOFF_FOR_TESTS",
+        "1",
+    )
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _v: candidate)
     monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
     monkeypatch.setattr(
@@ -988,12 +1002,15 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_k: ("national_v2",),
+        lambda **_k: (f"national_v{version}",),
     )
     monkeypatch.setattr(
         national_runtime_authority,
         "build_pending_local_publication_proof",
-        lambda _path: {"bot": "national_v2", "proof_digest": "proof"},
+        lambda _path: {
+            "bot": f"national_v{version}",
+            "proof_digest": "proof",
+        },
     )
     monkeypatch.setattr(
         official_certification,
@@ -1022,6 +1039,26 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     monkeypatch.setattr(tool_commit, "evolution_git_push_required", lambda: False)
     monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", lambda: checkpoint)
     monkeypatch.setattr(tool_commit, "clear_pipeline_checkpoint", clear)
+    def ensure_handoff(**kwargs):
+        # Keep the journal itself hermetic here while preserving its security
+        # boundary: local-only completion is explicit test mode, bound to the
+        # exact publishing checkpoint and proven publication result.
+        assert kwargs["version"] == version
+        assert kwargs["source_v"] == source_v
+        assert kwargs["publishing_checkpoint"] is checkpoint
+        assert kwargs["allow_local_only"] is True
+        publication = kwargs["publication_result"]
+        assert publication["committed"] is True
+        assert publication["publication_id"] == intent["publication_id"]
+        assert publication["completed_sentinel_written"] is True
+        handoff_calls.append(kwargs)
+        return {"identity_digest": "d" * 64, "state": "pending"}
+
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "ensure_post_publication_handoff",
+        ensure_handoff,
+    )
     if first_failure == "after_sentinel":
         monkeypatch.setattr(
             tool_commit, "_write_completed_sentinel_durable", write_then_crash
@@ -1029,11 +1066,19 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
 
     if first_failure == "after_sentinel":
         with pytest.raises(RuntimeError, match="simulated crash after durable sentinel"):
-            tool_commit._resume_publication_transaction(2, 1, checkpoint)
+            tool_commit._resume_publication_transaction(version, source_v, checkpoint)
         first = None
     else:
-        first = tool_commit._resume_publication_transaction(2, 1, checkpoint)
-    second = tool_commit._resume_publication_transaction(2, 1, checkpoint)
+        first = tool_commit._resume_publication_transaction(
+            version,
+            source_v,
+            checkpoint,
+        )
+    second = tool_commit._resume_publication_transaction(
+        version,
+        source_v,
+        checkpoint,
+    )
 
     if first_failure == "cas_rejected":
         assert first["committed"] is False
@@ -1045,9 +1090,11 @@ def test_publication_recovery_retries_after_sentinel_before_checkpoint_cas(
     assert second["committed"] is True
     assert second["checkpoint_cleared"] is True
     assert len(ensure_calls) == 2
+    assert len(handoff_calls) == (1 if first_failure == "after_sentinel" else 2)
     assert len(clear_calls) == (1 if first_failure == "after_sentinel" else 2)
     assert clear_calls[-1]["expected_checkpoint_stage"] == "publishing"
     assert clear_calls[-1]["expected_checkpoint_revision"] == 10
+    assert second["post_publication_handoff_identity_digest"] == "d" * 64
 
 
 def test_publication_intent_digest_covers_strategy_and_remote_requirement():

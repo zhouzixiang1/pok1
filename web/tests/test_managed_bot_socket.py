@@ -66,6 +66,16 @@ def test_bwrap_bot_can_use_only_inherited_stream(tmp_path):
         "wire.close()\n",
         encoding="utf-8",
     )
+    # Sealing is itself a strict-ABI boundary even though this test executes a
+    # synthetic entrypoint to probe the inherited-socket sandbox.
+    (source / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "precompute.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (source / "national_runtime_manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    (source / "policy_epoch_receipt.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
     sealed = seal_bot_artifact(
         source,
         tmp_path / "sealed" / "candidate",

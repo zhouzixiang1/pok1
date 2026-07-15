@@ -679,6 +679,271 @@ class ManagedProcess:
     isolation: IsolationIdentity
 
 
+@dataclass(frozen=True)
+class ManagedBotSourceSnapshot:
+    """Exact source bytes exposed to one managed bot process.
+
+    The host directory is never mounted.  ``files`` is a closed, top-level
+    source projection captured through no-follow descriptors and bound to the
+    same artifact hash used by native evaluation/certification.
+    """
+
+    root: Path
+    artifact_hash: str
+    files: tuple[tuple[str, bytes], ...]
+
+
+def _source_entry_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _read_bound_source_file(
+    root: Path,
+    path: Path,
+    expected: os.stat_result,
+    *,
+    max_file_bytes: int,
+) -> bytes:
+    if expected.st_size > max_file_bytes:
+        raise ManagedExecutorError(
+            f"managed bot source file exceeds byte limit: {path.name}"
+        )
+    flags = os.O_RDONLY | int(getattr(os, "O_CLOEXEC", 0))
+    flags |= int(getattr(os, "O_NOFOLLOW", 0))
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ManagedExecutorError(
+            f"managed bot source cannot be opened safely: {path.name}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ManagedExecutorError(
+                f"managed bot source is not regular: {path.name}"
+            )
+        if _source_entry_identity(opened) != _source_entry_identity(expected):
+            raise ManagedExecutorError(
+                f"managed bot source changed while opening: {path.name}"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(1024 * 1024, max_file_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_file_bytes:
+                raise ManagedExecutorError(
+                    f"managed bot source file exceeds byte limit: {path.name}"
+                )
+        finished = os.fstat(descriptor)
+        if _source_entry_identity(finished) != _source_entry_identity(opened):
+            raise ManagedExecutorError(
+                f"managed bot source changed while reading: {path.name}"
+            )
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def snapshot_managed_bot_sources(
+    artifact_root: str | Path,
+    *,
+    expected_artifact_hash: str | None = None,
+    required_artifact_files: Sequence[str] | None = None,
+) -> ManagedBotSourceSnapshot:
+    """Capture the only bytes a managed bot may import or execute.
+
+    Strict national callers pass the five-file ABI and their already-frozen
+    artifact hash.  Generic diagnostics get a closed projection of regular
+    top-level files.  Directories, bytecode, symlinks and special files are
+    always rejected.  ``.completed`` may prove publication on the host but is
+    intentionally not exposed inside the sandbox.
+    """
+
+    from bot_artifact import (
+        ARTIFACT_MANIFEST_SCHEMA,
+        ARTIFACT_MAX_FILE_BYTES,
+        ARTIFACT_MAX_FILE_COUNT,
+        ARTIFACT_MAX_TOTAL_BYTES,
+        canonical_digest,
+    )
+
+    root = _artifact_root(artifact_root, label="bot artifact")
+    required: set[str] | None = None
+    if required_artifact_files is not None:
+        required = set()
+        for raw_name in required_artifact_files:
+            name = str(raw_name)
+            parsed = PurePosixPath(name)
+            if (
+                not name
+                or parsed.is_absolute()
+                or len(parsed.parts) != 1
+                or parsed.name != name
+                or name in {".", "..", ".completed"}
+            ):
+                raise ManagedExecutorError(
+                    f"managed bot required source name is invalid: {name!r}"
+                )
+            required.add(name)
+        if not required:
+            raise ManagedExecutorError("managed bot required source set is empty")
+
+    def enumerate_entries() -> tuple[dict[str, tuple[Path, os.stat_result]], bool]:
+        sources: dict[str, tuple[Path, os.stat_result]] = {}
+        completion_seen = False
+        try:
+            with os.scandir(root) as iterator:
+                entries = sorted(iterator, key=lambda item: os.fsencode(item.name))
+        except OSError as exc:
+            raise ManagedExecutorError("managed bot source directory is unreadable") from exc
+        for entry in entries:
+            path = root / entry.name
+            try:
+                metadata = path.lstat()
+            except OSError as exc:
+                raise ManagedExecutorError(
+                    f"managed bot source entry is unreadable: {entry.name}"
+                ) from exc
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ManagedExecutorError(
+                    f"managed bot source symlink is forbidden: {entry.name}"
+                )
+            if entry.name == ".completed":
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise ManagedExecutorError(
+                        "managed bot completion sentinel must be a regular file"
+                    )
+                completion_seen = True
+                continue
+            if stat.S_ISDIR(metadata.st_mode):
+                raise ManagedExecutorError(
+                    f"managed bot unbound directory is forbidden: {entry.name}"
+                )
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ManagedExecutorError(
+                    f"managed bot source entry is not regular: {entry.name}"
+                )
+            if path.suffix.lower() in {".pyc", ".pyo"}:
+                raise ManagedExecutorError(
+                    f"managed bot bytecode is forbidden: {entry.name}"
+                )
+            sources[entry.name] = (path, metadata)
+        return sources, completion_seen
+
+    sources, _completion_seen = enumerate_entries()
+    observed_names = set(sources)
+    if required is not None and observed_names != required:
+        missing = sorted(required - observed_names)
+        extra = sorted(observed_names - required)
+        raise ManagedExecutorError(
+            "managed bot strict source layout mismatch: "
+            f"missing={missing}:extra={extra}"
+        )
+    if not sources:
+        raise ManagedExecutorError("managed bot source projection is empty")
+    if len(sources) > ARTIFACT_MAX_FILE_COUNT:
+        raise ManagedExecutorError("managed bot source file-count limit exceeded")
+
+    captured: list[tuple[str, bytes]] = []
+    total_bytes = 0
+    for name in sorted(sources, key=os.fsencode):
+        path, metadata = sources[name]
+        payload = _read_bound_source_file(
+            root,
+            path,
+            metadata,
+            max_file_bytes=ARTIFACT_MAX_FILE_BYTES,
+        )
+        total_bytes += len(payload)
+        if total_bytes > ARTIFACT_MAX_TOTAL_BYTES:
+            raise ManagedExecutorError("managed bot source total-byte limit exceeded")
+        captured.append((name, payload))
+
+    # Re-enumerate after all descriptor reads.  A late untrusted cache is never
+    # mounted in any case, but detecting changes before Popen gives callers a
+    # deterministic fail-closed result instead of silently tolerating pollution.
+    final_sources, _final_completion_seen = enumerate_entries()
+    if set(final_sources) != observed_names:
+        raise ManagedExecutorError("managed bot source layout changed while snapshotting")
+
+    manifest = {
+        "schema_version": ARTIFACT_MANIFEST_SCHEMA,
+        "artifact_type": "directory",
+        "entries": [
+            {"path": ".", "type": "directory"},
+            *(
+                {
+                    "path": name,
+                    "type": "file",
+                    "size": len(payload),
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                }
+                for name, payload in captured
+            ),
+        ],
+    }
+    artifact_hash = canonical_digest(manifest)
+    if expected_artifact_hash is not None:
+        expected = str(expected_artifact_hash)
+        if not _HEX_64.fullmatch(expected) or artifact_hash != expected:
+            raise ManagedExecutorError("managed bot artifact hash changed before launch")
+    return ManagedBotSourceSnapshot(
+        root=root,
+        artifact_hash=artifact_hash,
+        files=tuple(captured),
+    )
+
+
+def _sealed_source_memfd(name: str, payload: bytes) -> int:
+    if not hasattr(os, "memfd_create"):
+        raise IsolationUnavailable("managed_executor_source_memfd_unavailable")
+    required_fcntl = (
+        "F_ADD_SEALS",
+        "F_GET_SEALS",
+        "F_SEAL_SEAL",
+        "F_SEAL_SHRINK",
+        "F_SEAL_GROW",
+        "F_SEAL_WRITE",
+    )
+    if any(not hasattr(fcntl, item) for item in required_fcntl):
+        raise IsolationUnavailable("managed_executor_source_sealing_unavailable")
+    flags = int(getattr(os, "MFD_CLOEXEC", 0)) | int(
+        getattr(os, "MFD_ALLOW_SEALING", 0)
+    )
+    descriptor = os.memfd_create(f"pok-bot-{name}", flags=flags)
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("managed bot source memfd write made no progress")
+            offset += written
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        seals = (
+            fcntl.F_SEAL_SEAL
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_WRITE
+        )
+        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, seals)
+        if int(fcntl.fcntl(descriptor, fcntl.F_GET_SEALS)) & seals != seals:
+            raise IsolationUnavailable("managed_executor_source_memfd_not_sealed")
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
 def _safe_text(value: object, label: str) -> str:
     token = str(value)
     if not token or len(token) > _MAX_LABEL or "\x00" in token:
@@ -1087,6 +1352,8 @@ def launch_managed_bot(
     stderr: int | IO[bytes] | None = subprocess.PIPE,
     start_new_session: bool = False,
     host_process_owner: str | None = None,
+    expected_artifact_hash: str | None = None,
+    required_artifact_files: Sequence[str] | None = None,
 ) -> ManagedProcess:
     _host_owner_environment(host_process_owner)
     if not isinstance(endpoint, EndpointLease):
@@ -1096,6 +1363,16 @@ def launch_managed_bot(
     if shadow_errors:
         raise ManagedExecutorError(shadow_errors[0])
     entry = _entry_path(root, entry_relative)
+    source_snapshot = snapshot_managed_bot_sources(
+        root,
+        expected_artifact_hash=expected_artifact_hash,
+        required_artifact_files=required_artifact_files,
+    )
+    source_names = {name for name, _payload in source_snapshot.files}
+    if entry.as_posix() not in source_names:
+        raise ManagedExecutorError(
+            "managed bot entry is outside the bound source projection"
+        )
     safe_name = _safe_text(name, "bot name")
     safe_seat = _safe_text(seat, "bot seat") if seat is not None else None
     safe_seed: int | None = None
@@ -1133,9 +1410,14 @@ def launch_managed_bot(
     program = _compile_seccomp_program()
     endpoint_fd = -1
     log_fd = -1
+    source_descriptors: list[int] = []
     callbacks: list[object] = []
     cleanup_transferred = False
     try:
+        for source_name, payload in source_snapshot.files:
+            descriptor = _sealed_source_memfd(source_name, payload)
+            source_descriptors.append(descriptor)
+            callbacks.append(lambda value=descriptor: os.close(value))
         endpoint_fd = endpoint._take_for_launch()
         callbacks.append(endpoint._close_after_launch)
         child_environment.update(
@@ -1146,8 +1428,21 @@ def launch_managed_bot(
             }
         )
         command = _base_bwrap_command(selected_runtime, program, child_environment)
-        command.extend(("--ro-bind", str(root), "/bot"))
-        inherited_fds = [endpoint_fd]
+        command.extend(("--dir", "/bot"))
+        for (source_name, _payload), descriptor in zip(
+            source_snapshot.files,
+            source_descriptors,
+        ):
+            command.extend(
+                (
+                    "--perms",
+                    "0444",
+                    "--ro-bind-data",
+                    str(descriptor),
+                    f"/bot/{source_name}",
+                )
+            )
+        inherited_fds = [endpoint_fd, *source_descriptors]
         if decision_log is not None:
             _path, log_fd = _open_decision_log(decision_log)
             inherited_fds.append(log_fd)
@@ -1268,7 +1563,7 @@ def managed_executor_identity(
             SANDBOX_BOOTSTRAP.encode("utf-8")
         ).hexdigest()
         return {
-            "schema": "pok-managed-executor-identity-v1",
+            "schema": "pok-managed-executor-identity-v2",
             "source": {
                 "path": "web/core/managed_bot_executor.py",
                 "sha256": _sha256_file(source_path),
@@ -1305,6 +1600,11 @@ def managed_executor_identity(
                 "environment": "clear-and-allowlist",
                 "host_process_environment": "optional-owner-marker-only",
                 "network": "loopback-exact-peer-inherited-stream-only",
+                "managed_bot_sources": (
+                    "content-bound-top-level-files-sealed-before-spawn"
+                ),
+                "managed_bot_source_mount": "sealed-memfd-ro-bind-data-only",
+                "managed_bot_python_flags": ["-I", "-B"],
                 "readonly_inputs": "named-ro-bind-only",
                 "writable_outputs": "named-new-file-bind-fd-only",
                 "max_output_files": _MAX_OUTPUT_FILES,
@@ -1517,10 +1817,12 @@ __all__ = [
     "IsolationIdentity",
     "IsolationUnavailable",
     "ManagedExecutorError",
+    "ManagedBotSourceSnapshot",
     "ManagedProcess",
     "SECCOMP_POLICY_SHA256",
     "launch_isolated_worker",
     "launch_managed_bot",
     "managed_executor_identity",
     "probe_managed_executor",
+    "snapshot_managed_bot_sources",
 ]

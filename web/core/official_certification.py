@@ -818,6 +818,42 @@ def _log_target_reached(receipt: Any, target_hands: int) -> bool:
     return not round_completion_issues(receipt, target_hands)
 
 
+def _full_v5_completion_issues(receipt: dict[str, Any]) -> list[str]:
+    """Require the fixed EXE's natural 70/69 wire boundary for full-v5.
+
+    Generic diagnostic acceptance may exercise another server that emits all
+    70 settlement pairs.  That shape must never acquire normal full-v5
+    certification authority: the pinned 2021 EXE proves hands 1..69 on the
+    wire and hand 70 independently through the strict THP artifact/footer.
+    """
+    summary = receipt.get("log_summary") if isinstance(receipt, dict) else None
+    wire = receipt.get("wire_replay_summary") if isinstance(receipt, dict) else None
+    if not isinstance(summary, dict) or not isinstance(wire, dict):
+        return ["official_full_v5_natural_terminal_boundary_missing"]
+    try:
+        shape = (
+            int(summary.get("hands_started_min", 0) or 0),
+            int(summary.get("settlements_min", 0) or 0),
+            int(wire.get("hands_started_min", 0) or 0),
+            int(wire.get("settlements_min", 0) or 0),
+        )
+    except (TypeError, ValueError, OverflowError):
+        shape = (0, 0, 0, 0)
+    if shape != (70, 69, 70, 69):
+        return [
+            "official_full_v5_natural_terminal_boundary_required: "
+            f"log_hands={shape[0]} log_settlements={shape[1]} "
+            f"wire_hands={shape[2]} wire_settlements={shape[3]} "
+            "expected=70/69/70/69"
+        ]
+    if wire.get("issues"):
+        return ["official_full_v5_wire_replay_issues_present"]
+    completion = receipt.get("completion_evidence")
+    if not isinstance(completion, dict) or completion.get("kind") != "official-thp-terminal-settlement":
+        return ["official_full_v5_terminal_completion_evidence_required"]
+    return round_completion_issues(receipt, 70, natural_terminal_only=True)
+
+
 def _same_resolved_path(left: Any, right: str | None) -> bool:
     if not left or not right:
         return False
@@ -942,7 +978,11 @@ def receipt_validation_issues(
 
     thp_hands = _max_thp_hands(receipt)
     if spec.mode == "full" or spec.target_hands >= 70:
-        completion_issues = round_completion_issues(receipt, spec.target_hands)
+        completion_issues = (
+            _full_v5_completion_issues(receipt)
+            if spec.policy_id == FULL_POLICY_ID
+            else round_completion_issues(receipt, spec.target_hands)
+        )
         if completion_issues:
             issues.extend(completion_issues)
             summary = receipt.get("log_summary") or {}
@@ -1339,7 +1379,13 @@ def read_status(candidate: str | Path) -> dict[str, Any]:
         if not receipt_issues and official_compliance_verdict(payload).get("blocking"):
             return payload
     if published and published.get("status") == STATUS_CERTIFIED:
-        return published
+        # The published certificate validator already bound this exact latest
+        # signed verdict entry. Preserve that identity in the public status so
+        # API/UI consumers do not have to reopen or reconstruct the ledger.
+        return {
+            **published,
+            "official_verdict_ledger_entry": ledger_entry,
+        }
     if payload:
         return payload
     if published:
@@ -1476,17 +1522,38 @@ def _deterministic_status_receipt_issues(
         for key in ("classification", "blocking", "inconclusive", "violation"):
             if verdict.get(key) != summary.get(key):
                 issues.append(f"official_deterministic_status_{key}_mismatch")
+        receipt_issues = [str(item) for item in (verdict.get("issues") or [])]
+        summary_issues = summary.get("deterministic_issues")
+        if not isinstance(summary_issues, list):
+            issues.append("official_deterministic_status_issues_binding_missing")
+        elif receipt_issues != [str(item) for item in summary_issues]:
+            issues.append("official_deterministic_status_issues_mismatch")
+        if summary.get("issue_count") != len(receipt_issues):
+            issues.append("official_deterministic_status_issue_count_mismatch")
     evidence_path_value = status.get("official_evidence_path")
+    evidence_payload = None
     try:
         evidence_path = Path(str(evidence_path_value or ""))
         if not evidence_path_value or evidence_path.is_symlink() or not evidence_path.is_file():
             issues.append("official_deterministic_status_evidence_missing")
         elif _file_sha256(evidence_path) != receipt.get("evidence_sha256"):
             issues.append("official_deterministic_status_evidence_digest_mismatch")
+        else:
+            evidence_payload = _read_json(evidence_path)
     except Exception as exc:
         issues.append(
             f"official_deterministic_status_evidence_error:{type(exc).__name__}:{str(exc)[:120]}"
         )
+    if isinstance(verdict, dict):
+        deterministic = (
+            evidence_payload.get("deterministic")
+            if isinstance(evidence_payload, dict)
+            else None
+        )
+        if not isinstance(deterministic, dict):
+            issues.append("official_deterministic_status_evidence_verdict_missing")
+        elif verdict != _deterministic_status_projection(deterministic):
+            issues.append("official_deterministic_status_evidence_verdict_mismatch")
     archive = status.get("official_evidence_archive")
     archive = archive if isinstance(archive, dict) else {}
     if receipt.get("archive_sha256") != str(archive.get("archive_sha256") or ""):
@@ -1830,7 +1897,11 @@ def _deterministic_receipt_issues(
             and thp_hands == spec.target_hands
             and completed_hands == spec.target_hands
             and len(str(item.get("thp_sha256") or "")) == 64
-            and (paired_completion or thp_terminal_completion)
+            and (
+                thp_terminal_completion
+                if spec.policy_id == FULL_POLICY_ID
+                else (paired_completion or thp_terminal_completion)
+            )
             and issue_count == 0
         ):
             issues.append(
@@ -1921,6 +1992,7 @@ def _opponent_selection_issues(
     identity: dict[str, Any],
     *,
     allow_consumed_bootstrap: bool = False,
+    candidate_path: str | Path | None = None,
     _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     if spec.mode != "full":
@@ -1957,7 +2029,7 @@ def _opponent_selection_issues(
                 validation = validate_first_strict_control_selection(
                     selection,
                     spec.bootstrap_control_id,
-                    spec.candidate,
+                    candidate_path or spec.candidate,
                     allow_consumed=allow_consumed_bootstrap,
                     allow_published=allow_consumed_bootstrap,
                 )
@@ -1970,7 +2042,7 @@ def _opponent_selection_issues(
                     validate_first_strict_control_selection_from_entries(
                         selection,
                         spec.bootstrap_control_id,
-                        spec.candidate,
+                        candidate_path or spec.candidate,
                         _validated_ledger_entries,
                         allow_consumed=allow_consumed_bootstrap,
                         allow_published=allow_consumed_bootstrap,
@@ -2184,6 +2256,11 @@ def certificate_validation(
         }
     spec_candidate_label = _safe_label(spec.candidate)
     requested_candidate_label = _safe_label(candidate) if candidate is not None else spec_candidate_label
+    candidate_path = (
+        Path(candidate).expanduser().resolve()
+        if candidate is not None
+        else Path(spec.candidate).expanduser().resolve()
+    )
     if record.get("candidate_label") != spec_candidate_label:
         issues.append("certificate_candidate_label_missing_or_mismatch")
     if requested_candidate_label != spec_candidate_label:
@@ -2215,6 +2292,7 @@ def certificate_validation(
             spec,
             current_identity,
             allow_consumed_bootstrap=not _skip_ledger_check,
+            candidate_path=candidate_path,
             _validated_ledger_entries=_validated_ledger_entries,
         )
     )
@@ -2244,7 +2322,6 @@ def certificate_validation(
         retained_archive_validation = archive_validation
     if spec.mode == "full":
         issues.extend(archive_validation.get("issues") or [])
-    candidate_path = Path(candidate).expanduser().resolve() if candidate is not None else Path(spec.candidate)
     try:
         if hash_path(candidate_path) != current_identity.get("candidate_hash"):
             issues.append("candidate_artifact_hash_mismatch")
@@ -2443,6 +2520,92 @@ def official_full_certified(
         and entry.get("outcome") == STATUS_CERTIFIED
         and entry.get("certificate_digest") == status.get("certificate_digest")
     )
+
+
+def official_certification_profile_projection(
+    status: dict[str, Any],
+    candidate: str | Path,
+    *,
+    require_published: bool = False,
+) -> dict[str, Any]:
+    """Project the formal profile only after reopening the signed certificate.
+
+    HTTP/UI consumers must not infer the first-strict exception from ``v143``
+    or trust profile-looking fields copied into mutable status JSON.  The
+    signed certificate spec and its validated opponent selection are the sole
+    authority once publication has cleared the parked checkpoint.
+    """
+
+    status_identity = (
+        status.get("certification_identity")
+        if isinstance(status.get("certification_identity"), dict)
+        else {}
+    )
+    verdict = official_compliance_verdict(status)
+    if (
+        status.get("status") != STATUS_CERTIFIED
+        or status.get("mode") != "full"
+        or status.get("policy_id") != FULL_POLICY_ID
+        or status.get("test_only") is True
+        or status_identity.get("test_only") is not False
+        or status_identity.get("authority_scope") != "production"
+        or status_identity.get("runner_provenance") != PRODUCTION_RUNNER_PROVENANCE
+        or verdict.get("ok") is not True
+        or verdict.get("blocking") is not False
+        or verdict.get("inconclusive") is not False
+    ):
+        return {}
+    validation = certificate_validation(
+        status,
+        candidate=candidate,
+        require_published=require_published,
+    )
+    if validation.get("valid") is not True:
+        return {}
+    spec = validation.get("spec")
+    if not isinstance(spec, dict):
+        return {}
+    if (
+        spec.get("mode") != "full"
+        or spec.get("policy_id") != FULL_POLICY_ID
+        or spec.get("self_play_rounds") != 5
+        or spec.get("opponent_rounds") != 3
+        or spec.get("target_hands") != 70
+    ):
+        return {}
+
+    bootstrap_control_id = spec.get("bootstrap_control_id")
+    if bootstrap_control_id is None:
+        certification_profile = FULL_POLICY_ID
+        opponent_authority = "strict_published_pool"
+    else:
+        from first_strict_control import CONTROL_ID
+
+        if bootstrap_control_id != CONTROL_ID:
+            return {}
+        certification_profile = CONTROL_ID
+        opponent_authority = "system_control"
+
+    return {
+        "certification_profile": certification_profile,
+        "opponent_authority": opponent_authority,
+        # Official EXE evidence is compliance-only and never contributes to
+        # strategy selection or the native strength pool.
+        "strength_evidence_weight": 0,
+        "strategy_evidence_weight": 0,
+        # Certificate validation has already proven the deterministic receipt
+        # contains all eight passing rounds.  Reconstructing this from mutable
+        # summaries would create a weaker public authority.
+        "formal_summary": {
+            "self_play_rounds": 5,
+            "opponent_rounds": 3,
+            "target_hands": 70,
+            "rounds_requested": 8,
+            "rounds_run": 8,
+            "passed_rounds": 8,
+            "failed_rounds": 0,
+        },
+    }
 
 
 def authoritative_verdict_status_issues(
@@ -3248,6 +3411,9 @@ def _status_for_result(
                 "inconclusive": deterministic.get("inconclusive"),
                 "violation": deterministic.get("violation"),
                 "issue_count": len(deterministic.get("issues") or []),
+                "deterministic_issues": [
+                    str(item) for item in (deterministic.get("issues") or [])
+                ],
                 "rounds_requested": deterministic.get("rounds_requested"),
                 "rounds_run": deterministic.get("rounds_run"),
                 "target_hands": deterministic.get("target_hands"),

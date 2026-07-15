@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
+
 
 CORE = Path(__file__).resolve().parents[1] / "core"
 if str(CORE) not in sys.path:
@@ -83,6 +85,9 @@ def _strict_checkpoint(
         source_v=source_v,
         parent2_v=parent2_v,
         audit_context=audit_context,
+        published_high_water=next_v - 1,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
         parent_resolver=_resolve_published_parent,
     )
     return {
@@ -111,7 +116,7 @@ def _hermetic_strict_parent_resolution(monkeypatch):
     )
 
 
-def test_literature_probe_cache_roundtrip(tmp_path, monkeypatch):
+def test_literature_probe_legacy_cache_writer_fails_closed(tmp_path, monkeypatch):
     import evolution_infra
     import tool_planning
 
@@ -127,21 +132,11 @@ def test_literature_probe_cache_roundtrip(tmp_path, monkeypatch):
         "stagnation_info": "flat WR",
     }
 
-    tool_planning._write_literature_probe_cache(300, payload)
-    cached = tool_planning._read_literature_probe_cache(
-        300,
-        source_v=299,
-        h2h_weakness="vs station",
-        stagnation_info="flat WR",
-    )
-
-    assert cached["cached"] is True
-    assert cached["candidate_id"] == "research-1"
-    assert cached["context_fingerprint"]
-    assert "Research Proposal" in cached["inject_text"]
+    with pytest.raises(ValueError, match="schema_fields_mismatch"):
+        tool_planning._write_literature_probe_cache(300, payload)
 
 
-def test_literature_probe_cache_rejects_context_mismatch(tmp_path, monkeypatch):
+def test_literature_probe_reader_rejects_legacy_unreceipted_cache(tmp_path, monkeypatch):
     import evolution_infra
     import tool_planning
 
@@ -157,18 +152,14 @@ def test_literature_probe_cache_rejects_context_mismatch(tmp_path, monkeypatch):
         "stagnation_info": "flat WR",
     }
 
-    tool_planning._write_literature_probe_cache(300, payload)
+    path = tool_planning._literature_probe_cache_path(300)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
     assert tool_planning._read_literature_probe_cache(
         300,
-        source_v=298,
-        h2h_weakness="vs station",
-        stagnation_info="flat WR",
-    ) is None
-    assert tool_planning._read_literature_probe_cache(
-        300,
         source_v=299,
-        h2h_weakness="different weakness",
+        h2h_weakness="vs station",
         stagnation_info="flat WR",
     ) is None
 
@@ -251,11 +242,10 @@ def test_literature_probe_rejects_old_checkpoint_receipt_after_context_refresh(t
     data = json.loads(result["content"][0]["text"])
 
     assert data.get("cached") is not True
-    assert data["reason"] == "web retrieval in cooldown or disabled by governance"
-    assert data["master_context_digest"] == refreshed_context["context_digest"]
-    assert data["master_context_digest"] != payload["master_context_digest"]
+    assert data["error"] == "LITERATURE_PROBE_RECEIPT_INVALID"
+    assert data["next_tool"] == "abandon_generation"
     persisted = evolution_infra.read_pipeline_checkpoint()["literature_probe"]
-    assert persisted["requirement_context_digest"] == data["requirement_context_digest"]
+    assert persisted == payload
 
 
 def test_plan_compiler_externalizes_oversized_worker_prompt(tmp_path):
@@ -755,7 +745,6 @@ def test_runtime_code_has_no_local_absolute_project_paths():
         "bots/neural_national_lab/data/",
         "ladder_results/",
         "results/",
-        "scripts/research_eval/",
     )
     forbidden_tokens = (
         "/home/zzx/project/pok",
@@ -781,6 +770,31 @@ def test_runtime_code_has_no_local_absolute_project_paths():
                 hits.append(f"{rel}: {token}")
                 break
 
+    assert hits == []
+
+
+def test_active_scripts_have_no_retired_arbitrary_bot_entry_harness():
+    root = Path(__file__).resolve().parents[2]
+    active = [
+        path.relative_to(root).as_posix()
+        for path in (root / "scripts").rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    ]
+    assert not any(path.startswith("scripts/research_eval/") for path in active)
+
+    forbidden_markers = (
+        "--bot-a-entry",
+        "--bot-b-entry",
+        "bots/research_native_lab",
+    )
+    hits = []
+    for rel in active:
+        if not rel.endswith((".py", ".sh")):
+            continue
+        text = (root / rel).read_text(encoding="utf-8", errors="ignore")
+        for marker in forbidden_markers:
+            if marker in text:
+                hits.append(f"{rel}: {marker}")
     assert hits == []
 
 
@@ -952,58 +966,42 @@ def test_pipeline_route_guard_allows_only_tagged_post_commit_archivist(
     assert payload["reason"] == "no_active_checkpoint"
 
 
-def test_post_commit_archivist_receipt_is_content_bound_and_single_use(
-    tmp_path,
-    monkeypatch,
-):
+def test_archivist_authority_comes_only_from_active_handoff_route(monkeypatch):
     import evolution_infra
+    import post_publication_handoff
 
-    bot_dir = _strict_artifact(tmp_path / "bots" / "national_v300", 300)
-    archive_dir = tmp_path / "archive"
-    monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", archive_dir)
-    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: bot_dir)
-    monkeypatch.setattr(evolution_infra, "get_active_bots", lambda: ["national_v300"])
-    monkeypatch.setattr(evolution_infra, "load_ratings", lambda: {})
-    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: True)
     monkeypatch.setattr(
-        evolution_infra,
-        "_git",
-        lambda *args, **_kwargs: "commit-300" if args[0] == "rev-parse" else "",
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {
+            "status": "pending",
+            "version": 300,
+            "source_v": 299,
+            "identity_digest": "a" * 64,
+            "publication_id": "b" * 64,
+            "state": "pending",
+        },
     )
 
-    snapshot = evolution_infra.archive_generation(300, 299, {})
-    receipt = snapshot["post_commit_archivist_receipt"]
-    assert receipt["status"] == "pending"
-
-    ok, reason, _ = evolution_infra.validate_post_commit_archivist_receipt(300, 299)
+    ok, reason, receipt = evolution_infra.validate_post_commit_archivist_receipt(
+        300, 299
+    )
     assert ok is True
     assert reason == ""
+    assert receipt["receipt_digest"] == "a" * 64
+    assert receipt["publication_id"] == "b" * 64
     wrong_source_ok, wrong_source_reason, _ = (
         evolution_infra.validate_post_commit_archivist_receipt(300, 298)
     )
     assert wrong_source_ok is False
-    assert wrong_source_reason == "post_commit_archivist_source_mismatch"
+    assert wrong_source_reason == "post_publication_handoff_subject_mismatch"
 
     consumed, consume_reason, _ = evolution_infra.consume_post_commit_archivist_receipt(
         300,
         299,
     )
-    assert consumed is True
-    assert consume_reason == ""
-    replay_ok, replay_reason, _ = evolution_infra.validate_post_commit_archivist_receipt(
-        300,
-        299,
-    )
-    assert replay_ok is False
-    assert replay_reason == "post_commit_archivist_receipt_consumed"
-
-    (bot_dir / "policy.py").write_text("DRIFTED = True\n", encoding="utf-8")
-    second, second_reason, _ = evolution_infra.consume_post_commit_archivist_receipt(
-        300,
-        299,
-    )
-    assert second is False
-    assert second_reason == "post_commit_archivist_receipt_consumed"
+    assert consumed is False
+    assert consume_reason == "post_commit_archivist_consume_api_retired"
 
 
 def test_runtime_guard_blocks_random_pipeline_tool_without_checkpoint(monkeypatch):
@@ -1034,6 +1032,7 @@ def test_runtime_guard_blocks_random_pipeline_tool_without_checkpoint(monkeypatc
 def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkeypatch):
     import tool_runtime_guard
 
+    monkeypatch.setenv("POK_OPERATOR_FIRST_STRICT_FINALIZE", str(os.getpid()))
     checkpoint = _strict_checkpoint(
         143,
         142,
@@ -1062,6 +1061,7 @@ def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkey
 def test_operator_bootstrap_stage_allows_commit_only_after_full_validation(monkeypatch):
     import tool_runtime_guard
 
+    monkeypatch.setenv("POK_OPERATOR_FIRST_STRICT_FINALIZE", str(os.getpid()))
     checkpoint = _strict_checkpoint(
         143,
         142,
@@ -1084,18 +1084,33 @@ def test_operator_bootstrap_stage_allows_commit_only_after_full_validation(monke
     )
 
     assert ok is True
-    assert payload == {}
+    assert payload == {
+        "operator_only_finalize": True,
+        "candidate_v": 143,
+        "checkpoint_stage": "official_bootstrap_required",
+    }
     assert calls == [143]
 
 
 def test_operator_bootstrap_guard_uses_complete_official_validator(tmp_path, monkeypatch):
+    import official_bootstrap
     import official_certification
     import tool_runtime_guard
 
     candidate = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
     status = {"status": "official-certified", "certificate_digest": "signed"}
     calls = []
+    checkpoint = {
+        "stage": "official_bootstrap_required",
+        "next_v": 143,
+        "source_v": 142,
+    }
     monkeypatch.setattr(tool_runtime_guard, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
     monkeypatch.setattr(official_certification, "read_status", lambda path: status)
 
     def validate(requested_status, path):
@@ -1103,13 +1118,56 @@ def test_operator_bootstrap_guard_uses_complete_official_validator(tmp_path, mon
         return requested_status is status and path == candidate
 
     monkeypatch.setattr(official_certification, "official_full_certified", validate)
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_completed_operator_bootstrap_authorization",
+        lambda requested_status, path, *, checkpoint: (
+            calls.append(("completed", requested_status, path, checkpoint))
+            or {"valid": True}
+        ),
+    )
 
     assert tool_runtime_guard._operator_bootstrap_certificate_valid(143) is True
-    assert calls == [(status, candidate)]
+    assert calls == [
+        (status, candidate),
+        ("completed", status, candidate, checkpoint),
+    ]
+
+
+def test_operator_bootstrap_stage_rejects_direct_commit_without_finalize_cli(monkeypatch):
+    import tool_runtime_guard
+
+    monkeypatch.delenv("POK_OPERATOR_FIRST_STRICT_FINALIZE", raising=False)
+    checkpoint = _strict_checkpoint(
+        143,
+        142,
+        "official_bootstrap_required",
+        gate_results={"precommit_eval": {"passed": True}},
+    )
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: checkpoint)
+    certificate_checks = []
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_operator_bootstrap_certificate_valid",
+        lambda candidate_v: certificate_checks.append(candidate_v) or True,
+    )
+
+    ok, payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="commit_bot",
+        args={"version": 143, "source_v": 142},
+        candidate_v=143,
+        source_v=142,
+    )
+
+    assert ok is False
+    assert payload["reason"] == "operator_finalize_command_required"
+    assert payload["allowed_tools"] == []
+    assert certificate_checks == []
 
 
 def test_runtime_guard_allows_pre_master_literature_probe(monkeypatch):
     import tool_runtime_guard
+    from master_context_contract import build_master_context
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
@@ -1132,6 +1190,14 @@ def test_runtime_guard_allows_pre_master_literature_probe(monkeypatch):
         300,
         299,
         "direction_audited",
+        audit_context={
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+        direction_audit={"repetition_detected": False},
         repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
@@ -1241,7 +1307,7 @@ def test_runtime_guard_allows_unrelated_inplace_dirty_entries(monkeypatch):
     assert " M sever/国赛平台/通信协议.docx" in payload["ignored_entries"]
 
 
-def test_runtime_guard_allows_noncritical_web_core_dirty_entries(monkeypatch):
+def test_runtime_guard_blocks_dirty_replay_evidence_producer(monkeypatch):
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -1259,21 +1325,22 @@ def test_runtime_guard_allows_noncritical_web_core_dirty_entries(monkeypatch):
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
         300,
         299,
-        "master_planned",
+        "direction_audited",
         repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",
-            "captured_stage": "master_planned",
+            "captured_stage": "direction_audited",
         },
     ))
 
     ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
-        "execute_workers",
+        "run_master",
         {"next_v": 300, "source_v": 299},
     )
 
-    assert ok is True
-    assert " M web/core/replay_spotlight.py" in payload["ignored_entries"]
+    assert ok is False
+    assert payload["reason"] == "unexpected_worktree_entries"
+    assert " M web/core/replay_spotlight.py" in payload["unexpected_entries"]
 
 
 def test_runtime_guard_blocks_foreign_national_bot_dir(monkeypatch):
@@ -1537,6 +1604,7 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
     scope = evaluation_contract.classify_contract_paths(
         [
             "engine/battle.py",
+            "web/core/master_context_contract.py",
             "web/core/replay_spotlight.py",
             "bots/national_v300/policy.py",
             "bots/national_v299/policy.py",
@@ -1566,7 +1634,8 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
     assert "docs/official-terminal-settlement-oracle-2026-07-11.md" in scope[
         "contract_paths"
     ]
-    assert "web/core/replay_spotlight.py" in scope["external_paths"]
+    assert "web/core/master_context_contract.py" in scope["contract_paths"]
+    assert "web/core/replay_spotlight.py" in scope["contract_paths"]
     assert "sever/国赛平台/通信协议.docx" in scope["external_paths"]
     assert "bots/neural_national_lab/data/run.json" in scope["external_paths"]
     assert "docs/notes.md" in scope["external_paths"]
@@ -1704,13 +1773,16 @@ def test_worktree_scope_uses_native_evaluation_contract_for_dirty_paths(monkeypa
     ]
 
 
-def test_evaluation_contract_allows_noncritical_web_core_head_drift(monkeypatch):
+def test_evaluation_contract_blocks_master_evidence_head_drift(monkeypatch):
     import evaluation_contract
 
     monkeypatch.setattr(
         evaluation_contract,
         "changed_paths_between_heads",
-        lambda *_args, **_kwargs: ["web/core/replay_spotlight.py"],
+        lambda *_args, **_kwargs: [
+            "web/core/master_context_contract.py",
+            "web/core/replay_spotlight.py",
+        ],
     )
 
     allowed, payload = evaluation_contract.evaluate_head_drift(
@@ -1719,12 +1791,16 @@ def test_evaluation_contract_allows_noncritical_web_core_head_drift(monkeypatch)
         "new456",
         candidate_v=300,
         source_v=299,
+        stage="direction_audited",
     )
 
-    assert allowed is True
-    assert payload["evaluation_contract_unchanged"] is True
-    assert payload["head_contract_paths"] == []
-    assert payload["head_external_paths"] == ["web/core/replay_spotlight.py"]
+    assert allowed is False
+    assert payload["evaluation_contract_unchanged"] is False
+    assert payload["head_contract_paths"] == [
+        "web/core/master_context_contract.py",
+        "web/core/replay_spotlight.py",
+    ]
+    assert payload["head_external_paths"] == []
 
 
 def test_evaluation_contract_allows_observability_and_launcher_head_drift(monkeypatch):
@@ -2036,7 +2112,8 @@ def test_evolution_scope_is_exact_file_scoped():
     import evolution_scope
 
     assert evolution_scope.CRITICAL_PREFIXES == ()
-    assert evolution_scope.classify_path("web/core/replay_spotlight.py", candidate_v=300) == "external"
+    assert evolution_scope.classify_path("web/core/master_context_contract.py", candidate_v=300) == "critical"
+    assert evolution_scope.classify_path("web/core/replay_spotlight.py", candidate_v=300) == "critical"
     assert evolution_scope.classify_path("web/core/eval_stats.py", candidate_v=300) == "critical"
     assert evolution_scope.classify_path("sever/main.py", candidate_v=300) == "external"
     assert evolution_scope.classify_path("sever/server/tcp_server.py", candidate_v=300) == "critical"
@@ -2424,7 +2501,7 @@ def test_runtime_guard_allows_review_after_post_quality_head_drift(monkeypatch):
     assert payload["current_head"] == "new456"
 
 
-def test_runtime_guard_allows_review_repair_workers_after_post_quality_head_drift(monkeypatch):
+def test_runtime_guard_blocks_unscheduled_workers_after_quality_passed_head_drift(monkeypatch):
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -2446,12 +2523,9 @@ def test_runtime_guard_allows_review_repair_workers_after_post_quality_head_drif
         {"version": 300, "source_v": 299},
     )
 
-    assert ok is True
-    assert payload["head_drift_resume_allowed"] is True
-    assert payload["head_drift_repair_allowed"] is False
-    assert payload["resume_kind"] == "post_quality"
-    assert payload["baseline_head"] == "old123"
-    assert payload["current_head"] == "new456"
+    assert ok is False
+    assert payload["reason"] == "head_changed_during_generation"
+    assert "Abandon and restart" in payload["directive"]
 
 
 def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
@@ -2468,6 +2542,20 @@ def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
         300,
         299,
         "verified",
+        gate_results={
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "national_native_contract_ok": True,
+            },
+            "precommit_eval": {
+                "passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+            },
+        },
         repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
     ))
 
@@ -2510,6 +2598,7 @@ def test_runtime_guard_blocks_clean_branch_drift_without_auto_checkout(monkeypat
 
 def test_runtime_guard_allows_non_commit_tool_on_same_head_branch_alias(monkeypatch):
     import tool_runtime_guard
+    from master_context_contract import build_master_context
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     monkeypatch.setenv("POK_RUNTIME_EXPECTED_HEAD", "abc123")
@@ -2524,6 +2613,14 @@ def test_runtime_guard_allows_non_commit_tool_on_same_head_branch_alias(monkeypa
         300,
         299,
         "direction_audited",
+        audit_context={
+            "master_context": build_master_context(
+                next_v=300,
+                source_v=299,
+                stagnation_info="STAGNATION_DETECTED (is_stagnant=true)",
+            ),
+        },
+        direction_audit={"repetition_detected": False},
         repo_baseline={
             "head": "abc123",
             "branch": "main...origin/main",

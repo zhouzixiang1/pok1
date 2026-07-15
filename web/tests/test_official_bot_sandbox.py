@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 import socket
 
 import pytest
@@ -28,7 +29,10 @@ def _bot(path: Path) -> Path:
         "parser.parse_args()\n",
         encoding="utf-8",
     )
-    (path / "strategy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (path / "precompute.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (path / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (path / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
     return path
 
 
@@ -37,8 +41,19 @@ def test_sealed_bot_contains_only_content_bound_artifact(tmp_path):
     (source / ".completed").write_text("runtime-only\n", encoding="utf-8")
     cache = source / "__pycache__"
     cache.mkdir()
-    (cache / "strategy.pyc").write_bytes(b"runtime-cache")
+    (cache / "policy.pyc").write_bytes(b"runtime-cache")
     expected_hash = hash_path(source)
+
+    with pytest.raises(
+        RuntimeError,
+        match="artifact_execution_cache_directory_forbidden:__pycache__",
+    ):
+        seal_bot_artifact(
+            source,
+            tmp_path / "suite" / "sealed" / "candidate",
+            expected_hash=expected_hash,
+        )
+    shutil.rmtree(cache)
 
     sealed = seal_bot_artifact(
         source,
@@ -110,6 +125,9 @@ def test_execution_profile_is_tracked_and_requires_sandbox():
     )
     assert profile["sandbox"]["authority"] == "web/core/managed_bot_executor.py"
     assert profile["managed_executor"]["contract"]["host_root_mounted"] is False
+    assert profile["managed_executor"]["contract"]["managed_bot_source_mount"] == (
+        "sealed-memfd-ro-bind-data-only"
+    )
     assert profile["sandbox"]["python_flags"] == ["-I", "-B"]
     assert len(identity["profile_sha256"]) == 64
     assert len(identity["profile_digest"]) == 64

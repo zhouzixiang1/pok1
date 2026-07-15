@@ -215,9 +215,10 @@ def snapshot_artifact_files(root: Path) -> ArtifactFileSnapshot:
     """Capture every bot artifact file as raw bytes.
 
     Exclusions are imported from :mod:`bot_artifact`, so ``.completed``, Python
-    bytecode, cache trees, and ``.task_context`` have exactly one authority.
-    Excluded trees are still inspected for symlinks and special files, matching
-    publication identity validation; they simply do not contribute contents.
+    bytecode, cache trees, and ``.task_context`` have exactly one snapshot
+    policy. Excluded trees are still inspected for symlinks and special files;
+    they do not contribute identity. Strict execution/publication later rejects
+    caches, while the explicit Worker phase alone may own ``.task_context``.
     """
     root = Path(root)
     if not root.exists() and not root.is_symlink():
@@ -591,8 +592,9 @@ def restore_complete_artifact_snapshot(
     snapshot scanner correctly rejects that tree before it can produce a diff.
     A batch rollback already owns the complete pre-batch snapshot, so remove
     current root entries without following links and reconstruct only that
-    trusted regular-file/directory surface.  Excluded caches/control artifacts
-    are intentionally discarded; they are never part of bot identity.
+    trusted regular-file/directory surface. Excluded caches/control artifacts
+    are intentionally discarded: they are never identity-bearing, and caches
+    are forbidden at every execution/publication boundary.
     """
     root = Path(root)
     try:
@@ -714,6 +716,7 @@ def audit_strict_policy_artifact_delta_against_plan(
                     candidate_dir,
                     int(version),
                     parent_versions=tuple(map(int, parent_versions)),
+                    allow_working_task_context=True,
                 )
             )
         if not identity_errors and require_identity_refresh_receipt:

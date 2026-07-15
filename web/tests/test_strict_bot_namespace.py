@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from bot_namespace import (
     NATIONAL_RUNTIME_MANIFEST,
     POLICY_EPOCH_RECEIPT,
@@ -162,13 +164,99 @@ def test_version_authority_uses_tags_and_ignores_stale_directory(monkeypatch, tm
     monkeypatch.setattr(evolution_infra, "BOTS_DIR", bots)
 
     def git(*args, **_kwargs):
+        if args[:2] == ("for-each-ref", "--format=%(objecttype)%09%(*objecttype)%09%(refname:short)"):
+            return (
+                "tag\tcommit\tnational-bot-v141\n"
+                "tag\tcommit\tnational-bot-v142\n"
+                "tag\tcommit\tnational-high-water-v142\n"
+            )
         if args[:3] == ("tag", "-l", "national-bot-v*"):
             return "national-bot-v141\nnational-bot-v142\n"
         if args[:3] == ("tag", "-l", "national-high-water-v*"):
             return "national-high-water-v142\n"
+        if args == ("rev-parse", "refs/tags/national-bot-v142^{commit}"):
+            return "a" * 40
+        if args == ("rev-parse", "refs/tags/national-high-water-v142^{commit}"):
+            return "a" * 40
         return ""
 
     monkeypatch.setattr(evolution_infra, "_git", git)
 
     assert evolution_infra.find_current_v() == 142
     assert evolution_infra._tagged_bot_versions() == set()
+
+
+def test_version_authority_ignores_lightweight_completion_and_high_water_tags(
+    monkeypatch,
+):
+    import evolution_infra
+
+    monkeypatch.setattr(
+        evolution_infra,
+        "_git",
+        lambda *args, **_kwargs: (
+            "tag\tcommit\tnational-bot-v142\n"
+            "tag\tcommit\tnational-high-water-v142\n"
+            "commit\t\tnational-bot-v999\n"
+            "commit\t\tnational-high-water-v1000\n"
+        ) if args and args[0] == "for-each-ref" else (
+            "a" * 40 if args and args[0] == "rev-parse" else ""
+        ),
+    )
+
+    assert evolution_infra.find_current_v() == 142
+
+
+def test_version_authority_fails_closed_without_annotated_tag(monkeypatch):
+    import evolution_infra
+
+    monkeypatch.setattr(
+        evolution_infra,
+        "_git",
+        lambda *args, **_kwargs: (
+            "commit\t\tnational-high-water-v142\n"
+        ) if args and args[0] == "for-each-ref" else "",
+    )
+
+    with pytest.raises(RuntimeError, match="annotated completion/high-water"):
+        evolution_infra.find_current_v()
+
+
+def test_version_authority_ignores_unpaired_annotated_tag(monkeypatch):
+    import evolution_infra
+
+    def git(*args, **_kwargs):
+        if args and args[0] == "for-each-ref":
+            return (
+                "tag\tcommit\tnational-bot-v142\n"
+                "tag\tcommit\tnational-high-water-v142\n"
+                "tag\tcommit\tnational-bot-v999\n"
+            )
+        if args and args[0] == "rev-parse":
+            return "a" * 40
+        return ""
+
+    monkeypatch.setattr(evolution_infra, "_git", git)
+
+    assert evolution_infra.find_current_v() == 142
+
+
+def test_version_authority_rejects_pair_at_different_commits(monkeypatch):
+    import evolution_infra
+
+    def git(*args, **_kwargs):
+        if args and args[0] == "for-each-ref":
+            return (
+                "tag\tcommit\tnational-bot-v142\n"
+                "tag\tcommit\tnational-high-water-v142\n"
+            )
+        if args == ("rev-parse", "refs/tags/national-bot-v142^{commit}"):
+            return "a" * 40
+        if args == ("rev-parse", "refs/tags/national-high-water-v142^{commit}"):
+            return "b" * 40
+        return ""
+
+    monkeypatch.setattr(evolution_infra, "_git", git)
+
+    with pytest.raises(RuntimeError, match="commit mismatch for v142"):
+        evolution_infra.find_current_v()

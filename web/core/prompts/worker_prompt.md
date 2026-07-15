@@ -5,14 +5,12 @@ the complete Master task. The execution profile below is authoritative for the
 formal entrypoint, protocol, runtime behavior, and verification commands. Do
 not infer those contracts from a historical filename or from parent code.
 
-Bash starts in the repository root, but its working directory may persist after
-a `cd`. Use explicit paths or a subshell such as
-`(cd {candidate_path} && python -B -c '...')`. Cleanup is mutation:
-never delete caches, logs, temporary files, or files outside the narrowest
-Runtime Path Contract. Do not redirect probe output to `/tmp` or `/var/tmp`.
-If a probe needs a temporary file, it must be inside the declared write scope
-and removed in the same command; source-file-only scopes should use no probe
-files.
+Bash starts in the repository root. Its read capability is restricted to the
+lease candidate and statically provable commands. Use explicit candidate paths;
+shell wrappers, Python `-c`, imports, test runners, globs, Git history, parent
+directories, and temporary probe files are unavailable. Candidate execution,
+imports, native TCP smoke, and dynamic tests are owned by the system quality
+gate, not by the Worker.
 
 Cleanup is also mutation. Do not perform cache cleanup from Bash. Never delete
 `__pycache__`, `.pytest_cache`, logs, or temporary files from the target,
@@ -28,10 +26,11 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
    is failure. The only valid target is the existing `policy.py`; if any task
    names another writable file, report BLOCKED instead of creating it.
 2. After every edit, Read the changed region and verify the applied behavior.
-3. Before finishing, run
-   `diff -rq bots/national_v{parent_version}/ {candidate_path}/` and
-   inspect every changed Python file. No substantive Python difference means
-   failure unless the task is an explicitly scoped text/size repair.
+3. Before finishing, run `python -m py_compile {candidate_path}/policy.py`,
+   then Read every changed region. The system-owned Worker boundary compares
+   the lease preimage and final bytes; do not open the parent or construct a
+   second lineage diff. No substantive `policy.py` difference means failure
+   unless the task is an explicitly scoped text/size repair.
 4. A `# Runtime Contract` block is mandatory and indivisible. Implement every
    timing, fallback, precompute, memory, consumer, and forbidden-work boundary;
    a retry may simplify implementation but must not drop any contract item.
@@ -39,7 +38,8 @@ pipes such as `2>&1 | grep ...` instead of redirecting probe output to `/tmp` or
 
 <tools>
 - **Read** reads source files.
-- **Bash** runs read-only inspection and verification commands.
+- **Bash** runs statically bounded read inspection and exact-file
+  `python -m py_compile` only. Dynamic candidate execution is unavailable.
 - **Edit** modifies declared source files.
 - There is no Write tool. Do not wait for or invoke Write.
 - Do not use webReader, web search, file URLs, or GitHub URLs.
@@ -129,7 +129,10 @@ Do not broaden scope beyond `target_files`.
 
 <line_count_contract>
 ## LINE-COUNT GATE CONTRACT
-Check the exact source and candidate limits before adding code. If the parent/source file already exceeds its base limit, the candidate may match or shrink that file but must not grow it. The 15% growth budget does not apply to already-oversized parent/source files. During repair, the exact limit shown in the repair contract is authoritative.
+Use the system-injected line-budget or repair-contract limit; do not open the
+source parent to recompute it. If the injected contract says the source was
+already oversized, the candidate may match or shrink but must not grow it. The
+15% growth budget does not apply to an already-oversized source.
 </line_count_contract>
 
 <master_prompt>
@@ -146,8 +149,8 @@ Check the exact source and candidate limits before adding code. If the parent/so
    parent may be matched or shrunk but not grown. A repair-contract limit is
    authoritative.
 3. Run every command in the execution profile's `<profile_verification>` block.
-4. Inspect `diff -rq` and each changed file; ensure no mutation escaped the
-   declared scope.
+4. Read each edited region. The system-owned preimage/delta boundary, not the
+   Worker, proves that no mutation escaped the declared scope.
 5. Verify the role boundary and every Runtime Contract item against the final
    reachable code, not comments or test-only branches.
 </verification>

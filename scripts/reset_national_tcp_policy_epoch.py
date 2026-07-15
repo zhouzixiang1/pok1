@@ -32,7 +32,7 @@ from bot_namespace import (  # noqa: E402
     FIRST_STRICT_POLICY_VERSION,
     bot_name,
     parse_bot_version,
-    parse_tag_version,
+    resolve_version_namespace_authority,
 )
 from bot_artifact import canonical_digest  # noqa: E402
 from log_epoch import (  # noqa: E402
@@ -75,17 +75,7 @@ def _git(*args: str) -> str:
 
 
 def _version_authority_high_water() -> int:
-    versions = {ARCHIVED_VERSION_HIGH_WATER}
-    for tag in _git("tag", "-l", "national-bot-v*").splitlines():
-        version = parse_tag_version(tag.strip())
-        if version is not None:
-            versions.add(version)
-    for tag in _git("tag", "-l", "national-high-water-v*").splitlines():
-        prefix = "national-high-water-v"
-        suffix = tag.strip()[len(prefix):] if tag.strip().startswith(prefix) else ""
-        if suffix.isdigit() and int(suffix) > 0:
-            versions.add(int(suffix))
-    return max(versions)
+    return int(resolve_version_namespace_authority(_git).high_water)
 
 
 def _canonical_json_bytes(payload: dict) -> bytes:

@@ -7,10 +7,26 @@ import pytest
 
 
 def test_prepare_generation_blocks_legacy_adapter_workflow(monkeypatch):
+    import epoch_authority
     import generation_scheduler
+    import post_publication_handoff
     import workflow_profiles
 
     events = []
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: {
+            "initialized": True,
+            "ignored_checkpoint": None,
+            "active_generation": None,
+        },
+    )
     monkeypatch.setattr(
         workflow_profiles,
         "get_workflow_profile",

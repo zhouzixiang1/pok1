@@ -3,7 +3,14 @@
 `scripts/official_wire_probe.py` runs the Windows national platform through a
 transparent TCP proxy. Use it when a bot passes local native TCP tests but the
 official EXE reports illegal `check`, illegal `allin`, or no response within
-60 seconds.
+60 seconds. Both inputs must be strict five-file national-policy directories;
+they may be unpublished diagnostic candidates, but arbitrary script paths are
+not executable inputs.
+
+Before either connection is consumed, the probe content-binds and seals the
+five source files, validates the tracked formal execution profile, and launches
+the bot through the same managed sandbox and endpoint-lease boundary used by
+official certification. The host bot directory is never mounted.
 
 The probe records both raw byte streams and a replay summary:
 
@@ -15,18 +22,16 @@ python scripts/official_wire_probe.py \
   --results-dir /tmp/pok_wire_probe
 ```
 
-For a deterministic diagnostic peer, use the maintained raw-stream client:
+This standalone proxy is deliberately limited to `--target-hands 1..69`
+(default `1`).  The official EXE emits no wire settlement for natural hand 70,
+so the proxy alone cannot prove that hand.  A request for 70 is rejected rather
+than weakened to a generic `target - 1` rule.  Full completion must use
+`python scripts/official_certify.py full ...`, which cross-binds wire starts
+1..70 and settlements 1..69 to strict THP states 0..69 and the footer.
 
-```bash
-python scripts/official_wire_probe.py \
-  --candidate bots/national_v<N> \
-  --opponent scripts/official_scripted_bot.py \
-  --target-hands 1 \
-  --results-dir /tmp/pok_wire_probe_scripted
-```
-
-The original platform sample is archived and is not wrapped or launched by
-active tooling.
+The system-owned scripted client remains a low-level parser fixture; it is not
+an accepted bot-path substitute for this probe. The original platform sample
+is archived and is not wrapped or launched by active tooling.
 
 Important artifacts:
 
@@ -34,7 +39,8 @@ Important artifacts:
   partial buffers for each direction.
 - `wire_summary.json`: replayed protocol state, illegal action classifications,
   response timings, pending expected actions, and platform silent gaps.
-- `receipt.json`: command, environment, pass/fail, and artifact paths.
+- `receipt.json`: managed launch/artifact/isolation identity, environment,
+  diagnostic pass/fail, zero certification/rating weight, and artifact paths.
 
 Interpretation:
 

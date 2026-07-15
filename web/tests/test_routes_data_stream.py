@@ -29,3 +29,34 @@ class TestDataStream:
         assert response.status_code == 200
         assert "event: epoch_blocked" in response.text
         assert '"epoch_initialized": false' in response.text
+
+    def test_stale_expected_authority_is_fenced_before_any_data_fetch(
+        self,
+        monkeypatch,
+    ):
+        from fastapi import FastAPI
+        from server.routes import data_stream
+
+        monkeypatch.setattr(data_stream, "_epoch_projection", lambda: {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "epoch_state": "strict_published",
+            "epoch_initialized": True,
+            "epoch_reset_receipt_digest": "a" * 64,
+            "stream_authority_digest": "b" * 64,
+        })
+
+        def forbidden_snapshot():
+            raise AssertionError("stale expected identity fetched current data")
+
+        monkeypatch.setattr(data_stream, "_strict_snapshot", forbidden_snapshot)
+        app = FastAPI()
+        app.include_router(router)
+
+        response = TestClient(app).get(
+            f"/api/data/stream?authority={'a' * 64}"
+        )
+
+        assert response.status_code == 200
+        assert "event: epoch_blocked" in response.text
+        assert '"stream_authority_digest": "' + "b" * 64 + '"' in response.text
+        assert "event: ratings" not in response.text

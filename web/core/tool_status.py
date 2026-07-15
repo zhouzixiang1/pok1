@@ -26,10 +26,6 @@ from evolution_core import (
     start_daemon,
     stop_daemon,
     wait_for_daemon_eval,
-    find_current_v,
-    find_max_committed_v,
-    find_abandoned_version_floor,
-    compute_next_generation_v,
     locked_file,
     strict_epoch_projection,
     unpublished_candidate_versions,
@@ -98,6 +94,11 @@ async def get_status(args):
     result = {
         "current_v": current_v,
         "next_v": next_v,
+        "published_high_water": epoch["published_high_water"],
+        "allocation_floor": epoch["allocation_floor"],
+        "abandoned_receipt_floor": epoch["abandoned_receipt_floor"],
+        "next_v_authority": epoch["next_v_authority"],
+        # Deprecated read aliases retained for older tool clients.
         "max_committed_v": epoch["max_committed_v"],
         "abandoned_floor": epoch["abandoned_floor"],
         "active_bots_count": len(active_bots),
@@ -190,25 +191,32 @@ async def get_match_history(args):
     n = args.get("n", 5)
     bot_name = active_bot_name(v)
 
-    history_file = _infra_path("MATCH_HISTORY_FILE")
-    if not history_file.exists():
+    from evaluation_bundle import load_current_strict_evaluation_bundle
+
+    bundle = load_current_strict_evaluation_bundle()
+    if bundle.get("available") is not True:
         return _json_tool_result({"matches": []})
+    expected_identity = str(
+        (bundle.get("manifest") or {}).get("evaluation_identity_digest") or ""
+    )
+    raw_history = (bundle.get("raw_append_logs") or {}).get(
+        "match_history", b""
+    )
 
     entries = []
     from rating_snapshot import _admitted_70_hand_history_sample
-    with locked_file(history_file, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if _admitted_70_hand_history_sample(entry) is None:
-                continue
-            if entry.get("bot0") == bot_name or entry.get("bot1") == bot_name:
-                entries.append(entry)
+    for line in raw_history.splitlines():
+        try:
+            entry = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if _admitted_70_hand_history_sample(
+            entry,
+            expected_evaluation_identity_digest=expected_identity,
+        ) is None:
+            continue
+        if entry.get("bot0") == bot_name or entry.get("bot1") == bot_name:
+            entries.append(entry)
 
     entries = entries[-n:]
     return _json_tool_result({"matches": entries})

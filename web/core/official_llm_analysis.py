@@ -751,6 +751,35 @@ def build_official_analysis_prompt(evidence: dict[str, Any], *, prompt_template:
     return template.replace("{evidence_json}", evidence_json)
 
 
+def _render_official_provider_prompt(inputs: dict[str, Any]):
+    from llm_query import LLMRenderedMaterial
+
+    if not isinstance(inputs, dict) or set(inputs) != {"evidence"}:
+        raise ValueError("Official analysis renderer input contract mismatch")
+    evidence = inputs["evidence"]
+    if not isinstance(evidence, dict):
+        raise ValueError("Official analysis evidence must be an object")
+    compact = compact_evidence_for_llm(evidence)
+
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "official_platform_analysis.md"
+    ).read_text(encoding="utf-8")
+    return LLMRenderedMaterial(
+        text=build_official_analysis_prompt(evidence, prompt_template=template),
+        evidence_kind="compact_official_compliance_evidence",
+        evidence_provenance={
+            "evidence_id": str(compact.get("evidence_id") or ""),
+            "compact_evidence_digest": hashlib.sha256(
+                json.dumps(
+                    compact,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
 def safe_default_analysis(evidence: dict[str, Any], *, reason: str = "llm_not_run") -> dict[str, Any]:
     deterministic = evidence.get("deterministic") or {}
     blocking = bool(deterministic.get("blocking"))
@@ -1016,10 +1045,16 @@ async def run_official_llm_analysis(
     prompt = build_official_analysis_prompt(evidence)
     if runner is None:
         async def _default_runner(prompt_text: str) -> str:
-            from llm_query import run_claude_query
+            from llm_query import render_llm_prompt, run_claude_query
+
+            rendered_prompt = render_llm_prompt(
+                "OFFICIAL PLATFORM COMPLIANCE ANALYST",
+                producer=_render_official_provider_prompt,
+                renderer_inputs={"evidence": evidence},
+            )
 
             output, _, _ = await run_claude_query(
-                prompt_text,
+                rendered_prompt,
                 [],
                 ui,
                 "OFFICIAL PLATFORM COMPLIANCE ANALYST",

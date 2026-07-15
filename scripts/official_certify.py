@@ -162,6 +162,30 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.cmd in {
+        "smoke",
+        "compliance",
+        "full",
+        "bootstrap-first-strict",
+        "finalize-first-strict",
+        "init-ledger",
+        "reconcile-jobs",
+    }:
+        try:
+            from epoch_authority import require_policy_epoch_initialized
+
+            require_policy_epoch_initialized(f"official_certify.{args.cmd}")
+        except Exception as exc:
+            print(json.dumps({
+                "status": "policy-epoch-mutation-blocked",
+                "reason": f"{type(exc).__name__}: {str(exc)[:500]}",
+                "command": getattr(
+                    getattr(exc, "state", {}),
+                    "get",
+                    lambda *_a, **_k: None,
+                )("operator_command"),
+            }, ensure_ascii=False, indent=2))
+            return 2
     if args.cmd == "finalize-first-strict":
         if not args.acknowledge_publish_first_strict:
             print(json.dumps({
@@ -257,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
         os.environ.setdefault("POK_EVOLUTION_RUNTIME", "1")
         os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
         os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
+        os.environ["POK_OPERATOR_FIRST_STRICT_FINALIZE"] = str(os.getpid())
         from tool_commit import commit_bot
 
         plan = checkpoint.get("master_plan") or {}

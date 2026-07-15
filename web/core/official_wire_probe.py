@@ -28,6 +28,7 @@ from sever.server.protocol import (
 SERVER_ACTION_RE = re.compile(r"^(raise) ([0-9]+)$")
 CLIENT_RAISE_RE = re.compile(r"^raise [1-9]\d*")
 EARN_RE = re.compile(r"^earnChips (-?[0-9]+)$")
+CARD_RE = re.compile(r"<(\d+),(\d+)>")
 SMALL_BLIND = 50
 BIG_BLIND = 100
 INITIAL_CHIPS = 20000
@@ -127,6 +128,19 @@ def classify_server_action(message: str) -> tuple[str, int | None] | None:
     return None
 
 
+def _parse_protocol_cards(payload: str, *, expected: int) -> tuple[list[tuple[int, int]], str | None]:
+    """Parse one exact national card payload without normalizing bad bytes."""
+    matches = list(CARD_RE.finditer(payload))
+    if len(matches) != expected or "".join(match.group(0) for match in matches) != payload:
+        return [], f"expected exactly {expected} contiguous <suit,rank> cards"
+    cards = [(int(match.group(1)), int(match.group(2))) for match in matches]
+    if any(not (0 <= suit <= 3 and 0 <= rank <= 12) for suit, rank in cards):
+        return [], "card suit/rank is outside the national 52-card encoding"
+    if len(set(cards)) != len(cards):
+        return [], "card payload contains a duplicate card"
+    return cards, None
+
+
 @dataclass
 class SeatReplay:
     label: str
@@ -142,9 +156,22 @@ class SeatReplay:
     opponent_chips: int = INITIAL_CHIPS
     player_bet: int = 0
     opponent_bet: int = 0
+    pot: int = 0
     player_action_count: int = 0
     actions: list[tuple[str, int | None]] = field(default_factory=list)
+    action_actors: list[str] = field(default_factory=list)
+    hand_actions: list[dict[str, Any]] = field(default_factory=list)
+    hole_cards: list[tuple[int, int]] = field(default_factory=list)
+    public_cards: list[tuple[int, int]] = field(default_factory=list)
+    blind_by_hand: dict[int, str] = field(default_factory=dict)
+    hole_cards_by_hand: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
+    public_cards_by_hand: dict[
+        int,
+        dict[str, list[tuple[int, int]]],
+    ] = field(default_factory=dict)
+    opponent_cards_by_hand: dict[int, list[tuple[int, int]]] = field(default_factory=dict)
     allin_occurred: bool = False
+    fold_occurred: bool = False
     expected_since: float | None = None
     expected_reason: str = ""
     max_response_sec: float = 0.0
@@ -169,16 +196,23 @@ class SeatReplay:
         self.opponent_bet = 0
         self.player_action_count = 0
         self.actions = []
+        self.action_actors = []
         self.expected_since = None
         self.expected_reason = ""
 
-    def start_hand(self, blind: str) -> None:
+    def start_hand(self, blind: str, cards: list[tuple[int, int]]) -> None:
         self.stage = "preflop"
         self.hand_num += 1
         self.hands_started += 1
         self.is_small_blind = blind == "SMALLBLIND"
         self.player_chips = INITIAL_CHIPS
         self.opponent_chips = INITIAL_CHIPS
+        self.pot = SMALL_BLIND + BIG_BLIND
+        self.hole_cards = list(cards)
+        self.public_cards = []
+        self.blind_by_hand[self.hand_num] = blind
+        self.hole_cards_by_hand[self.hand_num] = list(cards)
+        self.public_cards_by_hand[self.hand_num] = {}
         if self.is_small_blind:
             self.player_chips -= SMALL_BLIND
             self.opponent_chips -= BIG_BLIND
@@ -191,7 +225,10 @@ class SeatReplay:
             self.opponent_bet = SMALL_BLIND
         self.player_action_count = 0
         self.actions = []
+        self.action_actors = []
+        self.hand_actions = []
         self.allin_occurred = False
+        self.fold_occurred = False
         self.expected_since = None
         self.expected_reason = ""
 
@@ -209,6 +246,8 @@ class OfficialWireReplay:
         self.max_platform_silent_gap_sec = 0.0
         self._last_event_t: float | None = None
         self._last_event_brief: dict[str, Any] | None = None
+        self._card_integrity_issue_keys: set[tuple[Any, ...]] = set()
+        self._blind_integrity_issue_keys: set[tuple[Any, ...]] = set()
 
     def _seat(self, label: str) -> SeatReplay:
         if label not in self.seats:
@@ -337,21 +376,85 @@ class OfficialWireReplay:
             seat.expect(t, "name_handshake")
             return
         if message.startswith("preflop|"):
+            self._infer_omitted_closer(seat, "hand_start")
             parts = message.split("|", 2)
             blind = parts[1] if len(parts) > 1 else ""
-            seat.start_hand(blind)
+            payload = parts[2] if len(parts) > 2 else ""
+            cards, card_issue = _parse_protocol_cards(payload, expected=2)
+            if blind not in {"SMALLBLIND", "BIGBLIND"}:
+                self._add_issue("preflop_blind_invalid", seat, message, event)
+            if card_issue:
+                self._add_issue(
+                    "preflop_cards_invalid",
+                    seat,
+                    message,
+                    event,
+                    reason=card_issue,
+                )
+            seat.start_hand(blind, cards)
+            self._validate_cross_seat_blinds(
+                seat.hand_num,
+                seat,
+                message,
+                event,
+            )
+            if not card_issue:
+                self._validate_cross_seat_card_integrity(
+                    seat.hand_num,
+                    seat,
+                    message,
+                    event,
+                )
             if seat.is_small_blind:
                 seat.expect(t, "small_blind_preflop_open")
             return
         if message.startswith(("flop|", "turn|", "river|")):
-            stage = message.split("|", 1)[0]
+            stage, payload = message.split("|", 1)
+            self._infer_omitted_closer(seat, f"street:{stage}")
+            expected_cards = 3 if stage == "flop" else 1
+            cards, card_issue = _parse_protocol_cards(payload, expected=expected_cards)
             seat.reset_street(stage)
+            if card_issue:
+                self._add_issue(
+                    "public_cards_invalid",
+                    seat,
+                    message,
+                    event,
+                    reason=card_issue,
+                )
+            else:
+                if set(cards) & set(seat.hole_cards + seat.public_cards):
+                    self._add_issue(
+                        "public_cards_collision",
+                        seat,
+                        message,
+                        event,
+                        reason="public card duplicates a known hole/public card",
+                    )
+                self._record_cross_seat_public_cards(
+                    seat,
+                    stage,
+                    cards,
+                    message,
+                    event,
+                )
+                seat.public_cards.extend(cards)
+                self._validate_cross_seat_card_integrity(
+                    seat.hand_num,
+                    seat,
+                    message,
+                    event,
+                )
             if not seat.is_small_blind and not seat.allin_occurred:
                 seat.expect(t, f"{stage}_first_action")
             return
         if message.startswith("earnChips"):
+            self._infer_omitted_closer(seat, "settlement")
             match = EARN_RE.fullmatch(message)
-            amount = int(match.group(1)) if match else 0
+            if match is None:
+                self._add_issue("settlement_format_invalid", seat, message, event)
+                return
+            amount = int(match.group(1))
             expected_hand = seat.settlements + 1
             if seat.hand_num != expected_hand:
                 self._add_issue(
@@ -370,6 +473,8 @@ class OfficialWireReplay:
             seat.expected_reason = ""
             return
         if message.startswith("oppo_hands|"):
+            self._infer_omitted_closer(seat, "showdown")
+            self._consume_showdown(seat, message, event)
             return
 
         action = classify_server_action(message)
@@ -436,6 +541,312 @@ class OfficialWireReplay:
             self._add_issue(f"illegal_{action_type}", seat, message, event, reason=reason)
         self._apply_player_action(seat, action_type, amount)
 
+    def _add_unique_blind_issue(
+        self,
+        key: tuple[Any, ...],
+        kind: str,
+        seat: SeatReplay,
+        message: str,
+        event: dict[str, Any],
+        **extra: Any,
+    ) -> None:
+        if key in self._blind_integrity_issue_keys:
+            return
+        self._blind_integrity_issue_keys.add(key)
+        self._add_issue(kind, seat, message, event, **extra)
+
+    def _validate_cross_seat_blinds(
+        self,
+        hand: int,
+        seat: SeatReplay,
+        message: str,
+        event: dict[str, Any],
+    ) -> None:
+        """Bind complementary, alternating blind roles to each hand identity."""
+
+        blind = seat.blind_by_hand.get(hand, "")
+        previous = seat.blind_by_hand.get(hand - 1)
+        if (
+            hand > 1
+            and previous in {"SMALLBLIND", "BIGBLIND"}
+            and blind in {"SMALLBLIND", "BIGBLIND"}
+            and previous == blind
+        ):
+            self._add_unique_blind_issue(
+                ("blind_not_alternating", seat.label, hand),
+                "blind_not_alternating",
+                seat,
+                message,
+                event,
+                previous_hand=hand - 1,
+                previous_blind=previous,
+                observed_blind=blind,
+            )
+
+        blind_rows = [
+            (label, replay.blind_by_hand[hand])
+            for label, replay in sorted(self.seats.items())
+            if hand in replay.blind_by_hand
+        ]
+        if len(blind_rows) < 2:
+            return
+        observed = [role for _label, role in blind_rows]
+        if len(blind_rows) == 2 and set(observed) == {
+            "SMALLBLIND",
+            "BIGBLIND",
+        }:
+            return
+        labels = tuple(label for label, _role in blind_rows)
+        self._add_unique_blind_issue(
+            ("blind_cross_seat_mismatch", hand, *labels),
+            "blind_cross_seat_mismatch",
+            seat,
+            message,
+            event,
+            blind_bindings={
+                label: role for label, role in blind_rows
+            },
+            reason=(
+                "each hand must bind exactly one SMALLBLIND and one BIGBLIND "
+                "across the two official connections"
+            ),
+        )
+
+    def _add_unique_card_issue(
+        self,
+        key: tuple[Any, ...],
+        kind: str,
+        seat: SeatReplay,
+        message: str,
+        event: dict[str, Any],
+        **extra: Any,
+    ) -> None:
+        if key in self._card_integrity_issue_keys:
+            return
+        self._card_integrity_issue_keys.add(key)
+        self._add_issue(kind, seat, message, event, **extra)
+
+    def _record_cross_seat_public_cards(
+        self,
+        seat: SeatReplay,
+        stage: str,
+        cards: list[tuple[int, int]],
+        message: str,
+        event: dict[str, Any],
+    ) -> None:
+        """Bind each public-card payload to the same hand/street on both wires."""
+
+        if seat.hand_num <= 0:
+            return
+        stages = seat.public_cards_by_hand.setdefault(seat.hand_num, {})
+        previous = stages.get(stage)
+        if previous is not None:
+            if previous != cards:
+                self._add_unique_card_issue(
+                    (
+                        "public_cards_same_seat_mismatch",
+                        seat.hand_num,
+                        seat.label,
+                        stage,
+                    ),
+                    "public_cards_same_seat_mismatch",
+                    seat,
+                    message,
+                    event,
+                    board_stage=stage,
+                    previous_cards=[list(card) for card in previous],
+                    observed_cards=[list(card) for card in cards],
+                )
+            return
+        stages[stage] = list(cards)
+
+        for peer_label, peer in sorted(self.seats.items()):
+            if peer_label == seat.label:
+                continue
+            peer_cards = (
+                peer.public_cards_by_hand.get(seat.hand_num, {}).get(stage)
+            )
+            if peer_cards is None or peer_cards == cards:
+                continue
+            seat_pair = tuple(sorted((seat.label, peer_label)))
+            self._add_unique_card_issue(
+                (
+                    "public_cards_cross_seat_mismatch",
+                    seat.hand_num,
+                    stage,
+                    *seat_pair,
+                ),
+                "public_cards_cross_seat_mismatch",
+                seat,
+                message,
+                event,
+                board_stage=stage,
+                peer_conn=peer_label,
+                observed_cards=[list(card) for card in cards],
+                peer_cards=[list(card) for card in peer_cards],
+            )
+
+    def _validate_cross_seat_card_integrity(
+        self,
+        hand: int,
+        seat: SeatReplay,
+        message: str,
+        event: dict[str, Any],
+    ) -> None:
+        """Prove two disjoint holes and each peer hole disjoint from the board."""
+
+        if hand <= 0:
+            return
+        hole_rows = [
+            (label, replay.hole_cards_by_hand[hand])
+            for label, replay in sorted(self.seats.items())
+            if len(replay.hole_cards_by_hand.get(hand) or []) == 2
+        ]
+        for index, (left_label, left_cards) in enumerate(hole_rows):
+            for right_label, right_cards in hole_rows[index + 1 :]:
+                collision = sorted(set(left_cards) & set(right_cards))
+                if not collision:
+                    continue
+                self._add_unique_card_issue(
+                    (
+                        "cross_seat_hole_collision",
+                        hand,
+                        left_label,
+                        right_label,
+                        *collision,
+                    ),
+                    "cross_seat_hole_collision",
+                    seat,
+                    message,
+                    event,
+                    left_conn=left_label,
+                    right_conn=right_label,
+                    collision=[list(card) for card in collision],
+                )
+
+        for board_label, board_seat in sorted(self.seats.items()):
+            by_stage = board_seat.public_cards_by_hand.get(hand) or {}
+            for stage, board_cards in sorted(by_stage.items()):
+                for hole_label, hole_cards in hole_rows:
+                    if hole_label == board_label:
+                        # The existing local public_cards_collision check owns
+                        # this same-wire invariant.  This branch proves the
+                        # other seat's private cards against the observed board.
+                        continue
+                    collision = sorted(set(hole_cards) & set(board_cards))
+                    if not collision:
+                        continue
+                    self._add_unique_card_issue(
+                        (
+                            "cross_seat_hole_board_collision",
+                            hand,
+                            hole_label,
+                            stage,
+                            *collision,
+                        ),
+                        "cross_seat_hole_board_collision",
+                        seat,
+                        message,
+                        event,
+                        hole_conn=hole_label,
+                        board_conn=board_label,
+                        board_stage=stage,
+                        collision=[list(card) for card in collision],
+                    )
+
+    def _infer_omitted_closer(self, seat: SeatReplay, boundary: str) -> str | None:
+        """Apply only the peer pass uniquely proven by a later wire boundary."""
+        if seat.hand_num <= 0 or not seat.actions or not seat.action_actors:
+            return None
+        if seat.action_actors[-1] != "player":
+            return None
+        player_action = seat.actions[-1][0]
+        inferred: str | None = None
+        if player_action in {"raise", "allin"}:
+            inferred = "call"
+        elif seat.stage in {"flop", "turn", "river"} and player_action == "check":
+            inferred = "call"
+        elif (
+            seat.stage == "preflop"
+            and seat.is_small_blind
+            and player_action == "call"
+            and len(seat.actions) == 1
+        ):
+            inferred = "check"
+        if inferred is None:
+            return None
+        self._apply_opponent_action(
+            seat,
+            inferred,
+            None,
+            inferred_boundary=boundary,
+        )
+        return inferred
+
+    def _consume_showdown(
+        self,
+        seat: SeatReplay,
+        message: str,
+        event: dict[str, Any],
+    ) -> None:
+        payload = message.split("|", 1)[1] if "|" in message else ""
+        cards, card_issue = _parse_protocol_cards(payload, expected=2)
+        if card_issue:
+            self._add_issue(
+                "showdown_cards_invalid",
+                seat,
+                message,
+                event,
+                reason=card_issue,
+            )
+            return
+        if seat.hand_num <= 0 or len(seat.public_cards) != 5 or seat.fold_occurred:
+            self._add_issue(
+                "showdown_boundary_invalid",
+                seat,
+                message,
+                event,
+                reason="oppo_hands is valid only at a five-card non-fold showdown",
+            )
+        if set(cards) & set(seat.hole_cards + seat.public_cards):
+            self._add_issue(
+                "showdown_cards_collision",
+                seat,
+                message,
+                event,
+                reason="revealed opponent cards collide with hero or board cards",
+            )
+        if seat.hand_num in seat.opponent_cards_by_hand:
+            self._add_issue("duplicate_showdown_cards", seat, message, event)
+        else:
+            seat.opponent_cards_by_hand[seat.hand_num] = list(cards)
+
+        peers = [
+            peer
+            for label, peer in self.seats.items()
+            if label != seat.label and seat.hand_num in peer.hole_cards_by_hand
+        ]
+        if len(peers) != 1:
+            self._add_issue(
+                "showdown_cross_seat_hole_missing",
+                seat,
+                message,
+                event,
+                peer_count=len(peers),
+            )
+            return
+        peer = peers[0]
+        peer_hole = peer.hole_cards_by_hand[seat.hand_num]
+        if set(cards) != set(peer_hole):
+            self._add_issue(
+                "showdown_cross_seat_hole_mismatch",
+                seat,
+                message,
+                event,
+                peer_conn=peer.label,
+                revealed=[list(card) for card in cards],
+                actual=[list(card) for card in peer_hole],
+            )
     def _opponent_action_requires_response(self, seat: SeatReplay, action_type: str) -> bool:
         if action_type == "fold":
             return False
@@ -500,7 +911,39 @@ class OfficialWireReplay:
             return True, ""
         return False, "unrecognized action type"
 
-    def _apply_player_action(self, seat: SeatReplay, action_type: str, amount: int | None) -> None:
+    def _record_action(
+        self,
+        seat: SeatReplay,
+        actor: str,
+        action_type: str,
+        amount: int | None,
+        committed: int,
+        *,
+        inferred_boundary: str | None = None,
+    ) -> None:
+        seat.actions.append((action_type, amount))
+        seat.action_actors.append(actor)
+        record: dict[str, Any] = {
+            "hand": seat.hand_num,
+            "stage": seat.stage,
+            "actor": actor,
+            "action_type": action_type,
+            "committed": int(committed),
+            "player_bet_after": seat.player_bet,
+            "opponent_bet_after": seat.opponent_bet,
+            "player_chips_after": seat.player_chips,
+            "opponent_chips_after": seat.opponent_chips,
+            "pot_after": seat.pot,
+            "inferred": inferred_boundary is not None,
+        }
+        if amount is not None:
+            record["raise_to"] = amount
+        if inferred_boundary is not None:
+            record["inference_boundary"] = inferred_boundary
+        seat.hand_actions.append(record)
+
+    def _apply_player_action(self, seat: SeatReplay, action_type: str, amount: int | None) -> int:
+        committed = 0
         if action_type == "call":
             committed = min(max(0, seat.opponent_bet - seat.player_bet), seat.player_chips)
             seat.player_chips -= committed
@@ -510,13 +953,26 @@ class OfficialWireReplay:
             seat.player_chips -= committed
             seat.player_bet += committed
         elif action_type == "allin":
-            seat.player_bet += seat.player_chips
+            committed = seat.player_chips
+            seat.player_bet += committed
             seat.player_chips = 0
             seat.allin_occurred = True
-        seat.actions.append((action_type, amount))
+        elif action_type == "fold":
+            seat.fold_occurred = True
+        seat.pot += committed
+        self._record_action(seat, "player", action_type, amount, committed)
         seat.player_action_count += 1
+        return committed
 
-    def _apply_opponent_action(self, seat: SeatReplay, action_type: str, amount: int | None) -> None:
+    def _apply_opponent_action(
+        self,
+        seat: SeatReplay,
+        action_type: str,
+        amount: int | None,
+        *,
+        inferred_boundary: str | None = None,
+    ) -> int:
+        committed = 0
         if action_type == "call":
             committed = min(max(0, seat.player_bet - seat.opponent_bet), seat.opponent_chips)
             seat.opponent_chips -= committed
@@ -526,10 +982,22 @@ class OfficialWireReplay:
             seat.opponent_chips -= committed
             seat.opponent_bet += committed
         elif action_type == "allin":
-            seat.opponent_bet += seat.opponent_chips
+            committed = seat.opponent_chips
+            seat.opponent_bet += committed
             seat.opponent_chips = 0
             seat.allin_occurred = True
-        seat.actions.append((action_type, amount))
+        elif action_type == "fold":
+            seat.fold_occurred = True
+        seat.pot += committed
+        self._record_action(
+            seat,
+            "opponent",
+            action_type,
+            amount,
+            committed,
+            inferred_boundary=inferred_boundary,
+        )
+        return committed
 
     def summary(self, *, now: float | None = None) -> dict[str, Any]:
         current = time.time() if now is None else float(now)
@@ -560,6 +1028,37 @@ class OfficialWireReplay:
                 "max_response_sec": round(seat.max_response_sec, 3),
                 "pending_expected_action": seat.expected_since is not None,
                 "expected_reason": seat.expected_reason,
+                "current_hand": seat.hand_num,
+                "current_stage": seat.stage,
+                "pot": seat.pot,
+                "player_chips": seat.player_chips,
+                "opponent_chips": seat.opponent_chips,
+                "player_bet": seat.player_bet,
+                "opponent_bet": seat.opponent_bet,
+                "hand_actions": list(seat.hand_actions),
+                "blind_records": [
+                    {"hand": hand, "blind": blind}
+                    for hand, blind in sorted(seat.blind_by_hand.items())
+                ],
+                "public_card_records": [
+                    {
+                        "hand": hand,
+                        "streets": {
+                            stage: [list(card) for card in cards]
+                            for stage, cards in sorted(stages.items())
+                        },
+                    }
+                    for hand, stages in sorted(
+                        seat.public_cards_by_hand.items()
+                    )
+                ],
+                "showdown_records": [
+                    {
+                        "hand": hand,
+                        "opponent_cards": [list(card) for card in cards],
+                    }
+                    for hand, cards in sorted(seat.opponent_cards_by_hand.items())
+                ],
             }
             for label, seat in sorted(self.seats.items())
         }

@@ -141,12 +141,29 @@ def test_active_prompts_expose_only_the_current_candidate_abi():
     orchestrator = (PROMPTS / "orchestrator.md").read_text(encoding="utf-8")
 
     assert "must target `policy.py` only" in worker
-    assert "Edit only `bots/national_v{version}/policy.py`" in crossover
+    assert "Edit only `policy.py` under the exact system-injected lease target" in crossover
     assert "Compare only candidate-owned `policy.py`" in compatibility
     assert "constants.py" not in worker
     assert "constants.py" not in compatibility
     assert "bootstrap-first-strict" in orchestrator
+    assert "finalize-first-strict" in orchestrator
     assert "`bootstrap-full`" not in orchestrator
+
+
+def test_orchestrator_shell_guard_blocks_both_first_strict_operator_steps():
+    from orchestrator_context import (
+        _orchestrator_bash_targets_operator_only_bootstrap,
+    )
+
+    assert _orchestrator_bash_targets_operator_only_bootstrap(
+        "python scripts/official_certify.py bootstrap-first-strict bots/national_v143"
+    )
+    assert _orchestrator_bash_targets_operator_only_bootstrap(
+        "python scripts/official_certify.py finalize-first-strict --acknowledge-publish-first-strict"
+    )
+    assert not _orchestrator_bash_targets_operator_only_bootstrap(
+        "python scripts/official_certify.py status bots/national_v143"
+    )
 
 
 def test_no_active_planning_path_calls_retired_fix_injection():

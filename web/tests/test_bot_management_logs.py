@@ -24,10 +24,8 @@ def _setup_reap_case(tmp_path, monkeypatch, max_active=1):
     events = []
     monkeypatch.setattr(tbm, "PROJECT_ROOT", root)
     monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(tbm, "REPLAY_DIR", results_dir / "replays")
     monkeypatch.setattr(tbm, "MAX_ACTIVE_BOTS", 1)
     monkeypatch.setattr(tbm, "get_active_bots", lambda: ["national_v143", "national_v144", "national_v145"])
-    monkeypatch.setattr(tbm, "find_latest_active_v", lambda: 145)
     monkeypatch.setattr(tbm, "load_ratings", lambda: {
         # v143 has stronger context metrics below, but weaker true cull key.
         "national_v143": tbm.Glicko2Player(r=1300, rd=100),
@@ -109,10 +107,8 @@ def test_hard_overflow_reaps_old_zero_game_before_strong_evaluated_baseline(tmp_
 
     monkeypatch.setattr(tbm, "PROJECT_ROOT", root)
     monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(tbm, "REPLAY_DIR", results_dir / "replays")
     monkeypatch.setattr(tbm, "MAX_ACTIVE_BOTS", 30)
     monkeypatch.setattr(tbm, "get_active_bots", lambda: active)
-    monkeypatch.setattr(tbm, "find_latest_active_v", lambda: 177)
     monkeypatch.setattr(
         tbm,
         "load_ratings",

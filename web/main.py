@@ -25,6 +25,19 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
 
+def apply_cli_runtime_overrides(app_state, *, no_daemon: bool) -> dict:
+    """Apply only explicit process-local launcher overrides.
+
+    An omitted ``--no-daemon`` means "use the persisted operator setting",
+    not "force-enable the daemon".  This distinction keeps the launcher,
+    control API, dashboard, and actual orchestrator arguments on one config.
+    """
+
+    if no_daemon:
+        return app_state.override_runtime_config(daemon_enabled=False)
+    return app_state.get_config()
+
+
 def build_frontend() -> bool:
     """Build the frontend and copy dist to server/static. Returns True on success."""
     frontend_dir = WEB_DIR / "frontend"
@@ -102,7 +115,7 @@ def main():
     # Pre-populate app_state from CLI args so lifespan reads correct config
     sys.path.insert(0, str(WEB_DIR / "server"))
     from server.state import app_state
-    app_state.override_runtime_config(daemon_enabled=not args.no_daemon)
+    apply_cli_runtime_overrides(app_state, no_daemon=args.no_daemon)
 
     # Note: atexit.register(stop_daemon) is handled inside start_daemon() itself
     # (daemon_management.py line ~90) — no need to register again here.

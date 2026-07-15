@@ -17,6 +17,13 @@ from managed_bot_executor import (
 from national_native import ensure_native_entry
 
 
+def _complete_strict_launch_fixture(bot_dir: Path) -> None:
+    """Add the two system identity documents required by the five-file ABI."""
+
+    (bot_dir / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (bot_dir / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
+
+
 def _load_native_entry(bot_dir: Path, monkeypatch):
     for module_name in ("policy", "typed_native_entry_probe"):
         monkeypatch.delitem(sys.modules, module_name, raising=False)
@@ -141,6 +148,7 @@ def test_policy_fixture_observes_real_isolated_tcp_action(
         encoding="utf-8",
     )
     ensure_native_entry(bot_dir)
+    _complete_strict_launch_fixture(bot_dir)
 
     result = native_tests._run_policy_fixture(
         bot_dir,
@@ -223,6 +231,7 @@ def test_invalid_candidate_policy_output_converges_at_real_socket_owner(
         encoding="utf-8",
     )
     ensure_native_entry(bot_dir)
+    _complete_strict_launch_fixture(bot_dir)
 
     result = native_tests._run_policy_fixture(
         bot_dir,
@@ -247,6 +256,7 @@ def test_exact_official_two_x_raise_boundary_reaches_real_wire(tmp_path):
         encoding="utf-8",
     )
     ensure_native_entry(bot_dir)
+    _complete_strict_launch_fixture(bot_dir)
 
     result = native_tests._run_policy_fixture(
         bot_dir,
@@ -255,6 +265,56 @@ def test_exact_official_two_x_raise_boundary_reaches_real_wire(tmp_path):
 
     assert result["passed"] is True, result
     assert result["action"] == "raise 400"
+
+
+def test_called_allin_runout_never_reenters_policy_or_socket_send(
+    monkeypatch,
+    tmp_path,
+):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "policy.py").write_text(
+        "def get_baseline_decision(context): return {'kind': 'pass'}\n\n"
+        "def iter_decisions(context, baseline, deadline):\n"
+        "    if False:\n"
+        "        yield baseline\n",
+        encoding="utf-8",
+    )
+    ensure_native_entry(bot_dir)
+    monkeypatch.setenv("POK_OFFICIAL_ACTION_DELAY", "0")
+    module = _load_native_entry(bot_dir, monkeypatch)
+    bot = module.NativeNationalBot("Runout", seat="lower")
+    decisions = []
+
+    def pass_once():
+        decisions.append(bot._stage)
+        return {"kind": "pass"}
+
+    class Wire:
+        def __init__(self):
+            self.payloads = []
+
+        def sendall(self, payload):
+            self.payloads.append(payload)
+
+    wire = Wire()
+    bot._policy_decision = pass_once
+    try:
+        bot.handle("preflop|BIGBLIND|<0,0><1,1>", wire)
+        bot.handle("allin", wire)
+        assert bot._in_allin_runout is True
+        assert bot._pot == 40_000
+        assert bot._my_chips == bot._opponent_chips == 0
+        bot.handle("flop|<0,4><1,5><2,6>", wire)
+        bot.handle("turn|<3,7>", wire)
+        bot.handle("river|<0,8>", wire)
+        bot.handle("earnChips 0", wire)
+        bot.handle("oppo_hands|<2,2><3,3>", wire)
+    finally:
+        bot.close()
+
+    assert decisions == ["preflop"]
+    assert wire.payloads == [b"call"]
 
 
 def test_typed_policy_deadline_keeps_socket_owned_fallback_and_kills_worker(

@@ -55,8 +55,11 @@ _GIT_TAG_MUTATION_FLAGS = {
 _GIT_TAG_RE = re.compile(r"\bgit\s+tag\b([^;&|]*)", re.IGNORECASE)
 _OPERATOR_ONLY_OFFICIAL_BOOTSTRAP_MARKERS = (
     "--acknowledge-one-time-first-strict-control",
+    "--acknowledge-publish-first-strict",
     "bootstrap-first-strict",
     "bootstrap_first_strict",
+    "finalize-first-strict",
+    "finalize_first_strict",
     "official_bootstrap.py",
     "official_bootstrap_control.json",
     "import official_bootstrap",
@@ -317,11 +320,12 @@ def _orchestrator_bash_is_mutation(command: str) -> bool:
 
 
 def _orchestrator_bash_targets_operator_only_bootstrap(command: str) -> bool:
-    """Reject every main-LLM Bash route to the one-time formal control.
+    """Reject every main-LLM Bash route to the one-time formal ceremony.
 
     This is intentionally independent of file-mutation detection and the
-    current pipeline stage.  ``bootstrap-first-strict`` is an operator action
-    whose durable side effect is outside the ordinary
+    current pipeline stage.  Both ``bootstrap-first-strict`` and
+    ``finalize-first-strict`` are operator actions whose durable side effects
+    are outside the ordinary
     orchestrator tool route, even when its command text contains no shell
     redirect or other syntactic write marker.
     """
@@ -370,7 +374,8 @@ def _inject_master_plan_hint(checkpoint, lines):
 
     Critical: the Orchestrator LLM has no Bash/Read tools — it cannot read
     pipeline_state.json on its own.  If we only say "Master plan is saved in
-    session history", a fresh (non-resumed) session has NO history and the
+    provider history", the mandatory fresh provider session has no prior task
+    list and the
     model spirals calling ToolSearch trying to find Read/Bash.  Instead we
     inline a compact summary for observability while instructing the model to
     pass ``tasks=[]``.  The worker tool then loads the exact checkpoint-owned
@@ -485,11 +490,13 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     from evolution_core import (
         get_active_bots,
         get_bot_dir,
-        find_current_v, find_max_committed_v, find_abandoned_version_floor,
-        compute_next_generation_v,
     )
     # If GenerationContext is provided, build streamlined context
     if gen_ctx is not None:
+        protocol_bootstrap_no_strength = gen_ctx.strategy in {
+            "fresh_policy_bootstrap",
+            "singleton_strict_bootstrap",
+        }
         lines = [
             f"Version authority high-water: v{gen_ctx.current_v}",
             f"Next generation: v{gen_ctx.next_v}",
@@ -507,7 +514,7 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         if gen_ctx.strategy == "crossover" and gen_ctx.crossover_parents:
             lines.append(f"Crossover parents: {bot_name(gen_ctx.crossover_parents[0])} x {bot_name(gen_ctx.crossover_parents[1])}")
 
-        # Tool reference — prevents ToolSearch when session is fresh/resumed
+        # Tool reference — every provider session is fresh and MCP-only.
         lines.append("\nAVAILABLE TOOLS (call by exact name):")
         lines.append("  prepare_next_gen(source_v, next_v) — copy source bot dir")
         lines.append("  run_direction_audit(source_v, next_v) — detect repetitive evolution directions")
@@ -522,13 +529,29 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  run_crossover(parent_a, parent_b, target_v) — prepare a two-parent baseline only; direction audit, optional research, Master planning, and Workers still follow")
         lines.append("  run_literature_probe(source_v, next_v, h2h_weakness, stagnation_info) — web-search ONE codable strategy hypothesis for the bot's biggest H2H weakness (governance-gated: auto-skips on cooldown). MANDATORY when stagnation analysis shows is_stagnant:true.")
 
-        if gen_ctx.stagnation_info:
+        if protocol_bootstrap_no_strength:
+            if gen_ctx.strategy == "fresh_policy_bootstrap":
+                lines.append(
+                    "\nPROTOCOL BOOTSTRAP NO-STRENGTH: the prepared v143 "
+                    "artifact, epoch reset receipt, and pinned national protocol "
+                    "contracts are the only planning inputs. Historical ratings, "
+                    "H2H, replays, lessons, failures, official prose, and v142 "
+                    "source bytes are unavailable."
+                )
+            else:
+                lines.append(
+                    "\nSINGLETON STRICT BOOTSTRAP NO-STRENGTH: the sole strict "
+                    "published parent and checkpoint-owned preparation receipt are "
+                    "the only code lineage inputs. No peer-cycle rating, H2H, "
+                    "replay, lesson, failure, or official prose is admissible."
+                )
+        elif gen_ctx.stagnation_info:
             lines.append(f"\nStagnation analysis:\n{gen_ctx.stagnation_info}")
-        if gen_ctx.match_analysis:
+        if not protocol_bootstrap_no_strength and gen_ctx.match_analysis:
             lines.append(f"\nMatch analysis:\n{gen_ctx.match_analysis}")
-        if gen_ctx.replay_spotlight:
+        if not protocol_bootstrap_no_strength and gen_ctx.replay_spotlight:
             lines.append(f"\nReplay spotlight:\n{gen_ctx.replay_spotlight}")
-        if gen_ctx.performance_verification:
+        if not protocol_bootstrap_no_strength and gen_ctx.performance_verification:
             lines.append(f"\nPerformance verification:\n{gen_ctx.performance_verification}")
 
         if one_gen:
@@ -648,6 +671,28 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             )
     except Exception:
         pass
+    try:
+        from post_publication_handoff import pending_handoff_route
+
+        handoff = pending_handoff_route()
+        if handoff.get("status") == "pending":
+            lines.append(
+                "POST-PUBLICATION HANDOFF ACTIVE: "
+                f"v{handoff['version']} from v{handoff['source_v']}, "
+                f"state={handoff.get('state')}. NEXT MCP TOOL: run_archivist. "
+                "Do not prepare or select another generation first."
+            )
+        elif handoff.get("status") == "blocked":
+            lines.append(
+                "POST-PUBLICATION HANDOFF BLOCKED/AMBIGUOUS: "
+                + "; ".join(map(str, handoff.get("issues") or []))
+                + ". Do not start another generation."
+            )
+    except Exception as exc:
+        lines.append(
+            "POST-PUBLICATION HANDOFF AUTHORITY UNAVAILABLE: "
+            f"{type(exc).__name__}. Do not start another generation."
+        )
 
     debris = unpublished_candidate_versions()
     if debris:
@@ -881,9 +926,10 @@ def _make_bot_dir_guard_hook():
                     blocked_command = str(cmd)
                     blocked_data = {"operator_action_required": True}
                     blocked_reason = (
-                        "The first-strict formal control is operator-only. The main "
-                        "Orchestrator may never invoke bootstrap-first-strict, acknowledge "
-                        "its one-time consumption, or call official_bootstrap through Bash. "
+                        "The first-strict formal ceremony is operator-only. The main "
+                        "Orchestrator may never invoke bootstrap-first-strict or "
+                        "finalize-first-strict, acknowledge either transition, or call "
+                        "official_bootstrap through Bash. "
                         "Stop automatic evolution and wait for an explicit external "
                         "operator command."
                     )

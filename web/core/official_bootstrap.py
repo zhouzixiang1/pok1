@@ -753,6 +753,242 @@ def _selection_projection(selection: Any) -> dict[str, Any]:
     }
 
 
+def _bound_mapping_issues(
+    value: Any,
+    *,
+    digest_field: str,
+    label: str,
+) -> list[str]:
+    if not isinstance(value, dict):
+        return [f"{label}_missing"]
+    unsigned = {key: item for key, item in value.items() if key != digest_field}
+    if value.get(digest_field) != canonical_digest(unsigned):
+        return [f"{label}_digest_mismatch"]
+    return []
+
+
+def _published_selection_validation(
+    selection: Any,
+    binding: dict[str, Any],
+    validated_entries: list[dict[str, Any]],
+    *,
+    allow_consumed: bool,
+) -> tuple[list[str], dict[str, Any] | None, dict[str, Any]]:
+    """Validate a signed first-strict selection after checkout relocation.
+
+    The portable attestation legitimately retains absolute paths from the
+    autonomous checkout that produced it.  Those path strings stay covered by
+    the certificate signature and their original receipt digests; semantic
+    comparison replaces only checkout-local paths with current paths, then
+    revalidates every content identity before consulting the consumption
+    ledger bound to the original authorization receipt.
+    """
+
+    if not isinstance(selection, dict):
+        return ["official_bootstrap_control_selection_missing"], None, {}
+    issues: list[str] = []
+    supplied_binding = selection.get("candidate_binding")
+    issues.extend(_bound_mapping_issues(
+        supplied_binding,
+        digest_field="candidate_binding_digest",
+        label="official_bootstrap_candidate_binding",
+    ))
+    if isinstance(supplied_binding, dict):
+        supplied_semantic = {
+            key: value
+            for key, value in supplied_binding.items()
+            if key not in {"candidate", "candidate_binding_digest"}
+        }
+        expected_semantic = {
+            key: value
+            for key, value in binding.items()
+            if key not in {"candidate", "candidate_binding_digest"}
+        }
+        if supplied_semantic != expected_semantic:
+            issues.append("official_bootstrap_candidate_binding_content_mismatch")
+        if Path(str(supplied_binding.get("candidate") or "")).name != bot_name(
+            FIRST_STRICT_POLICY_VERSION
+        ):
+            issues.append("official_bootstrap_candidate_binding_label_mismatch")
+        if selection.get("candidate") != supplied_binding.get("candidate"):
+            issues.append("official_bootstrap_selection_candidate_binding_mismatch")
+
+    supplied_receipt = (
+        selection.get("bootstrap_control_receipt")
+        if isinstance(selection.get("bootstrap_control_receipt"), dict)
+        else {}
+    )
+    control_receipt = supplied_receipt.get("first_strict_control_receipt")
+    issues.extend(_bound_mapping_issues(
+        control_receipt,
+        digest_field="receipt_digest",
+        label="official_bootstrap_first_strict_control_receipt",
+    ))
+    supplied_control = (
+        control_receipt.get("control")
+        if isinstance(control_receipt, dict)
+        and isinstance(control_receipt.get("control"), dict)
+        else {}
+    )
+    issues.extend(_bound_mapping_issues(
+        supplied_control,
+        digest_field="identity_digest",
+        label="official_bootstrap_control_identity",
+    ))
+    try:
+        current_control = control_identity(materialize_control())
+    except Exception as exc:
+        current_control = {}
+        issues.append(
+            f"official_bootstrap_control_identity_error:{type(exc).__name__}"
+        )
+    if supplied_control and current_control:
+        supplied_control_semantic = {
+            key: value
+            for key, value in supplied_control.items()
+            if key not in {"path", "identity_digest"}
+        }
+        current_control_semantic = {
+            key: value
+            for key, value in current_control.items()
+            if key not in {"path", "identity_digest"}
+        }
+        if supplied_control_semantic != current_control_semantic:
+            issues.append("official_bootstrap_control_identity_content_mismatch")
+        if Path(str(supplied_control.get("path") or "")).name != Path(
+            str(current_control.get("path") or "")
+        ).name:
+            issues.append("official_bootstrap_control_identity_label_mismatch")
+
+    normalized_control_receipt = deepcopy(control_receipt) if isinstance(
+        control_receipt, dict
+    ) else {}
+    if normalized_control_receipt and current_control:
+        normalized_control_receipt["control"] = deepcopy(current_control)
+        normalized_control_receipt["receipt_digest"] = canonical_digest({
+            key: value
+            for key, value in normalized_control_receipt.items()
+            if key != "receipt_digest"
+        })
+        issues.extend(
+            f"official_bootstrap_control:{item}"
+            for item in validate_control_receipt(
+                normalized_control_receipt,
+                candidate_version=FIRST_STRICT_POLICY_VERSION,
+                source_version=ARCHIVED_VERSION_HIGH_WATER,
+                active_bots=[],
+                force_protocol_refresh=False,
+            )
+        )
+
+    issues.extend(_bound_mapping_issues(
+        supplied_receipt,
+        digest_field="receipt_digest",
+        label="official_bootstrap_control_authorization_receipt",
+    ))
+    if isinstance(supplied_receipt, dict):
+        opponent = selection.get("opponent")
+        opponent = opponent if isinstance(opponent, dict) else {}
+        if opponent.get("eligibility_receipt") != supplied_receipt:
+            issues.append("official_bootstrap_opponent_authorization_receipt_mismatch")
+        if supplied_receipt.get("candidate_binding") != supplied_binding:
+            issues.append("official_bootstrap_authorization_candidate_binding_mismatch")
+        if supplied_receipt.get("first_strict_control_receipt") != control_receipt:
+            issues.append("official_bootstrap_authorization_control_receipt_mismatch")
+        if supplied_receipt.get("first_strict_control_receipt_digest") != (
+            control_receipt.get("receipt_digest")
+            if isinstance(control_receipt, dict)
+            else None
+        ):
+            issues.append("official_bootstrap_authorization_control_digest_mismatch")
+        if supplied_receipt.get("control_identity_digest") != supplied_control.get(
+            "identity_digest"
+        ):
+            issues.append("official_bootstrap_authorization_identity_digest_mismatch")
+
+    try:
+        current_policy = _policy_identity()
+    except Exception as exc:
+        current_policy = {}
+        issues.append(f"official_bootstrap_policy_identity_error:{type(exc).__name__}")
+    supplied_policy = (
+        supplied_receipt.get("bootstrap_policy")
+        if isinstance(supplied_receipt, dict)
+        and isinstance(supplied_receipt.get("bootstrap_policy"), dict)
+        else {}
+    )
+    if supplied_policy and current_policy:
+        if {
+            key: value for key, value in supplied_policy.items() if key != "path"
+        } != {
+            key: value for key, value in current_policy.items() if key != "path"
+        }:
+            issues.append("official_bootstrap_policy_identity_content_mismatch")
+        if Path(str(supplied_policy.get("path") or "")).name != Path(
+            str(current_policy.get("path") or "")
+        ).name:
+            issues.append("official_bootstrap_policy_identity_label_mismatch")
+
+    normalized_receipt = deepcopy(supplied_receipt)
+    if normalized_receipt and current_policy and normalized_control_receipt:
+        normalized_receipt["bootstrap_policy"] = deepcopy(current_policy)
+        normalized_receipt["candidate_binding"] = deepcopy(binding)
+        normalized_receipt["first_strict_control_receipt"] = deepcopy(
+            normalized_control_receipt
+        )
+        normalized_receipt["first_strict_control_receipt_digest"] = (
+            normalized_control_receipt.get("receipt_digest")
+        )
+        normalized_receipt["control_identity_digest"] = current_control.get(
+            "identity_digest"
+        )
+        normalized_receipt["receipt_digest"] = canonical_digest({
+            key: value
+            for key, value in normalized_receipt.items()
+            if key != "receipt_digest"
+        })
+        expected_receipt = _authorization_receipt(
+            binding,
+            normalized_control_receipt,
+        )
+        if normalized_receipt != expected_receipt:
+            issues.append("official_bootstrap_authorization_receipt_content_mismatch")
+
+    expected = None
+    if binding and normalized_control_receipt and normalized_receipt and current_control:
+        expected = _expected_selection(
+            binding,
+            normalized_control_receipt,
+            validated_entries,
+        )
+        normalized_selection = deepcopy(selection)
+        normalized_selection["candidate"] = binding["candidate"]
+        normalized_selection["candidate_binding"] = deepcopy(binding)
+        normalized_selection["bootstrap_control_receipt"] = deepcopy(
+            normalized_receipt
+        )
+        normalized_opponent = normalized_selection.get("opponent")
+        normalized_opponent = (
+            normalized_opponent if isinstance(normalized_opponent, dict) else {}
+        )
+        normalized_opponent["path"] = current_control["path"]
+        normalized_opponent["eligibility_receipt"] = deepcopy(normalized_receipt)
+        normalized_selection["opponent"] = normalized_opponent
+        if _selection_projection(normalized_selection) != _selection_projection(expected):
+            issues.append("official_bootstrap_control_selection_receipt_mismatch")
+
+    original_receipt_digest = str(supplied_receipt.get("receipt_digest") or "")
+    consumption = _consumption_report(
+        CONTROL_ID,
+        original_receipt_digest,
+        validated_entries,
+    )
+    issues.extend(consumption.get("issues") or [])
+    if consumption.get("consumed") and not allow_consumed:
+        issues.append("official_bootstrap_control_already_consumed")
+    return _unique(issues), expected, consumption
+
+
 def validate_first_strict_control_selection_from_entries(
     selection: Any,
     control_id: str,
@@ -797,17 +1033,28 @@ def validate_first_strict_control_selection_from_entries(
         else {}
     )
     control_receipt = supplied_receipt.get("first_strict_control_receipt")
-    issues.extend(
-        f"official_bootstrap_control:{item}"
-        for item in validate_control_receipt(
-            control_receipt,
-            candidate_version=FIRST_STRICT_POLICY_VERSION,
-            source_version=ARCHIVED_VERSION_HIGH_WATER,
-            active_bots=[],
-            force_protocol_refresh=False,
+    expected: dict[str, Any] | None = None
+    consumption: dict[str, Any] = {}
+    if allow_published and binding is not None:
+        portable_issues, expected, consumption = _published_selection_validation(
+            selection,
+            binding,
+            validated_entries,
+            allow_consumed=allow_consumed,
         )
-    )
-    if binding is not None and isinstance(control_receipt, dict):
+        issues.extend(portable_issues)
+    else:
+        issues.extend(
+            f"official_bootstrap_control:{item}"
+            for item in validate_control_receipt(
+                control_receipt,
+                candidate_version=FIRST_STRICT_POLICY_VERSION,
+                source_version=ARCHIVED_VERSION_HIGH_WATER,
+                active_bots=[],
+                force_protocol_refresh=False,
+            )
+        )
+    if not allow_published and binding is not None and isinstance(control_receipt, dict):
         expected = _expected_selection(binding, control_receipt, validated_entries)
         if _selection_projection(selection) != _selection_projection(expected):
             issues.append("official_bootstrap_control_selection_receipt_mismatch")
@@ -815,7 +1062,7 @@ def validate_first_strict_control_selection_from_entries(
         issues.extend(consumption.get("issues") or [])
         if consumption.get("consumed") and not allow_consumed:
             issues.append("official_bootstrap_control_already_consumed")
-    else:
+    elif not allow_published:
         expected = None
         consumption = {}
     issues = _unique(issues)

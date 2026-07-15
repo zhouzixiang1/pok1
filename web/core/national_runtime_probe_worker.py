@@ -35,7 +35,7 @@ from national_runtime_probe_scenarios import (
 )
 
 
-PROBE_WORKER_VERSION = 14
+PROBE_WORKER_VERSION = 15
 PHASE_PATH = Path("/output/phase.txt")
 MAX_CAPTURE_CHARS = 64 * 1024
 EXPECTED_CONTEXT_FIELDS = frozenset({
@@ -581,6 +581,8 @@ def _probe_persistent_memory(
 def _profile_context(
     context: dict[str, Any],
     profile: str,
+    *,
+    influence_enabled: bool = True,
 ) -> dict[str, Any]:
     candidate = copy.deepcopy(context)
     opponent = candidate.setdefault("opponent", {})
@@ -631,6 +633,18 @@ def _profile_context(
             "selection_bias_guard": "reach_rate_discount_and_capped_influence",
             "tightness": 0.18,
         })
+    if not influence_enabled:
+        # Matched negative control: keep the observed signal values different
+        # while removing their system-provided confidence/weight authority.
+        # A policy that reads raw sparse counters without the bounded trust
+        # contract will still change its wire action and therefore cannot claim
+        # causal opponent adaptation.
+        opponent["confidence"] = 0.0
+        opponent["adaptation_weight"] = 0.0
+        terminal["confidence"] = 0.0
+        terminal["adaptation_weight"] = 0.0
+        showdown["confidence"] = 0.0
+        showdown["adaptation_weight"] = 0.0
     return candidate
 
 
@@ -785,58 +799,93 @@ def _probe_policy_counterfactuals(
     for dimension, scenario_id, left_name, right_name in probes:
         scenario = scenario_by_id[scenario_id]
         observations: dict[str, dict[str, Any]] = {}
-        for profile in (left_name, right_name):
-            try:
-                row = _drive_scenario(
-                    imports,
-                    scenario,
-                    expected_runtime_version=expected_runtime_version,
-                    context_transform=lambda context, selected=profile: (
-                        _profile_context(context, selected)
-                    ),
+        for control_kind, influence_enabled in (
+            ("positive", True),
+            ("negative", False),
+        ):
+            for profile in (left_name, right_name):
+                observation_key = f"{control_kind}:{profile}"
+                try:
+                    row = _drive_scenario(
+                        imports,
+                        scenario,
+                        expected_runtime_version=expected_runtime_version,
+                        context_transform=(
+                            lambda context, selected=profile, enabled=influence_enabled: (
+                                _profile_context(
+                                    context,
+                                    selected,
+                                    influence_enabled=enabled,
+                                )
+                            )
+                        ),
+                    )
+                except BaseException as exc:
+                    row = {
+                        "decision": None,
+                        "wire": None,
+                        "runtime": {},
+                        "system_issues": [],
+                        "candidate_issues": [
+                            f"counterfactual_exception:{type(exc).__name__}:"
+                            f"{str(exc)[:160]}"
+                        ],
+                    }
+                system_issues.extend(
+                    f"{dimension}:{observation_key}:{item}"
+                    for item in row.get("system_issues") or []
                 )
-            except BaseException as exc:
-                row = {
-                    "decision": None,
-                    "wire": None,
-                    "runtime": {},
-                    "system_issues": [],
-                    "candidate_issues": [
-                        f"counterfactual_exception:{type(exc).__name__}:"
-                        f"{str(exc)[:160]}"
-                    ],
+                candidate_issues.extend(
+                    f"{dimension}:{observation_key}:{item}"
+                    for item in row.get("candidate_issues") or []
+                )
+                observations[observation_key] = {
+                    "decision": row.get("decision"),
+                    "wire": row.get("wire"),
+                    "runtime": row.get("runtime") or {},
                 }
-            system_issues.extend(
-                f"{dimension}:{profile}:{item}"
-                for item in row.get("system_issues") or []
-            )
-            candidate_issues.extend(
-                f"{dimension}:{profile}:{item}"
-                for item in row.get("candidate_issues") or []
-            )
-            observations[profile] = {
-                "decision": row.get("decision"),
-                "wire": row.get("wire"),
-                "runtime": row.get("runtime") or {},
-            }
+        left = observations[f"positive:{left_name}"]
+        right = observations[f"positive:{right_name}"]
+        negative_left = observations[f"negative:{left_name}"]
+        negative_right = observations[f"negative:{right_name}"]
+        positive_changed = (
+            left["decision"] != right["decision"]
+            or left["wire"] != right["wire"]
+        )
+        positive_wire_effect = bool(
+            left["wire"]
+            and right["wire"]
+            and left["wire"] != right["wire"]
+        )
+        negative_wire_stable = bool(
+            negative_left["wire"]
+            and negative_right["wire"]
+            and negative_left["wire"] == negative_right["wire"]
+        )
+        socket_validated = all(
+            item.get("wire") for item in observations.values()
+        )
         dimensions[dimension] = {
             "scenario": scenario_id,
             "left_profile": left_name,
             "right_profile": right_name,
-            "left_decision": observations[left_name]["decision"],
-            "right_decision": observations[right_name]["decision"],
-            "left_wire": observations[left_name]["wire"],
-            "right_wire": observations[right_name]["wire"],
-            "changed": (
-                observations[left_name]["decision"]
-                != observations[right_name]["decision"]
-                or observations[left_name]["wire"]
-                != observations[right_name]["wire"]
+            "left_decision": left["decision"],
+            "right_decision": right["decision"],
+            "left_wire": left["wire"],
+            "right_wire": right["wire"],
+            "negative_left_decision": negative_left["decision"],
+            "negative_right_decision": negative_right["decision"],
+            "negative_left_wire": negative_left["wire"],
+            "negative_right_wire": negative_right["wire"],
+            "changed": positive_changed,
+            "positive_wire_effect": positive_wire_effect,
+            "negative_control_stable": negative_wire_stable,
+            "causal_passed": bool(
+                positive_wire_effect
+                and negative_wire_stable
+                and socket_validated
             ),
-            "socket_validated": bool(
-                observations[left_name]["wire"]
-                and observations[right_name]["wire"]
-            ),
+            "socket_validated": bool(socket_validated),
         }
     issues = [*system_issues, *candidate_issues]
     return {
@@ -1064,9 +1113,14 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     issues = [*system_issues, *candidate_issues]
     return {
         "schema_version": int(spec.get("schema_version") or 0),
+        "orchestrator_version": int(spec.get("orchestrator_version") or 0),
         "worker_version": PROBE_WORKER_VERSION,
         "scenario_version": RUNTIME_PROBE_SCENARIO_VERSION,
         "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+        "limits_digest": spec.get("limits_digest"),
+        "worker_digest": spec.get("worker_digest"),
+        "probe_identity_digest": spec.get("probe_identity_digest"),
+        "policy_abi": spec.get("policy_abi"),
         "spec_digest": spec.get("spec_digest"),
         "code_fingerprint": spec.get("code_fingerprint"),
         "ok": not issues,
@@ -1105,9 +1159,16 @@ def main() -> int:
     except BaseException as exc:
         report = {
             "schema_version": int(spec.get("schema_version") or 0),
+            "orchestrator_version": int(
+                spec.get("orchestrator_version") or 0
+            ),
             "worker_version": PROBE_WORKER_VERSION,
             "scenario_version": RUNTIME_PROBE_SCENARIO_VERSION,
             "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+            "limits_digest": spec.get("limits_digest"),
+            "worker_digest": spec.get("worker_digest"),
+            "probe_identity_digest": spec.get("probe_identity_digest"),
+            "policy_abi": spec.get("policy_abi"),
             "spec_digest": spec.get("spec_digest"),
             "code_fingerprint": spec.get("code_fingerprint"),
             "ok": False,

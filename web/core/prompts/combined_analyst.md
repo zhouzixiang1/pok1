@@ -21,7 +21,12 @@ Before analysis, assess:
 4. **Structural repetition**: Use only the frozen generation trend, lineage, and strength rows supplied below. Repeated threshold-only changes without measured improvement can justify diversity; do not infer a direction from mutable failure logs or historical Critic prose.
 5. **Diversity trigger**: Set diversity_needed=true if trend is stagnant/declining for 2+ gens, OR last 2 gens applied the same type of change.
 6. **Branch safety**: If recommending branch_from, check lineage — do NOT branch from an ancestor if a later descendant already improved from it.
-7. **Causal reasoning**: For each identified improvement or weakness, explain the CAUSAL chain: what specific code change likely caused the rating movement, with evidence from the generation trend and H2H data. Put this in the `causal_analysis` field.
+7. **Causal boundary**: This envelope contains frozen outcome/rating rows but
+   no content-bound source/target artifact digest and no diff digest. Therefore
+   you MUST NOT attribute a rating movement to a specific code change. Set
+   `causal_analysis` to `unknown: no content-bound artifact/diff digest is
+   present in this frozen analyst envelope`. `verified_improvements` may name
+   observed outcome/coverage movements only, never a causal code mechanism.
 </analysis_rules>
 
 <context>
@@ -67,7 +72,7 @@ Output ONLY a JSON block:
   "suggestion": "one concrete high-priority suggestion for next gen",
   "recommended_source": "national_vN",
   "source_rationale": "why this bot is the best choice for evolution source",
-  "causal_analysis": "For each key rating movement, explain what code change caused it and why, with evidence"
+  "causal_analysis": "unknown: no content-bound artifact/diff digest is present in this frozen analyst envelope"
 }
 ```
 

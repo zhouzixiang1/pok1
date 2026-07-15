@@ -26,6 +26,7 @@ from official_certification import (
     certification_identity,
     certificate_validation,
     official_feedback_summary,
+    official_certification_profile_projection,
     official_full_certified,
     official_compliance_verdict,
     official_failure_blocks_parent,
@@ -250,6 +251,7 @@ def _full_report(
     from dataclasses import asdict
 
     from managed_bot_executor import IsolationIdentity
+    import official_platform_harness as harness
     from official_execution_profile import (
         execution_profile_identity,
         load_execution_profile,
@@ -313,14 +315,21 @@ def _full_report(
                 artifact_path = round_dir / f"{artifact_name}{suffix}"
                 artifact_path.write_text("{}\n", encoding="utf-8")
                 artifact_paths[artifact_name] = str(artifact_path)
-            thp_path = round_dir / "match.txt"
+            bot_b_path = candidate if kind == "self_play" else opponent
+            bot_a_name = "BotA" if kind == "self_play" else "Candidate"
+            bot_b_name = "BotB" if kind == "self_play" else "Opponent"
+            thp_path = round_dir / "THP-match.txt"
             screenshot_path = round_dir / "platform.png"
             thp_path.write_text(
-                "\n".join(
-                    f"STATE:{hand_no}:actions:cards:earnings:players;"
+                "".join(
+                    f"STATE:{hand_no}:f:AhKh|QsQd:50|-50:{bot_a_name}|{bot_b_name};"
                     for hand_no in range(thp_hands)
                 )
-                + "\n",
+                + (
+                    f"{{[THP][{bot_a_name}][{bot_b_name}]"
+                    f"[{bot_a_name}赢得{thp_hands * 50}个筹码]"
+                    "[2026-07-11 17:22 合肥][2018 CCGC]}"
+                ),
                 encoding="gb2312",
             )
             screenshot_path.write_bytes(b"fake-png")
@@ -333,24 +342,52 @@ def _full_report(
                 "bytes": len(thp_bytes),
                 "sha256": thp_sha256,
             }
-            bot_b_path = candidate if kind == "self_play" else opponent
             bot_a_hash = hash_path(candidate)
             bot_b_hash = hash_path(bot_b_path)
             bot_a_launch = {
                 "path": str(candidate),
-                "name": "BotA" if kind == "self_play" else "Candidate",
+                "name": bot_a_name,
                 "role": "candidate",
                 "instance_id": "candidate_a" if kind == "self_play" else "candidate",
                 "seat": "upper",
             }
             bot_b_launch = {
                 "path": str(bot_b_path),
-                "name": "BotB" if kind == "self_play" else "Opponent",
+                "name": bot_b_name,
                 "role": "candidate" if kind == "self_play" else "opponent",
                 "instance_id": "candidate_b" if kind == "self_play" else "opponent",
                 "seat": "lower",
             }
-            receipts.append({
+            wire_summary = {
+                "hands_started_min": 70,
+                "settlements_min": 69,
+                "pending_expected_actions": [],
+                "issues": [],
+                "warnings": [],
+                "seats": {
+                    "A": {
+                        "name": bot_a_name,
+                        "hands_started": 70,
+                        "settlements": 69,
+                        "settlement_records": [
+                            {"hand": hand, "amount": 50}
+                            for hand in range(1, 70)
+                        ],
+                        "pending_expected_action": False,
+                    },
+                    "B": {
+                        "name": bot_b_name,
+                        "hands_started": 70,
+                        "settlements": 69,
+                        "settlement_records": [
+                            {"hand": hand, "amount": -50}
+                            for hand in range(1, 70)
+                        ],
+                        "pending_expected_action": False,
+                    },
+                },
+            }
+            receipt = {
                 "round_id": f"{kind}_{round_index:02d}",
                 "round_kind": kind,
                 "round_index": round_index,
@@ -377,9 +414,10 @@ def _full_report(
                 "wire_probe": {"enabled": True, "issues": []},
                 "log_summary": {
                     "hands_started_min": 70,
-                    "settlements_min": 70,
+                    "settlements_min": 69,
                     "issues": [],
                 },
+                "wire_replay_summary": wire_summary,
                 "artifacts": {
                     "round_dir": str(round_dir),
                     **artifact_paths,
@@ -396,7 +434,24 @@ def _full_report(
                         "duplicate_paths": [],
                     },
                 },
-            })
+            }
+            if thp_hands == 70:
+                observation, observation_issues = harness._terminal_thp_observation(
+                    round_dir,
+                    before={},
+                    expected_hands=70,
+                    expected_names=(bot_a_name, bot_b_name),
+                    wire_summary=wire_summary,
+                )
+                assert observation_issues == []
+                assert observation is not None
+                receipt["completion_evidence"] = harness._build_terminal_completion_evidence(
+                    receipt,
+                    observation,
+                    receipt["artifacts"]["canonical_thp"],
+                    target_hands=70,
+                )
+            receipts.append(receipt)
     return {
         "passed": passed,
         "issues": issues or [],
@@ -1089,17 +1144,23 @@ def test_full_certification_rejects_thp_overrun(tmp_path):
     assert any("thp_hand_count_mismatch_for_full_certification" in issue for issue in issues)
 
 
-def test_full_certification_rejects_missing_final_settlement(tmp_path):
+def test_full_v5_rejects_paired_70_wire_settlement_bypass(tmp_path):
     candidate = _bot(tmp_path / "national_v1")
     opponent = _bot(tmp_path / "national_v2")
     spec = build_spec("full", candidate, opponent=opponent)
     payload = _full_report(tmp_path, candidate, opponent)
-    payload["report"]["rounds"][0]["log_summary"]["settlements_min"] = 69
+    receipt = payload["report"]["rounds"][0]
+    receipt["log_summary"]["settlements_min"] = 70
+    receipt["wire_replay_summary"]["settlements_min"] = 70
+    for seat, amount in (("A", 50), ("B", -50)):
+        row = receipt["wire_replay_summary"]["seats"][seat]
+        row["settlements"] = 70
+        row["settlement_records"].append({"hand": 70, "amount": amount})
 
     issues = report_validation_issues(payload, spec)
 
     assert report_valid_for_spec(payload, spec) is False
-    assert any("official_full_settlement_incomplete" in issue for issue in issues)
+    assert any("official_full_v5_natural_terminal_boundary_required" in issue for issue in issues)
 
 
 def test_full_certification_accepts_exe_terminal_thp_completion_proof(tmp_path):
@@ -1514,6 +1575,46 @@ def test_bound_deterministic_failure_survives_rejected_test_only_pass(tmp_path, 
     assert restored["status"] == STATUS_FAILED
     assert restored["official_deterministic_status_receipt"]["candidate_hash"] == hash_path(candidate)
 
+    import official_certification as certification
+
+    mutable_status = deepcopy(restored)
+    mutable_status["issues"] = ["MUTABLE_STATUS_POISON"]
+    assert certification._deterministic_status_receipt_issues(
+        mutable_status,
+        candidate=candidate,
+    ) == []
+
+    broken_binding = deepcopy(mutable_status)
+    broken_binding["official_evidence_summary"]["deterministic_issues"] = [
+        "MUTABLE_SUMMARY_POISON"
+    ]
+    assert "official_deterministic_status_issues_mismatch" in (
+        certification._deterministic_status_receipt_issues(
+            broken_binding,
+            candidate=candidate,
+        )
+    )
+
+    forged_receipt = deepcopy(restored)
+    forged_verdict = forged_receipt["official_deterministic_status_receipt"][
+        "verdict"
+    ]
+    forged_verdict["issues"] = ["FORGED_RECEIPT_POISON"]
+    forged_receipt["official_evidence_summary"]["deterministic_issues"] = [
+        "FORGED_RECEIPT_POISON"
+    ]
+    forged_receipt["official_evidence_summary"]["issue_count"] = 1
+    receipt = forged_receipt["official_deterministic_status_receipt"]
+    receipt["receipt_digest"] = canonical_digest({
+        key: value for key, value in receipt.items() if key != "receipt_digest"
+    })
+    assert "official_deterministic_status_evidence_verdict_mismatch" in (
+        certification._deterministic_status_receipt_issues(
+            forged_receipt,
+            candidate=candidate,
+        )
+    )
+
 
 def test_published_attestation_tampering_invalidates_certificate(tmp_path, monkeypatch):
     published_root = tmp_path / "published"
@@ -1535,6 +1636,381 @@ def test_published_attestation_tampering_invalidates_certificate(tmp_path, monke
 
     assert validation["valid"] is False
     assert "published_attestation_digest_mismatch" in validation["issues"]
+
+
+def test_published_status_projects_the_bound_verdict_ledger_identity(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification as certification
+    import official_verdict_ledger
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    published = {
+        "bot": "national_v143",
+        "status": STATUS_CERTIFIED,
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certificate_digest": "a" * 64,
+    }
+    ledger_entry = {
+        "entry_digest": "b" * 64,
+        "certificate_digest": "a" * 64,
+        "policy_id": "official-full-v5",
+        "outcome": STATUS_CERTIFIED,
+    }
+    monkeypatch.setattr(
+        certification,
+        "_published_status",
+        lambda *_args, **_kwargs: dict(published),
+    )
+    monkeypatch.setattr(certification, "hash_path", lambda _path: "c" * 64)
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "latest_authoritative_verdict",
+        lambda _candidate_hash: {"valid": True, "entry": ledger_entry},
+    )
+
+    restored = read_status(candidate)
+
+    assert restored["status"] == STATUS_CERTIFIED
+    assert restored["official_verdict_ledger_entry"] == ledger_entry
+
+
+@pytest.mark.parametrize(
+    ("bootstrap_control_id", "profile", "opponent_authority"),
+    (
+        (None, "official-full-v5", "strict_published_pool"),
+        ("first_strict_control_v1", "first_strict_control_v1", "system_control"),
+    ),
+)
+def test_formal_profile_projection_is_derived_from_validated_certificate_spec(
+    tmp_path,
+    monkeypatch,
+    bootstrap_control_id,
+    profile,
+    opponent_authority,
+):
+    import official_certification as certification
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    spec = {
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "candidate": str(candidate),
+        "opponent": str(tmp_path / "opponent"),
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "round_timeout_sec": 900.0,
+        "no_progress_timeout_sec": 75.0,
+    }
+    if bootstrap_control_id is not None:
+        spec["bootstrap_control_id"] = bootstrap_control_id
+    monkeypatch.setattr(certification, "official_compliance_verdict", lambda _status: {
+        "ok": True,
+        "classification": "pass",
+        "blocking": False,
+        "inconclusive": False,
+    })
+    monkeypatch.setattr(
+        certification,
+        "certificate_validation",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "issues": [],
+            "spec": spec,
+        },
+    )
+
+    projection = official_certification_profile_projection(
+        {
+            "status": STATUS_CERTIFIED,
+            "mode": "full",
+            "policy_id": "official-full-v5",
+            "test_only": False,
+            "certification_identity": {
+                "test_only": False,
+                "authority_scope": "production",
+                "runner_provenance": "official-exe",
+            },
+            "certification_profile": "FORGED",
+        },
+        candidate,
+        require_published=True,
+    )
+
+    assert projection["certification_profile"] == profile
+    assert projection["opponent_authority"] == opponent_authority
+    assert projection["strength_evidence_weight"] == 0
+    assert projection["strategy_evidence_weight"] == 0
+    assert projection["formal_summary"] == {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "rounds_requested": 8,
+        "rounds_run": 8,
+        "passed_rounds": 8,
+        "failed_rounds": 0,
+    }
+
+
+def test_formal_profile_projection_fails_closed_without_valid_certificate(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification as certification
+
+    candidate = tmp_path / "national_v144"
+    candidate.mkdir()
+    monkeypatch.setattr(
+        certification,
+        "official_compliance_verdict",
+        lambda _status: {
+            "ok": True,
+            "classification": "pass",
+            "blocking": False,
+            "inconclusive": False,
+        },
+    )
+    monkeypatch.setattr(
+        certification,
+        "certificate_validation",
+        lambda *_args, **_kwargs: {"valid": False, "issues": ["tampered"]},
+    )
+
+    assert official_certification_profile_projection(
+        {
+            "status": STATUS_CERTIFIED,
+            "mode": "full",
+            "policy_id": "official-full-v5",
+            "test_only": False,
+            "certification_identity": {
+                "test_only": False,
+                "authority_scope": "production",
+                "runner_provenance": "official-exe",
+            },
+            "certification_profile": "FORGED",
+        },
+        candidate,
+    ) == {}
+
+
+def test_published_first_strict_selection_allows_checkout_relocation_only(
+    tmp_path,
+    monkeypatch,
+):
+    import official_bootstrap
+    from bot_namespace import EVALUATION_EPOCH
+    from first_strict_control import CONTROL_AUTHORITY, CONTROL_ID
+
+    current_candidate = tmp_path / "current" / "bots" / "national_v143"
+    current_control_path = tmp_path / "current" / "control" / ("c" * 64)
+    current_policy_path = (
+        tmp_path / "current" / "web" / "core" / "official_bootstrap_control.json"
+    )
+    binding = {
+        "schema_version": 1,
+        "kind": "official-first-strict-candidate-binding",
+        "epoch": EVALUATION_EPOCH,
+        "candidate": str(current_candidate),
+        "candidate_label": "national_v143",
+        "candidate_version": 143,
+        "candidate_hash": "a" * 64,
+        "source_artifact_inherited": False,
+    }
+    binding["candidate_binding_digest"] = canonical_digest(binding)
+    control = {
+        "schema_version": 1,
+        "authority": CONTROL_AUTHORITY,
+        "control_id": CONTROL_ID,
+        "artifact_hash": "c" * 64,
+        "manifest_sha256": "d" * 64,
+        "path": str(current_control_path),
+        "strength_admitted": False,
+        "rating_eligible": False,
+        "official_opponent_eligible": False,
+    }
+    control["identity_digest"] = canonical_digest(control)
+    control_receipt = {
+        "schema_version": 1,
+        "kind": "first-strict-control-receipt",
+        "control": control,
+    }
+    control_receipt["receipt_digest"] = canonical_digest(control_receipt)
+    policy = {
+        "path": str(current_policy_path),
+        "file_sha256": "e" * 64,
+        "contract_digest": "f" * 64,
+        "policy_id": "official-first-strict-control-bootstrap-v1",
+        "epoch": EVALUATION_EPOCH,
+    }
+    monkeypatch.setattr(official_bootstrap, "_policy_identity", lambda: deepcopy(policy))
+    monkeypatch.setattr(
+        official_bootstrap,
+        "materialize_control",
+        lambda: current_control_path,
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "control_identity",
+        lambda *_a, **_k: deepcopy(control),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_control_receipt",
+        lambda *_a, **_k: [],
+    )
+    selection = official_bootstrap._expected_selection(
+        binding,
+        control_receipt,
+        [],
+    )
+
+    relocated = deepcopy(selection)
+    old_root = Path("/srv/evolution/.evolution_pok")
+    old_binding = deepcopy(binding)
+    old_binding["candidate"] = str(old_root / "bots" / "national_v143")
+    old_binding["candidate_binding_digest"] = canonical_digest({
+        key: value
+        for key, value in old_binding.items()
+        if key != "candidate_binding_digest"
+    })
+    old_control = deepcopy(control)
+    old_control["path"] = str(old_root / "control" / ("c" * 64))
+    old_control["identity_digest"] = canonical_digest({
+        key: value for key, value in old_control.items() if key != "identity_digest"
+    })
+    old_control_receipt = deepcopy(control_receipt)
+    old_control_receipt["control"] = old_control
+    old_control_receipt["receipt_digest"] = canonical_digest({
+        key: value
+        for key, value in old_control_receipt.items()
+        if key != "receipt_digest"
+    })
+    old_policy = deepcopy(policy)
+    old_policy["path"] = str(
+        old_root / "web" / "core" / "official_bootstrap_control.json"
+    )
+    old_authorization = deepcopy(relocated["bootstrap_control_receipt"])
+    old_authorization.update({
+        "bootstrap_policy": old_policy,
+        "candidate_binding": old_binding,
+        "first_strict_control_receipt": old_control_receipt,
+        "first_strict_control_receipt_digest": old_control_receipt["receipt_digest"],
+        "control_identity_digest": old_control["identity_digest"],
+    })
+    old_authorization["receipt_digest"] = canonical_digest({
+        key: value
+        for key, value in old_authorization.items()
+        if key != "receipt_digest"
+    })
+    relocated.update({
+        "candidate": old_binding["candidate"],
+        "candidate_binding": old_binding,
+        "bootstrap_control_receipt": old_authorization,
+    })
+    relocated["opponent"]["path"] = old_control["path"]
+    relocated["opponent"]["eligibility_receipt"] = old_authorization
+    ledger_entry = {
+        "bootstrap_control_id": CONTROL_ID,
+        "bootstrap_control_receipt_digest": old_authorization["receipt_digest"],
+        "outcome": "official-certified",
+        "policy_id": "official-full-v5",
+        "mode": "full",
+        "authoritative": True,
+        "blocking": False,
+        "classification": "pass",
+        "entry_digest": "9" * 64,
+    }
+
+    issues, _expected, consumption = (
+        official_bootstrap._published_selection_validation(
+            relocated,
+            binding,
+            [ledger_entry],
+            allow_consumed=True,
+        )
+    )
+    assert issues == []
+    assert consumption["consumed"] is True
+
+    tampered = deepcopy(relocated)
+    tampered_binding = tampered["candidate_binding"]
+    tampered_binding["candidate_hash"] = "0" * 64
+    tampered_binding["candidate_binding_digest"] = canonical_digest({
+        key: value
+        for key, value in tampered_binding.items()
+        if key != "candidate_binding_digest"
+    })
+    tampered["bootstrap_control_receipt"]["candidate_binding"] = tampered_binding
+    tampered["bootstrap_control_receipt"]["receipt_digest"] = canonical_digest({
+        key: value
+        for key, value in tampered["bootstrap_control_receipt"].items()
+        if key != "receipt_digest"
+    })
+    tampered["opponent"]["eligibility_receipt"] = tampered[
+        "bootstrap_control_receipt"
+    ]
+    tampered_issues, _expected, _consumption = (
+        official_bootstrap._published_selection_validation(
+            tampered,
+            binding,
+            [],
+            allow_consumed=True,
+        )
+    )
+    assert "official_bootstrap_candidate_binding_content_mismatch" in tampered_issues
+
+
+def test_bootstrap_certificate_validation_uses_current_checkout_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    import official_bootstrap
+    import official_certification as certification
+    from first_strict_control import CONTROL_ID
+
+    signed_candidate = Path("/srv/evolution/.evolution_pok/bots/national_v143")
+    current_candidate = tmp_path / "bots" / "national_v143"
+    opponent = tmp_path / "control"
+    spec = build_spec(
+        "full",
+        signed_candidate,
+        opponent=opponent,
+        bootstrap_control_id=CONTROL_ID,
+    )
+    identity = {"opponent_hash": "b" * 64}
+    selection = {
+        "selected": True,
+        "bootstrap_control_id": CONTROL_ID,
+        "opponent": {
+            "eligible": True,
+            "path": str(opponent.resolve()),
+            "artifact_hash": "b" * 64,
+            "reason": "first_strict_control_bootstrap",
+        },
+    }
+    observed = []
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_first_strict_control_selection",
+        lambda _selection, _control, candidate, **_kwargs: (
+            observed.append(Path(candidate))
+            or {"valid": True, "issues": []}
+        ),
+    )
+
+    assert certification._opponent_selection_issues(
+        selection,
+        spec,
+        identity,
+        allow_consumed_bootstrap=True,
+        candidate_path=current_candidate,
+    ) == []
+    assert observed == [current_candidate]
 
 
 def test_recomputed_unkeyed_digests_cannot_bypass_certificate_signature(tmp_path, monkeypatch):

@@ -12,6 +12,7 @@ Use the repository-pinned lockfile:
 ```bash
 cd web/frontend
 npm ci
+npm test
 npm run lint
 npm run build
 ```
@@ -38,6 +39,9 @@ Every page fails closed against `/api/control/status`:
 - `v142` is only the immutable pre-policy numeric high-water. In the explicit
   `reset_required` state, the first strict target is `v143`.
 - Recovery and unavailable states do not claim a next version.
+- A durable runtime-reconciliation claim is a hard launch barrier. The UI
+  exposes the backend-owned continuation command and clears all stream state;
+  it never treats the claim as an ordinary stopped checkpoint.
 - Directories such as an uncommitted/untagged `national_v155` are debris, not a
   published bot, candidate, generation result, or version authority.
 - The current published pool comes from strict epoch projection. The first
@@ -53,9 +57,12 @@ magnitude is secondary evidence, not a replacement score.
 ## Certification and Arena
 
 Formal publication authority is a backend-validated, content-bound
-`official-full-v5` certificate: five 70-hand self-play rounds plus three
-70-hand rounds against an eligible opponent, signed and bound to the official
-verdict ledger. The browser consumes `formal_certified` and
+`official-full-v5` certificate. Normal strict generations run five 70-hand
+self-play rounds plus three 70-hand rounds against an eligible strict opponent.
+The one-time v143 `first_strict_control_v1` profile instead binds the authorized
+system control and has zero strength and strategy-evidence weight; the browser
+does not describe it as a normal strict-pool H2H certification. Certificates
+are signed and bound to the official verdict ledger. The browser consumes `formal_certified` and
 `formal_authority=signed_full_v5`; it does not reconstruct certificate validity
 from a loose summary.
 
@@ -65,9 +72,14 @@ the first strict bootstrap uses the explicit acknowledged operator CLI path.
 While `official_bootstrap_required` is active, `/api/certification/jobs` may
 expose exactly one request-bound v143 job as
 `formal_authority=operator_bootstrap_full_v5_job`, `read_only=true`, and
-`cancel_allowed=false`. The dashboard may display its 5+3×70 progress and the
+`cancel_allowed=false`. The dashboard may display its exact rounds and the
 operator command, but cannot start or cancel it. Unrelated bootstrap jobs,
 v155 debris, and old-epoch jobs remain invisible.
+
+The v143 operator transition is also server-owned. The dashboard distinguishes
+`bootstrap_required`, `bootstrap_running`, `bootstrap_failed`, and
+`ready_to_finalize`; it never derives the finalize command from a generic job
+state or treats an operator pause as a failed certification.
 
 National Arena sessions are presentation and protocol diagnostics only:
 
@@ -95,8 +107,11 @@ reload. It is never written to local storage.
 
 ## Primary data contracts
 
-- `/api/control/status`: epoch, version, published-pool, and active-generation
-  authority.
+- `/api/control/status` plus `/api/control/health`: epoch/version authority,
+  active task liveness, the checkpoint-validated deterministic next route,
+  daemon intent versus actual heartbeat health, and a TTL-bound background
+  verification of the persistent 10-generation observation. Browser polling
+  pairs the two snapshots, rejects identity drift, and never overlaps requests.
 - `/api/ratings`, `/api/history`, `/api/matches/*`: current immutable strength
   bundle only.
 - `/api/bots`: current strict published inventory; unpublished and historical
@@ -104,7 +119,13 @@ reload. It is never written to local storage.
 - `/api/certification/*`: formal full-v5 status and exact current durable-job
   progress; enqueue is retired and v143 bootstrap is read-only.
 - `/api/evolution/state` and `/api/evolution/stream`: current initialized epoch
-  only. The server closes a pre-reset stream without replaying its memory ring.
+  only. One backend-issued SHA-256 stream identity binds the reset receipt,
+  published high-water, and active strict pool. The browser, live clients, and
+  replay ring all use that exact digest; publication clears the preceding ring.
+- `/api/data/stream`: immutable strength projections plus daemon liveness. A
+  disconnect, reset, or publication-identity movement clears the full cached
+  projection and cannot remain green merely because the last event said
+  `active`.
 - `/api/national-arena/*`: epoch-bound diagnostic sessions with explicit
   non-authority metadata.
 - `/api/prompts`: source-controlled, read-only prompt contracts.

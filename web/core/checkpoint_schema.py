@@ -24,6 +24,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Callable, Iterable
 
 from bot_namespace import (
@@ -32,25 +33,28 @@ from bot_namespace import (
     FIRST_STRICT_POLICY_VERSION,
     ROLE_PARENT_SOURCE,
     bot_name,
+    bot_tag,
     resolve_national_bot_spec,
 )
 
 
-CHECKPOINT_SCHEMA_VERSION = 1
-CHECKPOINT_EPOCH_BINDING_SCHEMA_VERSION = 1
+CHECKPOINT_SCHEMA_VERSION = 2
+CHECKPOINT_EPOCH_BINDING_SCHEMA_VERSION = 2
 FRESH_BOOTSTRAP_MODE = "fresh_bootstrap"
 PUBLISHED_STRICT_PARENT_MODE = "published_strict_parent"
 PUBLISHED_PARENT_AUTHORITY = "strict_published_parent_resolution"
 POLICY_EPOCH_RESET_RECEIPT_RELATIVE_PATH = Path(
     "web/core/results/policy_epoch_reset_receipt.json"
 )
-OPERATOR_ARCHIVE_RESET_ACTION = "operator_archive_reset"
+OPERATOR_ARCHIVE_RESET_ACTION = "operator_reconcile_checkpoint"
 OPERATOR_ARCHIVE_RESET_COMMAND = (
-    "python scripts/reset_national_tcp_policy_epoch.py --execute "
-    "--acknowledge-runtime-checkout"
+    "python scripts/reconcile_national_policy_epoch.py --execute "
+    "--acknowledge-runtime-checkout "
+    "--quarantine-legacy-ledger-and-abandon-checkpoint"
 )
 
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _BINDING_KEYS = frozenset(
     {
         "schema_version",
@@ -65,6 +69,10 @@ _BINDING_KEYS = frozenset(
         "published_parent_identities",
         "protocol_bootstrap_receipt_digest",
         "policy_epoch_reset_receipt_digest",
+        "published_high_water",
+        "abandoned_receipt_floor",
+        "abandoned_receipt_head_digest",
+        "allocation_floor",
         "binding_digest",
     }
 )
@@ -78,9 +86,24 @@ _PUBLISHED_PARENT_KEYS = frozenset(
         "epoch_receipt_digest",
         "publication_identity_digest",
         "certificate_digest",
+        "completion_tag",
+        "completion_tag_object_oid",
+        "high_water_tag",
+        "high_water_tag_object_oid",
+        "publication_commit_oid",
+        "completion_tree_oid",
+        "tag_artifact_hash",
     }
 )
 _LEGACY_MIGRATION_VALUE = "legacy_strategy_migration"
+_LEGACY_V1_BINDING_KEYS = frozenset(
+    _BINDING_KEYS.difference({
+        "published_high_water",
+        "abandoned_receipt_floor",
+        "abandoned_receipt_head_digest",
+        "allocation_floor",
+    })
+)
 
 
 class CheckpointSchemaError(RuntimeError):
@@ -147,7 +170,115 @@ def _legacy_migration_declared(checkpoint: Any) -> bool:
     return any(value == _LEGACY_MIGRATION_VALUE for value in values)
 
 
-def _published_parent_identity(spec: Any, version: int) -> dict[str, Any]:
+def _git_read(repo_root: str | Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=str(Path(repo_root)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(
+            completed.stderr.strip()
+            or f"git {args[0] if args else '<missing>'} failed"
+        )
+    return completed.stdout.strip()
+
+
+def resolve_published_parent_tag_authority(
+    *,
+    spec: Any,
+    version: int,
+    repo_root: str | Path,
+) -> dict[str, str]:
+    """Resolve both immutable publication refs and their exact parent tree.
+
+    ``published_bot_identity`` proves the completion ref and worktree.  The
+    checkpoint additionally binds the paired high-water ref because either ref
+    alone is only an interrupted publication effect.  Re-reading both refs here
+    prevents a caller-provided/self-digested parent identity from inventing a
+    parent which never occupied the published namespace.
+    """
+
+    publication = getattr(spec, "publication_identity", None)
+    if not isinstance(publication, dict):
+        raise CheckpointSchemaError(
+            ["checkpoint_parent_publication_identity_incomplete"]
+        )
+    completion_tag = bot_tag(version)
+    high_water_tag = f"national-high-water-v{version}"
+    completion_ref = f"refs/tags/{completion_tag}"
+    high_water_ref = f"refs/tags/{high_water_tag}"
+    completion_type = _git_read(repo_root, "cat-file", "-t", completion_ref)
+    high_water_type = _git_read(repo_root, "cat-file", "-t", high_water_ref)
+    completion_object = _git_read(repo_root, "rev-parse", completion_ref).lower()
+    high_water_object = _git_read(repo_root, "rev-parse", high_water_ref).lower()
+    completion_commit = _git_read(
+        repo_root, "rev-parse", f"{completion_ref}^{{commit}}"
+    ).lower()
+    high_water_commit = _git_read(
+        repo_root, "rev-parse", f"{high_water_ref}^{{commit}}"
+    ).lower()
+    completion_tree = _git_read(
+        repo_root,
+        "rev-parse",
+        f"{completion_ref}^{{commit}}:bots/{bot_name(version)}",
+    ).lower()
+    tag_artifact_hash = str(publication.get("tag_artifact_hash") or "").lower()
+    errors: list[str] = []
+    if completion_type != "tag":
+        errors.append("checkpoint_parent_completion_tag_not_annotated")
+    if high_water_type != "tag":
+        errors.append("checkpoint_parent_high_water_tag_not_annotated")
+    for label, value in (
+        ("completion_tag_object", completion_object),
+        ("high_water_tag_object", high_water_object),
+        ("publication_commit", completion_commit),
+        ("completion_tree", completion_tree),
+    ):
+        if _GIT_OBJECT_ID_RE.fullmatch(value) is None:
+            errors.append(f"checkpoint_parent_{label}_invalid")
+    if completion_commit != high_water_commit:
+        errors.append("checkpoint_parent_publication_tag_commit_mismatch")
+    if publication.get("published") is not True:
+        errors.append("checkpoint_parent_publication_not_complete")
+    if publication.get("tag") != completion_tag:
+        errors.append("checkpoint_parent_completion_tag_mismatch")
+    if publication.get("tag_type") != completion_type:
+        errors.append("checkpoint_parent_completion_tag_type_drift")
+    if str(publication.get("tag_object") or "").lower() != completion_object:
+        errors.append("checkpoint_parent_completion_tag_object_drift")
+    if str(publication.get("commit_oid") or "").lower() != completion_commit:
+        errors.append("checkpoint_parent_publication_commit_drift")
+    if (
+        str(publication.get("completion_tree_oid") or "").lower()
+        != completion_tree
+    ):
+        errors.append("checkpoint_parent_completion_tree_drift")
+    if not _digest_ok(tag_artifact_hash):
+        errors.append("checkpoint_parent_tag_artifact_hash_invalid")
+    if errors:
+        raise CheckpointSchemaError(errors)
+    return {
+        "completion_tag": completion_tag,
+        "completion_tag_object_oid": completion_object,
+        "high_water_tag": high_water_tag,
+        "high_water_tag_object_oid": high_water_object,
+        "publication_commit_oid": completion_commit,
+        "completion_tree_oid": completion_tree,
+        "tag_artifact_hash": tag_artifact_hash,
+    }
+
+
+def _published_parent_identity(
+    spec: Any,
+    version: int,
+    *,
+    repo_root: str | Path,
+    parent_tag_authority_resolver: Callable[..., dict[str, str]] | None = None,
+) -> dict[str, Any]:
     if not getattr(spec, "eligible", False):
         issues = list(getattr(spec, "issues", ()) or ())
         raise CheckpointSchemaError(
@@ -169,6 +300,54 @@ def _published_parent_identity(spec: Any, version: int) -> dict[str, Any]:
         raise CheckpointSchemaError(
             ["checkpoint_parent_publication_identity_incomplete"]
         )
+    tag_authority_resolver = (
+        parent_tag_authority_resolver or resolve_published_parent_tag_authority
+    )
+    try:
+        tag_authority = tag_authority_resolver(
+            spec=spec,
+            version=version,
+            repo_root=repo_root,
+        )
+    except CheckpointSchemaError:
+        raise
+    except Exception as exc:
+        raise CheckpointSchemaError(
+            [
+                "checkpoint_parent_tag_authority_unavailable:"
+                f"v{version}:{type(exc).__name__}"
+            ]
+        ) from exc
+    expected_tag_keys = _PUBLISHED_PARENT_KEYS.difference({
+        "version",
+        "bot",
+        "role",
+        "epoch",
+        "runtime_manifest_digest",
+        "epoch_receipt_digest",
+        "publication_identity_digest",
+        "certificate_digest",
+    })
+    if not isinstance(tag_authority, dict) or set(tag_authority) != expected_tag_keys:
+        raise CheckpointSchemaError(
+            ["checkpoint_parent_tag_authority_fields_mismatch"]
+        )
+    # ``published_bot_identity`` also reports live checkout observations such as
+    # ``main_commit_oid`` and the current HEAD tree.  Those values legitimately
+    # change when a later bot is published and therefore cannot be part of a
+    # durable parent receipt.  Bind only the immutable publication proof that
+    # was independently re-resolved above.
+    stable_publication_identity = {
+        "schema_version": 1,
+        "published": True,
+        "version": version,
+        "tag": tag_authority["completion_tag"],
+        "tag_type": "tag",
+        "tag_object": tag_authority["completion_tag_object_oid"],
+        "commit_oid": tag_authority["publication_commit_oid"],
+        "completion_tree_oid": tag_authority["completion_tree_oid"],
+        "tag_artifact_hash": tag_authority["tag_artifact_hash"],
+    }
     return {
         "version": version,
         "bot": bot_name(version),
@@ -176,8 +355,11 @@ def _published_parent_identity(spec: Any, version: int) -> dict[str, Any]:
         "epoch": EVALUATION_EPOCH,
         "runtime_manifest_digest": _canonical_digest(runtime_manifest),
         "epoch_receipt_digest": _canonical_digest(epoch_receipt),
-        "publication_identity_digest": _canonical_digest(publication_identity),
+        "publication_identity_digest": _canonical_digest(
+            stable_publication_identity
+        ),
         "certificate_digest": certificate_digest,
+        **tag_authority,
     }
 
 
@@ -191,8 +373,12 @@ def build_checkpoint_epoch_binding(
     source_v: int,
     parent2_v: int | None = None,
     audit_context: dict[str, Any] | None = None,
+    published_high_water: int,
+    abandoned_receipt_floor: int,
+    abandoned_receipt_head_digest: str | None,
     repo_root: str | Path | None = None,
     parent_resolver: Callable[..., Any] | None = None,
+    parent_tag_authority_resolver: Callable[..., dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build the immutable origin envelope for a newly selected checkpoint.
 
@@ -205,6 +391,7 @@ def build_checkpoint_epoch_binding(
     parent2 = _strict_int(parent2_v) if parent2_v is not None else None
     audit = audit_context if isinstance(audit_context, dict) else {}
     parent_resolver = parent_resolver or resolve_national_bot_spec
+    resolved_repo_root = Path(repo_root or Path(__file__).resolve().parents[2])
     synthetic_checkpoint = {
         "audit_context": audit,
         "generation_mode": (audit.get("selection") or {}).get("strategy")
@@ -217,6 +404,32 @@ def build_checkpoint_epoch_binding(
         raise CheckpointSchemaError(["checkpoint_epoch_version_type_invalid"])
     if target < FIRST_STRICT_POLICY_VERSION:
         raise CheckpointSchemaError(["checkpoint_target_before_strict_epoch"])
+    published = _strict_int(published_high_water)
+    abandoned = _strict_int(abandoned_receipt_floor)
+    head = abandoned_receipt_head_digest
+    authority_errors: list[str] = []
+    if published is None or published < ARCHIVED_VERSION_HIGH_WATER:
+        authority_errors.append("checkpoint_published_high_water_invalid")
+    if abandoned is None or abandoned < 0:
+        authority_errors.append("checkpoint_abandoned_receipt_floor_invalid")
+    if head is not None and not _digest_ok(head):
+        authority_errors.append("checkpoint_abandoned_receipt_head_invalid")
+    allocation_floor = (
+        max(published, abandoned)
+        if published is not None and abandoned is not None
+        else None
+    )
+    if allocation_floor is not None and target != allocation_floor + 1:
+        authority_errors.append("checkpoint_target_not_allocation_floor_successor")
+    if authority_errors:
+        raise CheckpointSchemaError(authority_errors)
+
+    allocation_binding = {
+        "published_high_water": published,
+        "abandoned_receipt_floor": abandoned,
+        "abandoned_receipt_head_digest": head,
+        "allocation_floor": allocation_floor,
+    }
 
     bootstrap = audit.get("protocol_bootstrap")
     if target == FIRST_STRICT_POLICY_VERSION:
@@ -270,6 +483,7 @@ def build_checkpoint_epoch_binding(
                 "published_parent_identities": [],
                 "protocol_bootstrap_receipt_digest": bootstrap_digest,
                 "policy_epoch_reset_receipt_digest": reset_digest,
+                **allocation_binding,
             }
         )
 
@@ -289,7 +503,7 @@ def build_checkpoint_epoch_binding(
             spec = parent_resolver(
                 bot_name(version),
                 role=ROLE_PARENT_SOURCE,
-                repo_root=repo_root,
+                repo_root=resolved_repo_root,
             )
         except Exception as exc:
             raise CheckpointSchemaError(
@@ -298,7 +512,12 @@ def build_checkpoint_epoch_binding(
                     f"v{version}:{type(exc).__name__}"
                 ]
             ) from exc
-        identities.append(_published_parent_identity(spec, version))
+        identities.append(_published_parent_identity(
+            spec,
+            version,
+            repo_root=resolved_repo_root,
+            parent_tag_authority_resolver=parent_tag_authority_resolver,
+        ))
 
     protocol_digest = None
     if bootstrap is not None:
@@ -326,6 +545,7 @@ def build_checkpoint_epoch_binding(
             "published_parent_identities": identities,
             "protocol_bootstrap_receipt_digest": protocol_digest,
             "policy_epoch_reset_receipt_digest": None,
+            **allocation_binding,
         }
     )
 
@@ -356,6 +576,25 @@ def _published_parent_identity_errors(
     ):
         if not _digest_ok(identity.get(field)):
             errors.append(f"checkpoint_published_parent_identity_{field}_invalid")
+    if identity.get("completion_tag") != bot_tag(expected_version):
+        errors.append("checkpoint_published_parent_identity_completion_tag_mismatch")
+    if identity.get("high_water_tag") != (
+        f"national-high-water-v{expected_version}"
+    ):
+        errors.append("checkpoint_published_parent_identity_high_water_tag_mismatch")
+    for field in (
+        "completion_tag_object_oid",
+        "high_water_tag_object_oid",
+        "publication_commit_oid",
+        "completion_tree_oid",
+    ):
+        value = identity.get(field)
+        if not isinstance(value, str) or _GIT_OBJECT_ID_RE.fullmatch(value) is None:
+            errors.append(f"checkpoint_published_parent_identity_{field}_invalid")
+    if not _digest_ok(identity.get("tag_artifact_hash")):
+        errors.append(
+            "checkpoint_published_parent_identity_tag_artifact_hash_invalid"
+        )
     return errors
 
 
@@ -406,6 +645,29 @@ def checkpoint_epoch_errors(checkpoint: Any) -> list[str]:
         expected_digest = ""
     if binding.get("binding_digest") != expected_digest:
         errors.append("checkpoint_epoch_binding_digest_mismatch")
+
+    published = _strict_int(binding.get("published_high_water"))
+    abandoned = _strict_int(binding.get("abandoned_receipt_floor"))
+    allocation_floor = _strict_int(binding.get("allocation_floor"))
+    head = binding.get("abandoned_receipt_head_digest")
+    if published is None or published < ARCHIVED_VERSION_HIGH_WATER:
+        errors.append("checkpoint_published_high_water_invalid")
+    if abandoned is None or abandoned < 0:
+        errors.append("checkpoint_abandoned_receipt_floor_invalid")
+    if head is not None and not _digest_ok(head):
+        errors.append("checkpoint_abandoned_receipt_head_invalid")
+    if (
+        published is not None
+        and abandoned is not None
+        and allocation_floor != max(published, abandoned)
+    ):
+        errors.append("checkpoint_allocation_floor_mismatch")
+    if (
+        target is not None
+        and allocation_floor is not None
+        and target != allocation_floor + 1
+    ):
+        errors.append("checkpoint_target_not_allocation_floor_successor")
 
     audit = _audit_context(checkpoint)
     bootstrap = audit.get("protocol_bootstrap")
@@ -507,6 +769,212 @@ def checkpoint_epoch_errors(checkpoint: Any) -> list[str]:
     else:
         errors.append("checkpoint_epoch_binding_mode_invalid")
     return list(dict.fromkeys(errors))
+
+
+def live_checkpoint_parent_authority_errors(
+    checkpoint: Any,
+    *,
+    repo_root: str | Path | None = None,
+    parent_resolver: Callable[..., Any] | None = None,
+    parent_tag_authority_resolver: Callable[..., dict[str, str]] | None = None,
+) -> list[str]:
+    """Re-open every v144+ parent against live immutable publication refs.
+
+    The binding digest detects accidental byte drift but is not a signature.  A
+    persisted checkpoint can therefore be trusted only after the exact strict
+    parent resolver, paired annotated refs, Git tree, and signed certificate
+    reproduce the identity captured at allocation time.
+    """
+
+    if not isinstance(checkpoint, dict):
+        return ["checkpoint_parent_authority_checkpoint_missing"]
+    binding = checkpoint.get("epoch_binding")
+    if not isinstance(binding, dict):
+        return ["checkpoint_parent_authority_binding_missing"]
+    if binding.get("mode") != PUBLISHED_STRICT_PARENT_MODE:
+        return []
+    parents = binding.get("parent_versions")
+    identities = binding.get("published_parent_identities")
+    if (
+        not isinstance(parents, list)
+        or not isinstance(identities, list)
+        or len(parents) != len(identities)
+    ):
+        return ["checkpoint_parent_authority_identity_set_invalid"]
+    resolver = parent_resolver or resolve_national_bot_spec
+    root = Path(repo_root or Path(__file__).resolve().parents[2])
+    errors: list[str] = []
+    for version, recorded in zip(parents, identities):
+        if type(version) is not int:
+            errors.append("checkpoint_parent_authority_version_invalid")
+            continue
+        try:
+            spec = resolver(
+                bot_name(version),
+                role=ROLE_PARENT_SOURCE,
+                repo_root=root,
+            )
+            observed = _published_parent_identity(
+                spec,
+                version,
+                repo_root=root,
+                parent_tag_authority_resolver=parent_tag_authority_resolver,
+            )
+        except CheckpointSchemaError as exc:
+            errors.extend(
+                f"checkpoint_parent_authority:v{version}:{item}"
+                for item in exc.errors
+            )
+            continue
+        except Exception as exc:
+            errors.append(
+                "checkpoint_parent_authority_resolution_error:"
+                f"v{version}:{type(exc).__name__}"
+            )
+            continue
+        if observed != recorded:
+            errors.append(f"checkpoint_parent_authority_identity_drift:v{version}")
+    return list(dict.fromkeys(errors))
+
+
+def live_checkpoint_allocation_authority_errors(
+    checkpoint: Any,
+    *,
+    published_high_water: int,
+    abandoned_receipt_floor: int,
+    abandoned_receipt_head_digest: str | None,
+    allow_published_target_reconciliation: bool = False,
+) -> list[str]:
+    """Compare one immutable checkpoint allocation receipt with live authority.
+
+    Normal active checkpoints must still observe the exact tag high-water and
+    digest-chain head captured when they were created.  The sole exception is
+    the atomic-publication recovery window: a ``publishing`` checkpoint may
+    remain executable after its own completion tag advances the high-water by
+    exactly one.  Callers must separately validate its publication intent.
+    """
+
+    if not isinstance(checkpoint, dict):
+        return ["checkpoint_missing_or_not_object"]
+    binding = checkpoint.get("epoch_binding")
+    if not isinstance(binding, dict):
+        return ["checkpoint_epoch_binding_missing_or_not_object"]
+    target = _strict_int(checkpoint.get("next_v"))
+    published = _strict_int(published_high_water)
+    abandoned = _strict_int(abandoned_receipt_floor)
+    head = abandoned_receipt_head_digest
+    errors: list[str] = []
+    if published is None or published < ARCHIVED_VERSION_HIGH_WATER:
+        errors.append("live_published_high_water_invalid")
+    if abandoned is None or abandoned < 0:
+        errors.append("live_abandoned_receipt_floor_invalid")
+    if head is not None and not _digest_ok(head):
+        errors.append("live_abandoned_receipt_head_invalid")
+    if errors or target is None:
+        if target is None:
+            errors.append("checkpoint_epoch_version_type_invalid")
+        return list(dict.fromkeys(errors))
+
+    live_floor = max(published, abandoned)
+    publication_reconciliation = bool(
+        allow_published_target_reconciliation
+        and checkpoint.get("stage") == "publishing"
+        and published == target
+        and binding.get("published_high_water") == target - 1
+        and abandoned < target
+    )
+    if target <= live_floor and not publication_reconciliation:
+        errors.append("checkpoint_target_not_above_live_allocation_floor")
+    if target > live_floor + 1:
+        errors.append("checkpoint_target_skips_live_allocation_floor")
+    if (
+        binding.get("published_high_water") != published
+        and not publication_reconciliation
+    ):
+        errors.append("checkpoint_published_high_water_changed")
+    if binding.get("abandoned_receipt_floor") != abandoned:
+        errors.append("checkpoint_abandoned_receipt_floor_changed")
+    if binding.get("abandoned_receipt_head_digest") != head:
+        errors.append("checkpoint_abandoned_receipt_head_changed")
+    return list(dict.fromkeys(errors))
+
+
+def upgrade_legacy_checkpoint_for_controlled_abandon(
+    checkpoint: Any,
+    *,
+    published_high_water: int,
+    abandoned_receipt_floor: int,
+    abandoned_receipt_head_digest: str | None,
+) -> dict[str, Any]:
+    """Upgrade a schema-v1 envelope only as input to terminal abandonment.
+
+    This is deliberately not a recovery/migration API: the returned object may
+    be used to create one quarantine-bound abandon receipt, but must never be
+    written back as an active checkpoint.  Exact v1 fields and its original
+    digest are verified before the allocation binding is added.  Consequently
+    an old bare-derived target jump cannot be laundered into the namespace.
+    """
+
+    if not isinstance(checkpoint, dict):
+        raise CheckpointSchemaError(["legacy_checkpoint_missing_or_not_object"])
+    if checkpoint.get("checkpoint_schema_version") != 1:
+        raise CheckpointSchemaError(["legacy_checkpoint_schema_not_v1"])
+    if checkpoint.get("evaluation_epoch") != EVALUATION_EPOCH:
+        raise CheckpointSchemaError(["legacy_checkpoint_epoch_mismatch"])
+    if _legacy_migration_declared(checkpoint):
+        raise CheckpointSchemaError(["checkpoint_legacy_strategy_migration_forbidden"])
+    binding = checkpoint.get("epoch_binding")
+    if not isinstance(binding, dict) or set(binding) != _LEGACY_V1_BINDING_KEYS:
+        raise CheckpointSchemaError(["legacy_checkpoint_binding_fields_mismatch"])
+    if binding.get("schema_version") != 1:
+        raise CheckpointSchemaError(["legacy_checkpoint_binding_schema_mismatch"])
+    unsigned_v1 = {
+        key: value for key, value in binding.items() if key != "binding_digest"
+    }
+    if binding.get("binding_digest") != _canonical_digest(unsigned_v1):
+        raise CheckpointSchemaError(["legacy_checkpoint_binding_digest_mismatch"])
+
+    published = _strict_int(published_high_water)
+    abandoned = _strict_int(abandoned_receipt_floor)
+    head = abandoned_receipt_head_digest
+    target = _strict_int(checkpoint.get("next_v"))
+    errors: list[str] = []
+    if published is None or published < ARCHIVED_VERSION_HIGH_WATER:
+        errors.append("checkpoint_published_high_water_invalid")
+    if abandoned is None or abandoned < 0:
+        errors.append("checkpoint_abandoned_receipt_floor_invalid")
+    if head is not None and not _digest_ok(head):
+        errors.append("checkpoint_abandoned_receipt_head_invalid")
+    allocation_floor = (
+        max(published, abandoned)
+        if published is not None and abandoned is not None
+        else None
+    )
+    if target is None or allocation_floor is None or target != allocation_floor + 1:
+        errors.append("checkpoint_target_not_allocation_floor_successor")
+    if errors:
+        raise CheckpointSchemaError(errors)
+
+    upgraded_unsigned = {
+        **unsigned_v1,
+        "schema_version": CHECKPOINT_EPOCH_BINDING_SCHEMA_VERSION,
+        "published_high_water": published,
+        "abandoned_receipt_floor": abandoned,
+        "abandoned_receipt_head_digest": head,
+        "allocation_floor": allocation_floor,
+    }
+    upgraded = {
+        **checkpoint,
+        "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "epoch_binding": {
+            **upgraded_unsigned,
+            "binding_digest": _canonical_digest(upgraded_unsigned),
+        },
+    }
+    upgraded_errors = checkpoint_epoch_errors(upgraded)
+    if upgraded_errors:
+        raise CheckpointSchemaError(upgraded_errors)
+    return upgraded
 
 
 def _reset_receipt_digest(receipt: dict[str, Any]) -> tuple[str, list[str]]:
@@ -650,7 +1118,7 @@ def checkpoint_epoch_reset_route(
             "This active checkpoint is not bound to national_tcp_policy_v1. "
             "Do not call run_master, prepare, Worker, gate, or commit tools and "
             "do not add missing fields in place. Preserve/archive the checkpoint "
-            "and candidate, then perform the central policy-epoch reset through "
+            "and candidate, then run the stopped-checkout reconciliation through "
             f"`{OPERATOR_ARCHIVE_RESET_COMMAND}` at an operator-controlled safe "
             "point."
         ),
@@ -669,6 +1137,10 @@ __all__ = [
     "build_checkpoint_epoch_binding",
     "checkpoint_epoch_errors",
     "checkpoint_epoch_reset_route",
+    "live_checkpoint_allocation_authority_errors",
+    "live_checkpoint_parent_authority_errors",
     "live_policy_epoch_reset_receipt_errors",
+    "resolve_published_parent_tag_authority",
     "strict_checkpoint_event_identity",
+    "upgrade_legacy_checkpoint_for_controlled_abandon",
 ]

@@ -4,12 +4,172 @@ Pure functions that accept pre-loaded data as parameters — no caching logic.
 Each caller retains control of its own cache keys.
 """
 
+import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Any, Callable
 
 from rating_snapshot import build_strength_rows, h2h_winrate_for_bot
 from evolution_infra import count_lines
+
+
+def stable_epoch_handoff_sample(
+    epoch_loader: Callable[[], dict[str, Any]],
+    handoff_loader: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    max_attempts: int = 3,
+) -> tuple[dict[str, Any], dict[str, Any], bool]:
+    """Bracket one handoff projection between identical epoch snapshots.
+
+    Comparing the complete epoch projection also covers checkpoint movement;
+    the SSE replay digest intentionally omits that mutable workflow identity.
+    A handoff revision may advance immediately after this read and remains a
+    valid complete snapshot.  What is forbidden is combining it with an epoch
+    that changed while the handoff was being observed.
+    """
+
+    latest_epoch: dict[str, Any] = {}
+    latest_handoff: dict[str, Any] = {}
+    for _attempt in range(max(1, int(max_attempts))):
+        before = epoch_loader()
+        before_bytes = json.dumps(
+            before,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        handoff = handoff_loader(before)
+        after = epoch_loader()
+        after_bytes = json.dumps(
+            after,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        latest_epoch, latest_handoff = after, handoff
+        if before_bytes == after_bytes:
+            return after, handoff, True
+    return latest_epoch, latest_handoff, False
+
+
+def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
+    """Return the bounded UI/API projection of the durable Archivist route.
+
+    The handoff journal may contain checkpoint, publication, and step receipts.
+    None of those mutable implementation details belong in an HTTP response or
+    browser event.  Consumers receive only the exact routing identity and a
+    digest of this whitelist, so status/health pairs can reject a transition
+    observed across two different journal revisions.
+    """
+
+    base = {
+        "schema_version": 1,
+        "authority": "post_publication_handoff_journal",
+        "status": "none",
+        "state": None,
+        "blocked": False,
+        "version": None,
+        "source_v": None,
+        "workflow_run_id": None,
+        "identity_digest": None,
+        "publication_id": None,
+        "record_revision": None,
+        "next_tool": None,
+        "issues": [],
+    }
+    if enabled:
+        try:
+            from post_publication_handoff import pending_handoff_route
+
+            route = pending_handoff_route()
+        except Exception as exc:
+            route = {
+                "status": "blocked",
+                "issues": [
+                    f"handoff_projection_failed:{type(exc).__name__}"
+                ],
+            }
+        route_status = str(route.get("status") or "blocked")
+        if route_status == "none":
+            pass
+        elif route_status == "blocked":
+            base.update({
+                "status": "blocked",
+                "state": "blocked",
+                "blocked": True,
+                "issues": [
+                    str(issue)[:240]
+                    for issue in list(route.get("issues") or [])[:30]
+                ] or ["post_publication_handoff_blocked"],
+            })
+        elif route_status == "pending":
+            record = route.get("record")
+            state = str(route.get("state") or "")
+            version = route.get("version")
+            source_v = route.get("source_v")
+            workflow_run_id = route.get("workflow_run_id")
+            identity_digest = route.get("identity_digest")
+            publication_id = route.get("publication_id")
+            revision = (
+                record.get("revision") if isinstance(record, dict) else None
+            )
+            valid = bool(
+                state in {"pending", "running"}
+                and type(version) is int
+                and version >= 143
+                and type(source_v) is int
+                and source_v < version
+                and isinstance(workflow_run_id, str)
+                and bool(workflow_run_id.strip())
+                and isinstance(identity_digest, str)
+                and len(identity_digest) == 64
+                and all(char in "0123456789abcdef" for char in identity_digest)
+                and isinstance(publication_id, str)
+                and len(publication_id) == 64
+                and all(char in "0123456789abcdef" for char in publication_id)
+                and type(revision) is int
+                and revision > 0
+            )
+            if valid:
+                base.update({
+                    "status": state,
+                    "state": state,
+                    "version": version,
+                    "source_v": source_v,
+                    "workflow_run_id": workflow_run_id,
+                    "identity_digest": identity_digest,
+                    "publication_id": publication_id,
+                    "record_revision": revision,
+                    "next_tool": "run_archivist",
+                })
+            else:
+                base.update({
+                    "status": "blocked",
+                    "state": "blocked",
+                    "blocked": True,
+                    "issues": ["post_publication_handoff_projection_invalid"],
+                })
+        else:
+            base.update({
+                "status": "blocked",
+                "state": "blocked",
+                "blocked": True,
+                "issues": ["post_publication_handoff_status_invalid"],
+            })
+    encoded = json.dumps(
+        base,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return {
+        **base,
+        "projection_digest": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def confidence(rd: float) -> str:
@@ -65,42 +225,6 @@ def build_ranked_ratings(
     )
 
 
-def _formal_certification_summary(payload: dict) -> dict | None:
-    """Project display-only round counts from an already validated receipt.
-
-    This helper never decides certification authority.  Its caller first asks
-    ``official_full_certified`` to validate the signed published certificate,
-    ledger entry, deterministic receipt, and candidate bytes.  The projection
-    only saves browser clients from reimplementing that trust boundary.
-    """
-
-    receipt = payload.get("official_deterministic_receipt")
-    if not isinstance(receipt, dict):
-        return None
-    spec = receipt.get("spec")
-    verdict = receipt.get("verdict")
-    if not isinstance(spec, dict) or not isinstance(verdict, dict):
-        return None
-
-    fields = {
-        "self_play_rounds": spec.get("self_play_rounds"),
-        "opponent_rounds": spec.get("opponent_rounds"),
-        "target_hands": spec.get("target_hands"),
-        "rounds_requested": verdict.get("rounds_requested"),
-        "rounds_run": verdict.get("rounds_run"),
-    }
-    if any(type(value) is not int or value < 0 for value in fields.values()):
-        return None
-    passed_rounds = fields["rounds_run"] if verdict.get("passed") is True else 0
-    return {
-        **fields,
-        "passed_rounds": passed_rounds,
-        "failed_rounds": fields["rounds_run"] - passed_rounds,
-    }
-
-
-
-
 def build_bot_summary(
     bot_dir: Path,
     bot_name: str,
@@ -132,26 +256,43 @@ def build_bot_summary(
         "h2h_avg_wr": wr,
     }
     try:
-        from official_certification import official_full_certified, status_payload
+        from official_certification import (
+            official_certification_profile_projection,
+            status_payload,
+        )
 
-        certification = status_payload(bot_dir)
-        if not isinstance(certification, dict):
+        raw_certification = status_payload(bot_dir)
+        if not isinstance(raw_certification, dict):
             raise TypeError("official certification status must be an object")
+        certification = dict(raw_certification)
+        # Mutable status JSON may contain profile-looking fields.  Bot list and
+        # detail routes share the certification endpoint's stronger boundary:
+        # strip them and add them back only from the reopened signed
+        # certificate, artifact, publication refs, and verdict ledger.
+        for key in (
+            "certification_profile",
+            "opponent_authority",
+            "strength_evidence_weight",
+            "strategy_evidence_weight",
+            "formal_summary",
+        ):
+            certification.pop(key, None)
         try:
-            formal = bool(official_full_certified(
-                certification,
+            profile = official_certification_profile_projection(
+                raw_certification,
                 bot_dir,
                 require_published=True,
-            ))
+            )
+            if not isinstance(profile, dict):
+                profile = {}
         except Exception:
-            formal = False
-        certification = dict(certification)
+            profile = {}
+        formal = bool(profile)
         certification.update({
             "formal_certified": formal,
             "formal_authority": "signed_full_v5" if formal else "none",
-            "formal_summary": (
-                _formal_certification_summary(certification) if formal else None
-            ),
+            "formal_summary": None,
+            **profile,
         })
         summary["official_certification"] = certification
     except Exception:

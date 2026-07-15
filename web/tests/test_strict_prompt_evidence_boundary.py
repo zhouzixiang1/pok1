@@ -79,8 +79,49 @@ def test_direction_audit_uses_only_strict_published_completion_commits(
     assert "v143" in captured["prompt"]
     assert "v145" in captured["prompt"]
     assert "v141" not in captured["prompt"]
-    assert "critic" not in captured["prompt"].lower()
-    assert "worker failure" not in captured["prompt"].lower()
+    # The canonical template itself explains that archived critic prose is
+    # forbidden; assert the injected history contains only completion commits
+    # instead of treating that policy word as evidence contamination.
+    assert "raw untagged critic output" not in captured["prompt"].lower()
+    assert "raw worker failure payload" not in captured["prompt"].lower()
+
+
+def test_master_plan_audit_history_uses_only_annotated_strict_completions(
+    monkeypatch,
+):
+    import audit_agents
+    import evolution_infra
+    import national_runtime_authority
+
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "strict_published_bot_names",
+        lambda: ("national_v141", "national_v143", "national_v145"),
+    )
+
+    def fake_git(*args, **_kwargs):
+        assert args[0] != "log", "ordinary Git commit windows are forbidden"
+        if args[:2] == ("cat-file", "-t"):
+            return "tag"
+        if args[0] == "rev-parse":
+            tag = args[1].split("^{", 1)[0]
+            return ("a" if tag.endswith("143") else "b") * 40
+        if args[:3] == ("show", "-s", "--format=%B"):
+            return (
+                "strict v143 typed policy foundation"
+                if args[3] == "a" * 40
+                else "strict v145 opponent evidence consumer"
+            )
+        raise AssertionError(f"unexpected Git query: {args}")
+
+    monkeypatch.setattr(evolution_infra, "_git", fake_git)
+
+    history = audit_agents._strict_completion_commit_history(limit=5)
+
+    assert "v143 [national-bot-v143]" in history
+    assert "v145 [national-bot-v145]" in history
+    assert "v141" not in history
+    assert "infrastructure" not in history
 
 
 def test_combined_prompt_is_built_only_from_supplied_frozen_bundle(
@@ -122,7 +163,9 @@ def test_combined_prompt_is_built_only_from_supplied_frozen_bundle(
                 "suggestion": None,
                 "recommended_source": "national_v143",
                 "source_rationale": "only strict frozen row",
-                "causal_analysis": "no mutable sidecar was consulted",
+                "causal_analysis": (
+                    "policy.py threshold change definitely caused the rating gain"
+                ),
             }),
             None,
             None,
@@ -165,6 +208,8 @@ def test_combined_prompt_is_built_only_from_supplied_frozen_bundle(
     assert sentinel not in captured["prompt"]
     assert "Recent Failures" not in captured["prompt"]
     assert "critic_insights" not in captured["prompt"]
+    assert result["causal_analysis"] == combined_analyst.CAUSAL_ANALYSIS_UNKNOWN
+    assert "no content-bound artifact/diff digest" in captured["prompt"]
 
 
 def test_prompt_builders_have_no_retired_positive_read_chain():
@@ -183,6 +228,9 @@ def test_prompt_builders_have_no_retired_positive_read_chain():
     assert "WORKER_FAILURES_FILE" not in direction
     assert "prev_critic_info" not in combined
     assert "prev_critic_info" not in scheduler
+    assert "_strict_completion_commit_history" in scheduler
+    assert "subprocess.run" not in scheduler
+    assert '["git", "log", bot_tag' not in scheduler
     assert "eval_round_summary" not in master
     assert "build_worker_execution_context" not in workers
     assert ".get(\"worker_execution_context\")" not in planning
@@ -200,10 +248,10 @@ def test_fresh_bootstrap_orchestrator_never_labels_v142_as_source(monkeypatch):
         source_v=142,
         strategy="fresh_policy_bootstrap",
         crossover_parents=(),
-        stagnation_info="No retired strategy evidence is admissible.",
-        match_analysis="",
-        replay_spotlight="",
-        performance_verification="",
+        stagnation_info="POISON_RETIRED_STRENGTH",
+        match_analysis="POISON_RETIRED_MATCH",
+        replay_spotlight="POISON_RETIRED_REPLAY",
+        performance_verification="POISON_RETIRED_OFFICIAL",
     )
 
     prompt = orchestrator_context._build_context(gen_ctx=generation)
@@ -211,3 +259,35 @@ def test_fresh_bootstrap_orchestrator_never_labels_v142_as_source(monkeypatch):
     assert "Source bot: NONE" in prompt
     assert "Source bot: national_v142" not in prompt
     assert "v142 is archived version authority only" in prompt
+    assert "PROTOCOL BOOTSTRAP NO-STRENGTH" in prompt
+    assert "POISON_RETIRED" not in prompt
+
+
+def test_strict_llm_gate_identity_never_fingerprints_numeric_high_water(
+    monkeypatch,
+    tmp_path,
+):
+    import tool_gates
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    seen = []
+
+    def fingerprint(path):
+        seen.append(path)
+        return "c" * 64
+
+    monkeypatch.setattr(tool_gates, "_bot_code_fingerprint", fingerprint)
+    numeric_identity = "n" * 64
+    _key, metadata = tool_gates._llm_gate_infrastructure_identity(
+        component="reviewer_llm",
+        role="LEAD CODE REVIEWER",
+        candidate_dir=candidate,
+        source_dir=None,
+        prompt_text="strict prepared target only",
+        checkpoint={},
+        source_fingerprint_override=numeric_identity,
+    )
+
+    assert seen == [candidate]
+    assert metadata["source_fingerprint"] == numeric_identity

@@ -18,7 +18,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from blocking_runtime import run_blocking_isolated
-from bot_artifact import canonical_digest, hash_path
+from bot_artifact import canonical_digest, hash_path, published_bot_identity
 from bot_namespace import (
     ARCHIVED_VERSION_HIGH_WATER,
     EVALUATION_EPOCH,
@@ -32,12 +32,19 @@ from checkpoint_schema import (
     CheckpointSchemaError,
     strict_checkpoint_event_identity,
 )
-from epoch_authority import strict_epoch_projection
+from epoch_authority import (
+    first_strict_operator_transition,
+    strict_epoch_projection,
+)
 from official_certification import (
     FULL_POLICY_ID,
+    _opponent_selection_issues,
     _spec_from_mapping,
     authoritative_verdict_status_issues,
+    official_compliance_verdict,
+    official_certification_profile_projection,
     official_full_certified,
+    official_opponent_eligibility,
     status_payload,
 )
 from official_certification_job import (
@@ -58,9 +65,233 @@ BOTS_DIR = PROJECT_ROOT / "bots"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _OFFICIAL_STAGE = "official_certifying"
 _BOOTSTRAP_STAGE = "official_bootstrap_required"
+_NORMAL_JOB_STAGES = frozenset({
+    _OFFICIAL_STAGE,
+    "official_failed",
+    "official_inconclusive",
+    "publishing",
+})
 _FORMAL_ROUNDS = {"self_play": 5, "opponent": 3}
 
 router = APIRouter(prefix="/api/certification", tags=["certification"])
+
+
+def _formal_job_profile(*, bootstrap: bool) -> dict[str, Any]:
+    """Return the already-validated official execution/profile projection."""
+
+    return {
+        "certification_profile": (
+            "first_strict_control_v1" if bootstrap else FULL_POLICY_ID
+        ),
+        "opponent_authority": (
+            "system_control" if bootstrap else "strict_published_pool"
+        ),
+        "formal_profile": {
+            "self_play_rounds": _FORMAL_ROUNDS["self_play"],
+            "opponent_rounds": _FORMAL_ROUNDS["opponent"],
+            "target_hands": 70,
+        },
+        # Official EXE evidence is compliance-only in both profiles.
+        "strength_evidence_weight": 0,
+        "strategy_evidence_weight": 0,
+    }
+
+
+def _normal_opponent_authority_issues(
+    selection: dict[str, Any],
+    spec: Any,
+    identity: dict[str, Any],
+) -> list[str]:
+    """Reopen the selected normal opponent's publication and verdict chain."""
+
+    issues = list(_opponent_selection_issues(selection, spec, identity))
+    opponent = selection.get("opponent")
+    if issues or not isinstance(opponent, dict):
+        return list(dict.fromkeys(issues or ["normal_opponent_selection_invalid"]))
+    try:
+        path = Path(str(opponent.get("path") or "")).expanduser().resolve()
+        publication = published_bot_identity(path)
+    except Exception as exc:
+        return [f"normal_opponent_publication_error:{type(exc).__name__}"]
+    if publication.get("published") is not True:
+        issues.extend(
+            str(item)
+            for item in (
+                publication.get("issues")
+                or ["normal_opponent_not_strict_published"]
+            )
+        )
+    expected_publication = {
+        "bot": publication.get("label"),
+        "path": publication.get("path"),
+        "artifact_hash": publication.get("artifact_hash"),
+        "tag": publication.get("tag"),
+        "tag_object": publication.get("tag_object"),
+    }
+    observed_publication = {
+        "bot": opponent.get("bot"),
+        "path": str(path),
+        "artifact_hash": opponent.get("artifact_hash"),
+        "tag": opponent.get("tag"),
+        "tag_object": opponent.get("tag_object"),
+    }
+    if observed_publication != expected_publication:
+        issues.append("normal_opponent_published_identity_mismatch")
+    try:
+        eligibility = official_opponent_eligibility(path)
+    except Exception as exc:
+        issues.append(f"normal_opponent_certificate_validation_error:{type(exc).__name__}")
+        eligibility = {}
+    if (
+        eligibility.get("eligible") is not True
+        or eligibility.get("reason") != "official_certified"
+    ):
+        issues.append("normal_opponent_latest_official_certificate_invalid")
+    if eligibility.get("eligibility_receipt") != opponent.get("eligibility_receipt"):
+        issues.append("normal_opponent_eligibility_receipt_stale")
+    return list(dict.fromkeys(str(item) for item in issues if str(item)))
+
+
+def _job_status_projection(
+    state: dict[str, Any],
+    candidate: Path,
+) -> dict[str, Any]:
+    """Expose terminal/running status without deriving truth from job.state."""
+
+    status = state.get("status") if isinstance(state.get("status"), dict) else None
+    verdict = official_compliance_verdict(status) if status is not None else None
+    issues: list[str] = []
+    if status is not None:
+        issues.extend(str(item) for item in (status.get("issues") or []))
+    for key in ("error", "failure_reason", "cancel_reason"):
+        value = state.get(key)
+        if value:
+            issues.append(f"{key}:{str(value)[:300]}")
+    failure = state.get("failure")
+    if isinstance(failure, dict):
+        for key in ("code", "classification", "message", "error"):
+            value = failure.get(key)
+            if value:
+                issues.append(f"failure_{key}:{str(value)[:300]}")
+    elif failure:
+        issues.append(f"failure:{str(failure)[:300]}")
+    certificate_digest = None
+    if (
+        status is not None
+        and state.get("state") == "completed"
+        and status.get("status") != "official-certified"
+    ):
+        status_issues = authoritative_verdict_status_issues(status)
+        if status_issues:
+            issues.extend(status_issues)
+            verdict = {
+                "ok": False,
+                "classification": "terminal_status_validation_failed",
+                "blocking": True,
+                "inconclusive": True,
+            }
+    if (
+        status is not None
+        and state.get("state") == "completed"
+        and status.get("status") == "official-certified"
+    ):
+        try:
+            if official_full_certified(status, candidate):
+                certificate_digest = str(status.get("certificate_digest") or "") or None
+            else:
+                issues.append("completed_certificate_validation_failed")
+                verdict = {
+                    "ok": False,
+                    "classification": "certificate_validation_failed",
+                    "blocking": True,
+                    "inconclusive": True,
+                }
+        except Exception as exc:
+            issues.append(
+                f"completed_certificate_validation_error:{type(exc).__name__}"
+            )
+            verdict = {
+                "ok": False,
+                "classification": "certificate_validation_error",
+                "blocking": True,
+                "inconclusive": True,
+            }
+    return {
+        "status": status,
+        "official_status": status.get("status") if status is not None else None,
+        "compliance_verdict": verdict,
+        "issues": list(dict.fromkeys(issues)),
+        "certificate_digest": certificate_digest,
+    }
+
+
+def _bootstrap_operator_transition(
+    context: dict[str, Any],
+    job: dict[str, Any] | None,
+    *,
+    discovery_issue: str | None = None,
+) -> dict[str, Any]:
+    """Resolve the four-state operator handoff from one validated job view."""
+
+    checkpoint = context["checkpoint"]
+    if discovery_issue:
+        return first_strict_operator_transition(
+            checkpoint,
+            state="bootstrap_failed",
+            reason=discovery_issue,
+        )
+    if job is None:
+        return first_strict_operator_transition(checkpoint)
+
+    job_id = str(job.get("job_id") or "") or None
+    state = str(job.get("state") or "")
+    bindings: dict[str, Any] = {"job_id": job_id}
+    if state in {
+        "created",
+        "queued",
+        "starting",
+        "running",
+        "finalizing",
+        "cancel_requested",
+    }:
+        return first_strict_operator_transition(
+            checkpoint,
+            state="bootstrap_running",
+            reason=f"authorized_bootstrap_job_{state}",
+            **bindings,
+        )
+    if state == "completed":
+        digest = str(job.get("certificate_digest") or "")
+        verdict = job.get("compliance_verdict")
+        if (
+            job.get("official_status") == "official-certified"
+            and _HEX64.fullmatch(digest) is not None
+            and isinstance(verdict, dict)
+            and verdict.get("ok") is True
+            and verdict.get("blocking") is False
+            and verdict.get("inconclusive") is False
+            and not job.get("issues")
+        ):
+            return first_strict_operator_transition(
+                checkpoint,
+                state="ready_to_finalize",
+                reason="bootstrap_certificate_and_authorization_verified",
+                certificate_digest=digest,
+                **bindings,
+            )
+        reason = "bootstrap_completed_without_valid_certificate"
+        if isinstance(verdict, dict) and verdict.get("classification"):
+            reason = f"bootstrap_completed:{verdict['classification']}"
+    elif state in {"failed", "cancelled"}:
+        reason = f"authorized_bootstrap_job_{state}"
+    else:
+        reason = "authorized_bootstrap_job_state_invalid"
+    return first_strict_operator_transition(
+        checkpoint,
+        state="bootstrap_failed",
+        reason=reason,
+        **bindings,
+    )
 
 
 def _projection() -> dict[str, Any]:
@@ -213,7 +444,7 @@ def _official_prerequisite_issues(context: dict[str, Any]) -> list[str]:
     """Reuse the commit gate ledger; HTTP never defines a weaker ready state."""
 
     checkpoint = context["checkpoint"]
-    if checkpoint.get("stage") != _OFFICIAL_STAGE:
+    if checkpoint.get("stage") not in _NORMAL_JOB_STAGES:
         return ["checkpoint_not_official_certifying"]
     if checkpoint.get("national_execution_mode") != "native_tcp":
         return ["checkpoint_execution_mode_not_native_tcp"]
@@ -264,6 +495,19 @@ def _safe_job_request(job_id: str) -> tuple[dict[str, Any], Path] | None:
     if request.get("job_id") != job_id:
         return None
     return request, directory.resolve()
+
+
+def _unvalidated_job_request(directory: Path) -> dict[str, Any] | None:
+    """Read identity hints without granting a malformed request authority."""
+
+    path = directory / "request.json"
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        value = _read_official_job_json(path)
+    except Exception:
+        return None
+    return value if isinstance(value, dict) else None
 
 
 def _parked_bootstrap_request(context: dict[str, Any]) -> dict[str, Any] | None:
@@ -516,6 +760,7 @@ def _bootstrap_request_view(
         return None
 
     status = state.get("status")
+    terminal_validation_issues: list[str] = []
     if state.get("state") == "completed":
         if not isinstance(status, dict):
             return None
@@ -552,14 +797,32 @@ def _bootstrap_request_view(
                 )
             except Exception:
                 return None
-            if completed.get("valid") is not True or not official_full_certified(
-                status,
-                context["candidate"],
-            ):
-                return None
+            if completed.get("valid") is not True:
+                terminal_validation_issues.extend(
+                    str(item)
+                    for item in (
+                        completed.get("issues")
+                        or ["completed_bootstrap_authorization_invalid"]
+                    )
+                )
+            try:
+                certified = official_full_certified(
+                    status,
+                    context["candidate"],
+                )
+            except Exception as exc:
+                certified = False
+                terminal_validation_issues.append(
+                    f"completed_certificate_validation_error:{type(exc).__name__}"
+                )
+            if not certified:
+                terminal_validation_issues.append(
+                    "completed_certificate_validation_failed"
+                )
         else:
-            if authoritative_verdict_status_issues(status):
-                return None
+            terminal_validation_issues.extend(
+                authoritative_verdict_status_issues(status)
+            )
             try:
                 from official_bootstrap import (
                     validate_operator_bootstrap_authorized_selection,
@@ -574,7 +837,13 @@ def _bootstrap_request_view(
             except Exception:
                 return None
             if live_authorization.get("valid") is not True:
-                return None
+                terminal_validation_issues.extend(
+                    str(item)
+                    for item in (
+                        live_authorization.get("issues")
+                        or ["bootstrap_authorization_invalid"]
+                    )
+                )
     else:
         if status is not None:
             return None
@@ -594,6 +863,19 @@ def _bootstrap_request_view(
         if live_authorization.get("valid") is not True:
             return None
 
+    status_projection = _job_status_projection(state, context["candidate"])
+    if terminal_validation_issues:
+        status_projection["issues"] = list(dict.fromkeys([
+            *(status_projection.get("issues") or []),
+            *terminal_validation_issues,
+        ]))
+        status_projection["certificate_digest"] = None
+        status_projection["compliance_verdict"] = {
+            "ok": False,
+            "classification": "bootstrap_terminal_validation_failed",
+            "blocking": True,
+            "inconclusive": True,
+        }
     return {
         **state,
         **_authority_fields(
@@ -606,32 +888,86 @@ def _bootstrap_request_view(
         "bootstrap_control_id": FIRST_STRICT_CONTROL_ID,
         "read_only": True,
         "cancel_allowed": False,
+        **_formal_job_profile(bootstrap=True),
+        **status_projection,
     }
 
 
-def _bootstrap_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
-    """Discover exactly one current authorized bootstrap job from the store."""
+def _bootstrap_request_related(
+    context: dict[str, Any],
+    parked: dict[str, Any],
+    request: dict[str, Any],
+) -> bool:
+    """Identify a job claiming the exact parked authority without trusting it."""
+
+    raw_spec = request.get("spec") if isinstance(request.get("spec"), dict) else {}
+    try:
+        candidate = Path(str(raw_spec.get("candidate") or "")).expanduser().resolve()
+    except Exception:
+        candidate = None
+    selection = request.get("opponent_selection")
+    selection = selection if isinstance(selection, dict) else {}
+    authorization = (
+        selection.get("operator_bootstrap_authorization")
+        if isinstance(selection.get("operator_bootstrap_authorization"), dict)
+        else {}
+    )
+    control_claimed = bool(
+        raw_spec.get("bootstrap_control_id") == FIRST_STRICT_CONTROL_ID
+        or selection.get("bootstrap_control_id") == FIRST_STRICT_CONTROL_ID
+    )
+    candidate_claimed = candidate == context["candidate"]
+    parked_binding_claimed = bool(
+        authorization.get("parked_request_digest") == parked.get("request_digest")
+        or authorization.get("workflow_run_id") == context["workflow_run_id"]
+        or authorization.get("candidate_hash") == context["candidate_hash"]
+    )
+    return bool(
+        (control_claimed and candidate_claimed)
+        or (control_claimed and parked_binding_claimed)
+        or (
+            candidate_claimed
+            and request.get("source_v") is None
+            and bool(authorization)
+        )
+    )
+
+
+def _bootstrap_job_resolution(
+    context: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Discover one authorized job and preserve ambiguity as a hard failure."""
 
     parked = _parked_bootstrap_request(context)
     if parked is None:
-        return None
+        return None, "parked_bootstrap_request_invalid"
     root = job_root()
     try:
-        if root.is_symlink() or not root.is_dir():
-            return None
+        if root.is_symlink():
+            return None, "bootstrap_job_store_symlink_forbidden"
+        if not root.exists():
+            return None, None
+        if not root.is_dir():
+            return None, "bootstrap_job_store_invalid"
         directories = sorted(root.iterdir(), key=lambda path: path.name)
     except OSError:
-        return None
+        return None, "bootstrap_job_store_unavailable"
     matches: list[dict[str, Any]] = []
+    invalid_related: list[str] = []
     for directory in directories:
-        if (
-            directory.is_symlink()
-            or not directory.is_dir()
-            or _HEX64.fullmatch(directory.name) is None
-        ):
+        if _HEX64.fullmatch(directory.name) is None:
             continue
+        if directory.is_symlink() or not directory.is_dir():
+            invalid_related.append(directory.name)
+            continue
+        raw_request = _unvalidated_job_request(directory)
         loaded = _safe_job_request(directory.name)
         if loaded is None:
+            # Once a 64-hex durable-job entry exists, malformed bytes cannot
+            # prove that they are unrelated to the one-time bootstrap.  Treat
+            # the unknown identity as an interrupted/tampered attempt instead
+            # of offering a fresh non-force launch.
+            invalid_related.append(directory.name)
             continue
         request, resolved_directory = loaded
         view = _bootstrap_request_view(
@@ -645,8 +981,24 @@ def _bootstrap_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
             if len(matches) > 1:
                 # Ambiguity is itself an authority failure.  Never pick the
                 # newest/oldest directory heuristically.
-                return None
-    return matches[0] if len(matches) == 1 else None
+                return None, "multiple_authorized_bootstrap_jobs"
+        elif _bootstrap_request_related(
+            context,
+            parked,
+            raw_request if raw_request is not None else request,
+        ):
+            invalid_related.append(str(request.get("job_id") or directory.name))
+    if matches and invalid_related:
+        return None, "authorized_bootstrap_job_identity_ambiguous"
+    if invalid_related:
+        return None, "authorized_bootstrap_job_validation_failed"
+    return (matches[0], None) if len(matches) == 1 else (None, None)
+
+
+def _bootstrap_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
+    """Compatibility wrapper returning only an unambiguous authorized job."""
+
+    return _bootstrap_job_resolution(context)[0]
 
 
 def _attached_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
@@ -677,6 +1029,9 @@ def _attached_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
         spec.mode != "full"
         or spec.policy_id != FULL_POLICY_ID
         or spec.bootstrap_control_id is not None
+        or spec.self_play_rounds != _FORMAL_ROUNDS["self_play"]
+        or spec.opponent_rounds != _FORMAL_ROUNDS["opponent"]
+        or spec.target_hands != 70
         or request.get("source_v") != checkpoint.get("source_v")
     ):
         return None
@@ -739,6 +1094,12 @@ def _attached_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
         != expected_identity["opponent_hash"]
     ):
         return None
+    if _normal_opponent_authority_issues(
+        selection,
+        spec,
+        request_identity,
+    ):
+        return None
 
     state = get_job(job_id)
     if not isinstance(state, dict):
@@ -776,18 +1137,31 @@ def _attached_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
             not isinstance(status, dict)
             or status.get("mode") != "full"
             or status.get("policy_id") != FULL_POLICY_ID
+            or status.get("certification_identity") != request_identity
+            or status.get("opponent_selection") != selection
         ):
             return None
         envelope = status.get("official_job_envelope")
-        if job_envelope_issues(
-            envelope,
-            expected_job_id=job_id,
-            expected_request_digest=str(request.get("request_digest") or ""),
-            expected_attempt=int(state.get("attempt", 0) or 0),
-            expected_candidate_hash=context["candidate_hash"],
-            expected_opponent_hash=expected_identity["opponent_hash"],
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("certification_identity_digest")
+            != request_identity.get("identity_digest")
+            or envelope.get("opponent_selection") != selection
+            or job_envelope_issues(
+                envelope,
+                expected_job_id=job_id,
+                expected_request_digest=str(request.get("request_digest") or ""),
+                expected_attempt=int(state.get("attempt", 0) or 0),
+                expected_candidate_hash=context["candidate_hash"],
+                expected_opponent_hash=expected_identity["opponent_hash"],
+            )
         ):
             return None
+    elif status is not None:
+        # The manager materializes result status only from a digest-bound
+        # completed result file.  Any status embedded in running/failed state
+        # JSON is stale or injected and must not become a public verdict.
+        return None
 
     return {
         **state,
@@ -798,6 +1172,8 @@ def _attached_job_view(context: dict[str, Any]) -> dict[str, Any] | None:
         ),
         "subject_kind": "active_candidate",
         "formal_authority": "pipeline_attached_full_v5_job",
+        **_formal_job_profile(bootstrap=False),
+        **_job_status_projection(state, context["candidate"]),
     }
 
 
@@ -808,6 +1184,8 @@ def _current_attached_job() -> tuple[dict[str, Any] | None, dict[str, Any] | Non
     context = _current_candidate_context(projection)
     if context is None:
         return None, None
+    if context["checkpoint"].get("stage") != _OFFICIAL_STAGE:
+        return None, context
     return _attached_job_view(context), context
 
 
@@ -819,7 +1197,7 @@ def _current_visible_job() -> tuple[dict[str, Any] | None, dict[str, Any] | None
     if context is None:
         return None, None
     stage = context["checkpoint"].get("stage")
-    if stage == _OFFICIAL_STAGE:
+    if stage in _NORMAL_JOB_STAGES:
         return _attached_job_view(context), context
     if stage == _BOOTSTRAP_STAGE:
         return _bootstrap_job_view(context), context
@@ -830,12 +1208,18 @@ def _jobs_payload() -> dict[str, Any]:
     projection = _projection()
     context = _current_candidate_context(projection)
     job = None
+    operator_transition = None
     if context is not None:
         stage = context["checkpoint"].get("stage")
-        if stage == _OFFICIAL_STAGE:
+        if stage in _NORMAL_JOB_STAGES:
             job = _attached_job_view(context)
         elif stage == _BOOTSTRAP_STAGE:
-            job = _bootstrap_job_view(context)
+            job, discovery_issue = _bootstrap_job_resolution(context)
+            operator_transition = _bootstrap_operator_transition(
+                context,
+                job,
+                discovery_issue=discovery_issue,
+            )
     workflow = context.get("workflow_run_id") if context is not None else None
     version = context.get("version") if context is not None else None
     rows = [job] if job is not None else []
@@ -853,6 +1237,7 @@ def _jobs_payload() -> dict[str, Any]:
             if item.get("state") in {"starting", "running", "finalizing"}
         ),
         "jobs": rows,
+        "operator_transition": operator_transition,
     }
 
 
@@ -867,14 +1252,9 @@ def _cancel_exact_job_sync(
 
     import evolution_infra as infra
 
-    lock_path = infra.PIPELINE_STATE_FILE.with_suffix(
-        infra.PIPELINE_STATE_FILE.suffix + ".lock"
-    )
-    with infra.locked_file(
-        lock_path,
-        "a+",
+    with infra._locked_state_sidecar(
+        infra.PIPELINE_STATE_FILE,
         lock_type=fcntl.LOCK_EX,
-        encoding="utf-8",
     ):
         projection = _projection()
         active = projection.get("active_generation")
@@ -926,15 +1306,26 @@ def _cancel_exact_job_sync(
 
 @router.get("/jobs")
 async def get_jobs():
-    return _jobs_payload()
+    return await run_blocking_isolated(
+        _jobs_payload,
+        thread_name_prefix="official-certification-jobs",
+    )
 
 
-@router.get("/jobs/{job_id}")
-async def get_certification_job(job_id: str):
+def _certification_job_payload(job_id: str) -> dict[str, Any]:
     job, _context = _current_visible_job()
     if job is None or job.get("job_id") != job_id:
         raise HTTPException(status_code=404, detail="Official certification job not found")
     return job
+
+
+@router.get("/jobs/{job_id}")
+async def get_certification_job(job_id: str):
+    return await run_blocking_isolated(
+        _certification_job_payload,
+        job_id,
+        thread_name_prefix="official-certification-job",
+    )
 
 
 @router.post("/jobs/{job_id}/cancel")
@@ -972,22 +1363,14 @@ async def cancel_certification_job(job_id: str, request: Request):
     }
 
 
-@router.get("/{version:int}")
-async def get_certification(version: int):
+def _certification_payload(version: int) -> dict[str, Any]:
     candidate, subject_kind, projection, workflow_run_id = _visible_subject(version)
     raw_payload = status_payload(candidate)
     is_full_record = (
         raw_payload.get("mode") == "full"
         and raw_payload.get("policy_id") == FULL_POLICY_ID
     )
-    try:
-        formal = is_full_record and official_full_certified(
-            raw_payload,
-            candidate,
-            require_published=subject_kind == "strict_published",
-        )
-    except Exception:
-        formal = False
+    formal = False
     diagnostic = None
     if not is_full_record and raw_payload.get("status") not in {
         None,
@@ -1000,6 +1383,16 @@ async def get_certification(version: int):
             "authority": "diagnostic_only",
         }
     payload = dict(raw_payload)
+    # Profile-looking mutable status fields have no authority.  Re-add them
+    # below only from the validated signed certificate projection.
+    for key in (
+        "certification_profile",
+        "opponent_authority",
+        "strength_evidence_weight",
+        "strategy_evidence_weight",
+        "formal_summary",
+    ):
+        payload.pop(key, None)
     if not is_full_record:
         # Existing clients historically rendered `status` without checking the
         # mode.  Keep diagnostic evidence separately and make the primary
@@ -1015,6 +1408,17 @@ async def get_certification(version: int):
                 "inconclusive": True,
             },
         })
+    profile: dict[str, Any] = {}
+    if is_full_record:
+        try:
+            profile = official_certification_profile_projection(
+                raw_payload,
+                candidate,
+                require_published=subject_kind == "strict_published",
+            )
+        except Exception:
+            profile = {}
+        formal = bool(profile)
     return {
         **payload,
         **_authority_fields(
@@ -1026,7 +1430,17 @@ async def get_certification(version: int):
         "formal_certified": formal,
         "formal_authority": "signed_full_v5" if formal else "none",
         "diagnostic_evidence": diagnostic,
+        **profile,
     }
+
+
+@router.get("/{version:int}")
+async def get_certification(version: int):
+    return await run_blocking_isolated(
+        _certification_payload,
+        version,
+        thread_name_prefix="official-certification-status",
+    )
 
 
 @router.post("/{version:int}/enqueue", status_code=410)

@@ -1,19 +1,17 @@
 <instructions>
 You are the Pure Crossover Recombination Engine for an evolving Texas Hold'em AI population.
 Generate a new poker bot (Child) from TWO scheduler-selected parent bots. Use Read, Bash, and Edit tools. Do not use webReader, web-search, file:// URLs, or GitHub URLs.
-Bash starts in the repository root, but the Bash tool working directory may
-persist across calls after a `cd`. Never use a bare `cd` that changes later
-commands. For bot-local probes, use a subshell such as
-`(cd bots/national_v{version} && python -B -c '...')`, or use explicit
-`bots/national_v{version}/...` paths. Never mutate bare relative paths from the
-repo root.
-Cleanup is also mutation. Obey the active Runtime Path Contract write scope. Do not perform cache cleanup from Bash. Never delete `__pycache__`, `.pytest_cache`,
-logs, or temporary files in the target, Parent A, Parent B, source, opponent, or
-any other bot directory. If probes create caches, leave them in place; the harness ignores those caches.
-Do not redirect probe output, stderr captures, or temporary logs to `/tmp` or
-`/var/tmp`. Prefer inline pipes such as `2>&1 | grep ...`; if a probe truly
-needs a file, write it inside the declared write scope and delete that probe
-file in the same command before finishing.
+Bash starts in the repository root. Use only explicit frozen-parent and target
+paths. Shell wrappers, Python `-c`, imports, test runners, Git history, globs,
+symlinks and implicit current-directory scans are unavailable. Candidate
+execution and native contract checks are system quality-gate work.
+Cleanup is also mutation. Obey the active Runtime Path Contract write scope.
+Do not compile, import, execute, or run commands that create caches; the system
+quality gate owns that work. Do not perform cache cleanup from Bash. If
+`__pycache__` or `.pytest_cache` already exists, leave them in place; the harness ignores those caches. Never write logs or temporary files to `/tmp` or
+`/var/tmp`. Do not redirect output or create probe files; inspect the explicit
+policies directly with Read, direct diff, `wc -l`, or a read-only filter such
+as `2>&1 | grep`.
 </instructions>
 
 <data_context>
@@ -55,20 +53,25 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
 </example>
 
 <parents>
-- **Parent A (Alpha)**: `bots/national_v{parent_a_version}/`
-- **Parent B (Beta)**: `bots/national_v{parent_b_version}/`
+- **Parent A (Alpha)**: `national_v{parent_a_version}` identity label only
+- **Parent B (Beta)**: `national_v{parent_b_version}` identity label only
+
+The system appends exact content-addressed readable snapshot paths and one
+lease-isolated writable target path for this attempt. Canonical `bots/` paths
+are unavailable to this role; do not substitute identity labels for those
+system-injected paths.
 </parents>
 
 <action>
-1. Read both parent bots' source code
+1. Read `policy.py` from both exact system-injected parent snapshot paths.
 2. Design a pure crossover strategy from frozen H2H evidence and code analysis;
    keep a component-level provenance note for every Parent-B import
-3. Edit only `bots/national_v{version}/policy.py`; the system has already
-   materialized every other exact artifact byte.
-4. Run quality checks:
-   - `python -m py_compile bots/national_v{version}/*.py`
-   - `python -c "import sys; sys.path.insert(0, 'web/core'); from national_native import check_native_contract; e=check_native_contract('bots/national_v{version}', require_current_stream_decoder=True, require_current_decision_runtime=True); assert not e, e"`
-   - The later quality gate owns isolated raw-TCP transcript execution.
+3. Edit only `policy.py` under the exact system-injected lease target; the
+   system has already materialized every other exact artifact byte.
+4. Read every edited region, use direct diff/`wc -l` only on the exact injected
+   paths, and check its Parent-B provenance. Do not compile, import, or execute
+   the candidate; the system quality gate owns compilation, imports,
+   native-contract validation, and isolated raw-TCP transcript execution.
 5. These checks certify only the crossover baseline. After this tool succeeds,
    the orchestrator MUST run `run_direction_audit`, the mandatory
    `run_literature_probe` when stagnant/repetitive, `run_master`, and
@@ -86,7 +89,7 @@ Parent A has tight preflop ranges (VPIP 18%) but weak river play. Parent B has a
     limit and a 2500-line hard cap. If Parent A/source is already over the base limit, the child may match or shrink that file but
     must not grow beyond Parent A/source line count; the 15% growth budget does
     not apply to already-oversized parents. Verify sizable file changes with
-    `wc -l` before finishing.
+    `wc -l` against the exact injected policy paths before finishing.
 </action>
 
 <non_negotiable_position_contract>

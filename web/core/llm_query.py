@@ -9,6 +9,7 @@ import contextlib
 import contextvars
 import fnmatch
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -17,6 +18,8 @@ import shlex
 import threading
 import time
 import uuid
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -45,6 +48,1731 @@ _LLM_TOOL_TRACE = contextvars.ContextVar("llm_tool_trace", default=None)
 _STRICT_PROVIDER_RESULTS = contextvars.ContextVar(
     "strict_provider_results", default=None
 )
+_LLM_TOTAL_DEADLINE = contextvars.ContextVar(
+    "llm_total_deadline", default=None
+)
+_LLM_PROVIDER_ATTEMPT = contextvars.ContextVar(
+    "llm_provider_attempt", default=None
+)
+_PROVIDER_CLEANUP_LOCK = threading.Lock()
+_UNRESOLVED_PROVIDER_ATTEMPTS = {}
+
+
+class LLMRoleContractError(RuntimeError):
+    """Raised before provider dispatch when an active role drifts from policy."""
+
+
+@dataclass(frozen=True)
+class LLMRoleContract:
+    """One provider-facing capability and evidence contract.
+
+    ``role_pattern`` is matched against the concrete runtime label (which may
+    carry a version, Worker id, or retry suffix).  The remaining fields are
+    system-owned: prompt templates may explain them but cannot broaden them.
+    """
+
+    role_id: str
+    role_pattern: object
+    provider_path: str
+    renderer: str
+    producer_file: str
+    producer_name: str
+    template_paths: tuple
+    evidence_provenance_kind: str
+    required_evidence_fields: tuple
+    scope_policy: str
+    allowed_tool_sets: tuple
+    provider_read_scope: str
+    provider_write_scope: str
+    evidence_policy: str
+    history_policy: str
+    allowed_models: tuple = ("sonnet",)
+    allowed_mcp_servers: frozenset = frozenset()
+    requires_read_scope: bool = False
+    requires_write_scope: bool = False
+    allows_context_files: bool = False
+    allows_evidence_snapshot: bool = False
+    allows_strict_authority: bool = False
+    allows_exact_bash_commands: bool = False
+    requires_frozen_evidence_guard: bool = False
+    fixed_read_files: tuple = ()
+    fixed_bash_commands: tuple = ()
+
+
+def _llm_role_contract(
+    role_id,
+    pattern,
+    *,
+    provider_path="subagent_sdk",
+    renderer,
+    producer_file,
+    producer_name,
+    template_paths=(),
+    evidence_kind,
+    required_evidence_fields=(),
+    scope_policy="none",
+    tools=((),),
+    read_scope="none_provider_filesystem",
+    write_scope="none",
+    evidence_policy="system_bound_prompt_only",
+    history_policy="forbidden",
+    models=("sonnet",),
+    mcp_servers=(),
+    requires_read_scope=False,
+    requires_write_scope=False,
+    allows_context_files=False,
+    allows_evidence_snapshot=False,
+    allows_strict_authority=False,
+    allows_exact_bash_commands=False,
+    requires_frozen_evidence_guard=False,
+    fixed_read_files=(),
+    fixed_bash_commands=(),
+):
+    return LLMRoleContract(
+        role_id=str(role_id),
+        role_pattern=re.compile(pattern, re.IGNORECASE),
+        provider_path=str(provider_path),
+        renderer=str(renderer),
+        producer_file=str(producer_file),
+        producer_name=str(producer_name),
+        template_paths=tuple(str(path) for path in template_paths),
+        evidence_provenance_kind=str(evidence_kind),
+        required_evidence_fields=tuple(
+            str(field) for field in required_evidence_fields
+        ),
+        scope_policy=str(scope_policy),
+        allowed_tool_sets=tuple(frozenset(group) for group in tools),
+        provider_read_scope=str(read_scope),
+        provider_write_scope=str(write_scope),
+        evidence_policy=str(evidence_policy),
+        history_policy=str(history_policy),
+        allowed_models=tuple(str(model) for model in models),
+        allowed_mcp_servers=frozenset(str(name) for name in mcp_servers),
+        requires_read_scope=bool(requires_read_scope),
+        requires_write_scope=bool(requires_write_scope),
+        allows_context_files=bool(allows_context_files),
+        allows_evidence_snapshot=bool(allows_evidence_snapshot),
+        allows_strict_authority=bool(allows_strict_authority),
+        allows_exact_bash_commands=bool(allows_exact_bash_commands),
+        requires_frozen_evidence_guard=bool(requires_frozen_evidence_guard),
+        fixed_read_files=tuple(str(path) for path in fixed_read_files),
+        fixed_bash_commands=tuple(str(command) for command in fixed_bash_commands),
+    )
+
+
+# This is the sole active role registry.  Order is significant where a more
+# specific label (proposal critic, CoT audit, crossover compatibility) shares a
+# prefix with an implementation role.
+ACTIVE_LLM_ROLE_CONTRACTS = (
+    _llm_role_contract(
+        "orchestrator",
+        r"^ORCHESTRATOR$",
+        provider_path="orchestrator_sdk",
+        renderer="prompts/orchestrator.md::_build_context",
+        producer_file="web/core/orchestrator.py",
+        producer_name="_render_orchestrator_provider_prompt",
+        template_paths=("web/core/prompts/orchestrator.md",),
+        evidence_kind="checkpoint_context_projection",
+        required_evidence_fields=("context_digest", "dry_run"),
+        scope_policy="orchestrator_mcp_only",
+        tools=((),),
+        read_scope="typed_evolution_mcp_projections_only",
+        write_scope="typed_fenced_evolution_mcp_effects_only",
+        evidence_policy="checkpoint_bound_typed_mcp_only",
+        history_policy="fresh_provider_session_from_checkpoint_projection_only",
+        mcp_servers=("evolution",),
+    ),
+    _llm_role_contract(
+        "master_proposal_critic",
+        r"^MASTER PROPOSAL CRITIC(?:\s|$)",
+        renderer="agent_master.py::_run_master_proposal_ensemble/critic_renderer",
+        producer_file="web/core/agent_master.py",
+        producer_name="_render_master_proposal_critic_provider_prompt",
+        evidence_kind="frozen_proposal_packet",
+        required_evidence_fields=(
+            "proposal_packet_digest", "proposal_name", "criteria_digest",
+            "planning_context_digest", "lens_digest", "schema_retry",
+            "invocation_id",
+        ),
+        evidence_policy="frozen_proposal_packet_in_prompt",
+        history_policy="frozen_generation_context_only",
+        allows_strict_authority=True,
+    ),
+    _llm_role_contract(
+        "master_proposal",
+        r"^MASTER PROPOSAL(?:\s|$)",
+        renderer="agent_master.py::_run_master_proposal_ensemble/proposal_renderer",
+        producer_file="web/core/agent_master.py",
+        producer_name="_render_master_proposal_provider_prompt",
+        evidence_kind="master_planning_context",
+        required_evidence_fields=(
+            "planning_context_digest", "direction", "source_v", "next_v",
+            "source_symbol_index_digest", "directive_digest",
+            "protocol_bootstrap_prepared_only", "repair_kind", "invocation_id",
+        ),
+        scope_policy="canonical_candidates",
+        tools=(("Read",),),
+        read_scope="explicit_candidate_and_generation_snapshot_dirs",
+        evidence_policy="generation_snapshot_plus_content_bound_candidate",
+        history_policy="frozen_generation_context_only",
+        requires_read_scope=True,
+        allows_evidence_snapshot=True,
+        allows_strict_authority=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "master_final",
+        r"^MASTER(?:\s+\(TRY\s+\d+\))?$",
+        renderer="prompts/master_prompt.md+master_context_contract.py",
+        producer_file="web/core/agent_master.py",
+        producer_name="_render_master_final_provider_prompt",
+        template_paths=("web/core/prompts/master_prompt.md",),
+        evidence_kind="compiled_master_context",
+        required_evidence_fields=(
+            "master_context_digest", "proposal_packet_digest", "source_v", "next_v",
+            "template_values_digest", "schema_repair_digest", "invocation_id",
+        ),
+        scope_policy="canonical_candidates",
+        tools=(("Read",),),
+        read_scope="explicit_candidate_and_generation_snapshot_dirs",
+        evidence_policy="generation_snapshot_plus_compiled_proposal_packet",
+        history_policy="frozen_generation_context_only",
+        requires_read_scope=True,
+        allows_evidence_snapshot=True,
+        allows_strict_authority=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "worker_cot_audit",
+        r"^WORKER_COT_CHECK_",
+        renderer="prompts/worker_cot_check.md::_run_worker_cot_check",
+        producer_file="web/core/audit_agents.py",
+        producer_name="_render_worker_cot_provider_prompt",
+        template_paths=("web/core/prompts/worker_cot_check.md",),
+        evidence_kind="worker_output_diff",
+        required_evidence_fields=(
+            "task_digest", "diff_digest", "worker_output_digest",
+            "worker_role_digest", "worker_task_digest", "diff_metadata_digest",
+            "worker_output_binding_digest", "worker_effect_id",
+            "worker_lease_epoch", "worker_dispatch_receipt_digest",
+        ),
+        evidence_policy="system_bound_worker_output_and_diff_metadata",
+        history_policy="current_bound_diff_only",
+    ),
+    _llm_role_contract(
+        "worker",
+        r"^WORKER(?:\s|$)",
+        renderer="prompts/worker_prompt.md+prompts/worker_profile_national_native.md",
+        producer_file="web/core/agent_workers.py",
+        producer_name="_render_worker_provider_prompt",
+        template_paths=(
+            "web/core/prompts/worker_prompt.md",
+            "web/core/prompts/worker_profile_national_native.md",
+        ),
+        evidence_kind="compiled_worker_task",
+        required_evidence_fields=(
+            "task", "next_v", "candidate_path", "allowed_files",
+            "renderer_inputs_digest",
+        ),
+        scope_policy="worker_candidate",
+        tools=(("Bash", "Read", "Edit"),),
+        read_scope="explicit_target_candidate_and_system_context_files",
+        write_scope="exact_compiled_task_files",
+        evidence_policy="checkpoint_compiled_task_plus_candidate_bytes",
+        history_policy="forbidden",
+        requires_read_scope=True,
+        requires_write_scope=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "debug_agent",
+        r"^DEBUG AGENT(?:\s|$)",
+        renderer="prompts/debug_worker_prompt.md::_run_debug_agent",
+        producer_file="web/core/agent_workers.py",
+        producer_name="_render_debug_provider_prompt",
+        template_paths=("web/core/prompts/debug_worker_prompt.md",),
+        evidence_kind="worker_gate_failure",
+        required_evidence_fields=(
+            "candidate_path", "error_digest", "changed_diff_digest",
+            "target_file", "next_v",
+        ),
+        scope_policy="debug_candidate",
+        tools=(("Read",),),
+        read_scope="explicit_target_candidate_only",
+        evidence_policy="bound_candidate_and_system_gate_failure",
+        requires_read_scope=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "lead_code_reviewer",
+        r"^LEAD CODE REVIEWER$",
+        renderer="prompts/reviewer_prompt.md::run_review",
+        producer_file="web/core/tool_gates.py",
+        producer_name="_render_reviewer_provider_prompt",
+        template_paths=("web/core/prompts/reviewer_prompt.md",),
+        evidence_kind="review_candidate_pair",
+        required_evidence_fields=("source_v", "next_v", "review_prompt_digest"),
+        scope_policy="canonical_candidates",
+        tools=(("Read",), ("Bash", "Read")),
+        read_scope="explicit_source_and_target_candidate_dirs",
+        evidence_policy="content_bound_candidate_and_system_gate_input",
+        history_policy="bound_parent_candidate_only",
+        requires_read_scope=True,
+        allows_strict_authority=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "strategy_critic",
+        r"^STRATEGY CRITIC$",
+        renderer="prompts/critic_prompt.md::_run_critic",
+        producer_file="web/core/agent_review.py",
+        producer_name="_render_critic_provider_prompt",
+        template_paths=("web/core/prompts/critic_prompt.md",),
+        evidence_kind="critic_plan_candidate_snapshot",
+        required_evidence_fields=(
+            "source_v", "next_v", "master_plan_digest", "code_evidence_digest",
+            "h2h_snapshot_digest", "previous_critic_digest", "invocation_id",
+        ),
+        scope_policy="canonical_candidates",
+        tools=(("Read",),),
+        read_scope="explicit_source_target_and_generation_snapshot_dirs",
+        evidence_policy="generation_snapshot_plus_content_bound_candidate",
+        history_policy="frozen_generation_context_only",
+        requires_read_scope=True,
+        allows_evidence_snapshot=True,
+        allows_strict_authority=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "crossover_compatibility",
+        r"^CROSSOVER_COMPAT_",
+        renderer="prompts/crossover_compatibility.md::_run_crossover_compatibility_audit",
+        producer_file="web/core/audit_agents.py",
+        producer_name="_render_crossover_compat_provider_prompt",
+        template_paths=("web/core/prompts/crossover_compatibility.md",),
+        evidence_kind="crossover_parent_compatibility",
+        required_evidence_fields=(
+            "parent_a_v", "parent_b_v", "parent_code_digest",
+            "rating_context_digest", "h2h_context_digest",
+            "architecture_context_digest", "parent_snapshot_receipt_digest",
+        ),
+        evidence_policy="frozen_parent_artifacts_plus_generation_snapshot",
+        history_policy="bound_parent_identity_only",
+    ),
+    _llm_role_contract(
+        "crossover",
+        r"^CROSSOVER(?:\s|$)",
+        renderer="prompts/crossover_prompt.md::_run_crossover",
+        producer_file="web/core/agent_review.py",
+        producer_name="_render_crossover_provider_prompt",
+        template_paths=("web/core/prompts/crossover_prompt.md",),
+        evidence_kind="crossover_frozen_parents",
+        required_evidence_fields=(
+            "parent_a_v", "parent_b_v", "target_v", "parent_artifacts",
+            "compatibility_receipt_digest", "renderer_inputs_digest",
+        ),
+        scope_policy="crossover_workspace",
+        tools=(("Bash", "Read", "Edit"),),
+        read_scope="frozen_parent_snapshots_and_target_candidate",
+        write_scope="exact_target_policy_file",
+        evidence_policy="frozen_parent_snapshots_plus_target_candidate",
+        history_policy="bound_parent_identity_only",
+        requires_read_scope=True,
+        requires_write_scope=True,
+        allows_evidence_snapshot=True,
+        requires_frozen_evidence_guard=True,
+    ),
+    _llm_role_contract(
+        "direction_auditor",
+        r"^DIRECTION AUDITOR$",
+        renderer="prompts/direction_auditor_prompt.md::_run_direction_audit",
+        producer_file="web/core/direction_auditor.py",
+        producer_name="_render_direction_provider_prompt",
+        template_paths=("web/core/prompts/direction_auditor_prompt.md",),
+        evidence_kind="annotated_completion_direction_history",
+        required_evidence_fields=("source_v", "generation_history_digest"),
+        evidence_policy="annotated_strict_completion_commits_in_prompt",
+        history_policy="annotated_strict_completion_tags_only",
+    ),
+    _llm_role_contract(
+        "literature_probe",
+        r"^LITERATURE_PROBE(?:\s|$)",
+        renderer="prompts/literature_probe_prompt.md::run_literature_probe",
+        producer_file="web/core/tool_planning.py",
+        producer_name="_render_literature_provider_prompt",
+        template_paths=("web/core/prompts/literature_probe_prompt.md",),
+        evidence_kind="governed_literature_brief",
+        required_evidence_fields=("source_v", "next_v", "brief_digest"),
+        tools=(("WebSearch",),),
+        read_scope="governed_public_web_search_only",
+        evidence_policy="cited_public_sources_no_strength_weight",
+    ),
+    _llm_role_contract(
+        "cycle_archivist",
+        r"^CYCLE ARCHIVIST$",
+        renderer="prompts/cycle_archivist.md::run_cycle_archivist_analysis",
+        producer_file="web/core/cycle_archivist.py",
+        producer_name="_render_cycle_archivist_provider_prompt",
+        template_paths=("web/core/prompts/cycle_archivist.md",),
+        evidence_kind="content_bound_cycle_snapshot",
+        required_evidence_fields=("version", "source_v", "snapshot_digest"),
+        evidence_policy="post_commit_content_bound_snapshot_in_prompt",
+        history_policy="bound_subject_snapshot_only",
+    ),
+    _llm_role_contract(
+        "master_plan_audit",
+        r"^MASTER_PLAN_AUDIT$",
+        renderer="prompts/master_plan_audit.md::_run_master_plan_audit",
+        producer_file="web/core/audit_agents.py",
+        producer_name="_render_master_plan_audit_provider_prompt",
+        template_paths=("web/core/prompts/master_plan_audit.md",),
+        evidence_kind="compiled_plan_completion_history",
+        required_evidence_fields=(
+            "source_v", "next_v", "plan_digest", "history_digest",
+            "direction_audit_digest", "h2h_snapshot_digest",
+        ),
+        evidence_policy="compiled_plan_plus_annotated_completion_commits",
+        history_policy="annotated_strict_completion_tags_only",
+    ),
+    _llm_role_contract(
+        "degeneration_diagnosis",
+        r"^DEGENERATION_DIAGNOSIS$",
+        renderer="prompts/degeneration_diagnosis.md::_run_degeneration_diagnosis",
+        producer_file="web/core/audit_agents.py",
+        producer_name="_render_degeneration_provider_prompt",
+        template_paths=("web/core/prompts/degeneration_diagnosis.md",),
+        evidence_kind="frozen_degeneration_window",
+        required_evidence_fields=(
+            "source_v", "history_digest", "rating_digest",
+            "strategy_changes_digest",
+        ),
+        evidence_policy="annotated_completion_commits_plus_frozen_rating_tail",
+        history_policy="annotated_strict_completion_tags_only",
+    ),
+    _llm_role_contract(
+        "combined_analyst",
+        r"^COMBINED ANALYST$",
+        renderer="prompts/combined_analyst.md::_run_combined_analysis",
+        producer_file="web/core/combined_analyst.py",
+        producer_name="_render_combined_provider_prompt",
+        template_paths=("web/core/prompts/combined_analyst.md",),
+        evidence_kind="immutable_generation_evaluation_bundle",
+        required_evidence_fields=("source_v", "frozen_bundle_digest"),
+        evidence_policy="generation_immutable_evaluation_snapshot_in_prompt",
+        history_policy="frozen_generation_rating_tail_only",
+    ),
+    _llm_role_contract(
+        "official_platform_analysis",
+        r"^OFFICIAL PLATFORM COMPLIANCE ANALYST$",
+        renderer="prompts/official_platform_analysis.md::build_official_analysis_prompt",
+        producer_file="web/core/official_llm_analysis.py",
+        producer_name="_render_official_provider_prompt",
+        template_paths=("web/core/prompts/official_platform_analysis.md",),
+        evidence_kind="compact_official_compliance_evidence",
+        required_evidence_fields=("evidence_id", "compact_evidence_digest"),
+        evidence_policy="compact_content_bound_official_evidence_in_prompt",
+        history_policy="forbidden",
+    ),
+    _llm_role_contract(
+        "operator_sdk_probe",
+        r"^OPERATOR SDK PROBE$",
+        renderer="operator_sdk_probe.py::build_probe_prompt",
+        producer_file="web/core/operator_sdk_probe.py",
+        producer_name="_render_operator_probe_provider_prompt",
+        evidence_kind="operator_exact_file_probe",
+        required_evidence_fields=("repo_root", "local_evidence_digest"),
+        scope_policy="operator_exact_files",
+        tools=(("Read", "Bash"),),
+        read_scope="exact_system_oracle_and_runtime_files",
+        evidence_policy="system_collected_exact_file_hashes_and_tool_receipts",
+        requires_read_scope=True,
+        allows_exact_bash_commands=True,
+        requires_frozen_evidence_guard=True,
+        fixed_read_files=(
+            "docs/official-raise-boundary-oracle-2026-07-11.md",
+            "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            "sever/server/transport.py",
+        ),
+        fixed_bash_commands=(
+            "sha256sum docs/official-raise-boundary-oracle-2026-07-11.md docs/official-terminal-settlement-oracle-2026-07-11.md sever/server/transport.py",
+            "rg -n 'writer.write\\(payload\\)|invalid_server_message_delimiter|take_client_action|idle_flush_sec' sever/server/transport.py",
+        ),
+    ),
+)
+
+
+def active_llm_role_contracts():
+    """Return the immutable active registry for tests and diagnostics."""
+
+    return ACTIVE_LLM_ROLE_CONTRACTS
+
+
+def resolve_llm_role_contract(role_name):
+    normalized = str(role_name or "").strip()
+    for contract in ACTIVE_LLM_ROLE_CONTRACTS:
+        if contract.role_pattern.search(normalized):
+            return contract
+    raise LLMRoleContractError(
+        f"unregistered active LLM role: {normalized or '<empty>'}"
+    )
+
+
+_LLM_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_LLM_RECEIPT_AUTHORITY = object()
+_LLM_RECEIPT_SCHEMA = "national_tcp_llm_dispatch_receipt_v2"
+
+
+@dataclass(frozen=True)
+class LLMRendererReceipt:
+    role_id: str
+    runtime_role: str
+    producer_file: str
+    producer_name: str
+    producer_file_sha256: str
+    producer_function_sha256: str
+    template_digests: tuple
+    rendered_prompt_sha256: str
+    rendered_prompt_chars: int
+    receipt_digest: str
+    producer: object
+    _authority: object
+
+
+@dataclass(frozen=True)
+class LLMEvidenceReceipt:
+    role_id: str
+    provenance_kind: str
+    provenance_json: str
+    provenance_sha256: str
+    renderer_receipt_digest: str
+    receipt_digest: str
+    _authority: object
+
+
+@dataclass(frozen=True)
+class LLMMCPReceipt:
+    role_id: str
+    config_json: str
+    config_sha256: str
+    receipt_digest: str
+    _authority: object
+
+
+@dataclass(frozen=True)
+class LLMDispatchReceipt:
+    schema: str
+    role_id: str
+    runtime_role: str
+    model: str
+    renderer: LLMRendererReceipt
+    evidence: LLMEvidenceReceipt
+    mcp: LLMMCPReceipt
+    receipt_digest: str
+    _authority: object
+
+
+@dataclass(frozen=True)
+class LLMRenderedMaterial:
+    """Replay result: provider text and its causally derived provenance."""
+
+    text: str
+    evidence_kind: str
+    evidence_provenance: dict
+
+
+class RenderedLLMPrompt(str):
+    """String-compatible but sealed output of a replayable renderer."""
+
+    def __new__(
+        cls,
+        *,
+        role_id,
+        runtime_role,
+        text,
+        renderer_inputs_json,
+        dispatch_receipt,
+        producer,
+        _authority,
+    ):
+        instance = str.__new__(cls, str(text))
+        object.__setattr__(instance, "role_id", str(role_id))
+        object.__setattr__(instance, "runtime_role", str(runtime_role))
+        object.__setattr__(instance, "text", str(text))
+        object.__setattr__(instance, "renderer_inputs_json", str(renderer_inputs_json))
+        object.__setattr__(instance, "dispatch_receipt", dispatch_receipt)
+        object.__setattr__(instance, "producer", producer)
+        object.__setattr__(instance, "_authority", _authority)
+        object.__setattr__(instance, "_sealed", True)
+        return instance
+
+    def __setattr__(self, name, value):
+        if getattr(self, "_sealed", False):
+            raise AttributeError("RenderedLLMPrompt is immutable")
+        object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True)
+class FrozenLLMCapability:
+    role_id: str
+    model: str
+    selected_tools: tuple
+    read_dirs: tuple
+    read_files: tuple
+    write_dirs: tuple
+    write_files: tuple
+    evidence_dir: str | None
+    context_files: tuple
+    exact_bash_commands: tuple
+    strict_authority_json: str | None
+    strict_authority_sha256: str | None
+    _authority: object
+
+
+def _receipt_digest(payload):
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _normalize_receipt_value(value):
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if value != value or value in {float("inf"), float("-inf")}:
+            raise LLMRoleContractError("non-finite evidence provenance number")
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (list, tuple)):
+        return [_normalize_receipt_value(item) for item in value]
+    if isinstance(value, dict):
+        normalized = {}
+        for key in sorted(value, key=lambda item: str(item)):
+            if not isinstance(key, str) or not key:
+                raise LLMRoleContractError(
+                    "evidence provenance requires non-empty string keys"
+                )
+            normalized[key] = _normalize_receipt_value(value[key])
+        return normalized
+    raise LLMRoleContractError(
+        f"unsupported evidence provenance value: {type(value).__name__}"
+    )
+
+
+def _canonical_strict_authority_json(strict_authority):
+    if strict_authority is None:
+        return None
+    if type(strict_authority) is not dict:
+        raise LLMRoleContractError("strict-authority descriptor must be a plain object")
+    try:
+        normalized = _normalize_receipt_value(strict_authority)
+    except LLMRoleContractError as exc:
+        raise LLMRoleContractError(
+            f"strict-authority descriptor is not canonically serializable: {exc}"
+        ) from exc
+    if not isinstance(normalized, dict):
+        raise LLMRoleContractError("strict-authority descriptor must be an object")
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _assert_strict_authority_unchanged(strict_authority, frozen_capability):
+    expected = frozen_capability.strict_authority_json
+    current = _canonical_strict_authority_json(strict_authority)
+    if current != expected:
+        raise LLMRoleContractError(
+            f"{frozen_capability.role_id}: strict-authority descriptor changed "
+            "after capability validation"
+        )
+
+
+def _project_strict_authority_state(owner, internal):
+    """Publish internal effect results without re-admitting caller authority."""
+
+    if owner is None or internal is None:
+        return
+    if type(owner) is not dict or type(internal) is not dict:
+        raise LLMRoleContractError("strict-authority projection requires plain objects")
+    projected = deepcopy(internal)
+    owner.clear()
+    owner.update(projected)
+
+
+def _project_relative_path(path, *, require_file=False):
+    raw = Path(str(path))
+    absolute = raw if raw.is_absolute() else _LLM_PROJECT_ROOT / raw
+    cursor = _LLM_PROJECT_ROOT
+    try:
+        relative_parts = absolute.absolute().relative_to(
+            _LLM_PROJECT_ROOT.absolute()
+        ).parts
+    except ValueError as exc:
+        raise LLMRoleContractError(f"path outside active project: {path}") from exc
+    for part in relative_parts:
+        cursor = cursor / part
+        if cursor.is_symlink():
+            raise LLMRoleContractError(f"symlinked LLM authority path: {path}")
+    resolved = absolute.resolve(strict=False)
+    try:
+        relative = resolved.relative_to(_LLM_PROJECT_ROOT.resolve())
+    except ValueError as exc:
+        raise LLMRoleContractError(f"resolved path outside active project: {path}") from exc
+    relative_text = relative.as_posix()
+    if not relative_text or relative_text == "." or relative_text.startswith("archive/"):
+        raise LLMRoleContractError(f"invalid active LLM authority path: {path}")
+    if require_file and not resolved.is_file():
+        raise LLMRoleContractError(f"required renderer source is not a file: {path}")
+    return relative_text, resolved
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _producer_binding(contract, producer):
+    if not callable(producer):
+        raise LLMRoleContractError(f"{contract.role_id}: renderer producer is not callable")
+    source_file = inspect.getsourcefile(producer)
+    if not source_file:
+        raise LLMRoleContractError(f"{contract.role_id}: renderer producer has no source file")
+    relative, resolved = _project_relative_path(source_file, require_file=True)
+    if relative != contract.producer_file:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: producer file {relative!r} is not "
+            f"{contract.producer_file!r}"
+        )
+    producer_name = str(getattr(producer, "__name__", ""))
+    if producer_name != contract.producer_name:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: producer {producer_name!r} is not "
+            f"{contract.producer_name!r}"
+        )
+    try:
+        function_source = inspect.getsource(producer).encode("utf-8")
+    except (OSError, TypeError) as exc:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: renderer producer source unavailable"
+        ) from exc
+    templates = []
+    for template_path in contract.template_paths:
+        relative_template, resolved_template = _project_relative_path(
+            template_path,
+            require_file=True,
+        )
+        if relative_template != template_path:
+            raise LLMRoleContractError(
+                f"{contract.role_id}: non-canonical template path {template_path}"
+            )
+        templates.append((template_path, _sha256_file(resolved_template)))
+    return {
+        "producer_file": relative,
+        "producer_name": producer_name,
+        "producer_file_sha256": _sha256_file(resolved),
+        "producer_function_sha256": hashlib.sha256(function_source).hexdigest(),
+        "template_digests": tuple(templates),
+    }
+
+
+def _type_identity(value):
+    if isinstance(value, type):
+        return f"{value.__module__}.{value.__qualname__}"
+    return str(value)
+
+
+def _active_mcp_config_payload(mcp_servers):
+    selected = dict(mcp_servers or {})
+    if not selected:
+        return {}
+    if set(selected) != {"evolution"}:
+        raise LLMRoleContractError(
+            f"unregistered MCP server objects: {sorted(selected)}"
+        )
+    from tools import evolution_server, mcp_tools
+
+    if selected["evolution"] is not evolution_server:
+        raise LLMRoleContractError(
+            "Orchestrator evolution MCP must be the system-owned server object"
+        )
+    if not isinstance(evolution_server, dict) or set(evolution_server) != {
+        "type", "name", "instance",
+    }:
+        raise LLMRoleContractError("system evolution MCP config shape drift")
+    instance = evolution_server.get("instance")
+    tools_payload = []
+    for tool in mcp_tools:
+        handler = getattr(tool, "handler", None)
+        handler_file = inspect.getsourcefile(handler) if callable(handler) else None
+        if not handler_file:
+            raise LLMRoleContractError("evolution MCP tool handler source unavailable")
+        handler_relative, handler_resolved = _project_relative_path(
+            handler_file,
+            require_file=True,
+        )
+        schema = getattr(tool, "input_schema", {}) or {}
+        tools_payload.append({
+            "name": str(getattr(tool, "name", "")),
+            "description_sha256": hashlib.sha256(
+                str(getattr(tool, "description", "")).encode("utf-8")
+            ).hexdigest(),
+            "input_schema": {
+                str(key): _type_identity(value)
+                for key, value in sorted(schema.items())
+            },
+            "handler_file": handler_relative,
+            "handler_name": str(getattr(handler, "__name__", "")),
+            "handler_file_sha256": _sha256_file(handler_resolved),
+        })
+    return {
+        "type": evolution_server.get("type"),
+        "name": evolution_server.get("name"),
+        "instance_name": str(getattr(instance, "name", "")),
+        "instance_version": str(getattr(instance, "version", "")),
+        "tools": tools_payload,
+    }
+
+
+def _issue_llm_dispatch_receipt(
+    role_name,
+    rendered_prompt,
+    *,
+    producer,
+    evidence_kind,
+    evidence_provenance,
+    mcp_servers=(),
+    model="sonnet",
+):
+    """Issue one sealed receipt from the real renderer and evidence producer.
+
+    Callers provide the callable and the structured source payload, never a
+    renderer-name string.  The issuer selects the expected source/template from
+    the active role registry and content-binds their current bytes.
+    """
+
+    contract = resolve_llm_role_contract(role_name)
+    if str(evidence_kind) != contract.evidence_provenance_kind:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: evidence kind {evidence_kind!r} is not "
+            f"{contract.evidence_provenance_kind!r}"
+        )
+    prompt_text = str(rendered_prompt or "")
+    producer_binding = _producer_binding(contract, producer)
+    renderer_payload = {
+        "role_id": contract.role_id,
+        "runtime_role": str(role_name),
+        **producer_binding,
+        "rendered_prompt_sha256": hashlib.sha256(
+            prompt_text.encode("utf-8")
+        ).hexdigest(),
+        "rendered_prompt_chars": len(prompt_text),
+    }
+    renderer_receipt = LLMRendererReceipt(
+        **renderer_payload,
+        receipt_digest=_receipt_digest(renderer_payload),
+        producer=producer,
+        _authority=_LLM_RECEIPT_AUTHORITY,
+    )
+
+    normalized_provenance = _normalize_receipt_value(evidence_provenance)
+    if not isinstance(normalized_provenance, dict):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: evidence provenance must be an object"
+        )
+    missing = [
+        field for field in contract.required_evidence_fields
+        if field not in normalized_provenance
+    ]
+    if missing:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: evidence provenance fields missing: {missing}"
+        )
+    provenance_json = json.dumps(
+        normalized_provenance,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    evidence_payload = {
+        "role_id": contract.role_id,
+        "provenance_kind": contract.evidence_provenance_kind,
+        "provenance_sha256": hashlib.sha256(
+            provenance_json.encode("utf-8")
+        ).hexdigest(),
+        "renderer_receipt_digest": renderer_receipt.receipt_digest,
+    }
+    evidence_receipt = LLMEvidenceReceipt(
+        **evidence_payload,
+        provenance_json=provenance_json,
+        receipt_digest=_receipt_digest(evidence_payload),
+        _authority=_LLM_RECEIPT_AUTHORITY,
+    )
+
+    mcp_payload_value = _active_mcp_config_payload(mcp_servers)
+    mcp_json = json.dumps(
+        mcp_payload_value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    mcp_payload = {
+        "role_id": contract.role_id,
+        "config_sha256": hashlib.sha256(mcp_json.encode("utf-8")).hexdigest(),
+    }
+    mcp_receipt = LLMMCPReceipt(
+        **mcp_payload,
+        config_json=mcp_json,
+        receipt_digest=_receipt_digest(mcp_payload),
+        _authority=_LLM_RECEIPT_AUTHORITY,
+    )
+    dispatch_payload = {
+        "schema": _LLM_RECEIPT_SCHEMA,
+        "role_id": contract.role_id,
+        "runtime_role": str(role_name),
+        "model": str(model),
+        "renderer_receipt_digest": renderer_receipt.receipt_digest,
+        "evidence_receipt_digest": evidence_receipt.receipt_digest,
+        "mcp_receipt_digest": mcp_receipt.receipt_digest,
+    }
+    return LLMDispatchReceipt(
+        schema=_LLM_RECEIPT_SCHEMA,
+        role_id=contract.role_id,
+        runtime_role=str(role_name),
+        model=str(model),
+        renderer=renderer_receipt,
+        evidence=evidence_receipt,
+        mcp=mcp_receipt,
+        receipt_digest=_receipt_digest(dispatch_payload),
+        _authority=_LLM_RECEIPT_AUTHORITY,
+    )
+
+
+def render_llm_prompt(
+    role_name,
+    *,
+    producer,
+    renderer_inputs,
+    mcp_servers=(),
+    model="sonnet",
+):
+    """Replayably render and seal one active provider prompt.
+
+    The provider boundary never accepts a text string plus a claimed renderer.
+    This wrapper canonicalizes the renderer inputs, calls the registered
+    production renderer itself, then signs the exact output. Validation invokes
+    the same callable again from the stored inputs, so replacing or independently
+    constructing ``text`` fails even when the correct producer is named.
+    """
+
+    contract = resolve_llm_role_contract(role_name)
+    if str(model) not in contract.allowed_models:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: model {model!r} outside "
+            f"{list(contract.allowed_models)!r}"
+        )
+    normalized_inputs = _normalize_receipt_value(renderer_inputs)
+    if not isinstance(normalized_inputs, dict):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: renderer inputs must be an object"
+        )
+    renderer_inputs_json = json.dumps(
+        normalized_inputs,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    replay_inputs = json.loads(renderer_inputs_json)
+    try:
+        material = producer(replay_inputs)
+    except Exception as exc:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: production renderer failed: "
+            f"{type(exc).__name__}"
+        ) from exc
+    if (
+        not isinstance(material, LLMRenderedMaterial)
+        or not isinstance(material.text, str)
+        or not material.text
+        or not isinstance(material.evidence_provenance, dict)
+    ):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: production renderer returned no typed material"
+        )
+    dispatch_receipt = _issue_llm_dispatch_receipt(
+        role_name,
+        material.text,
+        producer=producer,
+        evidence_kind=material.evidence_kind,
+        evidence_provenance=material.evidence_provenance,
+        mcp_servers=mcp_servers,
+        model=model,
+    )
+    return RenderedLLMPrompt(
+        role_id=contract.role_id,
+        runtime_role=str(role_name),
+        text=material.text,
+        renderer_inputs_json=renderer_inputs_json,
+        dispatch_receipt=dispatch_receipt,
+        producer=producer,
+        _authority=_LLM_RECEIPT_AUTHORITY,
+    )
+
+
+def _validate_rendered_llm_prompt(
+    rendered, contract, role_name, mcp_servers, model="sonnet"
+):
+    if not isinstance(rendered, RenderedLLMPrompt):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: sealed RenderedLLMPrompt required"
+        )
+    if (
+        rendered._authority is not _LLM_RECEIPT_AUTHORITY
+        or rendered.role_id != contract.role_id
+        or rendered.runtime_role != str(role_name)
+    ):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: rendered prompt authority/subject mismatch"
+        )
+    if rendered.producer is not rendered.dispatch_receipt.renderer.producer:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: rendered prompt producer receipt mismatch"
+        )
+    try:
+        replay_inputs = json.loads(rendered.renderer_inputs_json)
+        replayed = rendered.producer(replay_inputs)
+    except Exception as exc:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: renderer replay failed: {type(exc).__name__}"
+        ) from exc
+    if not isinstance(replayed, LLMRenderedMaterial) or replayed.text != rendered.text:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: rendered prompt replay mismatch"
+        )
+    replayed_provenance_json = json.dumps(
+        _normalize_receipt_value(replayed.evidence_provenance),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if (
+        replayed.evidence_kind
+        != rendered.dispatch_receipt.evidence.provenance_kind
+        or replayed_provenance_json
+        != rendered.dispatch_receipt.evidence.provenance_json
+    ):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: rendered evidence provenance replay mismatch"
+        )
+    _validate_llm_dispatch_receipt(
+        rendered.dispatch_receipt,
+        contract,
+        role_name,
+        rendered.text,
+        mcp_servers,
+        model,
+    )
+    return rendered
+
+
+def _validate_llm_dispatch_receipt(
+    receipt,
+    contract,
+    role_name,
+    rendered_prompt,
+    mcp_servers,
+    model,
+):
+    if not isinstance(receipt, LLMDispatchReceipt):
+        raise LLMRoleContractError(f"{contract.role_id}: typed dispatch receipt required")
+    if receipt._authority is not _LLM_RECEIPT_AUTHORITY:
+        raise LLMRoleContractError(f"{contract.role_id}: dispatch receipt authority invalid")
+    if (
+        receipt.schema != _LLM_RECEIPT_SCHEMA
+        or receipt.role_id != contract.role_id
+        or receipt.runtime_role != str(role_name)
+        or receipt.model != str(model)
+        or receipt.model not in contract.allowed_models
+    ):
+        raise LLMRoleContractError(f"{contract.role_id}: dispatch receipt subject mismatch")
+    renderer = receipt.renderer
+    if renderer._authority is not _LLM_RECEIPT_AUTHORITY:
+        raise LLMRoleContractError(f"{contract.role_id}: renderer receipt authority invalid")
+    binding = _producer_binding(contract, renderer.producer)
+    prompt_text = str(rendered_prompt or "")
+    renderer_payload = {
+        "role_id": contract.role_id,
+        "runtime_role": str(role_name),
+        **binding,
+        "rendered_prompt_sha256": hashlib.sha256(
+            prompt_text.encode("utf-8")
+        ).hexdigest(),
+        "rendered_prompt_chars": len(prompt_text),
+    }
+    if any(
+        getattr(renderer, key) != value for key, value in renderer_payload.items()
+    ) or renderer.receipt_digest != _receipt_digest(renderer_payload):
+        raise LLMRoleContractError(f"{contract.role_id}: renderer receipt drift")
+    evidence = receipt.evidence
+    if evidence._authority is not _LLM_RECEIPT_AUTHORITY:
+        raise LLMRoleContractError(f"{contract.role_id}: evidence receipt authority invalid")
+    try:
+        provenance = json.loads(evidence.provenance_json)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: evidence provenance receipt invalid"
+        ) from exc
+    missing = [
+        field for field in contract.required_evidence_fields
+        if field not in provenance
+    ]
+    evidence_payload = {
+        "role_id": contract.role_id,
+        "provenance_kind": contract.evidence_provenance_kind,
+        "provenance_sha256": hashlib.sha256(
+            evidence.provenance_json.encode("utf-8")
+        ).hexdigest(),
+        "renderer_receipt_digest": renderer.receipt_digest,
+    }
+    if (
+        missing
+        or evidence.provenance_kind != contract.evidence_provenance_kind
+        or any(getattr(evidence, key) != value for key, value in evidence_payload.items())
+        or evidence.receipt_digest != _receipt_digest(evidence_payload)
+    ):
+        raise LLMRoleContractError(f"{contract.role_id}: evidence receipt drift")
+    mcp = receipt.mcp
+    current_mcp_json = json.dumps(
+        _active_mcp_config_payload(mcp_servers),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    mcp_payload = {
+        "role_id": contract.role_id,
+        "config_sha256": hashlib.sha256(
+            current_mcp_json.encode("utf-8")
+        ).hexdigest(),
+    }
+    if (
+        mcp._authority is not _LLM_RECEIPT_AUTHORITY
+        or mcp.config_json != current_mcp_json
+        or any(getattr(mcp, key) != value for key, value in mcp_payload.items())
+        or mcp.receipt_digest != _receipt_digest(mcp_payload)
+    ):
+        raise LLMRoleContractError(f"{contract.role_id}: MCP config receipt drift")
+    dispatch_payload = {
+        "schema": _LLM_RECEIPT_SCHEMA,
+        "role_id": contract.role_id,
+        "runtime_role": str(role_name),
+        "model": str(model),
+        "renderer_receipt_digest": renderer.receipt_digest,
+        "evidence_receipt_digest": evidence.receipt_digest,
+        "mcp_receipt_digest": mcp.receipt_digest,
+    }
+    if receipt.receipt_digest != _receipt_digest(dispatch_payload):
+        raise LLMRoleContractError(f"{contract.role_id}: dispatch receipt digest drift")
+    return receipt
+
+
+def _llm_selected_tools(tools):
+    if tools is None:
+        return ()
+    if not isinstance(tools, (list, tuple, set, frozenset)):
+        raise LLMRoleContractError(
+            "active LLM roles require an explicit built-in tool-name sequence"
+        )
+    names = tuple(str(item) for item in tools)
+    if len(names) != len(set(names)):
+        raise LLMRoleContractError("duplicate built-in tool grant")
+    if isinstance(tools, (set, frozenset)):
+        names = tuple(sorted(names))
+    return names
+
+
+def _llm_selected_tool_set(tools):
+    return frozenset(_llm_selected_tools(tools))
+
+
+def _llm_selected_mcp_servers(mcp_servers):
+    if isinstance(mcp_servers, dict):
+        return frozenset(str(name) for name in mcp_servers)
+    return frozenset(str(name) for name in (mcp_servers or ()))
+
+
+_BOT_DIR_SCOPE_RE = re.compile(r"^bots/national_v(?P<version>\d+)$")
+_EVIDENCE_SCOPE_RE = re.compile(
+    r"^web/core/results/v(?P<version>\d+)/evidence_snapshot$"
+)
+_BOOTSTRAP_EVIDENCE_SCOPE_RE = re.compile(
+    r"^bots/national_v(?P<version>\d+)/\.protocol_bootstrap_no_strength_evidence$"
+)
+_WORKER_WORKSPACE_SCOPE_RE = re.compile(
+    r"^web/core/results/workflow/artifacts/workspaces/(?P<digest>[0-9a-f]{64})$"
+)
+_WORKFLOW_ARTIFACT_SCOPE_RE = re.compile(
+    r"^web/core/results/workflow/artifacts/(?P<digest>[0-9a-f]{64})$"
+)
+_CROSSOVER_WORKSPACE_SCOPE_RE = re.compile(
+    r"^web/core/results/crossover_workspaces/"
+    r"v(?P<version>\d+)-attempt-(?P<attempt>\d+)-[A-Za-z0-9_-]+$"
+)
+
+
+def _raw_scope_entries(raw, *, default_kind):
+    dirs = []
+    files = []
+    if raw is None:
+        return dirs, files
+    if isinstance(raw, dict):
+        allowed_keys = {"dirs", "directories", "files", "paths"}
+        unknown = set(raw) - allowed_keys
+        if unknown:
+            raise LLMRoleContractError(f"unknown LLM scope keys: {sorted(unknown)}")
+        dirs.extend(raw.get("dirs") or raw.get("directories") or ())
+        files.extend(raw.get("files") or raw.get("paths") or ())
+    elif isinstance(raw, (list, tuple, set, frozenset)):
+        (dirs if default_kind == "dirs" else files).extend(raw)
+    else:
+        (dirs if default_kind == "dirs" else files).append(raw)
+    return dirs, files
+
+
+def _canonical_scope_paths(values):
+    result = []
+    for value in values:
+        relative, _resolved = _project_relative_path(value)
+        if relative in result:
+            raise LLMRoleContractError(f"duplicate LLM authority path: {relative}")
+        result.append(relative)
+    return result
+
+
+def _scope_evidence_provenance(dispatch_receipt):
+    if not isinstance(dispatch_receipt, LLMDispatchReceipt):
+        return {}
+    try:
+        value = json.loads(dispatch_receipt.evidence.provenance_json)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _validate_role_scope(
+    contract,
+    role_name,
+    *,
+    allowed_read_dirs,
+    allowed_write_dir,
+    allowed_evidence_snapshot_dir,
+    context_files,
+    exact_bash_commands,
+    dispatch_receipt,
+    selected_tools,
+    strict_authority_json,
+    model,
+):
+    read_dirs_raw, read_files_raw = _raw_scope_entries(
+        allowed_read_dirs,
+        default_kind="dirs",
+    )
+    write_dirs_raw, write_files_raw = _raw_scope_entries(
+        allowed_write_dir,
+        default_kind="dirs",
+    )
+    read_dirs = _canonical_scope_paths(read_dirs_raw)
+    read_files = _canonical_scope_paths(read_files_raw)
+    write_dirs = _canonical_scope_paths(write_dirs_raw)
+    write_files = _canonical_scope_paths(write_files_raw)
+    context = _canonical_scope_paths(context_files or ())
+    evidence = None
+    if allowed_evidence_snapshot_dir is not None:
+        evidence, _resolved = _project_relative_path(
+            allowed_evidence_snapshot_dir
+        )
+    selected_bash = tuple(str(item).strip() for item in (exact_bash_commands or ()))
+    provenance = _scope_evidence_provenance(dispatch_receipt)
+
+    if context:
+        # Active production renderers inject their compiled context directly
+        # before signing the prompt. No provider role accepts caller-selected
+        # context files.
+        raise LLMRoleContractError(
+            f"{contract.role_id}: external context files are forbidden"
+        )
+
+    policy = contract.scope_policy
+    if policy in {"none", "orchestrator_mcp_only"}:
+        if any((read_dirs, read_files, write_dirs, write_files, evidence)):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: filesystem authority is forbidden"
+            )
+    elif policy == "canonical_candidates":
+        if (
+            read_files or write_dirs or write_files
+            or not 1 <= len(read_dirs) <= 2
+            or any(_BOT_DIR_SCOPE_RE.fullmatch(path) is None for path in read_dirs)
+        ):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: only one/two canonical national_v<N> read dirs are allowed"
+            )
+        if evidence is not None and not (
+            _EVIDENCE_SCOPE_RE.fullmatch(evidence)
+            or _BOOTSTRAP_EVIDENCE_SCOPE_RE.fullmatch(evidence)
+        ):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: evidence path is not a generation snapshot"
+            )
+        subject_versions = {
+            int(value)
+            for key, value in provenance.items()
+            if key in {"source_v", "next_v"}
+            and isinstance(value, int)
+        }
+        read_versions = {
+            int(_BOT_DIR_SCOPE_RE.fullmatch(path).group("version"))
+            for path in read_dirs
+        }
+        if subject_versions and not read_versions.issubset(subject_versions):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: candidate read scope is outside receipt subject versions"
+            )
+        if evidence is not None:
+            match = _EVIDENCE_SCOPE_RE.fullmatch(evidence) or (
+                _BOOTSTRAP_EVIDENCE_SCOPE_RE.fullmatch(evidence)
+            )
+            if subject_versions and int(match.group("version")) not in subject_versions:
+                raise LLMRoleContractError(
+                    f"{contract.role_id}: evidence snapshot version is outside receipt subject"
+                )
+    elif policy in {"worker_candidate", "debug_candidate"}:
+        if (
+            read_files or write_dirs or len(read_dirs) != 1
+            or _WORKER_WORKSPACE_SCOPE_RE.fullmatch(read_dirs[0]) is None
+            or evidence is not None
+        ):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: exact lease-isolated Worker workspace required"
+            )
+        candidate = read_dirs[0]
+        candidate_from_receipt = provenance.get("candidate_path")
+        if candidate_from_receipt is not None:
+            candidate_relative, _ = _project_relative_path(candidate_from_receipt)
+            if candidate_relative != candidate:
+                raise LLMRoleContractError(
+                    f"{contract.role_id}: candidate scope differs from evidence receipt"
+                )
+        if policy == "debug_candidate":
+            if write_files:
+                raise LLMRoleContractError("debug agent cannot receive write scope")
+        else:
+            expected_write = f"{candidate}/policy.py"
+            if write_files != [expected_write]:
+                raise LLMRoleContractError(
+                    "Worker write scope must be the compiled candidate policy.py"
+                )
+            if provenance.get("allowed_files") != ["policy.py"]:
+                raise LLMRoleContractError(
+                    "Worker evidence receipt must bind allowed_files=['policy.py']"
+                )
+            task = provenance.get("task")
+            next_v = provenance.get("next_v")
+            if not isinstance(task, dict) or not isinstance(next_v, int):
+                raise LLMRoleContractError("Worker compiled task provenance invalid")
+            from worker_boundary import allowed_files_for_task
+
+            if allowed_files_for_task(task, next_v) != ["policy.py"]:
+                raise LLMRoleContractError(
+                    "Worker compiled task does not authorize policy.py"
+                )
+    elif policy == "crossover_workspace":
+        artifact_dirs = [
+            path for path in read_dirs
+            if _WORKFLOW_ARTIFACT_SCOPE_RE.fullmatch(path)
+        ]
+        workspace_dirs = [
+            path for path in read_dirs
+            if _CROSSOVER_WORKSPACE_SCOPE_RE.fullmatch(path)
+        ]
+        if (
+            read_files or write_dirs or len(read_dirs) != 3
+            or len(artifact_dirs) != 2 or len(workspace_dirs) != 1
+        ):
+            raise LLMRoleContractError(
+                "Crossover requires two immutable parent artifacts and one target workspace"
+            )
+        workspace = workspace_dirs[0]
+        if write_files != [f"{workspace}/policy.py"]:
+            raise LLMRoleContractError(
+                "Crossover write scope must be the exact target policy.py"
+            )
+        role_match = re.search(r"→v(?P<version>\d+)", str(role_name))
+        workspace_match = _CROSSOVER_WORKSPACE_SCOPE_RE.fullmatch(workspace)
+        if (
+            role_match is None
+            or int(role_match.group("version"))
+            != int(workspace_match.group("version"))
+            or provenance.get("target_v") != int(workspace_match.group("version"))
+        ):
+            raise LLMRoleContractError("Crossover target version scope mismatch")
+        parent_artifacts = provenance.get("parent_artifacts")
+        if sorted(parent_artifacts or ()) != sorted(
+            path.rsplit("/", 1)[-1] for path in artifact_dirs
+        ):
+            raise LLMRoleContractError(
+                "Crossover parent artifact scope differs from evidence receipt"
+            )
+        if evidence is not None:
+            evidence_match = _EVIDENCE_SCOPE_RE.fullmatch(evidence)
+            if (
+                evidence_match is None
+                or int(evidence_match.group("version"))
+                != provenance.get("target_v")
+            ):
+                raise LLMRoleContractError("Crossover evidence snapshot version mismatch")
+    elif policy == "operator_exact_files":
+        if (
+            read_dirs or write_dirs or write_files or evidence is not None
+            or set(read_files) != set(contract.fixed_read_files)
+            or len(read_files) != len(contract.fixed_read_files)
+            or selected_bash != contract.fixed_bash_commands
+        ):
+            raise LLMRoleContractError(
+                "Operator probe scope/config differs from the fixed oracle contract"
+            )
+        repo_root = provenance.get("repo_root")
+        if repo_root is None or Path(str(repo_root)).resolve() != _LLM_PROJECT_ROOT.resolve():
+            raise LLMRoleContractError("Operator probe repo root receipt mismatch")
+    else:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: unknown scope policy {policy!r}"
+        )
+
+    if policy != "operator_exact_files" and selected_bash:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: exact Bash allowlist is not registered"
+        )
+    def absolute_paths(paths):
+        return tuple(
+            str((_LLM_PROJECT_ROOT / path).resolve(strict=False)) for path in paths
+        )
+
+    return FrozenLLMCapability(
+        role_id=contract.role_id,
+        model=str(model),
+        selected_tools=tuple(selected_tools),
+        read_dirs=absolute_paths(read_dirs),
+        read_files=absolute_paths(read_files),
+        write_dirs=absolute_paths(write_dirs),
+        write_files=absolute_paths(write_files),
+        evidence_dir=(
+            str((_LLM_PROJECT_ROOT / evidence).resolve(strict=False))
+            if evidence is not None else None
+        ),
+        context_files=absolute_paths(context),
+        exact_bash_commands=selected_bash,
+        strict_authority_json=strict_authority_json,
+        strict_authority_sha256=(
+            hashlib.sha256(strict_authority_json.encode("utf-8")).hexdigest()
+            if strict_authority_json is not None else None
+        ),
+        _authority=_LLM_RECEIPT_AUTHORITY,
+    )
+
+
+def validate_llm_role_dispatch(
+    role_name,
+    *,
+    tools,
+    rendered_prompt,
+    provider_path="subagent_sdk",
+    mcp_servers=(),
+    context_files=(),
+    allowed_read_dirs=None,
+    allowed_write_dir=None,
+    allowed_evidence_snapshot_dir=None,
+    strict_authority=None,
+    exact_bash_commands=None,
+    model="sonnet",
+):
+    """Fail closed if a real provider dispatch exceeds its registered scope."""
+
+    contract = resolve_llm_role_contract(role_name)
+    if str(model) not in contract.allowed_models:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: model {model!r} outside "
+            f"{list(contract.allowed_models)!r}"
+        )
+    selected_tool_names = _llm_selected_tools(tools)
+    selected_tools = frozenset(selected_tool_names)
+    selected_mcp = _llm_selected_mcp_servers(mcp_servers)
+    rendered_prompt = _validate_rendered_llm_prompt(
+        rendered_prompt,
+        contract,
+        role_name,
+        mcp_servers,
+        model,
+    )
+    dispatch_receipt = rendered_prompt.dispatch_receipt
+    if str(provider_path) != contract.provider_path:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: provider path {provider_path!r} is not "
+            f"{contract.provider_path!r}"
+        )
+    if selected_tools not in contract.allowed_tool_sets:
+        allowed = [sorted(group) for group in contract.allowed_tool_sets]
+        raise LLMRoleContractError(
+            f"{contract.role_id}: tools {sorted(selected_tools)!r} outside {allowed!r}"
+        )
+    if selected_mcp != contract.allowed_mcp_servers:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: MCP servers {sorted(selected_mcp)!r} outside "
+            f"{sorted(contract.allowed_mcp_servers)!r}"
+        )
+    if contract.requires_read_scope and not any((
+        allowed_read_dirs,
+        allowed_write_dir,
+        context_files,
+    )):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: explicit filesystem read scope is required"
+        )
+    if contract.requires_write_scope and allowed_write_dir is None:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: exact write scope is required"
+        )
+    if not contract.requires_write_scope and allowed_write_dir is not None:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: filesystem write scope is forbidden"
+        )
+    if context_files and not contract.allows_context_files:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: context-file prompt injection is not registered"
+        )
+    if (
+        allowed_evidence_snapshot_dir is not None
+        and not contract.allows_evidence_snapshot
+    ):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: filesystem evidence snapshot is not registered"
+        )
+    if strict_authority is not None and not contract.allows_strict_authority:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: strict-authority call binding is not registered"
+        )
+    if (
+        exact_bash_commands is not None
+        and not contract.allows_exact_bash_commands
+    ):
+        raise LLMRoleContractError(
+            f"{contract.role_id}: exact Bash command grants are not registered"
+        )
+    if contract.allows_exact_bash_commands and exact_bash_commands is None:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: exact Bash command allowlist is required"
+        )
+    strict_authority_json = _canonical_strict_authority_json(strict_authority)
+    frozen_capability = _validate_role_scope(
+        contract,
+        role_name,
+        allowed_read_dirs=allowed_read_dirs,
+        allowed_write_dir=allowed_write_dir,
+        allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+        context_files=context_files,
+        exact_bash_commands=exact_bash_commands,
+        dispatch_receipt=dispatch_receipt,
+        selected_tools=selected_tool_names,
+        strict_authority_json=strict_authority_json,
+        model=str(model),
+    )
+    return contract, dispatch_receipt, frozen_capability
+
+
+def render_llm_role_contract_suffix(
+    contract,
+    role_name,
+    *,
+    tools,
+    mcp_servers=(),
+    rendered_provider_prefix="",
+    dispatch_receipt=None,
+    frozen_capability=None,
+):
+    """Render the final, system-owned provider instruction for one dispatch."""
+
+    provider_prefix = str(rendered_provider_prefix or "")
+    capability_payload = {
+        "model": frozen_capability.model,
+        "selected_tools": list(frozen_capability.selected_tools),
+        "read_dirs": list(frozen_capability.read_dirs),
+        "read_files": list(frozen_capability.read_files),
+        "write_dirs": list(frozen_capability.write_dirs),
+        "write_files": list(frozen_capability.write_files),
+        "evidence_dir": frozen_capability.evidence_dir,
+        "context_files": list(frozen_capability.context_files),
+        "exact_bash_commands": list(frozen_capability.exact_bash_commands),
+        "strict_authority_sha256": frozen_capability.strict_authority_sha256,
+    }
+    payload = {
+        "schema": "national_tcp_llm_role_contract_v2",
+        "role_id": contract.role_id,
+        "runtime_role": str(role_name),
+        "provider_path": contract.provider_path,
+        "model": frozen_capability.model,
+        "renderer": contract.renderer,
+        "renderer_receipt_digest": dispatch_receipt.renderer.receipt_digest,
+        "renderer_producer_file": dispatch_receipt.renderer.producer_file,
+        "renderer_producer_file_sha256": (
+            dispatch_receipt.renderer.producer_file_sha256
+        ),
+        "renderer_producer_function_sha256": (
+            dispatch_receipt.renderer.producer_function_sha256
+        ),
+        "renderer_template_digests": dict(
+            dispatch_receipt.renderer.template_digests
+        ),
+        "evidence_provenance_kind": (
+            dispatch_receipt.evidence.provenance_kind
+        ),
+        "evidence_provenance_sha256": (
+            dispatch_receipt.evidence.provenance_sha256
+        ),
+        "evidence_receipt_digest": dispatch_receipt.evidence.receipt_digest,
+        "mcp_config_sha256": dispatch_receipt.mcp.config_sha256,
+        "mcp_receipt_digest": dispatch_receipt.mcp.receipt_digest,
+        "dispatch_receipt_digest": dispatch_receipt.receipt_digest,
+        "frozen_capability_sha256": _receipt_digest(capability_payload),
+        "frozen_capability": capability_payload,
+        "selected_builtin_tools": list(frozen_capability.selected_tools),
+        "selected_mcp_servers": sorted(_llm_selected_mcp_servers(mcp_servers)),
+        "provider_read_scope": contract.provider_read_scope,
+        "provider_write_scope": contract.provider_write_scope,
+        "evidence_policy": contract.evidence_policy,
+        "history_policy": contract.history_policy,
+        "rendered_provider_prefix_chars": len(provider_prefix),
+        "rendered_provider_prefix_sha256": hashlib.sha256(
+            provider_prefix.encode("utf-8")
+        ).hexdigest(),
+        "strength_authority": "zero",
+        "certification_authority": "zero",
+        "rating_authority": "zero",
+        "historical_memory_authority": "zero",
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    payload["contract_digest"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return (
+        "\n\n# SYSTEM-OWNED ACTIVE LLM ROLE CONTRACT (FINAL)\n"
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+        + "\n\nThe rendered template and every attached context block are "
+        "subordinate to this final contract. Do not read, infer from, search, "
+        "or request archive/legacy content, mutable live result files, unbound "
+        "replays, free-standing lessons/experience, generic Git history, or any "
+        "path/tool not listed above. Historical input is allowed only when the "
+        "history_policy explicitly names its system-bound form. This response "
+        "may perform only its registered advisory or scoped implementation "
+        "function; it is never strength evidence, a rating/certification result, "
+        "persistent memory, or authority to override deterministic gates.\n"
+    )
+
+
+def bind_llm_role_provider_prompt(
+    rendered_prompt,
+    role_name,
+    *,
+    tools,
+    provider_path="subagent_sdk",
+    mcp_servers=(),
+    context_files=(),
+    allowed_read_dirs=None,
+    allowed_write_dir=None,
+    allowed_evidence_snapshot_dir=None,
+    strict_authority=None,
+    exact_bash_commands=None,
+    max_chars=None,
+    provider_prefix=None,
+    frozen_capability=None,
+    model="sonnet",
+):
+    """Validate a dispatch and place its role contract last in provider input."""
+
+    if frozen_capability is not None:
+        contract = resolve_llm_role_contract(role_name)
+        if (
+            not isinstance(frozen_capability, FrozenLLMCapability)
+            or frozen_capability._authority is not _LLM_RECEIPT_AUTHORITY
+            or frozen_capability.role_id != contract.role_id
+        ):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: frozen capability authority invalid"
+            )
+        allowed_read_dirs = {
+            "dirs": frozen_capability.read_dirs,
+            "files": frozen_capability.read_files,
+        }
+        allowed_write_dir = {
+            "dirs": frozen_capability.write_dirs,
+            "files": frozen_capability.write_files,
+        } if (frozen_capability.write_dirs or frozen_capability.write_files) else None
+        allowed_evidence_snapshot_dir = frozen_capability.evidence_dir
+        context_files = frozen_capability.context_files
+        exact_bash_commands = frozen_capability.exact_bash_commands or None
+        tools = frozen_capability.selected_tools
+        model = frozen_capability.model
+    contract, dispatch_receipt, validated_capability = validate_llm_role_dispatch(
+        role_name,
+        tools=tools,
+        rendered_prompt=rendered_prompt,
+        provider_path=provider_path,
+        mcp_servers=mcp_servers,
+        context_files=context_files,
+        allowed_read_dirs=allowed_read_dirs,
+        allowed_write_dir=allowed_write_dir,
+        allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+        strict_authority=strict_authority,
+        exact_bash_commands=exact_bash_commands,
+        model=model,
+    )
+    if frozen_capability is not None and validated_capability != frozen_capability:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: frozen capability replay mismatch"
+        )
+    # The sealed renderer bytes are immutable evidence.  Do not even strip
+    # trailing whitespace here: doing so would make the provider prefix differ
+    # from the receipt while appearing visually identical in logs.
+    base = str(
+        rendered_prompt.text if provider_prefix is None else provider_prefix
+    )
+    if rendered_prompt.text not in base:
+        raise LLMRoleContractError(
+            f"{contract.role_id}: provider prefix does not contain the sealed "
+            "renderer output"
+        )
+    suffix = render_llm_role_contract_suffix(
+        contract,
+        role_name,
+        tools=tools,
+        mcp_servers=mcp_servers,
+        rendered_provider_prefix=base,
+        dispatch_receipt=dispatch_receipt,
+        frozen_capability=validated_capability,
+    )
+    if max_chars is not None:
+        if len(base) + len(suffix) > int(max_chars):
+            raise LLMRoleContractError(
+                f"{contract.role_id}: sealed provider prompt exceeds the "
+                "provider budget; renderer output cannot be truncated"
+            )
+    return base + suffix, contract
 
 
 @contextlib.contextmanager
@@ -827,6 +2555,775 @@ def _path_inside_allowed_scope(path, allowed_scope, base_dir=None):
     return False
 
 
+def _normalize_allowed_read_scope(allowed_read_dirs):
+    """Normalize explicit filesystem read authority.
+
+    ``allowed_read_dirs`` historically meant "results paths exempt from the
+    live-evidence marker".  That was not a read boundary: a role could still
+    open every bot and the repository's Git history.  The same public argument
+    now carries real capability semantics.  A scalar or sequence names
+    directory roots; callers that need exact files may pass
+    ``{"files": [...], "dirs": [...]}``.
+    """
+
+    dirs = []
+    files = []
+    raw = allowed_read_dirs
+    if isinstance(raw, dict):
+        dirs.extend(raw.get("dirs") or raw.get("directories") or [])
+        files.extend(raw.get("files") or raw.get("paths") or [])
+    elif isinstance(raw, (list, tuple, set)):
+        dirs.extend(raw)
+    elif raw is not None:
+        dirs.append(raw)
+
+    def _resolved(items):
+        values = []
+        for item in items:
+            if item is None or not str(item).strip():
+                continue
+            try:
+                values.append(
+                    str(Path(_local_path_from_file_uri(item)).resolve(strict=False))
+                )
+            except Exception:
+                # An unresolvable grant must not become an imprecise string
+                # prefix.  Drop it; the eventual access will fail closed.
+                continue
+        return list(dict.fromkeys(values))
+
+    return {"dirs": _resolved(dirs), "files": _resolved(files)}
+
+
+def _merge_allowed_read_scopes(*scopes):
+    merged = {"dirs": [], "files": []}
+    for scope in scopes:
+        normalized = _normalize_allowed_read_scope(scope)
+        merged["dirs"].extend(normalized.get("dirs") or ())
+        merged["files"].extend(normalized.get("files") or ())
+    merged["dirs"] = list(dict.fromkeys(merged["dirs"]))
+    merged["files"] = list(dict.fromkeys(merged["files"]))
+    return merged
+
+
+def _path_has_symlink_component(path):
+    """Return true for existing or dangling symlinks in any path component."""
+
+    try:
+        candidate = Path(path)
+        current = Path(candidate.anchor) if candidate.is_absolute() else Path()
+        for part in candidate.parts:
+            if candidate.is_absolute() and part == candidate.anchor:
+                continue
+            current = current / part
+            if current.is_symlink():
+                return True
+    except (OSError, RuntimeError, ValueError):
+        return True
+    return False
+
+
+def _path_parts_lower(path):
+    try:
+        return tuple(part.lower() for part in Path(path).parts)
+    except Exception:
+        return ()
+
+
+def _bot_anchor(path):
+    """Return ``.../bots/national_vN`` for an active-bot path, if present."""
+
+    candidate = Path(path)
+    parts = candidate.parts
+    for index, part in enumerate(parts[:-1]):
+        if part.lower() != "bots":
+            continue
+        name = parts[index + 1].lower()
+        if re.fullmatch(rf"{re.escape(ACTIVE_BOT_PREFIX.lower())}\d+", name):
+            return Path(*parts[: index + 2])
+    return None
+
+
+def _scope_sensitive_roots(allowed_scope, kind):
+    """Derive narrow sensitive roots explicitly named by the capability."""
+
+    roots = []
+    for raw in (
+        *(allowed_scope.get("dirs") or ()),
+        *(allowed_scope.get("files") or ()),
+    ):
+        candidate = Path(raw)
+        if kind == "bot":
+            anchor = _bot_anchor(candidate)
+            if anchor is not None:
+                roots.append(anchor.resolve(strict=False))
+            continue
+        parts = _path_parts_lower(candidate)
+        if "results" not in parts:
+            continue
+        results_index = parts.index("results")
+        # A grant of the mutable results root is too broad to be evidence
+        # authority.  Exact snapshots/workspaces below it are permitted.
+        if len(parts) <= results_index + 1:
+            continue
+        roots.append(candidate.resolve(strict=False))
+    return tuple(dict.fromkeys(roots))
+
+
+def _resolved_within(path, root):
+    try:
+        Path(path).resolve(strict=False).relative_to(Path(root).resolve(strict=False))
+        return True
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _read_path_violation(raw_path, allowed_scope, *, base_dir=None):
+    """Return a typed denial for a single filesystem read target."""
+
+    text = _local_path_from_file_uri(raw_path)
+    text = _strip_shell_grouping_parens(str(text or "").strip().strip("'\""))
+    if not text:
+        return "empty_path"
+    if text == "-" or text.lower() in _SAFE_REDIRECT_TARGETS:
+        return None
+    if "\x00" in text:
+        return "nul_path"
+    if text.startswith("~"):
+        return f"home_alias:{text[:120]}"
+    if any(marker in text for marker in ("$", "`", "*", "?", "[", "]", "{", "}")):
+        return f"dynamic_path:{text[:120]}"
+
+    try:
+        lexical = Path(text)
+        if ".." in lexical.parts:
+            return f"parent_alias:{text[:120]}"
+        if not lexical.is_absolute():
+            base = (
+                Path(base_dir).resolve(strict=False)
+                if base_dir is not None
+                else _project_root_for_guard()
+            )
+            lexical = base / lexical
+        lexical = lexical.absolute()
+        if _path_has_symlink_component(lexical):
+            return f"symlink_path:{text[:120]}"
+        resolved = lexical.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as exc:
+        return f"unresolvable_path:{type(exc).__name__}:{text[:100]}"
+
+    lowered_parts = _path_parts_lower(resolved)
+    if ".git" in lowered_parts:
+        return f"git_metadata_forbidden:{resolved}"
+    if any(part in {"archive", ".archive"} for part in lowered_parts):
+        return f"archived_tree_forbidden:{resolved}"
+
+    project_root = _project_root_for_guard()
+    if not _resolved_within(resolved, project_root):
+        return f"outside_active_checkout:{resolved}"
+
+    bot_root = _bot_anchor(resolved)
+    if bot_root is not None:
+        authorized_bots = _scope_sensitive_roots(allowed_scope, "bot")
+        if not any(bot_root.resolve(strict=False) == root for root in authorized_bots):
+            return f"bot_not_in_role_scope:{resolved}"
+
+    if "results" in lowered_parts:
+        authorized_results = _scope_sensitive_roots(allowed_scope, "results")
+        if not any(_resolved_within(resolved, root) for root in authorized_results):
+            return f"results_not_in_role_scope:{resolved}"
+
+    if not _path_inside_allowed_scope(resolved, allowed_scope):
+        return f"outside_role_read_scope:{resolved}"
+    return None
+
+
+def _shell_has_dynamic_expansion(command):
+    """Detect expansions whose eventual filesystem targets are unknowable."""
+
+    text = str(command or "")
+    quote = None
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            index += 1
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+                index += 1
+                continue
+            if char in {"$", "`"}:
+                return True
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char in {"$", "`"}:
+            return True
+        if text.startswith("<( ", index) or text.startswith(">(", index):
+            return True
+        index += 1
+    return quote is not None
+
+
+def _iter_shell_read_redirect_targets(command):
+    """Yield simple ``< file`` targets; complex redirections are rejected above."""
+
+    text = _strip_shell_comments(str(command or ""))
+    quote = None
+    escaped = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in ("'", '"'):
+            quote = char
+            index += 1
+            continue
+        if char != "<":
+            index += 1
+            continue
+        if index + 1 < len(text) and text[index + 1] in {"<", ">", "&", "("}:
+            index += 2
+            continue
+        cursor = index + 1
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        target, end = _read_shell_token(text, cursor, extra_stop_chars="()")
+        if target:
+            yield target
+        index = max(end, cursor + 1)
+
+
+_READ_COMMAND_OPTIONS_WITH_VALUE = {
+    "head": {"-n", "--lines", "-c", "--bytes"},
+    "tail": {"-n", "--lines", "-c", "--bytes", "--pid", "-s", "--sleep-interval"},
+    "grep": {
+        "-A", "--after-context", "-B", "--before-context", "-C", "--context",
+        "-m", "--max-count", "--exclude", "--exclude-from", "--exclude-dir",
+        "--include", "--label", "--binary-files", "-D", "--devices", "-d",
+        "--directories",
+    },
+    "rg": {
+        "-A", "--after-context", "-B", "--before-context", "-C", "--context",
+        "-g", "--glob", "-t", "--type", "-T", "--type-not", "--type-add",
+        "-m", "--max-count", "--max-depth", "--max-filesize", "--sort",
+        "--sortr", "--encoding", "--engine", "--path-separator", "--iglob",
+        "--ignore-file", "--color", "--colors", "--context-separator",
+        "--field-context-separator", "--field-match-separator", "-r", "--replace",
+    },
+    "diff": {"--exclude", "--exclude-from", "--label", "--starting-file", "-I"},
+}
+
+_READ_PATH_OPTIONS = {
+    "diff": {"--exclude-from", "--from-file", "--to-file"},
+    "grep": {"--exclude-from"},
+    "rg": {"--ignore-file"},
+    "wc": {"--files0-from"},
+}
+
+_SAFE_INLINE_VALUE_OPTIONS = {
+    "diff": {"--exclude", "--label", "--starting-file", "--unified"},
+    "grep": {
+        "--after-context", "--before-context", "--binary-files", "--context",
+        "--devices", "--directories", "--exclude", "--exclude-dir", "--include",
+        "--label", "--max-count",
+    },
+    "head": {"--bytes", "--lines"},
+    "rg": {
+        "--after-context", "--before-context", "--color", "--colors", "--context",
+        "--context-separator", "--encoding", "--engine", "--field-context-separator",
+        "--field-match-separator", "--glob", "--iglob", "--max-count",
+        "--max-depth", "--max-filesize", "--path-separator", "--replace", "--sort",
+        "--sortr", "--type", "--type-add", "--type-not",
+    },
+    "tail": {"--bytes", "--lines", "--pid", "--sleep-interval"},
+}
+
+
+def _option_consumes_value(command_name, arg):
+    options = _READ_COMMAND_OPTIONS_WITH_VALUE.get(command_name, set())
+    if arg in options:
+        return True
+    return False
+
+
+def _inline_option(command_name, arg):
+    if not str(arg).startswith("--") or "=" not in str(arg):
+        return None, None
+    name, value = str(arg).split("=", 1)
+    if name in _READ_PATH_OPTIONS.get(command_name, set()):
+        return "path", value
+    if name in _SAFE_INLINE_VALUE_OPTIONS.get(command_name, set()):
+        return "safe", value
+    return "unknown", value
+
+
+def _option_read_targets(command_name, args):
+    targets = []
+    index = 0
+    path_options = _READ_PATH_OPTIONS.get(command_name, set())
+    while index < len(args):
+        arg = str(args[index])
+        inline_kind, inline_value = _inline_option(command_name, arg)
+        if inline_kind == "path":
+            targets.append(inline_value)
+        if arg in path_options:
+            if index + 1 >= len(args):
+                raise ValueError(f"missing_option_value:{arg}")
+            targets.append(str(args[index + 1]))
+            index += 1
+        index += 1
+    return targets
+
+
+def _command_positionals(command_name, args):
+    """Return positionals while rejecting ambiguous/unbounded command options."""
+
+    positionals = []
+    index = 0
+    while index < len(args):
+        arg = str(args[index])
+        low = arg.lower()
+        if arg == "--":
+            positionals.extend(str(item) for item in args[index + 1 :])
+            break
+        if command_name in {"rg", "grep"} and low in {"-l", "--follow", "-r", "--dereference-recursive"}:
+            # rg -L means follow; grep -R follows.  Lower-casing deliberately
+            # treats either spelling conservatively.
+            if (command_name == "rg" and arg in {"-L", "--follow"}) or (
+                command_name == "grep" and arg in {"-R", "--dereference-recursive"}
+            ):
+                raise ValueError(f"symlink_follow_option:{arg}")
+        if command_name == "rg" and (low == "--pre" or low.startswith("--pre=")):
+            raise ValueError("rg_preprocessor_forbidden")
+        if arg.startswith("-") and arg != "-":
+            inline_kind, _inline_value = _inline_option(command_name, arg)
+            if inline_kind == "unknown":
+                raise ValueError(f"unproved_inline_option:{arg.split('=', 1)[0]}")
+            if inline_kind is not None:
+                index += 1
+                continue
+            if _option_consumes_value(command_name, arg):
+                if index + 1 >= len(args):
+                    raise ValueError(f"missing_option_value:{arg}")
+                index += 2
+                continue
+            # Common compact numeric forms (-n20, -C3) are self-contained.
+            index += 1
+            continue
+        positionals.append(arg)
+        index += 1
+    return positionals
+
+
+def _grep_like_read_targets(command_name, args):
+    """Extract pattern-file and search-root reads for grep/rg."""
+
+    targets = _option_read_targets(command_name, args)
+    positionals = []
+    pattern_from_option = False
+    index = 0
+    while index < len(args):
+        arg = str(args[index])
+        low = arg.lower()
+        if arg == "--":
+            positionals.extend(str(item) for item in args[index + 1 :])
+            break
+        if (command_name == "rg" and arg in {"-L", "--follow"}) or (
+            command_name == "grep" and arg in {"-R", "--dereference-recursive"}
+        ):
+            raise ValueError(f"symlink_follow_option:{arg}")
+        if command_name == "rg" and (low == "--pre" or low.startswith("--pre=")):
+            raise ValueError("rg_preprocessor_forbidden")
+        if arg in {"-e", "--regexp"}:
+            if index + 1 >= len(args):
+                raise ValueError(f"missing_option_value:{arg}")
+            pattern_from_option = True
+            index += 2
+            continue
+        if arg in {"-f", "--file"}:
+            if index + 1 >= len(args):
+                raise ValueError(f"missing_option_value:{arg}")
+            targets.append(str(args[index + 1]))
+            pattern_from_option = True
+            index += 2
+            continue
+        if arg.startswith("--regexp="):
+            pattern_from_option = True
+            index += 1
+            continue
+        if arg.startswith("--file="):
+            targets.append(arg.split("=", 1)[1])
+            pattern_from_option = True
+            index += 1
+            continue
+        if arg.startswith("-") and arg != "-":
+            inline_kind, inline_value = _inline_option(command_name, arg)
+            if inline_kind == "path":
+                targets.append(inline_value)
+                index += 1
+                continue
+            if inline_kind == "unknown":
+                raise ValueError(f"unproved_inline_option:{arg.split('=', 1)[0]}")
+            if inline_kind is not None:
+                index += 1
+                continue
+            if _option_consumes_value(command_name, arg):
+                if index + 1 >= len(args):
+                    raise ValueError(f"missing_option_value:{arg}")
+                index += 2
+                continue
+            index += 1
+            continue
+        positionals.append(arg)
+        index += 1
+    if not pattern_from_option and positionals:
+        positionals.pop(0)
+    targets.extend(positionals)
+    if command_name == "rg" and not targets:
+        # ripgrep searches the process cwd when no path is supplied.  Treat
+        # that implicit directory exactly like an explicit ``.``.
+        targets.append(".")
+    return targets
+
+
+def _sed_read_targets(args):
+    targets = []
+    positionals = []
+    script_from_option = False
+    index = 0
+    while index < len(args):
+        arg = str(args[index])
+        if arg == "--":
+            positionals.extend(str(item) for item in args[index + 1 :])
+            break
+        if arg in {"-e", "--expression"}:
+            if index + 1 >= len(args):
+                raise ValueError(f"missing_option_value:{arg}")
+            script_from_option = True
+            index += 2
+            continue
+        if arg in {"-f", "--file"}:
+            if index + 1 >= len(args):
+                raise ValueError(f"missing_option_value:{arg}")
+            targets.append(str(args[index + 1]))
+            script_from_option = True
+            index += 2
+            continue
+        if arg.startswith("--expression="):
+            script_from_option = True
+            index += 1
+            continue
+        if arg.startswith("--file="):
+            targets.append(arg.split("=", 1)[1])
+            script_from_option = True
+            index += 1
+            continue
+        if arg == "-i" or arg.startswith("-i") or arg == "--in-place" or arg.startswith("--in-place="):
+            raise ValueError("sed_in_place_forbidden")
+        if arg.startswith("-") and arg != "-":
+            if "=" in arg:
+                raise ValueError(f"unproved_inline_option:{arg.split('=', 1)[0]}")
+            index += 1
+            continue
+        positionals.append(arg)
+        index += 1
+    if not script_from_option and positionals:
+        positionals.pop(0)
+    targets.extend(positionals)
+    return targets
+
+
+def _python_pycompile_targets(args):
+    """Permit Python only as a non-executing compiler over explicit files."""
+
+    values = [str(arg) for arg in args]
+    index = 0
+    while index < len(values) and values[index] in {"-B", "-I", "-S", "-E", "-s", "-q"}:
+        index += 1
+    if index + 1 >= len(values) or values[index] != "-m" or values[index + 1] != "py_compile":
+        raise ValueError("python_execution_not_read_provable")
+    targets = values[index + 2 :]
+    if not targets or any(target.startswith("-") for target in targets):
+        raise ValueError("py_compile_requires_explicit_files")
+    return targets
+
+
+def _git_no_index_diff_targets(args):
+    if any(
+        str(arg) in _SUBAGENT_GIT_GLOBAL_OPTIONS_WITH_VALUE
+        or any(
+            str(arg).startswith(option + "=")
+            for option in _SUBAGENT_GIT_GLOBAL_OPTIONS_WITH_VALUE
+        )
+        for arg in args
+    ):
+        raise ValueError("git_global_path_or_config_forbidden")
+    subcmd, rest = _subagent_git_subcommand(args)
+    if subcmd != "diff" or "--no-index" not in rest:
+        raise ValueError("git_repository_read_forbidden")
+    safe_flags = {
+        "--no-index", "--", "-u", "--patch", "--stat", "--numstat",
+        "--shortstat", "--name-only", "--name-status", "--no-color",
+        "--word-diff", "--exit-code", "--quiet", "--text", "-a",
+    }
+    for arg in rest:
+        value = str(arg)
+        if not value.startswith("-") or value == "-":
+            continue
+        if value in safe_flags or re.fullmatch(r"-U\d+", value):
+            continue
+        if value.startswith("--unified=") and value.split("=", 1)[1].isdigit():
+            continue
+        if value in {"--color=never", "--word-diff=plain", "--word-diff=porcelain"}:
+            continue
+        raise ValueError(f"git_no_index_option_forbidden:{value}")
+    positionals = _command_positionals("diff", rest)
+    positionals = [item for item in positionals if item != "--no-index"]
+    if len(positionals) != 2:
+        raise ValueError("git_no_index_diff_requires_two_paths")
+    return positionals
+
+
+def _bash_segment_read_targets(segment, *, current_dir, depth):
+    words = _simple_command_words(segment)
+    if not words:
+        return [], current_dir
+    command_token = _strip_shell_grouping_parens(words[0])
+    command_name = _command_name(command_token)
+    args = [_strip_shell_grouping_parens(arg) for arg in words[1:]]
+    if "/" in command_token or "\\" in command_token:
+        executable = Path(command_token)
+        if not executable.is_absolute():
+            raise ValueError("relative_executable_forbidden")
+        if executable.parent not in {Path("/bin"), Path("/usr/bin")}:
+            raise ValueError("untrusted_executable_path")
+
+    if command_name in {"pwd", "true", "false", ":", "echo", "printf"}:
+        return [], current_dir
+    if command_name == "cd":
+        target = _cd_target_from_args(args)
+        if not target:
+            raise ValueError("cd_requires_explicit_path")
+        return [target], _resolve_guard_path(target, base_dir=current_dir)
+    if command_name in {"bash", "dash", "sh", "zsh"}:
+        # The child shell can reinterpret quoting, positional parameters,
+        # startup files, aliases, and its own cwd.  A static parent hook cannot
+        # prove the final read set, so wrappers are intentionally unavailable.
+        raise ValueError("shell_wrapper_forbidden")
+    if command_name.startswith("python"):
+        return _python_pycompile_targets(args), current_dir
+    if command_name == "git":
+        return _git_no_index_diff_targets(args), current_dir
+    if command_name in {"rg", "grep"}:
+        return _grep_like_read_targets(command_name, args), current_dir
+    if command_name == "sed":
+        return _sed_read_targets(args), current_dir
+    if command_name in {"cat", "nl", "wc", "sha256sum", "md5sum", "file", "stat"}:
+        return (
+            _option_read_targets(command_name, args)
+            + _command_positionals(command_name, args)
+        ), current_dir
+    if command_name in {"head", "tail"}:
+        return _command_positionals(command_name, args), current_dir
+    if command_name in {"ls", "tree", "du"}:
+        targets = _command_positionals(command_name, args)
+        return (targets or ["."]), current_dir
+    if command_name in {"diff", "cmp"}:
+        targets = _option_read_targets("diff", args) + _command_positionals("diff", args)
+        required = 2
+        if len(targets) != required:
+            raise ValueError(f"{command_name}_requires_two_paths")
+        return targets, current_dir
+    # Filter-only pipeline stages may consume stdin, but direct file operands
+    # are too command-specific to infer safely.
+    if command_name in {"sort", "uniq", "tr"}:
+        if any(
+            str(arg) in {"-o", "--output"}
+            or str(arg).startswith("--output=")
+            for arg in args
+        ):
+            raise ValueError(f"{command_name}_output_forbidden")
+        positionals = _command_positionals(command_name, args)
+        if command_name in {"sort", "uniq"} and positionals:
+            raise ValueError(f"{command_name}_file_operand_forbidden")
+        return [], current_dir
+    raise ValueError(f"bash_command_not_read_provable:{command_name or 'empty'}")
+
+
+def _subagent_bash_read_scope_violation(
+    command,
+    allowed_scope,
+    *,
+    initial_dir=None,
+    depth=0,
+    return_targets=False,
+):
+    """Fail closed unless every Bash filesystem read is statically authorized."""
+
+    text = str(command or "")
+    if not text.strip():
+        return "empty_bash_command"
+    if _shell_heredoc_delimiters(text) or "<<<" in text or "<(" in text or ">(" in text:
+        return "complex_shell_input_forbidden"
+    if _shell_has_dynamic_expansion(text):
+        return "dynamic_shell_expansion_forbidden"
+    try:
+        for segment in _split_shell_simple_commands(text):
+            raw_words = _shell_words(segment)
+            if raw_words and _command_name(raw_words[0]) == "env":
+                raise ValueError("env_wrapper_forbidden")
+            for word in raw_words:
+                if _is_shell_assignment(word):
+                    name = str(word).split("=", 1)[0].upper()
+                    if name not in {"LC_ALL", "LANG", "LANGUAGE", "TZ"}:
+                        raise ValueError(f"shell_assignment_forbidden:{name}")
+        current_dir = str(
+            Path(initial_dir).resolve(strict=False)
+            if initial_dir is not None
+            else _project_root_for_guard()
+        )
+        targets = []
+        for redirect in _iter_shell_read_redirect_targets(text):
+            targets.append((redirect, current_dir))
+        for segment in _split_shell_simple_commands(text):
+            segment_targets, next_dir = _bash_segment_read_targets(
+                segment,
+                current_dir=current_dir,
+                depth=depth,
+            )
+            targets.extend((target, current_dir) for target in segment_targets)
+            current_dir = next_dir
+        if return_targets:
+            return tuple(target for target, _base in targets)
+        for target, base in targets:
+            violation = _read_path_violation(target, allowed_scope, base_dir=base)
+            if violation:
+                return violation
+        return None
+    except Exception as exc:
+        return f"unprovable_bash_read:{type(exc).__name__}:{str(exc)[:180]}"
+
+
+def _subagent_read_scope_violation(tool_name, tool_input, allowed_scope):
+    if not isinstance(tool_input, dict):
+        return "malformed_tool_input"
+    if tool_name == "Read":
+        supplied = [
+            tool_input.get(key)
+            for key in ("file_path", "path")
+            if tool_input.get(key) is not None
+        ]
+        if not supplied:
+            return "read_path_missing"
+        for path in supplied:
+            violation = _read_path_violation(path, allowed_scope)
+            if violation:
+                return violation
+        return None
+    if tool_name == "Bash":
+        return _subagent_bash_read_scope_violation(
+            tool_input.get("command", ""),
+            allowed_scope,
+        )
+    return None
+
+
+def _make_subagent_read_scope_guard(role_name, allowed_read_scope):
+    """Build the mandatory role-scoped Read/Bash capability hook."""
+
+    scope = _normalize_allowed_read_scope(allowed_read_scope)
+
+    async def handler(hook_input, tool_use_id, context):
+        from claude_agent_sdk.types import SyncHookJSONOutput
+
+        try:
+            if not isinstance(hook_input, dict):
+                raise ValueError("hook_input_not_object")
+            tool_name = hook_input.get("tool_name", "")
+            if tool_name not in {"Read", "Bash"}:
+                raise ValueError("unexpected_read_guard_tool")
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                raise ValueError("tool_input_not_object")
+            violation = _subagent_read_scope_violation(
+                tool_name,
+                tool_input,
+                scope,
+            )
+        except Exception as exc:
+            violation = f"read_guard_internal_error:{type(exc).__name__}"
+        if not violation:
+            return SyncHookJSONOutput()
+        reason = (
+            f"{role_name} filesystem read denied by the role-scoped capability "
+            f"guard ({violation}). Read only the exact candidate/source/snapshot "
+            "roots supplied by the system; repository history and indirect shell "
+            "read programs are unavailable."
+        )
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.subagent_read_scope_guard_block",
+                "error",
+                f"BLOCKED {role_name} {tool_name} read: {violation}",
+                {
+                    "role": role_name,
+                    "tool": tool_name,
+                    "reason": violation,
+                    "tool_use_id": str(tool_use_id)[:64],
+                    "allowed_dirs": list(scope.get("dirs") or ()),
+                    "allowed_files": list(scope.get("files") or ()),
+                },
+            )
+        except Exception:
+            pass
+        return SyncHookJSONOutput(hookSpecificOutput={
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        })
+
+    try:
+        from claude_agent_sdk.types import HookMatcher
+
+        return {"PreToolUse": [
+            HookMatcher(matcher="Read", hooks=[handler]),
+            HookMatcher(matcher="Bash", hooks=[handler]),
+        ]}
+    except Exception:
+        return None
+
+
 def _subagent_write_target_outside_allowed(target, allowed_dir, base_dir=None):
     text = _strip_shell_grouping_parens(str(target or "").strip().strip("'\""))
     if not text:
@@ -1024,6 +3521,38 @@ def _subagent_bash_cost_detector(command):
     return None
 
 
+def _role_bash_read_violation(role_name, command):
+    """Return role-specific read denials that generic cost guards cannot allow."""
+
+    role = str(role_name or "").strip().upper()
+    if not (
+        role == "STRATEGY CRITIC" or role.startswith("STRATEGY CRITIC ")
+    ):
+        return None
+    git_args = list(_iter_subagent_git_args(command))
+    for segment in _split_shell_simple_commands(command):
+        words = _simple_command_words(segment)
+        if not words or _command_name(words[0]) not in {
+            "bash", "dash", "sh", "zsh"
+        }:
+            continue
+        for index, arg in enumerate(words[1:], start=1):
+            low = str(arg).lower()
+            if low == "-c" or (
+                low.startswith("-") and "c" in low[1:]
+            ):
+                if index + 1 < len(words):
+                    git_args.extend(
+                        _iter_subagent_git_args(words[index + 1])
+                    )
+                break
+    for args in git_args:
+        subcmd, _rest = _subagent_git_subcommand(args)
+        if subcmd in {"log", "show", "rev-list"}:
+            return f"strategy_critic_git_history_forbidden:{subcmd}"
+    return None
+
+
 def _make_subagent_cost_guard(role_name):
     """Build a hook that denies high-cost read-only Bash commands.
 
@@ -1039,26 +3568,48 @@ def _make_subagent_cost_guard(role_name):
             if tool_name != "Bash":
                 return SyncHookJSONOutput()
             cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
-            reason = _subagent_bash_cost_detector(cmd)
+            role_violation = _role_bash_read_violation(role_name, cmd)
+            reason = role_violation or _subagent_bash_cost_detector(cmd)
             if not reason:
                 return SyncHookJSONOutput()
-            blocked = (
-                f"Bash command denied by runtime cost guard ({reason}). Use bounded "
-                "inspection only: rg/sed/head/tail or git log with --max-count <= 20 "
-                "or an explicit revision range. Command: " + str(cmd)[:180]
-            )
+            if role_violation:
+                blocked = (
+                    f"Bash command denied by STRATEGY CRITIC evidence guard "
+                    f"({reason}). Git history is not admissible critic evidence; "
+                    "use only the system-supplied frozen envelope, exact "
+                    "parent-to-target diff, Read, rg, or direct diff. Command: "
+                    + str(cmd)[:180]
+                )
+            else:
+                blocked = (
+                    f"Bash command denied by runtime cost guard ({reason}). Use bounded "
+                    "inspection only: rg/sed/head/tail or git log with --max-count <= 20 "
+                    "or an explicit revision range. Command: " + str(cmd)[:180]
+                )
             try:
                 from system_log import log_system_event
                 log_system_event(
-                    "pipeline.subagent_cost_guard_block",
-                    "warn",
-                    f"BLOCKED high-cost {role_name} Bash: {reason}",
+                    (
+                        "pipeline.subagent_role_evidence_guard_block"
+                        if role_violation
+                        else "pipeline.subagent_cost_guard_block"
+                    ),
+                    "error" if role_violation else "warn",
+                    (
+                        f"BLOCKED inadmissible {role_name} Git history: {reason}"
+                        if role_violation
+                        else f"BLOCKED high-cost {role_name} Bash: {reason}"
+                    ),
                     {
                         "role": role_name,
                         "tool": tool_name,
                         "reason": reason,
                         "recoverable": True,
-                        "next_action": "retry_with_bounded_inspection",
+                        "next_action": (
+                            "use_frozen_envelope_and_exact_diff"
+                            if role_violation
+                            else "retry_with_bounded_inspection"
+                        ),
                         "command_preview": str(cmd)[:2000],
                         "command_truncated": len(str(cmd)) > 2000,
                     },
@@ -1156,13 +3707,27 @@ def _make_exact_bash_allowlist_guard(role_name, allowed_commands):
     async def handler(hook_input, tool_use_id, context):
         from claude_agent_sdk.types import SyncHookJSONOutput
 
-        tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
-        if tool_name != "Bash":
-            return SyncHookJSONOutput()
-        tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
-        command = str(tool_input.get("command", "") if isinstance(tool_input, dict) else "").strip()
-        if command in allowed:
-            return SyncHookJSONOutput()
+        try:
+            if not isinstance(hook_input, dict):
+                raise ValueError("hook_input_not_object")
+            tool_name = hook_input.get("tool_name", "")
+            if tool_name != "Bash":
+                raise ValueError("unexpected_exact_bash_guard_tool")
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                raise ValueError("tool_input_not_object")
+            command = str(tool_input.get("command", "")).strip()
+            if command in allowed:
+                return SyncHookJSONOutput()
+        except Exception as exc:
+            return SyncHookJSONOutput(hookSpecificOutput={
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"{role_name} exact Bash guard failed closed "
+                    f"({type(exc).__name__})."
+                ),
+            })
         reason = (
             f"{role_name} Bash command denied by the exact operator allowlist. "
             "Network commands, shell rewrites, and unreviewed variants are not permitted."
@@ -1247,7 +3812,7 @@ def _master_live_evidence_read_violation(
         try:
             candidate_path = Path(_local_path_from_file_uri(raw_text))
             if not candidate_path.is_absolute():
-                candidate_path = Path(PROJECT_ROOT) / candidate_path
+                candidate_path = _LLM_PROJECT_ROOT / candidate_path
             resolved = candidate_path.resolve(strict=False)
             allowed_roots = []
             if allowed_evidence_snapshot_dir is not None:
@@ -1306,39 +3871,45 @@ def _make_master_evidence_read_guard(
         from claude_agent_sdk.types import SyncHookJSONOutput
 
         try:
-            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
-            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            if not isinstance(hook_input, dict):
+                raise ValueError("hook_input_not_object")
+            tool_name = hook_input.get("tool_name", "")
+            if tool_name not in {"Read", "Bash"}:
+                raise ValueError("unexpected_evidence_guard_tool")
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                raise ValueError("tool_input_not_object")
             violation = _master_live_evidence_read_violation(
                 tool_name,
                 tool_input,
                 allowed_evidence_snapshot_dir,
                 allowed_results_dirs,
             )
-            if not violation:
-                return SyncHookJSONOutput()
-            reason = (
-                "Live evaluation evidence read denied. Use only the "
-                "generation's vN/evidence_snapshot files supplied in the prompt; "
-                f"forbidden target: {violation}"
-            )
-            try:
-                from system_log import log_system_event
-
-                log_system_event(
-                    "pipeline.frozen_evidence_read_blocked",
-                    "error",
-                    f"BLOCKED {role_name} live evaluation read",
-                    {"role": role_name, "tool": tool_name, "target": violation},
-                )
-            except Exception:
-                pass
-            return SyncHookJSONOutput(hookSpecificOutput={
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
-            })
-        except Exception:
+        except Exception as exc:
+            violation = f"evidence_guard_internal_error:{type(exc).__name__}"
+        if not violation:
             return SyncHookJSONOutput()
+        reason = (
+            "Live evaluation evidence read denied. Use only the generation's "
+            "vN/evidence_snapshot files supplied in the prompt; forbidden target: "
+            f"{violation}"
+        )
+        try:
+            from system_log import log_system_event
+
+            log_system_event(
+                "pipeline.frozen_evidence_read_blocked",
+                "error",
+                f"BLOCKED {role_name} live evaluation read",
+                {"role": role_name, "tool": tool_name, "target": violation},
+            )
+        except Exception:
+            pass
+        return SyncHookJSONOutput(hookSpecificOutput={
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        })
 
     try:
         from claude_agent_sdk.types import HookMatcher
@@ -1352,23 +3923,14 @@ def _make_master_evidence_read_guard(
 
 
 def _role_requires_frozen_evidence_guard(role_name):
-    """Return whether a tool-capable role must be isolated from live results.
+    """Return the registry-owned live-evidence isolation requirement."""
 
-    Planning roles may read their exact generation snapshot.  Crossover,
-    Reviewer, Worker, and the Worker debug helper do not need mutable runtime
-    results at all; with no explicit snapshot directory the same guard therefore
-    fails closed for every results path.
-    """
-
-    normalized = str(role_name or "").strip().upper()
-    return normalized.startswith((
-        "MASTER",
-        "STRATEGY CRITIC",
-        "CROSSOVER",
-        "LEAD CODE REVIEWER",
-        "WORKER",
-        "DEBUG AGENT",
-    ))
+    try:
+        return resolve_llm_role_contract(role_name).requires_frozen_evidence_guard
+    except LLMRoleContractError:
+        # ``run_claude_query`` rejects unregistered roles before hook assembly.
+        # Keeping this predicate total is useful to guard-only diagnostics.
+        return False
 
 
 def _merge_hooks(*hook_sets):
@@ -1453,10 +4015,17 @@ def _make_subagent_write_guard(allowed_write_dir):
     ) or str(allowed_write_dir)
 
     async def handler(hook_input, tool_use_id, context):
+        from claude_agent_sdk.types import SyncHookJSONOutput
+
         try:
-            from claude_agent_sdk.types import SyncHookJSONOutput
-            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
-            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            if not isinstance(hook_input, dict):
+                raise ValueError("hook_input_not_object")
+            tool_name = hook_input.get("tool_name", "")
+            if tool_name not in {"Bash", "Edit", "Write", "NotebookEdit"}:
+                raise ValueError("unexpected_write_guard_tool")
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                raise ValueError("tool_input_not_object")
             blocked = None
             if tool_name == "Bash":
                 cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else ""
@@ -1504,9 +4073,16 @@ def _make_subagent_write_guard(allowed_write_dir):
                     "permissionDecision": "deny",
                     "permissionDecisionReason": blocked,
                 })
-        except Exception:
-            pass
-        from claude_agent_sdk.types import SyncHookJSONOutput
+        except Exception as exc:
+            blocked = (
+                "Write denied because the system write-scope guard failed closed "
+                f"({type(exc).__name__})."
+            )
+            return SyncHookJSONOutput(hookSpecificOutput={
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": blocked,
+            })
         return SyncHookJSONOutput()
 
     try:
@@ -1542,8 +4118,10 @@ def _readonly_guard_recovery_hint(violation: str) -> str:
             base
             + " For comparisons, run direct read-only commands such as "
             "`diff -u parent_file target_file`, `git diff --no-index -- parent target`, "
-            "`sed -n 'START,ENDp' file`, or `python -c` snippets that only open/read "
-            "files and print results. Redirect only to `/dev/null` for stderr noise."
+            "`sed -n 'START,ENDp' exact_file`, or `rg PATTERN exact_allowed_path`. "
+            "Python snippets, shell wrappers, implicit-directory scans, and indirect "
+            "configuration reads are unavailable. Redirect only to `/dev/null` for "
+            "stderr noise."
         )
     if str(violation or "").startswith("tee:"):
         return (
@@ -1557,10 +4135,17 @@ def _readonly_guard_recovery_hint(violation: str) -> str:
 def _make_subagent_readonly_guard(role_name):
     """Build a hook that enforces read-only tools for non-worker LLM roles."""
     async def handler(hook_input, tool_use_id, context):
+        from claude_agent_sdk.types import SyncHookJSONOutput
+
         try:
-            from claude_agent_sdk.types import SyncHookJSONOutput
-            tool_name = hook_input.get("tool_name", "") if isinstance(hook_input, dict) else ""
-            tool_input = hook_input.get("tool_input", {}) if isinstance(hook_input, dict) else {}
+            if not isinstance(hook_input, dict):
+                raise ValueError("hook_input_not_object")
+            tool_name = hook_input.get("tool_name", "")
+            if tool_name not in {"Bash", "Edit", "Write", "NotebookEdit"}:
+                raise ValueError("unexpected_readonly_guard_tool")
+            tool_input = hook_input.get("tool_input")
+            if not isinstance(tool_input, dict):
+                raise ValueError("tool_input_not_object")
             violation = _subagent_readonly_mutation_violation(tool_name, tool_input)
             if not violation:
                 return SyncHookJSONOutput()
@@ -1598,9 +4183,15 @@ def _make_subagent_readonly_guard(role_name):
                 "permissionDecision": "deny",
                 "permissionDecisionReason": blocked,
             })
-        except Exception:
-            pass
-        from claude_agent_sdk.types import SyncHookJSONOutput
+        except Exception as exc:
+            return SyncHookJSONOutput(hookSpecificOutput={
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": (
+                    f"{role_name} read-only guard failed closed "
+                    f"({type(exc).__name__})."
+                ),
+            })
         return SyncHookJSONOutput()
 
     try:
@@ -1620,8 +4211,8 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
     lines = [
         "# Runtime Path Contract",
         f"- The active repository root for this run is `{root}`.",
-        "- Bash starts in that directory; prefer relative paths from this root.",
-        "- Bash tool working directory may persist across calls. Do not use a bare `cd` that changes later commands. If a command needs a bot-local cwd, use a subshell such as `(cd bots/national_vN && python -B -c '...')`, or start the command with the active repository root explicitly.",
+        "- If Bash is available to this role, each command starts from that directory; name every allowed file or directory explicitly and do not rely on a persisted working directory.",
+        "- Python `-c`/heredoc snippets, `bash`/`sh -c` wrappers, globs, dynamic expansion, Git history, and implicit current-directory scans are unavailable. Use only the role-specific exact paths and commands supplied below.",
         "- Do not use sibling or parent checkout absolute paths as edit targets.",
         "- Do not write probe output, stderr captures, or temporary logs to `/tmp` or `/var/tmp`.",
         "- Prefer inline pipes such as `2>&1 | grep ...`; if a probe truly needs a file, place it inside the declared write scope and remove it in the same command.",
@@ -1651,9 +4242,9 @@ def _format_runtime_path_contract(project_root, allowed_write_dir=None):
             )
     else:
         lines.extend([
-            "- This LLM role is read-only: Bash may read, diff, grep, count, and print, but must not create, modify, delete, move, tag, checkout, or write any file anywhere.",
+            "- This LLM role is read-only. If Bash is available, it may directly read, diff, grep, count, and print explicit allowed paths, but must not create, modify, delete, move, tag, checkout, or write any file anywhere.",
             "- Do not use output redirection (`>`, `>>`, `&>`, `&>>`) or `tee` except redirects to `/dev/null` for stderr/stdout noise.",
-            "- For snippet comparisons, use direct read-only commands such as `diff -u A B`, `git diff --no-index -- A B`, `sed -n 'START,ENDp' file`, `rg`, or `python -c` that opens files read-only and prints results.",
+            "- For comparisons, use direct read-only commands such as `diff -u EXACT_A EXACT_B`, `git diff --no-index -- EXACT_A EXACT_B`, `sed -n 'START,ENDp' EXACT_FILE`, or `rg PATTERN EXACT_ALLOWED_PATH`.",
             "- Never write comparison snippets to `/tmp`, `/var/tmp`, the bot directory, or `web/core/results`; if a Bash command is denied, do not retry the same mutating pattern.",
         ])
     return "\n".join(lines) + "\n\n"
@@ -1764,13 +4355,48 @@ def _role_timeout_policy(role_name: str) -> dict:
     }
 
 
+class LLMStreamNextTimeout(asyncio.TimeoutError):
+    """One SDK ``__anext__`` exceeded its deadline.
+
+    ``pending_task`` is retained only when cancellation did not complete during
+    the bounded grace period.  The attempt owner must then close its exact SDK
+    transport and prove both task and child-process exit before another provider
+    call may start.
+    """
+
+    def __init__(self, pending_task=None):
+        self.pending_task = pending_task
+        super().__init__("SDK stream __anext__ timed out")
+
+
+class LLMProviderCleanupError(ConnectionError):
+    """The SDK stream required exceptional transport-level cleanup."""
+
+    def __init__(self, message, *, provider_exit_confirmed=False, attempt_id=None):
+        self.provider_exit_confirmed = bool(provider_exit_confirmed)
+        self.attempt_id = attempt_id
+        super().__init__(str(message))
+
+
+class LLMProviderCleanupBlocked(LLMProviderCleanupError):
+    """A prior provider attempt has not yet proven task/process termination."""
+
+
 class LLMRoleTimeout(asyncio.TimeoutError):
     """Raised when a role exceeds first-activity, idle, or total timeout."""
 
-    def __init__(self, role_name, timeout_kind, timeout_sec):
+    def __init__(
+        self,
+        role_name,
+        timeout_kind,
+        timeout_sec,
+        *,
+        pending_stream_task=None,
+    ):
         self.role_name = role_name
         self.timeout_kind = timeout_kind
         self.timeout_sec = timeout_sec
+        self.pending_stream_task = pending_stream_task
         super().__init__(
             f"{role_name}: LLM {timeout_kind} timeout after {timeout_sec:.1f}s"
         )
@@ -1955,6 +4581,233 @@ def _trim_to_budget(text: str, max_chars: int, tail: bool = False) -> str:
     return text[:max_chars - len(note)] + note
 
 
+def _new_provider_attempt(transport):
+    return {
+        "attempt_id": uuid.uuid4().hex,
+        "transport": transport,
+        "owned_process": None,
+        "pending_tasks": set(),
+        "cleanup_reasons": [],
+        "cleanup_task": None,
+        "transport_close_attempted": False,
+        "transport_close_confirmed": False,
+    }
+
+
+def _capture_owned_provider_process(attempt):
+    if not isinstance(attempt, dict):
+        return None
+    transport = attempt.get("transport")
+    process = getattr(transport, "_process", None)
+    if process is not None and attempt.get("owned_process") is None:
+        attempt["owned_process"] = process
+    return attempt.get("owned_process")
+
+
+def _register_unresolved_provider_attempt(attempt, reason, *tasks):
+    if not isinstance(attempt, dict):
+        return
+    _capture_owned_provider_process(attempt)
+    for task in tasks:
+        if isinstance(task, asyncio.Task):
+            attempt.setdefault("pending_tasks", set()).add(task)
+            task.add_done_callback(_consume_task_result)
+    reasons = attempt.setdefault("cleanup_reasons", [])
+    reason = str(reason or "provider_cleanup_unresolved")
+    if reason not in reasons:
+        reasons.append(reason)
+    with _PROVIDER_CLEANUP_LOCK:
+        _UNRESOLVED_PROVIDER_ATTEMPTS[attempt["attempt_id"]] = attempt
+
+
+def _provider_attempt_exit_confirmed(attempt):
+    if (
+        not isinstance(attempt, dict)
+        or not attempt.get("transport_close_attempted")
+        or not attempt.get("transport_close_confirmed")
+    ):
+        return False
+    if any(
+        isinstance(task, asyncio.Task) and not task.done()
+        for task in attempt.get("pending_tasks") or ()
+    ):
+        return False
+    cleanup_task = attempt.get("cleanup_task")
+    if isinstance(cleanup_task, asyncio.Task) and not cleanup_task.done():
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if cleanup_task is not current_task:
+            return False
+    owned_process = _capture_owned_provider_process(attempt)
+    if owned_process is not None and getattr(owned_process, "returncode", None) is None:
+        return False
+    transport_process = getattr(attempt.get("transport"), "_process", None)
+    if (
+        transport_process is not None
+        and getattr(transport_process, "returncode", None) is None
+    ):
+        return False
+    return True
+
+
+def _resolve_provider_attempt_if_stopped(attempt):
+    if isinstance(attempt, dict) and attempt.get("transport_close_attempted"):
+        owned_process = _capture_owned_provider_process(attempt)
+        transport_process = getattr(attempt.get("transport"), "_process", None)
+        if (
+            (owned_process is None or getattr(owned_process, "returncode", None) is not None)
+            and (
+                transport_process is None
+                or getattr(transport_process, "returncode", None) is not None
+            )
+        ):
+            attempt["transport_close_confirmed"] = True
+    if not _provider_attempt_exit_confirmed(attempt):
+        return False
+    with _PROVIDER_CLEANUP_LOCK:
+        _UNRESOLVED_PROVIDER_ATTEMPTS.pop(attempt.get("attempt_id"), None)
+    return True
+
+
+def _assert_no_unresolved_provider_attempts():
+    blocked = []
+    with _PROVIDER_CLEANUP_LOCK:
+        attempts = list(_UNRESOLVED_PROVIDER_ATTEMPTS.values())
+    for attempt in attempts:
+        if _resolve_provider_attempt_if_stopped(attempt):
+            continue
+        blocked.append(attempt)
+    if blocked:
+        details = ", ".join(
+            f"{item.get('attempt_id')}:{'|'.join(item.get('cleanup_reasons') or [])}"
+            for item in blocked[:3]
+        )
+        raise LLMProviderCleanupBlocked(
+            "prior SDK provider cleanup is unresolved; refusing a new provider "
+            f"dispatch ({details})",
+            provider_exit_confirmed=False,
+            attempt_id=blocked[0].get("attempt_id"),
+        )
+
+
+def _track_pending_stream_task(task, reason):
+    attempt = _LLM_PROVIDER_ATTEMPT.get()
+    if isinstance(attempt, dict):
+        _register_unresolved_provider_attempt(attempt, reason, task)
+    else:
+        task.add_done_callback(_consume_task_result)
+
+
+def _provider_stream_cancel_grace():
+    try:
+        grace = max(
+            0.0,
+            min(
+                5.0,
+                float(os.environ.get("POK_LLM_NEXT_CANCEL_GRACE", "1")),
+            ),
+        )
+    except (TypeError, ValueError):
+        grace = 1.0
+    total_scope = _LLM_TOTAL_DEADLINE.get()
+    total_deadline = (
+        (total_scope or {}).get("deadline")
+        if isinstance(total_scope, dict)
+        else None
+    )
+    if total_deadline is not None:
+        grace = min(grace, max(0.0, float(total_deadline) - time.time()))
+    return grace
+
+
+async def cancel_provider_stream_task_bounded(
+    task,
+    reason,
+    *,
+    attempt=None,
+    grace=None,
+):
+    """Cancel one owned stream task without waiting beyond a fixed grace.
+
+    A task which ignores cancellation is retained by its exact provider
+    attempt.  The transport-level cleanup boundary then owns termination and
+    future provider dispatch remains blocked until task and process exit are
+    both proven.
+    """
+
+    if not isinstance(task, asyncio.Task):
+        raise TypeError("provider stream cancellation requires an asyncio.Task")
+    if task.done():
+        _consume_task_result(task)
+        return True
+    task.cancel()
+    if grace is None:
+        grace = _provider_stream_cancel_grace()
+    else:
+        try:
+            grace = max(0.0, min(30.0, float(grace)))
+        except (TypeError, ValueError):
+            grace = _provider_stream_cancel_grace()
+    try:
+        if grace > 0:
+            await asyncio.wait({task}, timeout=grace)
+    except BaseException:
+        if not task.done():
+            if isinstance(attempt, dict):
+                _register_unresolved_provider_attempt(attempt, reason, task)
+            else:
+                _track_pending_stream_task(task, reason)
+        raise
+    if task.done():
+        _consume_task_result(task)
+        return True
+    if isinstance(attempt, dict):
+        _register_unresolved_provider_attempt(attempt, reason, task)
+    else:
+        _track_pending_stream_task(task, reason)
+    return False
+
+
+async def _await_stream_next_bounded(stream_iter, timeout):
+    """Await one SDK message without unbounded ``wait_for`` cancellation.
+
+    ``asyncio.wait_for`` waits for a cancellation-resistant awaitable to finish
+    cancelling, so its wall-clock can exceed the timeout indefinitely.  Race a
+    task against the timeout, give SDK cleanup a small bounded grace, then let
+    the caller raise its typed role timeout.
+    """
+
+    task = asyncio.create_task(stream_iter.__anext__())
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            return task.result()
+        cancelled = await cancel_provider_stream_task_bounded(
+            task,
+            "stream_next_cancellation_unconfirmed",
+        )
+        if not cancelled:
+            raise LLMStreamNextTimeout(task)
+        raise LLMStreamNextTimeout()
+    except LLMStreamNextTimeout:
+        raise
+    except BaseException:
+        if not task.done():
+            await cancel_provider_stream_task_bounded(
+                task,
+                "stream_next_parent_cancellation_unconfirmed",
+            )
+        raise
+
+
+async def await_provider_stream_next_bounded(stream_iter, timeout):
+    """Public owned-provider boundary used by both role stream runtimes."""
+
+    return await _await_stream_next_bounded(stream_iter, timeout)
+
+
 async def _process_stream(query_gen, log_file_path, ui, role_name):
     """Process a streaming LLM query, returning (texts, cost_usd, usage).
 
@@ -1998,7 +4851,25 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
     # B3: shorter stall ceiling once substantive output has started (tool/think
     # loop). 0 means "do not enforce a separate stall ceiling; use idle_timeout".
     stall_timeout = float(timeout_policy.get("stall_timeout") or 0)
-    total_deadline = (stream_started_at + total_timeout) if total_timeout > 0 else None
+    total_scope = _LLM_TOTAL_DEADLINE.get()
+    scoped_deadline = (
+        float(total_scope.get("deadline"))
+        if isinstance(total_scope, dict) and total_scope.get("deadline") is not None
+        else None
+    )
+    scoped_started_at = (
+        float(total_scope.get("started_at"))
+        if isinstance(total_scope, dict) and total_scope.get("started_at") is not None
+        else stream_started_at
+    )
+    attempt_total_deadline = (
+        stream_started_at + total_timeout if total_timeout > 0 else None
+    )
+    total_deadline = attempt_total_deadline
+    if scoped_deadline is not None and (
+        total_deadline is None or scoped_deadline < total_deadline
+    ):
+        total_deadline = scoped_deadline
 
     def _tool_result_text(content):
         if isinstance(content, str):
@@ -2142,9 +5013,19 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             return stall_timeout
         return wait_timeout or 0
 
-    def _raise_role_timeout(timeout_kind, wait_timeout):
-        elapsed = time.time() - stream_started_at
+    def _raise_role_timeout(
+        timeout_kind,
+        wait_timeout,
+        *,
+        pending_stream_task=None,
+    ):
+        attempt_elapsed = time.time() - stream_started_at
         effective_kind = timeout_kind or "stream"
+        elapsed = (
+            time.time() - scoped_started_at
+            if effective_kind == "total"
+            else attempt_elapsed
+        )
         effective_limit = _timeout_limit(effective_kind, wait_timeout)
         _emit_llm_event(
             f"pipeline.llm_role_{effective_kind}_timeout",
@@ -2152,6 +5033,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             f"{role_name}: LLM {effective_kind} timeout after {effective_limit:.1f}s",
             role=role_name,
             elapsed_sec=round(elapsed, 2),
+            attempt_elapsed_sec=round(attempt_elapsed, 2),
             timeout_sec=round(effective_limit, 2),
             messages_seen=message_count,
             system_messages_seen=system_message_count,
@@ -2165,7 +5047,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
             **timeout_policy,
             **_role_log_metadata(log_file_path),
         )
-        raise LLMRoleTimeout(role_name, effective_kind, effective_limit)
+        raise LLMRoleTimeout(
+            role_name,
+            effective_kind,
+            effective_limit,
+            pending_stream_task=pending_stream_task,
+        )
 
     try:
         watchdog_task = asyncio.create_task(_silence_watchdog())
@@ -2210,14 +5097,18 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 if wait_timeout is None:
                     message = await stream_iter.__anext__()
                 else:
-                    message = await asyncio.wait_for(
-                        stream_iter.__anext__(),
-                        timeout=max(0.001, wait_timeout),
+                    message = await _await_stream_next_bounded(
+                        stream_iter,
+                        max(0.001, wait_timeout),
                     )
             except StopAsyncIteration:
                 break
-            except asyncio.TimeoutError:
-                _raise_role_timeout(timeout_kind, wait_timeout)
+            except LLMStreamNextTimeout as exc:
+                _raise_role_timeout(
+                    timeout_kind,
+                    wait_timeout,
+                    pending_stream_task=exc.pending_task,
+                )
             message_count += 1
             productive_message = False
             if isinstance(message, AssistantMessage):
@@ -2282,7 +5173,12 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                     )
                 _emit_progress()
             elif isinstance(message, SystemMessage):
-                productive_message = True
+                # SDK/proxy init and thinking-token telemetry can arrive tens
+                # of times per second while the actual model/tool loop is
+                # wedged.  It is observable bookkeeping, not progress: never
+                # refresh ``last_message_at`` and never emit the progress event
+                # consumed by the parent orchestrator's liveness extension.
+                productive_message = False
                 system_message_count += 1
                 subtype = getattr(message, "subtype", None) or "unknown"
                 data = getattr(message, "data", None)
@@ -2315,7 +5211,6 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                         f"thinking_tokens={thinking_tokens_estimate} "
                         f"thinking_delta_total={thinking_tokens_delta_total}]\n",
                     )
-                _emit_progress()
             elif isinstance(message, ResultMessage):
                 productive_message = True
                 _mark_first_activity("result")
@@ -2638,7 +5533,438 @@ def _record_completed_billing_attempt(
     return billed_cost, billed_usage
 
 
-async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, ui, role_name):
+def _raise_signature_retry_total_timeout(role_name, log_file_path):
+    scope = _LLM_TOTAL_DEADLINE.get()
+    timeout_sec = float((scope or {}).get("timeout_sec") or 0)
+    started_at = float((scope or {}).get("started_at") or time.time())
+    elapsed = max(0.0, time.time() - started_at)
+    _emit_llm_event(
+        "pipeline.llm_role_total_timeout",
+        "error",
+        f"{role_name}: LLM total timeout after {timeout_sec:.1f}s",
+        role=role_name,
+        elapsed_sec=round(elapsed, 2),
+        timeout_sec=round(timeout_sec, 2),
+        retry_phase="sdk_signature_backoff",
+        **_role_log_metadata(log_file_path),
+    )
+    raise LLMRoleTimeout(role_name, "total", timeout_sec)
+
+
+async def _signature_retry_sleep(delay, role_name, log_file_path):
+    """Sleep without letting retry backoff cross the call-wide total deadline."""
+
+    scope = _LLM_TOTAL_DEADLINE.get()
+    deadline = (scope or {}).get("deadline") if isinstance(scope, dict) else None
+    if deadline is None:
+        await asyncio.sleep(delay)
+        return
+    remaining = float(deadline) - time.time()
+    if remaining <= 0:
+        _raise_signature_retry_total_timeout(role_name, log_file_path)
+    if float(delay) >= remaining:
+        await asyncio.sleep(max(0.0, remaining))
+        _raise_signature_retry_total_timeout(role_name, log_file_path)
+    await asyncio.sleep(delay)
+
+
+def _consume_task_result(task):
+    with contextlib.suppress(BaseException):
+        task.result()
+
+
+async def _bounded_aclose(query_gen, role_name, log_file_path):
+    """Close one SDK generator or raise a typed infrastructure failure.
+
+    A completed close task is not automatically success: async generators raise
+    ``RuntimeError`` when ``aclose()`` races an active ``__anext__``.  Suppressing
+    that exception previously reported cleanup success while the CLI subprocess
+    and billed provider request could continue in the background.
+    """
+
+    try:
+        close_timeout = max(
+            0.1,
+            min(30.0, float(os.environ.get("POK_LLM_ACLOSE_TIMEOUT", "15"))),
+        )
+    except (TypeError, ValueError):
+        close_timeout = 15.0
+    close_task = asyncio.create_task(query_gen.aclose())
+    done, _pending = await asyncio.wait({close_task}, timeout=close_timeout)
+    if close_task in done:
+        try:
+            close_task.result()
+        except BaseException as exc:
+            raise LLMProviderCleanupError(
+                "SDK stream aclose failed: "
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            ) from exc
+        return True
+    close_task.cancel()
+    done, _pending = await asyncio.wait({close_task}, timeout=1.0)
+    pending_task = close_task if close_task not in done else None
+    if pending_task is not None:
+        _track_pending_stream_task(
+            pending_task,
+            "stream_aclose_cancellation_unconfirmed",
+        )
+    else:
+        _consume_task_result(close_task)
+    _emit_llm_event(
+        "pipeline.llm_role_stream_close_timeout",
+        "error",
+        f"{role_name}: SDK stream cleanup exceeded {close_timeout:.1f}s",
+        role=role_name,
+        timeout_sec=round(close_timeout, 2),
+        **_role_log_metadata(log_file_path),
+    )
+    raise LLMProviderCleanupError(
+        f"SDK stream aclose exceeded {close_timeout:.1f}s",
+        provider_exit_confirmed=False,
+    )
+
+
+def _new_owned_sdk_transport(full_prompt, options):
+    """Create the exact SDK subprocess transport owned by one query attempt."""
+
+    try:
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            SubprocessCLITransport,
+        )
+    except Exception as exc:
+        raise LLMProviderCleanupError(
+            "SDK owned subprocess transport is unavailable: "
+            f"{type(exc).__name__}: {str(exc)[:300]}"
+        ) from exc
+    return SubprocessCLITransport(prompt=full_prompt, options=options)
+
+
+def create_owned_provider_attempt(full_prompt, options):
+    """Create one dispatch-ready provider attempt with exact transport ownership."""
+
+    _assert_no_unresolved_provider_attempts()
+    return _new_provider_attempt(_new_owned_sdk_transport(full_prompt, options))
+
+
+def owned_provider_attempt_transport(attempt):
+    """Return only the transport bound to ``attempt``."""
+
+    if not isinstance(attempt, dict) or attempt.get("transport") is None:
+        raise LLMProviderCleanupError("owned provider attempt has no transport")
+    return attempt["transport"]
+
+
+@contextlib.contextmanager
+def owned_provider_attempt_scope(attempt):
+    """Bind pending SDK tasks to one provider attempt for this async context."""
+
+    token = activate_owned_provider_attempt(attempt)
+    try:
+        yield attempt
+    finally:
+        reset_owned_provider_attempt(token)
+
+
+def activate_owned_provider_attempt(attempt):
+    """Activate one attempt and return the exact ContextVar reset token."""
+
+    if not isinstance(attempt, dict):
+        raise TypeError("owned provider attempt must be a mapping")
+    return _LLM_PROVIDER_ATTEMPT.set(attempt)
+
+
+def reset_owned_provider_attempt(token):
+    """Reset a token produced by :func:`activate_owned_provider_attempt`."""
+
+    _LLM_PROVIDER_ATTEMPT.reset(token)
+
+
+def mark_owned_provider_attempt_unresolved(attempt, reason, task=None):
+    """Mark an anomalous attempt and optionally retain its unfinished task."""
+
+    tasks = (task,) if isinstance(task, asyncio.Task) else ()
+    _register_unresolved_provider_attempt(attempt, reason, *tasks)
+
+
+def owned_provider_attempt_exit_confirmed(attempt):
+    """Return true only after this attempt's exact process and tasks exited."""
+
+    return _resolve_provider_attempt_if_stopped(attempt)
+
+
+def _refresh_transport_exit_confirmation(attempt):
+    if not isinstance(attempt, dict) or not attempt.get("transport_close_attempted"):
+        return False
+    owned_process = _capture_owned_provider_process(attempt)
+    transport_process = getattr(attempt.get("transport"), "_process", None)
+    owned_stopped = (
+        owned_process is None
+        or getattr(owned_process, "returncode", None) is not None
+    )
+    transport_stopped = (
+        transport_process is None
+        or getattr(transport_process, "returncode", None) is not None
+    )
+    if owned_stopped and transport_stopped:
+        attempt["transport_close_confirmed"] = True
+    return bool(attempt.get("transport_close_confirmed"))
+
+
+async def _bounded_owned_transport_close(attempt, role_name, log_file_path):
+    """Close only this attempt's SDK-owned transport and prove process exit."""
+
+    transport = attempt.get("transport") if isinstance(attempt, dict) else None
+    if transport is None or not callable(getattr(transport, "close", None)):
+        raise LLMProviderCleanupError(
+            "SDK provider transport has no owned close API",
+            attempt_id=(attempt or {}).get("attempt_id"),
+        )
+    _capture_owned_provider_process(attempt)
+    attempt["transport_close_attempted"] = True
+    try:
+        close_timeout = max(
+            0.1,
+            min(
+                30.0,
+                float(os.environ.get("POK_LLM_TRANSPORT_CLOSE_TIMEOUT", "15")),
+            ),
+        )
+    except (TypeError, ValueError):
+        close_timeout = 15.0
+    close_task = asyncio.create_task(transport.close())
+    done, _pending = await asyncio.wait({close_task}, timeout=close_timeout)
+    if close_task not in done:
+        close_task.cancel()
+        done, _pending = await asyncio.wait({close_task}, timeout=1.0)
+    if close_task not in done:
+        _register_unresolved_provider_attempt(
+            attempt,
+            "owned_transport_close_cancellation_unconfirmed",
+            close_task,
+        )
+        raise LLMProviderCleanupError(
+            f"owned SDK transport close exceeded {close_timeout:.1f}s",
+            provider_exit_confirmed=False,
+            attempt_id=attempt.get("attempt_id"),
+        )
+    try:
+        close_task.result()
+    except BaseException as exc:
+        _register_unresolved_provider_attempt(
+            attempt,
+            f"owned_transport_close_failed:{type(exc).__name__}",
+        )
+        _refresh_transport_exit_confirmation(attempt)
+        raise LLMProviderCleanupError(
+            "owned SDK transport close failed: "
+            f"{type(exc).__name__}: {str(exc)[:300]}",
+            provider_exit_confirmed=_provider_attempt_exit_confirmed(attempt),
+            attempt_id=attempt.get("attempt_id"),
+        ) from exc
+    _refresh_transport_exit_confirmation(attempt)
+    if not attempt.get("transport_close_confirmed"):
+        _register_unresolved_provider_attempt(
+            attempt,
+            "owned_transport_process_exit_unconfirmed",
+        )
+        raise LLMProviderCleanupError(
+            "owned SDK transport returned from close without process-exit proof",
+            provider_exit_confirmed=False,
+            attempt_id=attempt.get("attempt_id"),
+        )
+    return True
+
+
+async def _await_provider_attempt_tasks(attempt):
+    tasks = {
+        task
+        for task in (attempt.get("pending_tasks") or ())
+        if isinstance(task, asyncio.Task) and not task.done()
+    }
+    if not tasks:
+        return True
+    try:
+        timeout = max(
+            0.1,
+            min(
+                10.0,
+                float(os.environ.get("POK_LLM_STREAM_TASK_EXIT_TIMEOUT", "5")),
+            ),
+        )
+    except (TypeError, ValueError):
+        timeout = 5.0
+    done, pending = await asyncio.wait(tasks, timeout=timeout)
+    for task in done:
+        _consume_task_result(task)
+    if pending:
+        _register_unresolved_provider_attempt(
+            attempt,
+            "stream_tasks_remain_after_transport_close",
+            *pending,
+        )
+        return False
+    return True
+
+
+async def _perform_owned_provider_attempt_cleanup(
+    query_gen,
+    attempt,
+    role_name,
+    log_file_path,
+):
+    """Close a query and fail explicitly if exceptional cleanup was required."""
+
+    # Preserve the exact process object before ``aclose`` can clear the
+    # transport's pointer.  Exceptional cleanup must prove that this same
+    # child exited; a later ``None`` transport pointer is not, by itself,
+    # process-exit evidence.
+    _capture_owned_provider_process(attempt)
+    exceptional = bool(attempt.get("cleanup_reasons"))
+    cleanup_errors = []
+    if exceptional:
+        try:
+            await _bounded_owned_transport_close(
+                attempt,
+                role_name,
+                log_file_path,
+            )
+        except LLMProviderCleanupError as exc:
+            cleanup_errors.append(str(exc))
+        if not await _await_provider_attempt_tasks(attempt):
+            cleanup_errors.append("SDK stream task exit remains unconfirmed")
+        if not any(
+            isinstance(task, asyncio.Task) and not task.done()
+            for task in attempt.get("pending_tasks") or ()
+        ):
+            try:
+                await _bounded_aclose(query_gen, role_name, log_file_path)
+            except LLMProviderCleanupError as exc:
+                cleanup_errors.append(str(exc))
+    else:
+        try:
+            await _bounded_aclose(query_gen, role_name, log_file_path)
+        except LLMProviderCleanupError as exc:
+            exceptional = True
+            cleanup_errors.append(str(exc))
+            _register_unresolved_provider_attempt(
+                attempt,
+                "stream_aclose_failed",
+            )
+            try:
+                await _bounded_owned_transport_close(
+                    attempt,
+                    role_name,
+                    log_file_path,
+                )
+            except LLMProviderCleanupError as transport_exc:
+                cleanup_errors.append(str(transport_exc))
+            await _await_provider_attempt_tasks(attempt)
+        else:
+            # Another owner (for example the cycle-level timeout boundary) may
+            # mark the attempt while this normal ``aclose`` is in flight.  A
+            # successful generator close then counts as the transport close,
+            # but only the captured original process can prove termination.
+            if attempt.get("cleanup_reasons"):
+                exceptional = True
+                attempt["transport_close_attempted"] = True
+                _refresh_transport_exit_confirmation(attempt)
+
+    if not exceptional:
+        return True
+    _refresh_transport_exit_confirmation(attempt)
+    confirmed = _resolve_provider_attempt_if_stopped(attempt)
+    message = (
+        "SDK provider stream required exceptional cleanup; "
+        f"process_exit_confirmed={confirmed}; reasons="
+        + "|".join(attempt.get("cleanup_reasons") or [])
+    )
+    if cleanup_errors:
+        message += "; errors=" + "; ".join(cleanup_errors[:4])
+    _emit_llm_event(
+        "pipeline.llm_role_provider_cleanup_failure",
+        "error",
+        f"{role_name}: {message}",
+        role=role_name,
+        attempt_id=attempt.get("attempt_id"),
+        provider_exit_confirmed=confirmed,
+        cleanup_reasons=list(attempt.get("cleanup_reasons") or []),
+        cleanup_errors=cleanup_errors[:4],
+        **_role_log_metadata(log_file_path),
+    )
+    raise LLMProviderCleanupError(
+        message,
+        provider_exit_confirmed=confirmed,
+        attempt_id=attempt.get("attempt_id"),
+    )
+
+
+async def _cleanup_owned_provider_attempt(
+    query_gen,
+    attempt,
+    role_name,
+    log_file_path,
+):
+    """Run the exact attempt cleanup once, even with multiple timeout owners."""
+
+    if not isinstance(attempt, dict):
+        raise LLMProviderCleanupError("invalid owned provider cleanup attempt")
+    cleanup_task = attempt.get("cleanup_task")
+    if not isinstance(cleanup_task, asyncio.Task):
+        cleanup_task = asyncio.create_task(
+            _perform_owned_provider_attempt_cleanup(
+                query_gen,
+                attempt,
+                role_name,
+                log_file_path,
+            )
+        )
+        attempt["cleanup_task"] = cleanup_task
+        cleanup_task.add_done_callback(_consume_task_result)
+    return await asyncio.shield(cleanup_task)
+
+
+async def cleanup_owned_provider_attempt(
+    query_gen,
+    attempt,
+    role_name,
+    log_file_path,
+):
+    """Public idempotent cleanup boundary for an owned provider attempt."""
+
+    return await _cleanup_owned_provider_attempt(
+        query_gen,
+        attempt,
+        role_name,
+        log_file_path,
+    )
+
+
+async def _run_stream_with_signature_retry(
+    full_prompt, options, log_file_path, ui, role_name
+):
+    """Run bounded SDK retries under one role-wide total wall-clock budget."""
+
+    policy = _role_timeout_policy(role_name)
+    total_timeout = float(policy.get("total_timeout") or 0)
+    started_at = time.time()
+    token = _LLM_TOTAL_DEADLINE.set({
+        "started_at": started_at,
+        "deadline": (
+            started_at + total_timeout if total_timeout > 0 else None
+        ),
+        "timeout_sec": total_timeout,
+    })
+    try:
+        return await _run_stream_with_signature_retry_attempts(
+            full_prompt, options, log_file_path, ui, role_name
+        )
+    finally:
+        _LLM_TOTAL_DEADLINE.reset(token)
+
+
+async def _run_stream_with_signature_retry_attempts(
+    full_prompt, options, log_file_path, ui, role_name
+):
     """Run one streaming query with retries on transient SDK signature errors.
 
     Extracted so the 529/429 retry paths reuse the same handling as the initial query.
@@ -2648,8 +5974,21 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
     total_cost = 0.0
     total_usage = None
     billing_call_id = uuid.uuid4().hex
+    _assert_no_unresolved_provider_attempts()
     for sdk_attempt in range(_SIGNATURE_MAX_ATTEMPTS):
-        query_gen = claude_query(prompt=full_prompt, options=options)
+        _assert_no_unresolved_provider_attempts()
+        owned_transport = _new_owned_sdk_transport(full_prompt, options)
+        provider_attempt = _new_provider_attempt(owned_transport)
+        provider_token = _LLM_PROVIDER_ATTEMPT.set(provider_attempt)
+        try:
+            query_gen = claude_query(
+                prompt=full_prompt,
+                options=options,
+                transport=owned_transport,
+            )
+        except BaseException:
+            _LLM_PROVIDER_ATTEMPT.reset(provider_token)
+            raise
         billing_results = []
         billing_token = _LLM_BILLING_RESULTS.set(billing_results)
         try:
@@ -2711,7 +6050,9 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                         )
                     except Exception:
                         pass
-                await asyncio.sleep(_backoff)
+                await _signature_retry_sleep(
+                    _backoff, role_name, log_file_path
+                )
                 continue
             # A completed, non-error ResultMessage is success regardless of its
             # prose. Provider failures are raised by _process_stream before this
@@ -2748,7 +6089,9 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
                     error=str(e)[:500],
                     **_role_log_metadata(log_file_path),
                 )
-                await asyncio.sleep(_backoff)
+                await _signature_retry_sleep(
+                    _backoff, role_name, log_file_path
+                )
                 continue
             # 自适应并发:非 signature 的 SDK error(可能含 503 熔断/overloaded/429)上报降并发
             try:
@@ -2762,11 +6105,18 @@ async def _run_stream_with_signature_retry(full_prompt, options, log_file_path, 
             raise  # non-signature SDK error, or signature retries exhausted
         finally:
             _LLM_BILLING_RESULTS.reset(billing_token)
-            # Defensive: ensure SDK generator is closed so subprocess is terminated.
             try:
-                await query_gen.aclose()
-            except Exception:
-                pass  # suppress any aclose() errors
+                # The transport is unique to this attempt. If generator cleanup
+                # races a cancellation-resistant ``__anext__``, terminate only
+                # that owned transport and prove process/task exit before retry.
+                await _cleanup_owned_provider_attempt(
+                    query_gen,
+                    provider_attempt,
+                    role_name,
+                    log_file_path,
+                )
+            finally:
+                _LLM_PROVIDER_ATTEMPT.reset(provider_token)
     if last_sdk_err is not None:
         raise last_sdk_err
 
@@ -2795,14 +6145,21 @@ async def run_claude_query(
            Workers/crossover pass their target bot dir so a rogue worker prompt
            cannot edit web/core/*.py, other bot dirs, or pipeline state (the
            orchestrator-level guard does not cover sub-agents).
-    allowed_read_dirs: exact non-evidence trees a guarded role must read, such
-           as its lease-isolated candidate. These roots do not grant a tool or
-           write authority; they only prevent the live-results guard from
-           mistaking a candidate workspace under ``results/`` for evidence.
+    allowed_read_dirs: the complete role-scoped filesystem read capability.
+           A scalar/sequence grants exact directory roots; a mapping may use
+           ``dirs`` and ``files`` for mixed directory/exact-file authority.
+           Read and every statically provable Bash input must resolve inside
+           this scope (plus the exact write scope, context files, and frozen
+           evidence snapshot supplied by the system). Sensitive Git metadata,
+           archived trees, unlisted bot versions, symlink aliases, and complex
+           shell/Python readers remain denied even if a broad root is supplied.
     exact_bash_commands: optional complete-command allowlist.  When supplied,
            every Bash call must match one of these strings (apart from outer
            whitespace).  This is intended for read-only operator probes, not
            general Worker execution.
+    dispatch_receipt: sealed renderer/evidence/MCP receipt issued from the real
+           production callable and current template bytes. Caller-supplied
+           renderer-name strings are not accepted.
     """
     call_started_at = time.time()
     from evolution_infra import (
@@ -2816,10 +6173,70 @@ async def run_claude_query(
     # analysis) intentionally have no dashboard. Normalize that boundary once
     # so stream, retry, cost, and error paths all receive the same UI contract.
     ui = resolve_ui(ui)
+    # ClaudeAgentOptions.tools=None means "omit --tools", which lets the CLI
+    # expose its default tool set.  That is unsafe under bypassPermissions and
+    # contradicts this API's documented zero-tool default.  An explicit empty
+    # list is serialized by the pinned SDK as ``--tools ''``.
+    if tools is None:
+        tools = []
     if exact_bash_commands is not None:
         exact_bash_commands = tuple(
             str(command).strip() for command in exact_bash_commands
         )
+    rendered_prompt_receipt = prompt
+
+    # Resolve and validate the concrete runtime label before any wait, budget,
+    # provider-availability, or prompt-I/O side effect.  Unknown roles and
+    # capability drift therefore cannot hide behind a provider pause or consume
+    # an attempt before failing closed.
+    role_contract, dispatch_receipt, frozen_capability = validate_llm_role_dispatch(
+        role_name,
+        tools=tools,
+        rendered_prompt=rendered_prompt_receipt,
+        provider_path="subagent_sdk",
+        mcp_servers=(),
+        context_files=context_files or (),
+        allowed_read_dirs=allowed_read_dirs,
+        allowed_write_dir=allowed_write_dir,
+        allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+        strict_authority=strict_authority,
+        exact_bash_commands=exact_bash_commands,
+        model=model,
+    )
+    rendered_role_prompt = rendered_prompt_receipt.text
+    prompt = rendered_role_prompt
+    # From this point onward every prompt prefix, context read, and hook consumes
+    # only the immutable normalized capability. Caller-owned lists/dicts may be
+    # mutated while the provider quota wait is suspended without changing this
+    # dispatch's authority.
+    allowed_read_dirs = {
+        "dirs": frozen_capability.read_dirs,
+        "files": frozen_capability.read_files,
+    }
+    allowed_write_dir = (
+        {
+            "dirs": frozen_capability.write_dirs,
+            "files": frozen_capability.write_files,
+        }
+        if (frozen_capability.write_dirs or frozen_capability.write_files)
+        else None
+    )
+    allowed_evidence_snapshot_dir = frozen_capability.evidence_dir
+    context_files = frozen_capability.context_files
+    exact_bash_commands = frozen_capability.exact_bash_commands or None
+    tools = list(frozen_capability.selected_tools)
+    model = frozen_capability.model
+    # The caller-owned strict descriptor is input only until this point.  All
+    # provider-visible schema, receipt, replay, effect and completion work uses
+    # this private deep copy, so a quota-wait/thread mutation cannot broaden or
+    # redirect the call.  At function exit only resulting state is projected
+    # back for the existing accept_role_result API.
+    strict_authority_owner = strict_authority
+    strict_authority = (
+        json.loads(frozen_capability.strict_authority_json)
+        if frozen_capability.strict_authority_json is not None
+        else None
+    )
 
     # Cost is monitor-only unless the operator enabled a finite positive hard
     # limit in the parent process.  This system-owned check is intentionally
@@ -2852,7 +6269,20 @@ async def run_claude_query(
             )
         await rate_limiter.wait_until_reset()
 
-    prompt = _format_runtime_path_contract(PROJECT_ROOT, allowed_write_dir) + (prompt or "")
+    strict_schema_suffix = ""
+    if strict_authority is not None:
+        _assert_strict_authority_unchanged(
+            strict_authority,
+            frozen_capability,
+        )
+        from strict_authority_workflow import schema_retry_prompt
+
+        strict_schema_suffix = schema_retry_prompt(strict_authority)
+    prompt = (
+        _format_runtime_path_contract(PROJECT_ROOT, allowed_write_dir)
+        + (prompt or "")
+        + strict_schema_suffix
+    )
 
     # Build (path, content) pairs for context files
     context_parts = []
@@ -2887,8 +6317,33 @@ async def run_claude_query(
     else:
         full_prompt = prompt
         if len(full_prompt) > MAX_PROMPT_CHARS:
-            ui.log_history(f"Prompt too long ({len(full_prompt):,} chars), trimming...", "warn")
-            full_prompt = _trim_to_budget(full_prompt, MAX_PROMPT_CHARS)
+            ui.log_history(
+                f"Prompt too long ({len(full_prompt):,} chars); sealed prompt "
+                "will fail closed instead of being truncated",
+                "warn",
+            )
+
+    # The role/evidence contract must be the last provider-visible instruction,
+    # after rendered templates, strict-schema repair text, and context files.
+    # The binder reserves space for it rather than letting prompt trimming cut
+    # away the system-owned authority boundary.
+    full_prompt, role_contract = bind_llm_role_provider_prompt(
+        rendered_prompt_receipt,
+        role_name,
+        tools=tools,
+        provider_path="subagent_sdk",
+        mcp_servers=(),
+        context_files=context_files or (),
+        allowed_read_dirs=allowed_read_dirs,
+        allowed_write_dir=allowed_write_dir,
+        allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+        strict_authority=strict_authority,
+        exact_bash_commands=exact_bash_commands,
+        max_chars=MAX_PROMPT_CHARS,
+        provider_prefix=full_prompt,
+        frozen_capability=frozen_capability,
+        model=model,
+    )
 
     ui.log_io(f"\n[{role_name} PROMPT]", "prompt", role_name)
     ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt", role_name)
@@ -2925,14 +6380,23 @@ async def run_claude_query(
     _write_hooks = None
     _readonly_hooks = None
     _master_evidence_hooks = None
+    _read_scope_hooks = None
     if allowed_write_dir is not None and tools and any(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
         _write_hooks = _make_subagent_write_guard(allowed_write_dir)
+        if not _write_hooks:
+            raise RuntimeError(
+                "write-scope guard hook is unavailable; refusing SDK dispatch"
+            )
     elif allowed_write_dir is None and tools and any(
         t in ("Bash", "Edit", "Write", "NotebookEdit") for t in (tools if isinstance(tools, list) else [])
     ):
         _readonly_hooks = _make_subagent_readonly_guard(role_name)
+        if not _readonly_hooks:
+            raise RuntimeError(
+                "read-only mutation guard hook is unavailable; refusing SDK dispatch"
+            )
     if _role_requires_frozen_evidence_guard(role_name):
         allowed_results_dirs = []
         if allowed_write_dir is not None:
@@ -2940,19 +6404,45 @@ async def run_claude_query(
             allowed_results_dirs.extend(write_scope.get("dirs") or ())
             allowed_results_dirs.extend(write_scope.get("files") or ())
         if allowed_read_dirs is not None:
-            if isinstance(allowed_read_dirs, (str, os.PathLike)):
-                allowed_results_dirs.append(allowed_read_dirs)
-            else:
-                allowed_results_dirs.extend(allowed_read_dirs)
+            read_scope = _normalize_allowed_read_scope(allowed_read_dirs)
+            allowed_results_dirs.extend(read_scope.get("dirs") or ())
+            allowed_results_dirs.extend(read_scope.get("files") or ())
         _master_evidence_hooks = _make_master_evidence_read_guard(
             role_name,
             allowed_evidence_snapshot_dir,
             allowed_results_dirs,
         )
+        if not _master_evidence_hooks:
+            raise RuntimeError(
+                "frozen-evidence guard hook is unavailable; refusing SDK dispatch"
+            )
+    read_scope = _merge_allowed_read_scopes(
+        allowed_read_dirs,
+        (
+            {"dirs": [allowed_evidence_snapshot_dir]}
+            if allowed_evidence_snapshot_dir is not None
+            else None
+        ),
+        _normalize_allowed_write_scope(allowed_write_dir),
+        {"files": context_files or ()},
+    )
+    if tools and any(
+        tool in {"Read", "Bash"}
+        for tool in (tools if isinstance(tools, list) else [])
+    ):
+        _read_scope_hooks = _make_subagent_read_scope_guard(
+            role_name,
+            read_scope,
+        )
+        if not _read_scope_hooks:
+            raise RuntimeError(
+                "role-scoped filesystem read hook is unavailable; refusing SDK dispatch"
+            )
     _sub_hooks = _merge_hooks(
         _cost_hooks,
         _write_hooks,
         _readonly_hooks,
+        _read_scope_hooks,
         _master_evidence_hooks,
         _availability_hooks,
         _exact_bash_hooks,
@@ -2973,12 +6463,18 @@ async def run_claude_query(
 
     lifecycle_fields = {
         "role": role_name,
+        "role_contract_id": role_contract.role_id,
+        "role_contract_renderer": role_contract.renderer,
+        "role_evidence_policy": role_contract.evidence_policy,
+        "role_history_policy": role_contract.history_policy,
         "model": model,
         "prompt_chars": len(prompt or ""),
         "full_prompt_chars": len(full_prompt or ""),
         "context_file_count": len(context_parts),
         "context_chars": context_chars,
         "allowed_write_dir": str(allowed_write_dir) if allowed_write_dir is not None else None,
+        "allowed_read_dir_count": len(read_scope.get("dirs") or ()),
+        "allowed_read_file_count": len(read_scope.get("files") or ()),
         "exact_bash_command_count": (
             len(tuple(exact_bash_commands))
             if exact_bash_commands is not None
@@ -2998,6 +6494,10 @@ async def run_claude_query(
     strict_provider_capture = None
     strict_provider_token = None
     if strict_authority is not None:
+        _assert_strict_authority_unchanged(
+            strict_authority,
+            frozen_capability,
+        )
         from strict_authority_workflow import dispatch_call
 
         dispatch_call(
@@ -3007,6 +6507,14 @@ async def run_claude_query(
             owner=f"llm_query:{os.getpid()}:{role_name}",
             actual_role=str(role_name),
             model=str(model),
+            lease_seconds=(
+                max(
+                    60.0,
+                    float(lifecycle_fields.get("total_timeout") or 0) + 60.0,
+                )
+                if float(lifecycle_fields.get("total_timeout") or 0) > 0
+                else 3600.0
+            ),
         )
         strict_provider_capture = {
             "invocation_id": strict_authority.get("invocation_id"),
@@ -3048,7 +6556,38 @@ async def run_claude_query(
             full_text, cost_usd, usage = await _run_stream_with_signature_retry(
                 full_prompt, options, log_file_path, ui, role_name)
 
-        output = "\n".join(full_text)
+        streamed_output = "\n".join(full_text)
+        output = streamed_output
+        if strict_authority is not None and not strict_authority.get(
+            "replay_provider"
+        ):
+            from strict_authority_workflow import canonical_provider_output
+
+            output = canonical_provider_output(
+                (strict_provider_capture or {}).get("results", [])
+            )
+            if output != streamed_output:
+                _append_role_io(
+                    log_file_path,
+                    "\n[STRICT_TERMINAL_OUTPUT_AUTHORITY] "
+                    f"stream_sha256={hashlib.sha256(streamed_output.encode('utf-8')).hexdigest()} "
+                    f"terminal_sha256={hashlib.sha256(output.encode('utf-8')).hexdigest()}\n",
+                )
+                _emit_llm_event(
+                    "pipeline.strict_llm_terminal_output_selected",
+                    "info",
+                    f"{role_name}: terminal SDK result selected over streaming aggregate",
+                    role=role_name,
+                    stream_output_chars=len(streamed_output),
+                    terminal_output_chars=len(output),
+                    stream_output_digest=hashlib.sha256(
+                        streamed_output.encode("utf-8")
+                    ).hexdigest(),
+                    terminal_output_digest=hashlib.sha256(
+                        output.encode("utf-8")
+                    ).hexdigest(),
+                    **_role_log_metadata(log_file_path),
+                )
 
         # Every completed SDK Result (including an empty-output/signature retry)
         # was already recorded and UI-projected inside
@@ -3182,6 +6721,10 @@ async def run_claude_query(
     finally:
         if strict_provider_token is not None:
             _STRICT_PROVIDER_RESULTS.reset(strict_provider_token)
+        _project_strict_authority_state(
+            strict_authority_owner,
+            strict_authority,
+        )
 
 
 def parse_json_output(output):

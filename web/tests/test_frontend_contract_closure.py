@@ -88,3 +88,193 @@ def test_active_navigation_describes_read_only_contracts():
     assert 'name: "提示词契约"' in sidebar
     assert "提示词编辑器" not in sidebar
     assert 'name: "Bot 管理"' not in sidebar
+
+
+def test_control_observation_pairs_status_health_without_overlapping_polls():
+    api = (FRONTEND / "api" / "control.ts").read_text(encoding="utf-8")
+    client = (FRONTEND / "api" / "client.ts").read_text(encoding="utf-8")
+    hook = (FRONTEND / "hooks" / "useControlStatus.ts").read_text(encoding="utf-8")
+    panel = (FRONTEND / "pages" / "ControlPanel.tsx").read_text(encoding="utf-8")
+
+    assert "export interface ControlHealth" in api
+    assert "export interface PipelineRoute" in api
+    assert "health: (signal?: AbortSignal)" in api
+    assert 'Pick<AppConfig, "daemon_enabled" | "daemon_workers" | "daemon_pairs">' in api
+    assert "const nextHealth = await controlApi.health()" in hook
+    assert "const nextStatus = nextHealth.status" in hook
+    assert "controlApi.status()" not in hook
+    assert "if (inFlight.current) return inFlight.current" in hook
+    assert "window.setTimeout(tick, pollMs)" in hook
+    assert "setInterval" not in hook
+    assert 'health?.overall === "healthy"' in panel
+    assert "controlTaskActive(health?.task)" in panel
+    assert "controlTaskStopping(health?.task)" in panel
+    assert "停止中（任务仍持有运行权威）" in panel
+    assert "runtimeMutationLocked" in panel
+    assert "routeMatchesGeneration" in panel
+    assert "页面不从 stage 猜测下一工具" in panel
+    assert "clearOrchestratorSession" not in client
+    assert "重置会话" not in panel
+    assert "opaque session ID 不构成恢复权威" in panel
+
+
+def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
+    api = (FRONTEND / "api" / "control.ts").read_text(encoding="utf-8")
+    provider = (FRONTEND / "context" / "DataProvider.tsx").read_text(encoding="utf-8")
+    overview = (FRONTEND / "pages" / "Overview.tsx").read_text(encoding="utf-8")
+    monitor = (FRONTEND / "pages" / "EvolutionMonitor.tsx").read_text(encoding="utf-8")
+    evolution_api = (FRONTEND / "api" / "evolution.ts").read_text(encoding="utf-8")
+    tool_card = (FRONTEND / "components" / "evolution" / "ToolCard.tsx").read_text(encoding="utf-8")
+
+    assert 'state: "disconnected"' in provider
+    assert "daemon: null" in provider
+    assert 'addEventListener("ping"' in provider
+    assert "dataStreamFresh" in overview
+    assert 'heartbeat_status === "fresh"' in overview
+    assert "daemonActuallyHealthy" in overview
+    assert "process_identity" in api
+    assert "配置意图：" in overview and "实际进程：" in overview
+    assert "onDisconnect" in evolution_api
+    assert "streamState !== \"connected\"" in monitor
+    assert "运行标志存在但任务未活动" in monitor
+    assert "编排器运行，等待下一动作" in monitor
+    assert "interrupted: true" in monitor
+    assert "状态未知（流中断）" in tool_card
+    assert "最近一次发布完成" in monitor
+    assert ">成功率<" not in monitor
+
+
+def test_pipeline_component_validates_identity_and_does_not_greenwash_repair_or_critic():
+    source = (FRONTEND / "components" / "evolution" / "PipelineStatus.tsx").read_text(encoding="utf-8")
+    labels = (FRONTEND / "constants" / "pipeline.ts").read_text(encoding="utf-8")
+
+    assert "checkpoint.master_plan.tasks" in source
+    for field in ("evaluation_epoch", "next_v", "source_v", "stage", "workflow_run_id", "run_id"):
+        assert f"checkpoint.{field}" in source
+    assert 'stage === "repair_planned" || stage === "rework_running"' in source
+    assert "此前 quality/review/Critic/precommit 结果只描述修复前字节" in source
+    assert "仅供后续决策参考，不授予发布资格" in source
+    assert 'critic_checked: "建议性 Critic 已完成"' in labels
+    assert "策略审核通过" not in labels
+
+
+def test_official_ui_distinguishes_first_strict_control_from_normal_full_profile():
+    source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
+    bots = (FRONTEND / "pages" / "BotManager.tsx").read_text(encoding="utf-8")
+
+    for token in (
+        "operator_transition",
+        "first_strict_control_v1",
+        "system_control",
+        "strength_evidence_weight === 0",
+        "strategy_evidence_weight === 0",
+        "official_status",
+        "compliance_verdict",
+        "certificate_digest",
+        "ready_to_finalize",
+    ):
+        assert token in source
+    assert source.index("jobsProjection?.operator_transition") < source.index("status.operator_transition")
+    assert "5 轮自对弈 + 3 轮合格 strict 对手 × 70 手" in source
+    assert "这是受控暂停，不是认证失败" in source
+    assert "passed=false" in source
+    assert "零强度权重" in source
+    assert "first_strict_control_v1" in bots
+    assert "强度与策略证据权重均为 0" in bots
+    assert 'certification.certification_profile === "official-full-v5"' in bots
+    assert 'certification.opponent_authority === "strict_published_pool"' in bots
+    assert "published attestation:" in bots
+    assert "verdict-ledger identity:" in bots
+    assert "ledgerEntry?.certificate_digest === certification.certificate_digest" in bots
+    assert 'ledgerEntry?.outcome === "official-certified"' in bots
+    assert "正式证书身份投影不完整" in bots
+    assert "不猜测为普通 5+3" in bots
+
+
+def test_official_ui_preserves_jobless_digest_bound_bootstrap_failure_and_normal_stage_jobs():
+    source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
+
+    assert "transitionJobBindingValid" in source
+    assert 'transition.state === "bootstrap_failed"' in source
+    assert "transition.job_id" in source and ": !job" in source
+    assert "failureProjectionValid" in source
+    assert "transition.certificate_digest === job.certificate_digest" in source
+    assert "原因：{transition.reason" in source
+    assert "动作：{transition.action}" in source
+    assert "digest-bound transition" in source
+    for stage in (
+        "official_certifying",
+        "official_failed",
+        "official_inconclusive",
+        "publishing",
+    ):
+        assert f'"{stage}"' in source
+    assert "NORMAL_JOB_STAGES.has(stage)" in source
+    assert "不从 stage 反推证书或发布完成" in source
+
+
+def test_v143_numeric_high_water_source_does_not_select_normal_certification_profile():
+    # The real fresh checkpoint binds numeric high-water v142 as source_v while
+    # explicitly carrying no inherited source artifact.  Frontend profile
+    # selection must therefore consume the bound transition/job, not source_v.
+    checkpoint_fixture = {"next_v": 143, "source_v": 142}
+    source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
+
+    assert checkpoint_fixture == {"next_v": 143, "source_v": 142}
+    assert "generation.source_v == null" not in source
+    assert "transition.source_v === 142" in source
+    assert 'certificationProfile === "first_strict_control_v1"' in source
+    assert 'job.certification_profile === "official-full-v5"' in source
+    assert 'job.opponent_authority === "strict_published_pool"' in source
+    assert "job.formal_profile?.self_play_rounds === 5" in source
+    assert "job.formal_profile.opponent_rounds === 3" in source
+    assert "job.formal_profile.target_hands === 70" in source
+    assert "job.strength_evidence_weight === 0" in source
+    assert "job.strategy_evidence_weight === 0" in source
+    assert "不从版本号或 source_v 猜测" in source
+
+
+def test_stability_ui_requires_fresh_background_verification_and_exact_state():
+    source = (FRONTEND / "lib" / "stabilityView.ts").read_text(encoding="utf-8")
+
+    for text in (
+        "验证投影不可用",
+        "连续性验证中",
+        "连续性验证已过期",
+        "连续性验证失败",
+        "尚未开始",
+        "已持久化归零",
+        "观测中",
+        "代次达标，等待强度周期",
+        "连续验收完成",
+    ):
+        assert text in source
+    assert 'verification.state !== "fresh"' in source
+
+
+def test_control_hook_pairs_stability_and_full_checkpoint_revision_before_green():
+    hook = (FRONTEND / "hooks" / "useControlStatus.ts").read_text(encoding="utf-8")
+    panel = (FRONTEND / "pages" / "ControlPanel.tsx").read_text(encoding="utf-8")
+    types = (FRONTEND / "api" / "control.ts").read_text(encoding="utf-8")
+
+    assert "stability_observation_digest" in types
+    assert "checkpoint_revision: number" in types
+    assert "healthStatus.stability_observation_digest !== status.stability_observation_digest" in hook
+    for field in (
+        "next_v",
+        "source_v",
+        "stage",
+        "run_id",
+        "workflow_run_id",
+        "checkpoint_revision",
+    ):
+        assert f"health.pipeline.{field}" in hook
+        assert f"health.pipeline.{field}" in panel
+
+
+def test_unpublished_ui_does_not_guess_version_reusability():
+    source = (FRONTEND / "components" / "evolution" / "EpochAuthorityStatus.tsx").read_text(encoding="utf-8")
+
+    assert "已提交但未发布" in source
+    assert "不能由此列表推断" in source
+    assert "不占版本号" not in source

@@ -1,4 +1,5 @@
 import json
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,6 +29,21 @@ def test_store_uses_wal_full_sync_and_foreign_keys(tmp_path):
         with store._connect() as configured:
             assert configured.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
+def test_short_lived_store_connections_do_not_leak_file_descriptors(tmp_path):
+    store = _store(tmp_path)
+    fd_dir = "/proc/self/fd"
+    if not os.path.isdir(fd_dir):
+        pytest.skip("Linux fd accounting is unavailable")
+    before = len(os.listdir(fd_dir))
+
+    for _ in range(300):
+        assert store.instance("149#0")["run_id"] == "149#0"
+        assert store.events("149#0") == []
+
+    after = len(os.listdir(fd_dir))
+    assert after - before < 5
 
 
 def test_event_append_is_versioned_and_causation_idempotent(tmp_path):

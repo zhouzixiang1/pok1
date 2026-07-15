@@ -2,10 +2,118 @@
 
 import asyncio
 import json
+import os
 import sys
+import threading
+import time
+
+import pytest
+
+
+class TestEvolutionTaskOwnership:
+    @pytest.mark.parametrize("outcome", ["return", "raise", "cancel"])
+    def test_owned_task_always_clears_running(self, outcome):
+        from server.state import app_state, run_evolution_task
+
+        async def scenario():
+            app_state.set_running(True)
+
+            async def owned():
+                if outcome == "return":
+                    return "done"
+                if outcome == "raise":
+                    raise RuntimeError("owned failure")
+                await asyncio.Future()
+
+            task = asyncio.create_task(run_evolution_task(owned()))
+            await asyncio.sleep(0)
+            if outcome == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            elif outcome == "raise":
+                with pytest.raises(RuntimeError, match="owned failure"):
+                    await task
+            else:
+                assert await task == "done"
+            assert app_state.to_dict()["running"] is False
+
+        asyncio.run(scenario())
+
+    def test_stop_preserves_live_owner_and_late_old_cleanup_cannot_clear_new_owner(
+        self,
+        tmp_path,
+    ):
+        from server.state import AppState
+
+        class FakeTask:
+            def __init__(self, *, done=False):
+                self._done = done
+                self._cancelled = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return self._cancelled
+
+            def cancel(self):
+                self._cancelled = True
+
+        state = AppState(config_file=tmp_path / "app_config.json")
+        old_owner = state.begin_runtime_owner()
+        old_task = FakeTask()
+        state.set_task(old_task, owner_id=old_owner)
+
+        assert state.stop_running() is old_task
+        assert state.task_snapshot()["present"] is True
+        assert state.begin_runtime_owner() is None
+
+        old_task._done = True
+        state.stop_running()
+        new_owner = state.begin_runtime_owner()
+        new_task = FakeTask()
+        state.set_task(new_task, owner_id=new_owner)
+
+        state.clear_task_if(old_task, owner_id=old_owner)
+
+        assert state.to_dict()["running"] is True
+        assert state.task_snapshot()["owner_id"] == new_owner
+        assert state.task_snapshot()["present"] is True
+        new_task._done = True
+        state.stop_running()
+
+    def test_start_does_not_cancel_and_overlap_a_stale_live_owner(self):
+        from server.state import app_state
+
+        async def scenario():
+            async def wait_forever():
+                await asyncio.Future()
+
+            app_state.stop_running()
+            owner = asyncio.create_task(wait_forever())
+            app_state.set_task(owner)
+            try:
+                assert app_state.try_set_running(True) is False
+                assert owner.cancelled() is False
+                assert owner.done() is False
+            finally:
+                owner.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await owner
+                app_state.stop_running()
+
+        asyncio.run(scenario())
 
 
 class TestConfig:
+    def test_default_daemon_workers_handles_unknown_cpu_count(self, monkeypatch):
+        import server.state as state
+
+        monkeypatch.setattr(state.os, "cpu_count", lambda: None)
+
+        assert state._default_daemon_workers() == 1
+
     def test_get(self, client):
         resp = client.get("/api/control/config")
         assert resp.status_code == 200
@@ -28,6 +136,260 @@ class TestConfig:
     def test_set_invalid_type(self, client):
         resp = client.put("/api/control/config", json={"daemon_workers": "not_a_number"})
         assert resp.status_code == 422
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            {"daemon_workers": 0},
+            {"daemon_workers": 13},
+            {"daemon_pairs": 0},
+            {"daemon_pairs": 21},
+        ),
+    )
+    def test_set_rejects_out_of_range_values_instead_of_clamping(
+        self,
+        client,
+        payload,
+    ):
+        assert client.put("/api/control/config", json=payload).status_code == 422
+
+    def test_running_runtime_rejects_config_and_session_mutation(self, client):
+        from server.state import app_state
+
+        app_state.set_running(True)
+        try:
+            config = client.put("/api/control/config", json={"daemon_pairs": 3})
+            session = client.delete("/api/control/orchestrator/session")
+        finally:
+            app_state.set_running(False)
+
+        assert config.status_code == 409
+        assert session.status_code == 410
+        assert config.json()["detail"]["code"] == (
+            "runtime_mutation_while_evolution_active"
+        )
+
+    def test_app_state_failed_atomic_write_leaves_memory_and_file_unchanged(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from server.state import AppState
+
+        path = tmp_path / "app_config.json"
+        state = AppState(config_file=path)
+        state.update_config(daemon_enabled=False, daemon_workers=2, daemon_pairs=4)
+        before_config = state.get_config()
+        before_bytes = path.read_bytes()
+        monkeypatch.setattr(
+            state,
+            "_write_config_atomic",
+            lambda _payload: (_ for _ in ()).throw(OSError("disk full")),
+        )
+
+        with pytest.raises(OSError, match="disk full"):
+            state.update_config(daemon_pairs=5)
+
+        assert state.get_config() == before_config
+        assert path.read_bytes() == before_bytes
+
+    def test_app_state_restores_prior_file_when_directory_fsync_fails(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from server.state import AppState
+
+        path = tmp_path / "app_config.json"
+        state = AppState(config_file=path)
+        state.update_config(daemon_enabled=False, daemon_workers=2, daemon_pairs=4)
+        before_config = state.get_config()
+        before_bytes = path.read_bytes()
+        calls = []
+
+        def fail_publish_sync_once():
+            calls.append("fsync")
+            if len(calls) == 1:
+                raise OSError("directory fsync failed")
+
+        monkeypatch.setattr(state, "_fsync_config_directory", fail_publish_sync_once)
+
+        with pytest.raises(OSError, match="directory fsync failed"):
+            state.update_config(daemon_pairs=5)
+
+        assert calls == ["fsync", "fsync"]
+        assert state.get_config() == before_config
+        assert path.read_bytes() == before_bytes
+
+    def test_app_state_does_not_hold_reader_lock_during_config_fsync(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from server.state import AppState
+
+        state = AppState(config_file=tmp_path / "app_config.json")
+        observed = []
+
+        def probe_reader_while_writer_is_in_io(_payload):
+            reader = threading.Thread(
+                target=lambda: observed.append(state.get_config()),
+            )
+            reader.start()
+            reader.join(timeout=0.5)
+            assert reader.is_alive() is False
+
+        monkeypatch.setattr(
+            state,
+            "_write_config_atomic",
+            probe_reader_while_writer_is_in_io,
+        )
+
+        state.update_config(daemon_pairs=4)
+
+        assert observed and observed[0]["daemon_pairs"] in {4, 5}
+
+    def test_config_transaction_rolls_back_when_stability_reset_fails(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        before = app_state.get_config()
+        requested = 2 if before["daemon_pairs"] != 2 else 3
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {"configured": before["daemon_enabled"], "alive": False},
+        )
+        monkeypatch.setattr(
+            control,
+            "_bind_and_reset_stability",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("observer unavailable")
+            ),
+        )
+
+        response = client.put(
+            "/api/control/config",
+            json={"daemon_pairs": requested},
+        )
+
+        assert response.status_code == 500
+        assert response.json()["detail"]["code"] == (
+            "runtime_configuration_transaction_failed"
+        )
+        assert app_state.get_config() == before
+
+    def test_pre_daemon_config_failure_does_not_restart_original_daemon(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        before = app_state.get_config()
+        requested = 2 if before["daemon_pairs"] != 2 else 3
+        restored = []
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {"configured": True, "alive": True},
+        )
+        monkeypatch.setattr(
+            control,
+            "_bind_and_reset_stability",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("observer unavailable before daemon phase")
+            ),
+        )
+        monkeypatch.setattr(
+            control,
+            "_restore_daemon_configuration",
+            lambda *_args, **_kwargs: restored.append("restarted"),
+        )
+
+        response = client.put(
+            "/api/control/config",
+            json={"daemon_pairs": requested},
+        )
+
+        assert response.status_code == 500
+        assert restored == []
+        assert app_state.get_config() == before
+
+    def test_cancelled_lifecycle_request_drains_inner_transaction(
+        self,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+
+        async def scenario():
+            monkeypatch.setattr(control, "_RUNTIME_LIFECYCLE_LOCK", asyncio.Lock())
+            started = asyncio.Event()
+            completed = asyncio.Event()
+
+            async def operation():
+                started.set()
+                await asyncio.sleep(0.03)
+                completed.set()
+                return "committed"
+
+            request_task = asyncio.create_task(
+                control._run_lifecycle_operation(operation)
+            )
+            await started.wait()
+            request_task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request_task
+            assert completed.is_set()
+
+        asyncio.run(scenario())
+
+    def test_lifecycle_operations_are_serialized_across_awaits(
+        self,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+
+        async def scenario():
+            monkeypatch.setattr(control, "_RUNTIME_LIFECYCLE_LOCK", asyncio.Lock())
+            first_started = asyncio.Event()
+            release_first = asyncio.Event()
+            events = []
+
+            async def first():
+                events.append("first:start")
+                first_started.set()
+                await release_first.wait()
+                events.append("first:end")
+
+            async def second():
+                events.append("second:start")
+                events.append("second:end")
+
+            first_task = asyncio.create_task(
+                control._run_lifecycle_operation(first)
+            )
+            await first_started.wait()
+            second_task = asyncio.create_task(
+                control._run_lifecycle_operation(second)
+            )
+            await asyncio.sleep(0.01)
+            assert events == ["first:start"]
+            release_first.set()
+            await asyncio.gather(first_task, second_task)
+            assert events == [
+                "first:start",
+                "first:end",
+                "second:start",
+                "second:end",
+            ]
+
+        asyncio.run(scenario())
 
     def test_runtime_override_does_not_persist_user_config(self, tmp_path):
         from server.state import AppState
@@ -60,6 +422,45 @@ class TestStatus:
         assert "running" in data
         assert "mode" in data
         assert "daemon_enabled" in data
+        assert data["stability_observation"]["count"] == 0
+        assert data["stability_observation"]["target"] == 10
+        assert data["stability_observation"]["strategy_evidence_weight"] == 0
+        assert len(data["stability_observation_digest"]) == 64
+        assert all(
+            char in "0123456789abcdef"
+            for char in data["stability_observation_digest"]
+        )
+
+    def test_status_and_health_snapshot_builds_do_not_block_event_loop(
+        self,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+
+        async def scenario():
+            for endpoint, builder_name in (
+                (control.control_status, "_control_status_snapshot"),
+                (control.control_health, "_control_health_snapshot"),
+            ):
+                monkeypatch.setattr(
+                    control,
+                    builder_name,
+                    lambda: time.sleep(0.08) or {"snapshot": builder_name},
+                )
+                ticked = asyncio.Event()
+
+                async def ticker():
+                    await asyncio.sleep(0.01)
+                    ticked.set()
+
+                snapshot_task = asyncio.create_task(endpoint())
+                ticker_task = asyncio.create_task(ticker())
+                await asyncio.wait_for(ticked.wait(), timeout=0.05)
+                assert snapshot_task.done() is False
+                await snapshot_task
+                await ticker_task
+
+        asyncio.run(scenario())
 
     def test_status_uses_active_checkpoint_target(self, client, monkeypatch):
         import epoch_authority
@@ -89,6 +490,7 @@ class TestStatus:
                 "strict_published_versions": [143],
                 "active_bots": ["national_v143"],
                 "reset_receipt_valid": True,
+                "reset_receipt_digest": "a" * 64,
                 "reset_receipt_issues": [],
                 "operator_action": None,
                 "operator_command": None,
@@ -111,6 +513,71 @@ class TestStatus:
         assert data["generation_count"] == 1
         assert data["active_generation"]["stage"] == "prepared"
         assert data["evaluation_epoch"] == "national_tcp_policy_v1"
+        assert data["reset_receipt_digest"] == "a" * 64
+        assert len(data["stream_authority_digest"]) == 64
+
+    def test_status_propagates_content_bound_first_strict_operator_transition(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import epoch_authority
+
+        transition = {
+            "schema_version": 1,
+            "kind": "first-strict-official-operator-transition",
+            "state": "bootstrap_required",
+            "action": "run_first_strict_official_certification",
+            "command": "python scripts/official_certify.py bootstrap-first-strict",
+            "reason": "authorized_bootstrap_job_not_started",
+            "certification_profile": "first_strict_control_v1",
+            "opponent_authority": "system_control",
+            "strength_evidence_weight": 0,
+            "strategy_evidence_weight": 0,
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "workflow_run_id": "generation:143:transition-test",
+            "candidate_version": 143,
+            "source_v": 142,
+            "checkpoint_stage": "official_bootstrap_required",
+            "checkpoint_revision": 9,
+            "candidate_hash": "a" * 64,
+            "parked_request_digest": "b" * 64,
+            "transition_digest": "c" * 64,
+        }
+        monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda: {
+            "current_v": 142,
+            "next_v": 143,
+            "strict_generation_count": 0,
+            "active_generation": {
+                "next_v": 143,
+                "source_v": 142,
+                "stage": "official_bootstrap_required",
+                "run_id": "143#0",
+                "workflow_run_id": "generation:143:transition-test",
+                "attempt": {"generation": 0, "audit": 0, "precommit": 0},
+            },
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "fresh_bootstrap_ready",
+            "initialized": True,
+            "version_authority_high_water": 142,
+            "strict_published_versions": [],
+            "active_bots": [],
+            "reset_receipt_valid": True,
+            "reset_receipt_issues": [],
+            "operator_action": transition["action"],
+            "operator_command": transition["command"],
+            "operator_transition": transition,
+            "ignored_checkpoint": None,
+        })
+        monkeypatch.setattr(
+            epoch_authority,
+            "unpublished_candidate_versions",
+            lambda: [143],
+        )
+
+        payload = client.get("/api/control/status").json()
+
+        assert payload["operator_transition"] == transition
 
     def test_status_never_promotes_legacy_checkpoint(self, client, monkeypatch):
         import epoch_authority
@@ -326,6 +793,58 @@ class TestStatus:
         assert "orchestrator_task_not_active" in data["issues"]
         app_state.set_running(False)
 
+    def test_shutdown_requested_unfinished_task_retains_runtime_ownership(
+        self,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        monkeypatch.setattr(
+            app_state,
+            "task_snapshot",
+            lambda: {
+                "present": True,
+                "done": False,
+                "cancelled": True,
+                "shutdown_requested": True,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_daemon_health_snapshot",
+            lambda: {
+                "configured": False,
+                "exists": False,
+                "pid": None,
+                "alive": False,
+                "heartbeat_status": "not_applicable",
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pipeline_health",
+            lambda _status: {"exists": False, "stage": None},
+        )
+
+        snapshot = control._health_summary({
+            "running": True,
+            "daemon_enabled": False,
+            "epoch_initialized": True,
+            "active_generation": None,
+            "stability_observation": {
+                "continuity_valid": True,
+                "verification": {
+                    "state": "fresh",
+                    "fresh_until": time.time() + 60,
+                },
+            },
+        })
+
+        assert "orchestrator_stop_in_progress" in snapshot["issues"]
+        assert "orchestrator_task_not_active" not in snapshot["issues"]
+        assert snapshot["task"]["done"] is False
+
     def test_health_degrades_when_daemon_heartbeat_is_stale(self, client, monkeypatch):
         import server.routes.control as control
         from server.state import app_state
@@ -346,9 +865,11 @@ class TestStatus:
             control,
             "_daemon_health_snapshot",
             lambda: {
+                "configured": True,
                 "exists": True,
                 "pid": 123,
                 "alive": True,
+                "heartbeat_status": "stale",
                 "heartbeat_stale": True,
                 "heartbeat_age_sec": 999,
             },
@@ -412,6 +933,284 @@ class TestStatus:
         assert data["overall"] == "degraded"
         assert "pipeline_repo_baseline_head_mismatch" in data["issues"]
         app_state.set_running(False)
+
+    def test_pipeline_health_exposes_route_from_same_revalidated_checkpoint(
+        self,
+        monkeypatch,
+    ):
+        import checkpoint_schema
+        import evolution_infra
+        import pipeline_recovery
+        import pipeline_state
+        import server.routes.control as control
+
+        checkpoint = {
+            "next_v": 143,
+            "source_v": 142,
+            "parent2_v": None,
+            "stage": "direction_audited",
+            "run_id": "143#0",
+            "workflow_run_id": "generation:143:route-test",
+            "checkpoint_revision": 7,
+            "generation_attempt": 0,
+        }
+        status = {
+            "epoch_initialized": True,
+            "epoch_state": "fresh_bootstrap_ready",
+            "active_generation": {
+                "next_v": 143,
+                "source_v": 142,
+                "stage": "direction_audited",
+                "run_id": "143#0",
+                "workflow_run_id": "generation:143:route-test",
+                "checkpoint_revision": 7,
+                "attempt": {"generation": 0, "audit": 0, "precommit": 0},
+            },
+        }
+        route = {
+            "stage": "direction_audited",
+            "next_v": 143,
+            "source_v": 142,
+            "parent2_v": None,
+            "next_tool": "run_master",
+            "allowed_tools": ["run_master"],
+            "intent": "pipeline",
+            "failure_class": None,
+            "directive": "Call run_master.",
+        }
+        seen = []
+        monkeypatch.setattr(checkpoint_schema, "checkpoint_epoch_errors", lambda value: [])
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_policy_epoch_reset_receipt_errors",
+            lambda value, **_kwargs: [],
+        )
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(
+            pipeline_recovery,
+            "checkpoint_recovery_diagnostics",
+            lambda value: {"recoverable": True, "issues": []},
+        )
+        monkeypatch.setattr(
+            pipeline_state,
+            "route_policy",
+            lambda value: seen.append(value) or route,
+        )
+
+        snapshot = control._read_pipeline_health(status)
+
+        assert snapshot["route"] == route
+        assert snapshot["source_v"] == 142
+        assert snapshot["run_id"] == "143#0"
+        assert snapshot["checkpoint_revision"] == 7
+        assert seen == [checkpoint]
+
+    @pytest.mark.parametrize(
+        ("field", "changed"),
+        (
+            ("source_v", 141),
+            ("run_id", "143#other"),
+            ("checkpoint_revision", 8),
+        ),
+    )
+    def test_pipeline_health_rejects_same_stage_checkpoint_identity_drift(
+        self,
+        monkeypatch,
+        field,
+        changed,
+    ):
+        import checkpoint_schema
+        import evolution_infra
+        import server.routes.control as control
+
+        checkpoint = {
+            "next_v": 143,
+            "source_v": 142,
+            "stage": "direction_audited",
+            "run_id": "143#0",
+            "workflow_run_id": "generation:143:route-test",
+            "checkpoint_revision": 7,
+            "generation_attempt": 0,
+        }
+        checkpoint[field] = changed
+        status = {
+            "epoch_initialized": True,
+            "active_generation": {
+                "next_v": 143,
+                "source_v": 142,
+                "stage": "direction_audited",
+                "run_id": "143#0",
+                "workflow_run_id": "generation:143:route-test",
+                "checkpoint_revision": 7,
+                "attempt": {"generation": 0, "audit": 0, "precommit": 0},
+            },
+        }
+        monkeypatch.setattr(checkpoint_schema, "checkpoint_epoch_errors", lambda _value: [])
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_policy_epoch_reset_receipt_errors",
+            lambda _value, **_kwargs: [],
+        )
+        monkeypatch.setattr(
+            evolution_infra,
+            "read_pipeline_checkpoint",
+            lambda: checkpoint,
+        )
+
+        snapshot = control._read_pipeline_health(status)
+
+        assert snapshot["error"] == "strict_checkpoint_revalidation_failed"
+        assert field in snapshot["identity_mismatches"]
+        assert "route" not in snapshot
+
+    @pytest.mark.parametrize(
+        ("heartbeat", "expected"),
+        (
+            (None, "missing"),
+            (float("nan"), "invalid"),
+            ("not-a-number", "invalid"),
+            ("future", "future"),
+            ("stale", "stale"),
+            ("fresh", "fresh"),
+        ),
+    )
+    def test_daemon_heartbeat_classification(
+        self,
+        monkeypatch,
+        tmp_path,
+        heartbeat,
+        expected,
+    ):
+        import server.routes.control as control
+        import daemon_management
+        from server.state import app_state
+
+        app_state.override_runtime_config(daemon_enabled=True)
+        monkeypatch.setattr(control, "RESULTS_DIR", tmp_path)
+        # Heartbeat classification is tested independently from the exact
+        # daemon argv/owner-token proof below.
+        monkeypatch.setattr(
+            daemon_management,
+            "_pid_record_identity",
+            lambda _record: "match",
+        )
+        pid = os.getpid()
+        # Read the real current process start identity; no process is spawned.
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            start_ticks = int(handle.read().split()[21])
+        payload = {"pid": pid, "ppid": os.getppid(), "start_ticks": start_ticks}
+        if heartbeat is None:
+            pass
+        elif heartbeat == "future":
+            payload["last_heartbeat"] = time.time() + 60
+        elif heartbeat == "stale":
+            payload["last_heartbeat"] = time.time() - 999
+        elif heartbeat == "fresh":
+            payload["last_heartbeat"] = time.time()
+        else:
+            payload["last_heartbeat"] = heartbeat
+        (tmp_path / ".daemon_pid").write_text(json.dumps(payload), encoding="utf-8")
+
+        snapshot = control._daemon_health_snapshot()
+
+        assert snapshot["configured"] is True
+        assert snapshot["alive"] is True
+        assert snapshot["heartbeat_status"] == expected
+        assert (snapshot["health_error"] is None) is (expected == "fresh")
+
+    def test_daemon_pid_reuse_and_disabled_live_process_fail_closed(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import server.routes.control as control
+        import daemon_management
+        from server.state import app_state
+
+        monkeypatch.setattr(control, "RESULTS_DIR", tmp_path)
+        pid = os.getpid()
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
+            start_ticks = int(handle.read().split()[21])
+        path = tmp_path / ".daemon_pid"
+        app_state.override_runtime_config(daemon_enabled=True)
+        missing = control._daemon_health_snapshot()
+        assert missing["alive"] is False
+        assert missing["heartbeat_status"] == "missing"
+        assert missing["health_error"] == "daemon_pid_file_missing"
+
+        path.write_text(json.dumps({
+            "pid": pid,
+            "ppid": os.getppid(),
+            "start_ticks": start_ticks + 1,
+            "last_heartbeat": time.time(),
+        }), encoding="utf-8")
+        reused = control._daemon_health_snapshot()
+
+        assert reused["alive"] is False
+        assert reused["heartbeat_status"] == "invalid"
+        assert reused["health_error"] == "daemon_pid_reused"
+
+        monkeypatch.setattr(
+            daemon_management,
+            "_pid_record_identity",
+            lambda _record: "match",
+        )
+        path.write_text(json.dumps({
+            "pid": pid,
+            "ppid": os.getppid(),
+            "start_ticks": start_ticks,
+            "last_heartbeat": time.time(),
+        }), encoding="utf-8")
+        app_state.override_runtime_config(daemon_enabled=False)
+        disabled = control._daemon_health_snapshot()
+        assert disabled["configured"] is False
+        assert disabled["alive"] is True
+        assert disabled["heartbeat_status"] == "not_applicable"
+        assert disabled["health_error"] == "daemon_running_while_disabled"
+
+    @pytest.mark.parametrize(
+        ("identity", "health_error"),
+        (
+            ("owner_mismatch", "daemon_owner_token_mismatch"),
+            ("command_mismatch", "daemon_command_mismatch"),
+            ("group_mismatch", "daemon_process_group_mismatch"),
+            ("unavailable", "daemon_process_identity_unavailable"),
+        ),
+    )
+    def test_fresh_heartbeat_cannot_override_daemon_process_identity_failure(
+        self,
+        monkeypatch,
+        tmp_path,
+        identity,
+        health_error,
+    ):
+        import daemon_management
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.override_runtime_config(daemon_enabled=True)
+        monkeypatch.setattr(control, "RESULTS_DIR", tmp_path)
+        monkeypatch.setattr(
+            daemon_management,
+            "_pid_record_identity",
+            lambda _record: identity,
+        )
+        (tmp_path / ".daemon_pid").write_text(
+            json.dumps({
+                "pid": os.getpid(),
+                "start_ticks": 123,
+                "owner_token_digest": "a" * 64,
+                "last_heartbeat": time.time(),
+            }),
+            encoding="utf-8",
+        )
+
+        snapshot = control._daemon_health_snapshot()
+
+        assert snapshot["alive"] is False
+        assert snapshot["process_identity"] == identity
+        assert snapshot["heartbeat_status"] == "invalid"
+        assert snapshot["health_error"] == health_error
 
 
 class TestDecisions:
@@ -481,13 +1280,42 @@ class TestOrchestratorSession:
         assert resp.status_code == 200
         data = resp.json()
         assert "session_id" in data
-        assert "active" in data
+        assert data["session_id"] is None
+        assert data["active"] is False
+        assert data["resume_supported"] is False
+        assert data["provider_history_persisted"] is False
+        assert data["recovery_authority"] == "validated_checkpoint_only"
 
-    def test_clear(self, client):
+    def test_clear_is_retired(self, client):
         resp = client.delete("/api/control/orchestrator/session")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "cleared" in data
+        assert resp.status_code == 410
+        assert resp.json()["detail"]["code"] == (
+            "orchestrator_provider_session_resume_retired"
+        )
+
+    def test_retired_clear_never_enters_lifecycle_transaction(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+
+        calls = []
+
+        async def fake_lifecycle(factory):
+            calls.append("lifecycle")
+            return await factory()
+
+        monkeypatch.setattr(
+            control,
+            "_run_lifecycle_operation",
+            fake_lifecycle,
+        )
+
+        response = client.delete("/api/control/orchestrator/session")
+
+        assert response.status_code == 410
+        assert calls == []
 
 
 class TestStop:
@@ -517,3 +1345,26 @@ class TestStartConflict:
         resp = client.post("/api/control/start")
         assert resp.status_code == 200
         client.post("/api/control/stop")
+
+    def test_start_refuses_second_live_stability_owner(self, client, monkeypatch):
+        import stability_observation
+        from server.state import app_state
+
+        client.post("/api/control/stop")
+        monkeypatch.setattr(
+            stability_observation,
+            "reset_stability_observation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                stability_observation.StabilityObservationError(
+                    "stability_observation_owner_process_still_alive"
+                )
+            ),
+        )
+
+        response = client.post("/api/control/start")
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == (
+            "stability_observation_owner_active"
+        )
+        assert app_state.to_dict()["running"] is False

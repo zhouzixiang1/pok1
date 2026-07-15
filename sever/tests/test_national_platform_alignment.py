@@ -232,6 +232,47 @@ def test_official_oracle_accepts_exact_2x_reraise_and_rejects_below_boundary():
     assert ">= 2x" in reason
 
 
+def test_equal_wealth_invariant_rules_out_short_allin_facing_larger_wager():
+    # Every legal street starts with equal chips+street_bet wealth. call,
+    # raise, and allin only move chips into street_bet, so the equality stays
+    # true until the street terminates. A 500 stack at bet=0 facing 1000 is
+    # therefore not reachable from the national 20000/20000 hand reset.
+    wealth = 20_000
+    for player_bet in (0, 50, 500, 1_000, 19_999):
+        player_chips = wealth - player_bet
+        for opponent_bet in (player_bet + 1, 1_000, 19_999):
+            if opponent_bet <= player_bet or opponent_bet > wealth:
+                continue
+            assert opponent_bet - player_bet <= player_chips
+
+    # The equal-wealth form of "500 behind facing 1000" has 500 already on
+    # the table and means the opponent is all-in. The only legal continuation
+    # is call/fold; a second allin token remains forbidden by rule 13.
+    facing_prior_allin = _state(
+        stage="preflop",
+        actions=[("allin", 1_000)],
+        player_chips=500,
+        player_bet=500,
+        opponent_bet=1_000,
+        is_small_blind=False,
+        is_big_blind=True,
+        allin_occurred=True,
+        player_action_count=0,
+    )
+    assert validate_action("call", None, facing_prior_allin) == (True, "")
+    ok, reason = validate_action("allin", None, facing_prior_allin)
+    assert ok is False
+    assert "consecutive allin" in reason
+    assert min(
+        max(
+            0,
+            facing_prior_allin["opponent_bet"]
+            - facing_prior_allin["player_bet"],
+        ),
+        facing_prior_allin["player_chips"],
+    ) == 500
+
+
 def test_thp_hand_line_uses_big_blind_order_for_cards_earnings_and_players():
     recorder = THPRecorder(team_a_name="A", team_b_name="B")
     recorder.on_hand_start(hand_num=1, sb_idx=0, bb_idx=1)
@@ -434,6 +475,7 @@ def test_allin_runout_records_public_cards_in_thp():
     result, sent, recorder = asyncio.run(run())
 
     assert result.is_showdown
+    assert result.pot == 40_000
     assert any(msg.startswith("flop|") for _, msg in sent)
     assert any(msg.startswith("turn|") for _, msg in sent)
     assert any(msg.startswith("river|") for _, msg in sent)

@@ -7,9 +7,8 @@ the CURRENT bot code for this generation. It:
   - defaults to 0 on a fresh checkpoint,
   - is settable via the precommit_attempt kwarg,
   - is resettable via reset_precommit_attempt=True,
-  - AUTO-RESETS to 0 when the stage regresses from a LATE stage (verified/
-    archived) to an EARLY stage (prepared..critic_checked), because worker
-    rework produced new bot code and the precommit counter must restart.
+  - AUTO-RESETS to 0 on a canonical code-mutating rework transition, because
+    Worker output changes the bot snapshot measured by precommit.
 
 The autouse isolate_state fixture in conftest.py redirects
 evolution_infra.PIPELINE_STATE_FILE to a tmp directory, so these tests never
@@ -21,6 +20,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 import checkpoint_schema
 import evolution_infra
@@ -411,12 +412,48 @@ def test_timeout_extensions_preserved_when_not_passed():
     assert state.get("precommit_attempt") == 2
 
 
-def test_timeout_extensions_resets_on_rework_regression():
-    """A code-regeneration regression also resets the timeout extension budget."""
-    _write_basic(stage="critic_checked", precommit_attempt=1, timeout_extensions=1)
-    write_pipeline_checkpoint(next_v=100, source_v=99, stage="workers_done")
-    state = read_pipeline_checkpoint()
-    assert state.get("timeout_extensions") == 0
+def test_timeout_extensions_resets_on_canonical_precommit_rework_path():
+    """A real precommit regression resets the budget before new Worker code."""
+
+    failed = _write_basic(
+        stage="precommit_failed",
+        precommit_attempt=1,
+        timeout_extensions=1,
+        gate_results={
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "aggregate_precommit_regression"}],
+            }
+        },
+    )
+    assert route_policy(failed)["next_tool"] == "execute_workers"
+
+    # The canonical Worker repair path is explicit.  Critic is advisory, so a
+    # bare critic_checked -> workers_done jump is neither a regression proof nor
+    # a legal state transition.
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="repair_planned",
+        reviewer_feedback="Precommit regression requires Worker repair",
+    ) is True
+    planned = read_pipeline_checkpoint()
+    assert planned.get("precommit_attempt") == 0
+    assert planned.get("timeout_extensions") == 0
+
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="rework_running",
+    ) is True
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="workers_done",
+    ) is True
+    completed = read_pipeline_checkpoint()
+    assert completed.get("stage") == "workers_done"
+    assert completed.get("timeout_extensions") == 0
 
 
 def test_forward_progression_does_not_reset_precommit_attempt():

@@ -39,6 +39,22 @@ class InvalidCompletion(WorkflowError):
     """An effect completion did not match the current fenced lease."""
 
 
+class _ClosingConnection(sqlite3.Connection):
+    """Commit/rollback like sqlite's context manager, then close the FD.
+
+    ``sqlite3.Connection.__exit__`` does not close the connection.  The
+    workflow store opens a fresh connection per command, so relying on that
+    default leaked one descriptor per read/write and eventually made recovery
+    fail with ``EMFILE`` during repeated Master retries.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def canonical_json(value: Any) -> str:
     return json.dumps(
         value,
@@ -104,6 +120,7 @@ class WorkflowStore:
             self.path,
             timeout=30.0,
             isolation_level=None,
+            factory=_ClosingConnection,
         )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")

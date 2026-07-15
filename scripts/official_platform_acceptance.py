@@ -51,8 +51,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "70 hands each) for formal publication. EXE chips never affect ratings."
         ),
     )
-    parser.add_argument("--candidate", help="Candidate bot directory or script.")
-    parser.add_argument("--opponent", help="Opponent bot directory or script for non-self-play rounds.")
+    parser.add_argument("--candidate", help="Strict five-file candidate directory under active bots/.")
+    parser.add_argument("--opponent", help="Strict five-file opponent directory under active bots/ for non-self-play rounds.")
     parser.add_argument("--self-play-rounds", type=int, default=1, help="Candidate-vs-candidate official rounds.")
     parser.add_argument("--opponent-rounds", type=int, default=1, help="Candidate-vs-opponent official rounds.")
     parser.add_argument("--target-hands", type=int, default=70, help="Hands required per official round.")

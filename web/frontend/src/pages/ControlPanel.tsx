@@ -1,11 +1,13 @@
 import { useEffect, useState, useCallback } from "react";
 import { controlApi, type Decision, type AppConfig } from "../api/control";
 import { api } from "../api/client";
-import type { OrchestratorSession, PipelineCheckpoint } from "../api/types";
+import type { PipelineCheckpoint } from "../api/types";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { OfficialCertificationProgress } from "../components/evolution/OfficialCertificationProgress";
+import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { getOperatorControlToken, setOperatorControlToken } from "../api/operatorControl";
+import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
 
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
@@ -15,16 +17,14 @@ const RefreshIcon = ({ className }: { className?: string }) => (
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 export default function ControlPanel() {
-  const { status, loading: statusLoading, error: statusError, refresh: refreshStatus } = useControlStatus(3_000);
+  const { status, health, loading: statusLoading, error: statusError, refresh: refreshStatus } = useControlStatus(3_000);
   const [config, setConfig] = useState<AppConfig | null>(null);
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState<string | null>(null);
   const [editWorkers, setEditWorkers] = useState(12);
   const [editPairs, setEditPairs] = useState(5);
   const [editDaemon, setEditDaemon] = useState(true);
-  const [session, setSession] = useState<OrchestratorSession | null>(null);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
-  const [sessionLoading, setSessionLoading] = useState(false);
   const [connError, setConnError] = useState(false);
   const [operatorToken, setOperatorToken] = useState(getOperatorControlToken);
   const [mutationError, setMutationError] = useState("");
@@ -47,30 +47,33 @@ export default function ControlPanel() {
       setEditPairs(c.daemon_pairs);
       setEditDaemon(c.daemon_enabled);
       setConnError(false);
-    } catch { setConnError(true); }
+    } catch {
+      setDecisions([]);
+      setConfig(null);
+      setConnError(true);
+    }
   }, []);
 
-  const refreshSession = useCallback(async () => {
+  const refreshCheckpoint = useCallback(async () => {
     try {
-      const [sess, ckpt] = await Promise.all([
-        api.orchestratorSession(),
-        api.pipelineCheckpoint(),
-      ]);
-      setSession(sess);
-      setCheckpoint(ckpt);
+      setCheckpoint(await api.pipelineCheckpoint());
       setConnError(false);
-    } catch { setConnError(true); }
+    } catch {
+      setCheckpoint(null);
+      setConnError(true);
+    }
   }, []);
 
   useEffect(() => {
     refresh();
-    refreshSession();
+    refreshCheckpoint();
     const id = setInterval(refresh, 3000);
-    const sessId = setInterval(refreshSession, 5000);
-    return () => { clearInterval(id); clearInterval(sessId); };
-  }, [refresh, refreshSession]);
+    const checkpointId = setInterval(refreshCheckpoint, 5000);
+    return () => { clearInterval(id); clearInterval(checkpointId); };
+  }, [refresh, refreshCheckpoint]);
 
   const handleSaveConfig = async () => {
+    if (status?.running || (health?.task.present && health.task.done === false)) return;
     setLoading("config");
     setMutationError("");
     try {
@@ -82,7 +85,7 @@ export default function ControlPanel() {
   };
 
   const handleStart = async () => {
-    if (!status?.epoch_initialized) return;
+    if (!status?.epoch_initialized || status.running || !config || controlTaskActive(health?.task)) return;
     setLoading("start");
     setMutationError("");
     try { await controlApi.start(); }
@@ -100,21 +103,6 @@ export default function ControlPanel() {
     await Promise.all([refresh(), refreshStatus()]);
   };
 
-  const handleResetSession = async () => {
-    if (!status?.epoch_initialized) return;
-    if (!confirm("重置编排器会话？下次重启将开始全新的 LLM 对话。")) return;
-    setSessionLoading(true);
-    setMutationError("");
-    try {
-      await api.clearOrchestratorSession();
-      await refreshSession();
-    } catch (error) {
-      setMutationError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSessionLoading(false);
-    }
-  };
-
   const formatTime = (ts: number) => new Date(ts * 1000).toLocaleTimeString();
 
   const configDirty = config && (
@@ -123,15 +111,78 @@ export default function ControlPanel() {
     editDaemon !== config.daemon_enabled
   );
 
-  const authoritativeRunning = Boolean(status?.epoch_initialized && status.running);
-  const unsafeRunning = Boolean(status?.running && !status.epoch_initialized);
+  const taskActive = controlTaskActive(health?.task);
+  const taskStopping = controlTaskStopping(health?.task);
+  const daemonConfigAligned = health?.daemon.configured != null
+    && health.daemon.configured === status?.daemon_enabled;
+  const authoritativeRunning = Boolean(
+    status?.epoch_initialized
+    && status.mode === "orchestrator"
+    && status.running
+    && health?.overall === "healthy"
+    && health.running === true
+    && taskActive
+    && !taskStopping
+    && daemonConfigAligned,
+  );
+  const degradedRunning = Boolean(status?.running && !authoritativeRunning);
+  const orphanTask = Boolean(taskActive && !status?.running);
+  const runtimeMutationLocked = Boolean(status?.running || taskActive);
   const authorityTarget = authorityNextVersion(status);
+  const route = health?.pipeline.route ?? null;
+  const handoff = status?.post_publication_handoff;
+  const routeMatchesGeneration = Boolean(
+    route
+    && status?.active_generation
+    && health?.pipeline.exists === true
+    && health.pipeline.authority === "strict_epoch_projection"
+    && health.pipeline.next_v === status.active_generation.next_v
+    && health.pipeline.source_v === status.active_generation.source_v
+    && health.pipeline.stage === status.active_generation.stage
+    && health.pipeline.run_id === status.active_generation.run_id
+    && health.pipeline.workflow_run_id === status.active_generation.workflow_run_id
+    && health.pipeline.checkpoint_revision === status.active_generation.checkpoint_revision
+    && route.stage === status.active_generation.stage
+    && route.next_v === status.active_generation.next_v
+    && route.source_v === status.active_generation.source_v
+    && (route.parent2_v == null || Number.isInteger(route.parent2_v))
+    && (route.next_tool == null || typeof route.next_tool === "string")
+    && Array.isArray(route.allowed_tools)
+    && route.allowed_tools.every((tool) => typeof tool === "string")
+    && (route.next_tool == null || route.allowed_tools.includes(route.next_tool))
+    && typeof route.intent === "string"
+    && route.intent.trim().length > 0
+    && typeof route.directive === "string"
+    && route.directive.trim().length > 0,
+  );
+  const routeMatchesHandoff = Boolean(
+    route
+    && handoff
+    && handoff.status !== "none"
+    && health?.pipeline.exists === true
+    && health.pipeline.authority === "post_publication_handoff_journal"
+    && health.pipeline.blocked !== true
+    && health.pipeline.handoff_projection_digest
+      === handoff.projection_digest
+    && health.pipeline.handoff_identity_digest
+      === handoff.identity_digest
+    && route.stage === "post_publication_handoff"
+    && route.next_v === handoff.version
+    && route.source_v === handoff.source_v
+    && route.parent2_v == null
+    && route.next_tool === "run_archivist"
+    && route.allowed_tools.length === 1
+    && route.allowed_tools[0] === "run_archivist"
+    && route.intent === "post_publication_handoff"
+    && typeof route.directive === "string"
+    && route.directive.trim().length > 0,
+  );
 
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-800 dark:text-white">控制面板</h1>
-        <button onClick={() => void Promise.all([refresh(), refreshStatus(), refreshSession()])} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1">
+        <button onClick={() => void Promise.all([refresh(), refreshStatus(), refreshCheckpoint()])} className="px-3 py-1 text-sm rounded bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 flex items-center gap-1">
           <RefreshIcon /> 刷新
         </button>
       </div>
@@ -170,13 +221,21 @@ export default function ControlPanel() {
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">模式:</span>
-            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">编排器</span>
+            <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{status?.mode ?? "权威投影不可用"}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">状态:</span>
-            <span className={`inline-flex items-center gap-1.5 text-sm font-medium ${authoritativeRunning ? "text-green-600" : unsafeRunning ? "text-red-600" : "text-gray-400"}`}>
-              <span className={`w-2 h-2 rounded-full ${authoritativeRunning ? "bg-green-500 animate-pulse" : unsafeRunning ? "bg-red-500" : "bg-gray-400"}`} />
-              {authoritativeRunning ? "运行中" : unsafeRunning ? "异常运行（epoch 未初始化）" : "已停止"}
+            <span className={`inline-flex items-center gap-1.5 text-sm font-medium ${authoritativeRunning ? "text-green-600" : degradedRunning || orphanTask || statusError ? "text-red-600" : "text-gray-400"}`}>
+              <span className={`w-2 h-2 rounded-full ${authoritativeRunning ? "bg-green-500 animate-pulse" : degradedRunning || orphanTask || statusError ? "bg-red-500" : "bg-gray-400"}`} />
+              {authoritativeRunning
+                ? "运行中（任务与健康均已确认）"
+                : taskStopping
+                  ? "停止中（任务仍持有运行权威）"
+                : orphanTask
+                  ? "异常：running=false 但编排器任务仍活动"
+                : degradedRunning
+                  ? `运行标志异常（${health?.issues.join("、") || "健康投影不可用"}）`
+                  : statusError ? "控制状态不可用" : "已停止"}
             </span>
             {connError && <span className="text-xs text-red-500">连接失败</span>}
           </div>
@@ -186,67 +245,101 @@ export default function ControlPanel() {
             </div>
           )}
           <div className="flex gap-2 ml-auto">
-            {!status?.running ? (
+            {!status?.running && !taskActive ? (
               <button
                 onClick={handleStart}
-                disabled={loading === "start" || !status?.epoch_initialized}
+                disabled={loading === "start" || !status?.epoch_initialized || !config || taskActive}
                 title={!status?.epoch_initialized ? "完成操作员一次性 epoch reset 后才能启动" : undefined}
                 className="px-4 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {loading === "start" ? "启动中..." : "启动"}
               </button>
             ) : (
-              <button onClick={handleStop} disabled={loading === "stop"} className="px-4 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
-                {loading === "stop" ? "停止中..." : "停止"}
+              <button onClick={handleStop} disabled={loading === "stop" || taskStopping} className="px-4 py-1.5 text-sm rounded bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
+                {loading === "stop" || taskStopping ? "停止中..." : "停止"}
               </button>
             )}
           </div>
         </div>
       </div>
 
-      {/* LLM Session Control */}
+      {status && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
+          <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+            <div>
+              <p className="mb-1 text-xs font-semibold uppercase text-gray-500">连续稳定性权威</p>
+              <StabilityStatus observation={status.stability_observation} />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="mb-1 text-xs font-semibold uppercase text-gray-500">确定性下一步</p>
+              {(routeMatchesGeneration || routeMatchesHandoff) && route ? (
+                <div className="space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                  <p>
+                    <span className="font-mono">{route.stage}</span> → 工具 <b className="font-mono">{route.next_tool || "无自动工具"}</b>
+                    {route.parent2_v != null ? ` · crossover parent2_v=v${route.parent2_v}` : ""}
+                    {route.failure_class ? ` · failure=${route.failure_class}` : ""}
+                  </p>
+                  <p>意图：{route.intent}</p>
+                  <p>指令：{route.directive}</p>
+                  <p className="font-mono text-[10px] text-gray-400">允许工具：{route.allowed_tools.length > 0 ? route.allowed_tools.join(", ") : "[]"}</p>
+                </div>
+              ) : status.post_publication_handoff.status === "blocked" || health?.pipeline.blocked ? (
+                <p className="text-xs text-red-600 dark:text-red-300">
+                  发布后交接已阻断；不会从旧 checkpoint 或阶段名称猜测下一工具。
+                </p>
+              ) : !status.active_generation && status.post_publication_handoff.status === "none" ? (
+                <p className="text-xs text-gray-500">当前没有活跃代次或发布后交接，因此没有下一工具。</p>
+              ) : (
+                <p className="text-xs text-red-600 dark:text-red-300">
+                  权威 route 不可用或与 active_generation 不一致；页面不从 stage 猜测下一工具。
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Provider-history recovery boundary */}
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
-        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM 会话</h2>
+        <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">LLM 恢复边界</h2>
         <div className="flex flex-wrap items-center gap-4">
           <div>
-            <span className="text-xs text-gray-500 block mb-1">编排器会话 ID</span>
-            <span className="font-mono text-sm text-gray-800 dark:text-gray-200">
-              {session?.session_id ? session.session_id.slice(0, 12) + "..." : <span className="text-gray-400 italic">无活跃会话</span>}
-            </span>
+            <span className="text-xs text-gray-500 block mb-1">Provider history</span>
+            <span className="text-sm text-gray-800 dark:text-gray-200">禁止持久化与恢复</span>
+            <p className="mt-1 max-w-xl text-xs text-gray-500">
+              重启只从已验证 checkpoint 重建确定性上下文，并创建全新的 provider stream；opaque session ID 不构成恢复权威。
+            </p>
           </div>
           {status?.active_generation && (
             <div>
               <span className="text-xs text-gray-500 block mb-1">流程阶段</span>
               <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-xs font-medium">
                 v{status.active_generation.next_v}
-                {status.active_generation.source_v != null ? ` ← v${status.active_generation.source_v}` : ""}: {status.active_generation.stage}
+                {status.active_generation.source_v != null ? ` · source_v=v${status.active_generation.source_v}` : ""}: {status.active_generation.stage}
               </span>
               {!checkpoint && <p className="mt-1 text-[10px] text-amber-600">详细 checkpoint 暂不可用</p>}
             </div>
           )}
-          <div className="ml-auto">
-            <button
-              onClick={handleResetSession}
-              disabled={sessionLoading || !session?.active || !status?.epoch_initialized}
-              className="px-4 py-1.5 text-sm rounded bg-orange-600 text-white hover:bg-orange-700 disabled:opacity-40 flex items-center gap-1"
-            >
-              <RefreshIcon /> {sessionLoading ? "重置中..." : "重置会话"}
-            </button>
-            <p className="text-xs text-gray-400 mt-1">下次重启时强制开启全新 LLM 对话</p>
-          </div>
         </div>
       </div>
 
       {/* Settings */}
       <div className="rounded-lg border border-gray-200 dark:border-border-subtle bg-white dark:bg-surface-1 p-4">
         <h2 className="text-lg font-semibold text-gray-800 dark:text-white mb-3">评分引擎设置</h2>
+        <p className="mb-3 text-xs text-gray-500">
+          配置意图：{config ? (config.daemon_enabled ? "启用" : "禁用") : "不可用"}
+          {" · "}实际进程：{health?.daemon.alive == null ? "不可用" : health.daemon.alive ? "运行" : "停止"}
+          {health?.daemon.process_identity ? ` · 进程身份：${health.daemon.process_identity}` : ""}
+          {" · "}心跳：{health?.daemon.heartbeat_status ?? "不可用"}
+          {health?.daemon.health_error ? ` · health_error=${health.daemon.health_error}` : ""}
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="flex items-center gap-3">
             <label className="text-sm text-gray-600 dark:text-gray-300">评分引擎</label>
             <button
               role="switch"
               aria-checked={editDaemon}
-              disabled={!status?.epoch_initialized}
+              disabled={!config || !status?.epoch_initialized || runtimeMutationLocked}
               onClick={() => setEditDaemon(!editDaemon)}
               className={`relative inline-flex h-6 w-11 rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${editDaemon ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"}`}
             >
@@ -255,15 +348,15 @@ export default function ControlPanel() {
           </div>
           <div className="flex items-center gap-2">
             <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">Worker</label>
-            <input type="number" min={1} max={12} value={editWorkers} onChange={(e) => setEditWorkers(Math.max(1, Math.min(12, Number(e.target.value) || 1)))} disabled={!editDaemon || !status?.epoch_initialized} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
+            <input type="number" min={1} max={12} value={editWorkers} onChange={(e) => setEditWorkers(Math.max(1, Math.min(12, Number(e.target.value) || 1)))} disabled={!config || !editDaemon || !status?.epoch_initialized || runtimeMutationLocked} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
           <div className="flex items-center gap-2">
             <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">每次配对数</label>
-            <input type="number" min={1} max={20} value={editPairs} onChange={(e) => setEditPairs(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} disabled={!editDaemon || !status?.epoch_initialized} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
+            <input type="number" min={1} max={20} value={editPairs} onChange={(e) => setEditPairs(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} disabled={!config || !editDaemon || !status?.epoch_initialized || runtimeMutationLocked} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
         </div>
         <div className="mt-3 flex justify-end">
-          <button onClick={handleSaveConfig} disabled={!configDirty || loading === "config" || !status?.epoch_initialized} className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
+          <button onClick={handleSaveConfig} disabled={!configDirty || loading === "config" || !status?.epoch_initialized || runtimeMutationLocked} className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40">
             {loading === "config" ? "保存中..." : "保存"}
           </button>
         </div>

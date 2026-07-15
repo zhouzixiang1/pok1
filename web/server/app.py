@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
 from web_ui import EventBroadcaster, WebUI
-from server.state import app_state
+from server.state import app_state, run_evolution_task
 from system_log import set_ui as _set_system_log_ui
 from national_arena.manager import NationalArenaManager
 from blocking_runtime import run_blocking_isolated
@@ -39,11 +39,15 @@ async def lifespan(app: FastAPI):
 
     config = app_state.get_config()
     daemon_enabled = config["daemon_enabled"]
+    from stability_observation import bind_runtime_configuration
+
+    bind_runtime_configuration(config)
     view_only = os.environ.get("POK_WEB_VIEW_ONLY") == "1"
     epoch_launch_state = None
     epoch_launch_allowed = False
     try:
         from epoch_authority import (
+            epoch_stream_authority_digest,
             require_policy_epoch_initialized,
             strict_epoch_projection,
         )
@@ -68,6 +72,11 @@ async def lifespan(app: FastAPI):
             "operator_action": "inspect_epoch_authority",
             "operator_command": None,
         }
+    try:
+        launch_authority_digest = epoch_stream_authority_digest(epoch_launch_state)
+    except (NameError, TypeError, ValueError):
+        launch_authority_digest = None
+    broadcaster.bind_authority(launch_authority_digest)
 
     # Let uvicorn own signal handling — its handle_exit sets should_exit,
     # which triggers sse-starlette shutdown → lifespan shutdown below.
@@ -87,6 +96,7 @@ async def lifespan(app: FastAPI):
         pass
 
     orchestrator_owned = False
+    stability_launch_allowed = True
 
     # On shutdown: stop orchestrator + daemon in parallel for fast exit.
     async def _stop_orchestrator():
@@ -141,24 +151,63 @@ async def lifespan(app: FastAPI):
                 f"Stopped: {epoch_state}",
                 is_working=False,
             )
+        else:
+            try:
+                from stability_observation import initialize_stability_observation
+
+                observation = initialize_stability_observation(
+                    "runtime_process_start"
+                )
+                web_ui.log_history(
+                    "连续进化验收已启动："
+                    f"{observation.get('count', 0)}/{observation.get('target', 10)}",
+                    "info",
+                )
+            except Exception as exc:
+                # Observation is not publication authority. Ordinary storage
+                # failure keeps evolution available with a fail-closed count;
+                # a proven live foreign owner blocks a second orchestrator.
+                if "owner_process_still_alive" in str(exc):
+                    stability_launch_allowed = False
+                    app_state.set_running(False)
+                web_ui.log_history(
+                    "连续进化验收状态无法初始化："
+                    f"{type(exc).__name__}: {str(exc)[:160]}",
+                    "error",
+                )
+
+        if view_only or not epoch_launch_allowed or not stability_launch_allowed:
+            pass
         elif not app_state.try_set_running(True):
             web_ui.log_history("Orchestrator already running", "warn")
         else:
+            owner_id = app_state.runtime_owner_id()
+            task = None
             try:
                 from orchestrator import orchestrator_loop
 
-                task = asyncio.create_task(orchestrator_loop(
+                app_state.set_shutdown_mgr(
+                    shutdown_mgr,
+                    owner_id=owner_id,
+                )
+                task = asyncio.create_task(run_evolution_task(orchestrator_loop(
                     web_ui,
                     shutdown_mgr=shutdown_mgr,
                     no_daemon=not daemon_enabled,
                     daemon_workers=config["daemon_workers"],
                     daemon_pairs=config["daemon_pairs"],
-                ))
-                app_state.set_task(task)
+                ), owner_id=owner_id))
+                app_state.set_task(task, owner_id=owner_id)
                 orchestrator_owned = True
                 web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
-            except Exception:
-                app_state.set_running(False)
+            except BaseException:
+                if task is not None:
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                app_state.abort_runtime_owner(owner_id)
                 raise
         yield
     finally:

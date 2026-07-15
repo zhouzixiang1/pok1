@@ -116,6 +116,11 @@ Use the policy-governed durable manager for evolution and formal acceptance:
 ```bash
 python3 scripts/official_certify.py smoke bots/national_v<N> --wait-if-busy
 python3 scripts/official_certify.py full bots/national_v<N> --wait-if-busy
+python3 scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
+  --control-id first_strict_control_v1 \
+  --acknowledge-one-time-first-strict-control --wait-if-busy
+python3 scripts/official_certify.py finalize-first-strict \
+  --acknowledge-publish-first-strict
 python3 scripts/official_certify.py jobs-status
 python3 scripts/official_certify.py reconcile-jobs --limit 4
 ```
@@ -180,7 +185,12 @@ parked at `official_bootstrap_required`, Web clients may only read that one
 durable job from `GET /api/certification/jobs` or
 `GET /api/certification/jobs/{job_id}`. Its
 projection declares `formal_authority=operator_bootstrap_full_v5_job`,
-`read_only=true`, and `cancel_allowed=false`. HTTP enqueue remains 410 and
+`read_only=true`, `cancel_allowed=false`, the exact 5/3×70 profile, system-control
+opponent authority, and zero strategy/strength weight. The jobs API refines the
+same checkpoint-bound operator transition through `bootstrap_required`,
+`bootstrap_running`, `bootstrap_failed`, and `ready_to_finalize`; the last state
+requires the complete certificate and authorization validator. The operator
+then runs the acknowledged `finalize-first-strict` CLI. HTTP enqueue remains 410 and
 bootstrap cancellation remains 404; the retired
 `/api/certification/queue` route is absent, and old-epoch, v155, unbound,
 drifted, or ambiguous jobs remain invisible.
@@ -199,13 +209,13 @@ so recovery cannot cherry-pick successful evidence.
 ## Completion Rules
 
 A 70-hand round still requires proof of exactly 70 completed hands. Policy
-`official-full-v5` accepts either 70 paired TCP settlements, or the official
-EXE's empirically verified terminal form: exact wire starts 1..70, exact paired
-wire settlements 1..69 with no pending action, plus a new stable THP whose
-strict states are exactly 0..69. In the terminal form, every named wire earning
-for hands 1..69 must equal THP states 0..68, state 69 must have named zero-sum
-earnings, and all 70 earnings must equal the THP footer result. The receipt
-binds both raw wire and THP hashes and is later signed and archived.
+`official-full-v5` requires the official EXE's empirically verified natural
+terminal form: exact wire starts 1..70, exact paired wire settlements 1..69
+with no pending action, plus a new stable THP whose strict states are exactly
+0..69. Every named wire earning for hands 1..69 must equal THP states 0..68,
+state 69 must have named zero-sum earnings, and all 70 earnings must equal the
+THP footer result. A synthetic 70th wire settlement fails this formal profile.
+The receipt binds both raw wire and THP hashes and is later signed and archived.
 
 This is not a `target - 1` allowance: 69 settlements without the exact
 cross-bound THP proof still fails. Short smoke/compliance runs continue to

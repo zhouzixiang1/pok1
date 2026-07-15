@@ -7,8 +7,6 @@ import type {
   ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
 } from "./types";
-import { withOperatorControlHeader } from "./operatorControl";
-
 const BASE = "/api";
 const FETCH_TIMEOUT = 30_000;
 
@@ -72,16 +70,6 @@ function expectArenaSession(value: ArenaSession | ArenaSessionUnavailable): Aren
     ? value.epoch_authority.state
     : "unavailable";
   throw new Error(`Arena session is unavailable for the current strict epoch (${state})`);
-}
-
-async function deleteReq<T>(url: string): Promise<T> {
-  const res = await fetch(url, {
-    method: "DELETE",
-    headers: withOperatorControlHeader(),
-    signal: abortSignal(),
-  });
-  if (!res.ok) return extractError(res);
-  return res.json();
 }
 
 export const api = {
@@ -222,6 +210,5 @@ export const api = {
 
   // Orchestrator session
   orchestratorSession: () => fetchJSON<OrchestratorSession>(`${BASE}/control/orchestrator/session`),
-  clearOrchestratorSession: () => deleteReq<{ cleared: boolean; message: string }>(`${BASE}/control/orchestrator/session`),
 
 };

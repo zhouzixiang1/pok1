@@ -11,8 +11,6 @@ PORT="8000"
 NO_BUILD=1
 DAEMON_WORKERS="12"
 DAEMON_PAIRS="5"
-CLEAR_SESSION="stale"
-CLEAR_CHECKPOINT="never"
 OBSERVE_GENERATIONS="3"
 OBSERVE_TIMEOUT="21600"
 DRY_RUN=0
@@ -31,12 +29,9 @@ Options:
   --port PORT                     default: 8000
   --build                         allow frontend build on startup
   --no-build                      skip frontend build on startup (default)
-  --daemon-workers N              written to web/core/results/app_config.json (default: 12, clamped by app)
-  --daemon-pairs N                complete 70-hand matches per scheduled pairing (default: 5)
-  --clear-session stale|always|never
-                                  stale = clear only when no pipeline checkpoint exists (default)
-  --clear-checkpoint never|backup-and-clear
-                                  default keeps pipeline_state.json
+  --daemon-workers N              persisted atomically; integer 1..12 (default: 12)
+  --daemon-pairs N                complete 70-hand matches per scheduled pairing;
+                                  integer 1..20 (default: 5)
   --observe-generations N         terminal generation events to observe after restart (default: 3)
   --observe-timeout SEC           max observation seconds (default: 21600)
   --observe-only                  do not restart or mutate config; only observe existing service
@@ -52,8 +47,6 @@ while [ $# -gt 0 ]; do
         --no-build) NO_BUILD=1; shift ;;
         --daemon-workers) DAEMON_WORKERS="$2"; shift 2 ;;
         --daemon-pairs) DAEMON_PAIRS="$2"; shift 2 ;;
-        --clear-session) CLEAR_SESSION="$2"; shift 2 ;;
-        --clear-checkpoint) CLEAR_CHECKPOINT="$2"; shift 2 ;;
         --observe-generations) OBSERVE_GENERATIONS="$2"; shift 2 ;;
         --observe-timeout) OBSERVE_TIMEOUT="$2"; shift 2 ;;
         --observe-only) OBSERVE_ONLY=1; shift ;;
@@ -63,8 +56,21 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-case "$CLEAR_SESSION" in stale|always|never) ;; *) echo "bad --clear-session" >&2; exit 2 ;; esac
-case "$CLEAR_CHECKPOINT" in never|backup-and-clear) ;; *) echo "bad --clear-checkpoint" >&2; exit 2 ;; esac
+validate_integer_range() {
+    local label="$1"
+    local value="$2"
+    local minimum="$3"
+    local maximum="$4"
+    if ! [[ "$value" =~ ^[0-9]+$ ]] \
+        || [ "$value" -lt "$minimum" ] \
+        || [ "$value" -gt "$maximum" ]; then
+        echo "$label must be an integer in [$minimum, $maximum]" >&2
+        exit 2
+    fi
+}
+
+validate_integer_range "--daemon-workers" "$DAEMON_WORKERS" 1 12
+validate_integer_range "--daemon-pairs" "$DAEMON_PAIRS" 1 20
 
 : "${POK_EVOLUTION_RUNTIME:=1}"
 : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
@@ -88,66 +94,6 @@ run() {
     if [ "$DRY_RUN" = "0" ]; then
         "$@" 2>&1 | tee -a "$RUN_LOG"
     fi
-}
-
-latest_completed_national_version() {
-    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        printf '0\n'
-        return
-    fi
-    local latest
-    latest="$(git tag -l 'national-bot-v*' \
-        | sed -n 's/^national-bot-v\([0-9][0-9]*\)$/\1/p' \
-        | sort -n \
-        | tail -1)"
-    printf '%s\n' "${latest:-0}"
-}
-
-archive_unfinished_path() {
-    local src="$1"
-    local kind="$2"
-    [ -e "$src" ] || return 0
-
-    local base dst parent n
-    base="$(basename "$src")"
-    parent="$RESULTS_DIR/abandoned/$TS/$kind"
-    dst="$parent/$base"
-    n=1
-    while [ -e "$dst" ]; do
-        dst="$parent/${base}.$n"
-        n=$((n + 1))
-    done
-    run mkdir -p "$parent"
-    run mv "$src" "$dst"
-    log "archived unfinished $kind artifact: $src -> $dst"
-}
-
-archive_unfinished_generation_artifacts() {
-    local latest_v dir base v
-    latest_v="$(latest_completed_national_version)"
-    log "checking unfinished generation artifacts newer than national-bot-v${latest_v}"
-
-    shopt -s nullglob
-    for dir in "$RESULTS_DIR"/v[0-9]*; do
-        [ -d "$dir" ] || continue
-        base="$(basename "$dir")"
-        v="${base#v}"
-        [[ "$v" =~ ^[0-9]+$ ]] || continue
-        if [ "$v" -gt "$latest_v" ]; then
-            archive_unfinished_path "$dir" "results"
-        fi
-    done
-
-    for dir in bots/national_v[0-9]*; do
-        [ -d "$dir" ] || continue
-        base="$(basename "$dir")"
-        v="${base#national_v}"
-        [[ "$v" =~ ^[0-9]+$ ]] || continue
-        if [ "$v" -gt "$latest_v" ]; then
-            archive_unfinished_path "$dir" "bots"
-        fi
-    done
-    shopt -u nullglob
 }
 
 exec 9>"$LOCK_FILE"
@@ -182,33 +128,22 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 if [ "$OBSERVE_ONLY" = "1" ]; then
-    log "observe-only mode: no checkpoint/session/config changes and no restart"
-elif [ "$CLEAR_CHECKPOINT" = "backup-and-clear" ]; then
-    if [ -f "$RESULTS_DIR/pipeline_state.json" ]; then
-        run cp "$RESULTS_DIR/pipeline_state.json" "$RESULTS_DIR/pipeline_state.${TS}.bak.json"
-        run rm -f "$RESULTS_DIR/pipeline_state.json"
-    fi
-    archive_unfinished_generation_artifacts
-fi
-
-SESSION_FILE="$RESULTS_DIR/orchestrator_session.json"
-if [ "$OBSERVE_ONLY" = "1" ]; then
-    log "observe-only mode kept existing session file if present"
-elif [ "$CLEAR_SESSION" = "always" ]; then
-    run rm -f "$SESSION_FILE"
-elif [ "$CLEAR_SESSION" = "stale" ] && [ ! -f "$RESULTS_DIR/pipeline_state.json" ]; then
-    run rm -f "$SESSION_FILE"
+    log "observe-only mode: no checkpoint/candidate/config changes and no restart"
 else
-    log "session policy kept existing session file if present"
+    log "checkpoint/candidate cleanup is never performed by this helper; use canonical abandon/reconciliation"
+    log "provider sessions are never resumable; no provider session state is retained or cleared here"
 fi
 
 if [ "$OBSERVE_ONLY" = "1" ]; then
     log "observe-only mode skipped daemon config write"
 else
-    log "writing daemon config workers=$DAEMON_WORKERS pairs=$DAEMON_PAIRS"
+    log "stopping the owned service before the durable daemon config transaction"
+    run ./pokctl.sh stop
+    log "persisting daemon config atomically workers=$DAEMON_WORKERS pairs=$DAEMON_PAIRS"
 fi
 if [ "$DRY_RUN" = "0" ] && [ "$OBSERVE_ONLY" = "0" ]; then
-    python - "$RESULTS_DIR/app_config.json" "$DAEMON_WORKERS" "$DAEMON_PAIRS" <<'PY'
+    python - "$RESULTS_DIR/app_config.json" "$DAEMON_WORKERS" "$DAEMON_PAIRS" <<'PY' \
+        | tee -a "$RUN_LOG"
 import json
 import pathlib
 import sys
@@ -216,12 +151,24 @@ import sys
 path = pathlib.Path(sys.argv[1])
 workers = int(sys.argv[2])
 pairs = int(sys.argv[3])
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps({
-    "daemon_enabled": True,
-    "daemon_workers": workers,
-    "daemon_pairs": pairs,
-}, indent=2), encoding="utf-8")
+root = pathlib.Path.cwd()
+sys.path.insert(0, str(root / "web"))
+sys.path.insert(0, str(root / "web" / "core"))
+
+from server.state import AppState
+
+state = AppState(config_file=path)
+previous = state.get_config()
+current = state.update_config(
+    daemon_enabled=True,
+    daemon_workers=workers,
+    daemon_pairs=pairs,
+)
+print(json.dumps({
+    "config_transaction": "committed",
+    "previous": previous,
+    "current": current,
+}, ensure_ascii=False, sort_keys=True))
 PY
 fi
 
@@ -241,7 +188,7 @@ if [ "$OBSERVE_ONLY" = "0" ]; then
     log "releasing restart lock before spawning web service"
     flock -u 9
     exec 9>&-
-    run ./pokctl.sh restart "${START_ARGS[@]}"
+    run ./pokctl.sh start "${START_ARGS[@]}"
 else
     log "releasing restart lock before observe-only loop"
     flock -u 9

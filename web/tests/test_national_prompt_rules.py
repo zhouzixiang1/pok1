@@ -304,6 +304,34 @@ def test_native_prompts_preserve_both_20260711_official_oracles():
     assert "National Runtime Architecture Feedback (planning signal, not legality)" in master
 
 
+def test_all_pipeline_roles_share_normal_and_first_strict_certification_boundary():
+    prompts = {
+        "master": _prompt("master_prompt.md"),
+        "worker": _prompt("worker_profile_national_native.md"),
+        "reviewer": _prompt("reviewer_prompt.md"),
+        "critic": _prompt("critic_prompt.md"),
+        "orchestrator": _prompt("orchestrator.md"),
+    }
+
+    for role, prompt in prompts.items():
+        normalized = " ".join(prompt.split())
+        assert "official-full-v5" in normalized, role
+        assert "five" in normalized and "70-hand self-play" in normalized, role
+        assert "three" in normalized and "eligible" in normalized, role
+        assert "v143" in normalized and "operator-only" in normalized, role
+        assert "first_strict_control_v1" in normalized, role
+        assert "v144+" in normalized, role
+
+
+def test_eqr_means_equity_realization_not_expected_quantity_of_risk():
+    critic = _prompt("critic_prompt.md")
+    master = _prompt("master_prompt.md")
+
+    assert "Equity Realization (EQR)" in master
+    assert "Equity Realization (EQR)" in critic
+    assert "expected-quantity-of-risk" not in critic
+
+
 def test_prompts_never_promote_web_arena_to_official_or_strength_authority():
     orchestrator = _prompt("orchestrator.md")
     worker = _prompt("worker_profile_national_native.md")
@@ -334,6 +362,27 @@ def test_worker_execution_profiles_do_not_mix_native_and_botzone_verification():
     assert "require_current_decision_runtime=True" in native
     assert "smoke_tester.py" not in native
     assert "emit exactly one JSON" not in native
+
+
+def test_role_prompts_match_the_runtime_read_capability_guard():
+    worker = _native_worker_prompt()
+    master = _prompt("master_prompt.md")
+    reviewer = _prompt("reviewer_prompt.md")
+    crossover = _prompt("crossover_prompt.md")
+
+    assert "python -m py_compile {candidate_path}/policy.py" in worker
+    assert "diff -rq bots/national_v" not in worker
+    assert "python -B -c" not in worker
+    assert "Only the `Read` tool is available" in master
+    assert "python -c" not in master
+    assert "python -c" not in reviewer
+    assert "git log" not in reviewer
+    assert "python -c" not in crossover
+    assert "national_v{version}/*.py" not in crossover
+    assert "bots/national_v{version}/policy.py" not in crossover
+    assert "exact system-injected lease target" in crossover
+    assert "py_compile" not in crossover
+    assert "system quality gate owns compilation" in crossover
 
 
 def test_active_llm_prompt_templates_expose_only_strict_raw_tcp_vocabulary():
@@ -401,19 +450,33 @@ def test_master_and_crossover_prompts_do_not_embed_generation_case_history():
     for name in ("master_prompt.md", "crossover_prompt.md"):
         prompt = _prompt(name)
         assert "Known Mandatory Fixes" not in prompt
-        assert not re.search(r"\bv\d{2,}\b", prompt), name
+        # v143/v144+ describe the permanent first-strict certification
+        # boundary, not an injected historical strategy case.
+        history_free = prompt.replace("v143", "").replace("v144+", "")
+        assert not re.search(r"\bv\d{2,}\b", history_free), name
         assert not re.search(r"\bL\d{3,}\b", prompt), name
         assert "Deterministic Invariants" in prompt
 
 
 def test_readonly_review_prompts_ban_temp_redirect_probes():
-    for name in ("reviewer_prompt.md", "critic_prompt.md", "master_prompt.md", "master_plan_audit.md"):
+    for name in ("reviewer_prompt.md", "master_prompt.md", "master_plan_audit.md"):
         text = _prompt(name)
         assert "read-only" in text
-        assert "Do not create temp files" in text
-        assert "write redirects" in text
-        assert "`/dev/null`" in text
-        assert "diff -u" in text or "direct read-only commands" in text
+        assert "temp files" in text or "temporary files" in text
+        assert "write redirects" in text or "redirects" in text
+        assert any(marker in text for marker in (
+            "diff -u",
+            "direct read-only commands",
+            "Only the `Read` tool is available",
+            "direct statically bounded reads",
+            "no filesystem tools",
+        ))
+
+    critic = _prompt("critic_prompt.md")
+    assert "read-only advisory gate" in critic
+    assert "only tool is Read" in critic
+    assert "Bash, Git, Python subprocesses" in critic
+    assert "complete evidence boundary" in critic
 
 
 def test_master_prompts_prioritize_h2h_snapshot_over_spotlight_samples():

@@ -15,6 +15,7 @@ import uuid
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
 from bot_namespace import (
     ROLE_RATING_POOL,
+    STRICT_ARTIFACT_FILES,
     resolve_national_bot_spec,
     runtime_manifest_errors,
 )
@@ -276,6 +277,8 @@ def launch_sandboxed_bot(
         stderr=stderr,
         start_new_session=start_new_session,
         host_process_owner=session_id,
+        expected_artifact_hash=artifact.artifact_hash,
+        required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
     )
 
 

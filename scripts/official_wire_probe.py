@@ -25,6 +25,21 @@ if str(CORE_DIR) not in sys.path:
 if str(ROOT) not in sys.path:
     sys.path.insert(1, str(ROOT))
 
+from bot_artifact import canonical_digest, hash_path  # noqa: E402
+from bot_namespace import (  # noqa: E402
+    ROLE_CANDIDATE,
+    STRICT_ARTIFACT_FILES,
+    policy_identity_document_errors,
+    resolve_national_bot_spec,
+)
+from managed_bot_executor import EndpointLease  # noqa: E402
+from national_runtime_authority import (  # noqa: E402
+    current_system_native_runtime_errors,
+)
+from official_bot_sandbox import (  # noqa: E402
+    launch_sandboxed_bot,
+    seal_bot_artifact,
+)
 from official_platform_harness import (  # noqa: E402
     OfficialPlatformConfig,
     _choose_display,
@@ -45,17 +60,35 @@ from official_platform_harness import (  # noqa: E402
     _wait_for_window,
     _wait_for_wine_idle,
     check_environment,
-    resolve_bot_entry,
 )
 from official_wire_probe import TcpWireProbe, WireEventRecorder, replay_events  # noqa: E402
+
+
+def _diagnostic_target_hands(value: str) -> int:
+    try:
+        target = int(value)
+    except (TypeError, ValueError) as exc:
+        raise argparse.ArgumentTypeError("target hands must be an integer") from exc
+    if not 1 <= target <= 69:
+        raise argparse.ArgumentTypeError(
+            "standalone wire diagnostics support 1..69 hands; a natural "
+            "70-hand result requires scripts/official_certify.py full so wire "
+            "hands 1..69 can be cross-bound to THP state 69 and the footer"
+        )
+    return target
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     base = OfficialPlatformConfig()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate", required=True, help="Candidate bot directory/script.")
-    parser.add_argument("--opponent", required=True, help="Opponent bot directory/script.")
-    parser.add_argument("--target-hands", type=int, default=70)
+    parser.add_argument("--candidate", required=True, help="Strict five-file candidate bot directory.")
+    parser.add_argument("--opponent", required=True, help="Strict five-file opponent bot directory.")
+    parser.add_argument(
+        "--target-hands",
+        type=_diagnostic_target_hands,
+        default=1,
+        help="Diagnostic wire settlements to observe (1..69 only; default: 1).",
+    )
     parser.add_argument("--results-dir", default=str(ROOT / "web" / "core" / "results" / "official_wire_probe"))
     parser.add_argument("--exe", default=str(base.exe_path))
     parser.add_argument("--wineprefix", default=str(base.wineprefix))
@@ -96,7 +129,69 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(_jsonable(payload), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _build_bot_command(
+def _strict_bot_directory(path: str | Path) -> Path:
+    requested = Path(path).expanduser().absolute()
+    if requested.is_symlink() or not requested.is_dir():
+        raise ValueError(
+            "official_wire_probe_requires_strict_bot_directory; "
+            "arbitrary script paths are forbidden"
+        )
+    return requested.resolve()
+
+
+def _validate_strict_candidate(path: str | Path) -> tuple[Path, dict[str, Any]]:
+    """Validate an unpublished-or-published strict candidate without importing it."""
+
+    source = _strict_bot_directory(path)
+    repo_root = source.parent.parent
+    spec = resolve_national_bot_spec(
+        source,
+        ROLE_CANDIDATE,
+        repo_root=repo_root,
+        require_completion=False,
+        require_certificate=False,
+    )
+    issues = list(spec.issues)
+    lineage = spec.epoch_receipt.get("lineage") if spec.epoch_receipt else {}
+    raw_parents = lineage.get("parent_versions") if isinstance(lineage, dict) else []
+    parents = (
+        tuple(int(item) for item in raw_parents)
+        if isinstance(raw_parents, list)
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in raw_parents)
+        else ()
+    )
+    if spec.version is not None:
+        issues.extend(
+            policy_identity_document_errors(
+                source,
+                spec.version,
+                parent_versions=parents,
+            )
+        )
+    issues.extend(current_system_native_runtime_errors(source))
+    issues = list(dict.fromkeys(str(item) for item in issues))
+    if issues:
+        raise RuntimeError(
+            "official_wire_probe_strict_candidate_invalid:"
+            + ";".join(issues[:12])
+        )
+    artifact_hash = hash_path(source)
+    validation = {
+        "schema_version": 1,
+        "role": ROLE_CANDIDATE,
+        "label": spec.label,
+        "version": spec.version,
+        "strict_artifact_files": sorted(STRICT_ARTIFACT_FILES),
+        "artifact_hash": artifact_hash,
+        "runtime_manifest_digest": canonical_digest(spec.runtime_manifest),
+        "policy_epoch_receipt_digest": canonical_digest(spec.epoch_receipt),
+        "issues": [],
+    }
+    validation["validation_digest"] = canonical_digest(validation)
+    return source, validation
+
+
+def _launch_managed_probe_bot(
     *,
     bot_path: Path,
     name: str,
@@ -104,34 +199,55 @@ def _build_bot_command(
     host: str,
     port: int,
     log_path: Path,
-) -> tuple[list[str], Path]:
-    entry = resolve_bot_entry(bot_path)
-    return (
-        [
-            sys.executable,
-            str(entry),
-            "--host",
-            host,
-            "--port",
-            str(port),
-            "--name",
-            name,
-            "--seat",
-            seat,
-            "--log",
-            str(log_path),
-        ],
-        entry.parent,
+    sealed_root: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+) -> tuple[subprocess.Popen, dict[str, Any]]:
+    """Launch one unpublished-or-published strict bot through the formal boundary."""
+
+    source, source_validation = _validate_strict_candidate(bot_path)
+    artifact_hash = str(source_validation["artifact_hash"])
+    artifact = seal_bot_artifact(
+        source,
+        sealed_root,
+        expected_hash=artifact_hash,
     )
-
-
-def _launch_command(cmd: list[str], *, cwd: Path, env: dict[str, str], stdout_path: Path, stderr_path: Path) -> subprocess.Popen:
     stdout = stdout_path.open("wb")
     stderr = stderr_path.open("wb")
-    proc = _popen(cmd, cwd=cwd, env=env, stdout=stdout, stderr=stderr)
+    try:
+        with EndpointLease.connect(host, int(port), timeout=10.0) as endpoint:
+            managed = launch_sandboxed_bot(
+                artifact,
+                endpoint,
+                name=name,
+                seat=seat,
+                log_path=log_path,
+                supports_log=True,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+        launch_receipt = {
+            "mode": "central-managed-sealed-source-projection",
+            "source": str(source),
+            "sealed_root": str(artifact.root),
+            "artifact_hash": artifact.artifact_hash,
+            "source_validation": source_validation,
+            "endpoint": {"host": host, "port": int(port)},
+            "endpoint_lease": {
+                "consumed": endpoint.consumed,
+                "closed": endpoint.closed,
+            },
+            "isolation": asdict(managed.isolation),
+        }
+    except BaseException:
+        stdout.close()
+        stderr.close()
+        raise
+    proc = managed.process
     proc._pok_stdout = stdout  # type: ignore[attr-defined]
     proc._pok_stderr = stderr  # type: ignore[attr-defined]
-    return proc
+    return proc, launch_receipt
 
 
 def _target_reached(summary: dict[str, Any], target_hands: int) -> bool:
@@ -153,12 +269,20 @@ def _format_wire_issues(summary: dict[str, Any]) -> list[str]:
 
 async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
     cfg = _config_from_args(args)
-    env_report = check_environment(cfg)
+    env_report = check_environment(cfg, require_formal_sandbox=True)
     round_dir = (cfg.results_dir / time.strftime("probe_%Y%m%d_%H%M%S")).resolve()
     round_dir.mkdir(parents=True, exist_ok=True)
     receipt: dict[str, Any] = {
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        "target_hands": max(1, min(70, int(args.target_hands))),
+        "target_hands": int(args.target_hands),
+        "authority": {
+            "scope": "wire_diagnostic_only",
+            "certification_weight": 0,
+            "rating_weight": 0,
+            "formal_70_hand_completion_proven": False,
+            "formal_70_hand_path": "scripts/official_certify.py full",
+            "terminal_oracle_shape": "wire starts 1..70; settlements 1..69; THP states 0..69",
+        },
         "candidate": str(Path(args.candidate).expanduser().resolve()),
         "opponent": str(Path(args.opponent).expanduser().resolve()),
         "config": _jsonable(cfg),
@@ -167,6 +291,31 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
         "issues": [],
         "passed": False,
     }
+    source_validation: dict[str, Any] = {}
+    try:
+        candidate_path, candidate_validation = _validate_strict_candidate(
+            args.candidate
+        )
+        opponent_path, opponent_validation = _validate_strict_candidate(
+            args.opponent
+        )
+        source_validation = {
+            "candidate": candidate_validation,
+            "opponent": opponent_validation,
+        }
+    except Exception as exc:
+        issue = (
+            "official_wire_probe_source_validation_failed:"
+            f"{type(exc).__name__}:{str(exc)[:500]}"
+        )
+        receipt["source_validation"] = {
+            "issues": [issue],
+            "validation_digest": "",
+        }
+        receipt["issues"].append(issue)
+        _write_json(round_dir / "receipt.json", receipt)
+        return receipt
+    receipt["source_validation"] = source_validation
     if not env_report["ok"]:
         receipt["issues"].extend(env_report["issues"])
         _write_json(round_dir / "receipt.json", receipt)
@@ -223,39 +372,32 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
 
             proxy_ports = await proxy.start(cfg.host)
             receipt["proxy_ports"] = proxy_ports
-            candidate_path = Path(args.candidate).expanduser().resolve()
-            opponent_path = Path(args.opponent).expanduser().resolve()
-            cmd_a, cwd_a = _build_bot_command(
+            bot_a_proc, launch_a = _launch_managed_probe_bot(
                 bot_path=candidate_path,
                 name="Candidate",
                 seat="upper",
                 host=cfg.host,
                 port=proxy_ports["A"],
                 log_path=round_dir / "botA.log",
+                sealed_root=round_dir / "managed_inputs" / "candidate",
+                stdout_path=round_dir / "botA.stdout.log",
+                stderr_path=round_dir / "botA.stderr.log",
             )
-            cmd_b, cwd_b = _build_bot_command(
+            bot_b_proc, launch_b = _launch_managed_probe_bot(
                 bot_path=opponent_path,
                 name="Opponent",
                 seat="lower",
                 host=cfg.host,
                 port=proxy_ports["B"],
                 log_path=round_dir / "botB.log",
-            )
-            receipt["commands"] = {"candidate": cmd_a, "opponent": cmd_b}
-            bot_a_proc = _launch_command(
-                cmd_a,
-                cwd=cwd_a,
-                env=env,
-                stdout_path=round_dir / "botA.stdout.log",
-                stderr_path=round_dir / "botA.stderr.log",
-            )
-            bot_b_proc = _launch_command(
-                cmd_b,
-                cwd=cwd_b,
-                env=env,
+                sealed_root=round_dir / "managed_inputs" / "opponent",
                 stdout_path=round_dir / "botB.stdout.log",
                 stderr_path=round_dir / "botB.stderr.log",
             )
+            receipt["managed_launches"] = {
+                "candidate": launch_a,
+                "opponent": launch_b,
+            }
             await asyncio.sleep(2.0)
             _click(env, window_id, cfg.ui.ok_x, cfg.ui.ok_y)
 

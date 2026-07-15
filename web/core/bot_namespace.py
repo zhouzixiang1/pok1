@@ -78,6 +78,8 @@ NATIONAL_BOT_ROLES = frozenset({ROLE_CANDIDATE, *ACTIVE_PUBLISHED_ROLES})
 
 _ACTIVE_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}([1-9][0-9]*)$")
 _ACTIVE_TAG_RE = re.compile(rf"^{re.escape(ACTIVE_TAG_PREFIX)}([1-9][0-9]*)$")
+_HIGH_WATER_TAG_RE = re.compile(r"^national-high-water-v([1-9][0-9]*)$")
+_GIT_OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _HEX_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_MANIFEST_KEYS = frozenset(
     {
@@ -117,15 +119,28 @@ _CORE_FILES = (
     POLICY_ENTRYPOINT,
     PRECOMPUTE_ENTRYPOINT,
 )
-_IGNORED_RUNTIME_DIRECTORY_NAMES = frozenset(
-    {"__pycache__", ".pytest_cache", ".task_context"}
+_WORKING_CONTROL_DIRECTORY_NAME = ".task_context"
+_FORBIDDEN_EXECUTION_CACHE_DIRECTORY_NAMES = frozenset(
+    {"__pycache__", ".pytest_cache"}
 )
 _IGNORED_RUNTIME_FILE_NAMES = frozenset({".completed"})
-_IGNORED_RUNTIME_FILE_SUFFIXES = frozenset({".pyc", ".pyo"})
+_FORBIDDEN_EXECUTION_CACHE_FILE_SUFFIXES = frozenset({".pyc", ".pyo"})
 
 
-def strict_artifact_layout_errors(bot_path: str | Path) -> list[str]:
-    """Require the exact five-file policy ABI, excluding runtime caches."""
+def strict_artifact_layout_errors(
+    bot_path: str | Path,
+    *,
+    allow_working_task_context: bool = False,
+) -> list[str]:
+    """Require the executable five-file policy ABI.
+
+    ``.task_context`` is a compiler-owned, non-executable Worker input.  The
+    one host-owned identity refresh that runs before the compiler removes that
+    directory may opt into it explicitly.  Every execution, parent selection,
+    certification, rating, and publication caller uses the default and rejects
+    it.  Python caches are never authorized: ``-B`` prevents writes but does not
+    stop an unchecked-hash ``.pyc`` from overriding a content-bound source file.
+    """
 
     root = Path(bot_path)
     if root.is_symlink() or not root.is_dir():
@@ -147,7 +162,12 @@ def strict_artifact_layout_errors(bot_path: str | Path) -> list[str]:
             errors.append(f"artifact_symlink_forbidden:{name}")
             continue
         if stat.S_ISDIR(metadata.st_mode):
-            if name not in _IGNORED_RUNTIME_DIRECTORY_NAMES:
+            if name == _WORKING_CONTROL_DIRECTORY_NAME:
+                if not allow_working_task_context:
+                    errors.append(f"artifact_working_control_directory_forbidden:{name}")
+            elif name in _FORBIDDEN_EXECUTION_CACHE_DIRECTORY_NAMES:
+                errors.append(f"artifact_execution_cache_directory_forbidden:{name}")
+            else:
                 errors.append(f"artifact_extra_directory_forbidden:{name}")
             continue
         if not stat.S_ISREG(metadata.st_mode):
@@ -155,8 +175,10 @@ def strict_artifact_layout_errors(bot_path: str | Path) -> list[str]:
             continue
         if (
             name in _IGNORED_RUNTIME_FILE_NAMES
-            or child.suffix.lower() in _IGNORED_RUNTIME_FILE_SUFFIXES
         ):
+            continue
+        if child.suffix.lower() in _FORBIDDEN_EXECUTION_CACHE_FILE_SUFFIXES:
+            errors.append(f"artifact_execution_cache_file_forbidden:{name}")
             continue
         files.add(name)
     for relative in sorted(STRICT_ARTIFACT_FILES - files):
@@ -213,6 +235,97 @@ def parse_tag_version(tag: str | None) -> int | None:
         return None
     match = _ACTIVE_TAG_RE.fullmatch(tag)
     return int(match.group(1)) if match else None
+
+
+@dataclass(frozen=True)
+class VersionNamespaceAuthority:
+    """One immutable snapshot of the paired publication-tag namespace.
+
+    A completion tag or a high-water tag by itself is an interrupted effect,
+    not version authority.  A version advances the namespace only when both
+    exact annotated tags peel to the same commit.  Strict-v143+ artifact and
+    certificate eligibility remain a separate publication-authority check;
+    callers must not treat this numeric namespace proof as executable bytes.
+    """
+
+    high_water: int
+    paired_versions: tuple[int, ...]
+    paired_commits: tuple[tuple[int, str], ...]
+    unpaired_completion_versions: tuple[int, ...]
+    unpaired_high_water_versions: tuple[int, ...]
+
+
+def resolve_version_namespace_authority(
+    git: Callable[..., str],
+) -> VersionNamespaceAuthority:
+    """Resolve the canonical paired completion/high-water tag authority.
+
+    ``git`` is an injected read-only command adapter.  Keeping the resolver in
+    the namespace module lets the runtime, scheduler projection, epoch-reset
+    tool and stopped-runtime reconciliation command share exactly one parser
+    and one commit-pairing rule.
+    """
+
+    rows = str(git(
+        "for-each-ref",
+        "--format=%(objecttype)%09%(*objecttype)%09%(refname:short)",
+        "refs/tags/national-bot-v*",
+        "refs/tags/national-high-water-v*",
+    ) or "")
+    completion: dict[int, str] = {}
+    high_water: dict[int, str] = {}
+    for row in rows.splitlines():
+        parts = row.split("\t")
+        if len(parts) != 3:
+            continue
+        object_type, peeled_type, raw_tag = parts
+        if object_type != "tag" or peeled_type != "commit":
+            continue
+        tag = raw_tag.strip()
+        completion_match = _ACTIVE_TAG_RE.fullmatch(tag)
+        if completion_match is not None:
+            completion[int(completion_match.group(1))] = tag
+            continue
+        high_water_match = _HIGH_WATER_TAG_RE.fullmatch(tag)
+        if high_water_match is not None:
+            high_water[int(high_water_match.group(1))] = tag
+
+    paired_versions = tuple(sorted(set(completion).intersection(high_water)))
+    if not paired_versions:
+        raise RuntimeError(
+            "paired annotated completion/high-water version authority unavailable"
+        )
+
+    paired_commits: list[tuple[int, str]] = []
+    for version in paired_versions:
+        completion_commit = str(git(
+            "rev-parse",
+            f"refs/tags/{completion[version]}^{{commit}}",
+        ) or "").strip().lower()
+        high_water_commit = str(git(
+            "rev-parse",
+            f"refs/tags/{high_water[version]}^{{commit}}",
+        ) or "").strip().lower()
+        if (
+            _GIT_OBJECT_ID_RE.fullmatch(completion_commit) is None
+            or completion_commit != high_water_commit
+        ):
+            raise RuntimeError(
+                f"paired version authority commit mismatch for v{version}"
+            )
+        paired_commits.append((version, completion_commit))
+
+    return VersionNamespaceAuthority(
+        high_water=paired_versions[-1],
+        paired_versions=paired_versions,
+        paired_commits=tuple(paired_commits),
+        unpaired_completion_versions=tuple(
+            sorted(set(completion).difference(high_water))
+        ),
+        unpaired_high_water_versions=tuple(
+            sorted(set(high_water).difference(completion))
+        ),
+    )
 
 
 def active_bot_glob() -> str:
@@ -677,6 +790,7 @@ def policy_identity_document_errors(
     version: int,
     *,
     parent_versions: list[int] | tuple[int, ...] = (),
+    allow_working_task_context: bool = False,
 ) -> list[str]:
     """Verify semantic identity and the exact host-owned JSON byte encoding.
 
@@ -687,7 +801,10 @@ def policy_identity_document_errors(
     """
 
     root = Path(bot_path)
-    errors = list(strict_artifact_layout_errors(root))
+    errors = list(strict_artifact_layout_errors(
+        root,
+        allow_working_task_context=allow_working_task_context,
+    ))
     try:
         expected_manifest = build_runtime_manifest(root)
     except Exception as exc:
@@ -784,7 +901,14 @@ def refresh_policy_identity_documents(
     """Atomically rebuild both identities after an authorized policy edit."""
 
     root = Path(bot_path)
-    layout_errors = strict_artifact_layout_errors(root)
+    # The system refresh runs immediately before the compiler-owned Worker
+    # briefs are removed.  This is the sole work-phase exception; caches remain
+    # forbidden and every consumer of the resulting artifact revalidates with
+    # the strict default before execution/publication.
+    layout_errors = strict_artifact_layout_errors(
+        root,
+        allow_working_task_context=True,
+    )
     if layout_errors:
         raise ValueError("invalid strict artifact layout: " + ";".join(layout_errors))
     manifest = build_runtime_manifest(root)
@@ -805,6 +929,7 @@ def refresh_policy_identity_documents(
         root,
         int(version),
         parent_versions=parent_versions,
+        allow_working_task_context=True,
     )
     if errors:
         raise ValueError("refreshed policy identity is invalid: " + ";".join(errors))

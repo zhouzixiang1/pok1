@@ -23,12 +23,16 @@ import re
 import shutil
 import signal
 import subprocess
-import sys
 import threading
 import time
 from typing import Any, Callable
 
 from bot_artifact import canonical_digest, hash_path
+from bot_namespace import (
+    ROLE_CANDIDATE,
+    policy_identity_document_errors,
+    resolve_national_bot_spec,
+)
 from pipeline_schema import NationalAcceptanceResult
 from official_attribution import round_topology
 from official_bot_sandbox import (
@@ -139,7 +143,6 @@ class BotLaunchConfig:
     seat: str = "auto"
     role: str = ""
     instance_id: str = ""
-    python: str = sys.executable
     supports_log: bool = True
     supports_seat: bool = True
     extra_args: tuple[str, ...] = ()
@@ -181,43 +184,54 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def resolve_bot_entry(path: str | Path) -> Path:
-    """Resolve a native bot directory or script to the executable script path."""
-    candidate = Path(path).expanduser().resolve()
-    if candidate.is_dir():
-        native = candidate / "national_bot.py"
-        if native.exists():
-            return native
-        raise FileNotFoundError(f"no national_bot.py under {candidate}")
-    if candidate.exists():
-        return candidate
-    raise FileNotFoundError(str(candidate))
-
-
-def build_bot_command(
-    bot: BotLaunchConfig,
+def _validate_active_diagnostic_bot(
+    path: str | Path,
     *,
-    host: str,
-    port: int,
-    log_path: Path | None = None,
-) -> list[str]:
-    entry = resolve_bot_entry(bot.path)
-    cmd = [
-        bot.python,
-        str(entry),
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--name",
-        bot.name,
-    ]
-    if bot.supports_seat:
-        cmd.extend(["--seat", bot.seat])
-    if bot.supports_log and log_path is not None:
-        cmd.extend(["--log", str(log_path)])
-    cmd.extend(bot.extra_args)
-    return cmd
+    repo_root: Path | None = None,
+) -> Path:
+    """Validate one unpublished-or-published strict bot before an EXE launch."""
+
+    root = (repo_root or ROOT).resolve()
+    requested = Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+    if requested.is_symlink() or not requested.is_dir():
+        raise RuntimeError(
+            "official_acceptance_requires_strict_bot_directory"
+        )
+    source = requested.resolve()
+    if source.parent != (root / "bots").resolve():
+        raise RuntimeError("official_acceptance_bot_outside_active_namespace")
+    spec = resolve_national_bot_spec(
+        source,
+        ROLE_CANDIDATE,
+        repo_root=root,
+        require_completion=False,
+        require_certificate=False,
+    )
+    issues = list(spec.issues)
+    lineage = spec.epoch_receipt.get("lineage") if spec.epoch_receipt else {}
+    raw_parents = lineage.get("parent_versions") if isinstance(lineage, dict) else []
+    parents = (
+        tuple(int(item) for item in raw_parents)
+        if isinstance(raw_parents, list)
+        and all(isinstance(item, int) and not isinstance(item, bool) for item in raw_parents)
+        else ()
+    )
+    if spec.version is not None:
+        issues.extend(
+            policy_identity_document_errors(
+                source,
+                spec.version,
+                parent_versions=parents,
+            )
+        )
+    issues.extend(current_system_native_runtime_errors(source))
+    issues = list(dict.fromkeys(str(issue) for issue in issues))
+    if issues:
+        raise RuntimeError(
+            "official_acceptance_strict_bot_invalid:"
+            + ";".join(issues[:12])
+        )
+    return source
 
 
 def _seconds_from_timestamp(line: str) -> int | None:
@@ -1444,12 +1458,16 @@ def _build_terminal_completion_evidence(
 def round_completion_issues(
     receipt: dict[str, Any],
     target_hands: int,
+    *,
+    natural_terminal_only: bool = False,
 ) -> list[str]:
     """Validate complete-round evidence, including the EXE hand-70 THP rule."""
     log_summary = receipt.get("log_summary") if isinstance(receipt, dict) else None
     if not isinstance(log_summary, dict):
         return ["official_round_log_summary_missing"]
-    if _target_reached(log_summary, target_hands):
+    if _target_reached(log_summary, target_hands) and not (
+        natural_terminal_only and target_hands == 70
+    ):
         return []
     if target_hands != 70:
         return [
@@ -2063,7 +2081,11 @@ def run_official_round(
     receipt["issues"].extend(_read_issue_file(bot_a_stderr))
     receipt["issues"].extend(_read_issue_file(bot_b_stdout))
     receipt["issues"].extend(_read_issue_file(bot_b_stderr))
-    receipt["issues"].extend(round_completion_issues(receipt, target_hands))
+    receipt["issues"].extend(round_completion_issues(
+        receipt,
+        target_hands,
+        natural_terminal_only=job_envelope is not None and target_hands == 70,
+    ))
     receipt["issues"] = list(dict.fromkeys(str(issue) for issue in receipt["issues"]))
     receipt["passed"] = not receipt["issues"]
     _write_json(round_dir / "receipt.json", receipt)
@@ -2134,7 +2156,11 @@ def _load_reusable_round(
         return None
     if receipt.get("issues"):
         return None
-    if round_completion_issues(receipt, target_hands):
+    if round_completion_issues(
+        receipt,
+        target_hands,
+        natural_terminal_only=job_envelope is not None and target_hands == 70,
+    ):
         return None
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     required = (
@@ -2249,6 +2275,10 @@ def run_official_acceptance_sync(
     formal_execution: dict[str, Any] | None = None
 
     try:
+        if round_runner is _PRODUCTION_ROUND_RUNNER:
+            candidate_path = _validate_active_diagnostic_bot(candidate_path)
+            if opponent_path is not None:
+                opponent_path = _validate_active_diagnostic_bot(opponent_path)
         formal_requested = job_envelope is not None and target_hands == 70
         formal_job = formal_requested and round_runner is _PRODUCTION_ROUND_RUNNER
         if formal_requested and not formal_job:

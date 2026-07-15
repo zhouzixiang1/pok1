@@ -5,6 +5,8 @@ from types import SimpleNamespace
 import checkpoint_schema
 import evolution_infra
 import pytest
+
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 from pipeline_infrastructure import (
     build_infrastructure_failure,
     infrastructure_attempt_key,

@@ -4,14 +4,20 @@ import shutil
 from types import SimpleNamespace
 
 import evolution_infra
+import pytest
 import tool_planning
+
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
 def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     tmp_path,
     monkeypatch,
 ):
-    from runtime_architecture_policy import build_prepared_capability_snapshot
+    import runtime_architecture_policy as architecture
+    from runtime_architecture_policy import (
+        build_lineage_only_prepared_capability_snapshot,
+    )
     from system_strict_bootstrap import materialize_fresh_candidate
 
     bots = tmp_path / "bots"
@@ -19,11 +25,38 @@ def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     candidate = bots / "national_v143"
     bots.mkdir(parents=True)
     materialize_fresh_candidate(candidate, version=143, final_policy=True)
-    snapshot = build_prepared_capability_snapshot(source, candidate)
+    source.mkdir()
+    (source / "policy.py").write_text(
+        "raise RuntimeError('poison stale v142 must never be opened')\n",
+        encoding="utf-8",
+    )
+
+    real_evaluate = architecture.evaluate_national_capabilities
+
+    def candidate_only_evaluate(path):
+        if getattr(path, "name", "") == "national_v142":
+            raise AssertionError("stale v142 capability probe was invoked")
+        return real_evaluate(path)
+
+    monkeypatch.setattr(
+        architecture,
+        "evaluate_national_capabilities",
+        candidate_only_evaluate,
+    )
+    snapshot = build_lineage_only_prepared_capability_snapshot(
+        "national_v142",
+        candidate,
+    )
+
+    def target_only_bot_dir(version):
+        if int(version) == 142:
+            raise AssertionError("fresh architecture must not resolve v142")
+        return bots / f"national_v{version}"
+
     monkeypatch.setattr(
         tool_planning,
         "get_bot_dir",
-        lambda version: bots / f"national_v{version}",
+        target_only_bot_dir,
     )
 
     assessment = tool_planning._build_generation_architecture_policy(
@@ -55,7 +88,74 @@ def test_missing_normal_parent_cannot_claim_lineage_only_exception(
     assert assessment["outcome"] == "source_invalid"
 
 
-def test_master_source_probe_retries_same_tool_then_abandons(tmp_path, monkeypatch):
+def test_fresh_quality_transition_never_resolves_or_probes_stale_v142(
+    tmp_path,
+    monkeypatch,
+):
+    import runtime_architecture_policy as architecture
+    import tool_gates
+    from system_strict_bootstrap import materialize_fresh_candidate
+
+    bots = tmp_path / "bots"
+    stale = bots / "national_v142"
+    candidate = bots / "national_v143"
+    bots.mkdir(parents=True)
+    stale.mkdir()
+    (stale / "policy.py").write_text(
+        "raise RuntimeError('poison stale v142 must never be opened')\n",
+        encoding="utf-8",
+    )
+    materialize_fresh_candidate(candidate, version=143, final_policy=True)
+
+    real_evaluate = architecture.evaluate_national_capabilities
+
+    def candidate_only_evaluate(path):
+        if getattr(path, "name", "") == "national_v142":
+            raise AssertionError("quality probed stale v142")
+        return real_evaluate(path)
+
+    monkeypatch.setattr(
+        architecture,
+        "evaluate_national_capabilities",
+        candidate_only_evaluate,
+    )
+    snapshot = architecture.build_lineage_only_prepared_capability_snapshot(
+        "national_v142",
+        candidate,
+    )
+    expected_policy = architecture.build_lineage_only_architecture_policy(
+        "national_v142",
+        prepared_capability_snapshot=snapshot,
+    )
+
+    def source_resolution_forbidden(version):
+        if int(version) == 142:
+            raise AssertionError("quality resolved stale v142")
+        return bots / f"national_v{version}"
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", source_resolution_forbidden)
+    assert tool_gates._quality_source_dir(
+        142,
+        numeric_lineage_only=True,
+    ) is None
+
+    transition = architecture.evaluate_architecture_transition(
+        None,
+        candidate,
+        expected_policy=expected_policy,
+        lineage_source_bot="national_v142",
+    )
+
+    assert transition["conclusive"] is True
+    assert transition["source_capabilities"]["lineage_only"] is True
+    assert transition["policy"]["source_bot"] == "national_v142"
+
+
+def test_master_source_probe_retries_same_tool_then_abandons(
+    tmp_path,
+    monkeypatch,
+    synthetic_checkpoint_authority,
+):
     from prepared_baseline_contract import build_prepared_artifact_contract
     from system_strict_bootstrap import (
         materialize_fresh_candidate,
@@ -97,6 +197,9 @@ def test_master_source_probe_retries_same_tool_then_abandons(tmp_path, monkeypat
         next_v=144,
         source_v=143,
         audit_context=audit_context,
+        published_high_water=143,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
         parent_resolver=lambda *_args, **_kwargs: published_source,
     )
     state_file.write_text(json.dumps({

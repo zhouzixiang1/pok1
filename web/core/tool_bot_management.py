@@ -1,37 +1,738 @@
 """Bot lifecycle management: MCP reaping/abandonment and guarded cleanup."""
 
 import fcntl
+import hashlib
 import json
-import shutil
+import math
+import os
+from contextlib import nullcontext
+from pathlib import Path
+import stat
 import time
-from typing import Annotated, TypedDict
+from typing import TypedDict
 
-from bot_namespace import bot_name, parse_bot_version
+from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, parse_bot_version
 from tool_runtime_guard import tool
 
 from evolution_core import (
-    get_active_bots, get_bot_dir, find_current_v, find_latest_active_v, load_ratings,
+    get_active_bots, get_bot_dir, load_ratings,
     clear_pipeline_checkpoint, git_has_tag, git_dir_is_committed,
-    find_max_committed_v, find_abandoned_version_floor, compute_next_generation_v,
-    MAX_ACTIVE_BOTS, RESULTS_DIR, REPLAY_DIR,
+    MAX_ACTIVE_BOTS, RESULTS_DIR,
     Glicko2Player,
 )
 from tool_helpers import (
-    _get_ui, load_h2h_avg_winrates, load_strength_scores, PROJECT_ROOT,
+    load_h2h_avg_winrates, load_strength_scores, PROJECT_ROOT,
 )
 from system_log import log_system_event
 
 from evolution_infra import (
     MAX_PRECOMMIT_RETRIES,
     BOTS_DIR,
-    append_locked_jsonl,
+    append_abandoned_version_receipt,
+    bot_publication_lock,
+    git_has_publication_ref,
+    load_abandoned_version_receipts,
+    recorded_abandon_receipt_for_checkpoint,
     read_pipeline_checkpoint,
     record_reaped_bot,
+    _fsync_regular_state_file_and_parent,
+    _git as _evolution_git,
 )
 from pipeline_state import generic_abandon_block
+from bot_artifact import canonical_digest
+from bot_namespace import EVALUATION_EPOCH
+from epoch_authority import (
+    schema2_abandon_quarantine_contract,
+    schema2_abandon_receipt_identity,
+    schema2_abandon_transaction_preimage,
+    validate_schema2_abandon_claim_structure,
+    validate_schema2_abandon_finalize_receipt,
+    validate_schema2_abandon_ledger_history,
+)
 
 # A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
 _LAST_ABANDON_TS = [0.0, ""]
+
+
+def _fsync_parent_directory(path) -> None:
+    descriptor = os.open(
+        str(path.parent),
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _candidate_tree_manifest(path: Path) -> dict:
+    """Bind the exact disposable candidate preimage without following links."""
+
+    root = Path(path)
+    metadata = os.lstat(root)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+    ):
+        raise RuntimeError("candidate_not_single_link_directory")
+    entries: list[dict] = []
+    total_bytes = 0
+    for child in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        relative = child.relative_to(root).as_posix()
+        if len(entries) >= 10_000 or len(Path(relative).parts) > 32:
+            raise RuntimeError("candidate_manifest_entry_or_depth_limit")
+        child_stat = os.lstat(child)
+        if stat.S_ISLNK(child_stat.st_mode):
+            raise RuntimeError(f"candidate_unsafe_entry:{relative}")
+        if stat.S_ISDIR(child_stat.st_mode):
+            entries.append({"path": relative, "kind": "directory"})
+            continue
+        if not stat.S_ISREG(child_stat.st_mode):
+            raise RuntimeError(f"candidate_special_entry:{relative}")
+        if child_stat.st_nlink != 1:
+            raise RuntimeError(f"candidate_hardlink_entry:{relative}")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(child, flags)
+        try:
+            opened = os.fstat(descriptor)
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total_bytes += len(chunk)
+                if total_bytes > 64 * 1024 * 1024:
+                    raise RuntimeError("candidate_manifest_too_large")
+            raw = b"".join(chunks)
+            opened_after = os.fstat(descriptor)
+            live = os.lstat(child)
+            if (
+                opened.st_nlink != 1
+                or opened_after.st_nlink != 1
+                or live.st_nlink != 1
+                or (opened.st_dev, opened.st_ino)
+                != (opened_after.st_dev, opened_after.st_ino)
+                or (opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                != (
+                    opened_after.st_size,
+                    opened_after.st_mtime_ns,
+                    opened_after.st_ctime_ns,
+                )
+                or (opened_after.st_dev, opened_after.st_ino)
+                != (live.st_dev, live.st_ino)
+                or opened.st_size != len(raw)
+            ):
+                raise RuntimeError(f"candidate_changed_while_read:{relative}")
+        finally:
+            os.close(descriptor)
+        entries.append({
+            "path": relative,
+            "kind": "file",
+            "size": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        })
+    return {
+        "manifest_digest": canonical_digest(entries),
+        "entry_count": len(entries),
+        "total_bytes": total_bytes,
+    }
+
+
+def _write_json_exclusive_durable(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise RuntimeError("abandon_transaction_parent_unsafe")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        raw = (
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("abandon transaction write made no progress")
+            offset += written
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    _fsync_parent_directory(path)
+
+
+def _read_json_regular(path: Path) -> dict:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        raw = os.read(descriptor, 1024 * 1024 + 1)
+        opened_after = os.fstat(descriptor)
+        live = os.lstat(path)
+        if (
+            len(raw) > 1024 * 1024
+            or not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(opened_after.st_mode)
+            or not stat.S_ISREG(live.st_mode)
+            or opened.st_nlink != 1
+            or opened_after.st_nlink != 1
+            or live.st_nlink != 1
+            or opened.st_size != len(raw)
+            or (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            ) != (
+                opened_after.st_dev,
+                opened_after.st_ino,
+                opened_after.st_size,
+                opened_after.st_mtime_ns,
+                opened_after.st_ctime_ns,
+            )
+            or (
+                opened_after.st_dev,
+                opened_after.st_ino,
+                opened_after.st_size,
+                opened_after.st_mtime_ns,
+                opened_after.st_ctime_ns,
+            ) != (
+                live.st_dev,
+                live.st_ino,
+                live.st_size,
+                live.st_mtime_ns,
+                live.st_ctime_ns,
+            )
+        ):
+            raise RuntimeError("abandon_transaction_json_unsafe")
+    finally:
+        os.close(descriptor)
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("abandon_transaction_json_not_object")
+    return value
+
+
+def _ensure_durable_json(path: Path, payload: dict) -> None:
+    if os.path.lexists(path):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        try:
+            opened = os.fstat(descriptor)
+            live_before = os.lstat(path)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or not stat.S_ISREG(live_before.st_mode)
+                or live_before.st_nlink != 1
+                or (opened.st_dev, opened.st_ino, opened.st_size)
+                != (live_before.st_dev, live_before.st_ino, live_before.st_size)
+            ):
+                raise RuntimeError("abandon_transaction_json_unsafe")
+            raw = os.read(descriptor, 1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise RuntimeError("abandon_transaction_json_unsafe")
+            observed = json.loads(raw.decode("utf-8"))
+            if observed != payload:
+                raise RuntimeError("abandon_transaction_claim_conflict")
+            os.fsync(descriptor)
+            opened_after = os.fstat(descriptor)
+            live_after = os.lstat(path)
+            if (
+                opened_after.st_nlink != 1
+                or live_after.st_nlink != 1
+                or opened.st_size != len(raw)
+                or (
+                    opened_after.st_dev,
+                    opened_after.st_ino,
+                    opened_after.st_size,
+                    opened_after.st_mtime_ns,
+                    opened_after.st_ctime_ns,
+                ) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                )
+                or (
+                    live_after.st_dev,
+                    live_after.st_ino,
+                    live_after.st_size,
+                    live_after.st_mtime_ns,
+                    live_after.st_ctime_ns,
+                ) != (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                )
+            ):
+                raise RuntimeError("abandon_transaction_json_changed")
+        finally:
+            os.close(descriptor)
+        _fsync_parent_directory(path)
+        return
+    _write_json_exclusive_durable(path, payload)
+
+
+def _checkpoint_transaction_identity(checkpoint: dict) -> dict:
+    return {
+        "digest": canonical_digest(checkpoint),
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "stage": checkpoint.get("stage"),
+        "workflow_run_id": str(
+            checkpoint.get("workflow_run_id")
+            or checkpoint.get("run_id")
+            or ""
+        ),
+        "checkpoint_revision": checkpoint.get("checkpoint_revision"),
+    }
+
+
+def _current_abandon_git_state(version: int) -> dict:
+    """Capture every Git predicate whose absence permits quarantine."""
+
+    target = int(version)
+    head = _evolution_git("rev-parse", "HEAD")
+    tracked_status = _evolution_git(
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    )
+    state = {
+        "head": head,
+        "tracked_worktree_clean": tracked_status == "",
+        "candidate_tracked": bool(git_dir_is_committed(target)),
+        "publication_refs": {
+            f"national-bot-v{target}": bool(git_has_publication_ref(target)),
+            f"national-high-water-v{target}": bool(
+                git_has_publication_ref(target)
+            ),
+        },
+    }
+    if (
+        state["tracked_worktree_clean"] is not True
+        or state["candidate_tracked"] is not False
+        or any(state["publication_refs"].values())
+    ):
+        raise RuntimeError("recorded_abandon_git_state_not_disposable")
+    return state
+
+
+def _abandon_ledger_claim(checkpoint: dict, reason: str) -> dict:
+    rows = load_abandoned_version_receipts(
+        path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+        project_root=PROJECT_ROOT,
+    )
+    return {
+        "path_contract": "RESULTS_DIR/abandoned_versions.jsonl",
+        "prior_receipt_count": len(rows),
+        "prior_receipt_head_digest": (
+            rows[-1]["receipt_digest"] if rows else None
+        ),
+        "receipt_identity": schema2_abandon_receipt_identity(
+            _checkpoint_transaction_identity(checkpoint),
+            str(reason),
+        ),
+    }
+
+
+def _assert_safe_existing_transaction_chain(transaction_dir: Path) -> None:
+    """Reject links/special files in every existing derived path ancestor."""
+
+    results = Path(RESULTS_DIR)
+    try:
+        relative = transaction_dir.relative_to(results)
+    except ValueError as exc:
+        raise RuntimeError("abandon_transaction_path_escaped_results") from exc
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(results, flags)
+    try:
+        for part in relative.parts:
+            if part in {"", ".", ".."}:
+                raise RuntimeError("abandon_transaction_path_not_canonical")
+            child = os.open(part, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except OSError as exc:
+        raise RuntimeError("abandon_transaction_directory_unsafe") from exc
+    finally:
+        os.close(descriptor)
+
+
+def _validate_active_abandon_claim(claim: dict) -> dict:
+    """Reopen all live authority; never trust a merely re-signed sidecar."""
+
+    validate_schema2_abandon_claim_structure(claim)
+    checkpoint_identity = claim["checkpoint"]
+    version = int(checkpoint_identity["next_v"])
+    current_git = _current_abandon_git_state(version)
+    if current_git != claim["git_state"]:
+        raise RuntimeError("recorded_abandon_active_git_state_changed")
+
+    transaction_dir, quarantine = _claim_transaction_paths(claim)
+    _assert_safe_existing_transaction_chain(transaction_dir)
+    transaction_claim = transaction_dir / "claim.json"
+    if not os.path.lexists(transaction_claim):
+        raise RuntimeError("recorded_abandon_transaction_claim_missing")
+    if _read_json_regular(transaction_claim) != claim:
+        raise RuntimeError("recorded_abandon_transaction_claim_mismatch")
+
+    candidate = Path(get_bot_dir(version))
+    state = _validate_claim_candidate_state(claim, candidate, quarantine)
+    rows = load_abandoned_version_receipts(
+        path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+        project_root=PROJECT_ROOT,
+    )
+    abandon_receipt = validate_schema2_abandon_ledger_history(
+        claim,
+        rows,
+        require_active_head=True,
+    )
+
+    from evolution_core import PIPELINE_STATE_FILE
+
+    checkpoint_path = Path(PIPELINE_STATE_FILE)
+    checkpoint_exists = os.path.lexists(checkpoint_path)
+    if checkpoint_exists:
+        checkpoint = read_pipeline_checkpoint()
+        if (
+            not isinstance(checkpoint, dict)
+            or canonical_digest(checkpoint) != checkpoint_identity["digest"]
+            or _checkpoint_transaction_identity(checkpoint) != checkpoint_identity
+        ):
+            raise RuntimeError("recorded_abandon_active_checkpoint_changed")
+        if abandon_receipt is None and state not in {"source", "absent"}:
+            raise RuntimeError("recorded_abandon_phase_invalid_before_ledger")
+    else:
+        if abandon_receipt is None:
+            raise RuntimeError("recorded_abandon_receipt_missing_after_checkpoint_clear")
+        if claim["candidate"]["present"] is True and state != "quarantine":
+            raise RuntimeError("recorded_abandon_source_invalid_after_checkpoint_clear")
+        if claim["candidate"]["present"] is False and state != "absent":
+            raise RuntimeError("recorded_abandon_absent_phase_invalid")
+
+    finalize_path = transaction_dir / "receipt.json"
+    if os.path.lexists(finalize_path):
+        validate_schema2_abandon_finalize_receipt(
+            claim,
+            _read_json_regular(finalize_path),
+            rows,
+        )
+    return claim
+
+
+def _load_live_abandon_claim() -> dict | None:
+    path = Path(RESULTS_DIR) / "policy_epoch_reconciliation_claim.json"
+    if not os.path.lexists(path):
+        return None
+    claim = _read_json_regular(path)
+    return _validate_active_abandon_claim(claim)
+
+
+def _ensure_transaction_directory(path: Path) -> None:
+    results = Path(RESULTS_DIR)
+    if results.is_symlink() or not results.is_dir():
+        raise RuntimeError("abandon_results_directory_unsafe")
+    cursor = results
+    relative = path.relative_to(results)
+    for part in relative.parts:
+        cursor = cursor / part
+        if os.path.lexists(cursor):
+            metadata = os.lstat(cursor)
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise RuntimeError("abandon_transaction_directory_unsafe")
+            continue
+        os.mkdir(cursor, 0o700)
+        _fsync_parent_directory(cursor)
+
+
+def _candidate_claim_preimage(version: int) -> tuple[Path, dict]:
+    candidate = Path(get_bot_dir(version))
+    if not os.path.lexists(candidate):
+        return candidate, {
+            "present": False,
+            "path": f"bots/{bot_name(version)}",
+            "manifest_digest": None,
+            "entry_count": 0,
+            "total_bytes": 0,
+        }
+    metadata = os.lstat(candidate)
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise RuntimeError("candidate_not_regular_directory")
+    if os.path.lexists(candidate / ".completed"):
+        raise RuntimeError("candidate_has_completed_sentinel")
+    if git_has_publication_ref(version):
+        raise RuntimeError("candidate_has_publication_ref")
+    if git_dir_is_committed(version):
+        raise RuntimeError("candidate_is_git_tracked")
+    return candidate, {
+        "present": True,
+        "path": f"bots/{bot_name(version)}",
+        **_candidate_tree_manifest(candidate),
+    }
+
+
+def _build_recorded_abandon_claim(
+    checkpoint: dict,
+    *,
+    reason: str,
+) -> tuple[dict, Path, Path]:
+    if not _is_autonomous_runtime_checkout():
+        raise RuntimeError("abandon_requires_autonomous_runtime_checkout")
+    checkpoint_identity = _checkpoint_transaction_identity(checkpoint)
+    version = int(checkpoint_identity["next_v"])
+    candidate, candidate_identity = _candidate_claim_preimage(version)
+    git_state = _current_abandon_git_state(version)
+    ledger = _abandon_ledger_claim(checkpoint, str(reason))
+    claim_identity = {
+        "checkpoint": checkpoint_identity,
+        "abandon_reason": str(reason),
+        "candidate": candidate_identity,
+        "quarantine": schema2_abandon_quarantine_contract(),
+        "ledger": ledger,
+        "git_state": git_state,
+    }
+    transaction_id = canonical_digest(
+        schema2_abandon_transaction_preimage(claim_identity)
+    )
+    transaction_dir = (
+        Path(RESULTS_DIR)
+        / "policy_epoch_abandon_transactions"
+        / transaction_id
+    )
+    claim_payload = {
+        "schema_version": 2,
+        "kind": "national-policy-recorded-abandon-finalize-claim",
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "git_head": git_state["head"],
+        "git_state": git_state,
+        "checkout_role": "autonomous_evolution_runtime",
+        "transaction_id": transaction_id,
+        "checkpoint": checkpoint_identity,
+        "abandon_reason": str(reason),
+        "candidate": candidate_identity,
+        "quarantine": schema2_abandon_quarantine_contract(),
+        "ledger": ledger,
+    }
+    claim = {
+        **claim_payload,
+        "claim_digest": canonical_digest(claim_payload),
+    }
+    validate_schema2_abandon_claim_structure(claim)
+    return claim, candidate, transaction_dir
+
+
+def _is_autonomous_runtime_checkout() -> bool:
+    return Path(PROJECT_ROOT).resolve().name == ".evolution_pok"
+
+
+def _claim_transaction_paths(claim: dict) -> tuple[Path, Path]:
+    transaction_id = str(claim.get("transaction_id") or "")
+    if (
+        len(transaction_id) != 64
+        or any(char not in "0123456789abcdef" for char in transaction_id)
+    ):
+        raise RuntimeError("recorded_abandon_transaction_id_invalid")
+    transaction_dir = (
+        Path(RESULTS_DIR)
+        / "policy_epoch_abandon_transactions"
+        / transaction_id
+    )
+    return transaction_dir, transaction_dir / "candidate"
+
+
+def _validate_claim_candidate_state(
+    claim: dict,
+    candidate: Path,
+    quarantine: Path,
+) -> str:
+    expected = claim["candidate"]
+    source_exists = os.path.lexists(candidate)
+    quarantine_exists = os.path.lexists(quarantine)
+    if source_exists and quarantine_exists:
+        raise RuntimeError("candidate_exists_at_source_and_quarantine")
+    if expected.get("present") is not True:
+        if source_exists or quarantine_exists:
+            raise RuntimeError("unexpected_candidate_for_absent_preimage")
+        return "absent"
+    if not source_exists and not quarantine_exists:
+        raise RuntimeError("claimed_candidate_disappeared")
+    observed_path = candidate if source_exists else quarantine
+    observed = _candidate_tree_manifest(observed_path)
+    for field in ("manifest_digest", "entry_count", "total_bytes"):
+        if observed.get(field) != expected.get(field):
+            raise RuntimeError(f"claimed_candidate_preimage_drifted:{field}")
+    return "source" if source_exists else "quarantine"
+
+
+def _claim_abandon_receipt(claim: dict) -> dict | None:
+    rows = load_abandoned_version_receipts(
+        path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+        project_root=PROJECT_ROOT,
+    )
+    receipt = validate_schema2_abandon_ledger_history(
+        claim,
+        rows,
+        require_active_head=True,
+    )
+    if receipt is None:
+        return None
+    # The prior append may have completed its atomic replace and then raised
+    # while syncing the parent directory.  A recovery attempt must re-prove
+    # both the exact ledger inode and its directory before it is allowed to
+    # quarantine candidate bytes or clear the checkpoint.
+    _fsync_regular_state_file_and_parent(
+        Path(RESULTS_DIR) / "abandoned_versions.jsonl"
+    )
+    return dict(receipt)
+
+
+def _finalize_checkpoint_abandon_transaction(
+    checkpoint: dict | None,
+    *,
+    reason: str,
+    infra_failure: dict | None,
+    timestamp: float,
+    recorded_abandon_receipt: dict | None,
+    clear_pipeline_state,
+) -> dict:
+    """Run the publication-linearized durable abandon state machine."""
+
+    live_claim_path = Path(RESULTS_DIR) / "policy_epoch_reconciliation_claim.json"
+    claim = _load_live_abandon_claim()
+    if claim is None:
+        if not isinstance(checkpoint, dict):
+            raise RuntimeError("recorded_abandon_claim_missing")
+        claim, candidate, transaction_dir = _build_recorded_abandon_claim(
+            checkpoint,
+            reason=reason,
+        )
+        _ensure_transaction_directory(transaction_dir)
+        _ensure_durable_json(transaction_dir / "claim.json", claim)
+        # The typed launch barrier and candidate preimage are durable before
+        # the allocation receipt or any source-path mutation.
+        _ensure_durable_json(live_claim_path, claim)
+    else:
+        if isinstance(checkpoint, dict):
+            checkpoint_identity = _checkpoint_transaction_identity(checkpoint)
+            if claim.get("checkpoint") != checkpoint_identity:
+                raise RuntimeError("recorded_abandon_claim_checkpoint_mismatch")
+        else:
+            checkpoint_identity = claim["checkpoint"]
+        if claim.get("abandon_reason") != str(reason):
+            raise RuntimeError("recorded_abandon_claim_reason_mismatch")
+        transaction_dir, _ = _claim_transaction_paths(claim)
+        candidate = Path(get_bot_dir(int(checkpoint_identity["next_v"])))
+        _ensure_transaction_directory(transaction_dir)
+        _ensure_durable_json(transaction_dir / "claim.json", claim)
+
+    # The two claim copies are durable, but durability is not permission to
+    # append the irreversible allocation receipt.  Reopen the LIVE copy, the
+    # transaction copy, Git predicates, candidate preimage, ledger prefix and
+    # exact checkpoint after the final claim write.  This closes the same-call
+    # window in which any of them could drift between claim construction and
+    # the first ledger append.
+    claim = _validate_active_abandon_claim(claim)
+    transaction_dir, quarantine = _claim_transaction_paths(claim)
+    durable_chain_receipt = _claim_abandon_receipt(claim)
+    if recorded_abandon_receipt is not None and (
+        durable_chain_receipt is None
+        or durable_chain_receipt.get("receipt_digest")
+        != recorded_abandon_receipt.get("receipt_digest")
+    ):
+        raise RuntimeError("recorded_abandon_receipt_changed_after_claim")
+    abandon_receipt = durable_chain_receipt
+    if abandon_receipt is None:
+        if not isinstance(checkpoint, dict):
+            raise RuntimeError("recorded_abandon_receipt_missing_after_checkpoint_clear")
+        abandon_receipt = append_abandoned_version_receipt(
+            checkpoint,
+            reason=reason,
+            infra_failure=infra_failure,
+            timestamp=timestamp,
+            path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+            project_root=PROJECT_ROOT,
+        )
+
+    state = _validate_claim_candidate_state(claim, candidate, quarantine)
+    if state == "source":
+        version = int(claim["checkpoint"]["next_v"])
+        # Re-run every publication predicate immediately before the rename.
+        if _current_abandon_git_state(version) != claim["git_state"]:
+            raise RuntimeError("recorded_abandon_active_git_state_changed")
+        if os.path.lexists(candidate / ".completed"):
+            raise RuntimeError("candidate_has_completed_sentinel")
+        if os.stat(candidate.parent).st_dev != os.stat(transaction_dir).st_dev:
+            raise RuntimeError("candidate_quarantine_not_same_filesystem")
+        os.replace(candidate, quarantine)
+        _fsync_parent_directory(candidate)
+        _fsync_parent_directory(quarantine)
+        if _validate_claim_candidate_state(claim, candidate, quarantine) != "quarantine":
+            raise RuntimeError("candidate_quarantine_not_durable")
+        state = "quarantine"
+    elif state == "quarantine":
+        _fsync_parent_directory(candidate)
+        _fsync_parent_directory(quarantine)
+
+    from evolution_core import PIPELINE_STATE_FILE
+
+    checkpoint_path = Path(PIPELINE_STATE_FILE)
+    if _current_abandon_git_state(
+        int(claim["checkpoint"]["next_v"])
+    ) != claim["git_state"]:
+        raise RuntimeError("recorded_abandon_active_git_state_changed")
+    if os.path.lexists(checkpoint_path):
+        cleared = bool(clear_pipeline_state(
+            expected_workflow_run_id=claim["checkpoint"]["workflow_run_id"],
+            expected_next_v=claim["checkpoint"]["next_v"],
+            expected_source_v=claim["checkpoint"]["source_v"],
+            expected_checkpoint_revision=claim["checkpoint"]["checkpoint_revision"],
+            expected_checkpoint_stage=claim["checkpoint"]["stage"],
+        ))
+        if not cleared:
+            raise RuntimeError("checkpoint_identity_conflict")
+    else:
+        # Retry the directory durability proof after an unlink→fsync failure.
+        _fsync_parent_directory(checkpoint_path)
+
+    receipt_payload = {
+        "schema_version": 2,
+        "kind": "national-policy-recorded-abandon-finalize",
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "mode": "execute",
+        "claim_digest": claim["claim_digest"],
+        "workflow_run_id": claim["checkpoint"]["workflow_run_id"],
+        "abandon_receipt_digest": abandon_receipt["receipt_digest"],
+        "checkpoint_cleared": True,
+        "candidate_state": state,
+        "candidate_manifest_digest": claim["candidate"]["manifest_digest"],
+    }
+    finalize_receipt = {
+        **receipt_payload,
+        "receipt_digest": canonical_digest(receipt_payload),
+    }
+    _ensure_durable_json(transaction_dir / "receipt.json", finalize_receipt)
+    live_claim_path.unlink(missing_ok=True)
+    _fsync_parent_directory(live_claim_path)
+    return {
+        "abandon_receipt": abandon_receipt,
+        "finalize_receipt": finalize_receipt,
+        "removed_directory": (
+            bot_name(int(claim["checkpoint"]["next_v"]))
+            if claim["candidate"]["present"] is True
+            else None
+        ),
+    }
 
 
 def _generic_abandon_stage_block(checkpoint, reason):
@@ -43,95 +744,382 @@ def _generic_abandon_stage_block(checkpoint, reason):
     )
 
 
+def expected_abandon_identity(checkpoint: dict) -> dict:
+    """Return the full checkpoint CAS identity required by forced callers."""
+
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("forced_abandon_checkpoint_identity_unavailable")
+    workflow = str(
+        checkpoint.get("workflow_run_id") or checkpoint.get("run_id") or ""
+    )
+    if (
+        not workflow
+        or type(checkpoint.get("next_v")) is not int
+        or type(checkpoint.get("source_v")) is not int
+        or type(checkpoint.get("checkpoint_revision")) is not int
+        or not isinstance(checkpoint.get("stage"), str)
+        or not checkpoint["stage"]
+    ):
+        raise RuntimeError("forced_abandon_checkpoint_identity_incomplete")
+    return {
+        "expected_workflow_run_id": workflow,
+        "expected_next_v": checkpoint["next_v"],
+        "expected_source_v": checkpoint["source_v"],
+        "expected_checkpoint_revision": checkpoint["checkpoint_revision"],
+        "expected_checkpoint_stage": checkpoint["stage"],
+    }
+
+
 class ReapWeakestInput(TypedDict):
     pass
 
 
-async def _do_reap_weakest(quiet: bool = False) -> dict:
-    """Core reaping logic — callable directly (not via MCP)."""
-    active_bots = get_active_bots()
-    if len(active_bots) <= MAX_ACTIVE_BOTS:
-        return {"reaped": False, "pool_size": len(active_bots)}
+REAP_SELECTION_POLICY = "conservative_glicko_v1"
+_REAP_SNAPSHOT_KEYS = {
+    "schema_version",
+    "kind",
+    "selection_policy",
+    "max_active_bots",
+    "active_bots",
+    "active_pool_digest",
+    "priority_bot",
+    "bot_inputs",
+    "bot_inputs_digest",
+    "snapshot_digest",
+}
+_REAP_BOT_INPUT_KEYS = {
+    "bot",
+    "rating_r_hex",
+    "rating_rd_hex",
+    "games",
+    "leaderboard_score_hex",
+    "h2h_avg_wr_hex",
+}
 
-    ratings = load_ratings()
-    h2h_winrates = load_h2h_avg_winrates()
-    strength_scores = load_strength_scores()
-    current_bot = bot_name(find_latest_active_v())
 
-    # Load bot stats to protect untested bots from reaping
+def _finite_float_hex(value, *, field: str) -> str:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"reap_selection_{field}_invalid") from exc
+    if not math.isfinite(normalized):
+        raise RuntimeError(f"reap_selection_{field}_non_finite")
+    return normalized.hex()
+
+
+def _decode_finite_float_hex(value, *, field: str) -> float:
+    if not isinstance(value, str):
+        raise RuntimeError(f"reap_selection_{field}_not_hex")
+    try:
+        normalized = float.fromhex(value)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"reap_selection_{field}_not_hex") from exc
+    if not math.isfinite(normalized) or normalized.hex() != value:
+        raise RuntimeError(f"reap_selection_{field}_not_canonical")
+    return normalized
+
+
+def _is_strict_canonical_bot_name(value) -> bool:
+    if not isinstance(value, str):
+        return False
+    version = parse_bot_version(value)
+    return (
+        version is not None
+        and version >= FIRST_STRICT_POLICY_VERSION
+        and value == bot_name(version)
+    )
+
+
+def _validate_reap_selection_snapshot(snapshot: dict) -> dict[str, dict]:
+    """Validate and decode one immutable conservative-Glicko preimage."""
+
+    if not isinstance(snapshot, dict) or set(snapshot) != _REAP_SNAPSHOT_KEYS:
+        raise RuntimeError("reap_selection_snapshot_keys_invalid")
+    if (
+        type(snapshot.get("schema_version")) is not int
+        or snapshot["schema_version"] != 1
+        or snapshot.get("kind") != "strict-active-pool-selection-snapshot"
+        or snapshot.get("selection_policy") != REAP_SELECTION_POLICY
+        or type(snapshot.get("max_active_bots")) is not int
+        or snapshot["max_active_bots"] < 1
+        or not isinstance(snapshot.get("active_bots"), list)
+        or not isinstance(snapshot.get("bot_inputs"), list)
+    ):
+        raise RuntimeError("reap_selection_snapshot_contract_invalid")
+    active_bots = snapshot["active_bots"]
+    if (
+        active_bots != sorted(active_bots)
+        or len(active_bots) != len(set(active_bots))
+        or any(not _is_strict_canonical_bot_name(name) for name in active_bots)
+        or snapshot.get("active_pool_digest") != canonical_digest(active_bots)
+    ):
+        raise RuntimeError("reap_selection_snapshot_pool_invalid")
+    priority_bot = snapshot.get("priority_bot")
+    if priority_bot is not None and (
+        not isinstance(priority_bot, str) or priority_bot not in active_bots
+    ):
+        raise RuntimeError("reap_selection_snapshot_priority_invalid")
+    rows = snapshot["bot_inputs"]
+    if (
+        len(rows) != len(active_bots)
+        or snapshot.get("bot_inputs_digest") != canonical_digest(rows)
+    ):
+        raise RuntimeError("reap_selection_snapshot_inputs_invalid")
+    decoded: dict[str, dict] = {}
+    for expected_name, row in zip(active_bots, rows):
+        if not isinstance(row, dict) or set(row) != _REAP_BOT_INPUT_KEYS:
+            raise RuntimeError("reap_selection_snapshot_input_keys_invalid")
+        if row.get("bot") != expected_name:
+            raise RuntimeError("reap_selection_snapshot_input_order_invalid")
+        if type(row.get("games")) is not int or row["games"] < 0:
+            raise RuntimeError("reap_selection_snapshot_games_invalid")
+        decoded[expected_name] = {
+            "r": _decode_finite_float_hex(
+                row.get("rating_r_hex"), field="rating_r"
+            ),
+            "rd": _decode_finite_float_hex(
+                row.get("rating_rd_hex"), field="rating_rd"
+            ),
+            "games": row["games"],
+            "leaderboard_score": _decode_finite_float_hex(
+                row.get("leaderboard_score_hex"), field="leaderboard_score"
+            ),
+            "h2h_avg_wr": _decode_finite_float_hex(
+                row.get("h2h_avg_wr_hex"), field="h2h_avg_wr"
+            ),
+        }
+    unsigned = {
+        key: value for key, value in snapshot.items() if key != "snapshot_digest"
+    }
+    if snapshot.get("snapshot_digest") != canonical_digest(unsigned):
+        raise RuntimeError("reap_selection_snapshot_digest_invalid")
+    return decoded
+
+
+def _capture_reap_selection_snapshot(
+    active_bots=None,
+    *,
+    max_active_bots: int | None = None,
+) -> dict:
+    """Freeze every input used by the active conservative-Glicko policy."""
+
+    from evaluation_bundle import evaluation_cycle_lock
     from tool_helpers import _read_json
-    bot_stats = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "bot_stats.json", {})
+
+    cap = MAX_ACTIVE_BOTS if max_active_bots is None else max_active_bots
+    if type(cap) is not int or cap < 1:
+        raise RuntimeError("reap_selection_max_active_bots_invalid")
+    with evaluation_cycle_lock(RESULTS_DIR, exclusive=False):
+        names = sorted(
+            get_active_bots() if active_bots is None else list(active_bots)
+        )
+        if (
+            len(names) != len(set(names))
+            or any(not _is_strict_canonical_bot_name(name) for name in names)
+        ):
+            raise RuntimeError("reap_selection_active_pool_invalid")
+        ratings = load_ratings()
+        h2h_winrates = load_h2h_avg_winrates()
+        strength_scores = load_strength_scores()
+        bot_stats = _read_json(RESULTS_DIR / "bot_stats.json", {})
+        priority_data = _read_json(RESULTS_DIR / "priority_eval.json", {})
+        priority_bot = (
+            priority_data.get("bot")
+            if isinstance(priority_data, dict)
+            else None
+        )
+        if priority_bot not in names:
+            priority_bot = None
+        rows = []
+        for name in names:
+            rating = ratings.get(name, Glicko2Player())
+            try:
+                games = int((bot_stats.get(name) or {}).get("games", 0) or 0)
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise RuntimeError("reap_selection_games_invalid") from exc
+            if games < 0:
+                raise RuntimeError("reap_selection_games_invalid")
+            rows.append({
+                "bot": name,
+                "rating_r_hex": _finite_float_hex(
+                    getattr(rating, "r", None), field="rating_r"
+                ),
+                "rating_rd_hex": _finite_float_hex(
+                    getattr(rating, "rd", None), field="rating_rd"
+                ),
+                "games": games,
+                "leaderboard_score_hex": _finite_float_hex(
+                    strength_scores.get(name, 0.0), field="leaderboard_score"
+                ),
+                "h2h_avg_wr_hex": _finite_float_hex(
+                    h2h_winrates.get(name, 0.0), field="h2h_avg_wr"
+                ),
+            })
+    snapshot = {
+        "schema_version": 1,
+        "kind": "strict-active-pool-selection-snapshot",
+        "selection_policy": REAP_SELECTION_POLICY,
+        "max_active_bots": cap,
+        "active_bots": names,
+        "active_pool_digest": canonical_digest(names),
+        "priority_bot": priority_bot,
+        "bot_inputs": rows,
+        "bot_inputs_digest": canonical_digest(rows),
+    }
+    snapshot["snapshot_digest"] = canonical_digest(snapshot)
+    _validate_reap_selection_snapshot(snapshot)
+    return snapshot
+
+
+def _select_reap_candidate_from_snapshot(
+    snapshot: dict,
+    active_bots=None,
+) -> dict:
+    """Purely select the next target from one validated frozen preimage."""
+
+    inputs = _validate_reap_selection_snapshot(snapshot)
+    active_bots = list(
+        snapshot["active_bots"] if active_bots is None else active_bots
+    )
+    if (
+        len(active_bots) != len(set(active_bots))
+        or not set(active_bots).issubset(inputs)
+    ):
+        raise RuntimeError("reap_selection_runtime_pool_invalid")
+    cap = snapshot["max_active_bots"]
+    if len(active_bots) <= cap:
+        return {"candidate": None, "pool_size": len(active_bots)}
+
+    current_bot = max(
+        active_bots,
+        key=lambda name: parse_bot_version(name) or -1,
+    )
 
     # Exclude the current/latest source and the newest few active bots; they are
     # either being evolved from or still need fresh evaluation.
     protected_recent = set()
-    if len(active_bots) > MAX_ACTIVE_BOTS + 3:
-        protected_recent = set(sorted(active_bots, key=lambda name: parse_bot_version(name) or -1)[-3:])
+    if len(active_bots) > cap + 3:
+        protected_recent = set(sorted(
+            active_bots,
+            key=lambda name: parse_bot_version(name) or -1,
+        )[-3:])
     protected_names = {current_bot, *protected_recent}
-    try:
-        priority_data = _read_json(PROJECT_ROOT / "web" / "core" / "results" / "priority_eval.json", {})
-        if priority_data.get("bot"):
-            protected_names.add(priority_data["bot"])
-    except Exception:
-        pass
+    if snapshot["priority_bot"] in active_bots:
+        protected_names.add(snapshot["priority_bot"])
 
     evaluated_candidates = []
     zero_game_candidates = []
-    for b in active_bots:
-        if b in protected_names:
+    for name in active_bots:
+        if name in protected_names:
             continue
-        games = int(bot_stats.get(b, {}).get("games", 0) or 0)
-        row = (b, ratings.get(b, Glicko2Player()), games)
-        if games == 0:
-            zero_game_candidates.append(row)
+        row = inputs[name]
+        candidate = (name, row["r"], row["rd"], row["games"])
+        if row["games"] == 0:
+            zero_game_candidates.append(candidate)
             continue
-        evaluated_candidates.append(row)
+        evaluated_candidates.append(candidate)
 
-    # Soft overflow: avoid culling untested bots. Hard overflow: old zero-game
-    # bots are safer cull targets than the only evaluated baseline.
-    if len(active_bots) <= MAX_ACTIVE_BOTS + 3:
+    # Soft overflow avoids untested candidates; hard overflow selects old
+    # zero-game candidates before allowing the pool to grow without bound.
+    if len(active_bots) <= cap + 3:
         candidates = evaluated_candidates
     else:
         candidates = evaluated_candidates + zero_game_candidates
     if not candidates:
         return {
-            "reaped": False,
+            "candidate": None,
             "reason": "All remaining bots are current, recent, priority, or protected untested",
             "protected": sorted(protected_names),
         }
 
-    # Protect bots with insufficient evaluation. Previously this also gated on
-    # `rd > 100`, but that clause existed only to compensate for the buggy
-    # decay_rd that snapped idle bots' RD up to 150 every cycle (collapsing their
-    # conservative_rating). Now that decay_rd follows the official Glicko-2
-    # formula, an idle veteran's RD stays low and its conservative_rating (r-2*rd)
-    # reflects real strength — so reaping it when it is genuinely the weakest is
-    # correct. Protection is therefore sample-based only: a bot with <600 games
-    # has too little data for its rating to be trusted as a reap verdict.
-    protected = set()
-    for name, rating, n_total in candidates:
-        if n_total < 600:
-            protected.add(name)
-    # Apply protection EXCEPT when pool overflow forces reap (avoid unbounded growth)
-    if len(active_bots) <= MAX_ACTIVE_BOTS + 3:  # soft cap, allow protection
-        filtered = [c for c in candidates if c[0] not in protected]
-        if not filtered:
-            return {"reaped": False, "reason": "all_protected",
-                    "remaining": len(active_bots), "protected_count": len(protected)}
-        candidates = filtered
+    protected = {name for name, _r, _rd, games in candidates if games < 600}
+    if len(active_bots) <= cap + 3:
+        candidates = [row for row in candidates if row[0] not in protected]
+        if not candidates:
+            return {
+                "candidate": None,
+                "reason": "all_protected",
+                "remaining": len(active_bots),
+                "protected_count": len(protected),
+            }
 
-    # Sort by conservative rating (r - 2*rd) as PRIMARY key. Glicko conservative
-    # rating is implicitly weighted by opponent strength, far less noisy than
-    # per-opponent h2h_avg_wr at low game counts.
-    candidates.sort(key=lambda x: (x[1].r - 2 * x[1].rd, x[2], parse_bot_version(x[0]) or 0))
-    weakest = candidates[0]
-    culled_name = weakest[0]
-    conservative = weakest[1].r - 2 * weakest[1].rd
+    candidates.sort(key=lambda row: (
+        row[1] - 2 * row[2],
+        row[3],
+        parse_bot_version(row[0]) or 0,
+    ))
+    name, rating_r, rating_rd, _games = candidates[0]
+    frozen = inputs[name]
+    return {
+        "candidate": name,
+        "selection_key": "conservative_glicko",
+        "conservative_rating": round(rating_r - 2 * rating_rd, 1),
+        "leaderboard_score": round(frozen["leaderboard_score"], 4),
+        "h2h_avg_wr": round(frozen["h2h_avg_wr"], 4),
+        "rating": {"r": round(rating_r, 1), "rd": round(rating_rd, 1)},
+        "active_pool": sorted(active_bots),
+    }
 
-    # Serialize concurrent reaps via file lock
-    reap_lock = RESULTS_DIR / ".reap.lock"
-    with open(reap_lock, "w") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
+
+def _select_reap_candidate(active_bots=None) -> dict:
+    """Return the exact next reap target without performing a side effect."""
+
+    snapshot = _capture_reap_selection_snapshot(active_bots)
+    return _select_reap_candidate_from_snapshot(snapshot, active_bots)
+
+
+async def _do_reap_weakest(
+    quiet: bool = False,
+    *,
+    expected_culled: str | None = None,
+    selection_snapshot: dict | None = None,
+) -> dict:
+    """Core reaping logic, optionally fenced to a preplanned target."""
+
+    active_bots = get_active_bots()
+    snapshot = (
+        _capture_reap_selection_snapshot(active_bots)
+        if selection_snapshot is None
+        else selection_snapshot
+    )
+    selection = _select_reap_candidate_from_snapshot(snapshot, active_bots)
+    culled_name = selection.get("candidate")
+    if not culled_name:
+        return {
+            "reaped": False,
+            **{key: value for key, value in selection.items() if key != "candidate"},
+        }
+    if expected_culled is not None and culled_name != expected_culled:
+        return {
+            "reaped": False,
+            "reason": "planned_reap_target_mismatch",
+            "expected_culled": expected_culled,
+            "actual_culled": culled_name,
+        }
+    conservative = float(selection["conservative_rating"])
+
+    # Serialize concurrent reaps on a stable sidecar; a mutable data inode is
+    # not a valid lock authority when atomic replacement is allowed elsewhere.
+    from evolution_infra import _locked_state_sidecar
+
+    with _locked_state_sidecar(
+        RESULTS_DIR / ".reap-transaction",
+        lock_type=fcntl.LOCK_EX,
+    ):
+        locked_active = get_active_bots()
+        locked_selection = _select_reap_candidate_from_snapshot(
+            snapshot, locked_active
+        )
+        locked_culled = locked_selection.get("candidate")
+        if locked_culled != culled_name or (
+            expected_culled is not None and locked_culled != expected_culled
+        ):
+            return {
+                "reaped": False,
+                "reason": "planned_reap_target_changed_under_lock",
+                "expected_culled": expected_culled or culled_name,
+                "actual_culled": locked_culled,
+            }
         try:
             bot_src = PROJECT_ROOT / "bots" / culled_name
             if not bot_src.exists():
@@ -144,45 +1132,49 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
                 reason="max_active_bots",
                 data={
                     "selection_key": "conservative_glicko",
-                    "conservative_rating": round(conservative, 1),
-                    "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
-                    "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
+                    "conservative_rating": selection["conservative_rating"],
+                    "leaderboard_score": selection["leaderboard_score"],
+                    "h2h_avg_wr": selection["h2h_avg_wr"],
                     "quiet": quiet,
                 },
             )
             sentinel = bot_src / ".completed"
-            if sentinel.exists():
+            if os.path.lexists(sentinel):
+                metadata = os.lstat(sentinel)
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or stat.S_ISLNK(metadata.st_mode)
+                    or metadata.st_nlink != 1
+                ):
+                    raise RuntimeError("reap_completed_sentinel_unsafe")
                 sentinel.unlink()
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
+                from evolution_infra import _fsync_directory
 
-    try:
-        if REPLAY_DIR.exists():
-            prefix = f"_{culled_name}_"
-            for f in list(REPLAY_DIR.iterdir()):
-                if prefix in f.name or f.name.endswith(f"_{culled_name}.json"):
-                    f.unlink()
-    except Exception:
-        pass
+                _fsync_directory(sentinel.parent)
+        finally:
+            pass
 
     reap_signal = RESULTS_DIR / ".reap_signal"
-    reap_signal.write_text(str(time.time()))
+    from evolution_infra import _atomic_publish_state_text
+
+    with _locked_state_sidecar(reap_signal, lock_type=fcntl.LOCK_EX):
+        _atomic_publish_state_text(reap_signal, f"{time.time():.6f}\n")
 
     log_system_event(
         "bot.reaped",
         "info" if quiet else "warn",
         (
             f"{'Auto-reaped' if quiet else 'Reaped'} {culled_name} by conservative Glicko "
-            f"(r-2rd={conservative:.1f}, leaderboard={strength_scores.get(culled_name, 0.0):.4f}, "
-            f"h2h_wr={h2h_winrates.get(culled_name, 0.0):.2%})"
+            f"(r-2rd={conservative:.1f}, leaderboard={selection['leaderboard_score']:.4f}, "
+            f"h2h_wr={selection['h2h_avg_wr']:.2%})"
         ),
         {
             "culled": culled_name,
             "remaining": len(active_bots) - 1,
             "selection_key": "conservative_glicko",
             "conservative_rating": round(conservative, 1),
-            "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
-            "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
+            "leaderboard_score": selection["leaderboard_score"],
+            "h2h_avg_wr": selection["h2h_avg_wr"],
             "quiet": quiet,
         },
     )
@@ -191,10 +1183,10 @@ async def _do_reap_weakest(quiet: bool = False) -> dict:
         "reaped": True,
         "culled": culled_name,
         "selection_key": "conservative_glicko",
-        "conservative_rating": round(conservative, 1),
-        "leaderboard_score": round(strength_scores.get(culled_name, 0.0), 4),
-        "h2h_avg_wr": round(h2h_winrates.get(culled_name, 0.0), 4),
-        "rating": {"r": round(weakest[1].r, 1), "rd": round(weakest[1].rd, 1)},
+        "conservative_rating": selection["conservative_rating"],
+        "leaderboard_score": selection["leaderboard_score"],
+        "h2h_avg_wr": selection["h2h_avg_wr"],
+        "rating": selection["rating"],
         "remaining": len(active_bots) - 1,
         "reap_mode": "deactivate_completed_sentinel",
     }
@@ -204,7 +1196,7 @@ def _mcp_result(data: dict) -> dict:
     return {"content": [{"type": "text", "text": json.dumps(data)}]}
 
 
-@tool("reap_weakest", f"Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by conservative rating, reporting unified strength.", {})
+@tool("reap_weakest", "Check if bot pool exceeds MAX_ACTIVE_BOTS and cull the weakest bot by conservative rating, reporting unified strength.", {})
 async def reap_weakest(args):
     result = await _do_reap_weakest(quiet=args.get("quiet", False) if isinstance(args, dict) else False)
     return _mcp_result(result)
@@ -342,6 +1334,7 @@ async def cleanup_incomplete(args: dict | None = None):
         expected_next_v=next_v,
         expected_source_v=checkpoint.get("source_v"),
         expected_checkpoint_revision=revision,
+        expected_checkpoint_stage=checkpoint.get("stage"),
     )
     return _mcp_result({
         "cleaned": bool(
@@ -369,11 +1362,13 @@ async def _do_abandon_generation(
     reason: str = "abandon_generation",
     *,
     _actor_lock_owned: bool = False,
+    _publication_lock_owned: bool = False,
     _bypass_rate_limit: bool = False,
     expected_workflow_run_id: str | None = None,
     expected_next_v: int | None = None,
     expected_source_v: int | None = None,
     expected_checkpoint_revision: int | None = None,
+    expected_checkpoint_stage: str | None = None,
 ) -> dict:
     """Core abandon logic — clears the pipeline checkpoint and removes the
     incomplete next-gen directory.
@@ -387,8 +1382,8 @@ async def _do_abandon_generation(
     does not bypass checkpoint identity, workflow fencing, or stage guards.
 
     Returns the abandon result dict (also written as a ``pipeline.abandoned``
-    system event). The caller is responsible for clearing the orchestrator
-    session BEFORE calling this if a stale session must not be resumed.
+    system event). Provider conversation history is never resumable; callers
+    recover only from the checkpoint and durable transaction receipts.
     """
     from evolution_core import PIPELINE_STATE_FILE
 
@@ -398,6 +1393,7 @@ async def _do_abandon_generation(
             expected_next_v,
             expected_source_v,
             expected_checkpoint_revision,
+            expected_checkpoint_stage,
         )):
             return None
         if not isinstance(candidate, dict):
@@ -413,6 +1409,7 @@ async def _do_abandon_generation(
                 "next_v": candidate.get("next_v"),
                 "source_v": candidate.get("source_v"),
                 "checkpoint_revision": candidate.get("checkpoint_revision"),
+                "stage": candidate.get("stage"),
             }
             mismatch = bool(
                 (
@@ -433,6 +1430,10 @@ async def _do_abandon_generation(
                     and current["checkpoint_revision"]
                     != int(expected_checkpoint_revision)
                 )
+                or (
+                    expected_checkpoint_stage is not None
+                    and current["stage"] != str(expected_checkpoint_stage)
+                )
             )
         if not mismatch:
             return None
@@ -445,6 +1446,7 @@ async def _do_abandon_generation(
                 "next_v": expected_next_v,
                 "source_v": expected_source_v,
                 "checkpoint_revision": expected_checkpoint_revision,
+                "stage": expected_checkpoint_stage,
             },
             "current_checkpoint": current,
             "directive": (
@@ -453,6 +1455,40 @@ async def _do_abandon_generation(
             ),
         }
 
+    try:
+        live_abandon_claim = _load_live_abandon_claim()
+    except Exception as exc:
+        try:
+            log_system_event(
+                "pipeline.abandon_claim_invalid",
+                "error",
+                "Refused cleanup because the durable abandon claim failed revalidation",
+                {"error": f"{type(exc).__name__}: {str(exc)[:500]}"},
+            )
+        except Exception:
+            pass
+        return {
+            "abandoned": False,
+            "reason": str(exc).split(":", 1)[0],
+            "action": "operator_reconcile",
+            "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+        }
+    if (
+        reason not in {"abandon_generation", "cleanup_incomplete_exact_workflow"}
+        and live_abandon_claim is None
+        and any(value is None for value in (
+            expected_workflow_run_id,
+            expected_next_v,
+            expected_source_v,
+            expected_checkpoint_revision,
+            expected_checkpoint_stage,
+        ))
+    ):
+        return {
+            "abandoned": False,
+            "reason": "forced_abandon_checkpoint_identity_required",
+            "action": "stale_rejection_ignored",
+        }
     checkpoint_exists = PIPELINE_STATE_FILE.exists()
     checkpoint = read_pipeline_checkpoint() if checkpoint_exists else None
     if checkpoint_exists and not isinstance(checkpoint, dict):
@@ -466,7 +1502,15 @@ async def _do_abandon_generation(
                 "or delete a candidate from directory names."
             ),
         }
-    identity_conflict = expected_identity_conflict(checkpoint)
+    identity_conflict = expected_identity_conflict(
+        checkpoint
+        if isinstance(checkpoint, dict)
+        else (
+            live_abandon_claim.get("checkpoint")
+            if isinstance(live_abandon_claim, dict)
+            else checkpoint
+        )
+    )
     if identity_conflict:
         return identity_conflict
     infra_failure = (
@@ -474,7 +1518,41 @@ async def _do_abandon_generation(
         if isinstance(checkpoint, dict) and isinstance(checkpoint.get("infra_failure"), dict)
         else None
     )
-    blocked = _generic_abandon_stage_block(checkpoint, reason)
+    recorded_abandon_receipt = None
+    if isinstance(checkpoint, dict):
+        try:
+            recorded_abandon_receipt = recorded_abandon_receipt_for_checkpoint(
+                checkpoint,
+                path=RESULTS_DIR / "abandoned_versions.jsonl",
+                project_root=PROJECT_ROOT,
+            )
+        except Exception:
+            recorded_abandon_receipt = None
+        if recorded_abandon_receipt is not None and (
+            recorded_abandon_receipt.get("reason") != str(reason).strip()
+            or recorded_abandon_receipt.get("infra_failure") != infra_failure
+        ):
+            return {
+                "abandoned": False,
+                "reason": "recorded_abandon_receipt_payload_mismatch",
+                "action": "operator_reconcile",
+                "abandon_receipt_digest": recorded_abandon_receipt.get(
+                    "receipt_digest"
+                ),
+            }
+    elif isinstance(live_abandon_claim, dict):
+        if reason != str(live_abandon_claim.get("abandon_reason") or ""):
+            return {
+                "abandoned": False,
+                "reason": "recorded_abandon_claim_reason_mismatch",
+                "action": "operator_reconcile",
+            }
+        recorded_abandon_receipt = _claim_abandon_receipt(live_abandon_claim)
+    blocked = (
+        None
+        if recorded_abandon_receipt is not None
+        else _generic_abandon_stage_block(checkpoint, reason)
+    )
     if blocked:
         try:
             log_system_event(
@@ -493,7 +1571,11 @@ async def _do_abandon_generation(
     # generation reach the gates. Enforce a 60s cooldown between abandons.
     import time as _t
     now = _t.time()
-    if not _bypass_rate_limit and (now - _LAST_ABANDON_TS[0]) < 60:
+    if (
+        recorded_abandon_receipt is None
+        and not _bypass_rate_limit
+        and (now - _LAST_ABANDON_TS[0]) < 60
+    ):
         try:
             log_system_event(
                 "pipeline.abandon_rate_limited", "warn",
@@ -522,6 +1604,7 @@ async def _do_abandon_generation(
             # use the same short lock, so a late Worker can never recreate an
             # abandoned candidate after rmtree.
             def fence_latest_checkpoint():
+                nonlocal recorded_abandon_receipt
                 latest = read_pipeline_checkpoint()
                 if not isinstance(latest, dict):
                     raise RuntimeError(
@@ -534,8 +1617,20 @@ async def _do_abandon_generation(
                     raise RuntimeError(
                         "checkpoint workflow identity changed before fence"
                     )
+                if recorded_abandon_receipt is not None:
+                    recorded_abandon_receipt = (
+                        recorded_abandon_receipt_for_checkpoint(
+                            latest,
+                            path=RESULTS_DIR / "abandoned_versions.jsonl",
+                            project_root=PROJECT_ROOT,
+                        )
+                    )
+                    if recorded_abandon_receipt is None:
+                        raise RuntimeError(
+                            "recorded abandon receipt no longer matches checkpoint"
+                        )
                 latest_block = _generic_abandon_stage_block(latest, reason)
-                if latest_block:
+                if latest_block and recorded_abandon_receipt is None:
                     return latest_block, None
                 workflow.abandon(reason)
                 return None, latest
@@ -584,94 +1679,119 @@ async def _do_abandon_generation(
             }
     cleared_checkpoint = False
     removed_dir = None
-    abandoned_v = checkpoint.get("next_v") if isinstance(checkpoint, dict) else None
-
-    def record_abandoned_floor(version):
-        if version is None:
-            return
-        append_locked_jsonl(
-            RESULTS_DIR / "abandoned_versions.jsonl",
-            {
-                "v": version,
-                "reason": reason,
-                "timestamp": __import__("time").time(),
-                "infra_failure": infra_failure,
-                "workflow_run_id": workflow_run_id,
-            },
+    abandon_receipt = None
+    abandoned_v = (
+        checkpoint.get("next_v")
+        if isinstance(checkpoint, dict)
+        else (
+            live_abandon_claim.get("checkpoint", {}).get("next_v")
+            if isinstance(live_abandon_claim, dict)
+            else None
         )
+    )
 
-    if checkpoint:
-        next_v = checkpoint.get("next_v")
-        # Persist the monotonic version floor before unlink/rmtree.  A crash
-        # after either cleanup step therefore cannot silently reuse this
-        # generation number on restart.
-        record_abandoned_floor(abandoned_v)
-        cleared_checkpoint = bool(clear_pipeline_checkpoint(
-            expected_workflow_run_id=(
-                checkpoint.get("workflow_run_id")
-                or checkpoint.get("run_id")
-                or workflow_run_id
-            ),
-            expected_next_v=checkpoint.get("next_v"),
-            expected_source_v=checkpoint.get("source_v"),
-            expected_checkpoint_revision=checkpoint.get("checkpoint_revision"),
-            expected_checkpoint_stage=checkpoint.get("stage"),
-        ))
-        if not cleared_checkpoint:
-            log_system_event(
-                "pipeline.abandon_checkpoint_identity_conflict",
-                "error",
-                "Durable actor was fenced but checkpoint identity changed before cleanup",
-                {
-                    "reason": reason,
-                    "workflow_run_id": workflow_run_id,
-                    "next_v": next_v,
-                    "source_v": checkpoint.get("source_v"),
-                },
-            )
+    if not isinstance(checkpoint, dict) and live_abandon_claim is None:
+        # A bare directory name is never cleanup authority. Re-prove the
+        # checkpoint-parent durability after any prior unlink/fsync failure,
+        # then leave candidate bytes untouched for operator inspection.
+        try:
+            _fsync_parent_directory(Path(PIPELINE_STATE_FILE))
+        except OSError as exc:
             return {
                 "abandoned": False,
-                "reason": "checkpoint_identity_conflict",
-                "workflow_fenced": workflow_fenced,
+                "reason": "checkpoint_parent_fsync_failed",
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            }
+        return {
+            "abandoned": False,
+            "reason": "no_checkpoint_cleanup_authority",
+            "cleared_checkpoint": False,
+            "abandoned_v": None,
+        }
+
+    lock_context = (
+        nullcontext()
+        if _publication_lock_owned
+        else bot_publication_lock(results_dir=RESULTS_DIR)
+    )
+    try:
+        with lock_context:
+            latest = read_pipeline_checkpoint() if os.path.lexists(PIPELINE_STATE_FILE) else None
+            if isinstance(latest, dict):
+                latest_conflict = expected_identity_conflict(latest)
+                if latest_conflict:
+                    return latest_conflict
+                latest_receipt = recorded_abandon_receipt_for_checkpoint(
+                    latest,
+                    path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+                    project_root=PROJECT_ROOT,
+                )
+                if latest_receipt is not None and (
+                    latest_receipt.get("reason") != str(reason).strip()
+                    or latest_receipt.get("infra_failure")
+                    != (
+                        dict(latest.get("infra_failure"))
+                        if isinstance(latest.get("infra_failure"), dict)
+                        else None
+                    )
+                ):
+                    raise RuntimeError(
+                        "recorded_abandon_receipt_payload_mismatch"
+                    )
+                recorded_abandon_receipt = latest_receipt
+                infra_failure = (
+                    dict(latest.get("infra_failure"))
+                    if isinstance(latest.get("infra_failure"), dict)
+                    else None
+                )
+                latest_block = _generic_abandon_stage_block(latest, reason)
+                if latest_block and recorded_abandon_receipt is None:
+                    return latest_block
+                checkpoint = latest
+            elif live_abandon_claim is None:
+                raise RuntimeError("checkpoint_disappeared_before_abandon_claim")
+            transaction = _finalize_checkpoint_abandon_transaction(
+                checkpoint if isinstance(checkpoint, dict) else None,
+                reason=reason,
+                infra_failure=infra_failure,
+                timestamp=now,
+                recorded_abandon_receipt=recorded_abandon_receipt,
+                clear_pipeline_state=clear_pipeline_checkpoint,
+            )
+            abandon_receipt = transaction["abandon_receipt"]
+            removed_dir = transaction["removed_directory"]
+            cleared_checkpoint = True
+    except Exception as exc:
+        log_system_event(
+            "pipeline.abandon_transaction_incomplete",
+            "error",
+            "Durable abandon transaction remains fenced for exact recovery",
+            {
+                "reason": reason,
                 "workflow_run_id": workflow_run_id,
                 "abandoned_v": abandoned_v,
-            }
-        if next_v is not None:
-            next_dir = get_bot_dir(next_v)
-            if next_dir.exists() and not (next_dir / ".completed").exists():
-                if git_dir_is_committed(next_v):
-                    log_system_event(
-                        "pipeline.abandon_preserved_git_tracked",
-                        "warn",
-                        f"Preserved git-tracked incomplete v{next_v} during abandon",
-                        {"version": next_v, "reason": "git_tracked_without_tag"},
-                    )
-                else:
-                    shutil.rmtree(next_dir)
-                    removed_dir = bot_name(next_v)
-    else:
-        # No checkpoint — clean up any incomplete dir for authoritative next
-        # version. Do not reuse current_v + 1 after abandoned generations.
-        current_v = find_current_v()
-        next_v = compute_next_generation_v(
-            current_v=current_v,
-            max_committed_v=find_max_committed_v(),
-            abandoned_floor=find_abandoned_version_floor(),
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            },
         )
-        next_dir = get_bot_dir(next_v)
-        if next_dir.exists() and not (next_dir / ".completed").exists():
-            abandoned_v = next_v
-            record_abandoned_floor(abandoned_v)
-            if git_dir_is_committed(next_v):
-                log_system_event(
-                    "pipeline.abandon_preserved_git_tracked",
-                    "warn",
-                    f"Preserved git-tracked incomplete v{next_v} during abandon",
-                    {"version": next_v, "reason": "git_tracked_without_tag"},
-                )
-            else:
-                shutil.rmtree(next_dir)
-                removed_dir = bot_name(next_v)
+        return {
+            "abandoned": False,
+            "reason": str(exc).split(":", 1)[0],
+            "workflow_fenced": workflow_fenced,
+            "workflow_run_id": workflow_run_id,
+            "abandoned_v": abandoned_v,
+            "removed_directory": (
+                bot_name(int(abandoned_v))
+                if abandoned_v is not None
+                and not os.path.lexists(get_bot_dir(int(abandoned_v)))
+                else None
+            ),
+            "abandon_receipt_digest": (
+                recorded_abandon_receipt.get("receipt_digest")
+                if isinstance(recorded_abandon_receipt, dict)
+                else None
+            ),
+            "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+        }
 
     log_system_event("pipeline.abandoned", "warn",
                      f"Abandoned generation ({reason}, dir={removed_dir})",
@@ -684,6 +1804,36 @@ async def _do_abandon_generation(
     _LAST_ABANDON_TS[0] = now
     _LAST_ABANDON_TS[1] = reason
 
+    # An abandoned generation breaks the uninterrupted-delivery streak even
+    # though it carries no strength or strategy authority.  Keep this
+    # acceptance update downstream of the fenced, durable cleanup.
+    try:
+        from stability_observation import reset_stability_observation
+
+        reset_stability_observation(
+            "generation_abandoned",
+            details={
+                "reason": reason,
+                "abandoned_v": abandoned_v,
+                "workflow_run_id": workflow_run_id,
+            },
+        )
+    except Exception as exc:
+        try:
+            log_system_event(
+                "pipeline.stability_observation_failed",
+                "error",
+                "Generation was abandoned but stability observation reset failed",
+                {
+                    "reason": reason,
+                    "abandoned_v": abandoned_v,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:300],
+                },
+            )
+        except Exception:
+            pass
+
     return {
         "abandoned": True,
         "cleared_checkpoint": cleared_checkpoint,
@@ -693,4 +1843,9 @@ async def _do_abandon_generation(
         "abandoned_v": abandoned_v,
         "workflow_fenced": workflow_fenced,
         "workflow_run_id": workflow_run_id,
+        "abandon_receipt_digest": (
+            abandon_receipt.get("receipt_digest")
+            if isinstance(abandon_receipt, dict)
+            else None
+        ),
     }

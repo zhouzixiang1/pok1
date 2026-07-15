@@ -104,30 +104,31 @@ async def test_reap_failure_keeps_completed_sentinel(monkeypatch, tmp_path):
 
     bots_dir = tmp_path / "bots"
     results_dir = tmp_path / "web" / "core" / "results"
-    replay_dir = results_dir / "match_replay"
-    replay_dir.mkdir(parents=True)
-    for version in (1, 2):
+    results_dir.mkdir(parents=True)
+    for version in (143, 144):
         bot_dir = bots_dir / f"national_v{version}"
         bot_dir.mkdir(parents=True)
-        (bot_dir / "main.py").write_text("# bot\n", encoding="utf-8")
+        (bot_dir / "policy.py").write_text("# policy\n", encoding="utf-8")
         (bot_dir / ".completed").touch()
     (results_dir / "bot_stats.json").write_text(
-        '{"national_v1":{"games":1000},"national_v2":{"games":1000}}\n',
+        '{"national_v143":{"games":1000},"national_v144":{"games":1000}}\n',
         encoding="utf-8",
     )
 
     monkeypatch.setattr(bot_management, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(bot_management, "RESULTS_DIR", results_dir)
-    monkeypatch.setattr(bot_management, "REPLAY_DIR", replay_dir)
     monkeypatch.setattr(bot_management, "MAX_ACTIVE_BOTS", 1)
-    monkeypatch.setattr(bot_management, "get_active_bots", lambda: ["national_v1", "national_v2"])
-    monkeypatch.setattr(bot_management, "find_latest_active_v", lambda: 2)
+    monkeypatch.setattr(
+        bot_management,
+        "get_active_bots",
+        lambda: ["national_v143", "national_v144"],
+    )
     monkeypatch.setattr(
         bot_management,
         "load_ratings",
         lambda: {
-            "national_v1": bot_management.Glicko2Player(r=1200, rd=50),
-            "national_v2": bot_management.Glicko2Player(r=1600, rd=50),
+            "national_v143": bot_management.Glicko2Player(r=1200, rd=50),
+            "national_v144": bot_management.Glicko2Player(r=1600, rd=50),
         },
     )
     monkeypatch.setattr(bot_management, "load_h2h_avg_winrates", lambda: {})
@@ -141,4 +142,4 @@ async def test_reap_failure_keeps_completed_sentinel(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError, match="publish failed"):
         await bot_management._do_reap_weakest(quiet=True)
 
-    assert (bots_dir / "national_v1" / ".completed").exists()
+    assert (bots_dir / "national_v143" / ".completed").exists()

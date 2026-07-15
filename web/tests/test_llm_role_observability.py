@@ -12,8 +12,146 @@ from claude_agent_sdk.types import (
     UserMessage,
 )
 
-from core import llm_query
-from core import evolution_infra
+import llm_query
+import evolution_infra
+
+
+def _rendered(role, text):
+    if role.startswith("WORKER_COT_CHECK_"):
+        import audit_agents
+
+        task = {"target_files": ["policy.py"]}
+        evidence = audit_agents.bind_fenced_worker_output(
+            task=task,
+            worker_id=role.removeprefix("WORKER_COT_CHECK_"),
+            next_v=282,
+            source_v=143,
+            worker_effect_identity={
+                "workflow_run_id": "generation:282:workflow-v1",
+                "envelope_digest": "3" * 64,
+                "effect_id": "effect-worker-cot-observability",
+                "lease_epoch": 1,
+            },
+            attempt=1,
+            dispatch_receipt_digest="4" * 64,
+            output=text,
+        )
+
+        return llm_query.render_llm_prompt(
+            role,
+            producer=audit_agents._render_worker_cot_provider_prompt,
+            renderer_inputs={
+                "task": task,
+                "worker_role": "logic",
+                "worker_task": "edit policy",
+                "worker_output_evidence": evidence.payload,
+                "code_diff": "+change",
+                "diff_metadata": "policy.py changed",
+            },
+        )
+    if role.startswith("WORKER ") or role == "worker":
+        import agent_workers
+
+        workspace = (
+            evolution_infra.PROJECT_ROOT
+            / "web/core/results/workflow/artifacts/workspaces"
+            / ("a" * 64)
+        )
+        task = {"target_files": ["policy.py"]}
+        return llm_query.render_llm_prompt(
+            role,
+            producer=agent_workers._render_worker_provider_prompt,
+            renderer_inputs={
+                "task": task,
+                "next_v": 282,
+                "source_v": 143,
+                "candidate_path": str(workspace),
+                "allowed_files": ["policy.py"],
+                "reviewer_feedback": text,
+                "attempt_note": "",
+                "retry_guidance": "",
+                "role": "logic",
+            },
+        )
+    if role.startswith("MASTER PROPOSAL "):
+        import agent_master
+
+        return llm_query.render_llm_prompt(
+            role,
+            producer=agent_master._render_master_proposal_provider_prompt,
+            renderer_inputs={
+                "planning_context": text,
+                "direction": role.split()[2],
+                "directive": "structural mechanism",
+                "source_v": 143,
+                "next_v": 149,
+                "protocol_bootstrap_prepared_only": False,
+                "source_symbol_index": "policy.py:decide",
+                "repair_kind": "",
+                "invocation_id": "1" * 32,
+            },
+        )
+    if role == "CYCLE ARCHIVIST":
+        import cycle_archivist
+
+        snapshot = cycle_archivist._cycle_archivist_prompt_projection(
+            {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "bot_name": "national_v149",
+                "git_tag": "national-bot-v149",
+                "publication_identity": {
+                    "publication_id": "1" * 64,
+                    "commit_oid": "2" * 40,
+                    "candidate_artifact_hash": "3" * 64,
+                },
+                "strength_evidence_identity": {"marker": text},
+                "review_score": 9,
+                "critic_score": 8,
+                "precommit_passed": True,
+                "post_publication_handoff": {
+                    "identity_digest": "4" * 64,
+                    "publication_id": "1" * 64,
+                },
+            },
+            version=149,
+            source_v=143,
+        )
+        return llm_query.render_llm_prompt(
+            role,
+            producer=cycle_archivist._render_cycle_archivist_provider_prompt,
+            renderer_inputs={
+                "snapshot": snapshot,
+                "version": 149,
+                "source_v": 143,
+            },
+        )
+    if role == "COMBINED ANALYST":
+        import combined_analyst
+
+        return llm_query.render_llm_prompt(
+            role,
+            producer=combined_analyst._render_combined_provider_prompt,
+            renderer_inputs={
+                "source_v": 149,
+                "frozen_bundle": {
+                    "marker": text,
+                    "rendered_view": {
+                        "bot_name": text,
+                        "opp_eval": "1",
+                        "opp_total": "1",
+                        "opp_coverage": "100%",
+                        "rd_warning": "",
+                        "top_bots": "none",
+                        "generation_trend": "none",
+                        "lineage": "none",
+                        "daemon_history": "none",
+                        "bot_stats": "none",
+                        "h2h_results": "none",
+                    },
+                },
+            },
+        )
+    raise AssertionError(role)
 
 
 class _DummyUI:
@@ -62,19 +200,25 @@ def test_run_claude_query_emits_role_start_and_done(monkeypatch, tmp_path):
         ),
     )
 
-    context_file = tmp_path / "ctx.txt"
-    context_file.write_text("context body", encoding="utf-8")
     log_file = tmp_path / "v243" / "logs" / "master_io.txt"
     log_file.parent.mkdir(parents=True)
+    worker_root = (
+        evolution_infra.PROJECT_ROOT
+        / "web/core/results/workflow/artifacts/workspaces"
+        / ("a" * 64)
+    )
+    worker_target = worker_root / "policy.py"
 
     output, cost, usage = asyncio.run(
         llm_query.run_claude_query(
-            "base prompt",
-            [str(context_file)],
+            _rendered("WORKER 1 (observability)", "base prompt\ncontext body"),
+            [],
             _DummyUI(),
-            "master",
+            "WORKER 1 (observability)",
             str(log_file),
-            tools=["Read"],
+            tools=["Bash", "Read", "Edit"],
+            allowed_write_dir={"files": [worker_target]},
+            allowed_read_dirs=[worker_root],
         )
     )
 
@@ -91,14 +235,85 @@ def test_run_claude_query_emits_role_start_and_done(monkeypatch, tmp_path):
     done = next(fields for category, _sev, _msg, fields in events
                 if category == "pipeline.llm_role_done")
 
-    assert start["role"] == "master"
-    assert start["context_file_count"] == 1
-    assert start["tools"] == ["Read"]
+    assert start["role"] == "WORKER 1 (observability)"
+    assert start["context_file_count"] == 0
+    assert start["tools"] == ["Bash", "Read", "Edit"]
     assert start["log_file"] == str(log_file)
     assert done["cost_usd"] == 0.125
     assert done["output_chars"] == len("hello")
     assert done["input_tokens"] == 10
     assert done["output_tokens"] == 3
+
+
+def test_strict_query_parses_and_persists_terminal_result_not_stream_aggregate(
+    monkeypatch, tmp_path
+):
+    import strict_authority_workflow
+
+    captured = {}
+    terminal = ResultMessage(
+        subtype="success",
+        duration_ms=10,
+        duration_api_ms=10,
+        is_error=False,
+        num_turns=1,
+        session_id="strict-terminal-session",
+        total_cost_usd=0.01,
+        usage={"input_tokens": 2, "output_tokens": 1},
+        result='{"terminal":true}',
+    )
+
+    async def fake_stream(full_prompt, options, log_file_path, ui, role_name):
+        del options, log_file_path, ui, role_name
+        assert "SYSTEM-OWNED STRICT SCHEMA REPAIR" in full_prompt
+        capture = llm_query._STRICT_PROVIDER_RESULTS.get()
+        capture["results"].append(terminal)
+        return ["intermediate tool-loop prose", '{"stream":true}'], 0.01, {}
+
+    def fake_dispatch(call, **kwargs):
+        captured["dispatch"] = kwargs
+        call.update({
+            "dispatched": True,
+            "effect_id": "effect",
+            "invocation_id": "invocation",
+        })
+
+    def fake_complete(call, *, raw_output, provider_results):
+        captured["raw_output"] = raw_output
+        captured["provider_results"] = provider_results
+        call["provider_completed"] = True
+
+    monkeypatch.setattr(llm_query, "_run_stream_with_signature_retry", fake_stream)
+    monkeypatch.setattr(strict_authority_workflow, "dispatch_call", fake_dispatch)
+    monkeypatch.setattr(
+        strict_authority_workflow, "complete_provider_call", fake_complete
+    )
+    monkeypatch.setattr(llm_query, "_emit_llm_event", lambda *_args, **_kwargs: None)
+    strict_call = {
+        "slot": "proposal:mechanism",
+        "schema_retry_required": True,
+        "prior_schema_rejection": {
+            "projection_errors": ["deterministic_schema_rejected"]
+        },
+    }
+
+    output, _cost, _usage = asyncio.run(
+        llm_query.run_claude_query(
+            _rendered("MASTER PROPOSAL mechanism", "base prompt"),
+            [],
+            _DummyUI(),
+            "MASTER PROPOSAL mechanism",
+            str(tmp_path / "strict_terminal_io.txt"),
+            tools=["Read"],
+            allowed_read_dirs=[evolution_infra.PROJECT_ROOT / "bots/national_v143"],
+            strict_authority=strict_call,
+        )
+    )
+
+    assert output == '{"terminal":true}'
+    assert captured["raw_output"] == output
+    assert captured["provider_results"] == [terminal]
+    assert captured["dispatch"]["lease_seconds"] == 960.0
 
 
 def test_run_claude_query_injects_runtime_path_contract(monkeypatch, tmp_path):
@@ -114,17 +329,23 @@ def test_run_claude_query_injects_runtime_path_contract(monkeypatch, tmp_path):
 
     log_file = tmp_path / "v282" / "logs" / "worker_io.txt"
     log_file.parent.mkdir(parents=True)
-    target = evolution_infra.PROJECT_ROOT / "bots" / "national_v282" / "policy.py"
+    worker_root = (
+        evolution_infra.PROJECT_ROOT
+        / "web/core/results/workflow/artifacts/workspaces"
+        / ("a" * 64)
+    )
+    target = worker_root / "policy.py"
 
     output, _cost, _usage = asyncio.run(
         llm_query.run_claude_query(
-            "base prompt",
+            _rendered("worker", "base prompt"),
             [],
             _DummyUI(),
             "worker",
             str(log_file),
-            tools=["Read", "Edit"],
+            tools=["Bash", "Read", "Edit"],
             allowed_write_dir={"files": [target]},
+            allowed_read_dirs=[worker_root],
         )
     )
 
@@ -133,6 +354,9 @@ def test_run_claude_query_injects_runtime_path_contract(monkeypatch, tmp_path):
     assert "# Runtime Path Contract" in seen["prompt"]
     assert f"`{evolution_infra.PROJECT_ROOT}`" in seen["prompt"]
     assert f"`{target}`" in seen["prompt"]
+    assert "python -c" not in seen["prompt"]
+    assert "python -B -c" not in seen["prompt"]
+    assert "bash`/`sh -c` wrappers" in seen["prompt"]
     assert "base prompt" in seen["prompt"]
 
 
@@ -157,10 +381,10 @@ def test_run_claude_query_emits_role_failed(monkeypatch, tmp_path):
     with pytest.raises(RuntimeError):
         asyncio.run(
             llm_query.run_claude_query(
-                "prompt",
+                _rendered("CYCLE ARCHIVIST", "prompt"),
                 [],
                 _DummyUI(),
-                "reviewer",
+                "CYCLE ARCHIVIST",
                 str(log_file),
             )
         )
@@ -169,8 +393,8 @@ def test_run_claude_query_emits_role_failed(monkeypatch, tmp_path):
     assert len(failed) == 1
     _category, severity, message, fields = failed[0]
     assert severity == "error"
-    assert "reviewer" in message
-    assert fields["role"] == "reviewer"
+    assert "CYCLE ARCHIVIST" in message
+    assert fields["role"] == "CYCLE ARCHIVIST"
     assert fields["exception_type"] == "RuntimeError"
     assert "boom" in fields["error"]
 
@@ -195,10 +419,10 @@ def test_run_claude_query_exit143_during_shutdown_is_cancelled(monkeypatch, tmp_
         with pytest.raises(asyncio.CancelledError):
             asyncio.run(
                 llm_query.run_claude_query(
-                    "prompt",
+                    _rendered("COMBINED ANALYST", "prompt"),
                     [],
                     _DummyUI(),
-                    "MATCH ANALYST",
+                    "COMBINED ANALYST",
                     str(tmp_path / "match_analyst_io.txt"),
                 )
             )
@@ -220,7 +444,7 @@ def test_run_claude_query_exit143_during_shutdown_is_cancelled(monkeypatch, tmp_
     _category, severity, message, fields = cancelled[0]
     assert severity == "info"
     assert "stopped during shutdown" in message
-    assert fields["role"] == "MATCH ANALYST"
+    assert fields["role"] == "COMBINED ANALYST"
     assert "exit code 143" in fields["error"]
     assert fields["shutdown_requested"] is True
 
@@ -244,10 +468,10 @@ def test_run_claude_query_exit143_without_shutdown_is_process_terminated(monkeyp
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
             llm_query.run_claude_query(
-                "prompt",
+                _rendered("COMBINED ANALYST", "prompt"),
                 [],
                 _DummyUI(),
-                "MATCH ANALYST",
+                "COMBINED ANALYST",
                 str(tmp_path / "match_analyst_io.txt"),
             )
         )
@@ -265,7 +489,7 @@ def test_run_claude_query_exit143_without_shutdown_is_process_terminated(monkeyp
     _category, severity, message, fields = terminated[0]
     assert severity == "warn"
     assert "received SIGTERM" in message
-    assert fields["role"] == "MATCH ANALYST"
+    assert fields["role"] == "COMBINED ANALYST"
     assert fields["shutdown_requested"] is False
 
 
@@ -288,7 +512,7 @@ def test_run_claude_query_exit143_without_shutdown_manager_is_process_cancelled(
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(
             llm_query.run_claude_query(
-                "prompt",
+                _rendered("COMBINED ANALYST", "prompt"),
                 [],
                 _DummyUI(),
                 "COMBINED ANALYST",
@@ -775,6 +999,62 @@ def test_process_stream_system_only_stall_times_out_at_first_activity(
     assert fields["system_messages_seen"] >= 1
 
 
+def test_system_bookkeeping_cannot_refresh_mid_loop_stall_or_parent_progress(
+    monkeypatch, tmp_path
+):
+    events = []
+
+    async def fake_stream():
+        yield AssistantMessage(
+            content=[TextBlock(text="real model activity")], model="sonnet"
+        )
+        for index in range(100):
+            await asyncio.sleep(0.005)
+            yield SystemMessage(
+                subtype="thinking_tokens",
+                data={
+                    "estimated_tokens": index + 1,
+                    "estimated_tokens_delta": 1,
+                },
+            )
+
+    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_STALL_TIMEOUT", "0.04")
+    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "2")
+    monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 0.001)
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    with pytest.raises(llm_query.LLMRoleTimeout) as exc:
+        asyncio.run(
+            llm_query._process_stream(
+                fake_stream(),
+                str(tmp_path / "master_system_flood_io.txt"),
+                _DummyUI(),
+                "MASTER PROPOSAL counterfactual",
+            )
+        )
+
+    assert exc.value.timeout_kind == "stall"
+    assert not [
+        event
+        for event in events
+        if event[0] == "pipeline.llm_role_progress"
+    ]
+    timeout = next(
+        event for event in events
+        if event[0] == "pipeline.llm_role_stall_timeout"
+    )
+    assert timeout[3]["system_messages_seen"] > 0
+
+
 def test_process_stream_mid_loop_stall_cuts_at_stall_timeout(monkeypatch, tmp_path):
     # B3 (2026-07-09): once a stream has produced substantive output (entered
     # the tool/think loop), a mid-loop stall — a tool_use is emitted but its
@@ -979,7 +1259,7 @@ def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
         ),
     )
 
-    hooks = llm_query._make_subagent_cost_guard("STRATEGY CRITIC")
+    hooks = llm_query._make_subagent_cost_guard("MASTER")
     handler = hooks["PreToolUse"][0].hooks[0]
     output = asyncio.run(
         handler(
@@ -999,10 +1279,87 @@ def test_subagent_cost_guard_denial_is_recoverable_warning(monkeypatch):
     category, severity, message, data = events[0]
     assert category == "pipeline.subagent_cost_guard_block"
     assert severity == "warn"
-    assert "STRATEGY CRITIC" in message
+    assert "MASTER" in message
     assert data["reason"] == "git_log_all_history"
     assert data["recoverable"] is True
     assert data["next_action"] == "retry_with_bounded_inspection"
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        "git log --max-count=1 national-bot-v143",
+        "git --no-pager show national-bot-v143:policy.py",
+        "git rev-list --max-count=1 HEAD",
+        "bash -lc 'git log -1 -- policy.py'",
+    ),
+)
+def test_strategy_critic_guard_denies_all_git_history_reads(
+    monkeypatch, command
+):
+    import system_log
+
+    events = []
+    monkeypatch.setattr(
+        system_log,
+        "log_system_event",
+        lambda category, severity, message, data=None: events.append(
+            (category, severity, message, data or {})
+        ),
+    )
+    hooks = llm_query._make_subagent_cost_guard("STRATEGY CRITIC")
+    handler = hooks["PreToolUse"][0].hooks[0]
+
+    output = asyncio.run(
+        handler(
+            {"tool_name": "Bash", "tool_input": {"command": command}},
+            "critic-history",
+            {},
+        )
+    )
+
+    decision = output["hookSpecificOutput"]
+    assert decision["permissionDecision"] == "deny"
+    assert "not admissible critic evidence" in decision[
+        "permissionDecisionReason"
+    ]
+    category, severity, _message, data = events[0]
+    assert category == "pipeline.subagent_role_evidence_guard_block"
+    assert severity == "error"
+    assert data["role"] == "STRATEGY CRITIC"
+    assert data["next_action"] == "use_frozen_envelope_and_exact_diff"
+
+
+def test_strategy_critic_guard_allows_exact_diff_but_other_roles_keep_bounded_log():
+    critic_hooks = llm_query._make_subagent_cost_guard("STRATEGY CRITIC")
+    critic_handler = critic_hooks["PreToolUse"][0].hooks[0]
+    allowed_diff = asyncio.run(
+        critic_handler(
+            {
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": "git diff --no-index -- parent/policy.py target/policy.py"
+                },
+            },
+            "critic-diff",
+            {},
+        )
+    )
+    assert allowed_diff.get("hookSpecificOutput") is None
+
+    master_hooks = llm_query._make_subagent_cost_guard("MASTER")
+    master_handler = master_hooks["PreToolUse"][0].hooks[0]
+    allowed_log = asyncio.run(
+        master_handler(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "git log --max-count=1 HEAD"},
+            },
+            "master-log",
+            {},
+        )
+    )
+    assert allowed_log.get("hookSpecificOutput") is None
 
 
 def test_readonly_guard_denial_suggests_non_mutating_comparison():
@@ -1014,13 +1371,21 @@ def test_readonly_guard_denial_suggests_non_mutating_comparison():
     assert "Redirect only to `/dev/null`" in hint
 
 
-def test_critic_and_reviewer_prompts_require_bounded_git_history():
+def test_reviewer_and_critic_forbid_git_history():
     prompts_dir = Path(__file__).resolve().parents[1] / "core" / "prompts"
-    for name in ("critic_prompt.md", "reviewer_prompt.md"):
-        text = (prompts_dir / name).read_text(encoding="utf-8")
-        assert "--max-count=20" in text
-        assert "Never use" in text
-        assert "--all" in text
+    reviewer = (prompts_dir / "reviewer_prompt.md").read_text(encoding="utf-8")
+    critic = (prompts_dir / "critic_prompt.md").read_text(encoding="utf-8")
+
+    assert "Git history" in reviewer
+    assert "git diff --no-index" in reviewer
+    assert "--max-count" not in reviewer
+    assert "git log" not in reviewer
+
+    assert "only tool is Read" in critic
+    assert "Bash, Git, Python subprocesses" in critic
+    assert "SYSTEM-SUPPLIED" not in critic  # bytes are injected at runtime
+    assert "another lineage comparison" in critic
+    assert "git log --oneline" not in critic
 
 
 def test_subagent_mutation_guard_allows_dev_null_in_command_substitution():
@@ -1086,7 +1451,7 @@ def test_runtime_path_contract_readonly_roles_ban_temp_redirects(tmp_path):
     assert "This LLM role is read-only" in contract
     assert "Do not use output redirection" in contract
     assert "`tee`" in contract
-    assert "diff -u A B" in contract
+    assert "diff -u EXACT_A EXACT_B" in contract
     assert "Never write comparison snippets to `/tmp`" in contract
 
 
@@ -1111,9 +1476,10 @@ def test_generation_prompts_explain_oversized_parent_line_limit():
 
     worker = (prompt_dir / "worker_prompt.md").read_text(encoding="utf-8")
     assert "LINE-COUNT GATE CONTRACT" in worker
-    assert "If the parent/source file already exceeds its base" in worker
-    assert "15% growth budget does not apply to already-oversized" in worker
-    assert "exact limit shown in the repair contract is authoritative" in worker
+    assert "If the injected contract says the source was\nalready oversized" in worker
+    assert "15% growth budget does not apply to an already-oversized source" in worker
+    assert "repair-contract limit" in worker
+    assert "authoritative" in worker
 
     crossover = (prompt_dir / "crossover_prompt.md").read_text(encoding="utf-8")
     assert "If Parent A/source is already over the base limit" in crossover
@@ -1141,10 +1507,10 @@ def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, t
     with pytest.raises(Exception):
         asyncio.run(
             llm_query.run_claude_query(
-                "prompt",
+                _rendered("COMBINED ANALYST", "prompt"),
                 [],
                 _DummyUI(),
-                "MATCH ANALYST",
+                "COMBINED ANALYST",
                 str(log_file),
             )
         )
@@ -1153,7 +1519,7 @@ def test_run_claude_query_downgrades_success_error_result_to_info(monkeypatch, t
     assert len(failed) == 1
     _category, severity, _message, fields = failed[0]
     assert severity == "info"
-    assert fields["role"] == "MATCH ANALYST"
+    assert fields["role"] == "COMBINED ANALYST"
     assert "error result: success" in fields["error"]
 
 
@@ -1178,10 +1544,10 @@ def test_run_claude_query_parent_timeout_cancel_is_typed(monkeypatch, tmp_path):
         ):
             asyncio.run(
                 llm_query.run_claude_query(
-                    "prompt",
+                    _rendered("WORKER_COT_CHECK_dynamic_test_gen", "prompt"),
                     [],
                     _DummyUI(),
-                    "DYNAMIC_TEST_GEN",
+                    "WORKER_COT_CHECK_dynamic_test_gen",
                     str(tmp_path / "dynamic_test_gen_io.txt"),
                 )
             )

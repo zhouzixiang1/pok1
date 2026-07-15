@@ -115,6 +115,9 @@ def _fresh_checkpoint(receipt: dict, *, workflow: str = "generation:143:test") -
         next_v=143,
         source_v=142,
         audit_context=audit_context,
+        published_high_water=142,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
     )
     return {
         "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,

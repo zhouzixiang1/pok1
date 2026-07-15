@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from bot_namespace import bot_tag, parse_bot_version
+from bot_namespace import bot_tag, parse_bot_version, strict_artifact_layout_errors
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -157,7 +157,9 @@ def _enumerate_directory(
             child_excluded = excluded or child.name in _EXCLUDED_DIRECTORY_NAMES
             if not child_excluded:
                 directory_entries.append({"path": relative, "type": "directory"})
-            # Excluded cache trees are still inspected so a symlink cannot hide in one.
+            # Transient cache/control trees do not contribute identity, but are
+            # still inspected so a symlink or special file cannot hide in one.
+            # Strict publication/execution separately rejects cache presence.
             _enumerate_directory(
                 root,
                 child,
@@ -200,7 +202,13 @@ def _enumerate_directory(
 
 
 def artifact_manifest(path_or_token: str | Path) -> dict[str, Any]:
-    """Build a deterministic manifest covering every executable artifact entry."""
+    """Build the deterministic identity manifest for artifact source entries.
+
+    Runtime caches and host control products do not acquire authority merely by
+    appearing in this hash.  Strict publication rejects executable caches, and
+    managed bot launch exposes only sealed bytes captured from the bound source
+    projection.
+    """
     path = _absolute_without_resolving(path_or_token)
     try:
         metadata = path.lstat()
@@ -472,6 +480,11 @@ def publication_shape_errors(
     root = _absolute_without_resolving(path_or_token)
     repo = _absolute_without_resolving(repo_root)
     errors: list[str] = []
+    # ``artifact_manifest`` deliberately excludes transient work products so
+    # Worker rollback hashes remain stable.  Publication is a stronger boundary:
+    # an ignored unchecked-hash pyc would be executable when the directory is
+    # mounted even though Git and the certificate never bound it.
+    errors.extend(strict_artifact_layout_errors(root))
     try:
         relative_root = root.relative_to(repo)
     except ValueError:

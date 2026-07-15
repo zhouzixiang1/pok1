@@ -357,9 +357,9 @@ def _load_post_wait_evaluation_evidence(
     return evidence
 
 
-def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
+def _bind_prepare_log_context(current_v: int, allocation_floor: int) -> int:
     """Bind structured logs emitted during disposable Phase-1 prepare."""
-    planned_next_v = max(current_v, max_committed_v) + 1
+    planned_next_v = int(allocation_floor) + 1
     attempt = {"generation": 0, "audit": 0, "precommit": 0}
     try:
         from event_bus import update_last_known, invalidate_ckpt_cache
@@ -373,7 +373,7 @@ def _bind_prepare_log_context(current_v: int, max_committed_v: int) -> int:
             "info",
             f"Prepare log context bound for v{planned_next_v}",
             {"next_v": planned_next_v, "current_v": current_v,
-             "max_committed_v": max_committed_v, "stage": "preparing"},
+             "allocation_floor": allocation_floor, "stage": "preparing"},
         )
     except Exception:
         pass
@@ -456,8 +456,8 @@ def _prepare_protocol_bootstrap_generation(
     active_bots: list[str],
     current_v: int,
     next_v: int,
-    max_committed_v: int,
-    abandoned_floor: int,
+    allocation_floor: int,
+    abandoned_receipt_floor: int,
     workflow_run_id: str,
     ui=None,
 ) -> GenerationContext | None:
@@ -593,8 +593,9 @@ def _prepare_protocol_bootstrap_generation(
             "selection": {
                 "strategy": strategy,
                 "current_v": current_v,
-                "max_committed_v": max_committed_v,
-                "abandoned_floor": abandoned_floor,
+                "published_high_water": current_v,
+                "allocation_floor": allocation_floor,
+                "abandoned_receipt_floor": abandoned_receipt_floor,
                 "parent_a": None if mode == "fresh_national_policy_bootstrap" else source_v,
                 "parent_b": None,
                 "bootstrap_without_strength_evidence": True,
@@ -643,9 +644,7 @@ def _prepare_protocol_bootstrap_generation(
 async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> GenerationContext | None:
     """Phase 1: Analyze state, decide strategy. Disposable on interrupt."""
     from evolution_infra import (
-        MAX_ACTIVE_BOTS, find_current_v, find_latest_active_v, get_active_bots,
-        find_max_committed_v, git_dir_is_committed, git_has_tag,
-        find_abandoned_version_floor, compute_next_generation_v,
+        MAX_ACTIVE_BOTS, find_latest_active_v, get_active_bots,
         wait_for_daemon_eval, ensure_publish_ready_for_new_generation,
         MIN_GAMES_FOR_EVAL,
     )
@@ -653,41 +652,106 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
     if shutdown_mgr and shutdown_mgr.is_shutting_down:
         return None
 
-    # If the checkpoint is already past the prepare/selected stage (e.g.
-    # direction_audited or master_planned), return a generation context from
-    # the existing checkpoint instead of trying to re-prepare from scratch.
-    # Re-preparing would attempt an illegal backwards stage transition.
+    # A published bot is not a completed evolution cycle until its durable
+    # Archivist journal finishes.  This check precedes epoch reads, cost scope,
+    # daemon waits, and every planning LLM call.
     try:
-        from evolution_infra import read_pipeline_checkpoint
-        _existing_ckpt = read_pipeline_checkpoint()
-        if _existing_ckpt and _existing_ckpt.get("stage") not in (
+        from post_publication_handoff import pending_handoff_route
+
+        handoff_route = pending_handoff_route()
+    except Exception as exc:
+        handoff_route = {
+            "status": "blocked",
+            "issues": [f"handoff_discovery_failed:{type(exc).__name__}"],
+        }
+    if handoff_route.get("status") != "none":
+        log_system_event(
+            "pipeline.prepare_blocked_post_publication_handoff",
+            "error" if handoff_route.get("status") == "blocked" else "warn",
+            "Prepare blocked until the durable post-publication Archivist handoff finishes",
+            {
+                "status": handoff_route.get("status"),
+                "version": handoff_route.get("version"),
+                "source_v": handoff_route.get("source_v"),
+                "issues": handoff_route.get("issues") or [],
+                "next_tool": "run_archivist",
+            },
+        )
+        return None
+
+    # Resolve an existing generation only through the canonical epoch
+    # projection. A raw checkpoint filename/JSON object cannot reserve a target
+    # or become resumable without its digest-bound strict-epoch envelope.
+    try:
+        from epoch_authority import strict_epoch_projection
+
+        _epoch_projection = strict_epoch_projection()
+    except Exception as exc:
+        log_system_event(
+            "pipeline.prepare_blocked_version_authority",
+            "error",
+            "Prepare generation could not verify version allocation authority",
+            {"error": f"{type(exc).__name__}: {str(exc)[:500]}"},
+        )
+        if ui:
+            ui.log_history(f"Prepare blocked by version authority: {exc}", "error")
+        return None
+    if _epoch_projection.get("initialized") is not True:
+        log_system_event(
+            "pipeline.prepare_blocked_epoch_uninitialized",
+            "error",
+            "Prepare generation refused an uninitialized strict policy epoch",
+            {
+                "state": _epoch_projection.get("state"),
+                "operator_action": _epoch_projection.get("operator_action"),
+                "reset_receipt_issues": _epoch_projection.get(
+                    "reset_receipt_issues"
+                ) or [],
+            },
+        )
+        return None
+    if _epoch_projection.get("ignored_checkpoint"):
+        log_system_event(
+            "pipeline.prepare_blocked_checkpoint_authority",
+            "error",
+            "Prepare generation refused an unreadable or incompatible checkpoint",
+            dict(_epoch_projection["ignored_checkpoint"]),
+        )
+        if ui:
+            ui.log_history(
+                "Prepare blocked: active checkpoint requires operator reconciliation.",
+                "error",
+            )
+        return None
+    _existing_generation = _epoch_projection.get("active_generation")
+    if isinstance(_existing_generation, dict):
+        if _existing_generation.get("stage") not in (
             None, "selected", "preparing",
         ):
-            _next_v = _existing_ckpt.get("next_v")
-            _source_v = _existing_ckpt.get("source_v")
+            _next_v = _existing_generation.get("next_v")
+            _source_v = _existing_generation.get("source_v")
             if _next_v is not None and _source_v is not None:
-                _parent2_v = _existing_ckpt.get("parent2_v")
+                _parent2_v = _existing_generation.get("parent2_v")
                 _strategy = "crossover" if _parent2_v else "master"
                 log_system_event(
                     "pipeline.prepare_skipped_existing_checkpoint",
                     "info",
-                    f"Prepare skipped: checkpoint already at {_existing_ckpt.get('stage')}",
+                    "Prepare skipped: canonical checkpoint already at "
+                    f"{_existing_generation.get('stage')}",
                     {
                         "next_v": _next_v,
                         "source_v": _source_v,
-                        "stage": _existing_ckpt.get("stage"),
+                        "stage": _existing_generation.get("stage"),
                     },
                 )
                 return GenerationContext(
-                    current_v=_source_v,
+                    current_v=int(_epoch_projection["current_v"]),
                     next_v=_next_v,
                     strategy=_strategy,
                     source_v=_source_v,
                     crossover_parents=(_source_v, _parent2_v) if _parent2_v else (),
                     gen_count=0,
                 )
-    except Exception:
-        pass
 
     try:
         from workflow_profiles import get_workflow_profile
@@ -741,7 +805,13 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 )
             return None
     except Exception as exc:
-        log.warning("Runtime git guard failed during prepare; continuing cautiously: %s", exc)
+        log_system_event(
+            "pipeline.prepare_runtime_guard_failed_closed",
+            "error",
+            "Prepare generation could not verify the runtime Git guard",
+            {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+        )
+        return None
 
     try:
         publish_ok, publish_payload = ensure_publish_ready_for_new_generation()
@@ -769,45 +839,25 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             ui.log_history(f"Prepare publish sync check failed: {exc}", "error")
         return None
 
-    current_v = find_current_v()       # immutable tag/high-water authority
-    # 裸 commit 对账（v117 反复重生循环根因修复, 2026-06-18）：find_max_committed_v()
-    # 返回含裸 commit（绕过 commit_bot 直接 git commit、无 tag+.completed）的最大版本号。
-    # 用它抬高 next_v 下界，使裸 commit 占用的版本号不会被下一代重生覆盖。
-    max_committed_v = find_max_committed_v()
-    # P2 (2026-06-29 reboot analysis): also account for abandoned versions.
-    # Keep this in evolution_infra so status endpoints and prepare_generation use
-    # the same next_v floor.
-    _abandoned_floor = find_abandoned_version_floor()
-    if _abandoned_floor > max_committed_v:
-        max_committed_v = _abandoned_floor
+    current_v = int(_epoch_projection["published_high_water"])
+    _abandoned_floor = int(_epoch_projection["abandoned_receipt_floor"])
+    allocation_floor = int(_epoch_projection["allocation_floor"])
+    _planned_next_v = int(_epoch_projection["next_v"])
+    # No directory, log filename, direct commit or runtime counter participates
+    # here. A valid active checkpoint may hold its bound target; otherwise the
+    # next label is tag high-water / durable abandon-receipt floor + one.
+    if _epoch_projection.get("next_v_authority") == "active_checkpoint_epoch_binding":
         log.info(
-            "P2: next_v floor raised to %d based on abandoned_versions.jsonl "
-            "(preventing reuse of just-abandoned version)", max_committed_v + 1,
+            "Resuming checkpoint-bound allocation v%d (published high-water v%d)",
+            _planned_next_v,
+            current_v,
         )
-    if max_committed_v > current_v:
-        _bare = [v for v in range(current_v + 1, max_committed_v + 1)
-                 if git_dir_is_committed(v) and not git_has_tag(v)]
-        if _bare:
-            log_system_event(
-                "pipeline.bare_commit_detected", "error",
-                f"Bare commit(s) v{_bare} are git-tracked but untagged (bypassed commit_bot). "
-                f"next_v floored to {max_committed_v + 1} to prevent regeneration loop.",
-                {"bare_versions": _bare, "current_v": current_v,
-                 "max_committed_v": max_committed_v,
-                 "next_v": max_committed_v + 1},
-            )
-            if ui:
-                ui.log_history(
-                    f"⚠️ 裸commit检测: v{_bare} 已git提交但无tag(绕过commit_bot)。"
-                    f"next_v={max_committed_v + 1}(跳过裸commit版本,避免反复重生)。"
-                    f"如需保留该版本请用commit_bot补全tag+.completed,否则它将孤立。",
-                    "warn",
-                )
-    _planned_next_v = compute_next_generation_v(
-        current_v=current_v,
-        max_committed_v=max_committed_v,
-        abandoned_floor=_abandoned_floor,
-    )
+    elif _abandoned_floor > current_v:
+        log.info(
+            "Next label v%d reserved after validated abandon receipt floor v%d",
+            _planned_next_v,
+            _abandoned_floor,
+        )
     # Allocate the final workflow identity before Combined/Match/degeneration
     # analysis.  The selected checkpoint below adopts this exact id, so prepare
     # retries, SDK session replacement, and process restart cannot split or
@@ -830,13 +880,59 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             f"Worktree snapshot before preparing v{_planned_next_v}",
             next_v=_planned_next_v,
             current_v=current_v,
-            max_committed_v=max_committed_v,
+            published_high_water=current_v,
+            allocation_floor=allocation_floor,
+            abandoned_receipt_floor=_abandoned_floor,
             emit_delta=True,
         )
     except Exception:
         pass
     active_v = find_latest_active_v()  # strict published active pool
     active_bots = get_active_bots()
+    # Re-open the namespace after active-pool discovery.  A paired tag/reset/
+    # abandon transaction racing the first projection invalidates every source,
+    # target, and bootstrap decision from that projection.
+    try:
+        _epoch_projection_second = strict_epoch_projection()
+    except Exception as exc:
+        log_system_event(
+            "pipeline.prepare_namespace_second_read_failed",
+            "error",
+            "Prepare generation could not revalidate namespace authority",
+            {"error": f"{type(exc).__name__}: {str(exc)[:300]}"},
+        )
+        return None
+    _namespace_fields = (
+        "initialized",
+        "published_high_water",
+        "allocation_floor",
+        "next_v",
+        "abandoned_receipt_floor",
+        "abandoned_receipt_head_digest",
+        "active_bots",
+        "active_generation",
+        "ignored_checkpoint",
+    )
+    if any(
+        _epoch_projection_second.get(field) != _epoch_projection.get(field)
+        for field in _namespace_fields
+    ) or sorted(active_bots) != sorted(_epoch_projection_second.get("active_bots") or []):
+        log_system_event(
+            "pipeline.prepare_namespace_drift",
+            "warn",
+            "Prepare generation stopped because namespace authority changed during discovery",
+            {
+                "first": {
+                    field: _epoch_projection.get(field) for field in _namespace_fields
+                },
+                "second": {
+                    field: _epoch_projection_second.get(field)
+                    for field in _namespace_fields
+                },
+                "observed_active_bots": list(active_bots),
+            },
+        )
+        return None
     if len(active_bots) <= 1:
         _cleanup_incomplete()
         if shutdown_mgr and shutdown_mgr.is_shutting_down:
@@ -845,8 +941,8 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
             active_bots=list(active_bots),
             current_v=current_v,
             next_v=_planned_next_v,
-            max_committed_v=max_committed_v,
-            abandoned_floor=_abandoned_floor,
+            allocation_floor=allocation_floor,
+            abandoned_receipt_floor=_abandoned_floor,
             workflow_run_id=_prepare_workflow_run_id,
             ui=ui,
         )
@@ -1115,21 +1211,18 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 )
     if mechanical_urgent or (combined and combined.get("trend") == "declining"):
         try:
-            from audit_agents import _run_degeneration_diagnosis
-            from evolution_infra import _git
-            # Build recent commit history
-            recent_commits_text = ""
+            from audit_agents import (
+                _run_degeneration_diagnosis,
+                _strict_completion_commit_history,
+            )
+            # Completion history is an exact annotated strict-tag allowlist.
+            # A generic ``git log <tag> -5`` window can cross into ordinary
+            # infrastructure, failed attempts, or the retired bot epoch and is
+            # therefore inadmissible prompt evidence.
             try:
-                import subprocess
-                result = subprocess.run(
-                    ["git", "log", bot_tag(active_v), "-5", "--format=%h %s%n%b"],
-                    capture_output=True, text=True, timeout=10,
-                    cwd=str(Path(__file__).resolve().parent.parent.parent),
-                )
-                if result.returncode == 0:
-                    recent_commits_text = result.stdout.strip()[:3000]
+                recent_commits_text = _strict_completion_commit_history(limit=5)
             except Exception:
-                pass
+                recent_commits_text = ""
 
             # Build rating curve
             rating_curve_text = "\n".join(
@@ -1284,19 +1377,18 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
         except Exception as e:
             log.warning("H2H anomaly check error (skipping): %s", e)
 
-    # LOG GAP FIX (2026-06-29): record the final next_v decision with all inputs
-    # so the version-number allocation is fully auditable. Previously only the
-    # abnormal paths (bare commit, abandoned floor) logged; the normal case left
-    # no trace of how next_v was computed. This is only a scheduler selection,
-    # not proof that prepare_next_gen/run_crossover has materialized the bot dir.
+    # Record the final next_v decision with the exact authoritative inputs. This
+    # is scheduler selection, not publication proof or directory authority.
     _final_next_v = _planned_next_v
     try:
         log_system_event(
             "pipeline.generation_selected", "info",
             f"Selected v{_final_next_v} from v{source_v} (strategy={strategy[:40]})",
             {"next_v": _final_next_v, "current_v": current_v,
-             "max_committed_v": max_committed_v,
-             "abandoned_floor": _abandoned_floor,
+             "published_high_water": current_v,
+             "allocation_floor": allocation_floor,
+             "abandoned_receipt_floor": _abandoned_floor,
+             "next_v_authority": _epoch_projection.get("next_v_authority"),
              "source_v": source_v, "strategy": strategy[:80],
              "selection_stage": "selected",
              "next_step": "prepare_next_gen_or_run_crossover"},
@@ -1326,12 +1418,17 @@ async def prepare_generation(shutdown_mgr, ui=None, min_games=None) -> Generatio
                 "selection": {
                     "strategy": strategy[:80],
                     "current_v": current_v,
-                    "max_committed_v": max_committed_v,
-                    "abandoned_floor": _abandoned_floor,
+                    "published_high_water": current_v,
+                    "allocation_floor": allocation_floor,
+                    "abandoned_receipt_floor": _abandoned_floor,
+                    "next_v_authority": _epoch_projection.get("next_v_authority"),
                     "parent_a": parents[0] if parents else None,
                     "parent_b": parent2_v,
                     "h2h_snapshot_manifest_digest": h2h_snapshot.get("manifest_digest"),
                     "h2h_snapshot_sha256": h2h_snapshot.get("sha256"),
+                    "selection_view_source_history": list(
+                        selection_view.source_history
+                    ),
                     "evaluation_evidence": {
                         "bot": active_bot_name,
                         "games": evidence.games,
@@ -2373,51 +2470,33 @@ def _finalize_bare_commit(v, ckpt=None):
 
 
 def _cleanup_incomplete():
-    """Remove incomplete bot directories that have no git tag and no active checkpoint."""
-    import shutil
-    from evolution_infra import PROJECT_ROOT, git_has_tag, git_dir_is_committed, RESULTS_DIR
+    """Report incomplete directories; mutation requires canonical abandon CAS.
+
+    Directory names, missing tags, and a best-effort checkpoint read are not
+    cleanup authority.  The former direct ``rmtree`` path raced publication and
+    could delete a partial-tag or just-committed candidate.  Active cleanup is
+    now exclusively owned by ``_do_abandon_generation`` under the shared
+    publication lock and durable claim transaction.
+    """
+    from evolution_infra import PROJECT_ROOT
 
     bots_dir = PROJECT_ROOT / "bots"
     if not bots_dir.exists():
-        return
+        return []
+    observed = []
     for d in sorted(bots_dir.iterdir()):
         if d.is_dir() and d.name.startswith(ACTIVE_BOT_PREFIX):
             if not (d / ".completed").exists():
                 v = parse_bot_version(d.name)
                 if v is None:
                     continue
-                if not git_has_tag(v):
-                    # H3 (2026-06-29): a bare-commit dir (git-tracked files but no
-                    # tag) is committed code interrupted mid-finalize. rmtree here
-                    # would destroy it. Attempt finalize instead; only rmtree if
-                    # finalize cannot recover AND there's no active checkpoint.
-                    if git_dir_is_committed(v):
-                        _ckpt = None
-                        checkpoint_file = RESULTS_DIR / "pipeline_state.json"
-                        if checkpoint_file.exists():
-                            try:
-                                _ckpt = json.loads(checkpoint_file.read_text())
-                            except Exception:
-                                _ckpt = None
-                        finalized = _finalize_bare_commit(v, _ckpt)
-                        if finalized:
-                            continue
-                        # Could not finalize — preserve git-tracked dir (history
-                        # still holds it). Do NOT rmtree committed code.
-                        log.warning(
-                            "H3: preserving bare-commit v%d dir (git-tracked, no tag, "
-                            "finalize failed) — not removing committed code.", v)
-                        continue
-                    # Skip if there's an active pipeline checkpoint for this version
-                    checkpoint_file = RESULTS_DIR / "pipeline_state.json"
-                    if checkpoint_file.exists():
-                        try:
-                            ckpt = json.loads(checkpoint_file.read_text())
-                            if ckpt.get("next_v") == v and ckpt.get("stage") not in (None, "archived"):
-                                continue
-                        except Exception:
-                            pass
-                    shutil.rmtree(d, ignore_errors=True)
+                observed.append(v)
+                log.warning(
+                    "Preserving incomplete v%d until canonical checkpoint-bound "
+                    "abandon or publication reconciliation proves authority.",
+                    v,
+                )
+    return observed
 
 
 async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
@@ -2453,63 +2532,22 @@ async def post_generation_cleanup(shutdown_mgr, ui, ctx: GenerationContext):
         _finish("skipped", "shutdown_before_start")
         return
 
+    from post_publication_handoff import pending_handoff_route
+
+    handoff = pending_handoff_route()
+    if handoff.get("status") != "none":
+        _finish("blocked", "post_publication_handoff_incomplete")
+        raise RuntimeError(
+            "post_generation_cleanup_requires_completed_archivist_handoff:"
+            + ";".join(handoff.get("issues") or [str(handoff.get("status"))])
+        )
     committed_generation = ctx.next_v > 0 and git_has_tag(ctx.next_v)
     if not committed_generation:
-        log.info(
-            "Post-cleanup skipped for v%s: no %s tag (abandoned or uncommitted cycle)",
-            ctx.next_v, bot_tag(ctx.next_v),
-        )
-        log_system_event(
-            "pipeline.post_cleanup_skipped_uncommitted",
-            "info",
-            f"Post-cleanup skipped for v{ctx.next_v}: generation is not committed/tagged",
-            {
-                "version": ctx.next_v,
-                "source_v": ctx.source_v,
-                "strategy": ctx.strategy,
-                "reason": "not_committed_or_abandoned",
-            },
-        )
         _finish("skipped", "not_committed_or_abandoned")
         return
-
-    # Auto-reap if pool exceeds limit
-    active_bots = get_active_bots()
-    if len(active_bots) > MAX_ACTIVE_BOTS:
-        log_system_event(
-            "pipeline.post_cleanup_reap_start",
-            "info",
-            f"Auto-reap starting: {len(active_bots)} active bot(s)",
-            {"version": ctx.next_v, "active_count": len(active_bots), "max_active": MAX_ACTIVE_BOTS},
-        )
-        try:
-            from tool_bot_management import _do_reap_weakest
-            reap_count = 0
-            while len(get_active_bots()) > MAX_ACTIVE_BOTS and reap_count < 10:
-                result = await _do_reap_weakest(quiet=True)
-                if not result.get("reaped"):
-                    break
-                reap_count += 1
-            log_system_event(
-                "pipeline.post_cleanup_reap_done",
-                "info",
-                f"Auto-reap finished: reaped {reap_count} bot(s)",
-                {"version": ctx.next_v, "reap_count": reap_count,
-                 "active_count": len(get_active_bots())},
-            )
-        except Exception as e:
-            log.warning("Auto-reap failed: %s\n%s", e, traceback.format_exc())
-            log_system_event(
-                "pipeline.post_cleanup_reap_failed",
-                "warn",
-                f"Auto-reap failed: {str(e)[:180]}",
-                {"version": ctx.next_v, "error": str(e)[:500]},
-            )
-            if ui:
-                ui.log_history(f"Auto-reap failed: {e}", "warn")
-
-    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-        _finish("skipped", "shutdown_after_reap")
-        return
-
+    # All reap, rotation, log archival, annotation, stability, and signal
+    # effects are journaled by run_archivist. Phase 3 only verifies that the
+    # obligation is complete; duplicating them here would make resume behavior
+    # differ from the initial publication path.
     _finish("done")
+    return

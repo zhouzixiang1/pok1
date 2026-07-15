@@ -271,12 +271,26 @@ class TestBuildBotSummary:
         monkeypatch.setattr(official_certification, "status_payload", lambda _path: status)
         monkeypatch.setattr(
             official_certification,
-            "official_full_certified",
-            lambda payload, candidate, *, require_published: (
+            "official_certification_profile_projection",
+            lambda payload, candidate, *, require_published: ({
+                "certification_profile": "official-full-v5",
+                "opponent_authority": "strict_published_pool",
+                "strength_evidence_weight": 0,
+                "strategy_evidence_weight": 0,
+                "formal_summary": {
+                    "self_play_rounds": 5,
+                    "opponent_rounds": 3,
+                    "target_hands": 70,
+                    "rounds_requested": 8,
+                    "rounds_run": 8,
+                    "passed_rounds": 8,
+                    "failed_rounds": 0,
+                },
+            } if (
                 payload is status
                 and candidate == bot_dir
                 and require_published is True
-            ),
+            ) else {}),
         )
 
         result = build_bot_summary(bot_dir, "national_v143", {}, {}, {})
@@ -284,6 +298,10 @@ class TestBuildBotSummary:
 
         assert certification["formal_certified"] is True
         assert certification["formal_authority"] == "signed_full_v5"
+        assert certification["certification_profile"] == "official-full-v5"
+        assert certification["opponent_authority"] == "strict_published_pool"
+        assert certification["strength_evidence_weight"] == 0
+        assert certification["strategy_evidence_weight"] == 0
         assert certification["formal_summary"] == {
             "self_play_rounds": 5,
             "opponent_rounds": 3,
@@ -311,7 +329,7 @@ class TestBuildBotSummary:
         )
         monkeypatch.setattr(
             official_certification,
-            "official_full_certified",
+            "official_certification_profile_projection",
             lambda *_args, **_kwargs: False,
         )
 
@@ -322,6 +340,62 @@ class TestBuildBotSummary:
         assert certification["formal_certified"] is False
         assert certification["formal_authority"] == "none"
         assert certification["formal_summary"] is None
+
+    def test_projects_first_strict_control_profile_from_signed_authority(
+        self, tmp_path, monkeypatch
+    ):
+        import official_certification
+        from server.routes._helpers import build_bot_summary
+
+        bot_dir = tmp_path / "national_v143"
+        bot_dir.mkdir()
+        status = {
+            "bot": "national_v143",
+            "status": "official-certified",
+            "mode": "full",
+            "policy_id": "official-full-v5",
+            # These mutable lookalikes must be replaced, not echoed.
+            "certification_profile": "FORGED",
+            "opponent_authority": "FORGED",
+            "strength_evidence_weight": 99,
+            "strategy_evidence_weight": 99,
+        }
+        profile = {
+            "certification_profile": "first_strict_control_v1",
+            "opponent_authority": "system_control",
+            "strength_evidence_weight": 0,
+            "strategy_evidence_weight": 0,
+            "formal_summary": {
+                "self_play_rounds": 5,
+                "opponent_rounds": 3,
+                "target_hands": 70,
+                "rounds_requested": 8,
+                "rounds_run": 8,
+                "passed_rounds": 8,
+                "failed_rounds": 0,
+            },
+        }
+        monkeypatch.setattr(official_certification, "status_payload", lambda _path: status)
+        monkeypatch.setattr(
+            official_certification,
+            "official_certification_profile_projection",
+            lambda payload, candidate, *, require_published: (
+                profile
+                if payload is status and candidate == bot_dir and require_published is True
+                else {}
+            ),
+        )
+
+        certification = build_bot_summary(
+            bot_dir, "national_v143", {}, {}, {}
+        )["official_certification"]
+
+        assert certification["formal_certified"] is True
+        assert certification["formal_authority"] == "signed_full_v5"
+        assert certification["certification_profile"] == "first_strict_control_v1"
+        assert certification["opponent_authority"] == "system_control"
+        assert certification["strength_evidence_weight"] == 0
+        assert certification["strategy_evidence_weight"] == 0
 
     def test_projects_complete_strength_order_row(self, tmp_path, monkeypatch):
         import official_certification

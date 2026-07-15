@@ -37,6 +37,128 @@ from worker_boundary import (
 )
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
+
+def _render_worker_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "task", "next_v", "source_v", "candidate_path", "allowed_files",
+        "reviewer_feedback", "attempt_note", "retry_guidance", "role",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Worker renderer input contract mismatch")
+    task = inputs["task"]
+    if not isinstance(task, dict):
+        raise ValueError("Worker renderer task must be an object")
+    next_v = int(inputs["next_v"])
+    source_v = inputs["source_v"]
+    candidate_path = str(inputs["candidate_path"])
+    base_worker_prompt = _compose_worker_task_prompt(
+        task,
+        str(inputs["reviewer_feedback"]),
+    )
+    base_worker_prompt = (
+        "# Lease-Isolated Candidate\n"
+        f"The only writable candidate tree for this attempt is `{candidate_path}`. "
+        f"Any older instruction that names `bots/national_v{next_v}` means this "
+        "lease-isolated tree, never the canonical bot directory. Read, edit, "
+        "compile, and probe only this tree; publication is owned by the harness.\n\n"
+        + base_worker_prompt
+    )
+    prompts_dir = Path(__file__).resolve().parent / "prompts"
+    common = (prompts_dir / "worker_prompt.md").read_text(encoding="utf-8")
+    profile = (prompts_dir / "worker_profile_national_native.md").read_text(
+        encoding="utf-8"
+    )
+    marker = "{execution_profile_contract}"
+    if common.count(marker) != 1:
+        raise ValueError("Worker renderer profile marker mismatch")
+    template = common.replace(marker, profile)
+    text = substitute_template(template, {
+        "role": str(inputs["role"]),
+        "worker_prompt": (
+            base_worker_prompt
+            + str(inputs["retry_guidance"])
+            + str(inputs["attempt_note"])
+        ),
+        "version": str(next_v),
+        "parent_version": str(source_v),
+        "candidate_path": candidate_path,
+    })
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="compiled_worker_task",
+        evidence_provenance={
+            "task": inputs["task"],
+            "next_v": int(inputs["next_v"]),
+            "candidate_path": candidate_path,
+            "allowed_files": [str(item) for item in inputs["allowed_files"]],
+            "renderer_inputs_digest": hashlib.sha256(
+                json.dumps(
+                    inputs,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        },
+    )
+
+
+def _render_debug_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "error_output", "changed_diff", "target_file", "next_v",
+        "candidate_path",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Debug renderer input contract mismatch")
+    next_v = int(inputs["next_v"])
+    candidate_root = Path(str(inputs["candidate_path"]))
+    target_file = str(inputs["target_file"])
+    target_rel = _target_rel(target_file, next_v) or target_file.strip()
+    target_display = (
+        f"{bot_relpath(next_v)}/{target_rel}" if target_rel else target_file
+    )
+    target_abs = candidate_root / target_rel if target_rel else candidate_root
+    prompt_template = (
+        Path(__file__).resolve().parent / "prompts" / "debug_worker_prompt.md"
+    ).read_text(encoding="utf-8")
+    error_output = str(inputs["error_output"])
+    changed_diff = str(inputs["changed_diff"])
+    text = (
+        f"{prompt_template}\n\n"
+        f"## Error Output\n```\n{error_output[:3000]}\n```\n\n"
+        f"## Changed Diff\n```\n{changed_diff[:3000]}\n```\n\n"
+        f"## Target File\n"
+        f"- Generation: v{next_v}\n"
+        f"- Repository-relative path: `{target_display}`\n"
+        f"- Absolute path: `{target_abs}`\n\n"
+        f"Read exactly `{target_abs}` for full context. Do not inspect or infer from "
+        f"any other bot version unless the error output explicitly names that file. "
+        f"Then produce your diagnosis.\n"
+        f"Return ONLY a ```json``` block with your diagnosis, fix, and confidence level."
+    )
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="worker_gate_failure",
+        evidence_provenance={
+            "candidate_path": str(candidate_root),
+            "error_digest": hashlib.sha256(
+                error_output.encode("utf-8")
+            ).hexdigest(),
+            "changed_diff_digest": hashlib.sha256(
+                changed_diff.encode("utf-8")
+            ).hexdigest(),
+            "target_file": target_file,
+            "next_v": next_v,
+        },
+    )
+
+
 # Maximum number of LLM turns for the debug sub-agent (budget cap).
 _DEBUG_AGENT_MAX_TURNS = 5
 QUALITY_REWORK_WORKER_TIMEOUT = int(os.environ.get("POK_WORKER_QUALITY_REWORK_TIMEOUT", "600"))
@@ -208,10 +330,9 @@ def _allowed_write_scope_for_task(task, next_dir, next_v):
 def _record_worker_failure(gen, worker_id, role, error, failure_type="unknown"):
     """Append a worker failure record to the JSONL file.
 
-    RC5: category="worker" distinguishes real worker-exec failures from the
-    reviewer/critic gate rejections that _record_quality_failure writes into the
-    same file — historically 49 critic + 9 reviewer + only 1 real worker, all
-    indistinguishable without this field.
+    ``category=worker`` distinguishes an execution failure from separately
+    typed gate observations in the same diagnostic file. Those diagnostics are
+    not cross-generation evidence authority.
     """
     entry = {"gen": gen, "worker_id": worker_id, "role": role, "error": error,
              "failure_type": failure_type, "category": "worker"}
@@ -676,12 +797,10 @@ def _cot_inconsistency_blocks_task(task, cot=None):
     return any(marker in text for marker in (
         "quality_repair",
         "precommit_repair",
-        "critic_repair",
         "review_repair",
         "reviewer_repair",
         "official_repair",
         "repair_planned",
-        "critic rejection",
         "review rejection",
         "file_size(",
         "position_semantics(",
@@ -753,36 +872,32 @@ async def _run_debug_agent(
             log.warning("Debug agent prompt not found: %s", prompt_template_file)
             return {}
 
-        prompt_template = prompt_template_file.read_text(encoding="utf-8")
-
-        target_rel = _target_rel(target_file, next_v) or str(target_file or "").strip()
-        target_display = f"{bot_relpath(next_v)}/{target_rel}" if target_rel else str(target_file or "")
         candidate_root = (
             Path(candidate_dir) if candidate_dir is not None else get_bot_dir(next_v)
-        )
-        target_abs = candidate_root / target_rel if target_rel else candidate_root
-
-        debug_prompt = (
-            f"{prompt_template}\n\n"
-            f"## Error Output\n```\n{error_output[:3000]}\n```\n\n"
-            f"## Changed Diff\n```\n{changed_diff[:3000]}\n```\n\n"
-            f"## Target File\n"
-            f"- Generation: v{next_v}\n"
-            f"- Repository-relative path: `{target_display}`\n"
-            f"- Absolute path: `{target_abs}`\n\n"
-            f"Read exactly `{target_abs}` for full context. Do not inspect or infer from "
-            f"any other bot version unless the error output explicitly names that file. "
-            f"Then produce your diagnosis.\n"
-            f"Return ONLY a ```json``` block with your diagnosis, fix, and confidence level."
         )
 
         logs_dir = get_logs_dir(next_v)
         logs_dir.mkdir(parents=True, exist_ok=True)
         debug_log = logs_dir / "debug_agent_io.txt"
 
+        from llm_query import render_llm_prompt
+
+        debug_role = f"DEBUG AGENT (v{next_v})"
+        rendered_prompt = render_llm_prompt(
+            debug_role,
+            producer=_render_debug_provider_prompt,
+            renderer_inputs={
+                "error_output": str(error_output),
+                "changed_diff": str(changed_diff),
+                "target_file": str(target_file or ""),
+                "next_v": int(next_v),
+                "candidate_path": str(candidate_root),
+            },
+        )
+
         output, _cost, _usage = await run_claude_query(
-            debug_prompt, [], ui,
-            f"DEBUG AGENT (v{next_v})", debug_log,
+            rendered_prompt, [], ui,
+            debug_role, debug_log,
             tools=["Read"],
             allowed_read_dirs=[candidate_root],
         )
@@ -912,19 +1027,13 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                               context_files, ui, reviewer_feedback,
                               source_v=None, parallel_mode=False, worker_snapshots=None,
                               boundary_allowed_files=None, task_skipper=None,
-                              boundary_snapshot=None):
+                              boundary_snapshot=None,
+                              worker_output_evidence=None,
+                              worker_effect_identity=None):
     """Run a single worker task with retries. Returns True on success."""
     w_id = task.get("worker_id", idx + 1)
     role = task.get("role", f"Expert Coder {w_id}")
-    base_worker_prompt = _compose_worker_task_prompt(task, reviewer_feedback)
-    base_worker_prompt = (
-        "# Lease-Isolated Candidate\n"
-        f"The only writable candidate tree for this attempt is `{next_dir}`. "
-        f"Any older instruction that names `bots/national_v{next_v}` means this "
-        "lease-isolated tree, never the canonical bot directory. Read, edit, "
-        "compile, and probe only this tree; publication is owned by the harness.\n\n"
-        + base_worker_prompt
-    )
+    retry_guidance = ""
 
     worker_log_file = get_logs_dir(next_v) / f"worker_{w_id}_io.txt"
     worker_timeout = _worker_timeout_for_task(task, reviewer_feedback)
@@ -963,6 +1072,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
         set(boundary_allowed_files or ()) - own_write_files
         if parallel_mode else set()
     )
+    if isinstance(worker_output_evidence, dict):
+        worker_output_evidence.pop(idx, None)
 
     for attempt in range(MAX_WORKER_RETRIES):
         if not parallel_mode:
@@ -1018,24 +1129,46 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 except Exception:
                     pass  # Debug agent failure must not block worker retry
 
-        worker_prompt = substitute_template(worker_template, {
-            "role": role,
-            "worker_prompt": base_worker_prompt + attempt_note,
-            "version": str(next_v),
-            "parent_version": str(source_v),
-            "candidate_path": str(next_dir),
-        })
+        from llm_query import render_llm_prompt
+
+        worker_role = f"WORKER {w_id} ({role})"
+        rendered_prompt = render_llm_prompt(
+            worker_role,
+            producer=_render_worker_provider_prompt,
+            renderer_inputs={
+                "task": task,
+                "next_v": int(next_v),
+                "source_v": source_v,
+                "candidate_path": str(next_dir),
+                "allowed_files": allowed_files_for_task(task, next_v),
+                "reviewer_feedback": str(reviewer_feedback or ""),
+                "attempt_note": attempt_note,
+                "retry_guidance": retry_guidance,
+                "role": str(role),
+            },
+        )
 
         # ── Timeout isolation: abort and retry if worker hangs for >WORKER_TIMEOUT sec ──
+        worker_output = ""
         try:
             llm_task = asyncio.create_task(run_claude_query(
-                worker_prompt, context_files, ui,
-                f"WORKER {w_id} ({role})", worker_log_file,
+                rendered_prompt, context_files, ui,
+                worker_role, worker_log_file,
                 tools=["Bash", "Read", "Edit"],
                 allowed_write_dir=allowed_write_scope,
                 allowed_read_dirs=[next_dir],
             ))
-            await asyncio.wait_for(llm_task, timeout=worker_timeout)
+            provider_result = await asyncio.wait_for(
+                llm_task,
+                timeout=worker_timeout,
+            )
+            if (
+                not isinstance(provider_result, tuple)
+                or len(provider_result) != 3
+                or not isinstance(provider_result[0], str)
+            ):
+                raise RuntimeError("Worker provider result contract mismatch")
+            worker_output = provider_result[0]
         except LLMAvailabilityBlocked:
             # A provider-wide pause is not a Worker implementation attempt.
             # Remove any partial edits and let the durable activity boundary
@@ -1083,7 +1216,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                 _boundary_snapshot,
                 ignored_files=sibling_files,
             )
-            base_worker_prompt += (
+            retry_guidance += (
                 "\n\nPREVIOUS ATTEMPT TIMED OUT. Start fresh with a more direct, bounded "
                 "implementation of the SAME assigned task. Reduce incidental complexity, "
                 "but implement every mandatory Runtime Contract boundary and every assigned "
@@ -1106,7 +1239,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             if invalid_targets:
                 _last_reason = f"invalid/deleted target files: {', '.join(invalid_targets)}"
                 _last_failure_type = "invalid_target"
-                base_worker_prompt += (
+                retry_guidance += (
                     f"\n\nCRITICAL: These target paths do NOT exist on disk: {', '.join(invalid_targets)}. "
                     f"You likely wrote to a bogus path (e.g. an unstripped \"(NEW)\" suffix). "
                     f"Write the candidate-owned file to its plain relative path `policy.py` — no annotations. "
@@ -1120,7 +1253,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             if unchanged:
                 _last_reason = f"zero changes in target files: {', '.join(unchanged)}"
                 _last_failure_type = "zero_changes"
-                base_worker_prompt += (
+                retry_guidance += (
                     f"\n\nCRITICAL: Your target files were NOT modified: {', '.join(unchanged)}. "
                     f"You MUST use the Edit tool to change these files. Do NOT just analyze — make actual edits."
                 )
@@ -1144,7 +1277,7 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
             _last_reason = "; ".join(boundary.violations[:3])
             _last_failure_type = "boundary_violation"
             restore_python_files(next_dir, _boundary_snapshot, boundary.violation_files)
-            base_worker_prompt += (
+            retry_guidance += (
                 "\n\nCRITICAL BOUNDARY VIOLATION: You changed files outside your declared "
                 "target_files/files_allowed. Only edit these files: "
                 f"{', '.join(boundary.allowed_files) or '(none declared)'}. "
@@ -1197,11 +1330,37 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
                             f"--- {rel} (modified) ---\n{_target_preview(dst_file)}"
                         )
             _last_changed_diff = "\n".join(_changed_files) if _changed_files else "(no diff available)"
-            base_worker_prompt += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
+            retry_guidance += f"\n\nCRITICAL FIX: Fix syntax error:\n{compile_errors[0]}"
             continue
 
         # Smoke test is NOT run here — it is deferred to the quality gate
         # (run_quality_gates in tool_gates.py) to save ~60-120s per retry attempt.
+        if isinstance(worker_output_evidence, dict):
+            try:
+                from audit_agents import bind_fenced_worker_output
+
+                worker_output_evidence[idx] = bind_fenced_worker_output(
+                    task=task,
+                    worker_id=w_id,
+                    next_v=next_v,
+                    source_v=source_v,
+                    worker_effect_identity=worker_effect_identity,
+                    attempt=attempt + 1,
+                    dispatch_receipt_digest=(
+                        rendered_prompt.dispatch_receipt.receipt_digest
+                    ),
+                    output=worker_output,
+                )
+            except Exception as exc:
+                from audit_agents import WorkerCoTEvidenceError
+
+                if isinstance(exc, WorkerCoTEvidenceError):
+                    raise WorkerInfrastructureError(
+                        w_id,
+                        role,
+                        [f"worker output evidence binding failed: {exc}"],
+                    ) from exc
+                raise
         ui.log_history(f"Worker {w_id} ({role}) done", "info")
         return True
 
@@ -1229,7 +1388,8 @@ async def _run_single_worker(task, idx, worker_template, next_dir, next_v,
 async def _execute_workers(tasks, worker_template, next_dir, next_v,
                             context_files, ui, reviewer_feedback,
                             source_v=None, force_sequential=False,
-                            task_skipper=None):
+                            task_skipper=None,
+                            worker_effect_identity=None):
     """Execute worker tasks, capturing per-worker file snapshots.
 
     When all workers have disjoint target_files, executes in parallel via
@@ -1245,6 +1405,7 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
     # This enables the boundary validator to check only the Tuner's own changes
     # rather than seeing all preceding workers' changes mixed in.
     worker_snapshots = {}
+    worker_outputs = {}
     audit_focus_areas = []  # P0-2: Collected from Worker CoT checks
 
     if len(tasks) <= 1:
@@ -1283,13 +1444,19 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
             task_skipper=task_skipper,
+            worker_output_evidence=worker_outputs,
+            worker_effect_identity=worker_effect_identity,
         )
         # P0-2: Worker CoT consistency check
         if ok:
             try:
-                from audit_agents import _run_worker_cot_check
+                from audit_agents import (
+                    WorkerCoTEvidenceError,
+                    _run_worker_cot_check,
+                )
                 cot = await _run_worker_cot_check(
-                    tasks[0], 0, next_v, source_v, next_dir, worker_snapshots, ui
+                    tasks[0], 0, next_v, source_v, next_dir, worker_snapshots, ui,
+                    worker_output_evidence=worker_outputs.get(0),
                 )
                 if not cot.get("cot_consistent", True):
                     if _cot_inconsistency_blocks_task(tasks[0], cot):
@@ -1308,6 +1475,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                         audit_focus_areas.extend(cot.get("focus_areas", []))
             except LLMAvailabilityBlocked:
                 raise
+            except WorkerCoTEvidenceError as e:
+                raise WorkerInfrastructureError(
+                    tasks[0].get("worker_id", 1),
+                    tasks[0].get("role", "Worker"),
+                    [f"Worker CoT evidence invalid: {e}"],
+                ) from e
             except Exception as e:
                 log.warning("CoT audit failed for worker 0: %s", e)
         return ok, worker_snapshots, audit_focus_areas
@@ -1355,6 +1528,8 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     worker_snapshots=worker_snapshots,
                     boundary_allowed_files=parallel_allowed_files,
                     boundary_snapshot=parallel_boundary_snapshot,
+                    worker_output_evidence=worker_outputs,
+                    worker_effect_identity=worker_effect_identity,
                 )
 
         results = await gather_llm_fail_fast(
@@ -1414,9 +1589,13 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
         # P0-2: Run Worker CoT checks sequentially (they are fast, read-only).
         for i, task in enumerate(tasks):
             try:
-                from audit_agents import _run_worker_cot_check
+                from audit_agents import (
+                    WorkerCoTEvidenceError,
+                    _run_worker_cot_check,
+                )
                 cot = await _run_worker_cot_check(
-                    task, i, next_v, source_v, next_dir, worker_snapshots, ui
+                    task, i, next_v, source_v, next_dir, worker_snapshots, ui,
+                    worker_output_evidence=worker_outputs.get(i),
                 )
                 if not cot.get("cot_consistent", True):
                     if _cot_inconsistency_blocks_task(task, cot):
@@ -1435,6 +1614,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                         audit_focus_areas.extend(cot.get("focus_areas", []))
             except LLMAvailabilityBlocked:
                 raise
+            except WorkerCoTEvidenceError as e:
+                raise WorkerInfrastructureError(
+                    task.get("worker_id", i + 1),
+                    task.get("role", "Worker"),
+                    [f"Worker CoT evidence invalid: {e}"],
+                ) from e
             except Exception as e:
                 log.warning("CoT audit failed for worker %d: %s", i, e)
 
@@ -1485,14 +1670,20 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
             context_files, ui, reviewer_feedback,
             source_v=source_v, worker_snapshots=worker_snapshots,
             task_skipper=task_skipper,
+            worker_output_evidence=worker_outputs,
+            worker_effect_identity=worker_effect_identity,
         )
         if not ok:
             return False, worker_snapshots, audit_focus_areas
         # P0-2: Worker CoT consistency check after each successful worker
         try:
-            from audit_agents import _run_worker_cot_check
+            from audit_agents import (
+                WorkerCoTEvidenceError,
+                _run_worker_cot_check,
+            )
             cot = await _run_worker_cot_check(
-                task, i, next_v, source_v, next_dir, worker_snapshots, ui
+                task, i, next_v, source_v, next_dir, worker_snapshots, ui,
+                worker_output_evidence=worker_outputs.get(i),
             )
             if not cot.get("cot_consistent", True):
                 if _cot_inconsistency_blocks_task(task, cot):
@@ -1511,6 +1702,12 @@ async def _execute_workers(tasks, worker_template, next_dir, next_v,
                     audit_focus_areas.extend(cot.get("focus_areas", []))
         except LLMAvailabilityBlocked:
             raise
+        except WorkerCoTEvidenceError as e:
+            raise WorkerInfrastructureError(
+                task.get("worker_id", i + 1),
+                task.get("role", "Worker"),
+                [f"Worker CoT evidence invalid: {e}"],
+            ) from e
         except Exception as e:
             log.warning("CoT audit failed for worker %d (sequential): %s", i, e)
     return True, worker_snapshots, audit_focus_areas

@@ -13,25 +13,17 @@ log substitutes for the signed official Windows EXE certificate.
 </instructions>
 
 <tools>
-- Read source files
-- Bash for diff and git commands
+- {review_tool_contract}
 - Do not use webReader, web-search, file:// URLs, or GitHub URLs
-- Bash tool working directory may persist across calls. Start review commands
-  from the repository root; if a command needs a bot-local cwd, use a subshell
-  such as `(cd bots/national_v{version} && ...)`. Do not use a bare `cd` that
-  affects later commands.
 - This is a read-only gate. Do not create temp files, write redirects, `tee`
   probe output, `touch`, `mkdir`, `rm`, or mutate git state. Redirect only to
   `/dev/null` for stderr/stdout noise.
-- For comparisons, use direct read-only commands: `diff -u parent target`,
-  `git diff --no-index -- parent target`, `sed -n 'START,ENDp' file`, `rg`, or
-  `python -c` snippets that open files read-only and print results. Never write
-  snippets to `/tmp` or `web/core/results`.
-- For git history, use only bounded commands. Every `git log` command MUST
-  include `--max-count=20` (or smaller) and an explicit revision range or path.
-  Never use `--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is
-  denied by the runtime cost guard, do not retry it; switch to `Read`, `diff`,
-  `rg`, or a bounded `git log --oneline --max-count=20 <range>` command.
+- Do not invoke Python execution, shell wrappers, Git history, `find`, globs,
+  symlink-following options, or implicit current-directory scans. If Bash is
+  available, only direct statically bounded reads under the supplied roots are
+  permitted (`cat`, `sed`, `rg` with an explicit path, direct `diff`, or
+  `git diff --no-index`). If a command is denied, use `Read`; do not retry a
+  variant.
 </tools>
 
 <context>
@@ -39,7 +31,7 @@ log substitutes for the signed official Windows EXE certificate.
 {master_plan}
 
 Bot directory: `bots/national_v{version}/`
-Parent version tag: `national-bot-v{parent_version}`
+{review_lineage_contract}
 </context>
 
 <action_semantics>
@@ -88,10 +80,7 @@ You check ONLY these five areas:
    (MAX_LINES_HARD_CAP). The exact five-file ABI permits candidate changes only
    in `policy.py`.
 
-   **Inherited-oversize handling**: The quality gate's adaptive limit lets a child match (but not grow beyond) an already-oversized parent. When judging file size, first check whether the PARENT already exceeds the base limit (`wc -l bots/national_v{parent_version}/FILE`):
-   - If the child GROWS an already-oversized file beyond the parent's line count → **Reject** (file_size violation).
-   - If the child SHRINKS or MAINTAINS an oversized file (net growth ≤ 0 vs parent) → **Marginal (5-6)**, NOT a Reject on file-size grounds alone (the oversize was inherited, not introduced by this candidate). Still flag it in `risk_areas` so future generations are nudged toward compliance.
-   - If the parent is within limits and the child exceeds them → apply the normal Reject/Marginal rules above.
+   {review_size_baseline_contract}
 
 3. **Code correctness** — The bot must compile. `national_bot.py` must connect over delimiter-free raw TCP, decode fragmented and coalesced platform tokens before state updates, preserve `POK_OFFICIAL_ACTION_DELAY`/`_send_wire_action`, and send exactly one official action for each pending decision. No unavailable imports (stdlib only). No infinite loops.
 
@@ -160,7 +149,14 @@ You check ONLY these five areas:
    strategy task.
 
    **Official oracle alignment** — Formal policy `official-full-v5` and both
-   content-pinned oracle documents are authoritative. Exact consecutive 2x is legal; a retained
+   content-pinned oracle documents are authoritative. Normal candidates require
+   five complete 70-hand self-play rounds plus three complete 70-hand rounds
+   against an eligible published strict-policy opponent. Only v143 while the
+   strict pool is empty may park for the operator-only, one-time
+   `bootstrap-first-strict` control `first_strict_control_v1`; no LLM role may
+   invoke, acknowledge, auto-fallback to, or use that control as strength, and
+   v144+ may never use it. The separate `finalize-first-strict` publication is
+   likewise operator-only after certificate validation. Exact consecutive 2x is legal; a retained
    `2x + 1` sanitizer is only conservative headroom. A natural 70-hand official
    finish may have starts 1..70 and paired TCP settlements only 1..69, but it is
    complete only with no pending action/wire issue and a new strict THP proving
@@ -191,8 +187,8 @@ Those are advisory Critic concerns and measured native TCP precommit concerns.
 
 <analysis>
 Before producing your JSON, list:
-1. Files changed: `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/`
-2. Diff each changed file: `diff bots/national_v{parent_version}/FILE bots/national_v{version}/FILE`
+1. {review_evaluation_step_one}
+2. Inspect every system-supplied or directly readable changed region.
 3. For each change, check: does it match the assigned role?
 4. Count lines in each changed file to verify size limits.
 5. Check for dead code: unused imports, unreachable blocks, commented-out sections.

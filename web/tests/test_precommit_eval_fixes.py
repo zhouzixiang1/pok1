@@ -8,7 +8,6 @@ P3: Stage-aware timeout skip for verified/critic_checked stages (orchestrator.py
 import inspect
 import json
 import logging
-import os
 from pathlib import Path
 
 import pytest
@@ -87,7 +86,7 @@ def test_national_precommit_does_not_make_secondary_chip_ci_a_hard_gate():
 # ── P0: Reap Signal Ordering ─────────────────────────────────────────
 
 class TestP0ReapSignalOrder:
-    """P0: In commit_bot, reap_signal and priority_eval are written BEFORE archive_generation."""
+    """Publication and post-publication effects have one durable boundary."""
 
     def _get_commit_bot_source(self):
         """Return the source text of tool_commit.py."""
@@ -110,38 +109,47 @@ class TestP0ReapSignalOrder:
             body_lines.append(line)
         return "\n".join(body_lines)
 
-    def test_reap_signal_before_archive(self):
-        source = self._get_commit_bot_body()
-        reap_pos = source.find(".reap_signal")
-        archive_pos = source.find("archive_generation")
-        assert reap_pos >= 0, ".reap_signal not found in commit_bot source"
-        assert archive_pos >= 0, "archive_generation not found in commit_bot source"
-        assert reap_pos < archive_pos, (
-            f"reap_signal (pos {reap_pos}) must appear BEFORE archive_generation (pos {archive_pos})"
-        )
+    def _get_archivist_body(self):
+        source = self._get_commit_bot_source()
+        start = source.find("async def _run_durable_post_publication_archivist(")
+        assert start >= 0
+        end = source.find("\n\n@tool(\"run_archivist\"", start)
+        assert end > start
+        return source[start:end]
 
-    def test_priority_eval_before_archive(self):
+    def test_commit_bot_does_not_start_post_publication_effects(self):
         source = self._get_commit_bot_body()
-        priority_pos = source.find("priority_eval")
-        archive_pos = source.find("archive_generation")
-        assert priority_pos >= 0, "priority_eval not found in commit_bot source"
-        assert archive_pos >= 0, "archive_generation not found in commit_bot source"
-        assert priority_pos < archive_pos, (
-            f"priority_eval (pos {priority_pos}) must appear BEFORE archive_generation (pos {archive_pos})"
-        )
+        assert ".reap_signal" not in source
+        assert "priority_eval.json" not in source
+        assert "archive_rotate_files" not in source
+        assert "_execute_strict_log_cleanup" not in source
+        assert '"next_tool": "run_archivist"' in source
 
-    def test_completed_before_reap_signal(self):
+    def test_archivist_plans_signals_before_archive_effects(self):
+        source = self._get_archivist_body()
+        signal_pos = source.find('plan_handoff_step(\n                    v, source_v, claim_id, "reap_signal"')
+        priority_pos = source.find('"priority_eval",\n                    {')
+        rotation_effect_pos = source.find(
+            'rotations = archive_rotate_files(v, row["plan"])'
+        )
+        cleanup_effect_pos = source.find(
+            "log_archives = _execute_strict_log_cleanup"
+        )
+        assert -1 not in {
+            signal_pos, priority_pos, rotation_effect_pos, cleanup_effect_pos,
+        }
+        assert signal_pos < rotation_effect_pos
+        assert priority_pos < rotation_effect_pos < cleanup_effect_pos
+
+    def test_publication_completes_before_durable_handoff(self):
         import tool_commit
 
         source = self._get_commit_bot_body()
         publication_pos = source.find("_resume_publication_transaction")
-        reap_pos = source.find(".reap_signal")
+        handoff_pos = source.find('"next_tool": "run_archivist"')
         assert publication_pos >= 0, "publication transaction not found in commit_bot source"
-        assert reap_pos >= 0, ".reap_signal not found in commit_bot source"
-        assert publication_pos < reap_pos, (
-            "publication transaction must complete before .reap_signal: "
-            f"publication={publication_pos}, reap={reap_pos}"
-        )
+        assert handoff_pos >= 0, "durable Archivist handoff not found"
+        assert publication_pos < handoff_pos
         resume_source = inspect.getsource(tool_commit._resume_publication_transaction)
         assert "_write_completed_sentinel_durable" in resume_source
 
@@ -379,6 +387,8 @@ class TestP1TimeBasedRefresh:
         bots_dir.mkdir()
         results_dir.mkdir(parents=True)
         replay_dir.mkdir()
+        retained_replay = replay_dir / "match_national_v143_national_v144.json"
+        retained_replay.write_text('{"immutable":"evidence"}\n', encoding="utf-8")
         for version in (143, 144):
             bot_dir = bots_dir / f"national_v{version}"
             bot_dir.mkdir()
@@ -394,6 +404,12 @@ class TestP1TimeBasedRefresh:
         monkeypatch.setattr(evolution_infra, "REAPED_BOTS_FILE", results_dir / "reaped_bots.jsonl")
         monkeypatch.setattr(evolution_infra, "_git", lambda *args, **kwargs: "national-bot-v143\nnational-bot-v144\n")
         monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _bot_dir: True)
+        fsynced_directories = []
+        monkeypatch.setattr(
+            evolution_infra,
+            "_fsync_directory",
+            lambda path: fsynced_directories.append(Path(path)),
+        )
         reaped_versions = set()
         monkeypatch.setattr(evolution_infra, "load_reaped_bot_versions", lambda: set(reaped_versions))
         monkeypatch.setattr(
@@ -403,7 +419,6 @@ class TestP1TimeBasedRefresh:
         )
         monkeypatch.setattr(tbm, "PROJECT_ROOT", tmp_path)
         monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
-        monkeypatch.setattr(tbm, "REPLAY_DIR", replay_dir)
         monkeypatch.setattr(tbm, "MAX_ACTIVE_BOTS", 1)
         monkeypatch.setattr(
             tbm,
@@ -423,6 +438,8 @@ class TestP1TimeBasedRefresh:
         assert result["reap_mode"] == "deactivate_completed_sentinel"
         assert (bots_dir / "national_v143" / "national_bot.py").exists()
         assert not (bots_dir / "national_v143" / ".completed").exists()
+        assert bots_dir / "national_v143" in fsynced_directories
+        assert retained_replay.read_text(encoding="utf-8") == '{"immutable":"evidence"}\n'
         assert {path.name for path in bots_dir.iterdir()} == {"national_v143", "national_v144"}
         assert evolution_infra.get_active_bots() == ["national_v144"]
 

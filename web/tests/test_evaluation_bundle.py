@@ -47,6 +47,18 @@ def _write_cycle_files(
     rating_history_rows=(),
 ):
     active = sorted(active)
+    identity_payload = json.loads(
+        (results / "evaluation_data_manifest.json").read_text(encoding="utf-8")
+    )
+    identity_digest = identity_payload["manifest_digest"]
+
+    def identity_bound(row):
+        payload = dict(row)
+        payload.setdefault("evaluation_epoch", "national_tcp_policy_v1")
+        payload.setdefault("execution_mode", "native_tcp")
+        payload.setdefault("evaluation_identity_digest", identity_digest)
+        return payload
+
     _write_json(results / "head_to_head.json", h2h or {})
     _write_json(
         results / "bot_stats.json",
@@ -89,8 +101,14 @@ def _write_cycle_files(
             "pairs": {},
         },
     )
-    _write_jsonl(results / "match_history.jsonl", match_history_rows)
-    _write_jsonl(results / "rating_history.jsonl", rating_history_rows)
+    _write_jsonl(
+        results / "match_history.jsonl",
+        [identity_bound(row) for row in match_history_rows],
+    )
+    _write_jsonl(
+        results / "rating_history.jsonl",
+        [identity_bound(row) for row in rating_history_rows],
+    )
 
 
 def _publish(results, active, *, save_num=1, **kwargs):
@@ -117,8 +135,18 @@ def test_cycle_manifest_binds_all_authoritative_payloads_and_append_logs(
 
     results, identity_manifest = _patch_results(monkeypatch, tmp_path)
     active = ["national_v1", "national_v2"]
-    match_row = {"id": "match-1", "bot0": active[0], "bot1": active[1]}
-    rating_row = {"period": 9, "daemon_run_id": "test-run"}
+    shared_identity = {
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "execution_mode": "native_tcp",
+        "evaluation_identity_digest": identity_manifest["manifest_digest"],
+    }
+    match_row = {
+        "id": "match-1",
+        "bot0": active[0],
+        "bot1": active[1],
+        **shared_identity,
+    }
+    rating_row = {"period": 9, "daemon_run_id": "test-run", **shared_identity}
     _write_cycle_files(
         results,
         active,
@@ -145,9 +173,17 @@ def test_cycle_manifest_binds_all_authoritative_payloads_and_append_logs(
 
     cycle_dir = results / manifest["cycle_dir"]
     assert cycle_dir.is_dir()
-    assert {path.name for path in cycle_dir.iterdir()} == {
+    payload_names = {
         *BUNDLE_FILES.values(),
         *APPEND_LOGS.values(),
+    }
+    observed_names = {path.name for path in cycle_dir.iterdir()}
+    # Stable ``<payload>.lock`` sidecars are implementation-owned lock
+    # authority. They may be materialized by a reader, but no unrelated file
+    # is allowed to enter the immutable cycle directory.
+    assert payload_names <= observed_names
+    assert observed_names <= payload_names | {
+        f"{name}.lock" for name in payload_names
     }
 
 
@@ -416,6 +452,56 @@ def test_publication_rejects_cross_file_semantic_mismatch(monkeypatch, tmp_path)
     selection["rows"][0]["rating"] = 1499.9
     _write_json(selection_path, selection)
     with pytest.raises(ValueError, match="selection_rating_mismatch"):
+        _publish(results, active)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "issue"),
+    [
+        ("evaluation_identity_digest", None, "match_history_row_identity_mismatch"),
+        ("evaluation_identity_digest", "f" * 64, "match_history_row_identity_mismatch"),
+        ("evaluation_epoch", "national_native_v1", "match_history_row_epoch_mismatch"),
+        ("execution_mode", "official_exe", "match_history_row_execution_mode_mismatch"),
+        ("execution_mode", "national_arena", "match_history_row_execution_mode_mismatch"),
+    ],
+)
+def test_publication_rejects_foreign_match_history_before_cycle_binding(
+    monkeypatch,
+    tmp_path,
+    field,
+    value,
+    issue,
+):
+    results, _identity = _patch_results(monkeypatch, tmp_path)
+    active = ["national_v1", "national_v2"]
+    row = {
+        "id": "foreign-match",
+        "bot0": active[0],
+        "bot1": active[1],
+        field: value,
+    }
+    _write_cycle_files(results, active, match_history_rows=[row])
+
+    with pytest.raises(ValueError, match=issue):
+        _publish(results, active)
+
+
+def test_publication_rejects_foreign_rating_history_before_prompt_projection(
+    monkeypatch,
+    tmp_path,
+):
+    results, _identity = _patch_results(monkeypatch, tmp_path)
+    active = ["national_v1", "national_v2"]
+    _write_cycle_files(
+        results,
+        active,
+        rating_history_rows=[{
+            "period": 1,
+            "evaluation_identity_digest": "f" * 64,
+        }],
+    )
+
+    with pytest.raises(ValueError, match="rating_history_row_identity_mismatch"):
         _publish(results, active)
 
 

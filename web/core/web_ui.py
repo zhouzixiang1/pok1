@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import threading
+import re
 from collections import deque
 from typing import Any
 
@@ -28,15 +29,74 @@ class EventBroadcaster:
     """
 
     def __init__(self, buffer_size=500):
-        # Each client: (asyncio.Queue, captured event loop or None)
-        self._clients: dict[int, tuple[asyncio.Queue, asyncio.AbstractEventLoop | None]] = {}
-        self._ring_buffer: deque[dict] = deque(maxlen=buffer_size)
+        # Each client is bound to the exact reset/publication stream digest it
+        # subscribed under. Ring rows carry the same identity so a new epoch or
+        # newly published active pool can never replay preceding events.
+        self._clients: dict[
+            int,
+            tuple[asyncio.Queue, asyncio.AbstractEventLoop | None, str],
+        ] = {}
+        self._ring_buffer: deque[tuple[str, dict]] = deque(maxlen=buffer_size)
+        self._authority_identity: str | None = None
         self._next_id = 0
         self._dropped = 0
         self._lock = threading.Lock()
 
-    def add_client(self) -> tuple[int, asyncio.Queue]:
+    @staticmethod
+    def _validated_authority_identity(identity: str | None) -> str | None:
+        if identity is None:
+            return None
+        value = str(identity)
+        if re.fullmatch(r"[0-9a-f]{64}", value) is None:
+            raise ValueError("SSE authority identity must be a SHA-256 digest")
+        return value
+
+    def bind_authority(self, identity: str | None) -> None:
+        """Bind future events to one stream-authority digest and clear on movement."""
+
+        value = self._validated_authority_identity(identity)
         with self._lock:
+            if value == self._authority_identity:
+                return
+            self._authority_identity = value
+            self._ring_buffer.clear()
+
+    def compare_and_bind_authority(
+        self,
+        identity: str | None,
+        *,
+        expected_identity: str | None,
+    ) -> bool:
+        """CAS a canonical authority observation without permitting rollback.
+
+        HTTP requests sample epoch state outside the broadcaster mutex.  A
+        delayed request must not overwrite a newer binding installed by a
+        request that observed publication later.  Equal-value convergence is
+        accepted; a changed current value rejects the stale sampler.
+        """
+
+        value = self._validated_authority_identity(identity)
+        expected = self._validated_authority_identity(expected_identity)
+        with self._lock:
+            if self._authority_identity == value:
+                return True
+            if self._authority_identity != expected:
+                return False
+            self._authority_identity = value
+            self._ring_buffer.clear()
+            return True
+
+    def authority_identity(self) -> str | None:
+        with self._lock:
+            return self._authority_identity
+
+    def add_client(self, authority_identity: str) -> tuple[int, asyncio.Queue]:
+        identity = self._validated_authority_identity(authority_identity)
+        if identity is None:
+            raise ValueError("SSE clients require initialized epoch authority")
+        with self._lock:
+            if identity != self._authority_identity:
+                raise ValueError("SSE client authority does not match broadcaster")
             cid = self._next_id
             self._next_id += 1
             q: asyncio.Queue = asyncio.Queue(maxsize=2000)
@@ -44,9 +104,13 @@ class EventBroadcaster:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
                 loop = None
-            self._clients[cid] = (q, loop)
-            # Replay ring buffer
-            for event in self._ring_buffer:
+            self._clients[cid] = (q, loop, identity)
+            # Replay only rows carrying this exact stream identity. The filter
+            # remains even though bind_authority clears on movement, making the
+            # invariant explicit and robust to future buffer implementations.
+            for event_identity, event in self._ring_buffer:
+                if event_identity != identity:
+                    continue
                 try:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
@@ -72,8 +136,13 @@ class EventBroadcaster:
         payload = {**payload, "ts": time.time()}
         sse_data = {"event": event_type, "data": json.dumps(payload)}
         with self._lock:
-            self._ring_buffer.append(sse_data)
-            for cid, (q, q_loop) in self._clients.items():
+            identity = self._authority_identity
+            if identity is None:
+                return
+            self._ring_buffer.append((identity, sse_data))
+            for cid, (q, q_loop, client_identity) in self._clients.items():
+                if client_identity != identity:
+                    continue
                 self._safe_put(q, q_loop, sse_data)
 
     def _safe_put(self, q, q_loop, item):
@@ -108,7 +177,11 @@ class EventBroadcaster:
             pass  # dropped in _safe_put caller context is not tracked for static method
 
     def get_stats(self):
-        return {"dropped_events": self._dropped, "clients": len(self._clients)}
+        return {
+            "dropped_events": self._dropped,
+            "clients": len(self._clients),
+            "authority_identity": self._authority_identity,
+        }
 
 
 class WebUI(BaseUI):
@@ -150,14 +223,10 @@ class WebUI(BaseUI):
                             log.debug("Malformed cost entry: %s", e)
         except OSError as e:
             log.debug("Cost file read failed: %s", e)
-        # Add archived cost total (preserved during archive_rotate_files)
-        try:
-            from evolution_infra import ARCHIVE_DIR
-            summary = ARCHIVE_DIR / "cost_summary.json"
-            if summary.exists():
-                total += json.loads(summary.read_text()).get("grand_total", 0.0)
-        except Exception:
-            pass
+        # Rotation copies digest-bound cold ranges but deliberately preserves
+        # the complete append-only live ledger.  The live JSONL is therefore
+        # the sole total-cost authority; adding an archive summary here would
+        # count every copied row twice.
         return total
 
     def _emit(self, event_type: str, payload: dict):

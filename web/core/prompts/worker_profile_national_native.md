@@ -32,8 +32,15 @@ enter Glicko, H2H, source selection, planning evidence, or precommit strength.
   street contributions or publishing the next decision context. A relayed
   closer suppresses inference.
 - Formal completion policy is `official-full-v5`: five 70-hand self-play rounds
-  plus three 70-hand rounds against an eligible opponent. A natural hand 70 may
-  omit its TCP settlement; completion then requires starts 1..70, settlements
+  plus three 70-hand rounds against an eligible published strict-policy
+  opponent. The sole exception is v143 while the strict pool is empty: it
+  parks for the operator-only, one-time `bootstrap-first-strict` control
+  `first_strict_control_v1`. No Worker or other LLM role may invoke,
+  acknowledge, auto-fallback to, or treat that control as strength, and v144+
+  may never use it. Only an operator may later run `finalize-first-strict`
+  after the certificate validates; no Worker may publish it. A natural hand 70
+  may omit its TCP settlement; completion
+  then requires starts 1..70, settlements
   1..69, no pending action/wire issue, and a fresh strict THP proving
   `STATE:0..69`, cross-bound first-69 earnings, final zero-sum earnings, and the
   footer. Never synthesize hand-70 `earnChips`.
@@ -138,15 +145,22 @@ or infer omitted actions in policy code.
 </runtime_architecture>
 
 <verification>
-Workers may inspect code and run read-only probes, but the trusted quality gate
-owns candidate execution. Required checks are:
+Workers may inspect the lease candidate and compile the exact edited file. The
+trusted quality gate exclusively owns imports, candidate execution, native TCP
+smoke and dynamic tests. Worker-visible verification is:
 
-1. `python -m py_compile {candidate_path}/*.py`
-2. `(cd {candidate_path} && python -B -c "import policy")`
-3. `PYTHONPATH=web/core python -B -c "from national_native import check_native_contract; e=check_native_contract('{candidate_path}', require_current_stream_decoder=True, require_current_decision_runtime=True); print(e); raise SystemExit(bool(e))"`
-4. Inspect the full candidate diff and confirm that only `policy.py` changed,
+1. `python -m py_compile {candidate_path}/policy.py`
+2. Read every edited region and report the intended reachable consumer.
+3. Leave import/native-contract/smoke/self-test execution to the system gate.
+4. The system boundary, not the Worker, proves that only `policy.py` changed,
    every system artifact is byte-identical, and the import graph is exactly the
-   system runtime calling the typed policy ABI.
+   system runtime calling the typed policy ABI. Do not open a historical parent
+   or reconstruct another diff.
+
+The resulting system quality receipt must show `check_native_contract` ran with
+`require_current_stream_decoder=True` and
+`require_current_decision_runtime=True`; these are gate-owned settings, not
+Worker Bash commands.
 
 Local Arena output is diagnostic only and cannot certify strategy semantics.
 The quality gate replays delimiter-free fragmented and coalesced TCP

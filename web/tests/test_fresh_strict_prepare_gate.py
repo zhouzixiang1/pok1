@@ -149,6 +149,15 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
         copying_old_source_is_forbidden,
     )
 
+    def resolve_target_only(version: int):
+        if int(version) == 142:
+            raise AssertionError(
+                "fresh bootstrap must not even resolve the stale v142 path"
+            )
+        return bot_dir(version)
+
+    monkeypatch.setattr(tool_gates, "get_bot_dir", resolve_target_only)
+
     payload = _tool_payload(asyncio.run(
         tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
     ))
@@ -175,6 +184,103 @@ def test_real_prepare_materializes_fresh_142_to_143_without_source_tag_or_bytes(
         candidate_dir=candidate,
         active_bots=(),
     ) == []
+
+    # A retry may resume only from the exact checkpoint-owned prepared
+    # contract.  It must not rewrite even the system blueprint bytes.
+    before_retry = {
+        path.name: path.read_bytes()
+        for path in candidate.iterdir()
+        if path.is_file()
+    }
+    resumed = _tool_payload(asyncio.run(
+        tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
+    ))
+    after_retry = {
+        path.name: path.read_bytes()
+        for path in candidate.iterdir()
+        if path.is_file()
+    }
+    assert resumed["success"] is True
+    assert resumed["resumed"] is True
+    assert resumed["stage"] == "prepared"
+    assert resumed["prepared_artifact_hash"] == hash_path(candidate)
+    assert before_retry == after_retry
+    assert len(writes) == 2
+
+
+def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
+    tmp_path,
+    monkeypatch,
+):
+    from system_strict_bootstrap import build_fresh_bootstrap_receipt
+
+    receipt = build_fresh_bootstrap_receipt(
+        active_bots=(),
+        epoch_reset_receipt_digest="a" * 64,
+    )
+    checkpoint = {
+        "source_v": 142,
+        "next_v": 143,
+        "stage": "selected",
+        "audit_context": {
+            "protocol_bootstrap": receipt,
+            "selection": {"strategy": "fresh_policy_bootstrap"},
+        },
+    }
+    tool_gates, bot_dir, _state, writes = _install_prepare_environment(
+        tmp_path,
+        monkeypatch,
+        checkpoint=checkpoint,
+        active_bots=[],
+        tagged_versions=set(),
+    )
+    target = bot_dir(143)
+    target.mkdir()
+    marker = target / "unbound-policy.py"
+    marker.write_text("UNTRUSTED_PREIMAGE = True\n", encoding="utf-8")
+    before = marker.read_bytes()
+
+    payload = _tool_payload(asyncio.run(
+        tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
+    ))
+
+    assert payload["error"] == "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON"
+    assert payload["stage"] == "selected"
+    assert marker.read_bytes() == before
+    assert writes == []
+
+
+def test_preexisting_target_without_checkpoint_is_never_adopted_or_deleted(
+    tmp_path,
+    monkeypatch,
+):
+    checkpoint = {"source_v": 143, "next_v": 144, "stage": "selected"}
+    tool_gates, bot_dir, _state, writes = _install_prepare_environment(
+        tmp_path,
+        monkeypatch,
+        checkpoint=checkpoint,
+        active_bots=["national_v143"],
+        tagged_versions={143},
+    )
+    source = bot_dir(143)
+    source.mkdir()
+    (source / ".completed").write_text("published\n", encoding="utf-8")
+    target = bot_dir(144)
+    target.mkdir()
+    marker = target / "orphan.py"
+    marker.write_text("ORPHAN = True\n", encoding="utf-8")
+    before = marker.read_bytes()
+    monkeypatch.setattr(tool_gates, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_a, **_k: None)
+
+    payload = _tool_payload(asyncio.run(
+        tool_gates.prepare_next_gen.handler({"source_v": 143, "next_v": 144})
+    ))
+
+    assert payload["error"] == "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON"
+    assert payload["stage"] is None
+    assert marker.read_bytes() == before
+    assert writes == []
 
 
 def test_normal_unpublished_parent_still_fails_closed_before_copy(

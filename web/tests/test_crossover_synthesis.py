@@ -219,6 +219,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     import evolution_infra
     import national_native
     import national_position_contract
+    import runtime_architecture_policy
     import workflow_profiles
     from workflow_kernel import WorkflowStore
 
@@ -251,10 +252,28 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         "checkpoint_revision": 4,
         "workflow_run_id": "generation:147:crossover-replay-test",
         "audit_context": {"selection": {"strategy": "crossover"}},
+        "checkpoint_schema_version": 2,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": {
+            "binding_digest": "e" * 64,
+            "published_parent_identities": [
+                {"tag_artifact_hash": ""},
+                {"tag_artifact_hash": ""},
+            ],
+        },
     }
 
     def bot_dir(version):
         return {143: parent_a, 146: parent_b, 147: target}[int(version)]
+
+    from bot_artifact import hash_path
+
+    checkpoint["epoch_binding"]["published_parent_identities"][0][
+        "tag_artifact_hash"
+    ] = hash_path(parent_a)
+    checkpoint["epoch_binding"]["published_parent_identities"][1][
+        "tag_artifact_hash"
+    ] = hash_path(parent_b)
 
     query_calls = []
     query_kwargs = []
@@ -273,9 +292,10 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         # The durable provider result must remain a valid strict typed policy;
         # this test exercises effect replay/projection recovery, not rejection
         # of a malformed policy ABI.
-        (Path(kwargs["allowed_write_dir"]) / "policy.py").write_bytes(
-            (parent_b / "policy.py").read_bytes()
-        )
+        write_scope = kwargs["allowed_write_dir"]
+        write_target = Path(kwargs["allowed_read_dirs"][-1]) / "policy.py"
+        assert write_scope == {"files": [write_target]}
+        write_target.write_bytes((parent_b / "policy.py").read_bytes())
 
     gate_calls = []
 
@@ -331,6 +351,39 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         "detect_position_semantics_errors",
         lambda _p: [],
     )
+    monkeypatch.setattr(
+        runtime_architecture_policy,
+        "evaluate_architecture_transition",
+        lambda *_a, **_k: {
+            "ok": True,
+            "outcome": "passed",
+            "source_capabilities": {},
+            "candidate_capabilities": {},
+            "runtime_floor_failures": [],
+            "regressions": [],
+        },
+    )
+
+    import audit_agents
+    import checkpoint_schema
+    from worker_workflow import WorkerArtifactStore
+
+    monkeypatch.setattr(checkpoint_schema, "checkpoint_epoch_errors", lambda _c: [])
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "live_checkpoint_parent_authority_errors",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(audit_agents, "RESULTS_DIR", results)
+    monkeypatch.setattr(audit_agents, "get_bot_dir", bot_dir)
+    snapshot_bundle = audit_agents.capture_crossover_parent_snapshots(
+        143,
+        146,
+        147,
+        checkpoint=checkpoint,
+        checkpoint_reader=lambda: checkpoint,
+        artifact_store=WorkerArtifactStore(results / "workflow" / "artifacts"),
+    )
 
     compatibility = {
         "compatible": False,
@@ -338,6 +391,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         "conflict_areas": ["untrusted prose"],
         "suggested_merge_approach": "untrusted prose",
         "files_to_take_from_b": ["policy.py"],
+        "parent_snapshot_receipt": snapshot_bundle["receipt"],
     }
     with pytest.raises(KeyboardInterrupt):
         asyncio.run(agent_review._run_crossover(
@@ -356,6 +410,14 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
     assert completed["status"] == "completed"
     assert len(query_calls) == 1
     assert query_kwargs[0]["allowed_evidence_snapshot_dir"] == evidence_snapshot_dir
+    lease_target = Path(query_kwargs[0]["allowed_read_dirs"][-1])
+    assert query_kwargs[0]["allowed_write_dir"] == {
+        "files": [lease_target / "policy.py"]
+    }
+    assert "provider-dispatch Runtime Path Contract" in query_calls[0]
+    assert "system quality gate owns compilation" in query_calls[0]
+    assert "py_compile" not in query_calls[0]
+    assert str(lease_target) not in query_calls[0]
     assert len(gate_calls) == 1
 
     async def must_not_query(*_args, **_kwargs):
@@ -387,6 +449,7 @@ def test_run_crossover_reuses_completed_synthesis_and_reruns_gates(
         "files_to_take_from_a": [],
         "files_to_take_from_b": ["policy.py"],
         "advisory_only": True,
+        "parent_snapshot_receipt": snapshot_bundle["receipt"],
     }
     assert (
         final_call["synthesis_receipt"]["compatibility_receipt"]

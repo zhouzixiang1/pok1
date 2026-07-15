@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import evolution_infra
-from bot_namespace import bot_name
+from bot_namespace import (
+    ARCHIVED_VERSION_HIGH_WATER,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+)
 from evolution_infra import append_locked_jsonl, locked_file
 from pipeline_schema import ArtifactRef, CandidateRecord, GateResult, ScoreCard
 
@@ -289,12 +293,87 @@ def _ensure_event_tables(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_candidates_source ON candidates(event_source)")
 
 
-def make_candidate_id(version: int | None, source_v: int | None = None) -> str:
+def candidate_observability_identity(
+    version: int | None,
+    source_v: int | None = None,
+) -> dict[str, Any]:
+    """Project candidate lineage without inventing a first-strict parent.
+
+    v142 is only the numeric completion-tag high-water for the first strict
+    label.  It is not an artifact parent of v143 and must not appear in the
+    mutable observability ledger's ``parent_ids``.
+    """
+
     if version is None:
-        return f"candidate_unknown_{int(time.time())}"
+        return {
+            "candidate_id": f"candidate_unknown_{int(time.time())}",
+            "parent_ids": [],
+            "lineage_kind": "unknown",
+            "source_artifact_inherited": False,
+        }
+    if (
+        int(version) == int(FIRST_STRICT_POLICY_VERSION)
+        and source_v is not None
+        and int(source_v) == int(ARCHIVED_VERSION_HIGH_WATER)
+    ):
+        return {
+            "candidate_id": (
+                f"{bot_name(version)}_numeric_high_water_v{int(source_v)}"
+            ),
+            "parent_ids": [],
+            "lineage_kind": "numeric_high_water_only",
+            "numeric_high_water_version": int(source_v),
+            "source_artifact_inherited": False,
+        }
     if source_v is None:
-        return bot_name(version)
-    return f"{bot_name(version)}_from_{bot_name(source_v)}"
+        return {
+            "candidate_id": bot_name(version),
+            "parent_ids": [],
+            "lineage_kind": "no_parent",
+            "source_artifact_inherited": False,
+        }
+    return {
+        "candidate_id": f"{bot_name(version)}_from_{bot_name(source_v)}",
+        "parent_ids": [bot_name(source_v)],
+        "lineage_kind": "strict_parent_artifact",
+        "source_artifact_inherited": True,
+    }
+
+
+def make_candidate_id(version: int | None, source_v: int | None = None) -> str:
+    return str(candidate_observability_identity(version, source_v)["candidate_id"])
+
+
+def _candidate_event_identity(
+    version: int | None,
+    source_v: int | None,
+    candidate_id: str | None,
+    parent_ids: list[str] | None,
+    metrics: dict[str, Any] | None,
+) -> tuple[str, list[str], dict[str, Any]]:
+    """Normalize numeric-only lineage even when a stale caller supplies it."""
+
+    identity = candidate_observability_identity(version, source_v)
+    numeric_only = identity.get("lineage_kind") == "numeric_high_water_only"
+    resolved_candidate_id = (
+        str(identity["candidate_id"])
+        if numeric_only
+        else str(candidate_id or identity["candidate_id"])
+    )
+    resolved_parent_ids = (
+        []
+        if numeric_only
+        else list(parent_ids if parent_ids is not None else identity["parent_ids"])
+    )
+    resolved_metrics = dict(metrics or {})
+    if numeric_only:
+        resolved_metrics = {
+            **resolved_metrics,
+            "lineage_kind": identity["lineage_kind"],
+            "numeric_high_water_version": identity["numeric_high_water_version"],
+            "source_artifact_inherited": False,
+        }
+    return resolved_candidate_id, resolved_parent_ids, resolved_metrics
 
 
 def _scorecard_payload(scorecard: ScoreCard | dict[str, Any] | None) -> dict[str, Any]:
@@ -487,7 +566,13 @@ def append_candidate_event(
     unit tests, but production call sites should wrap it if the ledger must not
     block a pipeline stage.
     """
-    cid = candidate_id or make_candidate_id(version, source_v)
+    cid, normalized_parent_ids, normalized_metrics = _candidate_event_identity(
+        version,
+        source_v,
+        candidate_id,
+        parent_ids,
+        metrics,
+    )
     scorecard_payload = _scorecard_payload(scorecard)
     refs = _artifact_refs_payload(artifact_refs)
 
@@ -504,14 +589,14 @@ def append_candidate_event(
         run_id=run_id,
         stage_attempt=stage_attempt,
         stage=stage,
-        parent_ids=parent_ids or [],
+        parent_ids=normalized_parent_ids,
         changed_files=changed_files or [],
         skill_layers=skill_layers or [],
         diff_hash=diff_hash,
         gate=gate,
         scorecard=scorecard_payload,
         gate_results=_gate_results_payload(gate_results),
-        metrics=metrics or {},
+        metrics=normalized_metrics,
         failures=failures or [],
         failure_class=failure_class,
         artifacts=artifacts or {},

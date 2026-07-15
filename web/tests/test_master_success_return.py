@@ -234,10 +234,12 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
 
     call_count = {"n": 0}
     captured_prompts = []
+    captured_kwargs = []
 
     async def fake_run_claude_query(prompt, ctx, ui, role_name, log_file, tools=None, **_kwargs):
         call_count["n"] += 1
         captured_prompts.append(prompt)
+        captured_kwargs.append({"tools": tools, **_kwargs})
         return _mock_llm_output(), 0.0, {}
 
     # Patch the name as bound in agent_master's namespace (imported at top).
@@ -267,6 +269,10 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     assert 'build_phase="module_import"' in rendered_prompt
     assert "runtime_contract.match_memory" in rendered_prompt
     assert 'snapshot_field="opponent"' in rendered_prompt
+    assert captured_kwargs[0]["allowed_read_dirs"] == [
+        agent_master.get_bot_dir(143),
+        agent_master.get_bot_dir(144),
+    ]
 
 
 @pytest.mark.asyncio
@@ -285,9 +291,11 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     from workflow_kernel import WorkflowStore
 
     captured = []
+    captured_kwargs = []
 
     async def fake_run_claude_query(prompt, *_args, **_kwargs):
         captured.append(prompt)
+        captured_kwargs.append(dict(_kwargs))
         output = _mock_llm_output()
         strict_call = _kwargs.get("strict_authority")
         if strict_call is not None:
@@ -394,8 +402,102 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     for forbidden in sentinels.values():
         assert forbidden not in rendered
     assert "Historical official-certification feedback was not loaded" in rendered
-    assert "Source bot directory (read-only parent): bots/national_v142/" not in rendered
+    assert "bots/national_v142/" not in rendered
+    assert "system-owned source is fixed at v142" not in rendered
+    assert "numeric completion high-water v142" in rendered
+    assert "bots/national_v143/" in rendered
+    assert captured_kwargs
+    assert all(
+        call.get("allowed_read_dirs") == [agent_master.get_bot_dir(143)]
+        for call in captured_kwargs
+        if call.get("tools") == ["Read"]
+    )
+    assert all(
+        agent_master.get_bot_dir(142) not in (call.get("allowed_read_dirs") or [])
+        for call in captured_kwargs
+    )
+    assert "{planning_code_input_contract}" not in rendered
+    assert "{source_selection_contract}" not in rendered
+    assert "{target_path_contract}" not in rendered
     assert "Historical lineage source directory: quarantined" in rendered
+
+
+def test_master_official_feedback_requires_exact_current_artifact_identity(
+    monkeypatch,
+    tmp_path,
+):
+    from types import SimpleNamespace
+
+    import agent_master
+    import bot_artifact
+    import bot_namespace
+    import official_certification
+
+    baseline = tmp_path / "national_v143"
+    baseline.mkdir()
+    exact_hash = "a" * 64
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: baseline)
+    monkeypatch.setattr(bot_artifact, "hash_path", lambda _path: exact_hash)
+    monkeypatch.setattr(
+        bot_namespace,
+        "resolve_national_bot_spec",
+        lambda *_args, **_kwargs: SimpleNamespace(eligible=True),
+    )
+    poisoned = {
+        "bot": "national_v142",
+        "mode": "full",
+        "policy_id": official_certification.FULL_POLICY_ID,
+        "status": official_certification.STATUS_FAILED,
+        "issues": ["RETIRED_OFFICIAL_SENTINEL"],
+        "certification_identity": {
+            "policy_id": official_certification.FULL_POLICY_ID,
+            "candidate_hash": "b" * 64,
+        },
+    }
+    monkeypatch.setattr(official_certification, "read_status", lambda _path: poisoned)
+    rejected = agent_master._exact_official_compliance_feedback(143)
+    assert "RETIRED_OFFICIAL_SENTINEL" not in rejected
+    assert "other epochs, versions, or artifact hashes is excluded" in rejected
+
+    exact = {
+        **poisoned,
+        "bot": "national_v143",
+        "issues": ["MUTABLE_STATUS_POISON"],
+        "official_llm_repair_guidance": "UNTRUSTED_ADVISORY_REPAIR",
+        "official_deterministic_status_receipt": {
+            "verdict": {
+                "classification": "protocol",
+                "blocking": True,
+                "inconclusive": False,
+                "issues": ["exact_protocol_action_format"],
+            },
+        },
+        "certification_identity": {
+            "policy_id": official_certification.FULL_POLICY_ID,
+            "candidate_hash": exact_hash,
+        },
+    }
+    monkeypatch.setattr(official_certification, "read_status", lambda _path: exact)
+    monkeypatch.setattr(
+        official_certification,
+        "_deterministic_status_receipt_issues",
+        lambda *_args, **_kwargs: [],
+    )
+    admitted = agent_master._exact_official_compliance_feedback(143)
+    assert exact_hash in admitted
+    assert "exact_protocol_action_format" in admitted
+    assert "MUTABLE_STATUS_POISON" not in admitted
+    assert "UNTRUSTED_ADVISORY_REPAIR" not in admitted
+    assert "wins, losses, chips, THP earnings" in admitted
+
+    monkeypatch.setattr(
+        official_certification,
+        "_deterministic_status_receipt_issues",
+        lambda *_args, **_kwargs: ["evidence_digest_mismatch"],
+    )
+    receipt_rejected = agent_master._exact_official_compliance_feedback(143)
+    assert "exact_protocol_action_format" not in receipt_rejected
+    assert "other epochs, versions, or artifact hashes is excluded" in receipt_rejected
 
 
 @pytest.mark.asyncio

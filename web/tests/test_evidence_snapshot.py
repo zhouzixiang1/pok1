@@ -217,14 +217,23 @@ def _patch_h2h_paths(
     enriched_match_rows = []
     for row in match_history_rows:
         enriched = dict(row)
+        enriched.setdefault("evaluation_epoch", "national_tcp_policy_v1")
+        enriched.setdefault("execution_mode", "native_tcp")
         enriched.setdefault("evaluation_identity_digest", identity_digest)
         enriched_match_rows.append(enriched)
     (results / "match_history.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in enriched_match_rows),
         encoding="utf-8",
     )
+    enriched_rating_rows = []
+    for row in rating_history_rows:
+        enriched = dict(row)
+        enriched.setdefault("evaluation_epoch", "national_tcp_policy_v1")
+        enriched.setdefault("execution_mode", "native_tcp")
+        enriched.setdefault("evaluation_identity_digest", identity_digest)
+        enriched_rating_rows.append(enriched)
     (results / "rating_history.jsonl").write_text(
-        "".join(json.dumps(row) + "\n" for row in rating_history_rows),
+        "".join(json.dumps(row) + "\n" for row in enriched_rating_rows),
         encoding="utf-8",
     )
     (results / "bot_action_stats.json").write_text(
@@ -731,6 +740,20 @@ def test_h2h_citation_repair_guidance_returns_canonical_snapshot_rows(monkeypatc
     assert "Do not replace them with live H2H" in guidance
 
 
+def test_master_citation_failure_feedback_binds_path_errors_and_guidance():
+    import tool_planning
+
+    feedback = tool_planning._h2h_citation_audit_feedback(
+        124,
+        ["games mismatch", "a_wins mismatch"],
+        "canonical row: 3W/2L",
+    )
+
+    assert "v124/evidence_snapshot/head_to_head.json" in feedback
+    assert "games mismatch; a_wins mismatch" in feedback
+    assert feedback.endswith("canonical row: 3W/2L")
+
+
 def test_snapshot_recomputes_draw_aware_score_instead_of_stale_win_rate():
     import evidence_snapshot
 
@@ -902,6 +925,15 @@ def test_hard_critic_uses_generation_snapshot_not_live_h2h(monkeypatch, tmp_path
         }), 0.0, {}
 
     monkeypatch.setattr(agent_review, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(
+        agent_review,
+        "_critic_code_evidence",
+        lambda *_args, **_kwargs: {
+            "lineage_contract": "exact current-epoch source and target",
+            "evaluation_steps": "use the exact injected diff",
+            "prompt_section": "# SYSTEM-SUPPLIED EXACT POLICY DIFF\n(no changes)",
+        },
+    )
 
     result = asyncio.run(agent_review._run_critic(24, 20, "{}", _UI()))
 

@@ -7,9 +7,8 @@ import json, os, tempfile
 from pathlib import Path
 
 
-def test_C1_try_set_running_cancels_stale_task():
-    """try_set_running(True) must cancel a leftover not-done task."""
-    import asyncio
+def test_C1_try_set_running_rejects_stale_live_task_overlap():
+    """A new owner must wait for the prior task to finish cancellation."""
     from server.state import AppState
 
     class FakeTask:
@@ -24,10 +23,15 @@ def test_C1_try_set_running_cancels_stale_task():
     s = AppState()
     stale = FakeTask()
     s.set_task(stale)
-    assert s.try_set_running(True) is True            # flip False->True
-    assert stale.cancelled is True                     # C1: stale task cancelled
-    # After flip, internal handle is cleared so set_task can replace cleanly
-    assert s.try_set_running(True) is False            # already running -> no-op
+    assert s.try_set_running(True) is False
+    assert stale.cancelled is False
+
+    # Only a proven-done owner can be reaped and replaced.  Cancelling and
+    # immediately forgetting a live task would allow old/new orchestrators to
+    # overlap until the old coroutine observes cancellation.
+    stale._done = True
+    assert s.try_set_running(True) is True
+    assert s.try_set_running(True) is False
     s.set_running(False)
 
 

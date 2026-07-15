@@ -257,6 +257,67 @@ class TestValidateWorkerBoundaries:
         )
         assert errors == []
 
+    def test_numeric_lineage_uses_worker_snapshot_without_resolving_source(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import tool_helpers
+
+        candidate = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
+        before = (candidate / "policy.py").read_text(encoding="utf-8")
+        (candidate / "policy.py").write_text(
+            before + "\nBOOTSTRAP_POLICY = True\n",
+            encoding="utf-8",
+        )
+
+        def retired_source_is_forbidden(_version):
+            raise AssertionError("numeric-only v142 path must not be resolved")
+
+        monkeypatch.setattr(tool_helpers, "get_bot_dir", retired_source_is_forbidden)
+        errors = tool_helpers._validate_worker_boundaries(
+            [{
+                "target_files": ["policy.py"],
+                "role": "Algorithmic Logic Architect",
+            }],
+            source_v=142,
+            next_v=143,
+            worker_snapshots={(0, "policy.py"): before},
+            candidate_dir=candidate,
+            source_artifact_inherited=False,
+        )
+
+        assert errors == []
+
+    def test_numeric_lineage_missing_snapshot_fails_without_source_fallback(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import tool_helpers
+
+        candidate = _strict_artifact(tmp_path / "bots" / "national_v143", 143)
+
+        def retired_source_is_forbidden(_version):
+            raise AssertionError("numeric-only v142 path must not be resolved")
+
+        monkeypatch.setattr(tool_helpers, "get_bot_dir", retired_source_is_forbidden)
+        errors = tool_helpers._validate_worker_boundaries(
+            [{
+                "target_files": ["policy.py"],
+                "role": "Algorithmic Logic Architect",
+            }],
+            source_v=142,
+            next_v=143,
+            worker_snapshots=None,
+            candidate_dir=candidate,
+            source_artifact_inherited=False,
+        )
+
+        assert [error["type"] for error in errors] == [
+            "worker_boundary_baseline_missing"
+        ]
+
 # ── evolution_infra.py ──
 
 class TestFindCurrentV:

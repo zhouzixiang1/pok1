@@ -2,12 +2,15 @@ import hashlib
 import json
 
 import checkpoint_schema
+import pytest
 from pipeline_state import (
     STAGE_GATE_ALLOWLIST,
     route_policy as _route_policy,
     validate_stage_transition,
 )
 from system_strict_bootstrap import build_fresh_bootstrap_receipt
+
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
 def _digest(payload):
@@ -21,41 +24,24 @@ def _digest(payload):
     ).hexdigest()
 
 
-def _parent_identity(version):
-    return {
-        "version": version,
-        "bot": f"national_v{version}",
-        "role": "parent_source",
-        "epoch": "national_tcp_policy_v1",
-        "runtime_manifest_digest": "1" * 64,
-        "epoch_receipt_digest": "2" * 64,
-        "publication_identity_digest": "3" * 64,
-        "certificate_digest": "4" * 64,
-    }
-
-
 def _strict(checkpoint):
     target = checkpoint["next_v"]
     source = checkpoint["source_v"]
-    payload = {
-        "schema_version": 1,
-        "epoch": "national_tcp_policy_v1",
-        "mode": "published_strict_parent",
-        "next_v": target,
-        "source_v": source,
-        "parent2_v": None,
-        "parent_versions": [source],
-        "source_artifact_inherited": True,
-        "parent_authority": "strict_published_parent_resolution",
-        "published_parent_identities": [_parent_identity(source)],
-        "protocol_bootstrap_receipt_digest": None,
-        "policy_epoch_reset_receipt_digest": None,
-    }
+    audit_context = checkpoint.get("audit_context") or {}
+    binding = checkpoint_schema.build_checkpoint_epoch_binding(
+        next_v=target,
+        source_v=source,
+        audit_context=audit_context,
+        published_high_water=source,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
+    )
     return {
         **checkpoint,
-        "checkpoint_schema_version": 1,
+        "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
         "evaluation_epoch": "national_tcp_policy_v1",
-        "epoch_binding": {**payload, "binding_digest": _digest(payload)},
+        "epoch_binding": binding,
+        "audit_context": audit_context,
     }
 
 
@@ -146,10 +132,13 @@ def _fresh(checkpoint, reset_receipt):
         next_v=143,
         source_v=142,
         audit_context=audit_context,
+        published_high_water=142,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
     )
     return {
         **checkpoint,
-        "checkpoint_schema_version": 1,
+        "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_binding": binding,
         "audit_context": audit_context,
@@ -192,7 +181,7 @@ def test_official_inconclusive_has_no_automatic_commit_retry():
     assert "Do not call commit_bot" in route["directive"]
 
 
-def test_official_bootstrap_required_is_parked_for_manual_validated_commit():
+def test_official_bootstrap_required_has_no_orchestrator_tool_route():
     route = route_policy(_fresh({
         "stage": "official_bootstrap_required",
         "next_v": 143,
@@ -202,7 +191,7 @@ def test_official_bootstrap_required_is_parked_for_manual_validated_commit():
     }, _strip_test_claim(_reset_receipt())))
 
     assert route["next_tool"] is None
-    assert route["allowed_tools"] == ["commit_bot"]
+    assert route["allowed_tools"] == []
     assert route["intent"] == "operator_bootstrap"
     assert "orchestrator must stop" in route["directive"]
     assert "never authorize or consume" in route["directive"]

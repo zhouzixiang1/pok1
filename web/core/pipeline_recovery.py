@@ -280,10 +280,18 @@ def checkpoint_recovery_diagnostics(
     from checkpoint_schema import (
         checkpoint_epoch_errors,
         checkpoint_epoch_reset_route,
+        live_checkpoint_parent_authority_errors,
         live_policy_epoch_reset_receipt_errors,
     )
 
     epoch_issues = checkpoint_epoch_errors(checkpoint)
+    if not epoch_issues:
+        epoch_issues.extend(
+            live_checkpoint_parent_authority_errors(
+                checkpoint,
+                repo_root=root,
+            )
+        )
     if not epoch_issues:
         epoch_issues.extend(
             live_policy_epoch_reset_receipt_errors(

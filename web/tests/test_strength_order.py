@@ -1,4 +1,8 @@
+import hashlib
 import json
+from pathlib import Path
+
+import pytest
 
 from bot_namespace import (
     STRICT_ARTIFACT_FILES,
@@ -6,6 +10,9 @@ from bot_namespace import (
     refresh_policy_identity_documents,
     strict_artifact_layout_errors,
 )
+
+
+IDENTITY = "a" * 64
 
 
 def _write_jsonl(path, rows):
@@ -63,6 +70,9 @@ def _admitted_history_row(**overrides):
         "bot0_wins": 1,
         "bot1_wins": 1,
         "draws": 0,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "execution_mode": "native_tcp",
+        "evaluation_identity_digest": IDENTITY,
         "strength_sample_unit": "70_hand_match",
         "hands_per_strength_sample": 70,
         "strength_admitted": True,
@@ -124,6 +134,7 @@ def test_equal_primary_strength_is_broken_by_70_hand_chip_amount(tmp_path):
         h2h,
         active_bots=list(ratings),
         match_history_path=history,
+        expected_evaluation_identity_digest=IDENTITY,
     )
 
     assert rows[0]["name"] == "national_v143"
@@ -150,6 +161,7 @@ def test_corrupt_chip_samples_do_not_enter_secondary_strength(tmp_path):
     assert national_chip_metrics_from_match_history(
         ["national_v143", "national_v144"],
         history,
+        expected_evaluation_identity_digest=IDENTITY,
     ) == {}
 
 
@@ -206,6 +218,140 @@ def test_match_replay_persists_primary_and_secondary_contract(tmp_path, monkeypa
     assert summary["net_chips_bot0"] == [500, -100]
     assert summary["strength_admitted"] is True
     assert summary["hands_per_strength_sample"] == 70
+
+
+def _stage_current_identity_match(tmp_path, monkeypatch):
+    import elo_daemon
+    import evaluation_data_identity
+
+    replay_dir = tmp_path / "replays"
+    results_dir = tmp_path / "results"
+    bots_dir = tmp_path / "bots"
+    results_dir.mkdir()
+    identity = evaluation_data_identity.ensure_evaluation_data_identity(
+        results_dir
+    )["manifest_digest"]
+    _write_strict_bot(bots_dir / "national_v143")
+    _write_strict_bot(bots_dir / "national_v144")
+    artifact_execution = _artifact_execution(
+        bots_dir / "national_v143",
+        bots_dir / "national_v144",
+    )
+    monkeypatch.setattr(elo_daemon, "REPLAY_DIR", replay_dir)
+    monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(
+        elo_daemon,
+        "MATCH_HISTORY_FILE",
+        results_dir / "match_history.jsonl",
+    )
+    monkeypatch.setattr(elo_daemon, "BOTS_DIR", bots_dir)
+    monkeypatch.setattr(
+        elo_daemon,
+        "daemon_evaluation_identity_digest",
+        identity,
+    )
+    admission = elo_daemon.save_match_replay(
+        "national_v143",
+        "national_v144",
+        1,
+        0,
+        0,
+        [{
+            "hands_played": 70,
+            "passed_compliance": True,
+            "artifact_execution": artifact_execution,
+        }],
+        [500],
+        "70_hand_match",
+        expected_evaluation_identity_digest=identity,
+        stage_only=True,
+    )
+    result = (
+        "national_v143",
+        "national_v144",
+        1,
+        0,
+        0,
+        1,
+        None,
+        [500],
+        admission,
+    )
+    return elo_daemon, results_dir, replay_dir, identity, result
+
+
+def test_staged_native_match_commits_exact_epoch_mode_and_identity(
+    tmp_path,
+    monkeypatch,
+):
+    from glicko2 import Glicko2Player
+
+    elo_daemon, results_dir, replay_dir, identity, result = (
+        _stage_current_identity_match(tmp_path, monkeypatch)
+    )
+    ratings = {
+        name: Glicko2Player(r=1500, rd=350, sigma=0.06)
+        for name in ("national_v143", "national_v144")
+    }
+    h2h = {}
+    bot_stats = {}
+
+    admitted = elo_daemon.admit_internal_match_result(
+        result,
+        ratings,
+        h2h,
+        bot_stats,
+    )
+
+    assert admitted == 1
+    summary = json.loads(
+        (results_dir / "match_history.jsonl").read_text(encoding="utf-8")
+    )
+    assert summary["evaluation_epoch"] == "national_tcp_policy_v1"
+    assert summary["execution_mode"] == "native_tcp"
+    assert summary["evaluation_identity_digest"] == identity
+    assert (replay_dir / summary["id"]).is_file()
+    assert h2h["national_v143 vs national_v144"]["a_wins"] == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("evaluation_epoch", "national_native_v1", "evaluation epoch mismatch"),
+        ("execution_mode", "official_exe", "execution mode mismatch"),
+        ("execution_mode", "national_arena", "execution mode mismatch"),
+    ],
+)
+def test_staged_match_rejects_resigned_foreign_epoch_or_mode(
+    tmp_path,
+    monkeypatch,
+    field,
+    value,
+    error,
+):
+    from glicko2 import Glicko2Player
+
+    elo_daemon, results_dir, _replay_dir, _identity, result = (
+        _stage_current_identity_match(tmp_path, monkeypatch)
+    )
+    admission = result[8]
+    pending = Path(admission["pending_path"])
+    payload = json.loads(pending.read_text(encoding="utf-8"))
+    payload[field] = value
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    pending.write_bytes(raw)
+    admission["replay_bytes"] = len(raw)
+    admission["replay_sha256"] = hashlib.sha256(raw).hexdigest()
+    admission["summary"][field] = value
+    ratings = {
+        name: Glicko2Player(r=1500, rd=350, sigma=0.06)
+        for name in ("national_v143", "national_v144")
+    }
+
+    with pytest.raises(RuntimeError, match=error):
+        elo_daemon.admit_internal_match_result(result, ratings, {}, {})
+
+    assert not (results_dir / "match_history.jsonl").exists()
 
 
 def test_precommit_outcome_gate_rejects_tiny_0w_8l_collapse():
@@ -297,6 +443,7 @@ def test_history_reconstruction_rejects_unproven_incomplete_or_failed_rows(tmp_p
     rebuilt = reconstruct_h2h_from_match_history(
         ["national_v143", "national_v144"],
         history,
+        expected_evaluation_identity_digest=IDENTITY,
     )
     assert rebuilt["national_v143 vs national_v144"] == {
         "games": 2,

@@ -366,7 +366,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "branch_alias_allowed": True,
     },
     "quality_passed": {
-        "allowed_tools": ("run_review", "execute_workers"),
+        "allowed_tools": ("run_review",),
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
@@ -374,7 +374,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "branch_alias_allowed": True,
     },
     "reviewed": {
-        "allowed_tools": ("run_critic", "execute_workers"),
+        "allowed_tools": ("run_critic",),
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
@@ -382,7 +382,7 @@ HEAD_DRIFT_RESUME_POLICY = {
         "branch_alias_allowed": True,
     },
     "critic_checked": {
-        "allowed_tools": ("run_precommit_eval", "execute_workers"),
+        "allowed_tools": ("run_precommit_eval",),
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
@@ -778,12 +778,6 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "rework_retry_planned"
     if proposed_stage == "rework_running" and current_stage in retry_sources | {"repair_planned"}:
         return True, "rework_running"
-    if proposed_stage == "workers_done" and current_stage == "quality_passed":
-        return True, "review_rework_done"
-    if proposed_stage == "workers_done" and current_stage == "reviewed":
-        return True, "review_rework_done"
-    if proposed_stage == "workers_done" and current_stage == "critic_checked":
-        return True, "critic_rework_done"
     if proposed_stage == "workers_done" and current_stage == "precommit_failed":
         return True, "precommit_rework_done"
     if proposed_stage == "workers_done" and current_stage in {"repair_planned", "rework_running"}:
@@ -876,6 +870,52 @@ def route_policy(checkpoint: dict | None) -> dict:
             "directive": "No active checkpoint. Start or select a generation before calling pipeline tools.",
         }
 
+    if checkpoint.get("post_publication_handoff_route") is True:
+        try:
+            from post_publication_handoff import pending_handoff_route
+
+            pending = pending_handoff_route()
+        except Exception as exc:
+            pending = {
+                "status": "blocked",
+                "issues": [f"handoff_route_validation_error:{type(exc).__name__}"],
+            }
+        exact = bool(
+            pending.get("status") == "pending"
+            and pending.get("identity_digest")
+            == checkpoint.get("post_publication_handoff_identity_digest")
+            and pending.get("publication_id") == checkpoint.get("post_publication_id")
+            and pending.get("version") == checkpoint.get("next_v")
+            and pending.get("source_v") == checkpoint.get("source_v")
+        )
+        if not exact:
+            return {
+                "stage": "archived",
+                "next_tool": None,
+                "allowed_tools": [],
+                "intent": "post_publication_handoff_blocked",
+                "directive": (
+                    "The post-publication handoff route is missing, ambiguous, "
+                    "or changed; do not start another generation."
+                ),
+                "issues": pending.get("issues") or [
+                    "post_publication_handoff_route_identity_mismatch"
+                ],
+            }
+        return {
+            "stage": "archived",
+            "next_v": int(pending["version"]),
+            "source_v": int(pending["source_v"]),
+            "parent2_v": None,
+            "next_tool": "run_archivist",
+            "allowed_tools": ["run_archivist"],
+            "intent": "post_publication_handoff",
+            "directive": (
+                "Call run_archivist for the exact durable handoff before "
+                "preparing another generation."
+            ),
+        }
+
     # Stage names survived the policy-epoch reset, but their old payloads did
     # not.  Validate the system-owned epoch envelope before infrastructure
     # normalization or any stage lookup so a legacy ``direction_audited``
@@ -959,8 +999,11 @@ def route_policy(checkpoint: dict | None) -> dict:
         and "critic" in gate_results
         and not _critic_gate_passed(gate_results)
     ):
-        next_tool = "execute_workers"
-        intent = "critic_rework"
+        # Critic verdicts are advisory.  An incomplete/legacy Critic record may
+        # require the role to run again, but it can never authorize Worker
+        # strategy rework or replace the native-TCP precommit hard gate.
+        next_tool = "run_critic"
+        intent = "critic_retry"
     elif stage == "critic_checked":
         gate = gate_results.get("precommit_eval")
         failure_class = classify_precommit_gate(gate)
@@ -1035,8 +1078,9 @@ def route_policy(checkpoint: dict | None) -> dict:
         directive = (
             "No published full-v5 opponent exists. The candidate is parked for the explicit "
             "one-time first-strict control bootstrap; the orchestrator must stop and must "
-            "never authorize or consume it. After bootstrap-first-strict succeeds, an "
-            "operator may call commit_bot manually; the complete signed certificate remains mandatory."
+            "never authorize or consume it. After bootstrap-first-strict succeeds, only the "
+            "operator-only finalize-first-strict command may publish it; the complete signed "
+            "certificate and completed bootstrap authorization remain mandatory."
         )
     elif stage == "official_certifying":
         directive = (
@@ -1055,11 +1099,11 @@ def route_policy(checkpoint: dict | None) -> dict:
             "commit_bot to reconcile the existing intent; do not rerun official "
             "certification, edit the candidate, or enter a Worker/rework path."
         )
-    elif intent == "critic_rework":
+    elif intent == "critic_retry":
         directive = (
-            "Critic rejected this candidate. Call execute_workers with the exact "
-            "critic feedback stored in reviewer_feedback; do not call run_precommit_eval "
-            "or commit_bot on unchanged code."
+            "The mandatory Critic execution receipt is incomplete or invalid. "
+            "Call run_critic again for the same candidate; its strategic verdict "
+            "remains advisory and must not create Worker rework."
         )
     elif stage in {"repair_planned", "rework_running"}:
         directive = (
@@ -1092,16 +1136,6 @@ def route_policy(checkpoint: dict | None) -> dict:
     allowed_tools = []
     if next_tool:
         allowed_tools.append(next_tool)
-    if stage == "official_bootstrap_required":
-        # This is a manual-only escape from the parked stage.  The runtime tool
-        # guard additionally requires a fully content-validated existing
-        # certificate before it lets commit_bot enter its body.
-        allowed_tools.append("commit_bot")
-    if intent not in {"mandatory_literature_probe", "system_bootstrap_abandon"}:
-        for tool_name in sorted(head_drift_allowed_tools(stage)):
-            if tool_name not in allowed_tools:
-                allowed_tools.append(tool_name)
-
     return {
         "stage": stage,
         "next_v": next_v,
@@ -1126,12 +1160,13 @@ def generic_abandon_block(checkpoint: dict | None, *,
                           max_precommit_retries: int = 3) -> dict | None:
     """Return a refusal payload when generic abandon is unsafe.
 
-    Forced abandon callers pass a different reason and bypass this guard. For
-    precommit regression failures, abandon is only allowed after the configured
-    hard limit; before that, the state machine requires a worker rework using
-    the exact precommit feedback.
+    Forced abandon callers use explicit reason/stage allowlists. Publication,
+    certification and finalization stages are never disposable. For precommit
+    regression failures, abandon is only allowed after the configured hard
+    limit; before that, the state machine requires worker rework using the
+    exact precommit feedback.
     """
-    if not checkpoint or reason != "abandon_generation":
+    if not checkpoint:
         return None
 
     stage = checkpoint.get("stage")
@@ -1142,11 +1177,11 @@ def generic_abandon_block(checkpoint: dict | None, *,
     block = False
     route = route_policy(checkpoint)
     next_tool = route.get("next_tool")
-    if route.get("intent") == "operator_archive_reset":
+    if route.get("intent") == "operator_reconcile_checkpoint":
         return {
             "abandoned": False,
             "blocked": True,
-            "reason": "checkpoint_epoch_requires_operator_archive_reset",
+            "reason": "checkpoint_epoch_requires_operator_reconciliation",
             "stage": stage,
             "next_v": checkpoint.get("next_v"),
             "source_v": checkpoint.get("source_v"),
@@ -1157,6 +1192,74 @@ def generic_abandon_block(checkpoint: dict | None, *,
             "directive": route.get("directive"),
         }
     if route.get("intent") == "system_bootstrap_abandon":
+        return None
+    never_disposable = {
+        "verified",
+        "official_bootstrap_required",
+        "official_certifying",
+        "official_inconclusive",
+        "publishing",
+        "archived",
+    }
+    if stage in never_disposable:
+        return {
+            "abandoned": False,
+            "blocked": True,
+            "reason": "publication_or_certification_stage_not_disposable",
+            "stage": stage,
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "next_tool": next_tool,
+            "directive": (
+                f"Refusing abandon for v{checkpoint.get('next_v')} at "
+                f"non-disposable stage '{stage}'. Resume/reconcile the exact "
+                "certification or publication transaction."
+            ),
+        }
+
+    if reason not in {"abandon_generation", "cleanup_incomplete_exact_workflow"}:
+        broad_infra_stages = {
+            "selected", "preparing", "prepared", "crossover_running",
+            "direction_audited", "master_planned", "workers_done",
+            "quality_failed", "quality_passed", "reviewed", "critic_checked",
+            "precommit_failed", "repair_planned", "rework_running",
+            "official_failed",
+        }
+        forced_rules = (
+            ("infrastructure_exhausted:", broad_infra_stages),
+            ("cycle_timeout_master_stuck", {"direction_audited"}),
+            ("master_", {"direction_audited"}),
+            ("crossover_", {"preparing", "prepared", "crossover_running"}),
+            ("worker_circuit_breaker", {"master_planned", "workers_done", "quality_failed"}),
+            ("worker_infrastructure_exhausted", {"master_planned", "workers_done", "quality_failed", "repair_planned", "rework_running"}),
+            ("worker_workflow_abandoned", {"master_planned", "workers_done", "quality_failed", "precommit_failed", "repair_planned", "rework_running", "official_failed"}),
+            ("worker_terminal_abandon", {"master_planned", "workers_done", "quality_failed", "precommit_failed", "repair_planned", "rework_running", "official_failed"}),
+            ("frozen_worker", {"master_planned", "workers_done", "quality_failed", "repair_planned", "rework_running"}),
+            ("frozen_rework_", {"precommit_failed", "repair_planned", "rework_running", "official_failed"}),
+            ("durable_initial_worker_", {"master_planned"}),
+            ("durable_worker_", {"master_planned", "repair_planned", "rework_running"}),
+            ("precommit_rework_circuit_breaker", {"precommit_failed", "repair_planned", "rework_running"}),
+            ("official_rework_circuit_breaker", {"official_failed", "repair_planned", "rework_running"}),
+            ("stale_blueprint_rejection", {"selected", "preparing", "prepared", "direction_audited"}),
+        )
+        allowed = next(
+            (stages for prefix, stages in forced_rules if str(reason).startswith(prefix)),
+            None,
+        )
+        if allowed is None or stage not in allowed:
+            return {
+                "abandoned": False,
+                "blocked": True,
+                "reason": "forced_abandon_reason_stage_not_allowed",
+                "stage": stage,
+                "next_v": checkpoint.get("next_v"),
+                "source_v": checkpoint.get("source_v"),
+                "next_tool": next_tool,
+                "directive": (
+                    f"Forced abandon reason '{reason}' is not authorized for "
+                    f"stage '{stage}'. Preserve the checkpoint and candidate."
+                ),
+            }
         return None
     explanation = "This generation has passed earlier gates; continue the state machine"
 
@@ -1177,8 +1280,11 @@ def generic_abandon_block(checkpoint: dict | None, *,
     elif stage == "critic_checked":
         block = True
         if "critic" in (checkpoint.get("gate_results") or {}) and not _critic_gate_passed(checkpoint.get("gate_results") or {}):
-            next_tool = "execute_workers"
-            explanation = "Critic rejected this code; rework the bot with exact critic feedback"
+            next_tool = "run_critic"
+            explanation = (
+                "Critic execution evidence is incomplete; rerun the advisory "
+                "role without changing candidate code"
+            )
         elif failure_class in {"regression", "failed_unknown"}:
             next_tool = "execute_workers"
             explanation = "Precommit already failed for this code; rework the bot with exact precommit feedback"

@@ -5,9 +5,13 @@ elo_daemon.py background process.
 """
 
 import atexit
+import hashlib
+import hmac
 import json
 import logging
 import os
+from pathlib import Path
+import secrets
 import signal
 import subprocess
 import sys
@@ -41,6 +45,9 @@ daemon_proc = None
 _daemon_lock = threading.Lock()
 _atexit_registered = False
 _daemon_shutting_down = False
+_DAEMON_OWNER_TOKEN_ENV = "POK_DAEMON_OWNER_TOKEN"
+_DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC = 8.0
+_DAEMON_FORCE_ORPHAN_TIMEOUT_SEC = 2.0
 
 
 def _daemon_exit_metadata(returncode):
@@ -77,11 +84,271 @@ def _drain_stdout(proc):
 MAX_SAFE_DAEMON_WORKERS = 12
 
 
-def _default_daemon_workers() -> int:
+def default_daemon_workers() -> int:
     """Default daemon workers = CPU cores * 7/8, clamped to [1, MAX_SAFE_DAEMON_WORKERS].
 
     The hard cap prevents OOM-kills on high-core machines."""
-    return max(1, min(MAX_SAFE_DAEMON_WORKERS, int(os.cpu_count() * 28 / 32)))
+    return max(
+        1,
+        min(MAX_SAFE_DAEMON_WORKERS, int((os.cpu_count() or 1) * 28 / 32)),
+    )
+
+
+def _proc_identity(pid: int) -> tuple[int, str] | None:
+    """Return Linux start ticks and process state from one proc snapshot."""
+
+    try:
+        with open(f"/proc/{int(pid)}/stat", encoding="utf-8") as handle:
+            fields = handle.read().split()
+        value = int(fields[21])
+    except (OSError, ValueError, IndexError, TypeError):
+        return None
+    return (value, str(fields[2])) if value > 0 else None
+
+
+def _proc_start_ticks(pid: int) -> int | None:
+    """Return Linux process start ticks, which disambiguate PID reuse."""
+
+    identity = _proc_identity(pid)
+    return identity[0] if identity is not None else None
+
+
+def _read_daemon_pid_record(path) -> dict:
+    raw = path.read_text(encoding="utf-8").strip()
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = int(raw)
+    if isinstance(parsed, dict):
+        pid = int(parsed.get("pid") or 0)
+        start_ticks = int(parsed.get("start_ticks") or 0)
+        return {**parsed, "pid": pid, "start_ticks": start_ticks}
+    return {"pid": int(parsed), "start_ticks": 0, "legacy": True}
+
+
+def _daemon_owner_contract_identity(pid: int, record: dict) -> str:
+    """Prove that an exact live PID is the daemon process we launched.
+
+    PID/start ticks prevent reuse, but a forged record could still name an
+    unrelated live process and make cleanup signal its whole process group.
+    Bind cleanup to a per-launch token, the exact elo_daemon.py command and the
+    start-new-session group-leader invariant before any signal is sent.
+    """
+
+    expected_digest = str(record.get("owner_token_digest") or "")
+    if (
+        len(expected_digest) != 64
+        or any(char not in "0123456789abcdef" for char in expected_digest)
+    ):
+        return "unverifiable"
+    try:
+        environ = (Path("/proc") / str(pid) / "environ").read_bytes()
+        prefix = f"{_DAEMON_OWNER_TOKEN_ENV}=".encode("ascii")
+        token = next(
+            item[len(prefix):]
+            for item in environ.split(b"\0")
+            if item.startswith(prefix)
+        )
+        actual_digest = hashlib.sha256(token).hexdigest()
+    except (OSError, StopIteration):
+        return "unavailable"
+    if not hmac.compare_digest(actual_digest, expected_digest):
+        return "owner_mismatch"
+    try:
+        argv = [
+            os.fsdecode(item)
+            for item in (Path("/proc") / str(pid) / "cmdline").read_bytes().split(b"\0")
+            if item
+        ]
+        expected_python = Path(sys.executable).resolve()
+        expected_script = Path(__file__).resolve().with_name("elo_daemon.py")
+        command_matches = (
+            len(argv) == 6
+            and Path(argv[0]).resolve() == expected_python
+            and Path(argv[1]).resolve() == expected_script
+            and argv[2] == "--workers"
+            and argv[4] == "--pairs"
+        )
+        if command_matches:
+            try:
+                command_matches = (
+                    1 <= int(argv[3]) <= MAX_SAFE_DAEMON_WORKERS
+                    and 1 <= int(argv[5]) <= 20
+                )
+            except (TypeError, ValueError, OverflowError):
+                command_matches = False
+    except (OSError, RuntimeError, ValueError):
+        return "unavailable"
+    if not command_matches:
+        return "command_mismatch"
+    try:
+        if os.getpgid(pid) != pid:
+            return "group_mismatch"
+    except (ProcessLookupError, PermissionError, OSError):
+        return "unavailable"
+    return "match"
+
+
+def _pid_record_identity(record: dict) -> str:
+    """Classify a PID record without ever killing a reused/unknown PID."""
+
+    pid = int(record.get("pid") or 0)
+    if pid <= 1:
+        return "invalid"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "dead"
+    except PermissionError:
+        pass
+    except OSError:
+        return "dead"
+    proc_identity = _proc_identity(pid)
+    expected = int(record.get("start_ticks") or 0)
+    if proc_identity is None:
+        return "unavailable"
+    actual, process_state = proc_identity
+    if process_state in {"Z", "X"}:
+        return "dead"
+    if expected <= 0:
+        return "unverifiable"
+    if actual != expected:
+        return "reused"
+    return _daemon_owner_contract_identity(pid, record)
+
+
+def daemon_pid_record_health(path: str | os.PathLike[str]) -> dict:
+    """Return a read-only, fail-closed daemon process identity projection.
+
+    This is the single health boundary shared by lifecycle cleanup and the
+    control plane.  A fresh heartbeat is never process authority: the exact
+    PID/start-tick identity must also prove the per-launch owner token, the
+    canonical daemon argv, a process-group leader, and a non-zombie proc
+    state through :func:`_pid_record_identity`.
+
+    The function never unlinks the record and never signals a process.
+    """
+
+    record_path = Path(path)
+    if not os.path.lexists(record_path):
+        return {
+            "exists": False,
+            "pid": None,
+            "alive": False,
+            "process_identity": "missing",
+            "health_error": "daemon_pid_file_missing",
+        }
+    if record_path.is_symlink():
+        return {
+            "exists": True,
+            "pid": None,
+            "alive": False,
+            "process_identity": "invalid",
+            "health_error": "daemon_pid_record_symlink",
+        }
+    try:
+        record = _read_daemon_pid_record(record_path)
+    except (OSError, UnicodeError) as exc:
+        return {
+            "exists": True,
+            "pid": None,
+            "alive": False,
+            "process_identity": "unavailable",
+            "health_error": (
+                f"daemon_pid_record_read_error:{type(exc).__name__}"
+            ),
+        }
+    except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
+        return {
+            "exists": True,
+            "pid": None,
+            "alive": False,
+            "process_identity": "invalid",
+            "health_error": "daemon_pid_record_invalid",
+        }
+
+    data = {**record, "exists": True}
+    try:
+        identity = _pid_record_identity(record)
+    except (TypeError, ValueError, OverflowError):
+        identity = "invalid"
+    data["process_identity"] = identity
+    data["alive"] = identity == "match"
+    if identity == "match":
+        data["health_error"] = None
+        return data
+
+    if identity == "unverifiable" and int(record.get("start_ticks") or 0) <= 0:
+        health_error = "daemon_start_identity_missing"
+    else:
+        health_error = {
+            "invalid": "daemon_pid_record_invalid",
+            "dead": "daemon_process_not_alive",
+            "reused": "daemon_pid_reused",
+            "unavailable": "daemon_process_identity_unavailable",
+            "unverifiable": "daemon_owner_identity_unverifiable",
+            "owner_mismatch": "daemon_owner_token_mismatch",
+            "command_mismatch": "daemon_command_mismatch",
+            "group_mismatch": "daemon_process_group_mismatch",
+        }.get(identity, f"daemon_process_identity_{identity}")
+    data["health_error"] = health_error
+    return data
+
+
+def _wait_for_daemon_record_exit(record: dict, timeout: float) -> bool:
+    """Wait until the exact recorded daemon PID is proven gone/reused."""
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        identity = _pid_record_identity(record)
+        if identity in {"dead", "reused"}:
+            return True
+        if identity != "match":
+            raise RuntimeError(
+                f"daemon_pid_identity_{identity}:pid={record.get('pid')}"
+            )
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _terminate_verified_daemon_record(record: dict) -> bool:
+    """Terminate one proven daemon; return whether SIGKILL was required."""
+
+    pid = int(record.get("pid") or 0)
+    identity = _pid_record_identity(record)
+    if identity in {"dead", "reused"}:
+        return False
+    if identity != "match":
+        raise RuntimeError(f"daemon_pid_identity_{identity}:pid={pid}")
+    pgid = os.getpgid(pid)
+    if pgid != pid:
+        raise RuntimeError(f"daemon_pid_identity_group_mismatch:pid={pid}")
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    if _wait_for_daemon_record_exit(
+        record,
+        _DAEMON_GRACEFUL_ORPHAN_TIMEOUT_SEC,
+    ):
+        return False
+
+    # Re-open every identity proof after the grace window.  Never send the
+    # force signal using only the earlier PID/PGID observation.
+    if _pid_record_identity(record) != "match":
+        if _wait_for_daemon_record_exit(record, 0.0):
+            return False
+        raise RuntimeError(f"daemon_pid_identity_changed_before_kill:pid={pid}")
+    if os.getpgid(pid) != pid:
+        raise RuntimeError(f"daemon_pid_identity_group_mismatch:pid={pid}")
+    os.killpg(pid, signal.SIGKILL)
+    if not _wait_for_daemon_record_exit(
+        record,
+        _DAEMON_FORCE_ORPHAN_TIMEOUT_SEC,
+    ):
+        raise RuntimeError(f"daemon_orphan_did_not_exit:pid={pid}")
+    return True
 
 
 def start_daemon(workers=None, pairs=5):
@@ -94,7 +361,7 @@ def start_daemon(workers=None, pairs=5):
 
     require_policy_epoch_initialized("daemon_management.start_daemon")
     if workers is None:
-        workers = _default_daemon_workers()
+        workers = default_daemon_workers()
 
     from evolution_infra import CORE_DIR, RESULTS_DIR
 
@@ -119,32 +386,44 @@ def start_daemon(workers=None, pairs=5):
         daemon_pid_file = RESULTS_DIR / ".daemon_pid"
         if daemon_pid_file.exists():
             try:
-                raw = daemon_pid_file.read_text().strip()
-                try:
-                    info = json.loads(raw)
-                    old_pid = info["pid"] if isinstance(info, dict) else int(raw)
-                except (json.JSONDecodeError, KeyError, TypeError):
-                    old_pid = int(raw)
-                try:
-                    os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                record = _read_daemon_pid_record(daemon_pid_file)
+                old_pid = int(record["pid"])
+                identity = _pid_record_identity(record)
+                if identity == "match":
                     log_system_event(
                         "daemon.orphan_found", "warn",
-                        f"Found stale daemon pid file; sent SIGTERM to orphan pid={old_pid}",
+                        f"Found verified daemon orphan pid={old_pid}; stopping it before replacement",
                         {"pid": old_pid},
                     )
-                    time.sleep(0.5)  # Wait for orphan to die
+                    forced = _terminate_verified_daemon_record(record)
                     log_system_event(
                         "daemon.orphan_killed", "info",
                         f"Stale daemon orphan cleanup finished for pid={old_pid}",
-                        {"pid": old_pid},
+                        {"pid": old_pid, "forced": forced},
                     )
-                except (ProcessLookupError, PermissionError, OSError):
-                    pass
-            except ValueError:
+                elif identity in {"dead", "reused"}:
+                    log_system_event(
+                        "daemon.stale_pid_record", "warn",
+                        f"Ignored stale daemon PID record ({identity})",
+                        {"pid": old_pid, "identity": identity},
+                    )
+                else:
+                    raise RuntimeError(
+                        f"daemon_pid_identity_{identity}:pid={old_pid}"
+                    )
+            except ProcessLookupError:
                 pass
+            except (PermissionError, OSError) as exc:
+                raise RuntimeError(
+                    f"daemon_orphan_cleanup_failed:{type(exc).__name__}"
+                ) from exc
         daemon_pid_file.unlink(missing_ok=True)
         daemon_script = str(CORE_DIR / "elo_daemon.py")
         cmd = [sys.executable, daemon_script, "--workers", str(workers), "--pairs", str(pairs)]
+        owner_token = secrets.token_hex(32)
+        owner_token_digest = hashlib.sha256(
+            owner_token.encode("ascii")
+        ).hexdigest()
         daemon_proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1,
@@ -154,8 +433,18 @@ def start_daemon(workers=None, pairs=5):
             # (RC6). The daemon serves many generations, so it does NOT receive a
             # pinned run_id; its events resolve the current generation's run_id
             # from the live pipeline_state.json at emit time.
-            env={**os.environ, "POK_PROC": "daemon"},
+            env={
+                **os.environ,
+                "POK_PROC": "daemon",
+                _DAEMON_OWNER_TOKEN_ENV: owner_token,
+            },
         )
+        start_ticks = _proc_start_ticks(daemon_proc.pid)
+        if start_ticks is None:
+            daemon_proc.terminate()
+            daemon_proc.wait(timeout=2)
+            daemon_proc = None
+            raise RuntimeError("daemon_process_start_identity_unavailable")
         tmp_pid = daemon_pid_file.with_suffix(".tmp")
         # Fsync before atomic replace so a crash/power loss cannot leave a
         # torn process-health record.
@@ -163,7 +452,12 @@ def start_daemon(workers=None, pairs=5):
         try:
             os.write(
                 _pid_fd,
-                json.dumps({"pid": daemon_proc.pid, "ppid": os.getpid()}).encode(
+                json.dumps({
+                    "pid": daemon_proc.pid,
+                    "ppid": os.getpid(),
+                    "start_ticks": start_ticks,
+                    "owner_token_digest": owner_token_digest,
+                }).encode(
                     "utf-8"
                 ),
             )
@@ -175,6 +469,8 @@ def start_daemon(workers=None, pairs=5):
             "daemon.pid_written", "info",
             f"Daemon PID file written for pid={daemon_proc.pid}",
             {"pid": daemon_proc.pid, "ppid": os.getpid(),
+             "start_ticks": start_ticks,
+             "owner_token_digest": owner_token_digest,
              "workers": workers, "pairs": pairs},
         )
     # Drain daemon stdout to prevent pipe buffer deadlock
@@ -281,24 +577,20 @@ def _kill_orphan_from_pid_file():
     if not daemon_pid_file.exists():
         return
     try:
-        raw = daemon_pid_file.read_text().strip()
-        try:
-            info = json.loads(raw)
-            old_pid = info["pid"] if isinstance(info, dict) else int(raw)
-        except (json.JSONDecodeError, KeyError, TypeError):
-            old_pid = int(raw)
-        try:
-            pgid = os.getpgid(old_pid)
-            os.killpg(pgid, signal.SIGTERM)
-            time.sleep(0.5)
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
-                pass
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-    except (ValueError, OSError):
-        pass
+        record = _read_daemon_pid_record(daemon_pid_file)
+        identity = _pid_record_identity(record)
+        if identity == "match":
+            _terminate_verified_daemon_record(record)
+        elif identity not in {"dead", "reused"}:
+            raise RuntimeError(
+                f"daemon_pid_identity_{identity}:pid={record.get('pid')}"
+            )
+    except ValueError as exc:
+        raise RuntimeError("daemon_pid_record_invalid") from exc
+    except OSError as exc:
+        raise RuntimeError(
+            f"daemon_orphan_cleanup_failed:{type(exc).__name__}"
+        ) from exc
     daemon_pid_file.unlink(missing_ok=True)
 
 
@@ -328,7 +620,7 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
     if not ui:
         return
     if daemon_workers is None:
-        daemon_workers = _default_daemon_workers()
+        daemon_workers = default_daemon_workers()
     from evolution_infra import load_daemon_stats, load_ratings
     restart_count = 0
     while not stop_event.is_set():
@@ -344,6 +636,41 @@ def daemon_monitor_thread(ui, stop_event, daemon_workers=None, daemon_pairs=5):
                 with _daemon_lock:
                     current_proc = daemon_proc
                     shutting_down = _daemon_shutting_down
+                if not shutting_down:
+                    try:
+                        from stability_observation import (
+                            reset_stability_observation,
+                        )
+
+                        reset_stability_observation(
+                            "rating_daemon_exited",
+                            details={
+                                "pid": proc.pid,
+                                "returncode": rc,
+                                "replacement_pid": (
+                                    current_proc.pid
+                                    if current_proc is not None
+                                    and current_proc is not proc
+                                    and current_proc.poll() is None
+                                    else None
+                                ),
+                            },
+                        )
+                    except Exception as exc:
+                        try:
+                            log_system_event(
+                                "daemon.stability_observation_failed",
+                                "error",
+                                "Rating daemon exited but stability reset failed",
+                                {
+                                    "pid": proc.pid,
+                                    "returncode": rc,
+                                    "error_type": type(exc).__name__,
+                                    "error": str(exc)[:300],
+                                },
+                            )
+                        except Exception:
+                            pass
                 # Determine if this was a crash-recovery restart or intentional stop
                 if current_proc is not None and current_proc is not proc and current_proc.poll() is None:
                     # Daemon was replaced by another actor (web UI, orchestrator, etc.)

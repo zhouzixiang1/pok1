@@ -12,6 +12,7 @@ Usage (from dashboard/backend/app.py):
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -98,6 +99,16 @@ _LLM_AVAILABILITY_CONTROL_ERRORS = frozenset({
     "WORKER_AVAILABILITY_RESUME_INVARIANT_FAILED",
     "WORKER_AVAILABILITY_RESUME_RECEIPT_INVALID",
 })
+
+
+def _resolve_daemon_workers(value: int | None) -> int:
+    """Resolve the orchestrator default through daemon resource authority."""
+
+    if value is not None:
+        return int(value)
+    from daemon_management import default_daemon_workers
+
+    return default_daemon_workers()
 
 
 def _tool_result_payload(value):
@@ -304,6 +315,7 @@ class _OrchStreamStallTimeout(Exception):
 # The main orchestrator_loop checks this flag at the top of each iteration and forces
 # a fresh _run_one_cycle (discarding the stale session) when set.
 _watchdog_triggered = False
+_orchestrator_provider_stream_active = False
 ORCH_FIRST_ACTIVITY_TIMEOUT = int(os.environ.get("POK_ORCH_FIRST_ACTIVITY_TIMEOUT", "600"))
 ORCH_STREAM_POLL_INTERVAL = float(os.environ.get("POK_ORCH_STREAM_POLL_INTERVAL", "15"))
 ORCH_ACTIONABLE_STAGE_TIMEOUT = float(os.environ.get("POK_ORCH_ACTIONABLE_STAGE_TIMEOUT", "300"))
@@ -318,8 +330,35 @@ ORCH_EXTERNAL_PROGRESS_TAIL_BYTES = int(os.environ.get("POK_ORCH_EXTERNAL_PROGRE
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 
-ORCHESTRATOR_PROMPT = (Path(__file__).parent / "prompts" / "orchestrator.md").read_text()
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+
+
+def _render_orchestrator_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    if not isinstance(inputs, dict) or set(inputs) != {"context", "dry_run"}:
+        raise ValueError("Orchestrator renderer input contract mismatch")
+
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "orchestrator.md"
+    ).read_text(encoding="utf-8")
+    prompt = template.replace("{context}", str(inputs["context"]))
+    if bool(inputs.get("dry_run")):
+        prompt += (
+            "\n\nIMPORTANT: This is a DRY RUN. Do not call any tool. Report only "
+            "the status already supplied in the context; live rating, H2H, match "
+            "history, and bot-stat query tools are intentionally unavailable."
+        )
+    return LLMRenderedMaterial(
+        text=prompt,
+        evidence_kind="checkpoint_context_projection",
+        evidence_provenance={
+            "context_digest": hashlib.sha256(
+                str(inputs["context"]).encode("utf-8")
+            ).hexdigest(),
+            "dry_run": bool(inputs["dry_run"]),
+        },
+    )
 
 # Tools the Orchestrator legitimately calls many times per cycle (exploration,
 # file reads, task bookkeeping). Excluded from the redundant-call warning's
@@ -350,7 +389,21 @@ from orchestrator_session import (  # noqa: E402
     _startup_recovery,
 )
 from evolution_infra import find_current_v  # noqa: E402
-from llm_query import extract_result_error  # noqa: E402
+from llm_query import (  # noqa: E402
+    LLMProviderCleanupError,
+    activate_owned_provider_attempt,
+    await_provider_stream_next_bounded,
+    bind_llm_role_provider_prompt,
+    cancel_provider_stream_task_bounded,
+    cleanup_owned_provider_attempt,
+    create_owned_provider_attempt,
+    extract_result_error,
+    mark_owned_provider_attempt_unresolved,
+    owned_provider_attempt_exit_confirmed,
+    owned_provider_attempt_scope,
+    owned_provider_attempt_transport,
+    reset_owned_provider_attempt,
+)
 
 
 def _bind_generation_cost_runtime(
@@ -512,7 +565,7 @@ _CORRECTIVE_RETRY_STAGES_BY_TOOL = {
     },
     "run_quality_gates": {"workers_done"},
     "run_review": {"quality_passed"},
-    "run_critic": {"reviewed"},
+    "run_critic": {"reviewed", "critic_checked"},
     "run_precommit_eval": {"critic_checked"},
 }
 
@@ -1004,6 +1057,27 @@ def _detect_actionable_stage_handoff():
                 "bootstrap-first-strict suite. Automation must not authorize or consume it."
             ),
         }
+    if not checkpoint:
+        try:
+            from post_publication_handoff import pending_handoff_route
+
+            handoff = pending_handoff_route()
+        except Exception as exc:
+            handoff = {
+                "status": "blocked",
+                "issues": [f"handoff_discovery_failed:{type(exc).__name__}"],
+            }
+        if handoff.get("status") == "pending":
+            return {
+                "next_v": handoff.get("version"),
+                "source_v": handoff.get("source_v"),
+                "stage": "post_publication_handoff",
+                "next_tool": "run_archivist",
+                "directive": (
+                    "End the current provider stream and resume the exact "
+                    "durable Archivist handoff."
+                ),
+            }
     return None
 
 
@@ -1017,6 +1091,7 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
     catching truly silent cycles before CYCLE_TIMEOUT (5400s).
     """
     pending = asyncio.create_task(stream_iter.__anext__())
+    pending_cleanup_owned = False
     _silence_origin = last_message_at if last_message_at is not None else (stream_started_at or time.time())
     _last_progress_marker = None
     try:
@@ -1080,11 +1155,10 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
                             )
                         except Exception:
                             pass
-                        pending.cancel()
-                        try:
-                            await pending
-                        except BaseException:
-                            pass
+                        pending_cleanup_owned = not await cancel_provider_stream_task_bounded(
+                            pending,
+                            "orchestrator_stream_stall_cancellation_unconfirmed",
+                        )
                         raise _OrchStreamStallTimeout(msg)
                 stall = _detect_actionable_stage_stall()
                 if not stall:
@@ -1106,16 +1180,173 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
                     )
                 except Exception:
                     pass
-                pending.cancel()
-                try:
-                    await pending
-                except BaseException:
-                    pass
+                pending_cleanup_owned = not await cancel_provider_stream_task_bounded(
+                    pending,
+                    "orchestrator_actionable_stall_cancellation_unconfirmed",
+                )
                 raise _OrchActionableStageTimeout(msg)
     except BaseException:
-        if not pending.done():
-            pending.cancel()
+        if not pending.done() and not pending_cleanup_owned:
+            await cancel_provider_stream_task_bounded(
+                pending,
+                "orchestrator_stream_parent_cancellation_unconfirmed",
+            )
         raise
+
+
+def _orchestrator_cycle_cancel_grace():
+    try:
+        return max(
+            0.0,
+            min(
+                30.0,
+                float(os.environ.get("POK_ORCH_CYCLE_CANCEL_GRACE", "1")),
+            ),
+        )
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _orchestrator_task_error(task):
+    try:
+        task.result()
+    except BaseException as exc:
+        return exc
+    return None
+
+
+async def _cancel_orchestrator_stream_task_bounded(
+    stream_task,
+    *,
+    attempt_ref,
+    gen_ref,
+    reason,
+    log_file_path,
+):
+    """Cancel one cycle task and close only its proven provider transport."""
+
+    if stream_task.done():
+        error = _orchestrator_task_error(stream_task)
+        return error if isinstance(error, LLMProviderCleanupError) else None
+
+    stream_task.cancel()
+    grace = _orchestrator_cycle_cancel_grace()
+    if grace > 0:
+        await asyncio.wait({stream_task}, timeout=grace)
+    if stream_task.done():
+        error = _orchestrator_task_error(stream_task)
+        return error if isinstance(error, LLMProviderCleanupError) else None
+
+    attempt = attempt_ref[0] if attempt_ref else None
+    query_gen = gen_ref[0] if gen_ref else None
+    cleanup_error = None
+    if isinstance(attempt, dict):
+        # Do not add ``stream_task`` yet: it may currently be awaiting the
+        # shared cleanup task in its own finally block. Tracking it before that
+        # cleanup completes would create a self-dependency. Mark the attempt,
+        # run/await the single shared cleanup, then retain the owner task only
+        # if it still refuses to exit.
+        mark_owned_provider_attempt_unresolved(attempt, reason)
+        if query_gen is not None:
+            try:
+                with owned_provider_attempt_scope(attempt):
+                    await cleanup_owned_provider_attempt(
+                        query_gen,
+                        attempt,
+                        "ORCHESTRATOR",
+                        log_file_path,
+                    )
+            except LLMProviderCleanupError as exc:
+                cleanup_error = exc
+            except BaseException as exc:
+                cleanup_error = LLMProviderCleanupError(
+                    "orchestrator owned provider cleanup failed: "
+                    f"{type(exc).__name__}: {str(exc)[:300]}",
+                    provider_exit_confirmed=False,
+                    attempt_id=attempt.get("attempt_id"),
+                )
+                mark_owned_provider_attempt_unresolved(
+                    attempt,
+                    f"orchestrator_cleanup_failed:{type(exc).__name__}",
+                )
+        else:
+            cleanup_error = LLMProviderCleanupError(
+                "orchestrator provider attempt has no query generator for cleanup",
+                provider_exit_confirmed=False,
+                attempt_id=attempt.get("attempt_id"),
+            )
+    else:
+        cleanup_error = LLMProviderCleanupError(
+            "orchestrator cycle task resisted cancellation before provider ownership was published",
+            provider_exit_confirmed=False,
+        )
+
+    post_cleanup_grace = max(0.1, grace)
+    await asyncio.wait({stream_task}, timeout=post_cleanup_grace)
+    if not stream_task.done():
+        if isinstance(attempt, dict):
+            mark_owned_provider_attempt_unresolved(
+                attempt,
+                f"{reason}:owner_task_pending",
+                stream_task,
+            )
+            confirmed = owned_provider_attempt_exit_confirmed(attempt)
+            cleanup_error = LLMProviderCleanupError(
+                "orchestrator stream owner task remained pending after owned transport cleanup",
+                provider_exit_confirmed=confirmed,
+                attempt_id=attempt.get("attempt_id"),
+            )
+        else:
+            stream_task.add_done_callback(_orchestrator_task_error)
+        return cleanup_error
+
+    task_error = _orchestrator_task_error(stream_task)
+    if cleanup_error is None and isinstance(task_error, LLMProviderCleanupError):
+        cleanup_error = task_error
+    if isinstance(attempt, dict):
+        owned_provider_attempt_exit_confirmed(attempt)
+    return cleanup_error
+
+
+async def _await_orchestrator_stream_response_bounded(
+    stream_coro,
+    *,
+    timeout,
+    attempt_ref,
+    gen_ref,
+    log_file_path,
+):
+    """Apply a real wall-clock bound to one complete orchestrator SDK stream."""
+
+    stream_task = asyncio.create_task(stream_coro)
+    try:
+        done, _pending = await asyncio.wait({stream_task}, timeout=timeout)
+    except BaseException:
+        await _cancel_orchestrator_stream_task_bounded(
+            stream_task,
+            attempt_ref=attempt_ref,
+            gen_ref=gen_ref,
+            reason="orchestrator_cycle_parent_cancellation_unconfirmed",
+            log_file_path=log_file_path,
+        )
+        raise
+    if stream_task in done:
+        return stream_task.result()
+
+    cleanup_error = await _cancel_orchestrator_stream_task_bounded(
+        stream_task,
+        attempt_ref=attempt_ref,
+        gen_ref=gen_ref,
+        reason="orchestrator_cycle_timeout_cancellation_unconfirmed",
+        log_file_path=log_file_path,
+    )
+    timeout_error = asyncio.TimeoutError(
+        f"orchestrator SDK stream exceeded cycle timeout {float(timeout):.1f}s"
+    )
+    if cleanup_error is not None:
+        raise timeout_error from cleanup_error
+    raise timeout_error
+
 
 async def _run_one_cycle(
     ui,
@@ -1130,19 +1361,31 @@ async def _run_one_cycle(
     """Run one Orchestrator cycle (one LLM agent session). Returns total cost."""
     set_cycle_start_time(time.time())
     context = _build_context(one_gen=one_gen, dry_run=dry_run, gen_ctx=gen_ctx)
-    prompt = ORCHESTRATOR_PROMPT.replace("{context}", context)
+    from llm_query import render_llm_prompt
 
-    if dry_run:
-        prompt += (
-            "\n\nIMPORTANT: This is a DRY RUN. Do not call any tool. Report only "
-            "the status already supplied in the context; live rating, H2H, match "
-            "history, and bot-stat query tools are intentionally unavailable."
-        )
+    rendered_prompt = render_llm_prompt(
+        "Orchestrator",
+        producer=_render_orchestrator_provider_prompt,
+        renderer_inputs={"context": context, "dry_run": bool(dry_run)},
+        mcp_servers={"evolution": evolution_server},
+    )
 
-    # Session resume: if orchestrator_session.json exists (written on every tool call),
-    # the previous cycle was interrupted — resume the exact conversation.
-    # The file is cleared on natural cycle completion, so its presence reliably means
-    # the process was killed mid-gen.  No need to gate this on pipeline_state.json.
+    # Orchestrator owns a streaming MCP session and therefore cannot delegate
+    # transport to ``run_claude_query``.  It still consumes the same fail-closed
+    # role registry and receives the same final provider prompt boundary as all
+    # sub-agent roles.  The only provider-visible capability is the typed
+    # evolution MCP server; built-in filesystem/shell tools remain absent.
+    prompt, _orchestrator_role_contract = bind_llm_role_provider_prompt(
+        rendered_prompt,
+        "Orchestrator",
+        tools=[],
+        provider_path="orchestrator_sdk",
+        mcp_servers={"evolution": evolution_server},
+        model="sonnet",
+    )
+
+    # Pipeline recovery is checkpoint-driven.  Provider session IDs are opaque
+    # server-side history capabilities and are never loaded into SDK ``resume``.
     from evolution_core import read_pipeline_checkpoint
     checkpoint = read_pipeline_checkpoint()
     _bind_generation_cost_runtime(
@@ -1158,16 +1401,7 @@ async def _run_one_cycle(
         if ui:
             ui.set_status("Stopped: operator generation cost limit", is_working=False)
         return ORCH_OPERATOR_COST_LIMIT_COST
-    saved_session_id = _load_orchestrator_session()
-
-    resume_kwargs = {"resume": saved_session_id} if saved_session_id else {}
-    if saved_session_id and ui:
-        stage_info = checkpoint.get("stage", "unknown") if checkpoint else "no checkpoint"
-        ui.log_history(
-            f"[Orchestrator] Resuming session {saved_session_id[:8]}... "
-            f"(pipeline stage={stage_info})",
-            "warn",
-        )
+    _load_orchestrator_session()  # removes any pre-policy legacy sidecar
 
     from evolution_core import _BLOCKED_MCP_TOOLS
     # P1 (2026-06-29): merge PreCompact hook (state preservation) with the
@@ -1188,7 +1422,6 @@ async def _run_one_cycle(
         hooks=_hooks,
         max_turns=max_turns,
         thinking={"type": "adaptive"},  # let Claude decide thinking depth (was disabled to dodge an old SDK signature bug; adaptive is now the documented default)
-        **resume_kwargs,
     )
 
     total_cost = 0.0
@@ -1210,6 +1443,7 @@ async def _run_one_cycle(
 
         async def _stream_response(opts, max_retries=3):
             """Run a single streaming query. Returns (full_text, cost, cycle_ok, gen, auth_error)."""
+            global _orchestrator_provider_stream_active
             nonlocal stream_invocation_count
             stream_invocation_count += 1
             stream_invocation_id = stream_invocation_count
@@ -1220,9 +1454,19 @@ async def _run_one_cycle(
             auth_err = False
             _tool_call_counts = {}
             availability_trace = LLMAvailabilityTrace()
+            if getattr(opts, "resume", None) is not None:
+                raise RuntimeError("orchestrator_provider_session_resume_forbidden")
+            provider_attempt = create_owned_provider_attempt(prompt, opts)
+            _attempt_ref[0] = provider_attempt
+            provider_token = activate_owned_provider_attempt(provider_attempt)
+            _orchestrator_provider_stream_active = True
             try:
-                gen = claude_query(prompt=prompt, options=opts)
-                _gen_ref[0] = gen  # Track for asyncio.wait_for timeout cleanup
+                gen = claude_query(
+                    prompt=prompt,
+                    options=opts,
+                    transport=owned_provider_attempt_transport(provider_attempt),
+                )
+                _gen_ref[0] = gen
                 _stream_iter = gen.__aiter__()
                 _first_activity_seen = False
                 _stream_started_at = time.time()
@@ -1230,9 +1474,9 @@ async def _run_one_cycle(
                 while True:
                     try:
                         if not _first_activity_seen:
-                            message = await asyncio.wait_for(
-                                _stream_iter.__anext__(),
-                                timeout=ORCH_FIRST_ACTIVITY_TIMEOUT,
+                            message = await await_provider_stream_next_bounded(
+                                _stream_iter,
+                                ORCH_FIRST_ACTIVITY_TIMEOUT,
                             )
                             _first_activity_seen = True
                             _last_message_at = time.time()
@@ -1432,13 +1676,13 @@ async def _run_one_cycle(
                             lf.write(f"\n[API ERROR] {error_text}\n")
                             if ui:
                                 ui.log_history(f"[Orchestrator] API error: {error_text[:200]}", "error")
-                            # 429 quota exhaustion: parse reset time but PRESERVE session
-                            # so _run_one_cycle can resume via saved_session_id after the wait.
+                            # Parse a provider-declared quota reset.  The next
+                            # attempt is a fresh stream over the same validated
+                            # checkpoint; opaque provider history is not retained.
                             is_429 = "429" in error_text or ("已达到" in error_text and "使用上限" in error_text)
                             if is_429:
                                 from rate_limiter import rate_limiter
                                 rate_limiter.parse_429(error_text)
-                                # Do NOT clear session — preserve for resume after reset
                             else:
                                 _clear_orchestrator_session()
                             # Detect real auth failures. Match status tokens, NOT bare substrings —
@@ -1493,11 +1737,6 @@ async def _run_one_cycle(
                 # loop in _run_one_cycle; otherwise propagate (-> infra -0.5 backoff).
                 _sig_s = str(_sig_err).lower()
                 if ("signature" in _sig_s or "missing required field" in _sig_s) and not _tool_call_counts:
-                    try:
-                        if gen is not None:
-                            await gen.aclose()
-                    except Exception:
-                        pass
                     raise _OrchSignatureRetryable(str(_sig_err)) from _sig_err
                 raise
             except Exception as e:
@@ -1508,6 +1747,18 @@ async def _run_one_cycle(
                 if availability_block is not None:
                     raise availability_block from e
                 raise
+            finally:
+                try:
+                    if gen is not None:
+                        await cleanup_owned_provider_attempt(
+                            gen,
+                            provider_attempt,
+                            "ORCHESTRATOR",
+                            log_file,
+                        )
+                finally:
+                    _orchestrator_provider_stream_active = False
+                    reset_owned_provider_attempt(provider_token)
             if _tool_call_counts:
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))
             return "".join(texts), cost, ok, gen, auth_err
@@ -1522,9 +1773,12 @@ async def _run_one_cycle(
         _TIMEOUT_EXTENSION_SENTINEL = -99999.0
         query_gen = None
         # Mutable container to track the async generator across scope boundaries.
-        # asyncio.wait_for raises TimeoutError BEFORE tuple unpacking completes,
-        # so query_gen remains None. We store gen here from inside _stream_response.
+        # The bounded task owner raises before tuple unpacking on timeout, so the
+        # exact generator is published here from inside _stream_response.
         _gen_ref = [None]
+        # The complete owned-attempt record is published before SDK dispatch so
+        # the cycle-level timeout can terminate and verify this exact transport.
+        _attempt_ref = [None]
         # H1: clear the precommit shutdown flag at the start of every cycle so a
         # previous cycle's CYCLE_TIMEOUT doesn't poison the next precommit round.
         try:
@@ -1552,7 +1806,13 @@ async def _run_one_cycle(
                 for _sig_attempt in range(_ORCH_SIG_MAX_ATTEMPTS + 1):
                     try:
                         full_output, total_cost, cycle_completed, query_gen, auth_error = (
-                            await asyncio.wait_for(_stream_response(options), timeout=CYCLE_TIMEOUT)
+                            await _await_orchestrator_stream_response_bounded(
+                                _stream_response(options),
+                                timeout=CYCLE_TIMEOUT,
+                                attempt_ref=_attempt_ref,
+                                gen_ref=_gen_ref,
+                                log_file_path=log_file,
+                            )
                         )
                         break
                     except _OrchSignatureRetryable as _sr:
@@ -1588,17 +1848,9 @@ async def _run_one_cycle(
                     # All signature retries exhausted and re-raised above; defensive.
                     raise RuntimeError("orchestrator signature retry loop exited without result")
             except asyncio.TimeoutError:
-                # query_gen is always None here (tuple unpacking never completed).
-                # Use _gen_ref which was set at the start of _stream_response.
-                _timed_out_gen = _gen_ref[0] or query_gen
-                if _timed_out_gen is not None:
-                    try:
-                        await _timed_out_gen.aclose()
-                    except Exception as e:
-                        log.debug("gen.aclose failed during timeout: %s", e)
-
                 # H1+H2 (2026-06-29): signal in-flight precommit mirror battles to
-                # abort. wait_for cancels the stream + aclose()s the generator, but
+                # abort. The owned stream boundary has already cancelled the
+                # cycle task and run its single transport-confirming cleanup, but
                 # mirror battles run via loop.run_in_executor (ThreadPool) whose
                 # Future cannot be cancelled once running — subprocesses keep
                 # spawning for up to per_game_timeout. The thread-safe flag set here
@@ -1678,9 +1930,9 @@ async def _run_one_cycle(
                                     "warn",
                                 )
                             lf.write(f"\n[TIMEOUT] Stage={_ckpt.get('stage')} — granting ONE extension (commit imminent)\n")
-                            # The generator is dead (asyncio.wait_for killed it) — the session
-                            # cannot be resumed.  Clear it so the next _run_one_cycle starts fresh
-                            # but resumes from the preserved checkpoint stage.
+                            # The owned stream boundary has confirmed or fenced
+                            # generator/process cleanup. The disposable session
+                            # cannot be resumed; restart from the checkpoint.
                             _clear_orchestrator_session()
                             # Refresh checkpoint timestamp so the watchdog does not immediately
                             # re-trigger on the next cycle (elapsed > WATCHDOG_TIMEOUT), AND
@@ -1760,9 +2012,13 @@ async def _run_one_cycle(
                                     "error",
                                 )
                             try:
-                                from tool_bot_management import _do_abandon_generation
+                                from tool_bot_management import (
+                                    _do_abandon_generation,
+                                    expected_abandon_identity,
+                                )
                                 await _do_abandon_generation(
-                                    reason=f"cycle_timeout_master_stuck ({_b3_audit} fails)"
+                                    reason=f"cycle_timeout_master_stuck ({_b3_audit} fails)",
+                                    **expected_abandon_identity(ckpt),
                                 )
                             except Exception as _ae:
                                 log.warning("B3 forced-abandon failed (%s) — falling back to timed_out", _ae)
@@ -1871,11 +2127,9 @@ async def _run_one_cycle(
                 and looks_like_provider_error_envelope(full_output)
                 and _is_rate_limited(full_output)
             ):
-                # Preserve the original session so retries can resume the same
-                # conversation instead of starting from scratch.
-                _saved_session_id = _load_orchestrator_session()
+                # Retry from the same sealed prompt and typed checkpoint/MCP
+                # projection, but never from opaque provider conversation history.
                 _clear_orchestrator_session()
-                _resume_kwargs = {"resume": _saved_session_id} if _saved_session_id else {}
                 retry_opts = ClaudeAgentOptions(
                     model="sonnet",
                     permission_mode="bypassPermissions",
@@ -1887,7 +2141,6 @@ async def _run_one_cycle(
                     hooks={**_make_precompact_hook(), **_make_bot_dir_guard_hook()},
                     max_turns=max_turns,
                     thinking={"type": "adaptive"},  # let Claude decide thinking depth
-                    **_resume_kwargs,
                 )
                 for backoff in [30, 60, 120]:
                     if ui:
@@ -1901,22 +2154,17 @@ async def _run_one_cycle(
                             pass
                     else:
                         await asyncio.sleep(backoff)
-                    if query_gen is not None:
-                        try:
-                            await query_gen.aclose()
-                        except Exception as e:
-                            log.debug("gen.aclose failed during retry: %s", e)
                     try:
                         full_output, retry_cost, cycle_completed, query_gen, auth_error = (
-                            await asyncio.wait_for(_stream_response(retry_opts), timeout=CYCLE_TIMEOUT)
+                            await _await_orchestrator_stream_response_bounded(
+                                _stream_response(retry_opts),
+                                timeout=CYCLE_TIMEOUT,
+                                attempt_ref=_attempt_ref,
+                                gen_ref=_gen_ref,
+                                log_file_path=log_file,
+                            )
                         )
                     except asyncio.TimeoutError:
-                        _timed_out_gen = _gen_ref[0]
-                        if _timed_out_gen is not None:
-                            try:
-                                await _timed_out_gen.aclose()
-                            except Exception:
-                                pass
                         raise  # Re-raise to outer timeout handler
                     total_cost += retry_cost
                     if not (
@@ -1925,31 +2173,45 @@ async def _run_one_cycle(
                     ):
                         break
                 else:
-                    # All retries exhausted — original session is gone.
-                    # Session was already cleared before retry loop.
-                    log.warning("529 retries exhausted — original session %s lost",
-                                _saved_session_id[:8] if _saved_session_id else "none")
+                    # Every attempt used the same sealed checkpoint/prompt
+                    # projection but a fresh provider stream.  Exhaustion is
+                    # an infrastructure failure, never a successful cycle and
+                    # never a reason to recover opaque provider history.
+                    cycle_failed = True
+                    infra_error = True
+                    log.warning(
+                        "529 retries exhausted; checkpoint preserved and "
+                        "provider history discarded"
+                    )
+                    if ui:
+                        ui.log_history(
+                            "[Orchestrator] 529 retries exhausted. Checkpoint "
+                            "preserved; the next attempt will use a fresh "
+                            "checkpoint-bound provider stream.",
+                            "warn",
+                        )
+                    lf.write(
+                        "\n[529 RETRIES EXHAUSTED] checkpoint preserved; "
+                        "provider history discarded\n"
+                    )
 
             # 429 quota detected — exit cycle cleanly so orchestrator_loop can block
             from rate_limiter import rate_limiter
             if rate_limiter.is_blocked() and not cycle_completed:
                 if ui:
                     ui.log_history(
-                        "[Orchestrator] 429 配额耗尽。Session 保留，等待恢复后继续。",
+                        "[Orchestrator] 429 配额耗尽。Checkpoint 保留；"
+                        "provider history 已丢弃，恢复后使用新 stream 继续。",
                         "warn",
                     )
                 return (ui.gen_cost_total - _cost_at_start) if ui else total_cost
 
             if ui:
                 total_cost = ui.gen_cost_total - _cost_at_start
-            lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
+            if not cycle_failed:
+                lf.write(f"\n[CYCLE DONE] cost=${total_cost:.4f}\n")
 
         except KeyboardInterrupt:
-            if query_gen is not None:
-                try:
-                    await query_gen.aclose()
-                except Exception as e:
-                    log.debug("gen.aclose failed during interrupt: %s", e)
             if ui:
                 ui.log_history("[Orchestrator] Interrupted by user.", "warn")
             else:
@@ -1957,11 +2219,6 @@ async def _run_one_cycle(
             lf.write("\n[INTERRUPTED]\n")
 
         except asyncio.CancelledError:
-            if query_gen is not None:
-                try:
-                    await query_gen.aclose()
-                except Exception as e:
-                    log.debug("gen.aclose failed during cancel: %s", e)
             # H1: signal in-flight precommit battles to abort (cancel, like timeout,
             # strands executor subprocesses that can't be cancelled mid-run).
             try:
@@ -1969,24 +2226,19 @@ async def _run_one_cycle(
                 set_precommit_shutdown()
             except Exception:
                 pass
-            # Session file PRESERVED — next startup can resume from checkpoint
+            # The validated checkpoint is preserved; provider history is not.
             if ui:
-                ui.log_history("[Orchestrator] Cancelled — session preserved for resume.", "warn")
+                ui.log_history("[Orchestrator] Cancelled — checkpoint preserved for a fresh provider stream.", "warn")
             else:
-                log.warning("Cancelled — session preserved for resume.")
-            lf.write("\n[CANCELLED — session preserved for resume]\n")
+                log.warning("Cancelled — checkpoint preserved for a fresh provider stream.")
+            lf.write("\n[CANCELLED — checkpoint preserved; provider history discarded]\n")
             raise
 
         except _OrchActionableStageHandoff as e:
             # Normal pipeline handoff: a tool has already persisted a checkpoint
             # whose route_policy has a deterministic next tool. Stop the current
             # SDK stream and let the main loop route directly from the checkpoint.
-            for _g in (query_gen, _gen_ref[0]):
-                if _g is not None:
-                    try:
-                        await _g.aclose()
-                    except Exception as _ge:
-                        log.debug("gen.aclose failed during actionable handoff: %s", _ge)
+            # _stream_response's finally has already completed owned cleanup.
             _clear_orchestrator_session(reason="actionable_stage_handoff")
             if ui:
                 ui.log_history(f"[Orchestrator] {e}", "info")
@@ -2000,12 +2252,6 @@ async def _run_one_cycle(
             # failure.  Preserve the generation checkpoint, discard the
             # disposable Claude session, and park the outer loop instead of
             # retrying every 15 seconds and spending past the same limit.
-            for _g in (query_gen, _gen_ref[0]):
-                if _g is not None:
-                    try:
-                        await _g.aclose()
-                    except Exception as _ge:
-                        log.debug("gen.aclose failed during operator cost stop: %s", _ge)
             _clear_orchestrator_session(reason="operator_generation_cost_limit")
             if ui:
                 ui.set_status("Stopped: operator generation cost limit", is_working=False)
@@ -2015,15 +2261,9 @@ async def _run_one_cycle(
 
         except LLMAvailabilityBlocked as e:
             # Provider availability is control-plane state, not a failed bot or
-            # a retryable SDK signature glitch.  Close the disposable stream,
-            # persist the typed pause, and preserve every generation/Worker
+            # a retryable SDK signature glitch. Owned cleanup has completed;
+            # persist the typed pause and preserve every generation/Worker
             # checkpoint exactly as-is.
-            for _g in (query_gen, _gen_ref[0]):
-                if _g is not None:
-                    try:
-                        await _g.aclose()
-                    except Exception as _ge:
-                        log.debug("gen.aclose failed during LLM pause: %s", _ge)
             _clear_orchestrator_session(reason="llm_availability_blocked")
             try:
                 pause_state = persist_llm_pause(e)
@@ -2065,12 +2305,6 @@ async def _run_one_cycle(
             # The Worker was already fenced, but its global pause record could
             # not be proven. Stop the current stream and let the outer sentinel
             # path fail closed; never translate this into a generic retry.
-            for _g in (query_gen, _gen_ref[0]):
-                if _g is not None:
-                    try:
-                        await _g.aclose()
-                    except Exception as _ge:
-                        log.debug("gen.aclose failed during pause-state stop: %s", _ge)
             _clear_orchestrator_session(reason="llm_availability_state_invalid")
             if ui:
                 ui.log_history(f"[Orchestrator] {e}", "error")
@@ -2092,14 +2326,9 @@ async def _run_one_cycle(
             return ORCH_LLM_AVAILABILITY_BLOCKED_COST
 
         except Exception as e:
-            # aclose 真实 gen：异常路径可能在元组解包前抛出 → query_gen 为 None，真实 gen
-            # 在 _gen_ref[0]。两者都尝试关，防止泄漏 CLI subprocess。
-            for _g in (query_gen, _gen_ref[0]):
-                if _g is not None:
-                    try:
-                        await _g.aclose()
-                    except Exception as _ge:
-                        log.debug("gen.aclose failed: %s", _ge)
+            # Every stream exit runs the single owned cleanup in
+            # _stream_response.finally. Cleanup failures arrive here as typed
+            # ConnectionError infrastructure failures and are never suppressed.
             cycle_failed = True
             # P2: classify infra (SDK signature/timeout/connection) vs real business failure.
             # is_llm_infra_error is type-based (ClaudeSDKError, asyncio.TimeoutError,
@@ -2120,7 +2349,7 @@ async def _run_one_cycle(
             )
             # SDK streaming errors (missing 'signature' field on thinking blocks,
             # observed with claude_agent_sdk 0.2.91 + adaptive thinking) leave the
-            # session broken — resuming replays into the same crash (the v84
+            # provider stream broken — a fresh stream avoids replaying the same crash (the v84
             # quality_passed→run_review infinite-retry deadlock). P0 disabled
             # thinking so this no longer fires, but the guard prevents silent
             # recurrence if thinking is ever re-enabled or another SDK stream
@@ -2130,16 +2359,16 @@ async def _run_one_cycle(
                 cycle_failed = False
                 if ui:
                     ui.log_history(
-                        "[Orchestrator] Claude stream stopped during shutdown; session preserved for resume.",
+                        "[Orchestrator] Claude stream stopped during shutdown; checkpoint preserved for a fresh provider stream.",
                         "warn",
                     )
                 else:
-                    log.warning("Claude stream stopped during shutdown; session preserved for resume: %s", e)
+                    log.warning("Claude stream stopped during shutdown; checkpoint preserved: %s", e)
                 try:
                     log_system_event(
                         "orchestrator.shutdown_cancelled",
                         "info",
-                        "Claude stream stopped during orchestrator shutdown; session preserved",
+                        "Claude stream stopped during orchestrator shutdown; checkpoint preserved and provider history discarded",
                         {"exception_type": type(e).__name__, "error": str(e)[:500]},
                     )
                 except Exception:
@@ -2150,29 +2379,29 @@ async def _run_one_cycle(
                 if ui:
                     ui.log_history(
                         f"[Orchestrator] LLM infrastructure error ({type(e).__name__}, NOT auth) — "
-                        "session cleared; next cycle will resume from checkpoint when present.", "warn",
+                        "provider history discarded; next cycle will use a fresh checkpoint-bound stream.", "warn",
                     )
                 else:
                     log.warning(
-                        "LLM infra error (%s), session cleared; checkpoint resume will be attempted: %s",
+                        "LLM infra error (%s); fresh checkpoint-bound provider retry will be attempted: %s",
                         type(e).__name__, e,
                     )
                 try:
                     log_system_event("pipeline.sdk_stream_error", "warn",
                         f"Orchestrator LLM infra error ({type(e).__name__}): {e}",
-                        {"session_cleared": True, "exception_type": type(e).__name__})
+                        {"provider_history_discarded": True, "exception_type": type(e).__name__})
                 except Exception:
                     pass
             else:
-                # Session file PRESERVED — next startup can assess recovery
+                # Checkpoint/transaction state remains available for recovery.
                 if ui:
                     ui.log_history(f"[Orchestrator] Error: {e}", "error")
                 else:
                     log.error("Error: %s", e)
             lf.write(f"\n[{'SHUTDOWN_CANCELLED' if is_shutdown_cancel else 'ERROR'}] {e}\n")
 
-    # Only clear session file on natural (non-error) cycle completion.
-    # If killed, the session file remains so next startup can resume.
+    # Remove any legacy sidecar after natural completion.  Provider session IDs
+    # are never persisted on either success or failure.
     if cycle_completed:
         _clear_orchestrator_session()
 
@@ -2226,7 +2455,54 @@ def _checkpoint_recovery_context(reason: str, ui=None, *, log_level: str = "warn
         return None
 
     if not checkpoint:
-        return None
+        try:
+            from post_publication_handoff import (
+                pending_handoff_route,
+                pending_handoff_route_checkpoint,
+            )
+
+            handoff = pending_handoff_route()
+        except Exception as exc:
+            handoff = {
+                "status": "blocked",
+                "issues": [f"handoff_discovery_failed:{type(exc).__name__}"],
+            }
+        if handoff.get("status") == "blocked":
+            return {
+                "action": "blocked",
+                "reason": "post_publication_handoff_ambiguous_or_invalid",
+                "checkpoint": None,
+                "diagnostics": {
+                    "active": True,
+                    "recoverable": False,
+                    "issues": list(handoff.get("issues") or []),
+                    "post_publication_handoff": True,
+                },
+            }
+        if handoff.get("status") != "pending":
+            return None
+        route_checkpoint = pending_handoff_route_checkpoint(handoff)
+        msg = (
+            f"{label} Resuming published v{handoff['version']} at the durable "
+            f"post-publication Archivist handoff after {reason}."
+        )
+        if ui:
+            ui.log_history(msg, log_level)
+        elif log_level == "info":
+            log.info(msg)
+        else:
+            log.warning(msg)
+        return {
+            "action": "resume",
+            "checkpoint": route_checkpoint,
+            "session_id": None,
+            "stage": "post_publication_handoff",
+            "next_v": handoff["version"],
+            "source_v": handoff["source_v"],
+            "post_publication_handoff": True,
+            "log_level": log_level,
+            "label": label,
+        }
 
     stage = checkpoint.get("stage")
     next_v = checkpoint.get("next_v")
@@ -2358,9 +2634,9 @@ def _worker_terminal_abandon_reason(data):
     if error == "WORKER_INFRASTRUCTURE_EXHAUSTED":
         return "worker_infrastructure_exhausted"
     if error == "WORKER_WORKFLOW_ABANDONED":
-        return str(
-            data.get("worker_abandon_reason") or "worker_workflow_abandoned"
-        )[:160]
+        # Provider/Worker text is diagnostic only and must never select a
+        # control-plane abandon capability.
+        return "worker_workflow_abandoned"
     return "worker_terminal_abandon"
 
 
@@ -2574,8 +2850,15 @@ async def _try_deterministic_checkpoint_route(
                 }
                 abandoned = True
             else:
-                from tool_bot_management import _do_abandon_generation
-                abandon_result = await _do_abandon_generation(reason=abandon_reason)
+                from evolution_core import read_pipeline_checkpoint
+                from tool_bot_management import (
+                    _do_abandon_generation,
+                    expected_abandon_identity,
+                )
+                abandon_result = await _do_abandon_generation(
+                    reason=abandon_reason,
+                    **expected_abandon_identity(read_pipeline_checkpoint()),
+                )
                 abandoned = bool(abandon_result.get("abandoned"))
             msg_abandon = (
                 f"{abandon_reason} reached for v{next_v}; "
@@ -2783,7 +3066,7 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
     _watchdog_triggered flag so the main loop will restart from the checkpoint.
 
     Only triggers when:
-      - A session file exists (orchestrator is actively running a cycle)
+      - this process owns an active orchestrator provider stream
       - The checkpoint stage is in the recoverable set
       - No stage change for > WATCHDOG_TIMEOUT seconds
     """
@@ -2805,9 +3088,9 @@ async def _watchdog_coroutine(ui, shutdown_mgr, check_interval=60):
             if shutdown_mgr and shutdown_mgr.is_shutting_down:
                 return
 
-            # Only trigger if orchestrator session exists (cycle is active)
-            session_id = _load_orchestrator_session()
-            if not session_id:
+            # Provider session IDs are never persisted.  The in-process owned
+            # stream flag supplies liveness without granting history authority.
+            if not _orchestrator_provider_stream_active:
                 continue
 
             checkpoint = read_pipeline_checkpoint()
@@ -3170,8 +3453,18 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
         # Do not emit a structured event: its destination still belongs to the
         # retired epoch.  Web and CLI launchers expose the canonical state.
         return
-    if daemon_workers is None:
-        daemon_workers = max(1, int(os.cpu_count() * 28 / 32))
+    # Keep the orchestrator, daemon subprocess manager, web config and
+    # stability identity on one resource contract.  The prior uncapped
+    # CPU-derived default produced 28 workers on a 32-core host even though
+    # daemon_management's OOM-safe authority caps the runtime at 12.
+    daemon_workers = _resolve_daemon_workers(daemon_workers)
+    from stability_observation import bind_runtime_configuration
+
+    bind_runtime_configuration({
+        "daemon_enabled": not no_daemon,
+        "daemon_workers": int(daemon_workers),
+        "daemon_pairs": int(daemon_pairs),
+    })
     from tools import inject_ui
     inject_ui(ui)
     set_system_log_ui(ui)
@@ -3355,7 +3648,8 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                         _watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
                     )
 
-            # 429 quota exhaustion check — block until reset, then resume
+            # 429 quota exhaustion check — block until reset, then dispatch a
+            # fresh provider stream from the validated checkpoint.
             from rate_limiter import rate_limiter
             if rate_limiter.is_blocked():
                 wait = rate_limiter.wait_seconds()
@@ -3366,7 +3660,6 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                     )
                     ui.set_status(f"⏳ 配额等待中 → {rate_limiter.reset_time_str()}", is_working=False)
                 await rate_limiter.wait_until_reset(shutdown_mgr=shutdown_mgr)
-                # Do NOT clear session — next _run_one_cycle() will resume via saved session
                 continue
 
             if recovery is None:
@@ -3385,7 +3678,10 @@ async def orchestrator_loop(ui, shutdown_mgr=None, no_daemon=False, daemon_worke
                 )
                 if ui:
                     ui.log_history(f"[Orchestrator] {msg}", "error")
-                    ui.set_status("Recovery blocked; manual checkpoint cleanup required", is_working=False)
+                    ui.set_status(
+                        "Recovery blocked; governed diagnostics/operator action required",
+                        is_working=False,
+                    )
                 log.error(msg)
                 log_system_event(
                     "orchestrator.recovery_blocked_stop",
@@ -3916,24 +4212,59 @@ async def run_orchestrator_cli(args, shutdown_mgr=None):
             else:
                 # one-gen mode: use three phases
                 from generation_scheduler import prepare_generation
-                gen_ctx = await prepare_generation(shutdown_mgr, None)
-                if gen_ctx is None:
-                    if shutdown_mgr and shutdown_mgr.is_shutting_down:
-                        log.warning("Cancelled during preparation.")
-                    else:
-                        log.warning("Preparation returned no context.")
-                    return
-                cost = await _run_one_cycle(
-                    ui=None, log_file=log_file,
-                    one_gen=True, dry_run=False,
-                    max_turns=args.max_turns,
-                    gen_ctx=gen_ctx,
-                    _cost_policy=operator_cost_policy,
+                pending_recovery = _checkpoint_recovery_context(
+                    "one_gen_start",
+                    None,
+                    log_level="info",
+                    label="[OneGen]",
                 )
-                if cost >= 0:
-                    await _run_post_generation_cleanup_with_timeout(
-                        shutdown_mgr, None, gen_ctx, gen_count=1
+                if (
+                    pending_recovery
+                    and pending_recovery.get("post_publication_handoff") is True
+                ):
+                    routed = await _try_deterministic_checkpoint_route(
+                        pending_recovery,
+                        None,
+                        log_level="info",
+                        label="[OneGen]",
+                        cost_policy=operator_cost_policy,
+                        shutdown_mgr=shutdown_mgr,
                     )
+                    if not routed:
+                        log.error(
+                            "One-gen mode could not complete the pending "
+                            "post-publication Archivist handoff."
+                        )
+                        return
+                    # Completing this already-published cycle consumes the one
+                    # requested generation boundary.  Do not immediately start
+                    # a second candidate in the same one-gen invocation.
+                    cost = 0.0
+                elif pending_recovery and pending_recovery.get("action") == "blocked":
+                    log.error(
+                        "One-gen mode is blocked by recovery diagnostics: %s",
+                        pending_recovery.get("diagnostics"),
+                    )
+                    return
+                else:
+                    gen_ctx = await prepare_generation(shutdown_mgr, None)
+                    if gen_ctx is None:
+                        if shutdown_mgr and shutdown_mgr.is_shutting_down:
+                            log.warning("Cancelled during preparation.")
+                        else:
+                            log.warning("Preparation returned no context.")
+                        return
+                    cost = await _run_one_cycle(
+                        ui=None, log_file=log_file,
+                        one_gen=True, dry_run=False,
+                        max_turns=args.max_turns,
+                        gen_ctx=gen_ctx,
+                        _cost_policy=operator_cost_policy,
+                    )
+                    if cost >= 0:
+                        await _run_post_generation_cleanup_with_timeout(
+                            shutdown_mgr, None, gen_ctx, gen_count=1
+                        )
             log.info("Done. Cost: $%.4f", cost)
         else:
             await orchestrator_loop(

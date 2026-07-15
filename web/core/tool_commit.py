@@ -1,6 +1,7 @@
 """Pipeline tools: commit, archivist, and crossover."""
 
 import json
+import hashlib
 import os
 import stat
 import time
@@ -11,26 +12,27 @@ from typing import Annotated, TypedDict
 from logging_config import get_logger
 _log = get_logger("commit")
 
-from bot_namespace import bot_name, bot_tag
+from bot_namespace import (
+    FIRST_STRICT_POLICY_VERSION,
+    bot_name,
+    bot_tag,
+    parse_bot_version,
+)
 from tool_runtime_guard import tool
 
 from evolution_core import (
     get_bot_dir,
     get_active_bots,
     load_ratings,
-    git_commit_bot,
     git_has_tag,
     git_dir_is_committed,
     clear_pipeline_checkpoint,
     RESULTS_DIR,
     MAX_ACTIVE_BOTS,
     _run_crossover,
-    locked_file,
     ARCHIVE_DIR,
     write_pipeline_checkpoint,
-    archive_generation,
     archive_rotate_files,
-    archive_old_logs,
 )
 from evolution_infra import (
     _git,
@@ -42,6 +44,8 @@ from evolution_infra import (
     verify_remote_bot_publication,
     remote_completion_ref_snapshot,
     publish_runtime_expected_head,
+    bot_publication_lock,
+    build_archive_rotation_plan,
 )
 from tool_helpers import (
     _get_ui, _json_tool_result,
@@ -495,13 +499,59 @@ def _resume_publication_transaction(v, source_v, ckpt):
             validation_errors=current_errors,
             remote_proof=remote_proof,
         )
-    cleared = clear_pipeline_checkpoint(
-        expected_workflow_run_id=current.get("workflow_run_id"),
-        expected_next_v=int(v),
-        expected_source_v=int(source_v),
-        expected_checkpoint_revision=current.get("checkpoint_revision"),
-        expected_checkpoint_stage="publishing",
-    )
+    publication_result = {
+        "committed": True,
+        "version": int(v),
+        "source_v": int(source_v),
+        "publication_id": intent.get("publication_id"),
+        "commit_oid": local_state.get("commit_oid"),
+        "local_refs": local_state.get("local_refs") or {},
+        "local_publication_proof": frozen_local_proof,
+        "push_ok": bool(local_state.get("push_ok")),
+        "remote_proof": remote_proof,
+        "completed_sentinel_written": True,
+        "checkpoint_cleared": False,
+    }
+    try:
+        from post_publication_handoff import ensure_post_publication_handoff
+
+        allow_local_only = (
+            not remote_required
+            and os.environ.get(
+                "POK_ALLOW_LOCAL_ONLY_POST_PUBLICATION_HANDOFF_FOR_TESTS"
+            )
+            == "1"
+        )
+        # Keep the publication lock across handoff/archive durability proof and
+        # the exact checkpoint CAS.  A clear can never outrun the discoverable
+        # post-publication obligation.
+        with bot_publication_lock():
+            handoff = ensure_post_publication_handoff(
+                version=v,
+                source_v=source_v,
+                publishing_checkpoint=current,
+                publication_result=publication_result,
+                allow_local_only=allow_local_only,
+            )
+            cleared = clear_pipeline_checkpoint(
+                expected_workflow_run_id=current.get("workflow_run_id"),
+                expected_next_v=int(v),
+                expected_source_v=int(source_v),
+                expected_checkpoint_revision=current.get("checkpoint_revision"),
+                expected_checkpoint_stage="publishing",
+            )
+    except Exception as exc:
+        return _publication_pending_result(
+            v,
+            source_v,
+            error=(
+                "COMMIT PENDING: publication is proven but the durable "
+                "post-publication handoff did not converge."
+            ),
+            reason=f"{type(exc).__name__}: {str(exc)[:500]}",
+            completed_sentinel_written=True,
+            remote_proof=remote_proof,
+        )
     if not cleared:
         return _publication_pending_result(
             v,
@@ -511,15 +561,12 @@ def _resume_publication_transaction(v, source_v, ckpt):
             remote_proof=remote_proof,
         )
     return {
-        "committed": True,
-        "version": int(v),
-        "source_v": int(source_v),
-        "publication_id": intent.get("publication_id"),
-        "commit_oid": local_state.get("commit_oid"),
-        "push_ok": bool(local_state.get("push_ok")),
-        "remote_proof": remote_proof,
-        "completed_sentinel_written": True,
+        **publication_result,
         "checkpoint_cleared": True,
+        "archivist_pending": True,
+        "post_publication_handoff_identity_digest": handoff.get(
+            "identity_digest"
+        ),
     }
 
 
@@ -1551,7 +1598,6 @@ async def _run_official_full_commit_gate(
 
 @tool("commit_bot", "Commit a bot generation with git commit and tag. review_approved must be true (set after run_review returns approved:true).", {"version": int, "source_v": int, "strategy": str, "review_approved": bool})
 async def commit_bot(args):
-    _t0 = time.time()
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
@@ -2071,111 +2117,54 @@ async def commit_bot(args):
         return _json_tool_result(publication_result)
     push_ok = bool(publication_result.get("push_ok"))
 
-    # Write reap_signal early so daemon discovers new bot immediately, even if archive/timeout interrupts later
-    reap_signal = RESULTS_DIR / ".reap_signal"
-    reap_signal.write_text(str(time.time()))
-
-    # Write priority eval signal so daemon schedules this bot heavily
-    priority_file = RESULTS_DIR / "priority_eval.json"
+    # Every initial or resumed publication now stops at the same durable
+    # handoff boundary.  Stability accounting, daemon signals, archive
+    # rotation, annotation, reap, and housekeeping are owned exclusively by
+    # run_archivist's step journal; starting any of them here would recreate a
+    # clear-before-archive crash window and make recovery path-dependent.
+    _set_pipeline_status(f"Published v{v}; Archivist handoff pending", is_working=False)
     try:
-        with locked_file(priority_file, "w") as f:
-            json.dump({"bot": bot_name(v), "min_games": 500, "since": time.time()}, f)
-    except Exception as e:
-        _log.warning("Priority eval signal write failed for v%d: %s", v, e)
-
-    # LOG GAP FIX (2026-06-29): enrich the commit audit event with rating,
-    # file_size, and gate_results summary so a committed generation is fully
-    # auditable from the event log alone (previously only version/source/strategy).
-    _commit_audit = {"version": v, "source_v": source_v, "strategy": strategy[:120]}
-    try:
-        if p is not None:
-            _commit_audit["rating"] = {"r": round(p.r, 1), "rd": round(p.rd, 1)}
-        if h2h_wr is not None:
-            _commit_audit["h2h_avg_wr"] = round(h2h_wr, 4)
+        log_system_event(
+            "pipeline.publication_handoff_pending",
+            "success",
+            f"Published v{v}; durable post-publication handoff is pending",
+            {
+                "version": v,
+                "source_v": source_v,
+                "publication_id": publication_result.get("publication_id"),
+                "handoff_identity_digest": publication_result.get(
+                    "post_publication_handoff_identity_digest"
+                ),
+                "checkpoint_cleared": True,
+                "next_tool": "run_archivist",
+            },
+        )
     except Exception:
         pass
-    try:
-        _py_files = list(bot_dir.glob("*.py"))
-        _commit_audit["file_size_total"] = sum(f.stat().st_size for f in _py_files)
-        _commit_audit["n_py_files"] = len(_py_files)
-    except Exception:
-        pass
-    try:
-        _gr = (ckpt or {}).get("gate_results", {}) or {}
-        _commit_audit["gate_results"] = {
-            "quality_passed": (_gr.get("quality") or {}).get("passed"),
-            "review_score": (_gr.get("review") or {}).get("score"),
-            "critic_score": (_gr.get("critic") or {}).get("score"),
-            "precommit_passed": (_gr.get("precommit_eval") or {}).get("passed"),
-        }
-        if official_certification_status:
-            _commit_audit["official_certification"] = {
-                "status": official_certification_status.get("status"),
-                "mode": official_certification_status.get("mode"),
-                "cache_key": official_certification_status.get("cache_key"),
-                "official_evidence_path": official_certification_status.get("official_evidence_path"),
-            }
-    except Exception:
-        pass
-    log_system_event("pipeline.committed", "success",
-                     f"Committed v{v} from v{source_v}: {strategy[:80]}", _commit_audit)
-
-    _set_pipeline_status(f"Committed v{v}", is_working=False)
-
-    # Archive this generation's state snapshot
-    try:
-        archive_generation(v, source_v, ckpt)
-        archive_rotate_files(v)
-        archive_old_logs()
-    except Exception as e:
-        _log.warning("Archive generation failed for v%d: %s", v, e)
-
-    # The publication transaction already cleared the exact publishing
-    # checkpoint with workflow/revision/stage CAS before advisory post-commit
-    # work begins.  Never perform an unconditional second clear here.
-
-    try:
-        from server.state import app_state
-        app_state.set_generation(v, v + 1)
-    except Exception as e:
-        _log.warning("App state update failed for v%d: %s", v, e)
-
-    # ── Update eval table + metrics in evolution state snapshot ──
-    try:
-        ratings = load_ratings()
-        active_bots = get_active_bots()
-        ui = _get_ui()
-        ui.update_eval_table(ratings, active_bots)
-        ui.update_metrics({
-            "current_v": v,
-            "next_v": v + 1,
-            "success_rate": 1.0,  # generation succeeded
-        })
-    except Exception:
-        pass  # non-blocking enrichment
-
-    result = {"committed": True, "version": v, "source_v": source_v, "push_ok": push_ok}
+    handoff_result = {
+        **publication_result,
+        "push_ok": push_ok,
+        "next_tool": "run_archivist",
+        "directive": (
+            "Call run_archivist for this exact version/source before preparing "
+            "another generation."
+        ),
+    }
     if official_full_gate:
-        result["official_full_gate"] = {
+        handoff_result["official_full_gate"] = {
             "status": official_certification_status.get("status"),
             "mode": official_certification_status.get("mode"),
             "cache_hit": official_certification_status.get("cache_hit"),
-            "official_evidence_path": official_certification_status.get("official_evidence_path"),
-            "opponent": (official_full_gate.get("opponent_selection") or {}).get("opponent"),
+            "official_evidence_path": official_certification_status.get(
+                "official_evidence_path"
+            ),
+            "opponent": (official_full_gate.get("opponent_selection") or {}).get(
+                "opponent"
+            ),
         }
     if novelty_info:
-        result["novelty_gate"] = novelty_info
-    active_bots = get_active_bots()
-    if len(active_bots) > MAX_ACTIVE_BOTS:
-        result["needs_reap"] = True
-        result["pool_size"] = len(active_bots)
-    try:
-        log_system_event("pipeline.commit_done", "info",
-                         f"Commit finished for v{v} in {time.time() - _t0:.1f}s",
-                         {"version": v, "elapsed_sec": round(time.time() - _t0, 2)})
-    except Exception:
-        pass
-    return _json_tool_result(result)
+        handoff_result["novelty_gate"] = novelty_info
+    return _json_tool_result(handoff_result)
 
 
 # ──────────────────────────────────────────────
@@ -2200,122 +2189,1709 @@ def _git_dirty_paths() -> set[str]:
     return paths
 
 
-def _path_was_dirty(path: str, preexisting_dirty: set[str]) -> bool:
-    prefix = path.rstrip("/") + "/"
-    return any(p == path or p.startswith(prefix) for p in preexisting_dirty)
-
-
-def _archive_housekeeping_commit(
-    version: int,
-    reap_result: dict | None,
-    preexisting_dirty: set[str],
+def _verify_post_publication_worktree(
+    *,
+    expected_head: str,
+    expected_dirty: set[str],
 ) -> dict:
-    """Commit archivist/reap tracked-file side effects so the worktree stays clean.
+    """Prove post-publication effects did not create a second Git mutation.
 
-    commit_bot owns the bot commit and tag. run_archivist can still create tracked
-    housekeeping changes after that point: tracked bot deletions from auto-reap.
-    Those must be explicit, path-scoped commits
-    rather than hidden user-facing dirty state.
+    Reaping publishes an annotated tombstone tag and removes an ignored
+    ``.completed`` capability.  Log/result archiving is ignored runtime state.
+    Consequently there is no authorized tracked housekeeping commit.  Any HEAD
+    or porcelain change is a hard failure and remains for operator inspection.
     """
+
     _git_ensure_main_branch()
-
-    preexisting_staged = [
-        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
-        if p
-    ]
-    if preexisting_staged:
-        log_system_event(
-            "pipeline.archivist_housekeeping_skip_staged", "warn",
-            f"v{version}: skipped housekeeping commit because staged files already exist",
-            {"version": version, "staged_files": preexisting_staged[:40]},
-        )
-        return {
-            "committed": False,
-            "reason": "preexisting_staged_files",
-            "preexisting_staged": preexisting_staged,
-        }
-
-    candidates: list[tuple[str, str]] = []
-    if reap_result and reap_result.get("reaped") and reap_result.get("culled"):
-        candidates.append((f"bots/{reap_result['culled']}", "add-u"))
-
-    staged_paths: list[str] = []
-    skipped_preexisting: list[str] = []
-    for path, mode in candidates:
-        if _path_was_dirty(path, preexisting_dirty):
-            skipped_preexisting.append(path)
-            continue
-        dirty_now = _git("status", "--porcelain", "--", path, check=False).strip()
-        if not dirty_now:
-            continue
-        if mode == "add-u":
-            _git("add", "-u", "--", path, check=False)
-        else:
-            _git("add", "--", path, check=False)
-        staged_paths.extend(
-            p for p in _git("diff", "--cached", "--name-only", "--", path, check=False).splitlines()
-            if p and p not in staged_paths
-        )
-
-    if skipped_preexisting:
-        log_system_event(
-            "pipeline.archivist_housekeeping_skip_dirty", "warn",
-            f"v{version}: skipped pre-existing dirty housekeeping path(s)",
-            {"version": version, "paths": skipped_preexisting},
-        )
-    if not staged_paths:
-        return {
-            "committed": False,
-            "reason": "no_housekeeping_changes",
-            "skipped_preexisting": skipped_preexisting,
-        }
-    staged_set = {
-        p for p in _git("diff", "--cached", "--name-only", check=False).splitlines()
-        if p
+    actual_head = _git("rev-parse", "HEAD").strip()
+    actual_dirty = _git_dirty_paths()
+    if actual_head != expected_head:
+        raise RuntimeError("post_publication_head_changed")
+    if actual_dirty != set(expected_dirty):
+        raise RuntimeError("post_publication_worktree_changed")
+    return {
+        "head_oid": actual_head,
+        "worktree_status_digest": hashlib.sha256(
+            "\n".join(sorted(actual_dirty)).encode("utf-8")
+        ).hexdigest(),
+        "tracked_housekeeping_commit": False,
     }
-    allowed_set = set(staged_paths)
-    unexpected = sorted(staged_set - allowed_set)
-    if unexpected:
-        for path in staged_paths:
-            _git("restore", "--staged", "--", path, check=False)
-        log_system_event(
-            "pipeline.archivist_housekeeping_skip_unexpected_staged", "warn",
-            f"v{version}: skipped housekeeping commit because unrelated staged files appeared",
-            {"version": version, "unexpected_staged": unexpected[:40],
-             "housekeeping_paths": staged_paths[:40]},
-        )
-        return {
-            "committed": False,
-            "reason": "unexpected_staged_files",
-            "unexpected_staged": unexpected,
-            "staged_files": staged_paths,
-            "skipped_preexisting": skipped_preexisting,
-        }
 
-    log_system_event(
-        "pipeline.archivist_git_commit_staged", "info",
-        f"v{version}: staging {len(staged_paths)} archivist housekeeping file(s)",
-        {"version": version, "staged_files": staged_paths[:40]},
+
+def _durable_archivist_state_write(path: Path, payload: dict) -> str:
+    """Atomically publish one required Archivist side effect."""
+
+    from evolution_infra import (
+        _atomic_publish_state_text,
+        _locked_state_sidecar,
     )
-    _git("commit", "-m", f"chore: archive v{version} evolution housekeeping", "--", *staged_paths)
-    commit_hash = _git("rev-parse", "--short", "HEAD", check=False).strip()
-    publish_runtime_expected_head("archivist_housekeeping_commit", version=version)
-    push_ok = False
-    if evolution_git_push_enabled():
-        push_ok = git_push_refs("main")
-        publish_runtime_expected_head("archivist_housekeeping_push", version=version)
-    log_system_event(
-        "pipeline.archivist_git_commit_done", "success",
-        f"v{version}: committed archivist housekeeping {commit_hash}",
-        {"version": version, "commit": commit_hash, "push_ok": push_ok},
+    import fcntl
+
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     )
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        _atomic_publish_state_text(path, encoded + "\n")
+    return hashlib.sha256((encoded + "\n").encode("utf-8")).hexdigest()
+
+
+def _safe_log_tree_manifest(root: Path, *, version: int) -> dict:
+    """Hash one exact strict-generation log tree without following links."""
+
+    from bot_artifact import canonical_digest
+
+    if int(version) < FIRST_STRICT_POLICY_VERSION:
+        raise RuntimeError("legacy_log_tree_forbidden")
+    expected_parent = RESULTS_DIR / f"v{int(version)}"
+    if root.parent != expected_parent:
+        raise RuntimeError("log_tree_root_outside_strict_generation")
+    for directory in (RESULTS_DIR, expected_parent):
+        directory_stat = os.lstat(directory)
+        if (
+            not stat.S_ISDIR(directory_stat.st_mode)
+            or stat.S_ISLNK(directory_stat.st_mode)
+        ):
+            raise RuntimeError("log_tree_parent_unsafe")
+    root_stat = os.lstat(root)
+    if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+        raise RuntimeError("log_tree_root_unsafe")
+    entries: list[dict] = []
+    pending = [(root, "")]
+    while pending:
+        directory, prefix = pending.pop()
+        before = os.lstat(directory)
+        if not stat.S_ISDIR(before.st_mode) or stat.S_ISLNK(before.st_mode):
+            raise RuntimeError("log_tree_directory_unsafe")
+        with os.scandir(directory) as scanner:
+            children = sorted(scanner, key=lambda item: item.name)
+        if len(entries) + len(children) > 4096:
+            raise RuntimeError("log_tree_member_limit")
+        for child in children:
+            if (
+                not child.name
+                or child.name in {".", ".."}
+                or "/" in child.name
+                or "\\" in child.name
+                or any(ord(char) < 32 for char in child.name)
+            ):
+                raise RuntimeError("log_tree_member_name_unsafe")
+            relative = f"{prefix}/{child.name}" if prefix else child.name
+            if len(relative.encode("utf-8")) > 1024:
+                raise RuntimeError("log_tree_member_path_too_long")
+            metadata = child.stat(follow_symlinks=False)
+            child_path = Path(child.path)
+            if stat.S_ISDIR(metadata.st_mode):
+                entries.append({"path": relative, "kind": "directory"})
+                pending.append((child_path, relative))
+                continue
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise RuntimeError("log_tree_member_unsafe")
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(child_path, flags)
+            hasher = hashlib.sha256()
+            size = 0
+            try:
+                opened = os.fstat(descriptor)
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+                    size += len(chunk)
+                live = os.lstat(child_path)
+            finally:
+                os.close(descriptor)
+            if (
+                opened.st_nlink != 1
+                or live.st_nlink != 1
+                or (opened.st_dev, opened.st_ino)
+                != (metadata.st_dev, metadata.st_ino)
+                or (live.st_dev, live.st_ino)
+                != (metadata.st_dev, metadata.st_ino)
+                or opened.st_size != size
+                or live.st_size != size
+                or opened.st_mtime_ns != live.st_mtime_ns
+                or opened.st_ctime_ns != live.st_ctime_ns
+            ):
+                raise RuntimeError("log_tree_member_changed")
+            entries.append({
+                "path": relative,
+                "kind": "file",
+                "size": size,
+                "sha256": hasher.hexdigest(),
+            })
+        after = os.lstat(directory)
+        if (
+            (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+            or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
+        ):
+            raise RuntimeError("log_tree_directory_changed")
+    entries.sort(key=lambda row: (row["path"], row["kind"]))
+    payload = {
+        "schema_version": 1,
+        "kind": "strict-generation-log-tree",
+        "version": int(version),
+        "source_relative_path": f"v{int(version)}/logs",
+        "entries": entries,
+    }
+    return {**payload, "tree_digest": canonical_digest(payload)}
+
+
+STRICT_LOG_KEEP_GENERATIONS = 5
+
+
+def _build_strict_log_cleanup_plan(
+    handoff_version: int,
+    *,
+    keep_generations: int = STRICT_LOG_KEEP_GENERATIONS,
+) -> dict:
+    """Plan only exact v143+ log roots owned by the current handoff."""
+
+    if type(handoff_version) is not int or (
+        handoff_version < FIRST_STRICT_POLICY_VERSION
+    ):
+        raise RuntimeError("strict_log_cleanup_handoff_version_invalid")
+    if (
+        type(keep_generations) is not int
+        or keep_generations != STRICT_LOG_KEEP_GENERATIONS
+    ):
+        raise RuntimeError("strict_log_cleanup_retention_invalid")
+    cutoff = handoff_version - keep_generations
+    archives: list[dict] = []
+    if cutoff >= FIRST_STRICT_POLICY_VERSION:
+        for version in range(FIRST_STRICT_POLICY_VERSION, cutoff + 1):
+            source = RESULTS_DIR / f"v{version}" / "logs"
+            # Exact paths only: never glob or probe v1..v142 legacy history.
+            if not os.path.lexists(source):
+                continue
+            tree = _safe_log_tree_manifest(source, version=version)
+            suffix = tree["tree_digest"][:20]
+            archives.append({
+                **tree,
+                "archive_relative_path": f"v{version}_logs_{suffix}.tar.gz",
+                "manifest_relative_path": (
+                    f"v{version}_logs_{suffix}.manifest.json"
+                ),
+                # Schema-1 plans already bind this historical path.  Retain it
+                # as inert identity data so persisted plans remain resumable;
+                # the non-destructive executor must never probe or mutate it.
+                "quarantine_relative_path": (
+                    f"v{version}/.logs-archived-{tree['tree_digest']}"
+                ),
+            })
+    return {
+        "schema_version": 1,
+        "kind": "strict-log-cleanup-plan",
+        "handoff_version": handoff_version,
+        "first_strict_version": FIRST_STRICT_POLICY_VERSION,
+        "keep_generations": int(keep_generations),
+        "cutoff_version": cutoff,
+        "archives": archives,
+    }
+
+
+def _validate_strict_log_cleanup_plan(
+    plan: dict,
+    *,
+    expected_handoff_version: int,
+    expected_publication_id: str | None = None,
+) -> list[dict]:
+    """Validate one frozen, non-destructive strict-log archive plan.
+
+    The caller supplies the handoff identity rather than trusting identity
+    fields stored in the plan.  A forged future handoff or shortened retention
+    window therefore cannot select current/recent log trees.  Schema-1 retains
+    its historical quarantine path as inert identity data only; validation
+    never makes that path an authorization to rename or delete live bytes.
+    """
+
+    from bot_artifact import canonical_digest
+
+    if (
+        type(expected_handoff_version) is not int
+        or expected_handoff_version < FIRST_STRICT_POLICY_VERSION
+    ):
+        raise RuntimeError("strict_log_cleanup_expected_version_invalid")
+    base_keys = {
+        "schema_version",
+        "kind",
+        "handoff_version",
+        "first_strict_version",
+        "keep_generations",
+        "cutoff_version",
+        "archives",
+    }
+    if not isinstance(plan, dict) or set(plan) not in (
+        base_keys,
+        base_keys | {"publication_id"},
+    ):
+        raise RuntimeError("strict_log_cleanup_plan_invalid")
+    handoff_version = plan.get("handoff_version")
+    keep_generations = plan.get("keep_generations")
+    cutoff = plan.get("cutoff_version")
+    archives = plan.get("archives")
+    if (
+        plan.get("schema_version") != 1
+        or plan.get("kind") != "strict-log-cleanup-plan"
+        or plan.get("first_strict_version") != FIRST_STRICT_POLICY_VERSION
+        or type(handoff_version) is not int
+        or handoff_version != expected_handoff_version
+        or type(keep_generations) is not int
+        or keep_generations != STRICT_LOG_KEEP_GENERATIONS
+        or type(cutoff) is not int
+        or cutoff != handoff_version - keep_generations
+        or not isinstance(archives, list)
+    ):
+        raise RuntimeError("strict_log_cleanup_plan_invalid")
+    publication_id = plan.get("publication_id")
+    if expected_publication_id is not None:
+        if (
+            not isinstance(expected_publication_id, str)
+            or len(expected_publication_id) != 64
+            or any(
+                char not in "0123456789abcdef"
+                for char in expected_publication_id
+            )
+            or publication_id != expected_publication_id
+        ):
+            raise RuntimeError("strict_log_cleanup_publication_invalid")
+    elif publication_id is not None and (
+        not isinstance(publication_id, str)
+        or len(publication_id) != 64
+        or any(char not in "0123456789abcdef" for char in publication_id)
+    ):
+        raise RuntimeError("strict_log_cleanup_publication_invalid")
+
+    maximum_subjects = max(0, cutoff - FIRST_STRICT_POLICY_VERSION + 1)
+    if len(archives) > maximum_subjects:
+        raise RuntimeError("strict_log_cleanup_subject_invalid")
+    previous_version = FIRST_STRICT_POLICY_VERSION - 1
+    item_keys = {
+        "schema_version",
+        "kind",
+        "version",
+        "source_relative_path",
+        "entries",
+        "tree_digest",
+        "archive_relative_path",
+        "manifest_relative_path",
+        "quarantine_relative_path",
+    }
+    for item in archives:
+        if not isinstance(item, dict) or set(item) != item_keys:
+            raise RuntimeError("strict_log_cleanup_subject_invalid")
+        version = item.get("version")
+        if (
+            type(version) is not int
+            or version < FIRST_STRICT_POLICY_VERSION
+            or version > cutoff
+            or version <= previous_version
+        ):
+            raise RuntimeError("strict_log_cleanup_subject_invalid")
+        previous_version = version
+        expected_source = f"v{version}/logs"
+        entries = item.get("entries")
+        if (
+            item.get("schema_version") != 1
+            or item.get("kind") != "strict-generation-log-tree"
+            or item.get("source_relative_path") != expected_source
+            or not isinstance(entries, list)
+            or len(entries) > 4096
+        ):
+            raise RuntimeError("strict_log_cleanup_tree_invalid")
+        seen_paths: set[str] = set()
+        directory_paths: set[str] = set()
+        previous_sort_key: tuple[str, str] | None = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise RuntimeError("strict_log_cleanup_tree_invalid")
+            relative = entry.get("path")
+            kind = entry.get("kind")
+            expected_keys = (
+                {"path", "kind"}
+                if kind == "directory"
+                else {"path", "kind", "size", "sha256"}
+            )
+            if (
+                set(entry) != expected_keys
+                or kind not in {"directory", "file"}
+                or not isinstance(relative, str)
+                or not relative
+                or relative in seen_paths
+            ):
+                raise RuntimeError("strict_log_cleanup_tree_invalid")
+            try:
+                encoded_relative = relative.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise RuntimeError("strict_log_cleanup_tree_invalid") from exc
+            components = relative.split("/")
+            if (
+                len(encoded_relative) > 1024
+                or any(
+                    not component
+                    or component in {".", ".."}
+                    or "\\" in component
+                    or any(ord(char) < 32 for char in component)
+                    for component in components
+                )
+            ):
+                raise RuntimeError("strict_log_cleanup_tree_invalid")
+            sort_key = (relative, kind)
+            if previous_sort_key is not None and sort_key <= previous_sort_key:
+                raise RuntimeError("strict_log_cleanup_tree_invalid")
+            previous_sort_key = sort_key
+            for index in range(1, len(components)):
+                parent = "/".join(components[:index])
+                if parent not in directory_paths:
+                    raise RuntimeError("strict_log_cleanup_tree_invalid")
+            if kind == "directory":
+                directory_paths.add(relative)
+            else:
+                size = entry.get("size")
+                digest = entry.get("sha256")
+                if (
+                    type(size) is not int
+                    or size < 0
+                    or not isinstance(digest, str)
+                    or len(digest) != 64
+                    or any(char not in "0123456789abcdef" for char in digest)
+                ):
+                    raise RuntimeError("strict_log_cleanup_tree_invalid")
+            seen_paths.add(relative)
+        tree_payload = {
+            "schema_version": 1,
+            "kind": "strict-generation-log-tree",
+            "version": version,
+            "source_relative_path": expected_source,
+            "entries": entries,
+        }
+        tree_digest = canonical_digest(tree_payload)
+        suffix = tree_digest[:20]
+        if (
+            item.get("tree_digest") != tree_digest
+            or item.get("archive_relative_path")
+            != f"v{version}_logs_{suffix}.tar.gz"
+            or item.get("manifest_relative_path")
+            != f"v{version}_logs_{suffix}.manifest.json"
+            or item.get("quarantine_relative_path")
+            != f"v{version}/.logs-archived-{tree_digest}"
+        ):
+            raise RuntimeError("strict_log_cleanup_tree_invalid")
+
+    # Live sources are deliberately retained, so both execution and final
+    # reproof can reconstruct the entire cutoff projection.  A syntactically
+    # valid subset (including a forged empty list) must not suppress required
+    # immutable evidence, while a changed tree must not be laundered through
+    # the previously frozen digest.
+    expected_plan = _build_strict_log_cleanup_plan(
+        expected_handoff_version,
+        keep_generations=STRICT_LOG_KEEP_GENERATIONS,
+    )
+    expected_archives = expected_plan["archives"]
+    if (
+        [item["version"] for item in archives]
+        != [item["version"] for item in expected_archives]
+    ):
+        raise RuntimeError("strict_log_cleanup_plan_incomplete")
+    if archives != expected_archives:
+        raise RuntimeError("strict_log_cleanup_preimage_changed")
+    return archives
+
+
+def _read_safe_json(path: Path) -> dict | None:
+    from evolution_infra import _read_regular_state_text
+
+    raw = _read_regular_state_text(path, allow_missing=True)
+    if not raw.strip():
+        return None
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"state_not_object:{path.name}")
+    return payload
+
+
+def _publish_log_tar(source: Path, target: Path, plan: dict) -> None:
+    """Create a normalized tar for one already-digest-bound tree."""
+
+    import tarfile
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    expected = {row["path"]: row for row in plan["entries"]}
+    try:
+        with tarfile.open(temporary, "x:gz", format=tarfile.PAX_FORMAT) as writer:
+            root_info = tarfile.TarInfo(f"v{plan['version']}/logs")
+            root_info.type = tarfile.DIRTYPE
+            root_info.mode = 0o700
+            root_info.mtime = 0
+            writer.addfile(root_info)
+            for relative in sorted(expected):
+                row = expected[relative]
+                archive_name = f"v{plan['version']}/logs/{relative}"
+                info = tarfile.TarInfo(archive_name)
+                info.mode = 0o600
+                info.mtime = 0
+                info.uid = 0
+                info.gid = 0
+                info.uname = ""
+                info.gname = ""
+                if row["kind"] == "directory":
+                    info.type = tarfile.DIRTYPE
+                    info.mode = 0o700
+                    writer.addfile(info)
+                    continue
+                child = source.joinpath(*relative.split("/"))
+                flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+                flags |= getattr(os, "O_NOFOLLOW", 0)
+                descriptor = os.open(child, flags)
+                try:
+                    metadata = os.fstat(descriptor)
+                    if (
+                        metadata.st_nlink != 1
+                        or metadata.st_size != row["size"]
+                    ):
+                        raise RuntimeError("log_tree_changed_while_archiving")
+                    info.size = row["size"]
+                    with os.fdopen(descriptor, "rb", closefd=False) as handle:
+                        writer.addfile(info, handle)
+                    live = os.lstat(child)
+                finally:
+                    os.close(descriptor)
+                if (
+                    live.st_nlink != 1
+                    or (metadata.st_dev, metadata.st_ino)
+                    != (live.st_dev, live.st_ino)
+                    or metadata.st_size != live.st_size
+                    or metadata.st_mtime_ns != live.st_mtime_ns
+                    or metadata.st_ctime_ns != live.st_ctime_ns
+                ):
+                    raise RuntimeError("log_tree_changed_while_archiving")
+        descriptor = os.open(
+            temporary,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(temporary, target, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        from evolution_infra import _fsync_directory
+
+        _fsync_directory(target.parent)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_log_tar(
+    path: Path,
+    plan: dict,
+    *,
+    expected_nlink: int = 1,
+) -> str:
+    import tarfile
+
+    metadata = os.lstat(path)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or stat.S_ISLNK(metadata.st_mode)
+        or metadata.st_nlink != expected_nlink
+    ):
+        raise RuntimeError("log_archive_path_unsafe")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    archive_hash = hashlib.sha256()
+    try:
+        with os.fdopen(descriptor, "rb", closefd=False) as raw_handle:
+            while True:
+                chunk = raw_handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                archive_hash.update(chunk)
+            raw_handle.seek(0)
+            with tarfile.open(fileobj=raw_handle, mode="r:gz") as reader:
+                members = reader.getmembers()
+                root = f"v{plan['version']}/logs"
+                expected = {root: {"kind": "directory"}}
+                expected.update({
+                    f"{root}/{row['path']}": row for row in plan["entries"]
+                })
+                if len(members) != len(expected):
+                    raise RuntimeError("log_archive_member_count_mismatch")
+                seen = set()
+                for member in members:
+                    if member.name in seen or member.name not in expected:
+                        raise RuntimeError("log_archive_member_name_mismatch")
+                    seen.add(member.name)
+                    row = expected[member.name]
+                    if row["kind"] == "directory":
+                        if not member.isdir():
+                            raise RuntimeError("log_archive_member_type_mismatch")
+                        continue
+                    if not member.isfile() or member.islnk() or member.issym():
+                        raise RuntimeError("log_archive_member_type_mismatch")
+                    if member.size != row["size"]:
+                        raise RuntimeError("log_archive_member_size_mismatch")
+                    extracted = reader.extractfile(member)
+                    if extracted is None:
+                        raise RuntimeError("log_archive_member_unreadable")
+                    hasher = hashlib.sha256()
+                    size = 0
+                    while True:
+                        chunk = extracted.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        hasher.update(chunk)
+                        size += len(chunk)
+                    if size != row["size"] or hasher.hexdigest() != row["sha256"]:
+                        raise RuntimeError("log_archive_member_digest_mismatch")
+        opened = os.fstat(descriptor)
+        live = os.lstat(path)
+    finally:
+        os.close(descriptor)
+    if (
+        opened.st_nlink != expected_nlink
+        or live.st_nlink != expected_nlink
+        or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
+        or opened.st_size != live.st_size
+        or opened.st_mtime_ns != live.st_mtime_ns
+        or opened.st_ctime_ns != live.st_ctime_ns
+    ):
+        raise RuntimeError("log_archive_changed_while_reading")
+    return archive_hash.hexdigest()
+
+
+def _recover_linked_log_tar(path: Path, plan: dict) -> None:
+    """Converge a crash after create-only link and before temp unlink."""
+
+    metadata = os.lstat(path)
+    if metadata.st_nlink == 1:
+        return
+    if metadata.st_nlink != 2:
+        raise RuntimeError("log_archive_link_count_unsafe")
+    prefix = f".{path.name}."
+    candidates = []
+    with os.scandir(path.parent) as scanner:
+        for entry in scanner:
+            name = entry.name
+            if not name.startswith(prefix) or not name.endswith(".tmp"):
+                continue
+            token = name[len(prefix):-4]
+            if len(token) != 32 or any(
+                char not in "0123456789abcdef" for char in token
+            ):
+                continue
+            candidate_stat = entry.stat(follow_symlinks=False)
+            if (
+                stat.S_ISREG(candidate_stat.st_mode)
+                and not stat.S_ISLNK(candidate_stat.st_mode)
+                and (candidate_stat.st_dev, candidate_stat.st_ino)
+                == (metadata.st_dev, metadata.st_ino)
+            ):
+                candidates.append(Path(entry.path))
+    if len(candidates) != 1:
+        raise RuntimeError("log_archive_orphan_link_unrecoverable")
+    # Validate the complete archive before removing the only evidence that the
+    # second link is our exact create-only temporary, not an injected hardlink.
+    _validate_log_tar(path, plan, expected_nlink=2)
+    candidates[0].unlink()
+    from evolution_infra import _fsync_directory
+
+    _fsync_directory(path.parent)
+    final = os.lstat(path)
+    if (
+        not stat.S_ISREG(final.st_mode)
+        or stat.S_ISLNK(final.st_mode)
+        or final.st_nlink != 1
+    ):
+        raise RuntimeError("log_archive_orphan_link_not_recovered")
+
+
+def _execute_strict_log_cleanup(
+    plan: dict,
+    *,
+    expected_handoff_version: int,
+    expected_publication_id: str | None = None,
+) -> list[dict]:
+    """Publish immutable log archives while preserving every live source.
+
+    The step name is retained for journal compatibility, but this executor is
+    deliberately not a cleanup primitive.  It never probes, renames, unlinks,
+    or removes the plan's quarantine path or any live generation log path.
+    Crash recovery only converges create-only archive and manifest effects.
+    """
+
+    from bot_artifact import canonical_digest
+
+    archives = _validate_strict_log_cleanup_plan(
+        plan,
+        expected_handoff_version=expected_handoff_version,
+        expected_publication_id=expected_publication_id,
+    )
+    archive_root = os.lstat(ARCHIVE_DIR)
+    if (
+        not stat.S_ISDIR(archive_root.st_mode)
+        or stat.S_ISLNK(archive_root.st_mode)
+    ):
+        raise RuntimeError("strict_log_archive_root_unsafe")
+    receipts = []
+    for item in archives:
+        version = item.get("version")
+        if type(version) is not int or version < FIRST_STRICT_POLICY_VERSION:
+            raise RuntimeError("strict_log_cleanup_subject_invalid")
+        expected_source = f"v{version}/logs"
+        if item.get("source_relative_path") != expected_source:
+            raise RuntimeError("strict_log_cleanup_source_invalid")
+        source = RESULTS_DIR / f"v{version}" / "logs"
+        archive = ARCHIVE_DIR / str(item.get("archive_relative_path"))
+        manifest_path = ARCHIVE_DIR / str(item.get("manifest_relative_path"))
+        if (
+            source.parent != RESULTS_DIR / f"v{version}"
+            or archive.parent != ARCHIVE_DIR
+            or manifest_path.parent != ARCHIVE_DIR
+        ):
+            raise RuntimeError("strict_log_cleanup_path_escape")
+
+        from evolution_infra import _locked_state_sidecar
+        import fcntl
+
+        with _locked_state_sidecar(archive, lock_type=fcntl.LOCK_EX):
+            if not archive.exists():
+                if not source.exists():
+                    raise RuntimeError(
+                        "strict_log_cleanup_source_missing_before_archive"
+                    )
+                if _safe_log_tree_manifest(source, version=version) != {
+                    key: item[key]
+                    for key in (
+                        "schema_version", "kind", "version",
+                        "source_relative_path", "entries", "tree_digest",
+                    )
+                }:
+                    raise RuntimeError("strict_log_cleanup_preimage_changed")
+                _publish_log_tar(source, archive, item)
+            _recover_linked_log_tar(archive, item)
+            archive_sha = _validate_log_tar(archive, item)
+        manifest_payload = {
+            "schema_version": 1,
+            "kind": "strict-generation-log-archive",
+            "version": version,
+            "source_relative_path": expected_source,
+            "tree_digest": item["tree_digest"],
+            "entries": item["entries"],
+            "archive_relative_path": item["archive_relative_path"],
+            "archive_sha256": archive_sha,
+        }
+        expected_manifest = {
+            **manifest_payload,
+            "manifest_digest": canonical_digest(manifest_payload),
+        }
+        from evolution_infra import _atomic_publish_state_text
+
+        with _locked_state_sidecar(manifest_path, lock_type=fcntl.LOCK_EX):
+            existing_manifest = _read_safe_json(manifest_path)
+            if existing_manifest is None:
+                encoded_manifest = json.dumps(
+                    expected_manifest,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                )
+                _atomic_publish_state_text(
+                    manifest_path,
+                    encoded_manifest + "\n",
+                )
+                existing_manifest = _read_safe_json(manifest_path)
+        if existing_manifest != expected_manifest:
+            raise RuntimeError("strict_log_archive_manifest_mismatch")
+
+        # Re-open the live tree after both immutable effects are durable.  This
+        # proves the receipt did not merely archive the right bytes before a
+        # destructive move.  No quarantine path is even resolved here.
+        current = _safe_log_tree_manifest(source, version=version)
+        expected_tree = {
+            key: item[key]
+            for key in (
+                "schema_version", "kind", "version",
+                "source_relative_path", "entries", "tree_digest",
+            )
+        }
+        if current != expected_tree:
+            raise RuntimeError("strict_log_cleanup_preimage_changed")
+        receipts.append({
+            "version": version,
+            "tree_digest": item["tree_digest"],
+            "archive_relative_path": item["archive_relative_path"],
+            "archive_sha256": archive_sha,
+            "manifest_relative_path": item["manifest_relative_path"],
+            "manifest_digest": expected_manifest["manifest_digest"],
+            "effect_mode": "nondestructive-immutable-archive",
+            "live_source_relative_path": expected_source,
+            "live_log_tree_preserved": True,
+            "quarantine_log_tree_touched": False,
+            "generation_siblings_preserved": True,
+        })
+    return receipts
+
+
+def _revalidate_strict_log_archives(
+    plan: dict,
+    receipts: list[dict],
+    *,
+    expected_handoff_version: int,
+    expected_publication_id: str | None = None,
+) -> None:
+    """Reprove immutable evidence and the still-live frozen source tree."""
+
+    from bot_artifact import canonical_digest
+    from evolution_infra import _locked_state_sidecar
+    import fcntl
+
+    items = _validate_strict_log_cleanup_plan(
+        plan,
+        expected_handoff_version=expected_handoff_version,
+        expected_publication_id=expected_publication_id,
+    )
+    if not isinstance(items, list) or not isinstance(receipts, list):
+        raise RuntimeError("strict_log_final_receipt_invalid")
+    if len(items) != len(receipts):
+        raise RuntimeError("strict_log_final_receipt_count_mismatch")
+    for item, receipt in zip(items, receipts):
+        if not isinstance(receipt, dict) or set(receipt) != {
+            "version", "tree_digest", "archive_relative_path",
+            "archive_sha256", "manifest_relative_path", "manifest_digest",
+            "effect_mode", "live_source_relative_path",
+            "live_log_tree_preserved", "quarantine_log_tree_touched",
+            "generation_siblings_preserved",
+        }:
+            raise RuntimeError("strict_log_final_receipt_invalid")
+        archive = ARCHIVE_DIR / str(item.get("archive_relative_path"))
+        manifest_path = ARCHIVE_DIR / str(item.get("manifest_relative_path"))
+        with _locked_state_sidecar(archive, lock_type=fcntl.LOCK_EX):
+            _recover_linked_log_tar(archive, item)
+            archive_sha = _validate_log_tar(archive, item)
+        manifest = _read_safe_json(manifest_path)
+        if not isinstance(manifest, dict):
+            raise RuntimeError("strict_log_final_manifest_missing")
+        manifest_payload = {
+            "schema_version": 1,
+            "kind": "strict-generation-log-archive",
+            "version": item["version"],
+            "source_relative_path": item["source_relative_path"],
+            "tree_digest": item["tree_digest"],
+            "entries": item["entries"],
+            "archive_relative_path": item["archive_relative_path"],
+            "archive_sha256": archive_sha,
+        }
+        expected_manifest = {
+            **manifest_payload,
+            "manifest_digest": canonical_digest(manifest_payload),
+        }
+        if manifest != expected_manifest:
+            raise RuntimeError("strict_log_final_manifest_mismatch")
+        source = RESULTS_DIR / f"v{item['version']}" / "logs"
+        expected_tree = {
+            key: item[key]
+            for key in (
+                "schema_version", "kind", "version",
+                "source_relative_path", "entries", "tree_digest",
+            )
+        }
+        if _safe_log_tree_manifest(
+            source, version=item["version"]
+        ) != expected_tree:
+            raise RuntimeError("strict_log_final_source_mismatch")
+        expected_receipt = {
+            "version": item["version"],
+            "tree_digest": item["tree_digest"],
+            "archive_relative_path": item["archive_relative_path"],
+            "archive_sha256": archive_sha,
+            "manifest_relative_path": item["manifest_relative_path"],
+            "manifest_digest": manifest["manifest_digest"],
+            "effect_mode": "nondestructive-immutable-archive",
+            "live_source_relative_path": item["source_relative_path"],
+            "live_log_tree_preserved": True,
+            "quarantine_log_tree_touched": False,
+            "generation_siblings_preserved": True,
+        }
+        if receipt != expected_receipt:
+            raise RuntimeError("strict_log_final_receipt_mismatch")
+
+
+def _handoff_publication_result(record: dict) -> dict:
+    identity = record["identity"]
+    remote = identity["remote_publication"]
+    remote_refs = {}
+    for name, row in (remote.get("paired_refs") or {}).items():
+        remote_refs[f"refs/tags/{name}"] = row["object_oid"]
+        remote_refs[f"refs/tags/{name}^{{}}"] = row["peeled_commit_oid"]
     return {
         "committed": True,
-        "commit": commit_hash,
-        "push_ok": push_ok,
-        "staged_files": staged_paths,
-        "skipped_preexisting": skipped_preexisting,
+        "version": identity["version"],
+        "source_v": identity["source_v"],
+        "publication_id": identity["publication_id"],
+        "commit_oid": identity["commit_oid"],
+        "push_ok": remote.get("required") is True,
+        "checkpoint_cleared": True,
+        "completed_sentinel_written": True,
+        "remote_proof": {
+            "valid": remote.get("required") is True,
+            "remote_main_oid": remote.get("remote_main_oid"),
+            "remote_refs": remote_refs,
+        },
     }
+
+
+def _build_pool_reap_plan(record: dict) -> dict:
+    """Freeze the complete reap sequence before publishing any tombstone."""
+
+    from bot_artifact import canonical_digest
+    from tool_bot_management import (
+        REAP_SELECTION_POLICY,
+        _capture_reap_selection_snapshot,
+        _select_reap_candidate_from_snapshot,
+    )
+
+    initial = sorted(get_active_bots())
+    if (
+        len(initial) != len(set(initial))
+        or any(
+            (parse_bot_version(name) or -1) < FIRST_STRICT_POLICY_VERSION
+            for name in initial
+        )
+    ):
+        raise RuntimeError("pool_reap_active_namespace_invalid")
+    selection_snapshot = _capture_reap_selection_snapshot(
+        initial,
+        max_active_bots=MAX_ACTIVE_BOTS,
+    )
+    if selection_snapshot["active_bots"] != initial:
+        raise RuntimeError("pool_reap_selection_snapshot_pool_mismatch")
+    simulated = list(initial)
+    targets = []
+    while len(simulated) > MAX_ACTIVE_BOTS:
+        selection = _select_reap_candidate_from_snapshot(
+            selection_snapshot,
+            simulated,
+        )
+        candidate = selection.get("candidate")
+        if not candidate:
+            raise RuntimeError(
+                "pool_reap_cannot_plan_required_target:"
+                + str(selection.get("reason") or selection)
+            )
+        targets.append({
+            key: value
+            for key, value in selection.items()
+            if key in {
+                "candidate", "selection_key", "conservative_rating",
+                "leaderboard_score", "h2h_avg_wr", "rating",
+                "active_pool",
+            }
+        })
+        simulated.remove(candidate)
+    return {
+        "schema_version": 2,
+        "kind": "strict-active-pool-reap-plan",
+        "publication_id": record["identity"]["publication_id"],
+        "selection_policy": REAP_SELECTION_POLICY,
+        "selection_snapshot": selection_snapshot,
+        "selection_snapshot_digest": selection_snapshot["snapshot_digest"],
+        "active_bots": initial,
+        "active_pool_digest": canonical_digest(initial),
+        "max_active_bots": MAX_ACTIVE_BOTS,
+        "required_reaps": len(targets),
+        "targets": targets,
+        "target_sequence_digest": canonical_digest(targets),
+        "expected_head_oid": record["identity"]["commit_oid"],
+        "expected_remote_main_oid": (
+            record["identity"]["remote_publication"].get("remote_main_oid")
+        ),
+    }
+
+
+_POOL_REAP_PLAN_KEYS = {
+    "schema_version",
+    "kind",
+    "publication_id",
+    "selection_policy",
+    "selection_snapshot",
+    "selection_snapshot_digest",
+    "active_bots",
+    "active_pool_digest",
+    "max_active_bots",
+    "required_reaps",
+    "targets",
+    "target_sequence_digest",
+    "expected_head_oid",
+    "expected_remote_main_oid",
+}
+
+
+def _lower_hex(value, length: int) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == length
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _validate_pool_reap_plan(
+    reap_plan: dict,
+    record: dict,
+) -> tuple[list, list, dict]:
+    """Purely prove the complete frozen target sequence before any effect."""
+
+    from bot_artifact import canonical_digest
+    from tool_bot_management import (
+        REAP_SELECTION_POLICY,
+        _select_reap_candidate_from_snapshot,
+        _validate_reap_selection_snapshot,
+    )
+
+    if not isinstance(reap_plan, dict) or set(reap_plan) != _POOL_REAP_PLAN_KEYS:
+        raise RuntimeError("pool_reap_plan_keys_invalid")
+    if (
+        type(reap_plan.get("schema_version")) is not int
+        or reap_plan["schema_version"] != 2
+        or reap_plan.get("kind") != "strict-active-pool-reap-plan"
+        or reap_plan.get("selection_policy") != REAP_SELECTION_POLICY
+        or not _lower_hex(reap_plan.get("publication_id"), 64)
+        or not _lower_hex(reap_plan.get("expected_head_oid"), 40)
+        or (
+            reap_plan.get("expected_remote_main_oid") is not None
+            and not _lower_hex(reap_plan.get("expected_remote_main_oid"), 40)
+        )
+        or type(reap_plan.get("max_active_bots")) is not int
+        or reap_plan["max_active_bots"] != MAX_ACTIVE_BOTS
+        or type(reap_plan.get("required_reaps")) is not int
+        or not isinstance(reap_plan.get("active_bots"), list)
+        or not isinstance(reap_plan.get("targets"), list)
+    ):
+        raise RuntimeError("pool_reap_plan_contract_invalid")
+
+    identity = record.get("identity") if isinstance(record, dict) else None
+    remote = (
+        identity.get("remote_publication")
+        if isinstance(identity, dict)
+        else None
+    )
+    if (
+        not isinstance(identity, dict)
+        or not isinstance(remote, dict)
+        or identity.get("publication_id") != reap_plan["publication_id"]
+        or identity.get("commit_oid") != reap_plan["expected_head_oid"]
+        or remote.get("remote_main_oid") != reap_plan["expected_remote_main_oid"]
+    ):
+        raise RuntimeError("pool_reap_plan_publication_identity_mismatch")
+
+    initial = list(reap_plan["active_bots"])
+    if (
+        initial != sorted(initial)
+        or len(initial) != len(set(initial))
+        or reap_plan.get("active_pool_digest") != canonical_digest(initial)
+        or any(
+            not isinstance(name, str)
+            or (parse_bot_version(name) or -1) < FIRST_STRICT_POLICY_VERSION
+            or name != bot_name(parse_bot_version(name))
+            for name in initial
+        )
+    ):
+        raise RuntimeError("pool_reap_initial_pool_invalid")
+
+    snapshot = reap_plan.get("selection_snapshot")
+    _validate_reap_selection_snapshot(snapshot)
+    if (
+        snapshot.get("snapshot_digest")
+        != reap_plan.get("selection_snapshot_digest")
+        or snapshot.get("selection_policy") != reap_plan["selection_policy"]
+        or snapshot.get("max_active_bots") != reap_plan["max_active_bots"]
+        or snapshot.get("active_bots") != initial
+        or snapshot.get("active_pool_digest") != reap_plan["active_pool_digest"]
+    ):
+        raise RuntimeError("pool_reap_selection_snapshot_identity_mismatch")
+
+    expected_targets = []
+    simulated = list(initial)
+    while len(simulated) > reap_plan["max_active_bots"]:
+        selection = _select_reap_candidate_from_snapshot(snapshot, simulated)
+        candidate = selection.get("candidate")
+        if not candidate:
+            raise RuntimeError(
+                "pool_reap_cannot_validate_required_target:"
+                + str(selection.get("reason") or selection)
+            )
+        expected_targets.append(selection)
+        simulated.remove(candidate)
+    if (
+        reap_plan["targets"] != expected_targets
+        or reap_plan.get("target_sequence_digest")
+        != canonical_digest(expected_targets)
+        or reap_plan["required_reaps"] != len(expected_targets)
+        or reap_plan["required_reaps"]
+        != max(0, len(initial) - reap_plan["max_active_bots"])
+    ):
+        raise RuntimeError("pool_reap_target_sequence_invalid")
+    return initial, [row["candidate"] for row in expected_targets], snapshot
+
+
+def _remote_ref_snapshot(*refs: str) -> dict[str, str]:
+    raw = _git("ls-remote", "origin", *refs)
+    result = {}
+    for line in raw.splitlines():
+        oid, separator, name = line.partition("\t")
+        if separator and len(oid) == 40:
+            result[name] = oid
+    return result
+
+
+def _converge_and_verify_reaped_target(name: str, record: dict) -> dict:
+    """Finish a planned tombstone crash and return exact local/remote proof."""
+
+    from bot_namespace import parse_bot_version
+    from evolution_infra import load_reaped_bot_versions
+
+    version = parse_bot_version(name)
+    if version is None or version < FIRST_STRICT_POLICY_VERSION:
+        raise RuntimeError("planned_reap_target_invalid")
+    completion_ref = f"refs/tags/{bot_tag(version)}"
+    tombstone_name = f"national-reaped-v{version}"
+    tombstone_ref = f"refs/tags/{tombstone_name}"
+    if _git("cat-file", "-t", completion_ref, check=False).strip() != "tag":
+        raise RuntimeError("reap_completion_tag_missing")
+    if _git("cat-file", "-t", tombstone_ref, check=False).strip() != "tag":
+        raise RuntimeError("reap_tombstone_tag_missing")
+    completion_commit = _git(
+        "rev-parse", f"{completion_ref}^{{commit}}", check=False
+    ).strip()
+    tombstone_object = _git("rev-parse", tombstone_ref, check=False).strip()
+    tombstone_commit = _git(
+        "rev-parse", f"{tombstone_ref}^{{commit}}", check=False
+    ).strip()
+    if (
+        len(tombstone_object) != 40
+        or len(completion_commit) != 40
+        or tombstone_commit != completion_commit
+    ):
+        raise RuntimeError("reap_tombstone_identity_mismatch")
+
+    remote = record["identity"]["remote_publication"]
+    remote_proof = {"required": remote.get("required") is True}
+    if remote.get("required") is True:
+        wanted = (
+            "refs/heads/main",
+            tombstone_ref,
+            f"{tombstone_ref}^{{}}",
+        )
+        refs = _remote_ref_snapshot(*wanted)
+        if (
+            refs.get(tombstone_ref) != tombstone_object
+            or refs.get(f"{tombstone_ref}^{{}}") != completion_commit
+        ):
+            if not git_push_refs(tombstone_name):
+                raise RuntimeError("reap_tombstone_remote_push_failed")
+            refs = _remote_ref_snapshot(*wanted)
+        if (
+            refs.get(tombstone_ref) != tombstone_object
+            or refs.get(f"{tombstone_ref}^{{}}") != completion_commit
+        ):
+            raise RuntimeError("reap_tombstone_remote_proof_mismatch")
+        remote_main = str(refs.get("refs/heads/main") or "")
+        if len(remote_main) != 40 or any(
+            char not in "0123456789abcdef" for char in remote_main
+        ):
+            raise RuntimeError("reap_remote_main_invalid")
+        from evolution_infra import _git_command_succeeds
+
+        tracking = _git(
+            "rev-parse", "refs/remotes/origin/main", check=False
+        ).strip()
+        if tracking != remote_main:
+            _git(
+                "fetch",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            )
+        if not _git_command_succeeds(
+            "merge-base",
+            "--is-ancestor",
+            record["identity"]["commit_oid"],
+            remote_main,
+        ):
+            raise RuntimeError("reap_publication_not_on_remote_main")
+        remote_proof.update({
+            "publication_remote_main_oid": remote.get("remote_main_oid"),
+            "verified_remote_main_oid": remote_main,
+            "publication_commit_is_ancestor": True,
+            "tombstone_object_oid": refs[tombstone_ref],
+            "tombstone_commit_oid": refs[f"{tombstone_ref}^{{}}"],
+        })
+    elif remote.get("explicit_test_mode") is not True:
+        raise RuntimeError("reap_local_only_mode_unproven")
+
+    # Once the durable local/required-remote tombstone is proven, removing the
+    # ignored completion capability is the idempotent final half of reaping.
+    sentinel = get_bot_dir(version) / ".completed"
+    if os.path.lexists(sentinel):
+        metadata = os.lstat(sentinel)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise RuntimeError("reap_completed_sentinel_unsafe")
+        sentinel.unlink()
+    from evolution_infra import _fsync_directory
+
+    # Durably prove the directory entry absence even on a crash retry where
+    # the original reaper already removed the sentinel before its own fsync.
+    _fsync_directory(sentinel.parent)
+    if os.path.lexists(sentinel):
+        raise RuntimeError("reap_completed_sentinel_still_present")
+    if version not in load_reaped_bot_versions():
+        raise RuntimeError("reap_registry_projection_missing")
+    if name in set(get_active_bots()):
+        raise RuntimeError("reaped_target_still_active")
+    if _git("rev-parse", "HEAD").strip() != record["identity"]["commit_oid"]:
+        raise RuntimeError("reap_changed_head")
+    return {
+        "bot": name,
+        "version": version,
+        "completion_commit_oid": completion_commit,
+        "tombstone_tag": tombstone_name,
+        "tombstone_object_oid": tombstone_object,
+        "tombstone_commit_oid": tombstone_commit,
+        "completed_sentinel_absent": True,
+        "registry_projection_present": True,
+        "remote_proof": remote_proof,
+    }
+
+
+async def _execute_pool_reap_plan(reap_plan: dict, record: dict) -> dict:
+    """Execute an immutable multi-reap plan and converge partial tombstones."""
+
+    from bot_artifact import canonical_digest
+    initial, target_names, selection_snapshot = _validate_pool_reap_plan(
+        reap_plan,
+        record,
+    )
+    current = sorted(get_active_bots())
+    if not set(current).issubset(set(initial)):
+        raise RuntimeError("pool_changed_after_reap_plan")
+    removed = sorted(set(initial) - set(current))
+    if not set(removed).issubset(set(target_names)):
+        raise RuntimeError("unplanned_pool_member_removed")
+    # Prove every already-absent target before publishing a new tombstone.  A
+    # partial crash is resumable, while a forged preimage cannot smuggle a
+    # nonexistent pool member past the subset check and then reap a live bot.
+    prior_reap_proofs = {
+        target: _converge_and_verify_reaped_target(target, record)
+        for target in removed
+    }
+    reap_proofs = []
+    for target in target_names:
+        if target in set(get_active_bots()):
+            from tool_bot_management import _do_reap_weakest
+
+            effect = await _do_reap_weakest(
+                quiet=True,
+                expected_culled=target,
+                selection_snapshot=selection_snapshot,
+            )
+            if effect.get("reaped") is not True:
+                raise RuntimeError(
+                    "required_pool_reap_did_not_complete:"
+                    + str(effect.get("reason") or effect)
+                )
+        reap_proofs.append(
+            prior_reap_proofs.get(target)
+            or _converge_and_verify_reaped_target(target, record)
+        )
+    current = sorted(get_active_bots())
+    removed = sorted(set(initial) - set(current))
+    if removed != sorted(target_names):
+        raise RuntimeError("pool_reap_preimage_drift")
+    return {
+        "removed_bots": removed,
+        "required_reaps": len(target_names),
+        "reap_proofs": reap_proofs,
+        "reap_proof_set_digest": canonical_digest(reap_proofs),
+    }
+
+
+async def _run_durable_post_publication_archivist(v: int, source_v: int):
+    """Execute or resume every post-publication effect through one journal."""
+
+    from bot_artifact import canonical_digest
+    from post_publication_handoff import (
+        claim_post_publication_handoff,
+        complete_handoff_step,
+        complete_post_publication_handoff,
+        load_archive_snapshot,
+        plan_handoff_step,
+        release_post_publication_handoff_claim,
+        write_archive_annotation,
+    )
+
+    claim_id = ""
+    try:
+        record, claim_id = claim_post_publication_handoff(v, source_v)
+        if record.get("state") == "completed":
+            return {
+                "version": v,
+                "source_v": source_v,
+                "archivist_completed": True,
+                "idempotent_replay": True,
+            }
+        _set_pipeline_status(f"Archiving v{v}")
+        _git_ensure_main_branch()
+        if _git("rev-parse", "HEAD").strip() != record["identity"]["commit_oid"]:
+            raise RuntimeError("post_publication_head_not_publication_commit")
+        if _git_dirty_paths():
+            raise RuntimeError("post_publication_worktree_not_clean")
+        snapshot = load_archive_snapshot(v)
+        publishing_checkpoint = snapshot["publishing_checkpoint_projection"]
+        publication_result = _handoff_publication_result(record)
+
+        def done(name):
+            return record["steps"][name].get("status") == "completed"
+
+        if not done("stability_observation"):
+            from stability_observation import record_published_generation
+
+            row = record["steps"]["stability_observation"]
+            if row.get("status") == "pending":
+                plan = {
+                    "schema_version": 1,
+                    "kind": "stability-observation-plan",
+                    "publication_id": record["identity"]["publication_id"],
+                    "publishing_checkpoint_digest": record["identity"][
+                        "publishing_checkpoint_digest"
+                    ],
+                    "strength_evidence_identity_digest": canonical_digest(
+                        snapshot["strength_evidence_identity"]
+                    ),
+                }
+                record = plan_handoff_step(
+                    v, source_v, claim_id, "stability_observation", plan
+                )
+                row = record["steps"]["stability_observation"]
+            projection = record_published_generation(
+                version=v,
+                publication_result=publication_result,
+                publishing_checkpoint=publishing_checkpoint,
+            )
+            record = complete_handoff_step(
+                v,
+                source_v,
+                claim_id,
+                "stability_observation",
+                {
+                    "plan_digest": row["plan_digest"],
+                    "publication_id": record["identity"]["publication_id"],
+                    "continuity_id": projection.get("continuity_id"),
+                    "count": projection.get("count"),
+                    "target": projection.get("target"),
+                    "complete": projection.get("complete"),
+                },
+            )
+
+        if not done("reap_signal"):
+            row = record["steps"]["reap_signal"]
+            if row.get("status") == "pending":
+                signal_text = f"{time.time():.6f}\n"
+                plan = {
+                    "schema_version": 1,
+                    "kind": "rating-daemon-refresh-plan",
+                    "publication_id": record["identity"]["publication_id"],
+                    "signal_text": signal_text,
+                    "signal_sha256": hashlib.sha256(
+                        signal_text.encode("utf-8")
+                    ).hexdigest(),
+                }
+                record = plan_handoff_step(
+                    v, source_v, claim_id, "reap_signal", plan
+                )
+                row = record["steps"]["reap_signal"]
+            plan = row["plan"]
+            signal_path = RESULTS_DIR / ".reap_signal"
+            signal_text = str(plan["signal_text"])
+            # The daemon may consume this file before the receipt write. A
+            # retry safely reissues the same refresh capability.
+            from evolution_infra import _atomic_publish_state_text, _locked_state_sidecar
+            import fcntl
+
+            with _locked_state_sidecar(signal_path, lock_type=fcntl.LOCK_EX):
+                _atomic_publish_state_text(signal_path, signal_text)
+            record = complete_handoff_step(
+                v, source_v, claim_id, "reap_signal", {
+                    "plan_digest": row["plan_digest"],
+                    "publication_id": record["identity"]["publication_id"],
+                    "signal_sha256": hashlib.sha256(
+                        signal_text.encode("utf-8")
+                    ).hexdigest(),
+                }
+            )
+
+        if not done("priority_eval"):
+            row = record["steps"]["priority_eval"]
+            if row.get("status") == "pending":
+                priority = {
+                    "bot": bot_name(v),
+                    "min_games": 500,
+                    "since": time.time(),
+                    "publication_id": record["identity"]["publication_id"],
+                }
+                record = plan_handoff_step(
+                    v,
+                    source_v,
+                    claim_id,
+                    "priority_eval",
+                    {
+                        "schema_version": 1,
+                        "kind": "priority-evaluation-plan",
+                        "payload": priority,
+                    },
+                )
+                row = record["steps"]["priority_eval"]
+            priority = row["plan"]["payload"]
+            priority_sha = _durable_archivist_state_write(
+                RESULTS_DIR / "priority_eval.json", priority
+            )
+            record = complete_handoff_step(
+                v, source_v, claim_id, "priority_eval", {
+                    "plan_digest": row["plan_digest"],
+                    "bot": bot_name(v),
+                    "min_games": 500,
+                    "publication_id": record["identity"]["publication_id"],
+                    "payload_sha256": priority_sha,
+                }
+            )
+
+        if not done("archive_rotation"):
+            row = record["steps"]["archive_rotation"]
+            if row.get("status") == "pending":
+                rotation_plan = build_archive_rotation_plan(
+                    v,
+                    record["identity"]["publication_id"],
+                )
+                record = plan_handoff_step(
+                    v,
+                    source_v,
+                    claim_id,
+                    "archive_rotation",
+                    rotation_plan,
+                )
+                row = record["steps"]["archive_rotation"]
+            rotations = archive_rotate_files(v, row["plan"])
+            if any(
+                not isinstance(item, dict)
+                or item.get("source_preserved_append_only") is not True
+                or len(str(item.get("rotation_id") or "")) != 64
+                or len(str(item.get("archive_sha256") or "")) != 64
+                for item in rotations
+            ):
+                raise RuntimeError("archive_rotation_receipt_invalid")
+            record = complete_handoff_step(
+                v, source_v, claim_id, "archive_rotation", {
+                    "plan_digest": row["plan_digest"],
+                    "version": v,
+                    "rotations": rotations,
+                    "rotation_set_digest": canonical_digest(rotations),
+                }
+            )
+
+        if not done("log_cleanup"):
+            row = record["steps"]["log_cleanup"]
+            if row.get("status") == "pending":
+                log_plan = _build_strict_log_cleanup_plan(v)
+                log_plan["publication_id"] = record["identity"]["publication_id"]
+                record = plan_handoff_step(
+                    v, source_v, claim_id, "log_cleanup", log_plan
+                )
+                row = record["steps"]["log_cleanup"]
+            log_archives = _execute_strict_log_cleanup(
+                row["plan"],
+                expected_handoff_version=v,
+                expected_publication_id=record["identity"]["publication_id"],
+            )
+            record = complete_handoff_step(
+                v, source_v, claim_id, "log_cleanup", {
+                    "plan_digest": row["plan_digest"],
+                    "version": v,
+                    "archives": log_archives,
+                    "archive_set_digest": canonical_digest(log_archives),
+                }
+            )
+
+        reap_row = record["steps"]["pool_reap"]
+        if reap_row.get("status") != "completed":
+            if reap_row.get("status") == "pending":
+                reap_plan = _build_pool_reap_plan(record)
+                record = plan_handoff_step(
+                    v, source_v, claim_id, "pool_reap", reap_plan
+                )
+                reap_row = record["steps"]["pool_reap"]
+            reap_plan = reap_row["plan"]
+            reap_output = await _execute_pool_reap_plan(reap_plan, record)
+            record = complete_handoff_step(
+                v,
+                source_v,
+                claim_id,
+                "pool_reap",
+                {**reap_output, "plan_digest": reap_row["plan_digest"]},
+            )
+
+        if not done("cycle_annotation"):
+            snapshot = load_archive_snapshot(v)
+            row = record["steps"]["cycle_annotation"]
+            if row.get("status") == "pending":
+                unannotated = dict(snapshot)
+                unannotated.pop("archivist_notes", None)
+                record = plan_handoff_step(
+                    v,
+                    source_v,
+                    claim_id,
+                    "cycle_annotation",
+                    {
+                        "schema_version": 1,
+                        "kind": "cycle-archivist-annotation-plan",
+                        "publication_id": record["identity"]["publication_id"],
+                        "archive_pre_annotation_digest": canonical_digest(
+                            unannotated
+                        ),
+                    },
+                )
+                row = record["steps"]["cycle_annotation"]
+            unannotated = dict(snapshot)
+            unannotated.pop("archivist_notes", None)
+            if canonical_digest(unannotated) != row["plan"].get(
+                "archive_pre_annotation_digest"
+            ):
+                raise RuntimeError("cycle_annotation_archive_preimage_changed")
+            from post_publication_handoff import local_handoff_identity_errors
+
+            local_cycle_issues = local_handoff_identity_errors(record)
+            if local_cycle_issues:
+                raise RuntimeError(
+                    "cycle_annotation_local_identity_invalid:"
+                    + ";".join(local_cycle_issues[:30])
+                )
+            existing_annotation = snapshot.get("archivist_notes")
+            if existing_annotation is not None:
+                from cycle_archivist import (
+                    _offline_cycle_input_errors,
+                    annotation_identity_errors,
+                )
+
+                issues = _offline_cycle_input_errors(
+                    snapshot,
+                    record,
+                    version=v,
+                    source_v=source_v,
+                )
+                issues.extend(annotation_identity_errors(
+                    existing_annotation,
+                    snapshot,
+                    version=v,
+                    source_v=source_v,
+                ))
+                if issues:
+                    raise RuntimeError("existing_cycle_annotation_invalid")
+                annotation = existing_annotation
+            else:
+                from cycle_archivist import run_cycle_archivist_analysis
+
+                annotation = await run_cycle_archivist_analysis(
+                    v,
+                    source_v,
+                    snapshot,
+                    _get_ui(),
+                    handoff_record=record,
+                )
+                if annotation.get("status") != "annotated":
+                    raise RuntimeError(
+                        "cycle_archivist_required_analysis_unavailable:"
+                        + ";".join(annotation.get("issues") or [])
+                    )
+            annotation_receipt = write_archive_annotation(
+                v, source_v, claim_id, annotation
+            )
+            record = complete_handoff_step(
+                v,
+                source_v,
+                claim_id,
+                "cycle_annotation",
+                {**annotation_receipt, "plan_digest": row["plan_digest"]},
+            )
+
+        if not done("housekeeping"):
+            row = record["steps"]["housekeeping"]
+            dependency_receipts = {
+                name: record["steps"][name]["receipt"]["receipt_digest"]
+                for name in (
+                    "archive_rotation", "log_cleanup", "pool_reap",
+                    "cycle_annotation",
+                )
+            }
+            if row.get("status") == "pending":
+                record = plan_handoff_step(
+                    v,
+                    source_v,
+                    claim_id,
+                    "housekeeping",
+                    {
+                        "schema_version": 1,
+                        "kind": "post-publication-worktree-verification-plan",
+                        "expected_head_oid": record["identity"]["commit_oid"],
+                        "expected_dirty_paths": [],
+                        "tracked_housekeeping_commit_allowed": False,
+                        "dependency_receipts": dependency_receipts,
+                    },
+                )
+                row = record["steps"]["housekeeping"]
+            if row["plan"].get("dependency_receipts") != dependency_receipts:
+                raise RuntimeError("post_publication_dependency_receipt_changed")
+            rotation_output = record["steps"]["archive_rotation"][
+                "receipt"
+            ]["output"]
+            recorded_rotations = rotation_output.get("rotations")
+            if canonical_digest(recorded_rotations) != rotation_output.get(
+                "rotation_set_digest"
+            ):
+                raise RuntimeError("archive_rotation_final_reproof_mismatch")
+            from evolution_infra import validate_archive_rotation_receipts
+
+            if validate_archive_rotation_receipts(
+                v,
+                recorded_rotations,
+                rotation_plan=record["steps"]["archive_rotation"]["plan"],
+            ) != recorded_rotations:
+                raise RuntimeError("archive_rotation_final_receipt_mismatch")
+            log_row = record["steps"]["log_cleanup"]
+            _revalidate_strict_log_archives(
+                log_row["plan"],
+                log_row["receipt"]["output"].get("archives"),
+                expected_handoff_version=v,
+                expected_publication_id=record["identity"]["publication_id"],
+            )
+            pool_output = record["steps"]["pool_reap"]["receipt"]["output"]
+            _initial_pool, target_names, _selection_snapshot = (
+                _validate_pool_reap_plan(
+                    record["steps"]["pool_reap"]["plan"],
+                    record,
+                )
+            )
+            if (
+                pool_output.get("required_reaps") != len(target_names)
+                or pool_output.get("removed_bots") != sorted(target_names)
+            ):
+                raise RuntimeError("pool_reap_final_target_set_mismatch")
+            prior_reap_proofs = {
+                proof.get("bot"): proof
+                for proof in pool_output.get("reap_proofs") or []
+                if isinstance(proof, dict)
+            }
+            final_reap_proofs = []
+            for name in target_names:
+                proof = _converge_and_verify_reaped_target(name, record)
+                prior = prior_reap_proofs.get(name) or {}
+                for field in (
+                    "version", "completion_commit_oid", "tombstone_tag",
+                    "tombstone_object_oid", "tombstone_commit_oid",
+                ):
+                    if proof.get(field) != prior.get(field):
+                        raise RuntimeError("pool_reap_final_reproof_mismatch")
+                final_reap_proofs.append(proof)
+            housekeeping = _verify_post_publication_worktree(
+                expected_head=row["plan"]["expected_head_oid"],
+                expected_dirty=set(row["plan"]["expected_dirty_paths"]),
+            )
+            housekeeping.update({
+                "archive_rotation_revalidated": True,
+                "strict_log_archives_revalidated": True,
+                "reap_proofs": final_reap_proofs,
+                "reap_proof_set_digest": canonical_digest(final_reap_proofs),
+            })
+            record = complete_handoff_step(
+                v,
+                source_v,
+                claim_id,
+                "housekeeping",
+                {**housekeeping, "plan_digest": row["plan_digest"]},
+            )
+
+        completed = complete_post_publication_handoff(v, source_v, claim_id)
+        claim_id = ""
+        _set_pipeline_status(f"Archived v{v}", is_working=False)
+        result = {
+            "version": v,
+            "source_v": source_v,
+            "archivist_completed": True,
+            "handoff_identity_digest": completed["identity_digest"],
+            "publication_id": completed["identity"]["publication_id"],
+            "steps": completed["steps"],
+            "next_tool": "prepare_generation",
+        }
+        # Completion telemetry is deliberately downstream of the durable
+        # archive/record linearization.  It has no marker file, is not a
+        # required handoff step, and failure cannot reopen the generation.
+        try:
+            log_system_event(
+                "pipeline.archivist_done",
+                "success",
+                f"Archivist completed required effects for v{v}",
+                {
+                    "version": v,
+                    "source_v": source_v,
+                    "publication_id": completed["identity"]["publication_id"],
+                    "handoff_identity_digest": completed["identity_digest"],
+                },
+            )
+        except Exception:
+            pass
+        return result
+    except LLMAvailabilityBlocked:
+        if claim_id:
+            release_post_publication_handoff_claim(
+                v, source_v, claim_id, error="llm_availability_blocked"
+            )
+        raise
+    except Exception as exc:
+        if claim_id:
+            release_post_publication_handoff_claim(
+                v,
+                source_v,
+                claim_id,
+                error=f"{type(exc).__name__}: {str(exc)[:500]}",
+            )
+        return {
+            "error": "POST_PUBLICATION_ARCHIVIST_PENDING",
+            "version": v,
+            "source_v": source_v,
+            "archivist_completed": False,
+            "checkpoint_cleared_by_archivist": False,
+            "detail": f"{type(exc).__name__}: {str(exc)[:500]}",
+            "directive": (
+                "Repair the required effect and retry run_archivist for the same "
+                "durable handoff; do not prepare another generation."
+            ),
+        }
 
 
 @tool("run_archivist", "Run the one-shot post-commit consistency/archive audit. Advisory notes stay in the content-bound archive snapshot and never enter prompt evidence directly.", {"version": int, "source_v": int})
@@ -2326,157 +3902,9 @@ async def run_archivist(args):
     v = int(v)
     source_v = int(source_v)
 
-    from evolution_infra import consume_post_commit_archivist_receipt
-
-    receipt_ok, receipt_error, receipt = consume_post_commit_archivist_receipt(
-        v,
-        source_v,
+    return _json_tool_result(
+        await _run_durable_post_publication_archivist(v, source_v)
     )
-    if not receipt_ok:
-        return _json_tool_result({
-            "error": "POST_COMMIT_ARCHIVIST_RECEIPT_REQUIRED",
-            "version": v,
-            "source_v": source_v,
-            "detail": receipt_error,
-            "directive": (
-                "run_archivist is a one-shot post-commit handoff. It cannot be "
-                "replayed for a historical bot or a different source version."
-            ),
-        })
-
-    _set_pipeline_status(f"Archiving v{v}")
-
-    ui = _get_ui()
-    preexisting_dirty = _git_dirty_paths()
-
-    # 1. Verify post-commit consistency
-    bot_dir = get_bot_dir(v)
-    consistency_issues = []
-    if not (bot_dir / ".completed").exists():
-        consistency_issues.append(f".completed missing for v{v}")
-    if not git_has_tag(v):
-        consistency_issues.append(f"git tag {bot_tag(v)} missing")
-    ratings = load_ratings()
-    if bot_name(v) not in ratings:
-        consistency_issues.append(f"v{v} not in glicko_ratings.json")
-
-    # 2. Auto-reap if pool exceeds limit
-    reap_result = None
-    active_bots = get_active_bots()
-    if len(active_bots) > MAX_ACTIVE_BOTS:
-        try:
-            from tool_bot_management import _do_reap_weakest
-            reap_result = await _do_reap_weakest()
-        except Exception as e:
-            reap_result = {"error": str(e)}
-
-    # 3. Load archive snapshot for LLM context
-    archive_path = ARCHIVE_DIR / f"v{v}.json"
-    snapshot = {}
-    if archive_path.exists():
-        try:
-            with open(archive_path, "r") as f:
-                snapshot = json.load(f)
-        except Exception:
-            pass
-
-    # Inject reviewer context into snapshot — prefer archive data (checkpoint is cleared by commit_bot)
-    review_info = ""
-    reviewer_context = snapshot.get("reviewer_context", "")
-    if reviewer_context:
-        review_info = reviewer_context
-    else:
-        # Fallback: try checkpoint (only works if run_archivist is called before commit clears it)
-        try:
-            ckpt = read_pipeline_checkpoint()
-            if ckpt:
-                review_gate = ckpt.get("gate_results", {}).get("review", {})
-                cs = review_gate.get("change_summary", "")
-                ra = review_gate.get("risk_areas", [])
-                if cs:
-                    review_info += f"\nReviewer Change Summary: {cs}"
-                if ra:
-                    review_info += f"\nReviewer Risk Areas: {', '.join(ra) if isinstance(ra, list) else str(ra)}"
-        except Exception:
-            pass
-
-    # Also extract reviewer info from archive snapshot fields
-    if not review_info:
-        cs = snapshot.get("reviewer_change_summary", "")
-        ra = snapshot.get("reviewer_risk_areas", [])
-        if cs:
-            review_info += f"\nReviewer Change Summary: {cs}"
-        if ra:
-            review_info += f"\nReviewer Risk Areas: {', '.join(ra) if isinstance(ra, list) else str(ra)}"
-
-    # Inject review info into snapshot for archivist LLM
-    if review_info:
-        snapshot["reviewer_context"] = review_info
-
-    # 4. Content-bound archive annotation; never a strategy-memory writer.
-    llm_result = None
-    try:
-        from cycle_archivist import run_cycle_archivist_analysis
-        llm_result = await run_cycle_archivist_analysis(v, source_v, snapshot, ui)
-        # Append LLM notes to archive snapshot
-        if llm_result and archive_path.exists():
-            snapshot["archivist_notes"] = llm_result
-            with locked_file(archive_path, "w") as f:
-                json.dump(snapshot, f, indent=2, ensure_ascii=False)
-
-        # Cross-generation lessons are produced only by the identity-bound
-        # native replay memory pipeline.  Free-form Archivist text remains
-        # advisory inside this exact archive snapshot and is never promoted to
-        # prompt evidence or a tracked markdown pool.
-    except Exception as e:
-        llm_result = {"error": str(e)}
-
-    housekeeping_commit = None
-    try:
-        housekeeping_commit = _archive_housekeeping_commit(
-            v, reap_result, preexisting_dirty
-        )
-    except Exception as e:
-        housekeeping_commit = {"error": str(e)}
-        log_system_event(
-            "pipeline.archivist_git_commit_failed", "error",
-            f"v{v}: archivist housekeeping commit failed: {str(e)[:180]}",
-            {"version": v, "error": str(e)[:500]},
-        )
-
-    result = {
-        "version": v,
-        "source_v": source_v,
-        "post_commit_archivist_receipt_digest": str(
-            (receipt or {}).get("receipt_digest") or ""
-        ),
-        "consistency_ok": len(consistency_issues) == 0,
-        "consistency_issues": consistency_issues if consistency_issues else None,
-        "reap_result": reap_result,
-        "pool_size": len(active_bots),
-        "snapshot": snapshot,
-        "llm_analysis": llm_result,
-        "housekeeping_commit": housekeeping_commit,
-    }
-
-    # Record archived stage in checkpoint (then clear)
-    _ckpt = _matching_checkpoint(v, source_v)
-    if _ckpt:
-        write_pipeline_checkpoint(v, source_v, "archived",
-                                  master_plan=_ckpt.get("master_plan"),
-                                  gate_results=_ckpt.get("gate_results"))
-    clear_pipeline_checkpoint()
-
-    try:
-        log_system_event('pipeline.archivist_done', 'info',
-            f'Archivist completed for v{v}',
-            {'version': v, 'source_v': source_v,
-             'consistency_ok': len(consistency_issues) == 0,
-             'pool_size': len(active_bots)})
-    except Exception:
-        pass
-
-    return _json_tool_result(result)
 
 
 # ──────────────────────────────────────────────
@@ -2690,6 +4118,47 @@ async def run_crossover(args):
         return _json_tool_result({"error": f"Parent A v{parent_a} has no git tag '{bot_tag(parent_a)}'. Cannot use uncommitted code."})
     if not git_has_tag(parent_b):
         return _json_tool_result({"error": f"Parent B v{parent_b} has no git tag '{bot_tag(parent_b)}'. Cannot use uncommitted code."})
+
+    parent_a_evidence_dir = parent_a_dir
+    parent_b_evidence_dir = parent_b_dir
+    bound_parent_snapshot = None
+    stored_crossover_context = (
+        ((authoritative_ckpt.get("audit_context") or {}).get("crossover") or {})
+        if isinstance(authoritative_ckpt, dict)
+        else {}
+    )
+    stored_compatibility = (
+        stored_crossover_context.get("compatibility")
+        if isinstance(stored_crossover_context, dict)
+        else None
+    )
+    if authoritative_stage == "crossover_running" and isinstance(
+        stored_compatibility, dict
+    ):
+        try:
+            from audit_agents import resolve_crossover_parent_snapshots
+
+            bound_parent_snapshot = resolve_crossover_parent_snapshots(
+                stored_compatibility.get("parent_snapshot_receipt"),
+                checkpoint=authoritative_ckpt,
+                parent_a_v=parent_a,
+                parent_b_v=parent_b,
+                target_v=target_v,
+            )
+            parent_a_evidence_dir = bound_parent_snapshot[
+                "frozen_parent_a_dir"
+            ]
+            parent_b_evidence_dir = bound_parent_snapshot[
+                "frozen_parent_b_dir"
+            ]
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "CROSSOVER_PARENT_SNAPSHOT_RECEIPT_INVALID",
+                "success": False,
+                "failure_class": "integrity",
+                "detail": f"{type(exc).__name__}: {str(exc)[:500]}",
+                "target_v": target_v,
+            })
     active_parent_set = set(get_active_bots())
     ineligible_parents = [
         bot_name(version)
@@ -2708,8 +4177,12 @@ async def run_crossover(args):
         })
     try:
         from national_position_contract import detect_position_semantics_errors
-        parent_a_position_errors = detect_position_semantics_errors(parent_a_dir)
-        parent_b_position_errors = detect_position_semantics_errors(parent_b_dir)
+        parent_a_position_errors = detect_position_semantics_errors(
+            parent_a_evidence_dir
+        )
+        parent_b_position_errors = detect_position_semantics_errors(
+            parent_b_evidence_dir
+        )
     except Exception as exc:
         parent_a_position_errors = [f"position_contract_check_error: {type(exc).__name__}: {str(exc)[:200]}"]
         parent_b_position_errors = []
@@ -2749,14 +4222,18 @@ async def run_crossover(args):
 
         if getattr(get_workflow_profile(), "national_execution_mode", None) != "native_tcp":
             raise RuntimeError("crossover supports only native_tcp parents")
-        if (parent_a_dir / "national_bot.py").exists():
+        if (parent_a_evidence_dir / "national_bot.py").exists():
             from national_capability_contract import evaluate_national_capabilities
             from runtime_architecture_policy import build_architecture_policy
 
-            parent_a_capabilities = evaluate_national_capabilities(parent_a_dir)
-            parent_b_capabilities = evaluate_national_capabilities(parent_b_dir)
+            parent_a_capabilities = evaluate_national_capabilities(
+                parent_a_evidence_dir
+            )
+            parent_b_capabilities = evaluate_national_capabilities(
+                parent_b_evidence_dir
+            )
             architecture_policy = build_architecture_policy(
-                parent_a_dir,
+                parent_a_evidence_dir,
                 source_capabilities=parent_a_capabilities,
             )
 
@@ -2833,10 +4310,14 @@ async def run_crossover(args):
         # resumable child and must never inherit the pre-synthesis receipt.
         if target_dir.exists():
             try:
-                from tool_bot_management import _do_abandon_generation
+                from tool_bot_management import (
+                    _do_abandon_generation,
+                    expected_abandon_identity,
+                )
 
                 abandon_result = await _do_abandon_generation(
-                    reason=f"crossover_pre_synthesis_artifact_unexpected:v{target_v}"
+                    reason=f"crossover_pre_synthesis_artifact_unexpected:v{target_v}",
+                    **expected_abandon_identity(read_pipeline_checkpoint()),
                 )
             except Exception as exc:
                 abandon_result = {
@@ -2906,10 +4387,14 @@ async def run_crossover(args):
         )
         if preserved_child_drift:
             try:
-                from tool_bot_management import _do_abandon_generation
+                from tool_bot_management import (
+                    _do_abandon_generation,
+                    expected_abandon_identity,
+                )
 
                 abandon_result = await _do_abandon_generation(
-                    reason=f"crossover_preserved_child_drift:v{target_v}"
+                    reason=f"crossover_preserved_child_drift:v{target_v}",
+                    **expected_abandon_identity(read_pipeline_checkpoint()),
                 )
             except Exception as exc:
                 abandon_result = {
@@ -2960,7 +4445,7 @@ async def run_crossover(args):
 
         try:
             resume_prepared_transition = evaluate_architecture_transition(
-                parent_a_dir,
+                parent_a_evidence_dir,
                 target_dir,
                 expected_policy=architecture_policy,
                 evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
@@ -3080,10 +4565,7 @@ async def run_crossover(args):
                 parent_b,
                 ui,
                 target_v=target_v,
-                architecture_context={
-                    "architecture_policy": architecture_policy,
-                    "parent_capabilities": capability_context,
-                },
+                authoritative_checkpoint=authoritative_ckpt,
             )
         if not compat.get("compatible", True):
             # Weak-model compatibility judgement is merge advice only. A single
@@ -3104,7 +4586,54 @@ async def run_crossover(args):
     except LLMAvailabilityBlocked:
         raise
     except Exception as e:
+        from audit_agents import CrossoverParentSnapshotError
+
+        if isinstance(e, CrossoverParentSnapshotError):
+            return _json_tool_result({
+                "error": "CROSSOVER_PARENT_SNAPSHOT_CAPTURE_FAILED",
+                "success": False,
+                "failure_class": "integrity",
+                "detail": str(e)[:500],
+                "target_v": target_v,
+                "provider_called": False,
+            })
         _log.warning("Crossover compat audit error (skipping): %s", e)
+
+    if isinstance(compat, dict) and isinstance(
+        compat.get("parent_snapshot_receipt"), dict
+    ):
+        try:
+            from audit_agents import (
+                frozen_crossover_parent_architecture,
+                resolve_crossover_parent_snapshots,
+            )
+
+            bound_parent_snapshot = resolve_crossover_parent_snapshots(
+                compat["parent_snapshot_receipt"],
+                checkpoint=authoritative_ckpt,
+                parent_a_v=parent_a,
+                parent_b_v=parent_b,
+                target_v=target_v,
+            )
+            frozen_architecture = frozen_crossover_parent_architecture(
+                bound_parent_snapshot
+            )
+            parent_a_evidence_dir = bound_parent_snapshot[
+                "frozen_parent_a_dir"
+            ]
+            parent_b_evidence_dir = bound_parent_snapshot[
+                "frozen_parent_b_dir"
+            ]
+            architecture_policy = frozen_architecture["architecture_policy"]
+            capability_context = frozen_architecture["capability_context"]
+        except Exception as exc:
+            return _json_tool_result({
+                "error": "CROSSOVER_PARENT_SNAPSHOT_RECEIPT_INVALID",
+                "success": False,
+                "failure_class": "integrity",
+                "detail": f"{type(exc).__name__}: {str(exc)[:500]}",
+                "target_v": target_v,
+            })
 
     success = True
     if resume_prepared_transition is None:
@@ -3206,7 +4735,7 @@ async def run_crossover(args):
         try:
             prepare_scope_files = [
                 p for p in _py_files_changed_between(
-                    get_bot_dir(parent_a),
+                    parent_a_evidence_dir,
                     get_bot_dir(target_v),
                 )
                 if "backup" not in p
@@ -3235,7 +4764,7 @@ async def run_crossover(args):
                 )
 
                 prepared_transition = evaluate_architecture_transition(
-                    parent_a_dir,
+                    parent_a_evidence_dir,
                     target_dir,
                     expected_policy=architecture_policy,
                     evaluation_phase=ARCHITECTURE_TRANSITION_PHASE_PREPLAN,
@@ -3373,7 +4902,7 @@ async def run_crossover(args):
                 ):
                     raise RuntimeError("generation H2H snapshot payload identity drift")
                 capability_snapshot = build_prepared_capability_snapshot(
-                    parent_a_dir,
+                    parent_a_evidence_dir,
                     target_dir,
                     parent_capabilities=prepared_transition.get(
                         "source_capabilities"
@@ -3383,8 +4912,8 @@ async def run_crossover(args):
                     ),
                 )
                 prepared_baseline_contract = build_prepared_baseline_contract(
-                    parent_a_dir,
-                    parent_b_dir,
+                    parent_a_evidence_dir,
+                    parent_b_evidence_dir,
                     target_dir,
                     source_v=parent_a,
                     parent2_v=parent_b,
@@ -3399,7 +4928,7 @@ async def run_crossover(args):
                     h2h_snapshot_identity=h2h_identity,
                 )
                 prepared_architecture_policy = build_architecture_policy(
-                    parent_a_dir,
+                    parent_a_evidence_dir,
                     source_capabilities=prepared_transition.get(
                         "source_capabilities"
                     ),
@@ -3514,9 +5043,13 @@ async def run_crossover(args):
         # CROSSOVER_LLM_EXHAUSTED token so the orchestrator recognizes the
         # abandon instead of looping.
         try:
-            from tool_bot_management import _do_abandon_generation
+            from tool_bot_management import (
+                _do_abandon_generation,
+                expected_abandon_identity,
+            )
             abandon_result = await _do_abandon_generation(
-                reason=f"crossover_llm_exhausted:v{parent_a}xv{parent_b}"
+                reason=f"crossover_llm_exhausted:v{parent_a}xv{parent_b}",
+                **expected_abandon_identity(read_pipeline_checkpoint()),
             )
         except Exception as abandon_exc:
             abandon_result = {

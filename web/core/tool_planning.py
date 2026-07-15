@@ -4,11 +4,13 @@ import ast
 from copy import deepcopy
 import io
 import json
+import math
 import os
 import py_compile
 import re
 import hashlib
 import shutil
+import stat
 import time
 import tokenize
 from dataclasses import dataclass
@@ -74,6 +76,80 @@ _PROTOCOL_BOOTSTRAP_NO_STRENGTH = (
 # national_tcp_policy_v1 has one candidate-owned source artifact.  System
 # runtime/precompute bytes and any extra helper/asset are never Worker targets.
 _ACTIVE_CANDIDATE_WRITABLE_FILES = frozenset({"policy.py"})
+
+
+def _render_literature_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {"source_v", "next_v", "weakness", "stagnation_info"}
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Literature renderer input contract mismatch")
+    source_v = int(inputs["source_v"])
+    probe_template = (
+        Path(__file__).resolve().parent / "prompts" / "literature_probe_prompt.md"
+    ).read_text(encoding="utf-8")
+    weakness = str(inputs["weakness"]).strip() or (
+        "General postflop stack-off leak: 0%-fold facing river all-ins (made_strength "
+        "0.40-0.50 always calls). Need optimal fold frequency vs polarized jam."
+    )
+    stagnation_info = str(inputs["stagnation_info"] or "")
+    text = (
+        f"{probe_template}\n\n"
+        f"## Current H2H weakness to research\n{weakness}\n\n"
+        f"## Stagnation context\n"
+        f"{stagnation_info or 'Stagnation detected — current axis exhausted.'}\n\n"
+        f"## Source bot version\nv{source_v}\n\n"
+        f"Now execute the 4 steps (PLAN → SEARCH → REFLECT → WRITE) and return the final "
+        f"WRITE-step JSON. You have web search tools available — use them for the SEARCH step."
+    )
+    brief_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="governed_literature_brief",
+        evidence_provenance={
+            "source_v": source_v,
+            "next_v": int(inputs["next_v"]),
+            "brief_digest": brief_digest,
+        },
+    )
+
+
+def _is_fresh_empty_pool_bootstrap(checkpoint: dict | None) -> bool:
+    """Return whether source_v is numeric high-water rather than an artifact."""
+
+    receipt = (
+        (checkpoint.get("audit_context") or {}).get("protocol_bootstrap")
+        if isinstance(checkpoint, dict)
+        else None
+    )
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("mode") == "fresh_national_policy_bootstrap"
+        and receipt.get("source_artifact_inherited") is False
+    )
+
+
+def _master_source_fingerprint(checkpoint: dict | None, source_v: int) -> str:
+    """Bind Master retries without resolving a numeric-only source path."""
+
+    if _is_fresh_empty_pool_bootstrap(checkpoint):
+        receipt = (checkpoint.get("audit_context") or {}).get(
+            "protocol_bootstrap"
+        ) or {}
+        payload = {
+            "kind": "numeric-high-water-lineage-only",
+            "source_v": int(source_v),
+            "receipt_digest": str(receipt.get("receipt_digest") or ""),
+        }
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    return _complete_artifact_fingerprint(get_bot_dir(source_v))
 
 
 def _protocol_bootstrap_direction_audit(
@@ -195,30 +271,282 @@ _LITERATURE_PROBE_BINDING_FIELDS = (
     "requirement_context_digest",
 )
 
+_LITERATURE_PROBE_PAYLOAD_SCHEMA = "national_tcp_literature_probe_payload_v2"
+_LITERATURE_PROBE_PRODUCER_SCHEMA = "national_tcp_literature_probe_producer_v2"
+_LITERATURE_PROBE_CHECKPOINT_BINDING_SCHEMA = (
+    "national_tcp_literature_probe_checkpoint_binding_v1"
+)
+_LITERATURE_PROBE_TRANSLATION_SCHEMA = (
+    "national_tcp_literature_probe_translation_gate_v1"
+)
+_LITERATURE_PROBE_CACHE_SCHEMA = "national_tcp_literature_probe_cache_v2"
+_LITERATURE_PROBE_CACHE_MAX_BYTES = 1_048_576
+_LITERATURE_PROBE_REASONS = frozenset({
+    "completed",
+    "governed_skip",
+    "literature_probe_timeout",
+    "literature_probe_failed",
+})
+_LITERATURE_PROPOSAL_FIELDS = (
+    "claim",
+    "source_url",
+    "numeric_claim",
+    "target_fn",
+    "proposed_change",
+    "pseudocode",
+    "firing_tuple",
+    "h2h_weakness_addressed",
+)
+_LITERATURE_PROBE_BODY_FIELDS = (
+    "schema",
+    "next_v",
+    "source_v",
+    "reason",
+    "skipped",
+    "weakness",
+    "stagnation_info",
+    "proposal",
+    "candidate_id",
+    "gated_out",
+    "elapsed_sec",
+    "timeout_s",
+    "error",
+    "context_fingerprint",
+    *_LITERATURE_PROBE_BINDING_FIELDS,
+    "inject_text",
+)
+_LITERATURE_PROBE_PAYLOAD_FIELDS = frozenset({
+    *_LITERATURE_PROBE_BODY_FIELDS,
+    "canonical_payload_digest",
+    "producer_receipt",
+})
 
-def _literature_probe_binding_matches(
-    payload: dict | None,
-    receipt_binding: dict | None,
-) -> bool:
-    """Require a cached/proposed receipt to match owned route evidence exactly."""
-    return bool(
-        isinstance(payload, dict)
-        and isinstance(receipt_binding, dict)
-        and isinstance(payload.get("reason"), str)
-        and bool(payload.get("reason").strip())
-        and all(
-            payload.get(field) == receipt_binding.get(field)
-            for field in _LITERATURE_PROBE_BINDING_FIELDS
-        )
+
+def _literature_canonical_json(value) -> str:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
     )
 
 
-def _bind_literature_probe_payload(payload: dict, receipt_binding: dict) -> dict:
-    """Attach the current immutable route binding to every terminal outcome."""
-    result = dict(payload)
-    for field in _LITERATURE_PROBE_BINDING_FIELDS:
-        result[field] = deepcopy(receipt_binding[field])
+def _literature_digest(value) -> str:
+    return hashlib.sha256(
+        _literature_canonical_json(value).encode("utf-8")
+    ).hexdigest()
+
+
+def _literature_checkpoint_identity(
+    checkpoint: dict,
+    *,
+    origin_revision: int | None = None,
+) -> str:
+    """Digest the semantic checkpoint preimage across the receipt CAS write."""
+
+    projection = deepcopy(checkpoint)
+    projection.pop("literature_probe", None)
+    for field in ("timestamp", "last_update_ts", "last_stage_change_ts"):
+        projection.pop(field, None)
+    projection["checkpoint_revision"] = (
+        int(origin_revision)
+        if origin_revision is not None
+        else int(checkpoint["checkpoint_revision"])
+    )
+    return _literature_digest(projection)
+
+
+def _literature_checkpoint_binding(
+    checkpoint: dict,
+    receipt_binding: dict,
+) -> dict:
+    if not isinstance(checkpoint, dict):
+        raise ValueError("literature checkpoint is not an object")
+    workflow_run_id = str(checkpoint.get("workflow_run_id") or "").strip()
+    revision = checkpoint.get("checkpoint_revision")
+    if not workflow_run_id or type(revision) is not int or revision < 1:
+        raise ValueError("literature checkpoint has no durable workflow identity")
+    if checkpoint.get("stage") != "direction_audited":
+        raise ValueError("literature checkpoint is not direction_audited")
+    if not isinstance(receipt_binding, dict):
+        raise ValueError("literature requirement binding is missing")
+    return {
+        "schema": _LITERATURE_PROBE_CHECKPOINT_BINDING_SCHEMA,
+        "checkpoint_identity": _literature_checkpoint_identity(checkpoint),
+        "checkpoint_revision": revision,
+        "workflow_run_id": workflow_run_id,
+        "stage": "direction_audited",
+        "next_v": int(checkpoint["next_v"]),
+        "source_v": int(checkpoint["source_v"]),
+        "requirement_context_digest": str(
+            receipt_binding["requirement_context_digest"]
+        ),
+    }
+
+
+def _literature_dispatch_projection(rendered_prompt) -> dict | None:
+    receipt = getattr(rendered_prompt, "dispatch_receipt", None)
+    if receipt is None:
+        return None
+    return {
+        "schema": str(receipt.schema),
+        "role_id": str(receipt.role_id),
+        "runtime_role": str(receipt.runtime_role),
+        "model": str(receipt.model),
+        "dispatch_receipt_digest": str(receipt.receipt_digest),
+        "renderer_receipt_digest": str(receipt.renderer.receipt_digest),
+        "rendered_prompt_sha256": str(
+            receipt.renderer.rendered_prompt_sha256
+        ),
+        "evidence_receipt_digest": str(receipt.evidence.receipt_digest),
+        "evidence_provenance_sha256": str(
+            receipt.evidence.provenance_sha256
+        ),
+        "mcp_receipt_digest": str(receipt.mcp.receipt_digest),
+        "mcp_config_sha256": str(receipt.mcp.config_sha256),
+    }
+
+
+def _expected_literature_dispatch(
+    *,
+    next_v: int,
+    source_v: int,
+    weakness: str,
+    stagnation_info: str,
+) -> dict:
+    rendered = _issue_literature_rendered_prompt(
+        next_v=next_v,
+        source_v=source_v,
+        weakness=weakness,
+        stagnation_info=stagnation_info,
+    )
+    projection = _literature_dispatch_projection(rendered)
+    if projection is None:
+        raise ValueError("literature dispatch receipt was not issued")
+    return projection
+
+
+def _issue_literature_rendered_prompt(
+    *,
+    next_v: int,
+    source_v: int,
+    weakness: str,
+    stagnation_info: str,
+):
+    from llm_query import render_llm_prompt
+
+    return render_llm_prompt(
+        f"LITERATURE_PROBE (v{int(next_v)})",
+        producer=_render_literature_provider_prompt,
+        renderer_inputs={
+            "source_v": int(source_v),
+            "next_v": int(next_v),
+            "weakness": str(weakness),
+            "stagnation_info": str(stagnation_info),
+        },
+    )
+
+
+def _normalize_literature_proposal(proposal) -> dict | None:
+    if not isinstance(proposal, dict) or proposal.get("claim") is None:
+        return None
+    normalized = {
+        field: str(proposal.get(field) or "")
+        for field in _LITERATURE_PROPOSAL_FIELDS
+    }
+    if not normalized["claim"]:
+        return None
+    if any(len(value) > 32_768 for value in normalized.values()):
+        raise ValueError("literature proposal field exceeds bounded schema")
+    return normalized
+
+
+def _literature_candidate_submission(
+    proposal: dict | None,
+    next_v: int,
+    submitted_candidate_id: str | None = None,
+) -> dict | None:
+    if proposal is None:
+        return None
+    result = {
+        "claim": proposal["claim"],
+        "source_url": proposal["source_url"],
+        "numeric_claim": proposal["numeric_claim"],
+        "target_fn": proposal["target_fn"],
+        "proposed_change": proposal["proposed_change"],
+        "pseudocode": proposal["pseudocode"],
+        "firing_tuple": proposal["firing_tuple"],
+        "born_gen": int(next_v),
+    }
+    if submitted_candidate_id is not None:
+        result["id"] = str(submitted_candidate_id)
     return result
+
+
+def _expected_literature_candidate_id(
+    proposal: dict | None,
+    *,
+    checkpoint_identity: str,
+    terminal_output_sha256: str | None,
+) -> str | None:
+    if proposal is None:
+        return None
+    identity = {
+        "checkpoint_identity": str(checkpoint_identity),
+        "terminal_output_sha256": str(terminal_output_sha256 or ""),
+        "proposal_digest": _literature_digest(proposal),
+    }
+    return f"wc_lit_{_literature_digest(identity)[:32]}"
+
+
+def _literature_translation_receipt(
+    proposal: dict | None,
+    *,
+    next_v: int,
+    candidate_id,
+    checkpoint_identity: str,
+    terminal_output_sha256: str | None,
+) -> dict:
+    submitted_candidate_id = _expected_literature_candidate_id(
+        proposal,
+        checkpoint_identity=checkpoint_identity,
+        terminal_output_sha256=terminal_output_sha256,
+    )
+    submission = _literature_candidate_submission(
+        proposal,
+        next_v,
+        submitted_candidate_id,
+    )
+    if submission is None:
+        return {
+            "schema": _LITERATURE_PROBE_TRANSLATION_SCHEMA,
+            "status": "not_applicable",
+            "eligible": False,
+            "submitted_candidate_id": None,
+            "candidate_id": None,
+            "gated_out": False,
+            "candidate_submission_digest": None,
+        }
+    from research_governance import translation_gate
+
+    eligible = bool(translation_gate(deepcopy(submission)))
+    normalized_candidate_id = (
+        str(candidate_id).strip()
+        if isinstance(candidate_id, str) and str(candidate_id).strip()
+        else None
+    )
+    if normalized_candidate_id not in {None, submitted_candidate_id}:
+        raise ValueError("literature governance returned a non-deterministic candidate id")
+    return {
+        "schema": _LITERATURE_PROBE_TRANSLATION_SCHEMA,
+        "status": "accepted" if normalized_candidate_id is not None else "rejected",
+        "eligible": eligible,
+        "submitted_candidate_id": submitted_candidate_id,
+        "candidate_id": normalized_candidate_id,
+        "gated_out": normalized_candidate_id is None,
+        "candidate_submission_digest": _literature_digest(submission),
+    }
 
 
 def _literature_probe_stale_result(next_v: int | str, source_v: int | str | None) -> dict:
@@ -233,40 +561,17 @@ def _literature_probe_stale_result(next_v: int | str, source_v: int | str | None
     }
 
 
-def _literature_probe_cache_matches(
-    data: dict,
-    *,
-    source_v: int | str | None = None,
-    h2h_weakness: str = "",
-    stagnation_info: str = "",
-    receipt_binding: dict | None = None,
-) -> bool:
-    if receipt_binding is not None:
-        return _literature_probe_binding_matches(data, receipt_binding)
-    if source_v is not None and data.get("source_v") is not None:
-        try:
-            if int(data.get("source_v")) != int(source_v):
-                return False
-        except (TypeError, ValueError):
-            return False
-    expected = _literature_probe_context_fingerprint(
-        source_v,
-        h2h_weakness,
-        stagnation_info,
-    )
-    stored = data.get("context_fingerprint")
-    if stored:
-        return stored == expected
+def _h2h_citation_audit_feedback(next_v, errors, repair_guidance=""):
+    """Render the deterministic citation failure without format ambiguity."""
 
-    # Backward-compatible safety for older cache files: only trust them when
-    # their recorded weakness exactly matches the current brief. If the current
-    # caller did not provide a weakness, source_v equality above is the best
-    # available signal.
-    current_weakness = " ".join((h2h_weakness or "").split())
-    stored_weakness = " ".join(str(data.get("weakness", "") or "").split())
-    if current_weakness and current_weakness != stored_weakness:
-        return False
-    return True
+    guidance = f"\n\n{repair_guidance}" if repair_guidance else ""
+    return (
+        "Master plan H2H citations disagree with the stable generation "
+        "H2H snapshot. Correct the cited raw games/a_wins/b_wins/draws counts "
+        f"against web/core/results/v{int(next_v)}/evidence_snapshot/"
+        "head_to_head.json: "
+        f"{'; '.join(str(item) for item in list(errors)[:6])}{guidance}"
+    )
 
 
 def _literature_probe_inject_text(payload: dict) -> str:
@@ -306,6 +611,546 @@ def _literature_probe_inject_text(payload: dict) -> str:
     )
 
 
+def _build_literature_probe_payload(
+    payload: dict,
+    *,
+    checkpoint: dict,
+    receipt_binding: dict,
+    rendered_prompt=None,
+    terminal_output: str | None = None,
+) -> dict:
+    """Create the sole durable literature outcome from system-owned inputs."""
+
+    reason = str(payload.get("reason") or "").strip()
+    if reason not in _LITERATURE_PROBE_REASONS:
+        raise ValueError(f"unsupported literature terminal reason: {reason!r}")
+    next_v = int(checkpoint["next_v"])
+    source_v = int(checkpoint["source_v"])
+    if int(payload.get("next_v")) != next_v or int(payload.get("source_v")) != source_v:
+        raise ValueError("literature terminal identity drift")
+
+    proposal = (
+        _normalize_literature_proposal(payload.get("proposal"))
+        if reason == "completed"
+        else None
+    )
+    checkpoint_binding = _literature_checkpoint_binding(
+        checkpoint,
+        receipt_binding,
+    )
+    terminal_output_sha256 = (
+        hashlib.sha256(terminal_output.encode("utf-8")).hexdigest()
+        if isinstance(terminal_output, str)
+        else None
+    )
+    translation = _literature_translation_receipt(
+        proposal,
+        next_v=next_v,
+        candidate_id=payload.get("candidate_id"),
+        checkpoint_identity=checkpoint_binding["checkpoint_identity"],
+        terminal_output_sha256=terminal_output_sha256,
+    )
+    elapsed = payload.get("elapsed_sec", 0.0)
+    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)):
+        raise ValueError("literature elapsed_sec is not numeric")
+    elapsed = float(elapsed)
+    if not math.isfinite(elapsed) or elapsed < 0:
+        raise ValueError("literature elapsed_sec is not finite and non-negative")
+    timeout_s = payload.get("timeout_s") if reason == "literature_probe_timeout" else None
+    if timeout_s is not None:
+        if isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float)):
+            raise ValueError("literature timeout_s is not numeric")
+        timeout_s = float(timeout_s)
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise ValueError("literature timeout_s is not positive")
+
+    body = {
+        "schema": _LITERATURE_PROBE_PAYLOAD_SCHEMA,
+        "next_v": next_v,
+        "source_v": source_v,
+        "reason": reason,
+        "skipped": reason != "completed",
+        "weakness": str(payload.get("weakness") or ""),
+        "stagnation_info": str(payload.get("stagnation_info") or ""),
+        "proposal": proposal,
+        "candidate_id": translation["candidate_id"],
+        "gated_out": translation["gated_out"],
+        "elapsed_sec": elapsed,
+        "timeout_s": timeout_s,
+        "error": (
+            str(payload.get("error") or "")[:1000]
+            if reason == "literature_probe_failed"
+            else ""
+        ),
+        "context_fingerprint": _literature_probe_context_fingerprint(
+            source_v,
+            str(payload.get("weakness") or ""),
+            str(payload.get("stagnation_info") or ""),
+        ),
+    }
+    for field in _LITERATURE_PROBE_BINDING_FIELDS:
+        body[field] = deepcopy(receipt_binding[field])
+    body["inject_text"] = _literature_probe_inject_text(body)
+    canonical_payload_digest = _literature_digest(body)
+
+    llm_dispatch = _literature_dispatch_projection(rendered_prompt)
+    if reason == "governed_skip":
+        if llm_dispatch is not None or terminal_output is not None:
+            raise ValueError("governed skip cannot claim a provider dispatch")
+    elif llm_dispatch is None:
+        raise ValueError("provider terminal outcome has no dispatch receipt")
+    if reason == "completed" and not isinstance(terminal_output, str):
+        raise ValueError("completed literature outcome has no terminal output")
+
+    producer_receipt = {
+        "schema": _LITERATURE_PROBE_PRODUCER_SCHEMA,
+        "producer_kind": reason,
+        "checkpoint_binding": checkpoint_binding,
+        "requirement_context_digest": str(
+            receipt_binding["requirement_context_digest"]
+        ),
+        "llm_dispatch_receipt": llm_dispatch,
+        "terminal_output": terminal_output if reason == "completed" else None,
+        "terminal_output_sha256": terminal_output_sha256,
+        "parsed_proposal_digest": _literature_digest(proposal),
+        "translation_gate": translation,
+        "canonical_payload_digest": canonical_payload_digest,
+    }
+    producer_receipt["receipt_digest"] = _literature_digest(producer_receipt)
+    return {
+        **body,
+        "canonical_payload_digest": canonical_payload_digest,
+        "producer_receipt": producer_receipt,
+    }
+
+
+def _literature_probe_payload_errors(
+    data: dict | None,
+    *,
+    checkpoint: dict | None,
+    receipt_binding: dict | None,
+    require_origin_checkpoint: bool,
+) -> list[str]:
+    """Validate cache/checkpoint bytes without trusting any derived text field."""
+
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["literature_payload_missing_or_not_object"]
+    if set(data) != _LITERATURE_PROBE_PAYLOAD_FIELDS:
+        return ["literature_payload_schema_fields_mismatch"]
+    if data.get("schema") != _LITERATURE_PROBE_PAYLOAD_SCHEMA:
+        errors.append("literature_payload_schema_invalid")
+    if not isinstance(checkpoint, dict):
+        errors.append("literature_checkpoint_missing")
+        return errors
+    if not isinstance(receipt_binding, dict):
+        errors.append("literature_requirement_binding_missing")
+        return errors
+
+    try:
+        next_v = int(checkpoint["next_v"])
+        source_v = int(checkpoint["source_v"])
+    except (KeyError, TypeError, ValueError):
+        errors.append("literature_checkpoint_identity_invalid")
+        return errors
+    if type(data.get("next_v")) is not int or data.get("next_v") != next_v:
+        errors.append("literature_payload_next_v_mismatch")
+    if type(data.get("source_v")) is not int or data.get("source_v") != source_v:
+        errors.append("literature_payload_source_v_mismatch")
+    reason = data.get("reason")
+    if reason not in _LITERATURE_PROBE_REASONS:
+        errors.append("literature_payload_reason_invalid")
+    if type(data.get("skipped")) is not bool or data.get("skipped") != (
+        reason != "completed"
+    ):
+        errors.append("literature_payload_skipped_invalid")
+    for field in ("weakness", "stagnation_info", "error", "inject_text"):
+        if not isinstance(data.get(field), str):
+            errors.append(f"literature_payload_{field}_invalid")
+    elapsed = data.get("elapsed_sec")
+    if (
+        isinstance(elapsed, bool)
+        or not isinstance(elapsed, (int, float))
+        or not math.isfinite(float(elapsed))
+        or float(elapsed) < 0
+    ):
+        errors.append("literature_payload_elapsed_invalid")
+    timeout_s = data.get("timeout_s")
+    if reason == "literature_probe_timeout":
+        if (
+            isinstance(timeout_s, bool)
+            or not isinstance(timeout_s, (int, float))
+            or not math.isfinite(float(timeout_s))
+            or float(timeout_s) <= 0
+        ):
+            errors.append("literature_payload_timeout_invalid")
+    elif timeout_s is not None:
+        errors.append("literature_payload_unexpected_timeout")
+    if reason == "literature_probe_failed":
+        if not isinstance(data.get("error"), str) or not data.get("error"):
+            errors.append("literature_payload_failure_error_missing")
+    elif data.get("error") != "":
+        errors.append("literature_payload_unexpected_error")
+
+    proposal = data.get("proposal")
+    try:
+        normalized_proposal = _normalize_literature_proposal(proposal)
+    except Exception:
+        normalized_proposal = None
+        errors.append("literature_payload_proposal_invalid")
+    if proposal is not None and (
+        not isinstance(proposal, dict)
+        or set(proposal) != set(_LITERATURE_PROPOSAL_FIELDS)
+        or normalized_proposal != proposal
+    ):
+        errors.append("literature_payload_proposal_schema_invalid")
+    if reason != "completed" and proposal is not None:
+        errors.append("literature_payload_unexpected_proposal")
+    if data.get("candidate_id") is not None and (
+        not isinstance(data.get("candidate_id"), str)
+        or not data.get("candidate_id").strip()
+    ):
+        errors.append("literature_payload_candidate_id_invalid")
+    if type(data.get("gated_out")) is not bool:
+        errors.append("literature_payload_gated_out_invalid")
+
+    for field in _LITERATURE_PROBE_BINDING_FIELDS:
+        if data.get(field) != receipt_binding.get(field):
+            errors.append(f"literature_payload_{field}_mismatch")
+    expected_context_fingerprint = _literature_probe_context_fingerprint(
+        source_v,
+        data.get("weakness") if isinstance(data.get("weakness"), str) else "",
+        data.get("stagnation_info")
+        if isinstance(data.get("stagnation_info"), str)
+        else "",
+    )
+    if data.get("context_fingerprint") != expected_context_fingerprint:
+        errors.append("literature_payload_context_fingerprint_mismatch")
+    expected_inject = _literature_probe_inject_text(data)
+    if data.get("inject_text") != expected_inject:
+        errors.append("literature_payload_inject_text_not_canonical")
+
+    body = {field: deepcopy(data.get(field)) for field in _LITERATURE_PROBE_BODY_FIELDS}
+    canonical_payload_digest = _literature_digest(body)
+    if data.get("canonical_payload_digest") != canonical_payload_digest:
+        errors.append("literature_payload_digest_mismatch")
+
+    producer = data.get("producer_receipt")
+    producer_fields = {
+        "schema",
+        "producer_kind",
+        "checkpoint_binding",
+        "requirement_context_digest",
+        "llm_dispatch_receipt",
+        "terminal_output",
+        "terminal_output_sha256",
+        "parsed_proposal_digest",
+        "translation_gate",
+        "canonical_payload_digest",
+        "receipt_digest",
+    }
+    if not isinstance(producer, dict) or set(producer) != producer_fields:
+        errors.append("literature_producer_receipt_schema_fields_mismatch")
+        return errors
+    if producer.get("schema") != _LITERATURE_PROBE_PRODUCER_SCHEMA:
+        errors.append("literature_producer_receipt_schema_invalid")
+    if producer.get("producer_kind") != reason:
+        errors.append("literature_producer_kind_mismatch")
+    if producer.get("requirement_context_digest") != receipt_binding.get(
+        "requirement_context_digest"
+    ):
+        errors.append("literature_producer_requirement_binding_mismatch")
+    if producer.get("canonical_payload_digest") != canonical_payload_digest:
+        errors.append("literature_producer_payload_digest_mismatch")
+    if producer.get("parsed_proposal_digest") != _literature_digest(
+        normalized_proposal
+    ):
+        errors.append("literature_producer_proposal_digest_mismatch")
+
+    checkpoint_binding = producer.get("checkpoint_binding")
+    checkpoint_binding_fields = {
+        "schema",
+        "checkpoint_identity",
+        "checkpoint_revision",
+        "workflow_run_id",
+        "stage",
+        "next_v",
+        "source_v",
+        "requirement_context_digest",
+    }
+    if (
+        not isinstance(checkpoint_binding, dict)
+        or set(checkpoint_binding) != checkpoint_binding_fields
+        or checkpoint_binding.get("schema")
+        != _LITERATURE_PROBE_CHECKPOINT_BINDING_SCHEMA
+    ):
+        errors.append("literature_producer_checkpoint_binding_invalid")
+    else:
+        current_workflow = str(checkpoint.get("workflow_run_id") or "")
+        current_revision = checkpoint.get("checkpoint_revision")
+        if checkpoint_binding.get("workflow_run_id") != current_workflow:
+            errors.append("literature_producer_workflow_mismatch")
+        if checkpoint_binding.get("stage") != "direction_audited" or checkpoint.get(
+            "stage"
+        ) != "direction_audited":
+            errors.append("literature_producer_stage_mismatch")
+        if checkpoint_binding.get("next_v") != next_v:
+            errors.append("literature_producer_next_v_mismatch")
+        if checkpoint_binding.get("source_v") != source_v:
+            errors.append("literature_producer_source_v_mismatch")
+        if checkpoint_binding.get("requirement_context_digest") != receipt_binding.get(
+            "requirement_context_digest"
+        ):
+            errors.append("literature_producer_checkpoint_requirement_mismatch")
+        origin_revision = checkpoint_binding.get("checkpoint_revision")
+        if type(origin_revision) is not int or origin_revision < 1:
+            errors.append("literature_producer_checkpoint_revision_invalid")
+        elif type(current_revision) is not int:
+            errors.append("literature_current_checkpoint_revision_invalid")
+        elif require_origin_checkpoint:
+            if current_revision != origin_revision:
+                errors.append("literature_cache_checkpoint_revision_mismatch")
+            if checkpoint.get("literature_probe") is not None:
+                errors.append("literature_cache_origin_already_has_receipt")
+        elif current_revision < origin_revision + 1:
+            errors.append("literature_checkpoint_receipt_revision_precedes_producer")
+        if (
+            not isinstance(checkpoint_binding.get("checkpoint_identity"), str)
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                checkpoint_binding.get("checkpoint_identity", ""),
+            )
+        ):
+            errors.append("literature_producer_checkpoint_identity_invalid")
+        elif type(origin_revision) is int and checkpoint_binding.get(
+            "checkpoint_identity"
+        ) != _literature_checkpoint_identity(
+            checkpoint,
+            origin_revision=origin_revision,
+        ):
+            errors.append("literature_checkpoint_semantic_identity_mismatch")
+
+    translation = producer.get("translation_gate")
+    try:
+        expected_translation = _literature_translation_receipt(
+            normalized_proposal,
+            next_v=next_v,
+            candidate_id=data.get("candidate_id"),
+            checkpoint_identity=(
+                checkpoint_binding.get("checkpoint_identity", "")
+                if isinstance(checkpoint_binding, dict)
+                else ""
+            ),
+            terminal_output_sha256=producer.get("terminal_output_sha256"),
+        )
+    except Exception:
+        expected_translation = None
+        errors.append("literature_translation_gate_replay_failed")
+    if translation != expected_translation:
+        errors.append("literature_translation_gate_receipt_mismatch")
+    elif isinstance(translation, dict) and (
+        translation.get("gated_out") != data.get("gated_out")
+        or translation.get("candidate_id") != data.get("candidate_id")
+    ):
+        errors.append("literature_translation_gate_payload_mismatch")
+
+    dispatch = producer.get("llm_dispatch_receipt")
+    if reason == "governed_skip":
+        if (
+            dispatch is not None
+            or producer.get("terminal_output") is not None
+            or producer.get("terminal_output_sha256") is not None
+        ):
+            errors.append("literature_governed_skip_claims_provider_output")
+    else:
+        try:
+            expected_dispatch = _expected_literature_dispatch(
+                next_v=next_v,
+                source_v=source_v,
+                weakness=str(data.get("weakness") or ""),
+                stagnation_info=str(data.get("stagnation_info") or ""),
+            )
+        except Exception:
+            expected_dispatch = None
+            errors.append("literature_dispatch_receipt_replay_failed")
+        if dispatch != expected_dispatch:
+            errors.append("literature_dispatch_receipt_mismatch")
+        output_digest = producer.get("terminal_output_sha256")
+        if reason == "completed":
+            terminal_output = producer.get("terminal_output")
+            if (
+                not isinstance(terminal_output, str)
+                or len(terminal_output.encode("utf-8"))
+                > _LITERATURE_PROBE_CACHE_MAX_BYTES // 2
+            ):
+                errors.append("literature_terminal_output_invalid")
+            elif (
+                not isinstance(output_digest, str)
+                or output_digest
+                != hashlib.sha256(terminal_output.encode("utf-8")).hexdigest()
+            ):
+                errors.append("literature_terminal_output_digest_invalid")
+            else:
+                try:
+                    from llm_query import parse_json_output_with_mode
+
+                    replayed, _mode = parse_json_output_with_mode(terminal_output)
+                    replayed_proposal = _normalize_literature_proposal(replayed)
+                except Exception:
+                    replayed_proposal = None
+                    errors.append("literature_terminal_output_parse_failed")
+                if replayed_proposal != normalized_proposal:
+                    errors.append("literature_terminal_output_proposal_mismatch")
+        elif (
+            producer.get("terminal_output") is not None
+            or output_digest is not None
+        ):
+            errors.append("literature_unexpected_terminal_output_digest")
+
+    claimed_receipt_digest = producer.get("receipt_digest")
+    producer_body = {
+        key: deepcopy(value)
+        for key, value in producer.items()
+        if key != "receipt_digest"
+    }
+    if claimed_receipt_digest != _literature_digest(producer_body):
+        errors.append("literature_producer_receipt_digest_mismatch")
+    return list(dict.fromkeys(errors))
+
+
+def _json_without_duplicate_keys(raw: bytes):
+    def _object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate JSON key: {key}")
+            value[key] = item
+        return value
+
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=_object)
+
+
+def _open_directory_nofollow(path: Path) -> int:
+    absolute = Path(path).absolute()
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(os.sep, flags)
+    try:
+        for component in absolute.parts[1:]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _read_regular_single_link_json(path: Path):
+    directory_fd = None
+    descriptor = None
+    try:
+        directory_fd = _open_directory_nofollow(path.parent)
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            return None
+        if before.st_size < 2 or before.st_size > _LITERATURE_PROBE_CACHE_MAX_BYTES:
+            return None
+        chunks = []
+        remaining = _LITERATURE_PROBE_CACHE_MAX_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        after = os.fstat(descriptor)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_nlink,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_nlink,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if (
+            before_identity != after_identity
+            or after.st_nlink != 1
+            or len(raw) != before.st_size
+        ):
+            return None
+        return _json_without_duplicate_keys(raw)
+    except (FileNotFoundError, NotADirectoryError, OSError, UnicodeError, ValueError):
+        return None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+def _write_regular_single_link_json(path: Path, value: dict) -> None:
+    encoded = (_literature_canonical_json(value) + "\n").encode("utf-8")
+    if len(encoded) > _LITERATURE_PROBE_CACHE_MAX_BYTES:
+        raise ValueError("literature cache exceeds bounded size")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    directory_fd = _open_directory_nofollow(path.parent)
+    temporary_name = f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    descriptor = None
+    try:
+        try:
+            existing = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and (
+            not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
+        ):
+            raise OSError("literature cache target is not a single-link regular file")
+        descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        offset = 0
+        while offset < len(encoded):
+            offset += os.write(descriptor, encoded[offset:])
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = None
+        os.replace(
+            temporary_name,
+            path.name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+
+
 def _read_literature_probe_cache(
     next_v: int | str,
     *,
@@ -313,67 +1158,81 @@ def _read_literature_probe_cache(
     h2h_weakness: str = "",
     stagnation_info: str = "",
     receipt_binding: dict | None = None,
+    checkpoint: dict | None = None,
 ) -> dict | None:
     path = _literature_probe_cache_path(next_v)
-    if not path.exists():
+    envelope = _read_regular_single_link_json(path)
+    envelope_fields = {
+        "schema",
+        "checkpoint_identity",
+        "payload",
+        "payload_digest",
+        "producer_receipt_digest",
+        "cache_digest",
+    }
+    if not isinstance(envelope, dict) or set(envelope) != envelope_fields:
         return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    if envelope.get("schema") != _LITERATURE_PROBE_CACHE_SCHEMA:
         return None
+    cache_body = {
+        key: deepcopy(value)
+        for key, value in envelope.items()
+        if key != "cache_digest"
+    }
+    if envelope.get("cache_digest") != _literature_digest(cache_body):
+        return None
+    data = envelope.get("payload")
     if not isinstance(data, dict):
         return None
-    if not _literature_probe_cache_matches(
-        data,
-        source_v=source_v,
-        h2h_weakness=h2h_weakness,
-        stagnation_info=stagnation_info,
-        receipt_binding=receipt_binding,
+    producer = data.get("producer_receipt") or {}
+    checkpoint_binding = producer.get("checkpoint_binding") or {}
+    if envelope.get("checkpoint_identity") != checkpoint_binding.get(
+        "checkpoint_identity"
     ):
         return None
-    result = {
-        "next_v": data.get("next_v", int(next_v)),
-        "source_v": data.get("source_v"),
-        "candidate_id": data.get("candidate_id"),
-        "gated_out": bool(data.get("gated_out", False)),
-        "proposal": data.get("proposal"),
-        "elapsed_sec": data.get("elapsed_sec", 0),
-        "weakness": data.get("weakness", ""),
-        "context_fingerprint": data.get("context_fingerprint", ""),
-        "cached": True,
-        "reason": data.get("reason", "cached"),
-        "skipped": data.get("skipped", False),
-    }
-    for field in _LITERATURE_PROBE_BINDING_FIELDS:
-        if field in data:
-            result[field] = deepcopy(data[field])
-    result["inject_text"] = data.get("inject_text") or _literature_probe_inject_text(result)
-    return result
-
-
-def _normalize_literature_probe_result(data: dict, next_v: int | str, *, cached: str = "") -> dict | None:
-    if not isinstance(data, dict):
+    if envelope.get("payload_digest") != data.get("canonical_payload_digest"):
         return None
-    result = {
-        "next_v": data.get("next_v", int(next_v)),
-        "source_v": data.get("source_v"),
-        "candidate_id": data.get("candidate_id"),
-        "gated_out": bool(data.get("gated_out", False)),
-        "proposal": data.get("proposal"),
-        "elapsed_sec": data.get("elapsed_sec", 0),
-        "weakness": data.get("weakness", ""),
-        "stagnation_info": data.get("stagnation_info", ""),
-        "context_fingerprint": data.get("context_fingerprint", ""),
-        "reason": data.get("reason", "cached"),
-        "skipped": data.get("skipped", False),
-    }
-    for field in _LITERATURE_PROBE_BINDING_FIELDS:
-        if field in data:
-            result[field] = deepcopy(data[field])
+    if envelope.get("producer_receipt_digest") != producer.get("receipt_digest"):
+        return None
+    if source_v is not None and data.get("source_v") != int(source_v):
+        return None
+    if data.get("next_v") != int(next_v):
+        return None
+    if data.get("weakness") != str(h2h_weakness or ""):
+        return None
+    if data.get("stagnation_info") != str(stagnation_info or ""):
+        return None
+    if _literature_probe_payload_errors(
+        data,
+        checkpoint=checkpoint,
+        receipt_binding=receipt_binding,
+        require_origin_checkpoint=True,
+    ):
+        return None
+    return deepcopy(data)
+
+
+def _normalize_literature_probe_result(
+    data: dict,
+    next_v: int | str,
+    *,
+    checkpoint: dict | None = None,
+    receipt_binding: dict | None = None,
+    cached: str = "",
+) -> dict | None:
+    if not isinstance(data, dict) or data.get("next_v") != int(next_v):
+        return None
+    if _literature_probe_payload_errors(
+        data,
+        checkpoint=checkpoint,
+        receipt_binding=receipt_binding,
+        require_origin_checkpoint=False,
+    ):
+        return None
+    result = deepcopy(data)
     if cached:
         result["cached"] = True
         result["cache_source"] = cached
-    result["inject_text"] = data.get("inject_text") or _literature_probe_inject_text(result)
     return result
 
 
@@ -405,21 +1264,19 @@ def _read_literature_probe_checkpoint(
     except (TypeError, ValueError):
         return None
     payload = ckpt.get("literature_probe")
-    if receipt_binding is not None and not _literature_probe_binding_matches(
+    result = _normalize_literature_probe_result(
         payload,
-        receipt_binding,
-    ):
-        return None
-    result = _normalize_literature_probe_result(payload, next_v, cached="checkpoint")
+        next_v,
+        checkpoint=ckpt,
+        receipt_binding=receipt_binding,
+        cached="checkpoint",
+    )
     if not result:
         return None
-    if receipt_binding is not None:
-        return result
-    current_fp = _literature_probe_context_fingerprint(source_v, h2h_weakness, stagnation_info)
-    stored_fp = result.get("context_fingerprint")
-    if stored_fp and stored_fp != current_fp:
-        result["context_mismatch_reused"] = True
-        result["current_context_fingerprint"] = current_fp
+    if result.get("weakness") != str(h2h_weakness or ""):
+        return None
+    if result.get("stagnation_info") != str(stagnation_info or ""):
+        return None
     return result
 
 
@@ -458,34 +1315,57 @@ def _persist_literature_probe_result(
         expected_binding = receipt_binding or current_binding
         if current_binding != expected_binding:
             return False
-        if not _literature_probe_binding_matches(payload, expected_binding):
+        if _literature_probe_payload_errors(
+            payload,
+            checkpoint=ckpt,
+            receipt_binding=expected_binding,
+            require_origin_checkpoint=True,
+        ):
             return False
+        workflow_run_id = str(ckpt.get("workflow_run_id") or "")
+        checkpoint_revision = int(ckpt.get("checkpoint_revision") or 0)
         return bool(write_pipeline_checkpoint(
             int(next_v),
             int(ckpt.get("source_v") if source_v is None else source_v),
             "direction_audited",
             literature_probe=payload,
+            expected_checkpoint_revision=checkpoint_revision,
+            expected_checkpoint_stage="direction_audited",
+            expected_workflow_run_id=workflow_run_id,
         ))
     except Exception:
         return False
 
 
-def _write_literature_probe_cache(next_v: int | str, payload: dict) -> dict:
-    path = _literature_probe_cache_path(next_v)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    out = dict(payload)
-    out.setdefault("next_v", int(next_v))
-    out.setdefault(
-        "context_fingerprint",
-        _literature_probe_context_fingerprint(
-            out.get("source_v"),
-            out.get("weakness", ""),
-            out.get("stagnation_info", ""),
-        ),
+def _write_literature_probe_cache(
+    next_v: int | str,
+    payload: dict,
+    *,
+    checkpoint: dict | None = None,
+    receipt_binding: dict | None = None,
+) -> dict:
+    errors = _literature_probe_payload_errors(
+        payload,
+        checkpoint=checkpoint,
+        receipt_binding=receipt_binding,
+        require_origin_checkpoint=True,
     )
-    out.setdefault("inject_text", _literature_probe_inject_text(out))
-    path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-    return out
+    if errors:
+        raise ValueError("invalid literature cache payload: " + ",".join(errors[:8]))
+    path = _literature_probe_cache_path(next_v)
+    producer = payload["producer_receipt"]
+    envelope = {
+        "schema": _LITERATURE_PROBE_CACHE_SCHEMA,
+        "checkpoint_identity": producer["checkpoint_binding"][
+            "checkpoint_identity"
+        ],
+        "payload": deepcopy(payload),
+        "payload_digest": payload["canonical_payload_digest"],
+        "producer_receipt_digest": producer["receipt_digest"],
+    }
+    envelope["cache_digest"] = _literature_digest(envelope)
+    _write_regular_single_link_json(path, envelope)
+    return deepcopy(payload)
 
 
 # ──────────────────────────────────────────────
@@ -779,8 +1659,16 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
     except Exception:
         pass
     try:
-        from tool_bot_management import _do_abandon_generation
-        abandon_result = await _do_abandon_generation(reason=reason)
+        from evolution_core import read_pipeline_checkpoint
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
+        abandon_identity = expected_abandon_identity(read_pipeline_checkpoint())
+        abandon_result = await _do_abandon_generation(
+            reason=reason,
+            **abandon_identity,
+        )
     except Exception as exc:
         abandon_result = {"abandoned": False, "error": str(exc)}
     result = {
@@ -811,10 +1699,16 @@ async def _force_abandon_official_rework_generation(
     except Exception:
         pass
     try:
-        from tool_bot_management import _do_abandon_generation
+        from evolution_core import read_pipeline_checkpoint
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
+        abandon_identity = expected_abandon_identity(read_pipeline_checkpoint())
         return await _do_abandon_generation(
             reason="official_rework_circuit_breaker",
             _actor_lock_owned=actor_lock_owned,
+            **abandon_identity,
         )
     except Exception as exc:
         return {
@@ -839,10 +1733,16 @@ async def _force_abandon_frozen_worker_generation(
     except Exception:
         pass
     try:
-        from tool_bot_management import _do_abandon_generation
+        from evolution_core import read_pipeline_checkpoint
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
+        abandon_identity = expected_abandon_identity(read_pipeline_checkpoint())
         return await _do_abandon_generation(
             reason=reason,
             _actor_lock_owned=actor_lock_owned,
+            **abandon_identity,
         )
     except Exception as exc:
         return {
@@ -945,7 +1845,7 @@ async def _handle_master_llm_infrastructure(
     attempt_key = infrastructure_attempt_key(
         component=component,
         candidate_fingerprint=_complete_artifact_fingerprint(get_bot_dir(next_v)),
-        source_fingerprint=_complete_artifact_fingerprint(get_bot_dir(source_v)),
+        source_fingerprint=_master_source_fingerprint(checkpoint, source_v),
         harness_identity=prompt_digest,
         contract_identity=str(
             ((checkpoint.get("runtime_contract_ledger") or {}).get("ledger_digest") or "")
@@ -1553,72 +2453,73 @@ def _build_generation_architecture_policy(
     profile = get_workflow_profile()
     if getattr(profile, "national_execution_mode", "") != "native_tcp":
         return {"outcome": "skipped", "policy": None, "capabilities": None}
+    if allow_lineage_only_source:
+        # The only path-free lineage exception is the one-time v142 -> v143
+        # empty-pool bootstrap.  Do not establish it by checking whether a
+        # historical directory happens to exist: stale local debris must have
+        # exactly zero influence.
+        from bot_namespace import (
+            ARCHIVED_VERSION_HIGH_WATER,
+            FIRST_STRICT_POLICY_VERSION,
+        )
+        from runtime_architecture_policy import (
+            build_lineage_only_architecture_policy,
+            lineage_only_capabilities,
+            validate_prepared_capability_snapshot,
+        )
+
+        target_dir = Path(prepared_dir) if prepared_dir is not None else None
+        source_identity = bot_name(source_v)
+        snapshot_errors = []
+        if int(source_v) != int(ARCHIVED_VERSION_HIGH_WATER):
+            snapshot_errors.append("lineage_only_source_not_archived_high_water")
+        if target_dir is None or target_dir.name != bot_name(
+            FIRST_STRICT_POLICY_VERSION
+        ):
+            snapshot_errors.append("lineage_only_target_not_first_strict")
+        if not isinstance(prepared_capability_snapshot, dict):
+            snapshot_errors.append("lineage_only_prepared_snapshot_missing")
+        else:
+            snapshot_errors.extend(validate_prepared_capability_snapshot(
+                prepared_capability_snapshot,
+                lineage_parent_bot=source_identity,
+                prepared_bot_dir=target_dir,
+            ))
+        if snapshot_errors:
+            return {
+                "outcome": "infrastructure_failure",
+                "policy": None,
+                "capabilities": None,
+                "infrastructure_failures": [{
+                    "component": "fresh_bootstrap_architecture_policy",
+                    "failure_class": "internal_infrastructure",
+                    "issues": list(dict.fromkeys(snapshot_errors))[:20],
+                }],
+            }
+        try:
+            policy = build_lineage_only_architecture_policy(
+                source_identity,
+                prepared_capability_snapshot=prepared_capability_snapshot,
+            )
+        except Exception as exc:
+            return {
+                "outcome": "infrastructure_failure",
+                "policy": None,
+                "capabilities": None,
+                "infrastructure_failures": [{
+                    "component": "fresh_bootstrap_architecture_policy",
+                    "failure_class": "internal_infrastructure",
+                    "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
+                }],
+            }
+        return {
+            "outcome": "passed",
+            "policy": policy,
+            "capabilities": lineage_only_capabilities(),
+        }
+
     source_dir = get_bot_dir(source_v)
     if not (source_dir / "national_bot.py").exists():
-        # Fresh v143 deliberately has no executable v142 parent.  Its only
-        # baseline is the just-materialized, digest-bound strict candidate.
-        # Keep this exception explicit and live-validated so a normal missing
-        # parent can never be laundered through an arbitrary snapshot.
-        if allow_lineage_only_source and prepared_capability_snapshot is not None:
-            from runtime_architecture_policy import (
-                build_architecture_policy,
-                validate_prepared_capability_snapshot,
-            )
-
-            target_dir = Path(prepared_dir) if prepared_dir is not None else None
-            snapshot_errors = validate_prepared_capability_snapshot(
-                prepared_capability_snapshot,
-                parent_bot_dir=source_dir,
-                prepared_bot_dir=target_dir,
-            )
-            if prepared_capability_snapshot.get("parent_bot") != source_dir.name:
-                snapshot_errors.append("lineage_only_parent_identity_mismatch")
-            if prepared_capability_snapshot.get("parent_epoch_compatible") is not False:
-                snapshot_errors.append("lineage_only_parent_must_be_incompatible")
-            if target_dir is None or prepared_capability_snapshot.get(
-                "prepared_bot"
-            ) != target_dir.name:
-                snapshot_errors.append("lineage_only_prepared_identity_mismatch")
-            if snapshot_errors:
-                return {
-                    "outcome": "infrastructure_failure",
-                    "policy": None,
-                    "capabilities": None,
-                    "infrastructure_failures": [{
-                        "component": "fresh_bootstrap_architecture_policy",
-                        "failure_class": "internal_infrastructure",
-                        "issues": list(dict.fromkeys(snapshot_errors))[:20],
-                    }],
-                }
-            try:
-                policy = build_architecture_policy(
-                    source_dir,
-                    prepared_capability_snapshot=prepared_capability_snapshot,
-                )
-            except Exception as exc:
-                return {
-                    "outcome": "infrastructure_failure",
-                    "policy": None,
-                    "capabilities": None,
-                    "infrastructure_failures": [{
-                        "component": "fresh_bootstrap_architecture_policy",
-                        "failure_class": "internal_infrastructure",
-                        "issues": [f"{type(exc).__name__}: {str(exc)[:300]}"],
-                    }],
-                }
-            return {
-                "outcome": "passed",
-                "policy": policy,
-                "capabilities": {
-                    "conclusive": True,
-                    "ok": True,
-                    "outcome": "lineage_only",
-                    "lineage_only": True,
-                    "checks": [],
-                    "checks_by_id": {},
-                    "infrastructure_failures": [],
-                },
-            }
         return {
             "outcome": "source_invalid",
             "policy": None,
@@ -2083,32 +2984,33 @@ async def run_master(args):
             ),
         })
 
-    # Literature-probe output is likewise checkpoint-owned.  A caller may pass
-    # it for backwards compatibility, but cannot invent or rewrite research in
-    # an active checkpoint.
+    # Literature-probe output is checkpoint-owned and producer-receipt bound.
+    # Caller text and legacy four-field receipts have no injection authority.
+    from pipeline_state import (
+        literature_probe_receipt_binding,
+        literature_probe_required,
+    )
+
+    _literature_required = literature_probe_required(_master_entry_ckpt)
+    _literature_binding = None
+    _literature_binding_errors = []
+    if _literature_required:
+        _literature_binding, _literature_binding_errors = (
+            literature_probe_receipt_binding(_master_entry_ckpt)
+        )
+    _validated_literature_probe = None
     if isinstance(_master_entry_ckpt, dict):
         _probe = _master_entry_ckpt.get("literature_probe")
-        _probe_identity_matches = False
-        if isinstance(_probe, dict):
-            try:
-                _probe_identity_matches = (
-                    int(_probe.get("next_v", next_v)) == int(next_v)
-                    and (
-                        _probe.get("source_v") is None
-                        or int(_probe.get("source_v")) == int(source_v)
-                    )
-                )
-            except (TypeError, ValueError):
-                _probe_identity_matches = False
         if _probe is not None:
-            normalized_probe = (
-                _normalize_literature_probe_result(_probe, next_v)
-                if _probe_identity_matches
-                else None
+            _validated_literature_probe = _normalize_literature_probe_result(
+                _probe,
+                next_v,
+                checkpoint=_master_entry_ckpt,
+                receipt_binding=_literature_binding,
             )
             canonical_research = (
-                str(normalized_probe.get("inject_text") or "")
-                if isinstance(normalized_probe, dict)
+                str(_validated_literature_probe.get("inject_text") or "")
+                if isinstance(_validated_literature_probe, dict)
                 else ""
             )
             if research_proposals and research_proposals != canonical_research:
@@ -2141,39 +3043,47 @@ async def run_master(args):
         performance_verification = _PROTOCOL_BOOTSTRAP_NO_STRENGTH
         research_proposals = ""
 
-    # The probe stage is a deterministic control-plane requirement, not a
-    # prompt suggestion.  A successful result, governed skip, timeout, or
-    # provider failure all persist an identity-bound receipt; absence of that
-    # receipt when stagnation/repetition requires research must block Master
-    # before it spends any LLM or runtime-probe budget.
-    from pipeline_state import (
-        literature_probe_receipt_present,
-        literature_probe_required,
-    )
-
-    if (
-        literature_probe_required(_master_entry_ckpt)
-        and not literature_probe_receipt_present(_master_entry_ckpt)
-    ):
+    # A terminal attempt is satisfied only by the exact schema-v2 producer
+    # receipt. The route helper's legacy four-field compatibility cannot grant
+    # Master prompt authority.
+    if _literature_required and _validated_literature_probe is None:
+        _probe_present = isinstance(
+            (_master_entry_ckpt or {}).get("literature_probe"), dict
+        )
         log_system_event(
-            "pipeline.master_blocked_missing_literature_probe",
+            "pipeline.master_blocked_invalid_literature_probe"
+            if _probe_present
+            else "pipeline.master_blocked_missing_literature_probe",
             "error",
-            f"Master v{next_v} blocked: mandatory literature probe has no receipt",
+            f"Master v{next_v} blocked: mandatory literature probe receipt is "
+            + ("invalid" if _probe_present else "missing"),
             {
                 "next_v": next_v,
                 "source_v": source_v,
                 "stage": (_master_entry_ckpt or {}).get("stage"),
+                "binding_errors": _literature_binding_errors,
             },
         )
         return _json_tool_result({
-            "error": "LITERATURE_PROBE_REQUIRED",
+            "error": (
+                "LITERATURE_PROBE_RECEIPT_INVALID"
+                if _probe_present
+                else "LITERATURE_PROBE_REQUIRED"
+            ),
             "next_v": next_v,
             "source_v": source_v,
-            "next_tool": "run_literature_probe",
+            "next_tool": (
+                "abandon_generation" if _probe_present else "run_literature_probe"
+            ),
+            "validation_errors": _literature_binding_errors,
             "directive": (
-                "Canonical stagnation/repetition evidence requires the literature "
-                "probe stage. Call run_literature_probe and persist its success, "
-                "governed-skip, timeout, or failure receipt before run_master."
+                "The mandatory literature stage requires an exact schema-v2 "
+                "checkpoint/dispatch/output/translation-gate producer receipt. "
+                + (
+                    "Use governed abandon/reprepare; never rewrite an existing receipt."
+                    if _probe_present
+                    else "Call run_literature_probe before run_master."
+                )
             ),
         })
 
@@ -2253,25 +3163,38 @@ async def run_master(args):
             "capability_snapshot"
         )
 
-    architecture_source_dir = get_bot_dir(source_v)
+    fresh_empty_pool_bootstrap = _is_fresh_empty_pool_bootstrap(
+        _master_entry_ckpt
+    )
+    architecture_source_dir = None
     if protocol_bootstrap_no_strength:
         try:
-            from runtime_architecture_policy import (
-                build_prepared_capability_snapshot,
-            )
+            if fresh_empty_pool_bootstrap:
+                from runtime_architecture_policy import (
+                    build_lineage_only_prepared_capability_snapshot,
+                )
 
-            prepared_capability_snapshot = build_prepared_capability_snapshot(
-                architecture_source_dir,
-                get_bot_dir(next_v),
-            )
+                prepared_capability_snapshot = (
+                    build_lineage_only_prepared_capability_snapshot(
+                        bot_name(source_v),
+                        get_bot_dir(next_v),
+                    )
+                )
+            else:
+                from runtime_architecture_policy import (
+                    build_prepared_capability_snapshot,
+                )
+
+                architecture_source_dir = get_bot_dir(source_v)
+                prepared_capability_snapshot = build_prepared_capability_snapshot(
+                    architecture_source_dir,
+                    get_bot_dir(next_v),
+                )
             architecture_assessment = _build_generation_architecture_policy(
                 source_v,
                 prepared_capability_snapshot=prepared_capability_snapshot,
                 prepared_dir=get_bot_dir(next_v),
-                allow_lineage_only_source=(
-                    protocol_bootstrap_receipt.get("mode")
-                    == "fresh_national_policy_bootstrap"
-                ),
+                allow_lineage_only_source=fresh_empty_pool_bootstrap,
             )
         except Exception as exc:
             architecture_assessment = {
@@ -2297,8 +3220,10 @@ async def run_master(args):
         from national_runtime_probe import RUNTIME_PROBE_IDENTITY_DIGEST
         from pipeline_infrastructure import infrastructure_attempt_key
 
-        source_dir = architecture_source_dir
-        source_fingerprint = _complete_artifact_fingerprint(source_dir)
+        source_fingerprint = _master_source_fingerprint(
+            _master_entry_ckpt,
+            source_v,
+        )
         failures = architecture_assessment.get("infrastructure_failures") or []
         infra_component = str(
             failures[0].get("component")
@@ -3221,15 +4146,10 @@ async def run_master(args):
                     "evidence_alignment": "misaligned",
                     "direction_novelty": "incremental",
                     "overall_pass": False,
-                    "feedback": (
-                        "Master plan H2H citations disagree with the stable generation "
-                        "H2H snapshot. Correct the cited raw games/a_wins/b_wins/draws counts "
-                        "against web/core/results/v{}/evidence_snapshot/head_to_head.json: "
-                        "{}{}{}".format(
-                            next_v,
-                            "; ".join(_h2h_citation_errors[:6]),
-                            ("\n\n" + _h2h_repair_guidance) if _h2h_repair_guidance else "",
-                        )
+                    "feedback": _h2h_citation_audit_feedback(
+                        next_v,
+                        _h2h_citation_errors,
+                        _h2h_repair_guidance,
                     ),
                     "retry_recommended": True,
                     "deterministic_h2h_snapshot_check": True,
@@ -3526,7 +4446,6 @@ async def run_literature_probe(args):
     probe_checkpoint = _matching_checkpoint(next_v, source_v)
     from pipeline_state import (
         literature_probe_receipt_binding,
-        literature_probe_receipt_present,
         literature_probe_required,
     )
 
@@ -3580,18 +4499,6 @@ async def run_literature_probe(args):
                 "Direction Audit; do not research caller-reconstructed text."
             ),
         })
-    if literature_probe_receipt_present(probe_checkpoint):
-        return _json_tool_result({
-            "error": "LITERATURE_PROBE_ALREADY_SATISFIED",
-            "next_v": next_v,
-            "source_v": source_v,
-            "next_tool": "run_master",
-            "directive": (
-                "A receipt already matches the current mandatory route. Continue "
-                "to Master instead of launching or overwriting a second probe."
-            ),
-        })
-
     # Research queries use scheduler/auditor-owned evidence, not an outer-model
     # paraphrase.  The binding above has already verified this exact context.
     master_context = (
@@ -3648,6 +4555,18 @@ async def run_literature_probe(args):
         except Exception:
             pass
         return _json_tool_result(checkpoint_probe)
+    if probe_checkpoint.get("literature_probe") is not None:
+        return _json_tool_result({
+            "error": "LITERATURE_PROBE_RECEIPT_INVALID",
+            "next_v": next_v,
+            "source_v": source_v,
+            "next_tool": "abandon_generation",
+            "directive": (
+                "The checkpoint contains a literature outcome that is not an "
+                "exact schema-v2 terminal producer receipt. Do not overwrite or "
+                "inject it; use governed abandon/reprepare."
+            ),
+        })
 
     cached_probe = _read_literature_probe_cache(
         next_v,
@@ -3655,6 +4574,7 @@ async def run_literature_probe(args):
         h2h_weakness=h2h_weakness,
         stagnation_info=stagnation_info,
         receipt_binding=receipt_binding,
+        checkpoint=probe_checkpoint,
     )
     if cached_probe:
         try:
@@ -3674,7 +4594,10 @@ async def run_literature_probe(args):
             cached_probe,
             receipt_binding=receipt_binding,
         ):
-            return _json_tool_result(cached_probe)
+            returned = deepcopy(cached_probe)
+            returned["cached"] = True
+            returned["cache_source"] = "terminal_receipt"
+            return _json_tool_result(returned)
         return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
 
     # ── A6 governance gate: cooldown / blacklist / kill-switch ──
@@ -3688,15 +4611,26 @@ async def run_literature_probe(args):
             except Exception:
                 pass
             payload = {
-                "skipped": True,
-                "reason": "web retrieval in cooldown or disabled by governance",
+                "reason": "governed_skip",
                 "next_v": next_v,
                 "source_v": source_v,
                 "weakness": h2h_weakness,
                 "stagnation_info": stagnation_info,
             }
-            payload = _bind_literature_probe_payload(payload, receipt_binding)
-            payload["inject_text"] = _literature_probe_inject_text(payload)
+            payload = _build_literature_probe_payload(
+                payload,
+                checkpoint=probe_checkpoint,
+                receipt_binding=receipt_binding,
+            )
+            try:
+                _write_literature_probe_cache(
+                    next_v,
+                    payload,
+                    checkpoint=probe_checkpoint,
+                    receipt_binding=receipt_binding,
+                )
+            except Exception:
+                pass
             if not _persist_literature_probe_result(
                 next_v,
                 source_v,
@@ -3706,29 +4640,19 @@ async def run_literature_probe(args):
                 return _json_tool_result(
                     _literature_probe_stale_result(next_v, source_v)
                 )
-            try:
-                payload = _write_literature_probe_cache(next_v, payload)
-            except Exception:
-                pass
             return _json_tool_result(payload)
     except Exception as e:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"governance gate failed: {e}"})}]}
 
     ui = _get_ui()
+    rendered_prompt = None
+    output = None
     try:
-        from llm_query import run_claude_query, parse_json_output
-        from evolution_infra import get_logs_dir, RESULTS_DIR as _RESULTS_DIR
-        from research_governance import add_candidate, translation_gate
+        from llm_query import run_claude_query
+        from evolution_infra import get_logs_dir
+        from research_governance import add_candidate
     except Exception as e:
         return {"content": [{"type": "text", "text": json.dumps({"error": f"import failed: {e}"})}]}
-
-    probe_prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "prompts", "literature_probe_prompt.md")
-    try:
-        with open(probe_prompt_path, encoding="utf-8") as f:
-            probe_template = f.read()
-    except Exception as e:
-        return {"content": [{"type": "text", "text": json.dumps({"error": f"prompt load failed: {e}"})}]}
 
     log_dir = get_logs_dir(next_v)
     try:
@@ -3736,20 +4660,6 @@ async def run_literature_probe(args):
     except Exception:
         pass
     probe_log = log_dir / "literature_probe_io.txt"
-
-    # ── Compose the research brief ──
-    weakness = h2h_weakness.strip() or (
-        "General postflop stack-off leak: 0%-fold facing river all-ins (made_strength "
-        "0.40-0.50 always calls). Need optimal fold frequency vs polarized jam."
-    )
-    brief = (
-        f"{probe_template}\n\n"
-        f"## Current H2H weakness to research\n{weakness}\n\n"
-        f"## Stagnation context\n{stagnation_info or 'Stagnation detected — current axis exhausted.'}\n\n"
-        f"## Source bot version\nv{source_v}\n\n"
-        f"Now execute the 4 steps (PLAN → SEARCH → REFLECT → WRITE) and return the final "
-        f"WRITE-step JSON. You have web search tools available — use them for the SEARCH step."
-    )
 
     # ── Single research agent run (plan/search/reflect/write in one query, with web tools) ──
     # The agent has web search (Exa MCP, connected) + WebSearch. Domain whitelist is in the prompt.
@@ -3763,10 +4673,17 @@ async def run_literature_probe(args):
         pass
     try:
         ui.clear_io()
+        literature_role = f"LITERATURE_PROBE (v{next_v})"
+        rendered_prompt = _issue_literature_rendered_prompt(
+            next_v=int(next_v),
+            source_v=int(source_v),
+            weakness=str(h2h_weakness or ""),
+            stagnation_info=str(stagnation_info or ""),
+        )
         output, _, _ = await _asyncio.wait_for(
             run_claude_query(
-                brief, [], ui,
-                f"LITERATURE_PROBE (v{next_v})", probe_log,
+                rendered_prompt, [], ui,
+                literature_role, probe_log,
                 tools=["WebSearch"],  # built-in; Exa MCP auto-available (not in _BLOCKED_MCP_TOOLS)
             ),
             timeout=LITERATURE_PROBE_TIMEOUT,
@@ -3786,23 +4703,30 @@ async def run_literature_probe(args):
                               "log_file": str(probe_log)})
         except Exception:
             pass
-        inject_text = (
-            "## Research Proposal\n"
-            "No codable proposal was produced because the web research stage timed out. "
-            "Proceed with run_master using frozen direction, H2H, replay, and identity-bound native memory evidence."
-        )
         payload = {
-            "skipped": True,
             "reason": "literature_probe_timeout",
             "next_v": next_v,
             "source_v": source_v,
-            "weakness": weakness,
+            "weakness": h2h_weakness,
             "stagnation_info": stagnation_info,
             "elapsed_sec": elapsed,
             "timeout_s": LITERATURE_PROBE_TIMEOUT,
-            "inject_text": inject_text,
         }
-        payload = _bind_literature_probe_payload(payload, receipt_binding)
+        payload = _build_literature_probe_payload(
+            payload,
+            checkpoint=probe_checkpoint,
+            receipt_binding=receipt_binding,
+            rendered_prompt=rendered_prompt,
+        )
+        try:
+            _write_literature_probe_cache(
+                next_v,
+                payload,
+                checkpoint=probe_checkpoint,
+                receipt_binding=receipt_binding,
+            )
+        except Exception:
+            pass
         if not _persist_literature_probe_result(
             next_v,
             source_v,
@@ -3810,10 +4734,6 @@ async def run_literature_probe(args):
             receipt_binding=receipt_binding,
         ):
             return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
-        try:
-            payload = _write_literature_probe_cache(next_v, payload)
-        except Exception:
-            pass
         return _json_tool_result(payload)
     except Exception as e:
         try:
@@ -3826,18 +4746,41 @@ async def run_literature_probe(args):
                               "log_file": str(probe_log)})
         except Exception:
             pass
+        if rendered_prompt is None:
+            return _json_tool_result({
+                "error": "LITERATURE_PROBE_PRODUCER_RECEIPT_UNAVAILABLE",
+                "next_v": next_v,
+                "source_v": source_v,
+                "detail": f"{type(e).__name__}: {str(e)[:500]}",
+                "directive": (
+                    "The system could not issue the typed LLM dispatch receipt. "
+                    "No terminal attempt or cache was persisted."
+                ),
+            })
         payload = {
-            "skipped": True,
             "reason": "literature_probe_failed",
             "next_v": next_v,
             "source_v": source_v,
-            "weakness": weakness,
+            "weakness": h2h_weakness,
             "stagnation_info": stagnation_info,
             "elapsed_sec": round(time.time() - _t0, 1),
             "error": str(e)[:1000],
         }
-        payload = _bind_literature_probe_payload(payload, receipt_binding)
-        payload["inject_text"] = _literature_probe_inject_text(payload)
+        payload = _build_literature_probe_payload(
+            payload,
+            checkpoint=probe_checkpoint,
+            receipt_binding=receipt_binding,
+            rendered_prompt=rendered_prompt,
+        )
+        try:
+            _write_literature_probe_cache(
+                next_v,
+                payload,
+                checkpoint=probe_checkpoint,
+                receipt_binding=receipt_binding,
+            )
+        except Exception:
+            pass
         if not _persist_literature_probe_result(
             next_v,
             source_v,
@@ -3845,53 +4788,64 @@ async def run_literature_probe(args):
             receipt_binding=receipt_binding,
         ):
             return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
-        try:
-            payload = _write_literature_probe_cache(next_v, payload)
-        except Exception:
-            pass
         return _json_tool_result(payload)
 
     # ── Parse the WRITE-step proposal ──
-    data, _mode = parse_json_output(output) if False else (None, None)
     try:
         from llm_query import parse_json_output_with_mode
         data, _fm = parse_json_output_with_mode(output)
     except Exception:
         data = None
 
-    proposal = data if isinstance(data, dict) else None
+    proposal = _normalize_literature_proposal(data)
     candidate_id = None
-    gated_out = False
-    if proposal and proposal.get("target_fn") and proposal.get("numeric_claim"):
+    if proposal is not None:
         # A6 translation_gate + cap + blacklist enforced inside add_candidate
-        candidate_id = add_candidate({
-            "claim": proposal.get("claim", ""),
-            "source_url": proposal.get("source_url", ""),
-            "numeric_claim": proposal.get("numeric_claim", ""),
-            "target_fn": proposal.get("target_fn", ""),
-            "proposed_change": proposal.get("proposed_change", ""),
-            "pseudocode": proposal.get("pseudocode", ""),
-            "firing_tuple": proposal.get("firing_tuple", ""),
-            "born_gen": next_v,
-        })
-        gated_out = candidate_id is None
-    elif proposal and proposal.get("claim") is None:
-        # Honest null — no codable evidence. Not an error.
-        pass
+        checkpoint_binding = _literature_checkpoint_binding(
+            probe_checkpoint,
+            receipt_binding,
+        )
+        submitted_candidate_id = _expected_literature_candidate_id(
+            proposal,
+            checkpoint_identity=checkpoint_binding["checkpoint_identity"],
+            terminal_output_sha256=hashlib.sha256(
+                output.encode("utf-8")
+            ).hexdigest(),
+        )
+        governance_result = add_candidate(
+            _literature_candidate_submission(
+                proposal,
+                int(next_v),
+                submitted_candidate_id,
+            )
+        )
+        candidate_id = (
+            governance_result
+            if governance_result == submitted_candidate_id
+            else None
+        )
 
     # ── Persist the proposal + return text for master_prompt injection ──
-    _payload = _bind_literature_probe_payload({
+    _payload = _build_literature_probe_payload({
         "next_v": next_v,
         "source_v": source_v,
-        "weakness": weakness,
+        "weakness": h2h_weakness,
         "stagnation_info": stagnation_info,
         "proposal": proposal,
         "candidate_id": candidate_id,
-        "gated_out": gated_out,
         "elapsed_sec": round(time.time() - _t0, 1),
         "reason": "completed",
-    }, receipt_binding)
-    _payload["inject_text"] = _literature_probe_inject_text(_payload)
+    }, checkpoint=probe_checkpoint, receipt_binding=receipt_binding,
+        rendered_prompt=rendered_prompt, terminal_output=output)
+    try:
+        _write_literature_probe_cache(
+            next_v,
+            _payload,
+            checkpoint=probe_checkpoint,
+            receipt_binding=receipt_binding,
+        )
+    except Exception:
+        pass
     if not _persist_literature_probe_result(
         next_v,
         source_v,
@@ -3899,14 +4853,10 @@ async def run_literature_probe(args):
         receipt_binding=receipt_binding,
     ):
         return _json_tool_result(_literature_probe_stale_result(next_v, source_v))
-    try:
-        _payload = _write_literature_probe_cache(next_v, _payload)
-    except Exception:
-        pass
 
     try:
         log_system_event("pipeline.literature_probe", "info",
-                         f"literature_probe v{next_v}: candidate_id={candidate_id} gated_out={gated_out}",
+                         f"literature_probe v{next_v}: candidate_id={candidate_id} gated_out={_payload['gated_out']}",
                          {"next_v": next_v, "candidate_id": candidate_id,
                           "target_fn": (proposal or {}).get("target_fn", "")})
     except Exception:
@@ -4803,6 +5753,24 @@ def _is_precommit_rework_checkpoint(ckpt):
         return False
     if ckpt.get("stage") == "precommit_failed":
         return True
+    gate_results = ckpt.get("gate_results") or {}
+    precommit_gate = (
+        gate_results.get("precommit_eval")
+        if isinstance(gate_results, dict)
+        else None
+    )
+    if isinstance(precommit_gate, dict) and precommit_gate.get("passed") is False:
+        # Older checkpoints recorded the precommit receipt while leaving the
+        # stage at critic_checked.  Preserve that compatibility only for a
+        # measured regression; infrastructure-only failures stay on the
+        # precommit owner and Critic advice can never enter this branch.
+        from failure_classification import classify_precommit_gate
+
+        if classify_precommit_gate(precommit_gate) in {
+            "regression",
+            "failed_unknown",
+        }:
+            return True
     work_item = _checkpoint_work_item(ckpt)
     route = work_item.get("route") if isinstance(work_item.get("route"), dict) else {}
     return (
@@ -4826,41 +5794,79 @@ def _is_official_rework_checkpoint(ckpt):
     )
 
 
-def _score_below_threshold(value, threshold=6.0):
-    try:
-        return float(value) < threshold
-    except (TypeError, ValueError):
-        return False
+def _has_legacy_critic_repair_contract(ckpt, tasks=()):
+    """Detect retired Critic-owned candidate mutation authority.
+
+    A schema-valid Critic receipt is advisory evidence only.  Historical
+    checkpoints/tasks may still carry ``critic_repair`` markers; recognizing
+    those markers is solely a fail-closed migration guard and never permission
+    to synthesize or execute a Worker task.
+    """
+
+    work_item = _checkpoint_work_item(ckpt)
+    route = work_item.get("route") if isinstance(work_item.get("route"), dict) else {}
+    markers = {
+        str(work_item.get("kind") or "").lower(),
+        str(work_item.get("repair_blocker") or "").lower(),
+        str(route.get("intent") or "").lower(),
+    }
+    for task in tasks or ():
+        if not isinstance(task, dict):
+            continue
+        markers.update({
+            str(task.get("task_kind") or "").lower(),
+            str(task.get("repair_blocker") or "").lower(),
+            str((task.get("repair_contract") or {}).get("blocker") or "").lower()
+            if isinstance(task.get("repair_contract"), dict)
+            else "",
+        })
+    return any(
+        "critic_repair" in marker
+        or "critic_rework" in marker
+        or marker == "critic_rejection"
+        for marker in markers
+    )
 
 
-def _is_critic_rework_checkpoint(ckpt):
-    """Whether the checkpoint represents a hard Strategy Critic rejection."""
-    if not isinstance(ckpt, dict):
-        return False
-    if ckpt.get("stage") not in {"repair_planned", "rework_running"}:
-        return False
-    if _is_precommit_rework_checkpoint(ckpt):
-        return False
-    if _is_official_rework_checkpoint(ckpt):
-        return False
-    if _is_review_rework_checkpoint(ckpt):
-        return False
+def _critic_advisory_rework_refusal(ckpt, tasks, next_v, source_v):
+    """Return a fail-closed payload when Critic advice reaches Workers."""
 
-    feedback = str(ckpt.get("reviewer_feedback") or "").lower()
-    if "critic_rejection" in feedback:
-        return True
-
-    critic = (ckpt.get("gate_results") or {}).get("critic") or {}
-    if not isinstance(critic, dict) or not critic:
-        return False
-    status = str(critic.get("status") or "").lower()
-    if status in {"rejected", "failed", "blocked"}:
-        return True
-    if critic.get("approved") is False:
-        return True
-    if critic.get("raw_approved") is False or critic.get("advisory_approved") is False:
-        return True
-    return _score_below_threshold(critic.get("score"))
+    legacy_critic_repair = _has_legacy_critic_repair_contract(ckpt, tasks)
+    critic_without_precommit_regression = (
+        isinstance(ckpt, dict)
+        and ckpt.get("stage") == "critic_checked"
+        and not _is_precommit_rework_checkpoint(ckpt)
+    )
+    if not legacy_critic_repair and not critic_without_precommit_regression:
+        return None
+    return {
+        "error": (
+            "LEGACY_CRITIC_REPAIR_FORBIDDEN"
+            if legacy_critic_repair
+            else "CRITIC_ADVISORY_REWORK_FORBIDDEN"
+        ),
+        "next_v": next_v,
+        "source_v": source_v,
+        "stage": ckpt.get("stage") if isinstance(ckpt, dict) else None,
+        "next_tool": (
+            "abandon_generation"
+            if legacy_critic_repair
+            else "run_precommit_eval"
+        ),
+        "failure_class": (
+            "contract_migration"
+            if legacy_critic_repair
+            else "route_violation"
+        ),
+        "safe_to_auto_execute": not legacy_critic_repair,
+        "directive": (
+            "This checkpoint carries retired Critic-owned Worker repair authority. "
+            "Do not mutate the candidate; run controlled abandon/re-prepare recovery."
+            if legacy_critic_repair
+            else "Critic is advisory. Call run_precommit_eval for the unchanged candidate; "
+            "only a measured native precommit regression can authorize Worker rework."
+        ),
+    }
 
 
 def _is_review_rework_checkpoint(ckpt):
@@ -4957,6 +5963,10 @@ def _precommit_changed_python_files(ckpt):
     source_v = ckpt.get("source_v")
     next_v = ckpt.get("next_v")
     if source_v is None or next_v is None:
+        return []
+    if _is_fresh_empty_pool_bootstrap(ckpt):
+        # Fresh v143 has no source-side diff.  Its prepared/Worker receipts own
+        # the exact policy delta; precommit must not infer one from stale v142.
         return []
     try:
         source_dir = get_bot_dir(source_v)
@@ -5228,7 +6238,7 @@ def _official_repair_tasks(ckpt, feedback):
     source_v = ckpt.get("source_v") if isinstance(ckpt, dict) else "?"
     method = (
         "- This is an official EXE full-certification repair, not a strength-rating tweak.\n"
-        "- Read the official_evidence_path and summarized round issues before editing.\n"
+        "- Use only the checkpoint-injected deterministic round issues below; the raw official evidence path is system-owned.\n"
         "- Fix only the bot-side reason the official 70-hand full gate could not complete.\n"
         "- Do not loosen local validators, suppress official evidence, or mark certification passed manually.\n"
         "- Keep the five-file strict artifact intact and the system-owned TCP entrypoint byte-identical."
@@ -5245,7 +6255,7 @@ def _official_repair_tasks(ckpt, feedback):
         f"Official evidence:\n{evidence[:5000]}\n\n"
         f"Required method:\n{method}\n\n"
         "Verification expectation:\n"
-        "- Run the smallest compile/import check for edited files.\n"
+        "- Run `python -m py_compile` on the exact edited file; imports and dynamic checks remain system-owned.\n"
         "- Confirm only policy.py changed; system artifacts must remain byte-identical.\n"
         "- End with the concrete official failure class you addressed."
     )
@@ -5265,46 +6275,6 @@ def _official_repair_tasks(ckpt, feedback):
             if isinstance(ckpt, dict) else "",
         },
     }]
-
-
-def _critic_feedback_items(ckpt, feedback=""):
-    items = []
-
-    def add(value):
-        if isinstance(value, dict):
-            for key, val in value.items():
-                add(f"{key}: {val}")
-        elif isinstance(value, (list, tuple, set)):
-            for item in value:
-                add(item)
-        elif value is not None:
-            text = str(value).strip()
-            if text:
-                items.append(text)
-
-    add(feedback)
-    if isinstance(ckpt, dict):
-        critic = (ckpt.get("gate_results") or {}).get("critic") or {}
-        if isinstance(critic, dict):
-            for key in (
-                "feedback",
-                "strategic_assessment",
-                "reasoning",
-                "directive",
-                "blockers",
-                "failures",
-                "issues",
-                "strategic_issues",
-            ):
-                add(critic.get(key))
-
-    deduped = []
-    seen = set()
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            deduped.append(item)
-    return deduped
 
 
 def _review_feedback_items(ckpt, feedback=""):
@@ -5344,44 +6314,6 @@ def _review_feedback_items(ckpt, feedback=""):
             seen.add(item)
             deduped.append(item)
     return deduped
-
-
-def _critic_repair_target_files(ckpt, feedback):
-    evidence = _critic_feedback_items(ckpt, feedback)
-    evidence_files = _extract_quality_failure_files(evidence)
-    allow_protocol_files = _precommit_protocol_compliance_failure(evidence, feedback)
-    changed_files = _precommit_changed_python_files(ckpt)
-    changed_repair_files = _precommit_filter_repair_targets(
-        changed_files,
-        allow_protocol_files=allow_protocol_files,
-    )
-    evidence_repair_files = _precommit_filter_repair_targets(
-        evidence_files,
-        allow_protocol_files=allow_protocol_files,
-    )
-    if changed_repair_files and evidence_repair_files:
-        evidence_set = set(evidence_repair_files)
-        intersected = [name for name in changed_repair_files if name in evidence_set]
-        if intersected:
-            return _limit_precommit_repair_targets(intersected)
-    if changed_repair_files:
-        return _limit_precommit_repair_targets(changed_repair_files)
-    if evidence_repair_files:
-        return _limit_precommit_repair_targets(evidence_repair_files)
-
-    try:
-        next_v = ckpt.get("next_v") if isinstance(ckpt, dict) else None
-        bot_dir = get_bot_dir(next_v) if next_v is not None else None
-        if bot_dir:
-            existing = [
-                name for name in _PRECOMMIT_STRATEGY_REPAIR_FILES
-                if (bot_dir / name).exists()
-            ]
-            if existing:
-                return _limit_precommit_repair_targets(existing[:1])
-    except Exception:
-        pass
-    return ["policy.py"]
 
 
 def _review_primary_feedback_text(feedback):
@@ -5462,10 +6394,6 @@ def _checkpoint_rework_feedback(ckpt):
         failed = _review_feedback_items(ckpt)
         if failed:
             return "Reviewer rejected:\n- " + "\n- ".join(str(item) for item in failed[:20])
-    if _is_critic_rework_checkpoint(ckpt):
-        failed = _critic_feedback_items(ckpt)
-        if failed:
-            return "Critic rejected:\n- " + "\n- ".join(str(item) for item in failed[:20])
     if stage in {"quality_failed", "repair_planned", "rework_running"}:
         failed = _quality_failure_items(ckpt)
         if failed:
@@ -6914,7 +7842,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         role_guidance = (
             "\nScope-drift repair method:\n"
             "- The reviewer evidence says this file changed outside the approved worker scope.\n"
-            "- Revert this target file to the source parent version unless the evidence names a smaller exact rollback.\n"
+            "- Apply only the exact rollback described in the injected evidence; the source parent is not readable by the Worker.\n"
             "- Do not add strategy thresholds, protocol refactors, helper subsystems, or action-behavior changes.\n"
             "- Keep the repair limited to restoring the approved scope boundary; other candidate files are intentionally preserved.\n"
         )
@@ -6929,7 +7857,7 @@ def _quality_contract_task(contract, ckpt, preservation, task_kind):
         f"- Edit `{filename}`. This file is listed in `must_change_files`; a no-op or editing only another file is failure.\n"
         "- Fix only the listed gate blocker.\n"
         "- Preserve national protocol/card mapping and previously passing behavior.\n"
-        "- Run the smallest relevant compile/import check before finishing."
+        "- Run `python -m py_compile` on the exact edited file before finishing; system gates own imports and execution."
     )
     return {
         "worker_id": f"auto_quality_repair_gate_{suffix}",
@@ -7146,7 +8074,7 @@ def _precommit_repair_task(filename, ckpt, feedback):
         "This is one file-scoped precommit regression repair from a failed native "
         f"national TCP final gate for bots/national_v{next_v}.\n\n"
         f"Target file: `{filename}`\n"
-        f"Source parent for diff: bots/national_v{source_v}/\n"
+        f"Source lineage identity: national_v{source_v} (not readable by this Worker)\n"
         f"Failed candidate: bots/national_v{next_v}/\n\n"
         f"Exact precommit feedback:\n{feedback}\n\n"
         "Non-negotiable national position invariant:\n"
@@ -7162,14 +8090,15 @@ def _precommit_repair_task(filename, ckpt, feedback):
         f"- Only edit `{filename}`. Other files are intentionally out of scope for this worker.\n"
         "- This is a policy/matchup repair. `policy.py` is the sole writable file; "
         "national_bot.py and precompute.py remain byte-identical system artifacts.\n"
-        f"- First inspect `diff bots/national_v{source_v}/{filename} bots/national_v{next_v}/{filename}` "
-        "and identify which changed behavior could explain the losing 70-hand national TCP matchups.\n"
+        "- Use the system-injected precommit feedback and current candidate region to identify "
+        "which changed behavior could explain the losing complete 70-hand native TCP samples.\n"
         "- Make one bounded EV/matchup correction in this file. Prefer tightening, gating, or partially "
         "rolling back a risky new branch over adding broad new logic.\n"
         "- Do not wholesale replace the candidate with the source parent; the final candidate must remain "
         "a real code change after repair.\n"
         "- Preserve native TCP protocol/card mapping, national action legality, and previously passed quality gates.\n"
-        "- Run a compile check for the bot package before finishing."
+        f"- Run `python -m py_compile bots/national_v{next_v}/{filename}` before finishing; "
+        "system gates own imports and dynamic execution."
         f"{line_note}"
     )
     return {
@@ -7265,6 +8194,14 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     stage = ckpt.get("stage")
     if stage not in {"quality_failed", "repair_planned", "rework_running", "precommit_failed", "official_failed"}:
         return []
+    if _has_legacy_critic_repair_contract(
+        ckpt,
+        _checkpoint_master_plan(ckpt).get("tasks", []),
+    ):
+        # Retired Critic-owned repair checkpoints require controlled recovery;
+        # silently translating them into a quality repair would mutate the
+        # candidate under an authority that no longer exists.
+        return []
 
     feedback = str(reviewer_feedback or _checkpoint_rework_feedback(ckpt) or "").strip()
     if not feedback:
@@ -7274,10 +8211,9 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     is_precommit_rework = _is_precommit_rework_checkpoint(ckpt)
     is_official_rework = _is_official_rework_checkpoint(ckpt)
     is_review_rework = _is_review_rework_checkpoint(ckpt)
-    is_critic_rework = _is_critic_rework_checkpoint(ckpt)
     quality_contracts = (
         []
-        if is_precommit_rework or is_official_rework or is_review_rework or is_critic_rework
+        if is_precommit_rework or is_official_rework or is_review_rework
         else _quality_repair_contracts(ckpt, feedback)
     )
     if is_precommit_rework:
@@ -7286,8 +8222,6 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
         return _official_repair_tasks(ckpt, feedback)
     elif is_review_rework:
         target_files = _review_repair_target_files(ckpt, feedback)
-    elif is_critic_rework:
-        target_files = _critic_repair_target_files(ckpt, feedback)
     elif quality_contracts:
         target_files = [contract["file"] for contract in quality_contracts]
     elif reviewer_feedback:
@@ -7314,28 +8248,11 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
             "- Resolve the primary rejected state coherently. If the feedback offers mutually exclusive paths, choose ONE complete path.\n"
             "- Do not leave defined-but-unwired helpers, misleading comments/docstrings, unused imports, or half-restored systems.\n"
             "- Keep the candidate's already-passing national protocol/card mapping behavior intact.\n"
-            "- Run the smallest relevant compile/import or self-test check before finishing."
+            "- Run `python -m py_compile` on the exact edited file before finishing; system gates own imports and self-tests."
         )
         worker_id = "auto_review_repair"
         role = "Algorithmic Logic Architect"
         task_kind = "crossover_review_repair" if is_crossover else "review_repair"
-    elif is_critic_rework:
-        preservation = (
-            "This is a Strategy Critic hard-gate repair. Preserve the current "
-            "candidate in bots/national_v{next_v}; fix the exact strategic defect "
-            "that caused critic rejection without changing the national TCP entrypoint "
-            "unless the critic evidence names a protocol violation."
-        )
-        method = (
-            "- Read the listed target files and the quoted critic feedback before editing.\n"
-            "- Correct the strategic sign, metric interpretation, or decision path named by the critic; do not add unrelated features.\n"
-            "- Keep the candidate's already-passing national protocol/card mapping behavior intact.\n"
-            "- Make the repair measurable in the code path used by decisions, not only in comments or telemetry.\n"
-            "- Run the smallest relevant compile/import or self-test check before finishing."
-        )
-        worker_id = "auto_critic_repair"
-        role = "Algorithmic Logic Architect"
-        task_kind = "crossover_critic_repair" if is_crossover else "critic_repair"
     elif is_crossover and stage in {"quality_failed", "repair_planned", "rework_running"}:
         preservation = (
             "This is a crossover quality repair. Preserve the current candidate's "
@@ -7382,8 +8299,6 @@ def _synthesize_rework_tasks_from_checkpoint(ckpt, reviewer_feedback=""):
     repair_blocker = (
         "review_rejection"
         if is_review_rework
-        else "critic_rejection"
-        if is_critic_rework
         else "quality_gate"
     )
     return [{
@@ -7519,13 +8434,6 @@ def _should_reset_before_rework(ckpt, tasks):
         or _is_review_rework_checkpoint(ckpt)
     )
     if is_review_repair:
-        return False
-    is_critic_repair = (
-        "critic_repair" in work_kind
-        or any("critic_repair" in kind for kind in task_kinds)
-        or _is_critic_rework_checkpoint(ckpt)
-    )
-    if is_critic_repair:
         return False
     is_quality_repair = (
         stage == "quality_failed"
@@ -8219,6 +9127,16 @@ async def _run_durable_worker_effect(
                     source_v=source_v,
                     force_sequential=bool(policy.get("force_sequential")),
                     task_skipper=task_skipper,
+                    worker_effect_identity={
+                        "workflow_run_id": str(
+                            checkpoint.get("workflow_run_id") or ""
+                        ),
+                        "envelope_digest": str(
+                            envelope.get("envelope_digest") or ""
+                        ),
+                        "effect_id": str(lease.effect_id),
+                        "lease_epoch": int(lease.lease_epoch),
+                    },
                 )
         except BaseException as exc:
             rollback_error = ""
@@ -8425,6 +9343,7 @@ async def _run_durable_worker_effect(
                 next_v,
                 worker_snapshots=worker_snapshots,
                 candidate_dir=workspace,
+                source_artifact_inherited=_source_inherited,
             )
             success = not boundary_errors
         if success:
@@ -8827,6 +9746,17 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             next_v,
             source_v,
         )
+    checkpoint_tasks = _checkpoint_master_plan(ckpt).get("tasks", [])
+    if not isinstance(checkpoint_tasks, list):
+        checkpoint_tasks = []
+    critic_refusal = _critic_advisory_rework_refusal(
+        ckpt,
+        [*checkpoint_tasks, *tasks],
+        next_v,
+        source_v,
+    )
+    if critic_refusal:
+        return _json_tool_result(critic_refusal)
     _system_bootstrap_executor = False
     from system_strict_bootstrap import is_declared_native_bootstrap
 
@@ -9237,6 +10167,18 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             "next_tool": route_policy(ckpt).get("next_tool"),
         })
     if _checkpoint_architecture_policy_identity_errors(ckpt):
+        if _is_fresh_empty_pool_bootstrap(ckpt):
+            return _json_tool_result({
+                "error": "FIRST_STRICT_ARCHITECTURE_POLICY_IDENTITY_DRIFT",
+                "next_v": next_v,
+                "source_v": source_v,
+                "action": "abandon_generation",
+                "directive": (
+                    "The fresh first-strict architecture identity drifted. "
+                    "Abandon and rematerialize the system blueprint; never "
+                    "recover it from numeric high-water source bytes."
+                ),
+            })
         try:
             recovery = _recover_architecture_policy_identity(
                 ckpt,
@@ -9657,7 +10599,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         tasks = deepcopy(_authoritative_tasks)
 
     review_rework_checkpoint = _is_review_rework_checkpoint(ckpt)
-    critic_rework_checkpoint = _is_critic_rework_checkpoint(ckpt)
     official_rework_checkpoint = _is_official_rework_checkpoint(ckpt)
     replace_checkpoint_tasks = ckpt.get("stage") in rework_stages
 
@@ -9681,9 +10622,9 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             },
         )
 
-    # Fallback: if tasks not provided, load from checkpoint master_plan.
-    # This happens when the orchestrator session is fresh (not resumed) and
-    # the LLM doesn't have the task list in its conversation history.
+    # If tasks are not provided, load them from the authoritative checkpoint.
+    # Provider sessions are always fresh and never carry task authority in
+    # remote conversation history.
     if not tasks:
         plan = _checkpoint_master_plan(ckpt)
         checkpoint_tasks = plan.get("tasks", [])
@@ -9702,7 +10643,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 and not _is_precommit_rework_checkpoint(ckpt)
                 and not _is_official_rework_checkpoint(ckpt)
                 and not review_rework_checkpoint
-                and not critic_rework_checkpoint
             ) else ""
         )
         if ckpt.get("stage") in rework_stages and (
@@ -9780,7 +10720,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         and not _is_precommit_rework_checkpoint(ckpt)
         and not _is_official_rework_checkpoint(ckpt)
         and not review_rework_checkpoint
-        and not critic_rework_checkpoint
     ):
         failure_files = _quality_failure_target_files(ckpt, reviewer_feedback)
         task_files = _task_target_filenames(tasks)
@@ -9870,7 +10809,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         and not _is_precommit_rework_checkpoint(ckpt)
         and not _is_official_rework_checkpoint(ckpt)
         and not review_rework_checkpoint
-        and not critic_rework_checkpoint
     ):
         ordered_tasks = _order_quality_repair_tasks(tasks)
         old_order = [str(task.get("worker_id", idx + 1)) for idx, task in enumerate(tasks)]
@@ -9889,6 +10827,15 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     "new_order": new_order,
                 },
             )
+
+    critic_refusal = _critic_advisory_rework_refusal(
+        ckpt,
+        tasks,
+        next_v,
+        source_v,
+    )
+    if critic_refusal:
+        return _json_tool_result(critic_refusal)
 
     task_write_scope_errors = _task_write_scope_errors(tasks, next_v)
     if task_write_scope_errors:
@@ -9968,10 +10915,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             "next_v": next_v,
             "source_v": source_v,
         })
-
-    # Critic is a hard strategic gate. generation_attempt can be incremented by a
-    # critic rejection and preserved through this worker rework path; run_master
-    # remains the explicit reset point for a fresh plan.
 
     # When retrying after workers already ran, actually reset code from source first.
     # Previous claim that code was reset was FALSE — now we actually do it.
@@ -10202,12 +11145,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 if ckpt.get("parent2_v") is not None or rework_kind.startswith("crossover_")
                 else "review_repair"
             )
-        elif critic_rework_checkpoint or any("critic_repair" in kind for kind in task_kinds):
-            rework_kind = (
-                "crossover_critic_repair"
-                if ckpt.get("parent2_v") is not None or rework_kind.startswith("crossover_")
-                else "critic_repair"
-            )
         elif _is_official_rework_checkpoint(ckpt) or any("official_repair" in kind for kind in task_kinds):
             rework_kind = "official_repair"
         is_precommit_rework = rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt)
@@ -10383,23 +11320,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     event_message,
                     {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
                 )
-            elif "critic_repair" in rework_kind:
-                event_type = (
-                    "pipeline.crossover_critic_repair_in_place"
-                    if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None
-                    else "pipeline.critic_repair_in_place"
-                )
-                event_message = (
-                    f"Repairing crossover v{next_v} in place after critic rejection; preserving fused candidate code"
-                    if event_type == "pipeline.crossover_critic_repair_in_place"
-                    else f"Repairing v{next_v} in place after critic rejection; preserving generated candidate code"
-                )
-                log_system_event(
-                    event_type,
-                    "warn",
-                    event_message,
-                    {"next_v": next_v, "source_v": source_v, "parent2_v": ckpt.get("parent2_v")},
-                )
             else:
                 in_place_kind = (
                     "crossover_quality_repair"
@@ -10530,8 +11450,9 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
         if reset_before_rework:
             reviewer_feedback += (
                 f"\n\nNOTE: This is a retry. The code in bots/national_v{next_v}/ has been ACTUALLY RESET "
-                f"from source bots/national_v{source_v}/. Any modifications described in the feedback "
-                f"above no longer exist in the code — you must re-implement them from scratch."
+                f"by the system to the exact national_v{source_v} preimage. The source path remains "
+                f"unreadable to this Worker. Any modifications described in the feedback above no "
+                f"longer exist in the candidate — re-implement them from the injected contract."
             )
         elif rework_kind == "precommit_repair" or _is_precommit_rework_checkpoint(ckpt):
             reviewer_feedback += (
@@ -10551,12 +11472,6 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                 f"\n\nNOTE: This is an in-place Lead Code Reviewer repair. The current code in "
                 f"bots/national_v{next_v}/ is the candidate that failed the reviewer hard gate; "
                 "preserve it except for the exact code-quality blocker described above."
-            )
-        elif "critic_repair" in rework_kind:
-            reviewer_feedback += (
-                f"\n\nNOTE: This is an in-place Strategy Critic repair. The current code in "
-                f"bots/national_v{next_v}/ is the candidate that failed the critic hard gate; "
-                "preserve it except for the exact strategic defect described above."
             )
         else:
             if rework_kind.startswith("crossover_") or ckpt.get("parent2_v") is not None:

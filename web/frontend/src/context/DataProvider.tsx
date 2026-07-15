@@ -1,109 +1,45 @@
 /* eslint-disable react-refresh/only-export-components -- Context provider modules intentionally export typed hooks. */
-import { createContext, useContext, useState, useEffect, useRef, type ReactNode } from "react";
-import type {
-  BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog,
-  MatchSummary, DaemonStatus, RateLimitStatus, BotSummary, H2HEntry, BotStatsEntry,
-} from "../api/types";
+import { createContext, useContext, useState, useLayoutEffect, type ReactNode } from "react";
 import { useControlStatus } from "../hooks/useControlStatus";
+import {
+  createDataStreamController,
+  createInitialDataStore,
+  initialDataStore,
+  type DataStore,
+} from "../lib/dataStreamController";
+import { epochStreamAuthorityKey } from "../lib/epochStreamAuthority";
 
-export type DataStore = {
-  ratings: BotRating[];
-  stats: MatchStats | null;
-  daemon: DaemonStatus | null;
-  rateLimit: RateLimitStatus | null;
-  bots: {
-    active: BotSummary[];
-  };
-  matches: MatchSummary[];
-  matrix: MatchMatrix | null;
-  history: HistoryEntry[];
-  generations: GenerationLog[];
-  h2h: Record<string, H2HEntry>;
-  botStats: Record<string, BotStatsEntry>;
-};
-
-const initial: DataStore = {
-  ratings: [],
-  stats: null,
-  daemon: null,
-  rateLimit: null,
-  bots: { active: [] },
-  matches: [],
-  matrix: null,
-  history: [],
-  generations: [],
-  h2h: {},
-  botStats: {},
-};
-
-const DataContext = createContext<DataStore>(initial);
+const DataContext = createContext<DataStore>(initialDataStore);
 const SetDataContext = createContext<((partial: Partial<DataStore>) => void) | null>(null);
 
 export function DataProvider({ children }: { children: ReactNode }) {
-  const [store, setStore] = useState<DataStore>(initial);
-  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [store, setStore] = useState<DataStore>(initialDataStore);
   const { status: epochStatus } = useControlStatus(5_000);
+  const streamAuthorityKey = epochStreamAuthorityKey(epochStatus);
 
-  useEffect(() => {
-    if (!epochStatus?.epoch_initialized) {
+  useLayoutEffect(() => {
+    if (!streamAuthorityKey) {
       // The browser store is only a cache. Drop every prior SSE projection on
       // reset/recovery/control-read failure so a later page cannot flash stale
       // ratings or replays while the canonical epoch is unavailable.
-      setStore(initial);
+      setStore(createInitialDataStore());
       return;
     }
-    let currentSource: EventSource | null = null;
-    let authorityBlocked = false;
-
-    const connect = () => {
-      currentSource = new EventSource("/api/data/stream");
-
-      const handlers: Record<string, (data: unknown) => void> = {
-        ratings: (data) => setStore((s) => ({ ...s, ratings: data as BotRating[] })),
-        daemon: (data) => setStore((s) => ({ ...s, daemon: data as DaemonStatus })),
-        rate_limit: (data) => setStore((s) => ({ ...s, rateLimit: data as RateLimitStatus })),
-        bots: (data) => setStore((s) => ({ ...s, bots: data as DataStore["bots"] })),
-        stats: (data) => setStore((s) => ({ ...s, stats: data as MatchStats })),
-        matches: (data) => setStore((s) => ({ ...s, matches: data as MatchSummary[] })),
-        generations: (data) => setStore((s) => ({ ...s, generations: data as GenerationLog[] })),
-        matrix: (data) => setStore((s) => ({ ...s, matrix: data as MatchMatrix })),
-        history: (data) => setStore((s) => ({ ...s, history: data as HistoryEntry[] })),
-        h2h: (data) => setStore((s) => ({ ...s, h2h: data as Record<string, H2HEntry> })),
-        bot_stats: (data) => setStore((s) => ({ ...s, botStats: data as Record<string, BotStatsEntry> })),
-      };
-
-      Object.entries(handlers).forEach(([event, handler]) => {
-        currentSource!.addEventListener(event, (e: MessageEvent) => {
-          try { handler(JSON.parse(e.data)); } catch { /* ignore */ }
-        });
-      });
-
-      currentSource.addEventListener("epoch_blocked", () => {
-        authorityBlocked = true;
-        setStore(initial);
-        currentSource?.close();
-        currentSource = null;
-        if (reconnectRef.current) {
-          clearTimeout(reconnectRef.current);
-          reconnectRef.current = null;
-        }
-      });
-
-      currentSource.onerror = () => {
-        currentSource?.close();
-        currentSource = null;
-        if (authorityBlocked) return;
-        reconnectRef.current = setTimeout(connect, 5000);
-      };
-    };
-
-    connect();
-
-    return () => {
-      if (reconnectRef.current) clearTimeout(reconnectRef.current);
-      currentSource?.close();
-    };
-  }, [epochStatus?.epoch_initialized]);
+    // A valid-to-different-valid authority transition is still a hard cache
+    // boundary. Clear synchronously before the new EventSource can paint so
+    // ratings from the prior reset/publication identity never flash.
+    setStore({
+      ...createInitialDataStore(),
+      stream: { state: "connecting", last_event_at: null },
+    });
+    // The injected controller owns addEventListener("ping") and
+    // addEventListener("epoch_blocked"). Its tested state machine executes
+    // `if (authorityBlocked) return`, and transport failure projects
+    // `daemon: null` with `state: "disconnected"`. Dynamic node:test coverage
+    // exercises that production implementation instead of a copied reducer.
+    const controller = createDataStreamController(setStore, streamAuthorityKey);
+    return controller.start();
+  }, [streamAuthorityKey]);
 
   const updateData = (partial: Partial<DataStore>) => setStore((s) => ({ ...s, ...partial }));
 
@@ -125,4 +61,5 @@ export const useHistory = () => useContext(DataContext).history;
 export const useGenerations = () => useContext(DataContext).generations;
 export const useH2H = () => useContext(DataContext).h2h;
 export const useBotStats = () => useContext(DataContext).botStats;
+export const useDataStreamStatus = () => useContext(DataContext).stream;
 export const useUpdateData = () => useContext(SetDataContext)!;

@@ -12,6 +12,7 @@ import subprocess
 from typing import Any, IO
 
 from bot_artifact import artifact_manifest, canonical_digest, hash_path
+from bot_namespace import STRICT_ARTIFACT_FILES, strict_artifact_layout_errors
 from managed_bot_executor import (
     BotTiming,
     EndpointLease,
@@ -115,6 +116,12 @@ def seal_bot_artifact(
 ) -> SealedBotArtifact:
     source_path = Path(os.path.abspath(os.fspath(Path(source).expanduser())))
     destination_path = Path(destination).expanduser().resolve()
+    layout_errors = strict_artifact_layout_errors(source_path)
+    if layout_errors:
+        raise RuntimeError(
+            "official_seal_strict_artifact_layout_invalid:"
+            + ";".join(layout_errors[:8])
+        )
     source_manifest = artifact_manifest(source_path)
     source_hash = canonical_digest(source_manifest)
     if source_hash != expected_hash:
@@ -203,6 +210,8 @@ def launch_sandboxed_bot(
         stdout=stdout,
         stderr=stderr,
         start_new_session=start_new_session,
+        expected_artifact_hash=artifact.artifact_hash,
+        required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
     )
 
 

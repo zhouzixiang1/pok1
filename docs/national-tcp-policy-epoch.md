@@ -51,6 +51,25 @@ the checkpoint and unfinished candidate and use the central epoch reset at a
 safe point. This prevents an abandoned `v155`/source-`v142` migration checkpoint
 from entering the fresh v143 pipeline after a process restart.
 
+Current-epoch abandonment is likewise typed authority rather than deletion by
+name. A schema-2 transaction claim has exact keys and binds the checkpoint
+digest/workflow/revision/stage, reason, bounded no-link candidate manifest,
+fixed content-addressed quarantine contract, current abandon-ledger prefix and
+six-field successor receipt, plus the exact Git HEAD, clean tracked tree,
+untracked candidate and absent completion/high-water refs. The transaction and
+live claim are durable before mutation, and the complete live state is reopened
+again before the irreversible ledger append. Source/quarantine must remain an
+exclusive-or of the claimed preimage through rename and checkpoint CAS.
+
+The presence of any live reconciliation claim is a launch barrier even when the
+claim is malformed: epoch initialization is false and the active-bot projection
+is empty until operator inspection or exact recovery completes. A terminal
+schema-2 receipt is historical proof, not a permanent chain-head lease; after
+the live claim is cleared it remains valid across later legitimate Git commits
+and ledger successors by revalidating its original prefix, exact row and final
+receipt. It never licenses a same-version source directory that reappears after
+checkpoint clear.
+
 `web/core/epoch_authority.py` is the single read-only projection used by
 scheduling, operator status, and the dashboard. Before the reset validates it
 reports version-authority high-water v142, next target v143, zero strict

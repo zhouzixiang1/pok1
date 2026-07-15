@@ -13,7 +13,7 @@ from llm_availability import (
     classify_llm_availability,
 )
 import llm_availability_store as store
-from core import llm_query
+import llm_query
 
 
 @pytest.fixture
@@ -233,18 +233,43 @@ def test_every_llm_role_fails_before_sdk_while_pause_is_active(
             pass
 
     import asyncio
+    import combined_analyst
+
+    rendered_prompt = llm_query.render_llm_prompt(
+        "COMBINED ANALYST",
+        producer=combined_analyst._render_combined_provider_prompt,
+        renderer_inputs={
+            "source_v": 149,
+            "frozen_bundle": {
+                "marker": "prompt",
+                "rendered_view": {
+                    "bot_name": "prompt",
+                    "opp_eval": "1",
+                    "opp_total": "1",
+                    "opp_coverage": "100%",
+                    "rd_warning": "",
+                    "top_bots": "none",
+                    "generation_trend": "none",
+                    "lineage": "none",
+                    "daemon_history": "none",
+                    "bot_stats": "none",
+                    "h2h_results": "none",
+                },
+            },
+        },
+    )
 
     with pytest.raises(LLMAvailabilityBlocked) as caught:
         asyncio.run(
             llm_query.run_claude_query(
-                "prompt",
+                rendered_prompt,
                 [],
                 UI(),
-                "background-analyst",
+                "COMBINED ANALYST",
                 str(isolated_store / "role.log"),
             )
         )
 
     assert caught.value.issue.evidence_digest == issue.evidence_digest
-    assert caught.value.role == "background-analyst"
+    assert caught.value.role == "COMBINED ANALYST"
     assert sdk_calls == []

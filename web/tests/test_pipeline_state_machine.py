@@ -19,6 +19,11 @@ from core.pipeline_infrastructure import (
     build_infrastructure_failure,
     infrastructure_attempt_key,
 )
+from core.tool_planning import (
+    _critic_advisory_rework_refusal,
+    _has_legacy_critic_repair_contract,
+    _synthesize_rework_tasks_from_checkpoint,
+)
 
 
 def _digest(payload):
@@ -33,7 +38,14 @@ def _digest(payload):
 
 
 def _strict_checkpoint(checkpoint):
-    """Add the trusted strict-parent envelope omitted by compact route fixtures."""
+    """Add a complete schema-2 allocation/parent envelope to route fixtures.
+
+    Route tests should exercise the active state machine, not accidentally
+    assert against the fail-closed legacy-checkpoint route.  The immutable Git
+    identities below are synthetic, but they have the exact shape persisted by
+    the schema-2 allocator.  Tests that cover legacy recovery call the raw
+    production router instead of this helper.
+    """
 
     if not isinstance(checkpoint, dict) or checkpoint.get("epoch_binding"):
         return checkpoint
@@ -53,11 +65,18 @@ def _strict_checkpoint(checkpoint):
             "epoch_receipt_digest": "2" * 64,
             "publication_identity_digest": "3" * 64,
             "certificate_digest": "4" * 64,
+            "completion_tag": f"national-bot-v{version}",
+            "completion_tag_object_oid": "5" * 40,
+            "high_water_tag": f"national-high-water-v{version}",
+            "high_water_tag_object_oid": "6" * 40,
+            "publication_commit_oid": "7" * 40,
+            "completion_tree_oid": "8" * 40,
+            "tag_artifact_hash": "9" * 64,
         }
         for version in parents
     ]
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "epoch": "national_tcp_policy_v1",
         "mode": "published_strict_parent",
         "next_v": target,
@@ -69,12 +88,20 @@ def _strict_checkpoint(checkpoint):
         "published_parent_identities": identities,
         "protocol_bootstrap_receipt_digest": None,
         "policy_epoch_reset_receipt_digest": None,
+        "published_high_water": target - 1,
+        "abandoned_receipt_floor": 0,
+        "abandoned_receipt_head_digest": None,
+        "allocation_floor": target - 1,
     }
     return {
         **checkpoint,
-        "checkpoint_schema_version": 1,
+        "checkpoint_schema_version": 2,
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_binding": {**payload, "binding_digest": _digest(payload)},
+        "workflow_run_id": checkpoint.get(
+            "workflow_run_id", f"generation:{target}:pipeline-state-test"
+        ),
+        "checkpoint_revision": checkpoint.get("checkpoint_revision", 1),
     }
 
 
@@ -95,6 +122,20 @@ def _prepare_official_profile_refresh(checkpoint, next_tool):
         _strict_checkpoint(checkpoint),
         next_tool,
     )
+
+
+def test_legacy_checkpoint_routes_only_to_controlled_epoch_reconciliation():
+    route = _route_policy({
+        "stage": "direction_audited",
+        "next_v": 155,
+        "source_v": 142,
+    })
+
+    assert route["next_tool"] is None
+    assert route["allowed_tools"] == []
+    assert route["intent"] == "operator_reconcile_checkpoint"
+    assert route["failure_class"] == "checkpoint_epoch_incompatible"
+    assert "checkpoint_schema_version_missing_or_mismatch" in route["epoch_issues"]
 
 
 def test_precommit_failed_is_forward_and_reworkable():
@@ -130,14 +171,109 @@ def test_old_critic_checked_failed_precommit_routes_to_workers():
         },
     }
 
-    assert next_tool_for_checkpoint(checkpoint) == "execute_workers"
+    route = route_policy(checkpoint)
+    assert route["next_tool"] == "execute_workers"
+    assert route["allowed_tools"] == ["execute_workers"]
+    assert route["intent"] == "precommit_rework"
     blocked = generic_abandon_block(checkpoint, max_precommit_retries=3)
     assert blocked["blocked"] is True
     assert blocked["next_tool"] == "execute_workers"
     assert blocked["failure_class"] == "regression"
 
 
-def test_rejected_critic_routes_to_workers_before_precommit(monkeypatch):
+def test_critic_advice_cannot_transition_directly_back_to_workers():
+    ok, reason = validate_stage_transition("critic_checked", "workers_done")
+
+    assert ok is False
+    assert "backward_transition" in reason
+
+
+@pytest.mark.parametrize(
+    ("stage", "next_tool"),
+    [
+        ("quality_passed", "run_review"),
+        ("reviewed", "run_critic"),
+    ],
+)
+def test_completed_gate_stage_exposes_only_its_canonical_next_tool(
+    stage,
+    next_tool,
+):
+    checkpoint = {
+        "stage": stage,
+        "next_v": 264,
+        "source_v": 244,
+    }
+
+    route = route_policy(checkpoint)
+    assert route["next_tool"] == next_tool
+    assert route["allowed_tools"] == [next_tool]
+    ok, reason = validate_stage_transition(stage, "workers_done")
+    assert ok is False
+    assert "backward_transition" in reason
+
+
+def test_legacy_critic_repair_contract_fails_closed_without_worker_synthesis():
+    checkpoint = {
+        "stage": "repair_planned",
+        "next_v": 264,
+        "source_v": 244,
+        "reviewer_feedback": "Retired critic advice",
+        "master_plan": {
+            "work_item": {
+                "kind": "critic_repair",
+                "route": {"intent": "critic_rework"},
+            },
+            "tasks": [{
+                "task_kind": "critic_repair",
+                "repair_blocker": "critic_rejection",
+                "target_files": ["policy.py"],
+            }],
+        },
+    }
+
+    assert _has_legacy_critic_repair_contract(
+        checkpoint,
+        checkpoint["master_plan"]["tasks"],
+    ) is True
+    assert _synthesize_rework_tasks_from_checkpoint(checkpoint) == []
+    refusal = _critic_advisory_rework_refusal(
+        checkpoint,
+        checkpoint["master_plan"]["tasks"],
+        264,
+        244,
+    )
+    assert refusal["error"] == "LEGACY_CRITIC_REPAIR_FORBIDDEN"
+    assert refusal["safe_to_auto_execute"] is False
+    assert refusal["next_tool"] == "abandon_generation"
+
+
+def test_schema_valid_critic_advice_routes_to_precommit_not_workers():
+    checkpoint = {
+        "stage": "critic_checked",
+        "next_v": 264,
+        "source_v": 244,
+        "gate_results": {
+            "critic": {
+                "critic_llm_executed": True,
+                "schema_valid": True,
+                "advisory_approved": False,
+            }
+        },
+    }
+
+    refusal = _critic_advisory_rework_refusal(
+        checkpoint,
+        [],
+        264,
+        244,
+    )
+    assert refusal["error"] == "CRITIC_ADVISORY_REWORK_FORBIDDEN"
+    assert refusal["safe_to_auto_execute"] is True
+    assert refusal["next_tool"] == "run_precommit_eval"
+
+
+def test_incomplete_legacy_critic_record_retries_role_not_workers(monkeypatch):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
     checkpoint = {
         "stage": "reviewed",
@@ -163,9 +299,10 @@ def test_rejected_critic_routes_to_workers_before_precommit(monkeypatch):
     }
 
     route = route_policy(checkpoint)
-    assert route["next_tool"] == "execute_workers"
-    assert route["intent"] == "critic_rework"
-    assert "Critic rejected" in route["directive"]
+    assert route["next_tool"] == "run_critic"
+    assert route["allowed_tools"] == ["run_critic"]
+    assert route["intent"] == "critic_retry"
+    assert "remains advisory" in route["directive"]
 
 
 def test_critic_force_advanced_no_longer_bypasses_gate():
@@ -210,6 +347,7 @@ def test_completed_critic_advice_does_not_replace_native_precommit_gate():
     }
     route = route_policy(routed)
     assert route["next_tool"] == "run_precommit_eval"
+    assert route["allowed_tools"] == ["run_precommit_eval"]
     assert route["intent"] == "precommit_eval"
 
 
@@ -373,7 +511,7 @@ def test_route_policy_for_explicit_rework_stage():
     assert "Rework" in route["directive"]
 
 
-def test_route_policy_exposes_literature_probe_as_allowed_pre_master_tool():
+def test_route_policy_does_not_expose_unrequired_literature_probe():
     route = route_policy({
         "stage": "direction_audited",
         "next_v": 300,
@@ -381,8 +519,7 @@ def test_route_policy_exposes_literature_probe_as_allowed_pre_master_tool():
     })
 
     assert route["next_tool"] == "run_master"
-    assert "run_master" in route["allowed_tools"]
-    assert "run_literature_probe" in route["allowed_tools"]
+    assert route["allowed_tools"] == ["run_master"]
 
 
 def test_route_policy_requires_literature_probe_receipt_when_stagnant():

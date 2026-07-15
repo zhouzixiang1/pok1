@@ -26,7 +26,12 @@ import time
 from typing import Any
 
 from eval_stats import paired_bootstrap_ci
-from bot_namespace import bot_name, parse_bot_version, version_sort_key
+from bot_namespace import (
+    STRICT_ARTIFACT_FILES,
+    bot_name,
+    parse_bot_version,
+    version_sort_key,
+)
 from national_runtime_telemetry import (
     empty_bot_log_summary as _empty_bot_log_summary,
     empty_runtime_telemetry as _empty_runtime_telemetry,
@@ -111,7 +116,7 @@ INITIAL_CHIPS = 20000
 TOTAL_HANDS = 70
 CARD_RE = re.compile(r"<(\d+),(\d+)>")
 ACTION_PREFIX_RE = re.compile(r"^raise [0-9]+")
-EARN_PREFIX_RE = re.compile(r"^earnChips\s+-?\d+")
+EARN_PREFIX_RE = re.compile(r"^earnChips -?[0-9]+")
 DEFAULT_OFFICIAL_ACTION_DELAY_SEC = 0.30
 OFFICIAL_ACTION_DELAY_ENV = "POK_OFFICIAL_ACTION_DELAY"
 NATIONAL_STREAM_DECODER_VERSION = 2
@@ -2964,15 +2969,23 @@ if captured.getvalue():
 
 decoder_class = namespace.get("NationalStreamDecoder")
 cases = (
-    ("raise 200", ["raise 200"]),
-    ("earnChips -100", ["earnChips -100"]),
-    ("raise 200call", ["raise 200", "call"]),
-    ("raise 200earnChips -100", ["raise 200", "earnChips -100"]),
+    ("raise 200", ["raise 200"], ""),
+    ("earnChips -100", ["earnChips -100"], ""),
+    ("raise 200call", ["raise 200", "call"], ""),
+    ("raise 200earnChips -100", ["raise 200", "earnChips -100"], ""),
     (
         "earnChips -100preflop|SMALLBLIND|<0,3><1,3>",
         ["earnChips -100", "preflop|SMALLBLIND|<0,3><1,3>"],
+        "",
     ),
-    ("allinriver|<3,12>", ["allin", "river|<3,12>"]),
+    ("allinriver|<3,12>", ["allin", "river|<3,12>"], ""),
+    ("earnChips\t-100", [], "earnChips\t-100"),
+    ("earnChips  -100", [], "earnChips  -100"),
+    ("earnChips\n-100", [], "earnChips\n-100"),
+    ("raise  200", [], "raise  200"),
+    ("raise ", [], "raise "),
+    ("preflop|SMALLBLIND|<0,3>", [], "preflop|SMALLBLIND|<0,3>"),
+    ("call\n", ["call"], "\n"),
 )
 
 def decode(chunks):
@@ -2986,7 +2999,7 @@ def decode(chunks):
 if decoder_class is None:
     errors.append("missing_decoder_class")
 else:
-    for raw, expected in cases:
+    for raw, expected, expected_remainder in cases:
         chunkings = [(raw,)]
         chunkings.extend((raw[:split], raw[split:]) for split in range(1, len(raw)))
         chunkings.append(tuple(raw))
@@ -2998,10 +3011,11 @@ else:
                     f"decode_exception:{raw!r}:{type(exc).__name__}:{exc}"
                 )
                 break
-            if actual != expected or remainder:
+            if actual != expected or remainder != expected_remainder:
                 errors.append(
                     f"decode_mismatch:{raw!r}:chunks={chunks!r}:"
-                    f"actual={actual!r}:remainder={remainder!r}"
+                    f"actual={actual!r}:remainder={remainder!r}:"
+                    f"expected={expected!r}:expected_remainder={expected_remainder!r}"
                 )
                 break
 
@@ -3793,6 +3807,8 @@ async def _execute_tcp_server_with_processes(
                         stdin=subprocess.DEVNULL,
                         stdout=stdout_file,
                         stderr=stderr_file,
+                        expected_artifact_hash=spec.artifact_hash,
+                        required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
                     )
                 proc = managed.process
                 process_isolation[label] = asdict(managed.isolation)

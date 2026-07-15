@@ -124,6 +124,8 @@ class SSEHandler(logging.Handler):
                         "logger": record.name,
                         "msg": "SSE handler throttled %d INFO/DEBUG events (max_rate=%d/s)"
                                % (self._drop_count, self._max_rate),
+                        "dropped_count": self._drop_count,
+                        "max_rate": self._max_rate,
                     })
                 except Exception:
                     pass

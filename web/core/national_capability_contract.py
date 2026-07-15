@@ -23,8 +23,8 @@ import stat
 from typing import Any, Iterable
 
 
-CAPABILITY_SCHEMA_VERSION = 2
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v1"
+CAPABILITY_SCHEMA_VERSION = 3
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v2"
 DECISION_CONTEXT_SCHEMA_VERSION = 1
 POLICY_ENTRYPOINTS = {
     "get_baseline_decision": ("context",),
@@ -69,6 +69,7 @@ REQUIRED_CHECKS = (
     "authoritative_hand_context",
     "policy_consumes_legal_context",
     "policy_consumes_betting_context",
+    "incremental_opponent_model",
 )
 
 ADVISORY_CHECKS = (
@@ -76,7 +77,6 @@ ADVISORY_CHECKS = (
     "budget_scaled_refinement",
     "precompute_lookup_path",
     "precompute_runtime_influence",
-    "incremental_opponent_model",
     "terminal_response_adaptation",
     "showdown_range_adaptation",
     "donk_line_reachability",
@@ -85,13 +85,33 @@ ADVISORY_CHECKS = (
 
 _FORBIDDEN_IMPORT_ROOTS = frozenset({
     "asyncio",
+    "builtins",
+    "ctypes",
+    "ftplib",
+    "glob",
     "http",
+    "importlib",
+    "io",
+    "logging",
+    "marshal",
+    "mmap",
     "multiprocessing",
+    "os",
     "pathlib",
+    "pickle",
     "requests",
+    "shutil",
+    "smtplib",
     "socket",
+    "sqlite3",
+    "ssl",
     "subprocess",
+    "sys",
+    "tarfile",
+    "telnetlib",
+    "tempfile",
     "urllib",
+    "zipfile",
 })
 _FORBIDDEN_CALL_LEAVES = frozenset({
     "Popen",
@@ -99,11 +119,69 @@ _FORBIDDEN_CALL_LEAVES = frozenset({
     "compile",
     "eval",
     "exec",
+    "getattr",
+    "globals",
+    "input",
+    "itemgetter",
+    "attrgetter",
+    "locals",
+    "methodcaller",
     "open",
-    "run",
-    "socket",
-    "system",
+    "vars",
 })
+_FORBIDDEN_IO_METHOD_LEAVES = frozenset({
+    "bind",
+    "connect",
+    "create_connection",
+    "open",
+    "read_bytes",
+    "read_text",
+    "recv",
+    "send",
+    "sendall",
+    "urlopen",
+    "write_bytes",
+    "write_text",
+})
+_HISTORY_SCAN_CALLS = frozenset({
+    "all",
+    "any",
+    "dict",
+    "dump",
+    "dumps",
+    "enumerate",
+    "filter",
+    "iter",
+    "list",
+    "map",
+    "max",
+    "min",
+    "reversed",
+    "set",
+    "sorted",
+    "sum",
+    "tuple",
+})
+_CONTEXT_DEEP_SCAN_CALLS = frozenset({
+    "asdict",
+    "deepcopy",
+    "dump",
+    "dumps",
+    "pformat",
+    "repr",
+    "str",
+})
+_HISTORY_SCAN_METHODS = frozenset({"copy", "items", "keys", "values"})
+_MAX_POLICY_LITERAL_ENTRIES = 4096
+_FORBIDDEN_REFLECTION_ATTRIBUTES = frozenset({
+    "__builtins__",
+    "__dict__",
+    "__getattribute__",
+    "__globals__",
+    "__mro__",
+    "__subclasses__",
+})
+_FORBIDDEN_REFLECTION_NAMES = frozenset({"__builtins__"})
 _HISTORY_RECONSTRUCTION_NAMES = frozenset({
     "request",
     "requests",
@@ -243,6 +321,356 @@ def _call_leaf(node: ast.Call) -> str:
     return ""
 
 
+def _literal_string(
+    node: ast.AST | None,
+    string_constants: dict[str, str],
+) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return string_constants.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _literal_string(node.left, string_constants)
+        right = _literal_string(node.right, string_constants)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _constant_int(node: ast.AST | None) -> int | None:
+    if isinstance(node, ast.Constant) and type(node.value) is int:
+        return int(node.value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        value = _constant_int(node.operand)
+        if value is None:
+            return None
+        return value if isinstance(node.op, ast.UAdd) else -value
+    if isinstance(node, ast.BinOp):
+        left = _constant_int(node.left)
+        right = _constant_int(node.right)
+        if left is None or right is None:
+            return None
+        try:
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.FloorDiv) and right:
+                return left // right
+        except ArithmeticError:
+            return None
+    return None
+
+
+def _qualified_symbol(
+    node: ast.AST | None,
+    symbol_aliases: dict[str, str],
+    string_constants: dict[str, str],
+) -> str:
+    if isinstance(node, ast.Name):
+        if node.id == "__builtins__":
+            return "builtins"
+        return symbol_aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        parent = _qualified_symbol(node.value, symbol_aliases, string_constants)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    if isinstance(node, ast.Subscript):
+        parent = _qualified_symbol(node.value, symbol_aliases, string_constants)
+        key = _literal_string(node.slice, string_constants)
+        if parent in {"builtins", "builtins.__dict__"} and key:
+            return f"builtins.{key}"
+        return ""
+    if (
+        isinstance(node, ast.Call)
+        and _qualified_symbol(node.func, symbol_aliases, string_constants).split(".")[-1]
+        == "getattr"
+        and len(node.args) >= 2
+    ):
+        parent = _qualified_symbol(node.args[0], symbol_aliases, string_constants)
+        attribute = _literal_string(node.args[1], string_constants)
+        if parent and attribute:
+            return f"{parent}.{attribute}"
+    return ""
+
+
+def _context_path(
+    node: ast.AST | None,
+    context_aliases: dict[str, tuple[str, ...]],
+    string_constants: dict[str, str],
+) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Starred):
+        return _context_path(
+            node.value,
+            context_aliases,
+            string_constants,
+        )
+    if isinstance(node, ast.Name):
+        return context_aliases.get(node.id)
+    if isinstance(node, ast.Subscript):
+        parent = _context_path(node.value, context_aliases, string_constants)
+        key = _literal_string(node.slice, string_constants)
+        if parent is not None and key is not None:
+            return (*parent, key)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        and node.args
+    ):
+        parent = _context_path(
+            node.func.value,
+            context_aliases,
+            string_constants,
+        )
+        key = _literal_string(node.args[0], string_constants)
+        if parent is not None and key is not None:
+            return (*parent, key)
+    if isinstance(node, ast.Call) and len(node.args) >= 1:
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "__getitem__":
+            parent = _context_path(
+                node.func.value,
+                context_aliases,
+                string_constants,
+            )
+            key = _literal_string(node.args[0], string_constants)
+            if parent is not None and key is not None:
+                return (*parent, key)
+        if (
+            (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "getitem"
+            )
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "getitem"
+            )
+        ) and len(node.args) >= 2:
+            parent = _context_path(
+                node.args[0],
+                context_aliases,
+                string_constants,
+            )
+            key = _literal_string(node.args[1], string_constants)
+            if parent is not None and key is not None:
+                return (*parent, key)
+    if isinstance(node, ast.Call) and node.args:
+        if isinstance(node.func, ast.Name) and node.func.id in {
+            "dict",
+            "list",
+            "tuple",
+        }:
+            return _context_path(
+                node.args[0],
+                context_aliases,
+                string_constants,
+            )
+        if isinstance(node.func, ast.Attribute) and node.func.attr in {
+            "copy",
+            "deepcopy",
+        }:
+            return _context_path(
+                node.args[0],
+                context_aliases,
+                string_constants,
+            )
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "copy"
+        and not node.args
+    ):
+        return _context_path(
+            node.func.value,
+            context_aliases,
+            string_constants,
+        )
+    if isinstance(node, ast.Dict):
+        unpacked = [
+            _context_path(value, context_aliases, string_constants)
+            for key, value in zip(node.keys, node.values)
+            if key is None
+        ]
+        if len(unpacked) == 1 and unpacked[0] is not None:
+            return unpacked[0]
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = _context_path(node.left, context_aliases, string_constants)
+        right = _context_path(node.right, context_aliases, string_constants)
+        if left is not None and right is None:
+            return left
+        if right is not None and left is None:
+            return right
+        if left is not None and left == right:
+            return left
+    return None
+
+
+def _assigned_names(node: ast.AST) -> list[str]:
+    if isinstance(node, ast.Name):
+        return [node.id]
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return [
+            name
+            for item in node.elts
+            for name in _assigned_names(item)
+        ]
+    return []
+
+
+def _bounded_history_slice(
+    node: ast.AST,
+    context_aliases: dict[str, tuple[str, ...]],
+    string_constants: dict[str, str],
+) -> bool:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.slice, ast.Slice):
+        return False
+    parent = _context_path(node.value, context_aliases, string_constants)
+    if not parent or parent[0] != "history":
+        return False
+    lower = _constant_int(node.slice.lower)
+    upper = _constant_int(node.slice.upper)
+    step = _constant_int(node.slice.step) if node.slice.step is not None else 1
+    if not step:
+        return False
+    if lower is not None and lower < 0 and upper is None:
+        return abs(lower) <= 64
+    if lower is None and upper is not None and 0 <= upper <= 64:
+        return True
+    if lower is not None and upper is not None:
+        return abs(upper - lower) <= 64
+    return False
+
+
+def _contains_unbounded_history_reference(
+    node: ast.AST,
+    context_aliases: dict[str, tuple[str, ...]],
+    string_constants: dict[str, str],
+) -> bool:
+    if _bounded_history_slice(node, context_aliases, string_constants):
+        return False
+    path = _context_path(node, context_aliases, string_constants)
+    if path and path[0] == "history":
+        return True
+    return any(
+        _contains_unbounded_history_reference(
+            child,
+            context_aliases,
+            string_constants,
+        )
+        for child in ast.iter_child_nodes(node)
+    )
+
+
+def _literal_cardinality(node: ast.AST | None) -> int | None:
+    if isinstance(node, ast.Constant) and isinstance(
+        node.value,
+        (str, bytes, bytearray),
+    ):
+        return len(node.value)
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        total = len(node.elts)
+        for item in node.elts:
+            child = _literal_cardinality(item)
+            if child:
+                total += child
+        return total
+    if isinstance(node, ast.Dict):
+        total = len(node.keys)
+        for item in node.values:
+            child = _literal_cardinality(item)
+            if child:
+                total += child
+        return total
+    return None
+
+
+def _range_cardinality(node: ast.AST | None) -> int | None:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+        return None
+    if node.func.id != "range" or node.keywords or not 1 <= len(node.args) <= 3:
+        return None
+    values = [_constant_int(item) for item in node.args]
+    if any(item is None for item in values):
+        return None
+    if len(values) == 1:
+        start, stop, step = 0, int(values[0]), 1
+    elif len(values) == 2:
+        start, stop, step = int(values[0]), int(values[1]), 1
+    else:
+        start, stop, step = map(int, values)
+    if not step:
+        return None
+    return len(range(start, stop, step))
+
+
+def _constructed_size(
+    node: ast.AST | None,
+    size_aliases: dict[str, int],
+) -> int | None:
+    literal = _literal_cardinality(node)
+    if literal is not None:
+        return literal
+    if isinstance(node, ast.Name):
+        return size_aliases.get(node.id)
+    if isinstance(node, ast.BinOp):
+        left = _constructed_size(node.left, size_aliases)
+        right = _constructed_size(node.right, size_aliases)
+        if isinstance(node.op, ast.Add) and left is not None and right is not None:
+            return left + right
+        if isinstance(node.op, ast.Mult):
+            left_count = _constant_int(node.left)
+            right_count = _constant_int(node.right)
+            if left is not None and right_count is not None:
+                return left * right_count
+            if right is not None and left_count is not None:
+                return right * left_count
+    range_size = _range_cardinality(node)
+    if range_size is not None:
+        return range_size
+    if isinstance(node, ast.Call) and node.args:
+        leaf = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else ""
+        )
+        if leaf in {"bytearray", "dict", "list", "set", "tuple"}:
+            return (
+                _constant_int(node.args[0])
+                or _constructed_size(node.args[0], size_aliases)
+            )
+        if leaf == "product":
+            sizes = [_constructed_size(item, size_aliases) for item in node.args]
+            if sizes and all(size is not None for size in sizes):
+                total = 1
+                for size in sizes:
+                    total *= int(size)
+                return total
+    return None
+
+
+def _nested_mutating_loop_size(node: ast.For | ast.AsyncFor) -> int | None:
+    own_size = _range_cardinality(node.iter)
+    if own_size is None:
+        return None
+    largest = own_size
+    for child in node.body:
+        if not isinstance(child, (ast.For, ast.AsyncFor)):
+            continue
+        child_size = _nested_mutating_loop_size(child)
+        if child_size is not None:
+            largest = max(largest, own_size * child_size)
+    mutates_collection = any(
+        isinstance(candidate, ast.Call)
+        and isinstance(candidate.func, ast.Attribute)
+        and candidate.func.attr in {"add", "append", "extend", "update"}
+        for candidate in ast.walk(node)
+    )
+    return largest if mutates_collection else None
+
+
 def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
     if tree is None:
         return {
@@ -256,7 +684,10 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
             "kind_literals": set(),
             "large_literal_locations": [],
             "context_fields": set(),
+            "history_scan_locations": [],
         }
+    string_constants: dict[str, str] = {}
+    symbol_aliases: dict[str, str] = {}
     imports: set[str] = set()
     forbidden_imports: list[str] = []
     forbidden_calls: list[str] = []
@@ -267,6 +698,203 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
     kind_literals: set[str] = set()
     large_literal_locations: list[str] = []
     context_fields: set[str] = set()
+    history_scan_locations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                symbol_aliases[alias.asname or alias.name.split(".", 1)[0]] = (
+                    alias.name
+                )
+        elif isinstance(node, ast.ImportFrom):
+            module = str(node.module or "")
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                symbol_aliases[alias.asname or alias.name] = (
+                    f"{module}.{alias.name}" if module else alias.name
+                )
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            literal = _literal_string(value, string_constants)
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if literal is not None:
+                for target in targets:
+                    for name in _assigned_names(target):
+                        string_constants[name] = literal
+
+    # Resolve callable aliases (including aliases obtained through getattr or
+    # builtins.__dict__) before checking calls.  A small fixed point is enough
+    # for straight-line alias chains and deliberately errs on the safe side.
+    for _ in range(8):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            symbol = _qualified_symbol(value, symbol_aliases, string_constants)
+            if not symbol:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in _assigned_names(target):
+                    if symbol_aliases.get(name) != symbol:
+                        symbol_aliases[name] = symbol
+                        changed = True
+        if not changed:
+            break
+
+    context_aliases: dict[str, tuple[str, ...]] = {"context": ()}
+    propagation_functions: dict[
+        str,
+        list[ast.FunctionDef | ast.AsyncFunctionDef],
+    ] = {}
+    for candidate in ast.walk(tree):
+        if isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            propagation_functions.setdefault(candidate.name, []).append(candidate)
+
+    def call_definitions(
+        call: ast.Call,
+    ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+        if isinstance(call.func, ast.Name):
+            return list(propagation_functions.get(call.func.id) or [])
+        if isinstance(call.func, ast.Attribute):
+            return list(propagation_functions.get(call.func.attr) or [])
+        return []
+
+    def call_bindings(
+        call: ast.Call,
+        callee: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> list[tuple[ast.arg, ast.AST]]:
+        positional_parameters = list(callee.args.posonlyargs + callee.args.args)
+        parameter_variants = [positional_parameters]
+        if (
+            isinstance(call.func, ast.Attribute)
+            and positional_parameters
+            and positional_parameters[0].arg in {"self", "cls"}
+        ):
+            # Attribute syntax can be either a bound instance call or an
+            # explicit unbound class-method call.  Propagate both shapes; a
+            # false negative here would permit history to hide in the shifted
+            # argument.
+            parameter_variants.append(positional_parameters[1:])
+        bindings = [
+            binding
+            for parameters in parameter_variants
+            for binding in zip(parameters, call.args)
+        ]
+        keyword_parameters = [
+            *positional_parameters,
+            *callee.args.kwonlyargs,
+        ]
+        by_name = {
+            parameter.arg: parameter for parameter in keyword_parameters
+        }
+        bindings.extend(
+            (by_name[keyword.arg], keyword.value)
+            for keyword in call.keywords
+            if keyword.arg in by_name
+        )
+        for keyword in call.keywords:
+            if keyword.arg is not None or not isinstance(keyword.value, ast.Dict):
+                continue
+            for key, value in zip(keyword.value.keys, keyword.value.values):
+                name = _literal_string(key, string_constants)
+                if name in by_name:
+                    bindings.append((by_name[name], value))
+        return bindings
+
+    for _ in range(12):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = node.value
+                targets = (
+                    node.targets
+                    if isinstance(node, ast.Assign)
+                    else [node.target]
+                )
+                path = _context_path(value, context_aliases, string_constants)
+                if (
+                    path is None
+                    and isinstance(value, ast.Call)
+                ):
+                    return_paths = {
+                        candidate_path
+                        for callee in call_definitions(value)
+                        for return_node in ast.walk(callee)
+                        if isinstance(return_node, ast.Return)
+                        and (
+                            candidate_path := _context_path(
+                                return_node.value,
+                                context_aliases,
+                                string_constants,
+                            )
+                        )
+                        is not None
+                    }
+                    if len(return_paths) == 1:
+                        path = next(iter(return_paths))
+                if path is not None:
+                    for target in targets:
+                        for name in _assigned_names(target):
+                            if context_aliases.get(name) != path:
+                                context_aliases[name] = path
+                                changed = True
+                if (
+                    isinstance(value, (ast.Tuple, ast.List))
+                    and len(targets) == 1
+                    and isinstance(targets[0], (ast.Tuple, ast.List))
+                ):
+                    for target_item, value_item in zip(
+                        targets[0].elts,
+                        value.elts,
+                    ):
+                        item_path = _context_path(
+                            value_item,
+                            context_aliases,
+                            string_constants,
+                        )
+                        if item_path is None:
+                            continue
+                        for name in _assigned_names(target_item):
+                            if context_aliases.get(name) != item_path:
+                                context_aliases[name] = item_path
+                                changed = True
+            if isinstance(node, ast.Call):
+                for callee in call_definitions(node):
+                    for parameter, argument in call_bindings(node, callee):
+                        path = _context_path(
+                            argument,
+                            context_aliases,
+                            string_constants,
+                        )
+                        if (
+                            path is not None
+                            and context_aliases.get(parameter.arg) != path
+                        ):
+                            context_aliases[parameter.arg] = path
+                            changed = True
+        if not changed:
+            break
+
+    size_aliases: dict[str, int] = {}
+    for _ in range(12):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            size = _constructed_size(node.value, size_aliases)
+            if size is None:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in _assigned_names(target):
+                    if size_aliases.get(name) != size:
+                        size_aliases[name] = size
+                        changed = True
+        if not changed:
+            break
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -280,28 +908,99 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
             imports.add(root)
             if root in _FORBIDDEN_IMPORT_ROOTS:
                 forbidden_imports.append(f"policy.py:{node.lineno}:{root}")
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            size = _constructed_size(node.value, size_aliases)
+            if size is not None and size > _MAX_POLICY_LITERAL_ENTRIES:
+                large_literal_locations.append(
+                    f"policy.py:{node.lineno}:constructed:{size}"
+                )
         elif isinstance(node, ast.Call):
-            leaf = _call_leaf(node)
-            if leaf in _FORBIDDEN_CALL_LEAVES:
-                forbidden_calls.append(f"policy.py:{node.lineno}:{leaf}")
-            # context.get("field")
+            symbol = _qualified_symbol(node.func, symbol_aliases, string_constants)
+            leaf = symbol.split(".")[-1] if symbol else _call_leaf(node)
+            root = symbol.split(".", 1)[0] if symbol else ""
+            call_values = [
+                *node.args,
+                *(keyword.value for keyword in node.keywords),
+            ]
+            if (
+                leaf in _FORBIDDEN_CALL_LEAVES
+                or leaf in _FORBIDDEN_IO_METHOD_LEAVES
+                or root in _FORBIDDEN_IMPORT_ROOTS
+            ):
+                forbidden_calls.append(
+                    f"policy.py:{node.lineno}:{symbol or leaf or 'dynamic_call'}"
+                )
+            path = _context_path(node, context_aliases, string_constants)
+            if path:
+                context_fields.add(path[0])
+            scans_history = leaf in _HISTORY_SCAN_CALLS and any(
+                _contains_unbounded_history_reference(
+                    argument,
+                    context_aliases,
+                    string_constants,
+                )
+                for argument in call_values
+            )
+            scans_full_context = leaf in _CONTEXT_DEEP_SCAN_CALLS and any(
+                _context_path(
+                    argument,
+                    context_aliases,
+                    string_constants,
+                )
+                == ()
+                for argument in call_values
+            )
+            if scans_history or scans_full_context:
+                history_scan_locations.append(
+                    f"policy.py:{node.lineno}:{leaf}"
+                )
             if (
                 isinstance(node.func, ast.Attribute)
-                and node.func.attr == "get"
-                and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "context"
-                and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
+                and leaf in _HISTORY_SCAN_METHODS
+                and _contains_unbounded_history_reference(
+                    node.func.value,
+                    context_aliases,
+                    string_constants,
+                )
             ):
-                context_fields.add(node.args[0].value)
+                history_scan_locations.append(
+                    f"policy.py:{node.lineno}:{leaf}"
+                )
+            range_size = _range_cardinality(node)
+            if range_size is not None and range_size > _MAX_POLICY_LITERAL_ENTRIES:
+                large_literal_locations.append(
+                    f"policy.py:{node.lineno}:range:{range_size}"
+                )
+            if leaf in {"bytearray", "dict", "list", "set", "tuple"} and node.args:
+                allocation = _constant_int(node.args[0]) or _range_cardinality(node.args[0])
+                if allocation is not None and allocation > _MAX_POLICY_LITERAL_ENTRIES:
+                    large_literal_locations.append(
+                        f"policy.py:{node.lineno}:{leaf}:{allocation}"
+                    )
+                elif (
+                    allocation is None
+                    and isinstance(node.args[0], ast.Call)
+                    and isinstance(node.args[0].func, ast.Name)
+                    and node.args[0].func.id == "range"
+                ):
+                    large_literal_locations.append(
+                        f"policy.py:{node.lineno}:{leaf}:unbounded_range"
+                    )
         elif isinstance(node, ast.Subscript):
-            if isinstance(node.value, ast.Name) and node.value.id == "context":
-                key = node.slice
-                if isinstance(key, ast.Constant) and isinstance(key.value, str):
-                    context_fields.add(key.value)
+            path = _context_path(node, context_aliases, string_constants)
+            if path:
+                context_fields.add(path[0])
+        elif isinstance(node, ast.Attribute):
+            if node.attr in _FORBIDDEN_REFLECTION_ATTRIBUTES:
+                forbidden_calls.append(
+                    f"policy.py:{node.lineno}:reflection:{node.attr}"
+                )
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
+            if node.id in _FORBIDDEN_REFLECTION_NAMES:
+                forbidden_calls.append(
+                    f"policy.py:{node.lineno}:reflection:{node.id}"
+                )
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             string_literals.add(node.value)
         elif isinstance(node, ast.Return):
@@ -310,9 +1009,78 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
             ):
                 integer_return_locations.append(f"policy.py:{node.lineno}")
         elif isinstance(node, (ast.List, ast.Tuple, ast.Set, ast.Dict)):
-            size = len(node.elts) if hasattr(node, "elts") else len(node.keys)
-            if size > 4096:
+            size = _literal_cardinality(node) or 0
+            if size > _MAX_POLICY_LITERAL_ENTRIES:
                 large_literal_locations.append(f"policy.py:{node.lineno}:{size}")
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            left_size = _literal_cardinality(node.left)
+            right_size = _literal_cardinality(node.right)
+            left_count = _constant_int(node.left)
+            right_count = _constant_int(node.right)
+            size = (
+                left_size * right_count
+                if left_size is not None and right_count is not None
+                else right_size * left_count
+                if right_size is not None and left_count is not None
+                else None
+            )
+            if size is not None and size > _MAX_POLICY_LITERAL_ENTRIES:
+                large_literal_locations.append(
+                    f"policy.py:{node.lineno}:repeat:{size}"
+                )
+            elif (
+                size is None
+                and (
+                    left_size is not None
+                    and right_count is None
+                    or right_size is not None
+                    and left_count is None
+                )
+            ):
+                large_literal_locations.append(
+                    f"policy.py:{node.lineno}:repeat:unbounded"
+                )
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            sizes = [_range_cardinality(item.iter) for item in node.generators]
+            if sizes and all(size is not None for size in sizes):
+                total = 1
+                for size in sizes:
+                    total *= int(size)
+                if total > _MAX_POLICY_LITERAL_ENTRIES:
+                    large_literal_locations.append(
+                        f"policy.py:{node.lineno}:comprehension:{total}"
+                    )
+
+        if isinstance(node, (ast.For, ast.AsyncFor)) and _contains_unbounded_history_reference(
+            node.iter,
+            context_aliases,
+            string_constants,
+        ):
+            history_scan_locations.append(f"policy.py:{node.lineno}:for")
+        elif isinstance(node, ast.While) and _contains_unbounded_history_reference(
+            node.test,
+            context_aliases,
+            string_constants,
+        ):
+            history_scan_locations.append(f"policy.py:{node.lineno}:while")
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
+            if any(
+                _contains_unbounded_history_reference(
+                    generator.iter,
+                    context_aliases,
+                    string_constants,
+                )
+                for generator in node.generators
+            ):
+                history_scan_locations.append(
+                    f"policy.py:{node.lineno}:comprehension"
+                )
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            loop_size = _nested_mutating_loop_size(node)
+            if loop_size is not None and loop_size > _MAX_POLICY_LITERAL_ENTRIES:
+                large_literal_locations.append(
+                    f"policy.py:{node.lineno}:mutating_loop:{loop_size}"
+                )
 
         if isinstance(node, ast.Dict):
             literal_map: dict[str, ast.AST] = {}
@@ -334,8 +1102,9 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
         "integer_return_locations": integer_return_locations,
         "raise_dict_locations": raise_dict_locations,
         "kind_literals": kind_literals,
-        "large_literal_locations": large_literal_locations,
+        "large_literal_locations": list(dict.fromkeys(large_literal_locations)),
         "context_fields": context_fields,
+        "history_scan_locations": list(dict.fromkeys(history_scan_locations)),
     }
 
 
@@ -426,7 +1195,12 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         typed_ok = False
 
     candidate_io_ok = not static["forbidden_imports"] and not static["forbidden_calls"]
-    history_ok = not static["loaded_names"].intersection(_HISTORY_RECONSTRUCTION_NAMES)
+    history_identifier_issues = static["loaded_names"].intersection(
+        _HISTORY_RECONSTRUCTION_NAMES
+    )
+    history_ok = not history_identifier_issues and not static[
+        "history_scan_locations"
+    ]
     table_ok = not static["large_literal_locations"]
     context_used = bool("context" in static["loaded_names"])
     context_fields = set(static["context_fields"])
@@ -563,9 +1337,19 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         _check(
             "decision_path_no_full_history_scan",
             history_ok,
-            guidance="Use bounded decision_context.history/opponent snapshots; never rebuild protocol history.",
-            summary="no retired history reconstruction identifiers" if history_ok else "retired history identifiers loaded",
-            locations=[f"policy.py:{name}" for name in sorted(static["loaded_names"].intersection(_HISTORY_RECONSTRUCTION_NAMES))],
+            guidance=(
+                "Use bounded decision_context line/opponent snapshots; never iterate, "
+                "copy, aggregate, or indirectly rescan full decision_context.history."
+            ),
+            summary=(
+                "no full-history reconstruction or traversal"
+                if history_ok
+                else "full-history reconstruction or traversal detected"
+            ),
+            locations=[
+                *(f"policy.py:{name}" for name in sorted(history_identifier_issues)),
+                *static["history_scan_locations"],
+            ],
         ),
         _check(
             "decision_path_no_large_runtime_tables",
@@ -608,6 +1392,21 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             summary="policy reads betting context" if "betting" in context_fields else "betting context not read",
             locations=["policy.py"],
         ),
+        _check(
+            "incremental_opponent_model",
+            "opponent" in context_fields,
+            guidance=(
+                "Consume the bounded decision_context.opponent snapshot and prove "
+                "confidence-gated causal influence on a legal typed intent at the wire."
+            ),
+            summary=(
+                "opponent snapshot is consumed; managed causal proof is pending"
+                if "opponent" in context_fields
+                else "opponent snapshot is not consumed"
+            ),
+            locations=["policy.py"],
+            required=True,
+        ),
     ]
 
     advisory_states = {
@@ -615,7 +1414,6 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         "budget_scaled_refinement": refinement_ok and "deadline" in static["loaded_names"],
         "precompute_lookup_path": "precompute" in static["imports"],
         "precompute_runtime_influence": "precompute" in static["imports"],
-        "incremental_opponent_model": "opponent" in context_fields,
         "terminal_response_adaptation": "opponent" in context_fields,
         "showdown_range_adaptation": "opponent" in context_fields,
         "donk_line_reachability": "line" in context_fields,

@@ -350,6 +350,211 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
     assert "MASTER PROPOSAL CRITIC falsification SCHEMA RETRY" in roles
 
 
+@pytest.mark.asyncio
+async def test_duplicate_proposal_gets_one_causally_distinct_repair(
+    monkeypatch, tmp_path
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    calls = []
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        calls.append((role_name, prompt))
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"', prompt
+            )))
+            return _critic_output(agent_master, ids), 0.0, {}
+        if "counterfactual" in role_name:
+            if "DISTINCTNESS RETRY" in role_name:
+                return _proposal("counterfactual"), 0.0, {}
+            return _proposal("mechanism", shared_claims=True), 0.0, {}
+        if "mechanism" in role_name:
+            return _proposal("mechanism", shared_claims=True), 0.0, {}
+        return _proposal("compute_memory"), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "frozen planning context",
+        source_v=143,
+        next_v=149,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+    ))
+
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert len(set(packet["allowed_proposal_ids"])) == 3
+    repair_calls = [
+        item for item in calls if "DISTINCTNESS RETRY" in item[0]
+    ]
+    assert len(repair_calls) == 1
+    assert repair_calls[0][0] == (
+        "MASTER PROPOSAL counterfactual DISTINCTNESS RETRY"
+    )
+    assert "single permitted distinctness repair" in repair_calls[0][1]
+    assert "genuinely different reachable mechanism" in repair_calls[0][1]
+    assert "Changing only direction, risks, wording" in repair_calls[0][1]
+    assert len(calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_second_duplicate_fails_closed_without_critics_or_another_repair(
+    monkeypatch, tmp_path
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    roles = []
+
+    async def fake_query(_prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        roles.append(role_name)
+        if "mechanism" in role_name or "counterfactual" in role_name:
+            return _proposal("mechanism", shared_claims=True), 0.0, {}
+        return _proposal("compute_memory"), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "frozen planning context",
+        source_v=143,
+        next_v=149,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+    ))
+
+    assert packet["valid"] is False
+    assert packet["reason"] == (
+        "three_distinct_schema_valid_scout_proposals_required:got_2"
+    )
+    assert roles.count(
+        "MASTER PROPOSAL counterfactual DISTINCTNESS RETRY"
+    ) == 1
+    assert len(roles) == 4
+    assert not any("CRITIC" in role for role in roles)
+
+
+@pytest.mark.asyncio
+async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
+    monkeypatch, tmp_path
+):
+    import agent_master
+    import strict_authority_workflow
+
+    class CrashAfterDurableRejection(RuntimeError):
+        pass
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    accepted_by_slot = {}
+    rejected_slots = set()
+    observed_roles = []
+    invocation_counter = 0
+    crash_once = True
+
+    def fake_new_call(_checkpoint, *, slot, **_kwargs):
+        nonlocal invocation_counter
+        invocation_counter += 1
+        call = {
+            "slot": slot,
+            "invocation_id": f"{invocation_counter:032x}",
+        }
+        if slot in rejected_slots and slot not in accepted_by_slot:
+            call.update({
+                "schema_retry_required": True,
+                "schema_attempt": 2,
+                "prior_schema_rejection": {
+                    "rejection_kind": "proposal_identity_collision",
+                    "projection_errors": [
+                        "strict_authority_proposal_identity_collision"
+                    ],
+                },
+            })
+        return call
+
+    def fake_accept(call, *, role_result, parse_contract):
+        assert parse_contract in {
+            "master-proposal-v2",
+            "master-proposal-ballot-v1",
+        }
+        accepted_by_slot[call["slot"]] = role_result
+        return {"slot": call["slot"]}
+
+    def fake_reject(call):
+        nonlocal crash_once
+        rejected_slots.add(call["slot"])
+        if crash_once:
+            crash_once = False
+            raise CrashAfterDurableRejection("simulated post-journal crash")
+        return {"slot": call["slot"]}
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **kwargs):
+        observed_roles.append(role_name)
+        strict_call = kwargs["strict_authority"]
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"', prompt
+            )))
+            return _critic_output(agent_master, ids), 0.0, {}
+        slot = strict_call["slot"]
+        if slot == "proposal:counterfactual":
+            if strict_call.get("schema_retry_required"):
+                assert "DISTINCTNESS RETRY" in role_name
+                return _proposal("counterfactual"), 0.0, {}
+            return _proposal("mechanism", shared_claims=True), 0.0, {}
+        if slot == "proposal:mechanism":
+            return _proposal("mechanism", shared_claims=True), 0.0, {}
+        return _proposal("compute_memory"), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    monkeypatch.setattr(strict_authority_workflow, "new_call", fake_new_call)
+    monkeypatch.setattr(
+        strict_authority_workflow, "accept_role_result", fake_accept
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow, "reject_duplicate_proposal", fake_reject
+    )
+    kwargs = dict(
+        planning_context="frozen planning context",
+        source_v=142,
+        next_v=143,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+        baseline_v=143,
+        protocol_bootstrap_prepared_only=True,
+        strict_checkpoint={},
+    )
+
+    with pytest.raises(CrashAfterDurableRejection):
+        await agent_master._run_master_proposal_ensemble(**kwargs)
+
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(**kwargs))
+
+    assert packet["valid"] is True
+    assert len(set(packet["allowed_proposal_ids"])) == 3
+    assert rejected_slots == {"proposal:counterfactual"}
+    assert (
+        "MASTER PROPOSAL counterfactual DISTINCTNESS RETRY"
+        in observed_roles
+    )
+
+
 def test_proposal_id_is_stable_and_not_scout_identity(monkeypatch, tmp_path):
     import agent_master
 

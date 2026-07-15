@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 import importlib.util
 import json
+import pytest
 
 from official_wire_probe import (
     OfficialWireReplay,
@@ -11,6 +12,8 @@ from official_wire_probe import (
     split_client_messages,
     split_server_messages,
 )
+from national_native import NATIVE_BOT_TEMPLATE
+from sever.server.protocol import split_server_messages as split_transport_messages
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -46,6 +49,89 @@ def test_server_stream_split_handles_official_sticky_packets():
         "call",
     ]
     assert rest == ""
+
+
+def _decode_transport_chunks(chunks):
+    messages = []
+    remainder = ""
+    for chunk in chunks:
+        emitted, remainder = split_transport_messages(
+            remainder + chunk,
+            flush_boundary=False,
+        )
+        messages.extend(emitted)
+    emitted, remainder = split_transport_messages(
+        remainder,
+        flush_boundary=True,
+    )
+    return messages + emitted, remainder
+
+
+def _decode_probe_chunks(chunks):
+    messages = []
+    remainder = ""
+    for chunk in chunks:
+        emitted, remainder = split_server_messages(
+            remainder + chunk,
+            flush_numeric=False,
+        )
+        messages.extend(emitted)
+    emitted, remainder = split_server_messages(
+        remainder,
+        flush_numeric=True,
+    )
+    return messages + emitted, remainder
+
+
+def _candidate_decoder_class():
+    namespace = {
+        "__file__": str(ROOT / "synthetic-national-bot.py"),
+        "__name__": "_synthetic_national_decoder_equivalence",
+    }
+    exec(compile(NATIVE_BOT_TEMPLATE, namespace["__file__"], "exec"), namespace)
+    return namespace["NationalStreamDecoder"]
+
+
+def _decode_candidate_chunks(decoder_class, chunks):
+    decoder = decoder_class()
+    messages = []
+    for chunk in chunks:
+        messages.extend(decoder.feed(chunk))
+    messages.extend(decoder.flush_idle())
+    return messages, decoder.buffer
+
+
+def test_transport_candidate_and_official_probe_decoders_share_exact_corpus():
+    decoder_class = _candidate_decoder_class()
+    corpus = (
+        (
+            "earnChips -100preflop|SMALLBLIND|<0,3><1,12>raise 200call",
+            [
+                "earnChips -100",
+                "preflop|SMALLBLIND|<0,3><1,12>",
+                "raise 200",
+                "call",
+            ],
+            "",
+        ),
+        ("raise 200", ["raise 200"], ""),
+        ("earnChips -100", ["earnChips -100"], ""),
+        ("earnChips\t-100", [], "earnChips\t-100"),
+        ("earnChips  -100", [], "earnChips  -100"),
+        ("earnChips\n-100", [], "earnChips\n-100"),
+        ("raise  200", [], "raise  200"),
+        ("raise ", [], "raise "),
+        ("preflop|SMALLBLIND|<0,3>", [], "preflop|SMALLBLIND|<0,3>"),
+        ("call\n", ["call"], "\n"),
+    )
+    for raw, expected_messages, expected_remainder in corpus:
+        chunkings = [(raw,), tuple(raw)]
+        chunkings.extend((raw[:cut], raw[cut:]) for cut in range(len(raw) + 1))
+        for chunks in chunkings:
+            expected = (expected_messages, expected_remainder)
+            assert _decode_transport_chunks(chunks) == expected
+            assert _decode_probe_chunks(chunks) == expected
+            assert _decode_candidate_chunks(decoder_class, chunks) == expected
 
 
 def test_client_stream_split_preserves_illegal_raise_spacing_for_replay():
@@ -233,6 +319,9 @@ def test_replay_does_not_create_runout_actions_after_allin_is_called():
 
     assert summary["pending_expected_actions"] == []
     assert not any(item["kind"] == "pending_bot_response_timeout" for item in summary["issues"])
+    assert summary["seats"]["A"]["pot"] == 40_000
+    assert summary["seats"]["A"]["player_chips"] == 0
+    assert summary["seats"]["A"]["opponent_chips"] == 0
 
 
 def test_replay_reports_unparseable_client_tail_at_eof():
@@ -283,6 +372,352 @@ def test_replay_records_settlement_hand_ids_and_signed_amounts():
         {"hand": 2, "amount": 100},
     ]
     assert summary["issues"] == []
+
+
+def test_replay_applies_omitted_paid_closer_before_clearing_street():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,0><1,1>"]),
+        _event(1, "A", "bot_to_server", ["raise 200"]),
+        _event(2, "A", "server_to_bot", ["flop|<0,4><1,5><2,6>"]),
+    ])
+
+    seat = summary["seats"]["A"]
+    assert summary["issues"] == []
+    assert seat["pot"] == 400
+    assert seat["player_chips"] == 19800
+    assert seat["opponent_chips"] == 19800
+    assert seat["player_bet"] == seat["opponent_bet"] == 0
+    assert seat["hand_actions"][-1] == {
+        "hand": 1,
+        "stage": "preflop",
+        "actor": "opponent",
+        "action_type": "call",
+        "committed": 100,
+        "player_bet_after": 200,
+        "opponent_bet_after": 200,
+        "player_chips_after": 19800,
+        "opponent_chips_after": 19800,
+        "pot_after": 400,
+        "inferred": True,
+        "inference_boundary": "street:flop",
+    }
+
+
+def test_replay_does_not_duplicate_relayed_street_closer():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,0><1,1>"]),
+        _event(1, "A", "bot_to_server", ["raise 200"]),
+        _event(2, "A", "server_to_bot", ["call"]),
+        _event(3, "A", "server_to_bot", ["flop|<0,4><1,5><2,6>"]),
+    ])
+
+    actions = summary["seats"]["A"]["hand_actions"]
+    assert [item["action_type"] for item in actions] == ["raise", "call"]
+    assert actions[-1]["inferred"] is False
+    assert summary["seats"]["A"]["pot"] == 400
+    assert summary["issues"] == []
+
+
+def _showdown_events(*, a_reveal="<2,2><3,3>"):
+    board = ["flop|<0,4><1,5><2,6>", "turn|<3,7>", "river|<0,8>"]
+    return [
+        _event(0, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,0><1,1>"]),
+        _event(0.1, "B", "server_to_bot", ["preflop|BIGBLIND|<2,2><3,3>"]),
+        _event(1, "A", "bot_to_server", ["allin"]),
+        _event(1.1, "B", "server_to_bot", ["allin"]),
+        _event(1.2, "B", "bot_to_server", ["call"]),
+        _event(2, "A", "server_to_bot", board),
+        _event(2.1, "B", "server_to_bot", board),
+        _event(3, "A", "server_to_bot", ["earnChips 20000"]),
+        _event(3.1, "B", "server_to_bot", ["earnChips -20000"]),
+        _event(4, "A", "server_to_bot", [f"oppo_hands|{a_reveal}"]),
+        _event(4.1, "B", "server_to_bot", ["oppo_hands|<0,0><1,1>"]),
+    ]
+
+
+def _cross_seat_board_events(*, b_overrides=None, a_hole=None, b_hole=None):
+    board_a = {
+        "flop": "flop|<0,4><1,5><2,6>",
+        "turn": "turn|<3,7>",
+        "river": "river|<0,8>",
+    }
+    board_b = dict(board_a)
+    board_b.update(b_overrides or {})
+    events = [
+        _event(
+            0,
+            "A",
+            "server_to_bot",
+            [f"preflop|SMALLBLIND|{a_hole or '<0,0><1,1>'}"],
+        ),
+        _event(
+            0.1,
+            "B",
+            "server_to_bot",
+            [f"preflop|BIGBLIND|{b_hole or '<2,2><3,3>'}"],
+        ),
+    ]
+    timestamp = 1.0
+    for stage in ("flop", "turn", "river"):
+        events.append(
+            _event(timestamp, "A", "server_to_bot", [board_a[stage]])
+        )
+        events.append(
+            _event(timestamp + 0.1, "B", "server_to_bot", [board_b[stage]])
+        )
+        timestamp += 1.0
+    return events
+
+
+def _two_hand_blind_events(*, second_a="BIGBLIND", second_b="SMALLBLIND"):
+    return [
+        _event(0, "A", "server_to_bot", [
+            "preflop|SMALLBLIND|<0,0><1,1>"
+        ]),
+        _event(0.1, "B", "server_to_bot", [
+            "preflop|BIGBLIND|<2,2><3,3>"
+        ]),
+        _event(1, "A", "server_to_bot", [
+            f"preflop|{second_a}|<0,4><1,5>"
+        ]),
+        _event(1.1, "B", "server_to_bot", [
+            f"preflop|{second_b}|<2,6><3,7>"
+        ]),
+    ]
+
+
+def test_replay_binds_complementary_blinds_and_accepts_normal_alternation():
+    summary = replay_events(_two_hand_blind_events(), now=2.0)
+
+    assert summary["issues"] == []
+    assert summary["seats"]["A"]["blind_records"] == [
+        {"hand": 1, "blind": "SMALLBLIND"},
+        {"hand": 2, "blind": "BIGBLIND"},
+    ]
+    assert summary["seats"]["B"]["blind_records"] == [
+        {"hand": 1, "blind": "BIGBLIND"},
+        {"hand": 2, "blind": "SMALLBLIND"},
+    ]
+
+
+@pytest.mark.parametrize("blind", ["SMALLBLIND", "BIGBLIND"])
+def test_replay_rejects_same_blind_on_both_connections(blind):
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", [
+            f"preflop|{blind}|<0,0><1,1>"
+        ]),
+        _event(0.1, "B", "server_to_bot", [
+            f"preflop|{blind}|<2,2><3,3>"
+        ]),
+    ], now=1.0)
+
+    mismatch = next(
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "blind_cross_seat_mismatch"
+    )
+    assert mismatch["hand"] == 1
+    assert mismatch["blind_bindings"] == {"A": blind, "B": blind}
+
+
+def test_replay_rejects_complementary_roles_that_fail_to_alternate():
+    summary = replay_events(
+        _two_hand_blind_events(
+            second_a="SMALLBLIND",
+            second_b="BIGBLIND",
+        ),
+        now=2.0,
+    )
+
+    alternation = [
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "blind_not_alternating"
+    ]
+    assert {issue["conn"] for issue in alternation} == {"A", "B"}
+    assert all(issue["hand"] == 2 for issue in alternation)
+    assert not any(
+        issue["kind"] == "blind_cross_seat_mismatch"
+        for issue in summary["issues"]
+    )
+
+
+def test_replay_binds_each_public_street_exactly_across_connections():
+    summary = replay_events(_cross_seat_board_events(), now=4.0)
+
+    assert summary["issues"] == []
+    expected = [{
+        "hand": 1,
+        "streets": {
+            "flop": [[0, 4], [1, 5], [2, 6]],
+            "river": [[0, 8]],
+            "turn": [[3, 7]],
+        },
+    }]
+    assert summary["seats"]["A"]["public_card_records"] == expected
+    assert summary["seats"]["B"]["public_card_records"] == expected
+
+
+@pytest.mark.parametrize(
+    "stage,replacement",
+    [
+        ("flop", "flop|<0,4><1,5><3,6>"),
+        ("turn", "turn|<2,7>"),
+        ("river", "river|<1,8>"),
+    ],
+)
+def test_replay_rejects_cross_seat_public_card_mismatch_by_street(
+    stage,
+    replacement,
+):
+    summary = replay_events(
+        _cross_seat_board_events(b_overrides={stage: replacement}),
+        now=4.0,
+    )
+
+    mismatches = [
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "public_cards_cross_seat_mismatch"
+    ]
+    assert len(mismatches) == 1
+    assert mismatches[0]["hand"] == 1
+    assert mismatches[0]["board_stage"] == stage
+    assert mismatches[0]["conn"] == "B"
+    assert mismatches[0]["peer_conn"] == "A"
+
+
+def test_replay_rejects_flop_order_drift_even_when_card_set_matches():
+    summary = replay_events(
+        _cross_seat_board_events(
+            b_overrides={"flop": "flop|<1,5><0,4><2,6>"}
+        ),
+        now=4.0,
+    )
+
+    mismatch = next(
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "public_cards_cross_seat_mismatch"
+    )
+    assert mismatch["board_stage"] == "flop"
+    assert mismatch["observed_cards"] == [[1, 5], [0, 4], [2, 6]]
+    assert mismatch["peer_cards"] == [[0, 4], [1, 5], [2, 6]]
+
+
+def test_replay_rejects_cross_seat_hole_collision():
+    summary = replay_events([
+        _event(0, "A", "server_to_bot", [
+            "preflop|SMALLBLIND|<0,0><1,1>"
+        ]),
+        _event(0.1, "B", "server_to_bot", [
+            "preflop|BIGBLIND|<0,0><3,3>"
+        ]),
+    ], now=1.0)
+
+    collision = next(
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "cross_seat_hole_collision"
+    )
+    assert collision["hand"] == 1
+    assert collision["left_conn"] == "A"
+    assert collision["right_conn"] == "B"
+    assert collision["collision"] == [[0, 0]]
+
+
+@pytest.mark.parametrize(
+    "stage,b_hole",
+    [
+        ("flop", "<0,4><3,3>"),
+        ("turn", "<3,7><3,3>"),
+        ("river", "<0,8><3,3>"),
+    ],
+)
+def test_replay_rejects_peer_hole_collision_with_each_board_street(
+    stage,
+    b_hole,
+):
+    events = _cross_seat_board_events(b_hole=b_hole)
+    # One A-side observation is sufficient to prove the peer-hole collision;
+    # remove B's board messages so a same-wire collision cannot mask the gap.
+    events = [
+        event
+        for event in events
+        if not (
+            event["conn"] == "B"
+            and (event["messages"][0].startswith(("flop|", "turn|", "river|")))
+        )
+    ]
+    summary = replay_events(events, now=4.0)
+
+    collisions = [
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "cross_seat_hole_board_collision"
+    ]
+    assert len(collisions) == 1
+    assert collisions[0]["hole_conn"] == "B"
+    assert collisions[0]["board_conn"] == "A"
+    assert collisions[0]["board_stage"] == stage
+    assert not any(
+        issue["kind"] == "public_cards_collision"
+        for issue in summary["issues"]
+    )
+
+
+def test_replay_checks_a_hole_against_board_observed_only_on_b_wire():
+    events = _cross_seat_board_events(a_hole="<0,4><1,1>")
+    events = [
+        event
+        for event in events
+        if not (
+            event["conn"] == "A"
+            and event["messages"][0].startswith(("flop|", "turn|", "river|"))
+        )
+    ]
+    summary = replay_events(events, now=4.0)
+
+    collision = next(
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "cross_seat_hole_board_collision"
+    )
+    assert collision["hole_conn"] == "A"
+    assert collision["board_conn"] == "B"
+    assert collision["board_stage"] == "flop"
+
+
+def test_replay_binds_showdown_cards_to_the_other_connection_hole_cards():
+    summary = replay_events(_showdown_events())
+
+    assert summary["issues"] == []
+    assert summary["seats"]["A"]["showdown_records"] == [{
+        "hand": 1,
+        "opponent_cards": [[2, 2], [3, 3]],
+    }]
+    assert summary["seats"]["B"]["showdown_records"] == [{
+        "hand": 1,
+        "opponent_cards": [[0, 0], [1, 1]],
+    }]
+
+
+def test_replay_rejects_showdown_cross_seat_mismatch_and_non_showdown_reveal():
+    mismatch = replay_events(_showdown_events(a_reveal="<2,2><3,4>"))
+    premature = replay_events([
+        _event(0, "A", "server_to_bot", ["preflop|SMALLBLIND|<0,0><1,1>"]),
+        _event(0.1, "B", "server_to_bot", ["preflop|BIGBLIND|<2,2><3,3>"]),
+        _event(1, "A", "server_to_bot", ["oppo_hands|<2,2><3,3>"]),
+    ])
+
+    assert any(
+        issue["kind"] == "showdown_cross_seat_hole_mismatch"
+        for issue in mismatch["issues"]
+    )
+    assert any(
+        issue["kind"] == "showdown_boundary_invalid"
+        for issue in premature["issues"]
+    )
 
 
 def test_replay_rejects_duplicate_and_gapped_settlement_hands():

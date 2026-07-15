@@ -16,6 +16,7 @@ from typing import Any
 
 from national_capability_contract import (
     ADVISORY_CHECKS,
+    CAPABILITY_SCHEMA_VERSION,
     NATIONAL_CAPABILITY_DETECTOR_VERSION,
     REQUIRED_CHECKS,
     evaluate_national_capabilities,
@@ -31,7 +32,7 @@ from output_schema import (
 
 
 ACTIVE_EPOCH = "national_tcp_policy_v1"
-RUNTIME_ARCHITECTURE_POLICY_VERSION = "5.0.0"
+RUNTIME_ARCHITECTURE_POLICY_VERSION = "5.1.0"
 RUNTIME_ARCHITECTURE_POLICY_SCHEMA_VERSION = 14
 RUNTIME_CONTRACT_LEDGER_SCHEMA_VERSION = 3
 PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION = 3
@@ -343,6 +344,41 @@ def _epoch_compatible(capabilities: dict[str, Any] | None) -> bool:
     )
 
 
+def lineage_only_capabilities() -> dict[str, Any]:
+    """Return the synthetic empty capability set for numeric-only lineage.
+
+    The first strict generation has a completion-tag high-water identity but no
+    source artifact.  This constructor is deliberately path-free: callers must
+    not prove that absence by resolving or probing ``bots/national_v142``.
+    """
+
+    return {
+        "schema_version": CAPABILITY_SCHEMA_VERSION,
+        "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
+        "epoch": ACTIVE_EPOCH,
+        "conclusive": True,
+        "ok": True,
+        "outcome": "lineage_only",
+        "checks": [],
+        "checks_by_id": {},
+        "required_failures": [],
+        "advisory_warnings": [],
+        "infrastructure_failures": [],
+        "lineage_only": True,
+    }
+
+
+def _lineage_bot_identity(value: Any) -> str:
+    """Validate a bot label without interpreting it as a filesystem path."""
+
+    text = str(value or "").strip()
+    prefix = "national_v"
+    suffix = text[len(prefix):] if text.startswith(prefix) else ""
+    if not suffix.isdigit() or int(suffix) <= 0 or any(char in text for char in "/\\"):
+        raise ValueError("lineage_bot_identity_invalid")
+    return text
+
+
 def _lineage_capabilities(path: Path) -> dict[str, Any]:
     """Return policy capabilities only for active-epoch artifacts.
 
@@ -351,20 +387,7 @@ def _lineage_capabilities(path: Path) -> dict[str, Any]:
     """
 
     if not path.is_dir() or not (path / "policy.py").is_file():
-        return {
-            "schema_version": 2,
-            "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
-            "epoch": ACTIVE_EPOCH,
-            "conclusive": True,
-            "ok": True,
-            "outcome": "lineage_only",
-            "checks": [],
-            "checks_by_id": {},
-            "required_failures": [],
-            "advisory_warnings": [],
-            "infrastructure_failures": [],
-            "lineage_only": True,
-        }
+        return lineage_only_capabilities()
     capabilities = evaluate_national_capabilities(path)
     capabilities, _probe, _infrastructure = _apply_typed_runtime_probe(
         capabilities,
@@ -404,6 +427,33 @@ def _runtime_probe_check(
     }
 
 
+def _causal_wire_counterfactual_passed(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    left_wire = value.get("left_wire")
+    right_wire = value.get("right_wire")
+    negative_left_wire = value.get("negative_left_wire")
+    negative_right_wire = value.get("negative_right_wire")
+    positive_wire_effect = bool(
+        left_wire
+        and right_wire
+        and left_wire != right_wire
+    )
+    negative_control_stable = bool(
+        negative_left_wire
+        and negative_right_wire
+        and negative_left_wire == negative_right_wire
+    )
+    return bool(
+        value.get("causal_passed") is True
+        and value.get("positive_wire_effect") is True
+        and value.get("negative_control_stable") is True
+        and value.get("socket_validated") is True
+        and positive_wire_effect
+        and negative_control_stable
+    )
+
+
 def _dynamic_probe_states(probe: dict[str, Any]) -> dict[str, bool]:
     rows = [
         row
@@ -430,23 +480,14 @@ def _dynamic_probe_states(probe: dict[str, Any]) -> dict[str, bool]:
         # probe currently has no digest-bound same-shape/different-value
         # precompute variant, so this claim stays fail-closed when selected.
         "precompute_runtime_influence": False,
-        "incremental_opponent_model": bool(
-            (counterfactuals.get("action_profile") or {}).get("changed")
-            and (counterfactuals.get("action_profile") or {}).get(
-                "socket_validated"
-            )
+        "incremental_opponent_model": _causal_wire_counterfactual_passed(
+            counterfactuals.get("action_profile")
         ),
-        "terminal_response_adaptation": bool(
-            (counterfactuals.get("terminal_response") or {}).get("changed")
-            and (counterfactuals.get("terminal_response") or {}).get(
-                "socket_validated"
-            )
+        "terminal_response_adaptation": _causal_wire_counterfactual_passed(
+            counterfactuals.get("terminal_response")
         ),
-        "showdown_range_adaptation": bool(
-            (counterfactuals.get("showdown_range") or {}).get("changed")
-            and (counterfactuals.get("showdown_range") or {}).get(
-                "socket_validated"
-            )
+        "showdown_range_adaptation": _causal_wire_counterfactual_passed(
+            counterfactuals.get("showdown_range")
         ),
         "donk_line_reachability": bool(
             (lines.get("donk") or {}).get("ok")
@@ -626,16 +667,14 @@ def _snapshot_payload(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_prepared_capability_snapshot(
-    parent_bot_dir: str | Path,
-    prepared_bot_dir: str | Path,
+def _build_prepared_capability_snapshot(
     *,
-    parent_capabilities: dict[str, Any] | None = None,
+    parent_bot: str,
+    parent_capabilities: dict[str, Any],
+    prepared_bot_dir: str | Path,
     prepared_capabilities: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    parent = Path(parent_bot_dir)
     prepared = Path(prepared_bot_dir)
-    parent_cap = parent_capabilities or _lineage_capabilities(parent)
     if prepared_capabilities is None:
         prepared_cap = evaluate_national_capabilities(prepared)
         prepared_cap, _probe, _infrastructure = _apply_typed_runtime_probe(
@@ -647,14 +686,14 @@ def build_prepared_capability_snapshot(
         prepared_cap = prepared_capabilities
     if prepared_cap.get("conclusive") is not True:
         raise RuntimeError("prepared capability assessment is inconclusive")
-    compatible = _epoch_compatible(parent_cap)
-    parent_state = _check_state(parent_cap) if compatible else {}
+    compatible = _epoch_compatible(parent_capabilities)
+    parent_state = _check_state(parent_capabilities) if compatible else {}
     prepared_state = _check_state(prepared_cap)
     payload = {
         "schema_version": PREPARED_CAPABILITY_SNAPSHOT_SCHEMA_VERSION,
         "epoch": ACTIVE_EPOCH,
         "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
-        "parent_bot": parent.name,
+        "parent_bot": parent_bot,
         "prepared_bot": prepared.name,
         "parent_epoch_compatible": compatible,
         "parent_checks": parent_state,
@@ -674,10 +713,47 @@ def build_prepared_capability_snapshot(
     return {**payload, "snapshot_digest": _canonical_json_digest(payload)}
 
 
+def build_prepared_capability_snapshot(
+    parent_bot_dir: str | Path,
+    prepared_bot_dir: str | Path,
+    *,
+    parent_capabilities: dict[str, Any] | None = None,
+    prepared_capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind a real active-epoch parent and the prepared candidate."""
+
+    parent = Path(parent_bot_dir)
+    return _build_prepared_capability_snapshot(
+        parent_bot=parent.name,
+        parent_capabilities=(
+            parent_capabilities or _lineage_capabilities(parent)
+        ),
+        prepared_bot_dir=prepared_bot_dir,
+        prepared_capabilities=prepared_capabilities,
+    )
+
+
+def build_lineage_only_prepared_capability_snapshot(
+    parent_bot: str,
+    prepared_bot_dir: str | Path,
+    *,
+    prepared_capabilities: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind numeric lineage to a live prepared bot without a parent path."""
+
+    return _build_prepared_capability_snapshot(
+        parent_bot=_lineage_bot_identity(parent_bot),
+        parent_capabilities=lineage_only_capabilities(),
+        prepared_bot_dir=prepared_bot_dir,
+        prepared_capabilities=prepared_capabilities,
+    )
+
+
 def validate_prepared_capability_snapshot(
     snapshot: dict[str, Any] | None,
     *,
     parent_bot_dir: str | Path | None = None,
+    lineage_parent_bot: str | None = None,
     prepared_bot_dir: str | Path | None = None,
     parent_capabilities: dict[str, Any] | None = None,
     prepared_capabilities: dict[str, Any] | None = None,
@@ -705,18 +781,41 @@ def validate_prepared_capability_snapshot(
         errors.append("prepared_capability_snapshot_parent_digest_mismatch")
     if snapshot.get("prepared_capability_digest") != _state_digest(prepared_state):
         errors.append("prepared_capability_snapshot_prepared_digest_mismatch")
-    # A fresh epoch has lineage-only parent authority: the archived high-water
-    # path intentionally does not exist.  Rebuild live state only when the
-    # caller supplies the prepared directory as well; a parent-only validation
-    # must never reinterpret snapshot["prepared_bot"] relative to cwd.
+    if parent_bot_dir is not None and lineage_parent_bot is not None:
+        errors.append("prepared_capability_snapshot_parent_authority_ambiguous")
+    lineage_identity = None
+    if lineage_parent_bot is not None:
+        try:
+            lineage_identity = _lineage_bot_identity(lineage_parent_bot)
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            if snapshot.get("parent_bot") != lineage_identity:
+                errors.append("prepared_capability_snapshot_lineage_identity_mismatch")
+            if snapshot.get("parent_epoch_compatible") is not False:
+                errors.append("prepared_capability_snapshot_lineage_must_be_incompatible")
+            if parent_state:
+                errors.append("prepared_capability_snapshot_lineage_checks_not_empty")
+    # Rebuild live prepared state only when the caller supplies its exact
+    # directory.  Numeric-only lineage uses the path-free constructor and must
+    # never reinterpret the parent label as a path relative to cwd.
     if prepared_bot_dir is not None:
         try:
-            rebuilt = build_prepared_capability_snapshot(
-                parent_bot_dir or snapshot.get("parent_bot") or "",
-                prepared_bot_dir,
-                parent_capabilities=parent_capabilities,
-                prepared_capabilities=prepared_capabilities,
-            )
+            if lineage_identity is not None:
+                if parent_capabilities is not None:
+                    raise ValueError("lineage_parent_capabilities_forbidden")
+                rebuilt = build_lineage_only_prepared_capability_snapshot(
+                    lineage_identity,
+                    prepared_bot_dir,
+                    prepared_capabilities=prepared_capabilities,
+                )
+            else:
+                rebuilt = build_prepared_capability_snapshot(
+                    parent_bot_dir or snapshot.get("parent_bot") or "",
+                    prepared_bot_dir,
+                    parent_capabilities=parent_capabilities,
+                    prepared_capabilities=prepared_capabilities,
+                )
         except Exception as exc:
             errors.append(f"prepared_capability_snapshot_rebuild_error:{type(exc).__name__}")
         else:
@@ -755,29 +854,19 @@ def _policy_contract_digest(policy: dict[str, Any]) -> str:
     return _canonical_json_digest(_policy_payload(policy))
 
 
-def build_architecture_policy(
-    source_bot_dir: str | Path,
-    *,
-    source_capabilities: dict[str, Any] | None = None,
-    prepared_capability_snapshot: dict[str, Any] | None = None,
+def _build_architecture_policy_payload(
+    source_bot: str,
+    capabilities: dict[str, Any],
+    prepared_capability_snapshot: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    source = Path(source_bot_dir)
-    capabilities = source_capabilities or _lineage_capabilities(source)
     if capabilities.get("conclusive") is not True:
         raise RuntimeError("source capability assessment is inconclusive")
     source_compatible = _epoch_compatible(capabilities)
     source_state = _check_state(capabilities) if source_compatible else {}
     snapshot = None
     effective_state = dict(source_state)
-    effective_bot = source.name
+    effective_bot = source_bot
     if prepared_capability_snapshot is not None:
-        snapshot_errors = validate_prepared_capability_snapshot(
-            prepared_capability_snapshot,
-            parent_bot_dir=source,
-            parent_capabilities=capabilities,
-        )
-        if snapshot_errors:
-            raise ValueError("invalid prepared capability snapshot: " + "; ".join(snapshot_errors))
         snapshot = deepcopy(prepared_capability_snapshot)
         effective_state = dict(snapshot["prepared_checks"])
         if snapshot.get("parent_epoch_compatible"):
@@ -796,7 +885,7 @@ def build_architecture_policy(
         "official_oracle_digests": _verified_official_oracle_identity(),
         "strategy_reference_pack_digest": _strategy_reference_pack_digest(),
         "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
-        "source_bot": source.name,
+        "source_bot": source_bot,
         "source_epoch_compatible": source_compatible,
         "source_capability_digest": _state_digest(source_state),
         "source_checks": source_state,
@@ -819,6 +908,56 @@ def build_architecture_policy(
     }
     policy["policy_digest"] = _policy_contract_digest(policy)
     return policy
+
+
+def build_architecture_policy(
+    source_bot_dir: str | Path,
+    *,
+    source_capabilities: dict[str, Any] | None = None,
+    prepared_capability_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = Path(source_bot_dir)
+    capabilities = source_capabilities or _lineage_capabilities(source)
+    if prepared_capability_snapshot is not None:
+        snapshot_errors = validate_prepared_capability_snapshot(
+            prepared_capability_snapshot,
+            parent_bot_dir=source,
+            parent_capabilities=capabilities,
+        )
+        if snapshot_errors:
+            raise ValueError(
+                "invalid prepared capability snapshot: "
+                + "; ".join(snapshot_errors)
+            )
+    return _build_architecture_policy_payload(
+        source.name,
+        capabilities,
+        prepared_capability_snapshot,
+    )
+
+
+def build_lineage_only_architecture_policy(
+    source_bot: str,
+    *,
+    prepared_capability_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the first-strict policy from numeric lineage and prepared facts."""
+
+    source_identity = _lineage_bot_identity(source_bot)
+    snapshot_errors = validate_prepared_capability_snapshot(
+        prepared_capability_snapshot,
+        lineage_parent_bot=source_identity,
+    )
+    if snapshot_errors:
+        raise ValueError(
+            "invalid lineage-only prepared capability snapshot: "
+            + "; ".join(snapshot_errors)
+        )
+    return _build_architecture_policy_payload(
+        source_identity,
+        lineage_only_capabilities(),
+        prepared_capability_snapshot,
+    )
 
 
 def _policy_identity_errors(expected: dict[str, Any], current: dict[str, Any]) -> list[str]:
@@ -875,18 +1014,28 @@ def _selected_dynamic_probe_checks(
 
 
 def evaluate_architecture_transition(
-    source_bot_dir: str | Path,
+    source_bot_dir: str | Path | None,
     candidate_bot_dir: str | Path,
     *,
     expected_policy: dict[str, Any] | None = None,
     evaluation_phase: str = ARCHITECTURE_TRANSITION_PHASE_FINAL,
     runtime_contract_ledger: dict[str, Any] | None = None,
+    lineage_source_bot: str | None = None,
 ) -> dict[str, Any]:
     if evaluation_phase not in ARCHITECTURE_TRANSITION_PHASES:
         raise ValueError(f"unknown architecture transition phase: {evaluation_phase}")
-    source = Path(source_bot_dir)
     candidate = Path(candidate_bot_dir)
-    source_cap = _lineage_capabilities(source)
+    if lineage_source_bot is not None:
+        if source_bot_dir is not None:
+            raise ValueError("architecture_transition_source_authority_ambiguous")
+        source_identity = _lineage_bot_identity(lineage_source_bot)
+        source_cap = lineage_only_capabilities()
+    else:
+        if source_bot_dir is None:
+            raise ValueError("architecture_transition_source_missing")
+        source = Path(source_bot_dir)
+        source_identity = source.name
+        source_cap = _lineage_capabilities(source)
     candidate_cap = evaluate_national_capabilities(candidate)
     candidate_cap, runtime_probe, probe_infrastructure = _apply_typed_runtime_probe(
         candidate_cap,
@@ -898,11 +1047,21 @@ def evaluate_architecture_transition(
         infrastructure_failures.extend(candidate_cap.get("infrastructure_failures") or [])
 
     snapshot = expected_policy.get("prepared_capability_snapshot") if isinstance(expected_policy, dict) else None
-    current_policy = build_architecture_policy(
-        source,
-        source_capabilities=source_cap,
-        prepared_capability_snapshot=snapshot,
-    )
+    if lineage_source_bot is not None:
+        if not isinstance(snapshot, dict):
+            raise ValueError(
+                "lineage_only_transition_requires_prepared_capability_snapshot"
+            )
+        current_policy = build_lineage_only_architecture_policy(
+            source_identity,
+            prepared_capability_snapshot=snapshot,
+        )
+    else:
+        current_policy = build_architecture_policy(
+            source,
+            source_capabilities=source_cap,
+            prepared_capability_snapshot=snapshot,
+        )
     policy = expected_policy or current_policy
     policy_identity_errors = (
         _policy_identity_errors(expected_policy, current_policy)
@@ -976,6 +1135,8 @@ def evaluate_architecture_transition(
     ))
     return {
         "schema_version": 2,
+        "policy_version": RUNTIME_ARCHITECTURE_POLICY_VERSION,
+        "detector_version": NATIONAL_CAPABILITY_DETECTOR_VERSION,
         "epoch": ACTIVE_EPOCH,
         "ok": ok,
         "conclusive": not infrastructure_failures,
@@ -1171,10 +1332,13 @@ __all__ = [
     "architecture_policy_prompt",
     "attach_runtime_contract_ledger",
     "build_architecture_policy",
+    "build_lineage_only_architecture_policy",
+    "build_lineage_only_prepared_capability_snapshot",
     "build_prepared_capability_snapshot",
     "build_runtime_contract_ledger",
     "crossover_architecture_policy_prompt",
     "evaluate_architecture_transition",
+    "lineage_only_capabilities",
     "native_policy_runtime_contract",
     "prepared_capability_snapshot_digest",
     "runtime_contract_ledger_digest",

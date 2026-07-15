@@ -166,6 +166,9 @@ def test_operator_probe_passes_with_mocked_production_wrapper():
         assert role == probe.ROLE_NAME
         assert kwargs["tools"] == ["Read", "Bash"]
         assert tuple(kwargs["exact_bash_commands"]) == probe.EXACT_BASH_COMMANDS
+        assert set(kwargs["allowed_read_dirs"]["files"]) == {
+            PROJECT_ROOT / relative for relative in probe.READ_RELATIVE_PATHS
+        }
         assert "curl" in prompt  # Explicitly prohibited by the prompt and allowlist.
         _emit_complete_trace(evidence)
         return _model_output(evidence), 0.01, {"input_tokens": 10}

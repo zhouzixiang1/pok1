@@ -7,10 +7,21 @@ from evaluation_contract import ALWAYS_CRITICAL_EXACT
 
 
 def _git_at_v142(*args):
+    if args and args[0] == "for-each-ref":
+        return (
+            "tag\tcommit\tnational-bot-v141\n"
+            "tag\tcommit\tnational-bot-v142\n"
+            "tag\tcommit\tnational-high-water-v142"
+        )
     if args[:3] == ("tag", "-l", "national-bot-v*"):
         return "national-bot-v141\nnational-bot-v142"
     if args[:3] == ("tag", "-l", "national-high-water-v*"):
         return "national-high-water-v142"
+    if args in {
+        ("rev-parse", "refs/tags/national-bot-v142^{commit}"),
+        ("rev-parse", "refs/tags/national-high-water-v142^{commit}"),
+    }:
+        return "b" * 40
     if args[:2] == ("rev-parse", "HEAD"):
         return "a" * 40
     return ""
@@ -48,6 +59,12 @@ def test_policy_epoch_reset_has_no_source_seed(monkeypatch, tmp_path):
 
 def test_policy_epoch_reset_refuses_rerun_after_strict_tag(monkeypatch):
     def git(*args):
+        if args and args[0] == "for-each-ref":
+            return (
+                "tag\tcommit\tnational-bot-v142\n"
+                "tag\tcommit\tnational-bot-v143\n"
+                "tag\tcommit\tnational-high-water-v143"
+            )
         if args[:3] == ("tag", "-l", "national-bot-v*"):
             return "national-bot-v142\nnational-bot-v143"
         if args[:3] == ("tag", "-l", "national-high-water-v*"):
@@ -57,6 +74,50 @@ def test_policy_epoch_reset_refuses_rerun_after_strict_tag(monkeypatch):
     monkeypatch.setattr(reset, "_git", git)
 
     with pytest.raises(RuntimeError, match="cannot rerun"):
+        reset.run(execute=False)
+
+
+def test_policy_epoch_reset_ignores_lightweight_version_claim(monkeypatch, tmp_path):
+    monkeypatch.setattr(reset, "ROOT", tmp_path)
+    monkeypatch.setattr(reset, "CORE", tmp_path / "web" / "core")
+    monkeypatch.setattr(
+        reset,
+        "_git",
+        lambda *args: (
+            "tag\tcommit\tnational-bot-v142\n"
+            "tag\tcommit\tnational-high-water-v142\n"
+            "commit\t\tnational-bot-v999"
+        ) if args and args[0] == "for-each-ref" else (
+            "a" * 40 if args and args[0] == "rev-parse" else ""
+        ),
+    )
+    monkeypatch.setattr(
+        reset,
+        "build_plan",
+        lambda _stamp: {
+            "archive_root": tmp_path / "archive",
+            "runtime": [],
+            "archived_bot_dirs": [],
+        },
+    )
+
+    receipt = reset.run(execute=False)
+
+    assert receipt["version_authority_high_water"] == 142
+
+
+def test_policy_epoch_reset_fails_without_annotated_version_authority(monkeypatch):
+    monkeypatch.setattr(
+        reset,
+        "_git",
+        lambda *args: (
+            "commit\t\tnational-high-water-v142"
+            if args and args[0] == "for-each-ref"
+            else ""
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="annotated completion/high-water"):
         reset.run(execute=False)
 
 

@@ -3,6 +3,51 @@ import json
 from types import SimpleNamespace
 
 import pytest
+import runtime_architecture_policy  # Import before capability-failure monkeypatches.
+
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
+
+
+def _published_parent(label, **_kwargs):
+    version = int(str(label).rsplit("_v", 1)[1])
+    return SimpleNamespace(
+        eligible=True,
+        version=version,
+        issues=(),
+        runtime_manifest={"epoch": "national_tcp_policy_v1"},
+        epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
+        publication_identity={"published": True, "version": version},
+        certificate_digest="a" * 64,
+    )
+
+
+def _strict_checkpoint(next_v, source_v, parent2_v, *, stage, workflow_run_id):
+    import checkpoint_schema
+
+    audit_context = {}
+    binding = checkpoint_schema.build_checkpoint_epoch_binding(
+        next_v=next_v,
+        source_v=source_v,
+        parent2_v=parent2_v,
+        audit_context=audit_context,
+        published_high_water=next_v - 1,
+        abandoned_receipt_floor=0,
+        abandoned_receipt_head_digest=None,
+        parent_resolver=_published_parent,
+    )
+    return {
+        "checkpoint_schema_version": checkpoint_schema.CHECKPOINT_SCHEMA_VERSION,
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "epoch_binding": binding,
+        "next_v": next_v,
+        "source_v": source_v,
+        "parent2_v": parent2_v,
+        "run_id": f"{next_v}#0",
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": 1,
+        "stage": stage,
+        "audit_context": audit_context,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -10,19 +55,11 @@ def _eligible_test_parents(monkeypatch):
     import checkpoint_schema
     import tool_commit
 
-    def resolve(label, **_kwargs):
-        version = int(str(label).rsplit("_v", 1)[1])
-        return SimpleNamespace(
-            eligible=True,
-            version=version,
-            issues=(),
-            runtime_manifest={"epoch": "national_tcp_policy_v1"},
-            epoch_receipt={"epoch": "national_tcp_policy_v1", "version": version},
-            publication_identity={"published": True, "version": version},
-            certificate_digest="a" * 64,
-        )
-
-    monkeypatch.setattr(checkpoint_schema, "resolve_national_bot_spec", resolve)
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_national_bot_spec",
+        _published_parent,
+    )
 
     monkeypatch.setattr(
         tool_commit,
@@ -240,13 +277,43 @@ def test_crossover_compatibility_uses_glicko_r_stable_h2h_and_architecture_conte
         }), 0.0, {}
 
     monkeypatch.setattr(audit_agents, "run_claude_query", fake_query)
+    frozen_bundle = {
+        "receipt": {"receipt_digest": "d" * 64},
+        "frozen_parent_a_dir": parent_a,
+        "frozen_parent_b_dir": parent_b,
+    }
+    monkeypatch.setattr(
+        audit_agents,
+        "capture_crossover_parent_snapshots",
+        lambda *_a, **_k: frozen_bundle,
+    )
+    monkeypatch.setattr(
+        audit_agents,
+        "resolve_crossover_parent_snapshots",
+        lambda *_a, **_k: frozen_bundle,
+    )
+    monkeypatch.setattr(
+        audit_agents,
+        "revalidate_crossover_parent_capture",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        audit_agents,
+        "frozen_crossover_parent_architecture",
+        lambda _bundle: {
+            "architecture_policy": {
+                "selected_focus": "incremental_match_model",
+            },
+            "capability_context": {},
+        },
+    )
 
     result = asyncio.run(audit_agents._run_crossover_compatibility_audit(
         149,
         143,
         SimpleNamespace(),
         target_v=167,
-        architecture_context={"selected_focus": "incremental_match_model"},
+        authoritative_checkpoint={},
     ))
 
     assert result["compatible"] is True
@@ -287,6 +354,8 @@ def test_run_crossover_llm_incompatibility_is_advisory_only(tmp_path, monkeypatc
 
     fake_state = tmp_path / "pipeline_state.json"
     fake_state.write_text("{}", encoding="utf-8")
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
     cleared = []
 
     monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
@@ -313,6 +382,7 @@ def test_run_crossover_llm_incompatibility_is_advisory_only(tmp_path, monkeypatc
     tool_bot_management._LAST_ABANDON_TS[0] = 0.0
     tool_bot_management._LAST_ABANDON_TS[1] = ""
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+    monkeypatch.setattr(tool_bot_management, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(
         tool_bot_management,
         "read_pipeline_checkpoint",
@@ -357,6 +427,7 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     # run_crossover again — an infinite deadlock (~28 min/cycle, no progress).
     import audit_agents
     import evolution_core
+    import evolution_infra
     import tool_bot_management
     import tool_commit
 
@@ -384,8 +455,22 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
         # fail (e.g. each LLM call idle-timed out).
         return False
 
+    async def _abandon_exhausted(*, reason, **checkpoint_identity):
+        assert reason == "crossover_llm_exhausted:v149xv143"
+        assert checkpoint_identity == {
+            "expected_workflow_run_id": "test-crossover-exhausted-167-149",
+            "expected_next_v": 167,
+            "expected_source_v": 149,
+            "expected_checkpoint_revision": 1,
+            "expected_checkpoint_stage": "crossover_running",
+        }
+        cleared.append(True)
+        return {"abandoned": True, "abandoned_v": 167, "reason": reason}
+
     fake_state = tmp_path / "pipeline_state.json"
     fake_state.write_text("{}", encoding="utf-8")
+    exhausted_results_dir = tmp_path / "exhausted-results"
+    exhausted_results_dir.mkdir()
     cleared = []
 
     monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
@@ -399,16 +484,25 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
     monkeypatch.setattr(
         tool_bot_management,
+        "RESULTS_DIR",
+        exhausted_results_dir,
+    )
+    exhausted_checkpoint = _strict_checkpoint(
+        167,
+        149,
+        143,
+        stage="crossover_running",
+        workflow_run_id="test-crossover-exhausted-167-149",
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
         "read_pipeline_checkpoint",
-        lambda: {
-            "next_v": 167,
-            "source_v": 149,
-            "parent2_v": 143,
-            "run_id": "167#0",
-            "workflow_run_id": "test-crossover-exhausted-167-149",
-            "checkpoint_revision": 1,
-            "stage": "selected",
-        },
+        lambda: exhausted_checkpoint,
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "read_pipeline_checkpoint",
+        lambda: exhausted_checkpoint,
     )
     monkeypatch.setattr(
         tool_bot_management,
@@ -417,6 +511,10 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(tool_bot_management, "get_bot_dir", _bot_dir)
     monkeypatch.setattr(tool_bot_management, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(
+        tool_bot_management, "_do_abandon_generation", _abandon_exhausted
+    )
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 166)
 
     result = asyncio.run(tool_commit.run_crossover.handler({
         "parent_a": 149,
@@ -429,7 +527,7 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     # {"success": False} — so the orchestrator can abandon instead of looping.
     assert data["error"] == "CROSSOVER_LLM_EXHAUSTED"
     assert data["success"] is False
-    assert data["abandoned"] is True
+    assert data["abandoned"] is True, data
     assert data["abandon_result"]["abandoned_v"] == 167
     assert cleared == [True]
 
@@ -647,11 +745,7 @@ def test_run_crossover_infrastructure_resume_reuses_preserved_child_without_llm(
         "parent2_v": 143,
         "stage": "crossover_running",
         "infra_failure": overlay,
-        "audit_context": {
-            "crossover": {
-                "compatibility": {"compatible": True, "compatibility_score": 8},
-            },
-        },
+        "audit_context": {"crossover": {}},
     }
     writes = []
 
@@ -791,6 +885,8 @@ def test_run_crossover_infrastructure_resume_abandons_drifted_child_without_llm(
         "next_v": 167,
         "source_v": 149,
         "parent2_v": 143,
+        "workflow_run_id": "test-crossover-drift-167-149",
+        "checkpoint_revision": 1,
         "stage": "crossover_running",
         "infra_failure": overlay,
     }
@@ -807,7 +903,14 @@ def test_run_crossover_infrastructure_resume_abandons_drifted_child_without_llm(
     async def must_not_synthesize(*_args, **_kwargs):
         raise AssertionError("drifted preserved child reached crossover synthesis")
 
-    async def abandon(*, reason):
+    async def abandon(*, reason, **checkpoint_identity):
+        assert set(checkpoint_identity) == {
+            "expected_workflow_run_id",
+            "expected_next_v",
+            "expected_source_v",
+            "expected_checkpoint_revision",
+            "expected_checkpoint_stage",
+        }
         return {"abandoned": True, "reason": reason, "abandoned_v": 167}
 
     monkeypatch.setattr(tool_commit, "get_bot_dir", bot_dir)
@@ -934,8 +1037,8 @@ def test_crossover_infrastructure_budget_is_monotonic_across_components(
     )
     abandon_calls = []
 
-    async def abandon(*, reason):
-        abandon_calls.append(reason)
+    async def abandon(*, reason, **checkpoint_identity):
+        abandon_calls.append((reason, checkpoint_identity))
         return {"abandoned": True, "reason": reason, "abandoned_v": 167}
 
     monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", abandon)
@@ -962,6 +1065,14 @@ def test_crossover_infrastructure_budget_is_monotonic_across_components(
     assert data["infra_failure"]["exhausted"] is True
     assert data["infra_failure"]["metadata"]["crossover_generation_attempt"] == 3
     assert data["abandoned"] is True
-    assert abandon_calls == [
+    checkpoint = evolution_infra.read_pipeline_checkpoint()
+    assert [reason for reason, _identity in abandon_calls] == [
         "infrastructure_exhausted:national_runtime_probe",
     ]
+    assert abandon_calls[0][1] == {
+        "expected_workflow_run_id": checkpoint["workflow_run_id"],
+        "expected_next_v": checkpoint["next_v"],
+        "expected_source_v": checkpoint["source_v"],
+        "expected_checkpoint_revision": checkpoint["checkpoint_revision"],
+        "expected_checkpoint_stage": checkpoint["stage"],
+    }

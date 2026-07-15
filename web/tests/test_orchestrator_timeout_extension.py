@@ -27,6 +27,8 @@ from types import SimpleNamespace
 import checkpoint_schema
 import pytest
 
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "web" / "core"))
@@ -109,6 +111,20 @@ class _FakeUI:
         pass
 
 
+def test_orchestrator_default_daemon_workers_uses_authoritative_safe_cap(
+    monkeypatch,
+):
+    import daemon_management
+    import orchestrator
+
+    monkeypatch.setattr(daemon_management.os, "cpu_count", lambda: 128)
+
+    resolved = orchestrator._resolve_daemon_workers(None)
+
+    assert resolved == daemon_management.MAX_SAFE_DAEMON_WORKERS == 12
+    assert orchestrator._resolve_daemon_workers(3) == 3
+
+
 # ---------------------------------------------------------------------------
 # Task A/B/C: extension grant logic inside _run_one_cycle
 # ---------------------------------------------------------------------------
@@ -187,44 +203,25 @@ def test_second_timeout_at_verified_refuses_extension(tmp_path, monkeypatch):
 async def _drive_cycle(orchestrator, log_file, ui):
     """Run _run_one_cycle forcing the timeout-handling branch.
 
-    _run_one_cycle defines _stream_response as a nested closure, so we cannot
-    patch it by name. Instead we force a TimeoutError out of the real closure:
-      - patch claude_query to return an async generator that never yields, so
-        the real _stream_response's `async for message in gen` blocks.
-      - patch asyncio.wait_for to immediately raise TimeoutError (the exact
-        exception the cycle's outer try/except handles), exercising the
-        stage-aware extension logic against the real on-disk checkpoint.
+    _run_one_cycle defines _stream_response as a nested closure, so force a
+    TimeoutError at its cycle-owner boundary. This isolates the stage-aware
+    extension logic from provider lifecycle behavior, which has dedicated
+    cancellation-resistant tests below.
     """
-    original_wait_for = asyncio.wait_for
-    original_claude_query = orchestrator.claude_query
+    original_boundary = orchestrator._await_orchestrator_stream_response_bounded
 
-    async def _hang_gen():
-        # Never yields — real _stream_response's `async for` blocks forever
-        if False:
-            yield  # pragma: no cover (never reached)
-
-    def _fake_claude_query(prompt, options):
-        return _hang_gen()
-
-    async def _fast_wait_for(coro, timeout):
-        t = asyncio.ensure_future(coro)
-        t.cancel()
-        try:
-            await t
-        except BaseException:
-            pass
+    async def _fast_cycle_boundary(coro, **_kwargs):
+        coro.close()
         raise asyncio.TimeoutError()
 
-    orchestrator.claude_query = _fake_claude_query
-    orchestrator.asyncio.wait_for = _fast_wait_for
+    orchestrator._await_orchestrator_stream_response_bounded = _fast_cycle_boundary
     try:
         return await orchestrator._run_one_cycle(
             ui=ui, log_file=log_file, one_gen=False, dry_run=False,
             max_turns=None, gen_ctx=None, shutdown_mgr=None,
         )
     finally:
-        orchestrator.claude_query = original_claude_query
-        orchestrator.asyncio.wait_for = original_wait_for
+        orchestrator._await_orchestrator_stream_response_bounded = original_boundary
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +797,7 @@ def test_first_activity_timeout_is_infra_and_preserves_checkpoint(tmp_path, monk
         if False:
             yield  # pragma: no cover
 
-    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _silent_gen())
+    monkeypatch.setattr(orchestrator, "claude_query", lambda **_kwargs: _silent_gen())
     monkeypatch.setattr(orchestrator, "ORCH_FIRST_ACTIVITY_TIMEOUT", 0.01)
 
     ui = _FakeUI()
@@ -851,7 +848,7 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
         if False:
             yield  # pragma: no cover
 
-    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _stalls_after_first_message())
+    monkeypatch.setattr(orchestrator, "claude_query", lambda **_kwargs: _stalls_after_first_message())
     monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(orchestrator, "ORCH_ACTIONABLE_STAGE_TIMEOUT", 0.01)
     # Immediate handoff has its own coverage below. Disable it here so this
@@ -917,7 +914,7 @@ def test_stream_stall_timeout_aborts_without_checkpoint(tmp_path, monkeypatch):
         if False:
             yield  # pragma: no cover
 
-    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _stalls_after_first_message())
+    monkeypatch.setattr(orchestrator, "claude_query", lambda **_kwargs: _stalls_after_first_message())
     monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
     monkeypatch.setattr(orchestrator, "ORCH_STREAM_STALL_TIMEOUT", 0.05)
     # Disable the actionable-stage path so only the generic ceiling can fire.
@@ -1136,7 +1133,7 @@ def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch
 
 
 def test_deterministic_execute_workers_passes_checkpoint_feedback(monkeypatch):
-    """Critic/review rework routes must pass exact checkpoint feedback to workers."""
+    """Reviewer/precommit rework routes pass exact checkpoint feedback to workers."""
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
@@ -1171,7 +1168,7 @@ def test_deterministic_execute_workers_passes_checkpoint_feedback(monkeypatch):
             "stage": "reviewed",
             "next_v": 268,
             "source_v": 249,
-            "reviewer_feedback": "CRITIC_REJECTION: fix pfr sign",
+            "reviewer_feedback": "REVIEW_REJECTION: fix pfr sign",
         },
     }
 
@@ -1183,7 +1180,7 @@ def test_deterministic_execute_workers_passes_checkpoint_feedback(monkeypatch):
     fake_execute.handler.assert_awaited_once_with({
         "next_v": 268,
         "source_v": 249,
-        "reviewer_feedback": "CRITIC_REJECTION: fix pfr sign",
+        "reviewer_feedback": "REVIEW_REJECTION: fix pfr sign",
     })
 
 
@@ -1320,7 +1317,7 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
         )
     )
 
-    async def _fake_abandon(reason="abandon_generation"):
+    async def _fake_abandon(reason="abandon_generation", **_identity):
         abandoned.append(reason)
         return {"abandoned": True, "reason": reason, "abandoned_v": 268}
 
@@ -1345,7 +1342,10 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "tool_bot_management",
-        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
     )
 
     recovery = {
@@ -1382,7 +1382,7 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
                 "action": "abandon_generation",
                 "worker_abandon_reason": "worker_infrastructure_exhausted",
             },
-            "worker_infrastructure_exhausted",
+            "worker_workflow_abandoned",
         ),
         (
             {
@@ -1418,7 +1418,7 @@ def test_deterministic_route_reconciles_abandoned_worker_journal(
         )
     )
 
-    async def _fake_abandon(reason="abandon_generation"):
+    async def _fake_abandon(reason="abandon_generation", **_identity):
         abandoned.append(reason)
         return {"abandoned": True, "reason": reason, "abandoned_v": 152}
 
@@ -1443,7 +1443,10 @@ def test_deterministic_route_reconciles_abandoned_worker_journal(
     monkeypatch.setitem(
         sys.modules,
         "tool_bot_management",
-        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
     )
 
     recovery = {
@@ -1488,7 +1491,7 @@ def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(mon
         )
     )
 
-    async def _fake_abandon(reason="abandon_generation"):
+    async def _fake_abandon(reason="abandon_generation", **_identity):
         abandoned.append(reason)
         return {"abandoned": True, "reason": reason, "abandoned_v": 277}
 
@@ -1513,7 +1516,10 @@ def test_deterministic_route_abandons_after_precommit_rework_circuit_breaker(mon
     monkeypatch.setitem(
         sys.modules,
         "tool_bot_management",
-        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
     )
 
     recovery = {
@@ -1568,7 +1574,7 @@ def test_deterministic_route_abandons_after_official_rework_circuit_breaker(monk
         )
     )
 
-    async def _fake_abandon(reason="abandon_generation"):
+    async def _fake_abandon(reason="abandon_generation", **_identity):
         abandoned.append(reason)
         return {"abandoned": True, "reason": reason, "abandoned_v": 278}
 
@@ -1593,7 +1599,10 @@ def test_deterministic_route_abandons_after_official_rework_circuit_breaker(monk
     monkeypatch.setitem(
         sys.modules,
         "tool_bot_management",
-        SimpleNamespace(_do_abandon_generation=_fake_abandon),
+        SimpleNamespace(
+            _do_abandon_generation=_fake_abandon,
+            expected_abandon_identity=lambda _checkpoint: {},
+        ),
     )
 
     recovery = {
@@ -1922,7 +1931,7 @@ def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch
         if False:
             yield  # pragma: no cover
 
-    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _quality_failed_after_message())
+    monkeypatch.setattr(orchestrator, "claude_query", lambda **_kwargs: _quality_failed_after_message())
     monkeypatch.setattr(
         orchestrator,
         "log_system_event",
@@ -1990,7 +1999,7 @@ def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, mo
     monkeypatch.setattr(
         orchestrator,
         "claude_query",
-        lambda prompt, options: _park_after_message(),
+        lambda **_kwargs: _park_after_message(),
     )
     monkeypatch.setattr(
         orchestrator,

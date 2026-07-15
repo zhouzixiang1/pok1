@@ -200,25 +200,137 @@ def test_projection_rejection_is_not_replayed_as_poison(authority, monkeypatch):
     )
     assert fresh.get("replay_provider") is not True
     assert fresh["invocation_id"] != call["invocation_id"]
+    assert fresh["schema_retry_required"] is True
+    assert fresh["schema_attempt"] == 2
+    assert "single permitted" in module.schema_retry_prompt(fresh)
 
-
-def test_terminal_sdk_output_and_projected_role_are_both_enforced(authority):
-    module, _store = authority
-    # This test exercises the strict (non-tolerant) raw-result binding path.
-    import os
-    old_val = os.environ.get("POK_STRICT_AUTHORITY_TOLERANT")
-    os.environ["POK_STRICT_AUTHORITY_TOLERANT"] = "0"
-    try:
-        checkpoint = _checkpoint()
-        call = module.new_call(
+    module.dispatch_call(
+        fresh,
+        full_prompt="one bounded schema repair",
+        tools=module.SLOT_TOOLS["proposal:mechanism"],
+        owner="pytest",
+    )
+    second = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="poison-session-two",
+        total_cost_usd=0.01,
+        usage={},
+        result="still invalid for this role",
+    )
+    module._observe_provider_result(
+        second,
+        invocation_id=fresh["invocation_id"],
+        effect_id=fresh["effect_id"],
+    )
+    module.complete_provider_call(
+        fresh,
+        raw_output="still invalid for this role",
+        provider_results=[second],
+    )
+    with pytest.raises(module.StrictAuthorityError, match="schema_retry_exhausted"):
+        module.new_call(
             checkpoint,
             slot="proposal:mechanism",
-            context_binding={"slot": "proposal:mechanism", "suffix": "binding"},
+            context_binding={"slot": "proposal:mechanism", "suffix": "poison"},
         )
+
+
+def test_dead_provider_owner_is_fenced_before_fresh_dispatch(authority, monkeypatch):
+    module, store = authority
+    checkpoint = _checkpoint()
+    context = {"slot": "proposal:mechanism", "suffix": "dead-owner"}
+    original = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding=context,
+    )
+    module.dispatch_call(
+        original,
+        full_prompt="provider that exits before a result",
+        tools=module.SLOT_TOOLS["proposal:mechanism"],
+        owner="llm_query:999999:MASTER PROPOSAL mechanism",
+    )
+    monkeypatch.setattr(module, "_provider_owner_is_alive", lambda _owner: False)
+
+    recovered = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding=context,
+    )
+
+    assert recovered["invocation_id"] != original["invocation_id"]
+    assert store.effect(original["effect_id"])["status"] == "exhausted"
+    assert store.effect(original["effect_id"])["lease_owner"] is None
+
+
+def test_live_provider_owner_blocks_duplicate_slot_dispatch(authority, monkeypatch):
+    module, _store = authority
+    checkpoint = _checkpoint()
+    context = {"slot": "proposal:mechanism", "suffix": "live-owner"}
+    original = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding=context,
+    )
+    module.dispatch_call(
+        original,
+        full_prompt="live provider",
+        tools=module.SLOT_TOOLS["proposal:mechanism"],
+        owner="llm_query:123:MASTER PROPOSAL mechanism",
+    )
+    monkeypatch.setattr(module, "_provider_owner_is_alive", lambda _owner: True)
+
+    with pytest.raises(module.StrictAuthorityError, match="provider_call_active"):
+        module.new_call(
+            checkpoint,
+            slot="proposal:mechanism",
+            context_binding=context,
+        )
+
+
+def test_terminal_result_is_the_only_canonical_strict_output(authority):
+    module, _store = authority
+    result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="terminal-authority",
+        total_cost_usd=0.01,
+        usage={},
+        result='{"terminal":true}',
+    )
+
+    assert module.canonical_provider_output([result]) == '{"terminal":true}'
+
+
+def test_duplicate_proposal_rejection_is_durable_and_bounded(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    proposal_id = "duplicate-proposal-id"
+    _call(
+        module,
+        checkpoint,
+        "proposal:mechanism",
+        role_result={"proposal_id": proposal_id, "direction": "mechanism"},
+    )
+    context = {"slot": "proposal:counterfactual", "suffix": "duplicate"}
+
+    def complete_duplicate(call, session_id):
+        role_result = {
+            "proposal_id": proposal_id,
+            "direction": "counterfactual",
+        }
+        raw_output = json.dumps(role_result, sort_keys=True)
         module.dispatch_call(
             call,
-            full_prompt="binding prompt",
-            tools=module.SLOT_TOOLS["proposal:mechanism"],
+            full_prompt=f"duplicate provider {session_id}",
+            tools=module.SLOT_TOOLS["proposal:counterfactual"],
             owner="pytest",
         )
         result = ResultMessage(
@@ -227,40 +339,108 @@ def test_terminal_sdk_output_and_projected_role_are_both_enforced(authority):
             duration_api_ms=1,
             is_error=False,
             num_turns=1,
-            session_id="binding-session",
+            session_id=session_id,
             total_cost_usd=0.01,
             usage={},
-            result='{"provider":true}',
+            result=raw_output,
         )
         module._observe_provider_result(
             result,
             invocation_id=call["invocation_id"],
             effect_id=call["effect_id"],
         )
-        with pytest.raises(module.StrictAuthorityError, match="raw_result_mismatch"):
-            module.complete_provider_call(
-                call,
-                raw_output='{"caller":true}',
-                provider_results=[result],
-            )
-
-        call, role_result, _receipt = _call(
-            module,
-            checkpoint,
-            "proposal:counterfactual",
-            accept=False,
+        module.complete_provider_call(
+            call,
+            raw_output=raw_output,
+            provider_results=[result],
         )
-        with pytest.raises(module.StrictAuthorityError, match="projection_mismatch"):
-            module.accept_role_result(
-                call,
-                role_result={**role_result, "injected": True},
-                parse_contract=module.SLOT_PARSE_CONTRACTS["proposal:counterfactual"],
-            )
-    finally:
-        if old_val is None:
-            os.environ.pop("POK_STRICT_AUTHORITY_TOLERANT", None)
-        else:
-            os.environ["POK_STRICT_AUTHORITY_TOLERANT"] = old_val
+        return module.reject_duplicate_proposal(call)
+
+    first = module.new_call(
+        checkpoint,
+        slot="proposal:counterfactual",
+        context_binding=context,
+    )
+    rejection = complete_duplicate(first, "duplicate-one")
+    assert rejection["conflicting_slots"] == ["proposal:mechanism"]
+    assert any(
+        event.event_type == module.REJECTED_EVENT
+        and event.payload.get("rejection_kind")
+        == "proposal_identity_collision"
+        for event in store.events(first["run_id"])
+    )
+
+    repair = module.new_call(
+        checkpoint,
+        slot="proposal:counterfactual",
+        context_binding=context,
+    )
+    assert repair.get("replay_provider") is not True
+    assert repair["schema_retry_required"] is True
+    assert repair["schema_attempt"] == 2
+    repair_prompt = module.schema_retry_prompt(repair)
+    assert "ENSEMBLE DISTINCTNESS REPAIR" in repair_prompt
+    assert "proposal_id is derived by the system" in repair_prompt
+    assert "Changing only direction, risks, formatting" in repair_prompt
+    complete_duplicate(repair, "duplicate-two")
+
+    with pytest.raises(module.StrictAuthorityError, match="schema_retry_exhausted"):
+        module.new_call(
+            checkpoint,
+            slot="proposal:counterfactual",
+            context_binding=context,
+        )
+
+
+def test_terminal_sdk_output_and_projected_role_are_both_enforced(authority):
+    module, _store = authority
+    checkpoint = _checkpoint()
+    call = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding={"slot": "proposal:mechanism", "suffix": "binding"},
+    )
+    module.dispatch_call(
+        call,
+        full_prompt="binding prompt",
+        tools=module.SLOT_TOOLS["proposal:mechanism"],
+        owner="pytest",
+    )
+    result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="binding-session",
+        total_cost_usd=0.01,
+        usage={},
+        result='{"provider":true}',
+    )
+    module._observe_provider_result(
+        result,
+        invocation_id=call["invocation_id"],
+        effect_id=call["effect_id"],
+    )
+    with pytest.raises(module.StrictAuthorityError, match="raw_result_mismatch"):
+        module.complete_provider_call(
+            call,
+            raw_output='{"caller":true}',
+            provider_results=[result],
+        )
+
+    call, role_result, _receipt = _call(
+        module,
+        checkpoint,
+        "proposal:counterfactual",
+        accept=False,
+    )
+    with pytest.raises(module.StrictAuthorityError, match="projection_mismatch"):
+        module.accept_role_result(
+            call,
+            role_result={**role_result, "injected": True},
+            parse_contract=module.SLOT_PARSE_CONTRACTS["proposal:counterfactual"],
+        )
 
 
 def test_terminal_structured_output_is_bound_to_raw_and_projection(authority):

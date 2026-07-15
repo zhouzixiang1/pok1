@@ -27,8 +27,10 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
+import time
 import uuid
 import threading
 from typing import Any, Iterable
@@ -43,6 +45,7 @@ EFFECT_KIND = "first-strict-llm-provider-call-v1"
 ACCEPTED_EVENT = "StrictRoleAccepted"
 REJECTED_EVENT = "StrictRoleRejected"
 RECEIPT_KIND = "first-strict-llm-authority-receipt-v1"
+MAX_SCHEMA_ATTEMPTS_PER_SLOT = 2
 
 MASTER_SLOTS = (
     "proposal:mechanism",
@@ -178,17 +181,6 @@ def _valid_digest(value: Any) -> bool:
 
 def _json_value(value: Any) -> Any:
     return json.loads(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
-
-
-def _normalise_ws(text: str) -> str:
-    """Normalise whitespace for tolerant comparison (proxy environments).
-
-    Strips leading/trailing whitespace, converts ``\\r\\n`` to ``\\n``, and
-    collapses internal whitespace runs to a single space.  This is **only**
-    used as a fallback when byte-exact comparison fails, so genuine content
-    divergence is still detected.
-    """
-    return re.sub(r"\s+", " ", text.replace("\r\n", "\n").replace("\r", "\n")).strip()
 
 
 def authority_run_id(workflow_run_id: str) -> str:
@@ -665,6 +657,251 @@ def _recover_completed_unaccepted_call(
     }
 
 
+_STABLE_CALL_FIELDS = (
+    "slot",
+    "role",
+    "purpose",
+    "generation_binding",
+    "generation_binding_digest",
+    "context_binding",
+    "context_binding_digest",
+    "checkpoint_stage",
+    "checkpoint_revision",
+)
+
+
+def _input_matches_descriptor(
+    input_payload: dict[str, Any], descriptor: dict[str, Any]
+) -> bool:
+    return all(
+        input_payload.get(field) == descriptor.get(field)
+        for field in _STABLE_CALL_FIELDS
+    )
+
+
+def _provider_owner_pid(owner: Any) -> int | None:
+    match = re.match(r"^llm_query:(\d+):", str(owner or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _provider_owner_is_alive(owner: Any) -> bool | None:
+    """Return local owner liveness, or ``None`` for an unrecognised owner."""
+
+    pid = _provider_owner_pid(owner)
+    if pid is None:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _reap_or_block_running_calls(descriptor: dict[str, Any]) -> None:
+    """Fence dead/expired provider owners before issuing another slot call.
+
+    A process crash can leave a strict effect in ``running`` until its lease
+    timestamp.  Starting a second provider for the same immutable slot while
+    the old owner is still alive permits two concurrent terminal results.  A
+    dead or expired owner is therefore failed under its exact lease epoch;
+    every live or unverifiable owner blocks the new dispatch fail-closed.
+    """
+
+    store = _store()
+    if not store.instance(descriptor["run_id"]):
+        return
+    requested_ids = [
+        str(event.payload.get("effect_id") or "")
+        for event in store.events(descriptor["run_id"])
+        if event.event_type == "EffectRequested"
+    ]
+    now = time.time()
+    for effect_id in dict.fromkeys(requested_ids):
+        if not effect_id:
+            continue
+        effect = store.effect(effect_id)
+        if (
+            effect.get("kind") != EFFECT_KIND
+            or effect.get("run_id") != descriptor["run_id"]
+            or effect.get("status") != "running"
+            or not _input_matches_descriptor(
+                effect.get("input_payload") or {}, descriptor
+            )
+        ):
+            continue
+        owner = effect.get("lease_owner")
+        lease_until = effect.get("lease_until")
+        expired = bool(
+            lease_until is not None and float(lease_until) <= now
+        )
+        alive = _provider_owner_is_alive(owner)
+        if not expired and alive is not False:
+            raise StrictAuthorityError(
+                f"strict_authority_provider_call_active:{descriptor['slot']}"
+            )
+        try:
+            store.fail_effect(
+                effect_id,
+                lease_epoch=int(effect.get("lease_epoch") or 0),
+                error=(
+                    "strict provider lease expired"
+                    if expired
+                    else f"strict provider owner exited: {owner}"
+                ),
+                retryable=False,
+                causation_id=(
+                    f"strict-provider-owner-reaped:{effect_id}:"
+                    f"{int(effect.get('lease_epoch') or 0)}"
+                ),
+            )
+        except Exception:
+            # Completion and reaping race through the same SQLite fence.  If
+            # completion won, recovery below will verify/replay it.  Any other
+            # state is not safe to ignore.
+            refreshed = store.effect(effect_id)
+            if refreshed.get("status") != "completed":
+                raise StrictAuthorityError(
+                    f"strict_authority_provider_reap_failed:{descriptor['slot']}"
+                )
+
+
+def _schema_rejections(descriptor: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return verified deterministic projection rejections for this slot."""
+
+    store = _store()
+    if not store.instance(descriptor["run_id"]):
+        return []
+    all_events = store.events(descriptor["run_id"])
+    rows: list[dict[str, Any]] = []
+    for event in all_events:
+        if (
+            event.event_type != REJECTED_EVENT
+            or event.payload.get("slot") != descriptor["slot"]
+        ):
+            continue
+        effect_id = str(event.payload.get("effect_id") or "")
+        effect = store.effect(effect_id)
+        provider = effect.get("result_payload") or {}
+        input_payload = effect.get("input_payload") or {}
+        provider_subject = {
+            key: value
+            for key, value in provider.items()
+            if key != "result_digest"
+        }
+        errors = list(event.payload.get("projection_errors") or ())
+        rejection_kind = str(
+            event.payload.get("rejection_kind") or "schema_projection"
+        )
+        common_valid = bool(
+            effect.get("status") == "completed"
+            and effect.get("kind") == EFFECT_KIND
+            and effect.get("run_id") == descriptor["run_id"]
+            and _input_matches_descriptor(input_payload, descriptor)
+            and event.payload.get("parse_contract")
+            == SLOT_PARSE_CONTRACTS[descriptor["slot"]]
+            and event.payload.get("raw_output_digest")
+            == provider.get("raw_output_digest")
+            and provider.get("result_digest") == content_digest(provider_subject)
+        )
+        if rejection_kind == "schema_projection":
+            valid = bool(
+                common_valid
+                and provider.get("role_projection_valid") is False
+                and list(provider.get("role_projection_errors") or ()) == errors
+            )
+        elif rejection_kind == "proposal_identity_collision":
+            projected = provider.get("projected_role_result")
+            proposal_id = (
+                str(projected.get("proposal_id") or "")
+                if isinstance(projected, dict)
+                else ""
+            )
+            conflicting_slots = sorted({
+                str(accepted.payload.get("slot") or "")
+                for accepted in all_events
+                if accepted.event_type == ACCEPTED_EVENT
+                and accepted.payload.get("slot") in MASTER_SLOTS[:3]
+                and accepted.payload.get("slot") != descriptor["slot"]
+                and isinstance(accepted.payload.get("role_result"), dict)
+                and str(
+                    accepted.payload["role_result"].get("proposal_id") or ""
+                ) == proposal_id
+            })
+            valid = bool(
+                common_valid
+                and provider.get("role_projection_valid") is True
+                and proposal_id
+                and event.payload.get("proposal_id") == proposal_id
+                and event.payload.get("projected_role_result_digest")
+                == provider.get("projected_role_result_digest")
+                and event.payload.get("conflicting_slots") == conflicting_slots
+                and conflicting_slots
+                and errors == [
+                    "strict_authority_proposal_identity_collision"
+                ]
+            )
+        else:
+            valid = False
+        if not valid:
+            raise StrictAuthorityError(
+                f"strict_authority_schema_rejection_invalid:{descriptor['slot']}"
+            )
+        rows.append({
+            "effect_id": effect_id,
+            "invocation_id": str(event.payload.get("invocation_id") or ""),
+            "event_seq": int(event.seq),
+            "event_payload_digest": event.payload_digest,
+            "rejection_kind": rejection_kind,
+            "projection_errors": errors,
+        })
+    return rows
+
+
+def schema_retry_prompt(call: dict[str, Any]) -> str:
+    """Render the system-owned one-shot repair suffix after a durable rejection."""
+
+    if not isinstance(call, dict) or not call.get("schema_retry_required"):
+        return ""
+    prior = call.get("prior_schema_rejection") or {}
+    errors = ", ".join(map(str, prior.get("projection_errors") or ()))
+    parse_contract = SLOT_PARSE_CONTRACTS.get(str(call.get("slot") or ""))
+    if prior.get("rejection_kind") == "proposal_identity_collision":
+        return (
+            "\n\n# SYSTEM-OWNED DETERMINISTIC ENSEMBLE DISTINCTNESS REPAIR\n"
+            "The preceding schema-valid provider result for this exact "
+            "immutable role/context duplicated an already accepted proposal "
+            "identity. This is the single permitted ensemble repair. Keep the "
+            "assigned scout lens, source, evidence, writable scope, and gates "
+            "unchanged. Produce a genuinely different poker mechanism and "
+            "causal claim, demonstrated by substantive differences in its "
+            "structural_change/counterfactual and reachable_chain or falsifier. "
+            "Changing only direction, risks, formatting, thresholds, or wording "
+            "is invalid. proposal_id is derived by the system: do not emit, "
+            "invent, or manipulate it. Do not combine with or copy another "
+            "proposal. Return only one complete object accepted by "
+            f"parse_contract={parse_contract}."
+        )
+    return (
+        "\n\n# SYSTEM-OWNED STRICT SCHEMA REPAIR\n"
+        "The preceding provider result for this exact immutable role/context "
+        "failed deterministic projection. This is the single permitted "
+        "schema-only repair attempt. Keep the assigned lens and evidence "
+        "unchanged; do not synthesize evidence, relax the schema, or copy a "
+        "different proposal. Return only one complete object accepted by "
+        f"parse_contract={parse_contract}."
+        + (f" Prior deterministic errors: {errors}." if errors else "")
+    )
+
+
 def new_call(
     checkpoint: dict[str, Any],
     *,
@@ -714,11 +951,27 @@ def new_call(
         "context_binding": normalized_context,
         "context_binding_digest": content_digest(normalized_context),
     }
+    _reap_or_block_running_calls(descriptor)
     recovered = _recover_accepted_call(descriptor)
     if recovered is not None:
         return recovered
     recovered = _recover_completed_unaccepted_call(descriptor)
-    return recovered if recovered is not None else descriptor
+    if recovered is not None:
+        return recovered
+    rejections = _schema_rejections(descriptor)
+    if len(rejections) >= MAX_SCHEMA_ATTEMPTS_PER_SLOT:
+        raise StrictAuthorityError(
+            f"strict_authority_schema_retry_exhausted:{slot}"
+        )
+    if rejections:
+        descriptor.update({
+            "schema_retry_required": True,
+            "schema_attempt": len(rejections) + 1,
+            "prior_schema_rejection": deepcopy(rejections[-1]),
+        })
+    else:
+        descriptor["schema_attempt"] = 1
+    return descriptor
 
 
 def dispatch_call(
@@ -729,6 +982,7 @@ def dispatch_call(
     owner: str,
     actual_role: str | None = None,
     model: str = "sonnet",
+    lease_seconds: float = 3600.0,
 ) -> dict[str, Any]:
     """Request and claim the provider effect immediately before SDK dispatch."""
 
@@ -810,7 +1064,17 @@ def dispatch_call(
         causation_id=f"strict-call-request:{invocation_id}",
         max_attempts=1,
     )
-    lease = store.claim_effect(effect_id, owner=str(owner), lease_seconds=3600.0)
+    try:
+        bounded_lease_seconds = float(lease_seconds)
+    except (TypeError, ValueError):
+        raise StrictAuthorityError("strict_authority_lease_seconds_invalid")
+    if not 1.0 <= bounded_lease_seconds <= 7200.0:
+        raise StrictAuthorityError("strict_authority_lease_seconds_invalid")
+    lease = store.claim_effect(
+        effect_id,
+        owner=str(owner),
+        lease_seconds=bounded_lease_seconds,
+    )
     call.update({
         "effect_id": effect_id,
         "lease_epoch": int(lease.lease_epoch),
@@ -853,12 +1117,11 @@ def _provider_output_binding(
 ) -> dict[str, Any]:
     """Bind persisted raw text to the terminal SDK result payload.
 
-    A successful ``ResultMessage`` is not enough: its actual result (or its
-    structured result on structured-output transports) must be the bytes that
-    the deterministic role parser consumes.  In proxy-backed environments
-    (e.g. GLM behind cc-switch) the SDK ``.result`` may differ from the raw
-    streaming text by whitespace/formatting alone; normalised comparison
-    preserves the integrity guarantee while tolerating proxy-induced drift.
+    A successful ``ResultMessage`` is not enough: its terminal result (or its
+    structured result on structured-output transports) must be the exact bytes
+    that the deterministic role parser consumes.  Streaming ``TextBlock``
+    aggregation is observability only: tool-loop prose and proxy reassembly can
+    differ from the terminal provider result and therefore cannot be authority.
     """
 
     raw_output = str(raw_output)
@@ -866,34 +1129,10 @@ def _provider_output_binding(
     structured_output = getattr(terminal_result, "structured_output", None)
     if isinstance(result_output, str):
         if raw_output != result_output:
-            # Byte-exact match failed — try whitespace-normalised
-            # comparison for proxy environments where streaming
-            # reassembly and the SDK terminal result differ by
-            # whitespace alone.
-            if _normalise_ws(raw_output) != _normalise_ws(result_output):
-                # Normalised comparison also failed. In proxy-backed
-                # environments (GLM via cc-switch), the SDK terminal
-                # .result can differ from streaming text by more than
-                # whitespace (markdown wrapping, truncation, re-ordering).
-                # The deterministic role parser already validates the raw
-                # streaming text independently, so the binding is a
-                # belt-and-braces audit check rather than the primary
-                # integrity gate. Record the discrepancy as a warning
-                # mode rather than blocking the pipeline.
-                import os
-                if os.environ.get("POK_STRICT_AUTHORITY_TOLERANT", "1") == "1":
-                    mode = "terminal_result_text_proxy_drift"
-                else:
-                    raise StrictAuthorityError(
-                        "strict_authority_provider_raw_result_mismatch"
-                    )
-            else:
-                # Content matches after normalisation; record both digests
-                # so the discrepancy is auditable rather than silently
-                # ignored.
-                mode = "terminal_result_text_normalised"
-        else:
-            mode = "terminal_result_text"
+            raise StrictAuthorityError(
+                "strict_authority_provider_raw_result_mismatch"
+            )
+        mode = "terminal_result_text"
     elif structured_output is not None:
         from llm_query import parse_json_output_with_mode
 
@@ -922,6 +1161,33 @@ def _provider_output_binding(
         ),
     }
     return {**subject, "output_binding_digest": content_digest(subject)}
+
+
+def canonical_provider_output(provider_results: Iterable[Any]) -> str:
+    """Return the exact terminal provider output consumed by strict parsers."""
+
+    results = list(provider_results)
+    if not results or not isinstance(results[-1], ResultMessage):
+        raise StrictAuthorityError("strict_authority_provider_result_missing")
+    terminal = results[-1]
+    if bool(getattr(terminal, "is_error", False)) or str(
+        getattr(terminal, "subtype", "") or ""
+    ) != "success":
+        raise StrictAuthorityError("strict_authority_provider_result_not_success")
+    result_output = getattr(terminal, "result", None)
+    if isinstance(result_output, str):
+        return result_output
+    structured_output = getattr(terminal, "structured_output", None)
+    if structured_output is not None:
+        return json.dumps(
+            _json_value(structured_output),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    raise StrictAuthorityError(
+        "strict_authority_provider_terminal_output_missing"
+    )
 
 
 def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
@@ -1094,6 +1360,7 @@ def complete_provider_call(
                 "effect_id": call["effect_id"],
                 "slot": call["slot"],
                 "invocation_id": call["invocation_id"],
+                "rejection_kind": "schema_projection",
                 "parse_contract": SLOT_PARSE_CONTRACTS[call["slot"]],
                 "raw_output_digest": raw_output_digest,
                 "projection_errors": list(projection_errors),
@@ -1107,6 +1374,7 @@ def complete_provider_call(
         result_payload=result_payload,
         causation_id=f"strict-provider-result:{call['invocation_id']}",
         followup_events=followup_events,
+        require_live_lease=True,
     )
     if completion.get("accepted") is not True:
         raise StrictAuthorityError("strict_authority_provider_completion_fenced")
@@ -1122,6 +1390,122 @@ def complete_provider_call(
         "role_projection_valid": not projection_errors,
     })
     return result_payload
+
+
+def reject_duplicate_proposal(call: dict[str, Any]) -> dict[str, Any]:
+    """Durably reject a valid scout result that duplicates an accepted slot.
+
+    Proposal identity intentionally excludes the scout direction.  Therefore a
+    schema-valid response can still violate the three-distinct-proposal set.
+    The ensemble caller must record that deterministic cross-slot rejection
+    before requesting its one repair; otherwise restart would replay the
+    completed-but-unaccepted duplicate forever.
+    """
+
+    slot = str((call or {}).get("slot") or "")
+    if slot not in MASTER_SLOTS[:3]:
+        raise StrictAuthorityError(
+            "strict_authority_duplicate_rejection_slot_invalid"
+        )
+    store = _store()
+    effect = store.effect(str(call.get("effect_id") or ""))
+    provider = effect.get("result_payload") or {}
+    input_payload = effect.get("input_payload") or {}
+    provider_subject = {
+        key: value for key, value in provider.items() if key != "result_digest"
+    }
+    projected = provider.get("projected_role_result")
+    proposal_id = (
+        str(projected.get("proposal_id") or "")
+        if isinstance(projected, dict)
+        else ""
+    )
+    if (
+        effect.get("status") != "completed"
+        or effect.get("kind") != EFFECT_KIND
+        or effect.get("run_id") != call.get("run_id")
+        or provider.get("role_projection_valid") is not True
+        or not proposal_id
+        or provider.get("result_digest") != content_digest(provider_subject)
+        or provider.get("projected_role_result_digest")
+        != content_digest(_json_value(projected))
+        or any(
+            input_payload.get(field) != call.get(field)
+            or provider.get(field) != call.get(field)
+            for field in (
+                "slot",
+                "role",
+                "purpose",
+                "invocation_id",
+                "generation_binding_digest",
+                "context_binding_digest",
+                "checkpoint_stage",
+                "checkpoint_revision",
+                "prompt_digest",
+                "actual_role",
+                "model",
+                "tools",
+            )
+        )
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_duplicate_rejection_provider_invalid"
+        )
+    events = store.events(str(call.get("run_id") or ""))
+    accepted_collisions = sorted({
+        str(event.payload.get("slot") or "")
+        for event in events
+        if event.event_type == ACCEPTED_EVENT
+        and event.payload.get("slot") in MASTER_SLOTS[:3]
+        and event.payload.get("slot") != slot
+        and isinstance(event.payload.get("role_result"), dict)
+        and str(event.payload["role_result"].get("proposal_id") or "")
+        == proposal_id
+    })
+    if not accepted_collisions:
+        raise StrictAuthorityError(
+            "strict_authority_duplicate_rejection_collision_missing"
+        )
+    if any(
+        event.event_type == ACCEPTED_EVENT
+        and event.payload.get("effect_id") == call.get("effect_id")
+        for event in events
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_duplicate_rejection_already_accepted"
+        )
+    payload = {
+        "effect_id": call["effect_id"],
+        "slot": slot,
+        "invocation_id": call["invocation_id"],
+        "rejection_kind": "proposal_identity_collision",
+        "parse_contract": SLOT_PARSE_CONTRACTS[slot],
+        "raw_output_digest": provider.get("raw_output_digest"),
+        "projection_errors": [
+            "strict_authority_proposal_identity_collision"
+        ],
+        "projected_role_result_digest": provider.get(
+            "projected_role_result_digest"
+        ),
+        "proposal_id": proposal_id,
+        "conflicting_slots": accepted_collisions,
+    }
+    event = store.append_event(
+        call["run_id"],
+        REJECTED_EVENT,
+        payload,
+        causation_id=f"strict-role-duplicate-rejected:{call['invocation_id']}",
+    )
+    return {
+        "schema_version": 1,
+        "run_id": call["run_id"],
+        "slot": slot,
+        "effect_id": call["effect_id"],
+        "event_seq": int(event.seq),
+        "event_payload_digest": event.payload_digest,
+        "proposal_id": proposal_id,
+        "conflicting_slots": accepted_collisions,
+    }
 
 
 def fail_provider_call(call: dict[str, Any], error: BaseException | str) -> None:
@@ -1739,6 +2123,7 @@ __all__ = [
     "accept_role_result",
     "authority_run_id",
     "authority_summary",
+    "canonical_provider_output",
     "complete_provider_call",
     "dispatch_call",
     "fail_provider_call",
@@ -1750,6 +2135,8 @@ __all__ = [
     "new_call",
     "ballot_call_context",
     "proposal_call_context",
+    "reject_duplicate_proposal",
+    "schema_retry_prompt",
     "validate_master_final_projection",
     "validate_receipts",
 ]

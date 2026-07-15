@@ -25,18 +25,12 @@ current-epoch local raw TCP H2H/precommit evidence described below.
 National Web Arena results are also non-strength, local diagnostic evidence.
 They neither prove official compliance nor justify a strategy score change.
 
-Use Bash for diff commands and Read for changed functions. Do not use webReader or web-search.
-This is a read-only gate. Do not create temp files, write redirects, `tee`
-probe output, `touch`, `mkdir`, `rm`, or mutate git state. Redirect only to
-`/dev/null` for stderr/stdout noise. For comparisons, use direct read-only
-commands: `diff -u parent target`, `git diff --no-index -- parent target`,
-`sed -n 'START,ENDp' file`, `rg`, or `python -c` snippets that open files
-read-only and print results.
-For git history, use only bounded commands. Every `git log` command MUST include
-`--max-count=20` (or smaller) and an explicit revision range or path. Never use
-`--all`, `-S`, `-G`, or unbounded `git log`. If a Bash command is denied by the
-runtime cost guard, do not retry the same command; switch to `rg`, `Read`, or a
-bounded command such as `git log --oneline --max-count=20 national-bot-v{parent_version}..HEAD`.
+This is a read-only advisory gate. The system supplies the complete
+content-bound code comparison below. Your
+only tool is Read for cited target functions; Bash, Git, Python subprocesses,
+webReader, and web search are unavailable. Do not attempt to reconstruct Git
+history or another lineage comparison. The supplied frozen evidence envelope
+and exact code section are the complete evidence boundary.
 </instructions>
 
 <context>
@@ -44,7 +38,7 @@ bounded command such as `git log --oneline --max-count=20 national-bot-v{parent_
 {master_plan}
 
 Bot directory: `bots/national_v{version}/`
-Parent version tag: `national-bot-v{parent_version}`
+{critic_lineage_contract}
 
 ## Head-to-Head Context
 Use only the generation-scoped **Stable H2H Snapshot Contract** appended to this prompt when making matchup, rating, RD, game-count, or ranking claims. Never read live `web/core/results/`, another checkout's results, copied results, `glicko_ratings.json`, `bot_stats.json`, `head_to_head.json`, `rating_history.jsonl`, or `match_history.jsonl`. If the frozen snapshot has no row, report the claim as unknown; there is no live fallback.
@@ -69,6 +63,17 @@ You evaluate ONLY these strategic dimensions:
    hypothesis being tested?
 </your_scope>
 
+<official_completion_boundary>
+Normal candidates require `official-full-v5`: five complete 70-hand self-play
+rounds plus three complete 70-hand rounds against an eligible published strict
+opponent. Only v143 while the strict pool is empty may park for the
+operator-only, one-time `bootstrap-first-strict` control
+`first_strict_control_v1`. No LLM role may invoke, acknowledge, auto-fallback
+to, or score that control; v144+ may never use it. Only the operator may run
+`finalize-first-strict` after its certificate validates. Both paths are compliance
+only and have zero strength weight.
+</official_completion_boundary>
+
 <not_your_scope>
 Do NOT evaluate:
 - Code correctness, compilation, or syntax (Reviewer handles this)
@@ -80,7 +85,7 @@ Do NOT evaluate:
 <analysis>
 Before scoring, produce an analysis addressing each checklist item:
 
-- [ ] **Confirmed weakness**: Does the change target a pattern from frozen match analysis or identity-bound native replay memory?
+- [ ] **Confirmed weakness**: Does the change target a pattern from frozen match analysis or identity-bound native replay evidence?
 - [ ] **Opponent modeling**: Does it improve per-street tracking, bet-sizing detection, or exploitative adjustment?
 - [ ] **EV basis**: Are decisions based on equity/pot-odds/fold-equity rather than arbitrary thresholds?
 - [ ] **No regression**: AA/KK/QQ still raises preflop; nut hands still value-bet river?
@@ -96,7 +101,9 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 
 **Strategic Soundness Checklist**
 - **P1 — Pot-odds discipline**: Does the bot compare call cost to pot odds (or at least approximate them) rather than calling arbitrarily?
-- **P2 — EQR grounding**: Are expected-quantity-of-risk (EQR) or equity-based thresholds derived from math, not hand-tuned constants?
+- **P2 — EQR grounding**: Is Equity Realization (EQR)—the share of raw equity
+  the hand can actually realize under position, texture, and future-action
+  pressure—used coherently rather than as an arbitrary hand-tuned constant?
 - **P3 — Range-aware thinking**: Does the change consider opponent ranges (value vs bluff proportion) rather than treating every bet the same?
 - **P4 — Sizing coherence**: Do bet sizes map to hand strength / range polarization? Are sizings consistent with the story they tell?
 - **P5 — MDF compliance**: When facing bets, does the bot defend at least at minimum-defense-frequency (or explicitly exploit over-folding) with a clear reason?
@@ -122,13 +129,11 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 </poker_quality_checklist>
 
 <how_to_evaluate>
-1. List changed files: `diff -rq bots/national_v{parent_version}/ bots/national_v{version}/`
-2. Diff each changed file: `diff bots/national_v{parent_version}/FILE bots/national_v{version}/FILE`
-3. Read the most changed functions for strategic context
-4. Check recent history: `git log --oneline --max-count=20 national-bot-v{parent_version}..HEAD`
-5. Cite concrete evidence: frozen H2H rows, identity-bound native replay evidence
-   supplied in the task, and the real `policy.py` diff. The supplied evidence
-   envelope is complete; do not open unrelated strategy summaries.
+{critic_evaluation_steps}
+
+Cite concrete evidence from frozen H2H rows, identity-bound native replay
+evidence supplied in the task, and the system-supplied code section. The
+supplied evidence envelope is complete; do not open unrelated summaries.
 </how_to_evaluate>
 
 <scoring>

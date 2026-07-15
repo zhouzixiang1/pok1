@@ -124,11 +124,73 @@ def evaluation_cycle_lock(
 
 
 def _read_bytes_locked(path: Path) -> bytes:
-    infra = _infra()
-    if path.is_symlink() or not path.is_file():
-        raise ValueError(f"unsafe or missing evaluation payload: {path.name}")
-    with infra.locked_file(path, "rb") as handle:
-        return handle.read()
+    """Read under the enclosing cycle lock without mutating immutable dirs."""
+
+    import stat
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(
+            f"unsafe or missing evaluation payload: {path.name}"
+        ) from exc
+    try:
+        opened = os.fstat(descriptor)
+        live = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(live.st_mode)
+            or opened.st_nlink != 1
+            or live.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
+        ):
+            raise ValueError(f"unsafe evaluation payload: {path.name}")
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        opened_after = os.fstat(descriptor)
+        live_after = os.lstat(path)
+        if (
+            opened_after.st_nlink != 1
+            or live_after.st_nlink != 1
+            or (
+                opened_after.st_dev,
+                opened_after.st_ino,
+                opened_after.st_size,
+                opened_after.st_mtime_ns,
+                opened_after.st_ctime_ns,
+            )
+            != (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+            or (
+                live_after.st_dev,
+                live_after.st_ino,
+                live_after.st_size,
+                live_after.st_mtime_ns,
+                live_after.st_ctime_ns,
+            )
+            != (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+        ):
+            raise ValueError(f"evaluation payload changed: {path.name}")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def _read_optional_bytes_locked(path: Path) -> bytes:
@@ -292,6 +354,55 @@ def _bundle_semantic_issues(
     return issues
 
 
+def _append_log_semantic_issues(
+    raw_append_logs: dict[str, bytes],
+    *,
+    evaluation_identity_digest: str,
+) -> list[str]:
+    """Reject cross-epoch history before an immutable cycle can bind it."""
+
+    from rating_snapshot import _admitted_70_hand_history_sample
+
+    issues: list[str] = []
+    expected_epoch = "national_tcp_policy_v1"
+    expected_mode = "native_tcp"
+    for role in ("match_history", "rating_history"):
+        payload = raw_append_logs.get(role, b"")
+        for line_number, raw_line in enumerate(payload.splitlines(), start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                row = json.loads(raw_line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                issues.append(f"{role}_row_invalid_json:{line_number}")
+                continue
+            if not isinstance(row, dict):
+                issues.append(f"{role}_row_not_object:{line_number}")
+                continue
+            if row.get("evaluation_epoch") != expected_epoch:
+                issues.append(f"{role}_row_epoch_mismatch:{line_number}")
+            if row.get("execution_mode") != expected_mode:
+                issues.append(f"{role}_row_execution_mode_mismatch:{line_number}")
+            if row.get("evaluation_identity_digest") != evaluation_identity_digest:
+                issues.append(f"{role}_row_identity_mismatch:{line_number}")
+            if (
+                role == "match_history"
+                and row.get("strength_admitted") is True
+                and _admitted_70_hand_history_sample(
+                    row,
+                    expected_evaluation_identity_digest=(
+                        evaluation_identity_digest
+                    ),
+                ) is None
+            ):
+                issues.append(
+                    f"match_history_strength_admission_invalid:{line_number}"
+                )
+            if len(issues) >= 32:
+                return issues
+    return issues
+
+
 def publish_evaluation_cycle_manifest(
     *,
     save_num: int,
@@ -409,6 +520,15 @@ def publish_evaluation_cycle_manifest(
     ):
         raise ValueError("explicit evaluation identity does not match current manifest")
     identity = current_identity
+    append_semantic_issues = _append_log_semantic_issues(
+        raw_append_logs,
+        evaluation_identity_digest=identity,
+    )
+    if append_semantic_issues:
+        raise ValueError(
+            "evaluation append-log semantic mismatch: "
+            + ", ".join(append_semantic_issues)
+        )
     descriptor = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
         "save_num": int(save_num),

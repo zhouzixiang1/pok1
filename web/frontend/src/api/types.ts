@@ -7,10 +7,10 @@ export interface BotRating {
   conservative_rating: number;
   confidence: string;
   last_period: string;
-  win_rate?: number;
+  win_rate?: number | null;
   games?: number;
-  h2h_avg_wr?: number;
-  h2h_weighted_wr?: number;
+  h2h_avg_wr?: number | null;
+  h2h_weighted_wr?: number | null;
   h2h_games?: number;
   h2h_opponents?: number;
   h2h_opponents_total?: number;
@@ -19,9 +19,9 @@ export interface BotRating {
   leaderboard_score?: number;
   selection_score?: number;
   selection_penalty?: number;
-  primary_70_hand_match_score?: number;
-  secondary_net_chips_total?: number;
-  secondary_net_chips_mean?: number;
+  primary_70_hand_match_score?: number | null;
+  secondary_net_chips_total?: number | null;
+  secondary_net_chips_mean?: number | null;
   strength_sample_count?: number;
   strength_order_contract?: string[];
   rank_basis?: string;
@@ -251,6 +251,10 @@ export interface OfficialCertification {
   epoch_initialized?: boolean;
   workflow_run_id?: string | null;
   candidate_version?: number | null;
+  certification_profile?: string | null;
+  opponent_authority?: "system_control" | "strict_published_pool" | string | null;
+  strength_evidence_weight?: number;
+  strategy_evidence_weight?: number;
 }
 
 export interface OfficialCertificationProgressRound {
@@ -290,6 +294,26 @@ export interface OfficialCertificationJob {
     active_round: OfficialCertificationProgressRound | null;
     rounds: OfficialCertificationProgressRound[];
   };
+  /** Exact terminal/running status projection; never infer it from job.state. */
+  status?: Record<string, unknown> | null;
+  official_status?: OfficialCertificationState | null;
+  compliance_verdict?: {
+    ok: boolean;
+    classification: string;
+    blocking: boolean;
+    inconclusive: boolean;
+  } | null;
+  issues?: string[];
+  certificate_digest?: string | null;
+  certification_profile?: string | null;
+  opponent_authority?: "system_control" | "strict_published_pool" | string | null;
+  formal_profile?: {
+    self_play_rounds: number;
+    opponent_rounds: number;
+    target_hands: number;
+  } | null;
+  strength_evidence_weight?: number;
+  strategy_evidence_weight?: number;
 }
 
 export interface OfficialCertificationJobsProjection {
@@ -304,6 +328,7 @@ export interface OfficialCertificationJobsProjection {
   pending: number;
   running: number;
   jobs: OfficialCertificationJob[];
+  operator_transition?: import("./control").OperatorTransition | null;
 }
 
 export interface BotSummary {
@@ -313,10 +338,10 @@ export interface BotSummary {
   total_lines: number;
   files: string[];
   rating: { r: number; rd: number; conservative: number } | null;
-  win_rate?: number;
+  win_rate?: number | null;
   games?: number;
-  h2h_avg_wr?: number;
-  h2h_weighted_wr?: number;
+  h2h_avg_wr?: number | null;
+  h2h_weighted_wr?: number | null;
   h2h_games?: number;
   h2h_opponents?: number;
   h2h_opponents_total?: number;
@@ -325,9 +350,9 @@ export interface BotSummary {
   leaderboard_score?: number;
   selection_score?: number;
   selection_penalty?: number;
-  primary_70_hand_match_score?: number;
-  secondary_net_chips_total?: number;
-  secondary_net_chips_mean?: number;
+  primary_70_hand_match_score?: number | null;
+  secondary_net_chips_total?: number | null;
+  secondary_net_chips_mean?: number | null;
   strength_sample_count?: number;
   strength_order_contract?: string[];
   rank_basis?: string;
@@ -360,6 +385,36 @@ export interface DirectionAudit {
   resolved: boolean;
 }
 
+export interface MasterPlanTask {
+  worker_id?: string;
+  role?: string;
+  target_files?: string[];
+  difficulty?: string;
+  [key: string]: unknown;
+}
+
+export interface MasterPlanProjection {
+  tasks: MasterPlanTask[];
+  [key: string]: unknown;
+}
+
+export interface PipelineGateResult {
+  passed?: boolean;
+  all_passed?: boolean;
+  approved?: boolean;
+  schema_valid?: boolean;
+  llm_invoked?: boolean;
+  critic_llm_executed?: boolean;
+  llm_failed?: boolean;
+  parse_failed?: boolean;
+  score?: number;
+  quality_score?: number;
+  feedback?: string;
+  strategic_assessment?: string;
+  decision_pass_rate?: number;
+  [key: string]: unknown;
+}
+
 export interface PipelineCheckpoint {
   checkpoint_schema_version?: number;
   evaluation_epoch?: "national_tcp_policy_v1";
@@ -368,10 +423,10 @@ export interface PipelineCheckpoint {
   next_v?: number;
   source_v?: number | null;
   stage?: string;
-  master_plan?: unknown;
+  master_plan?: MasterPlanProjection | null;
   reviewer_feedback?: string;
   generation_attempt?: number;
-  gate_results?: Record<string, unknown>;
+  gate_results?: Record<string, PipelineGateResult>;
   direction_audit?: DirectionAudit;
   worker_failure_count?: number;
   parent2_v?: number | null;
@@ -409,9 +464,13 @@ export interface PromptInfo {
 
 // Orchestrator session
 export interface OrchestratorSession {
-  session_id: string | null;
-  active: boolean;
+  session_id: null;
+  active: false;
   blocked?: boolean;
+  resume_supported: false;
+  provider_history_persisted: false;
+  recovery_authority: "validated_checkpoint_only";
+  history_policy: "fresh_provider_session_from_checkpoint_projection_only";
   epoch_state?: string;
   operator_action?: string | null;
 }

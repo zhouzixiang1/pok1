@@ -16,14 +16,9 @@ import asyncio
 import threading
 import uuid
 import hashlib
+import stat
 
 
-# Phase 4 feature flag (default OFF). PSRO = Pipeline Policy Response Operator
-# MVP: when enabled, a MixtureBot (bots/mixture_main/) meta-opponent is injected
-# as a telemetry-only opponent in run_precommit_eval. OFF = byte-identical
-# precommit path (no mixture_main opponent), guaranteeing zero regression for
-# the engine/2-player contract. Toggle via env var POK_PSRO_ENABLED=1.
-PSRO_ENABLED = os.environ.get("POK_PSRO_ENABLED", "0") == "1"
 import fcntl
 import time
 from contextlib import contextmanager
@@ -53,6 +48,7 @@ from bot_namespace import (
     format_version,
     parse_bot_version,
     parse_tag_version,
+    resolve_version_namespace_authority,
     resolve_national_bot_spec,
     strip_bot_path_prefix,
     version_sort_key,
@@ -78,10 +74,61 @@ PIPELINE_STATE_FILE = RESULTS_DIR / "pipeline_state.json"
 REPLAY_DIR = RESULTS_DIR / "match_replay"
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 ARCHIVE_DIR = RESULTS_DIR / "archive"
+POST_PUBLICATION_HANDOFF_DIR = RESULTS_DIR / "post_publication_handoffs"
 LLM_COSTS_FILE = RESULTS_DIR / "llm_costs.jsonl"
 RATING_HISTORY_FILE = RESULTS_DIR / "rating_history.jsonl"
 ABANDONED_VERSIONS_FILE = RESULTS_DIR / "abandoned_versions.jsonl"
 REAPED_BOTS_FILE = RESULTS_DIR / "reaped_bots.jsonl"
+
+POST_PUBLICATION_HANDOFF_SCHEMA_VERSION = 2
+POST_PUBLICATION_HANDOFF_KIND = "national-policy-post-publication-handoff"
+POST_PUBLICATION_HANDOFF_REQUIRED_STEPS = (
+    "stability_observation",
+    "reap_signal",
+    "priority_eval",
+    "archive_rotation",
+    "log_cleanup",
+    "pool_reap",
+    "cycle_annotation",
+    "housekeeping",
+)
+POST_PUBLICATION_HANDOFF_STALE_SEC = 15 * 60
+
+ABANDONED_VERSION_RECEIPT_SCHEMA_VERSION = 1
+ABANDONED_VERSION_RECEIPT_KIND = "national-policy-abandon-receipt"
+_ABANDONED_VERSION_RECEIPT_KEYS = frozenset({
+    "schema_version",
+    "kind",
+    "evaluation_epoch",
+    "version",
+    "source_v",
+    "checkpoint_stage",
+    "workflow_run_id",
+    "checkpoint_revision",
+    "checkpoint_envelope",
+    "reason",
+    "timestamp",
+    "infra_failure",
+    "previous_receipt_digest",
+    "receipt_digest",
+})
+_ABANDONED_CHECKPOINT_ENVELOPE_KEYS = frozenset({
+    "checkpoint_schema_version",
+    "evaluation_epoch",
+    "next_v",
+    "source_v",
+    "parent2_v",
+    "generation_mode",
+    "epoch_binding",
+    "audit_context",
+})
+_ABANDONED_VERSION_LEDGER_MAX_BYTES = 16 * 1024 * 1024
+_ABANDONED_VERSION_REASON_MAX_BYTES = 4 * 1024
+_ABANDONED_VERSION_INFRA_FAILURE_MAX_BYTES = 64 * 1024
+
+
+class AbandonedVersionLedgerError(RuntimeError):
+    """The current-epoch allocation receipt ledger is not trustworthy."""
 
 MAX_ACTIVE_BOTS = 30
 
@@ -199,6 +246,7 @@ def _get_worker_semaphore() -> "asyncio.Semaphore":
 
 _FILE_THREAD_LOCKS: dict[str, threading.RLock] = {}
 _FILE_THREAD_LOCKS_GUARD = threading.Lock()
+_STATE_SIDECAR_LOCAL = threading.local()
 
 
 def _thread_lock_for(path) -> threading.RLock:
@@ -248,15 +296,178 @@ def _locked_file_os(path, mode='r', lock_type=None, encoding=None):
 
 @contextmanager
 def locked_file(path, mode='r', lock_type=None, encoding=None):
-    """Serialize same-process threads by path and processes with ``flock``."""
-    with _thread_lock_for(path):
-        with _locked_file_os(
-            path,
-            mode=mode,
-            lock_type=lock_type,
-            encoding=encoding,
-        ) as handle:
-            yield handle
+    """Open data only after acquiring its stable sidecar lock.
+
+    Locking the replaceable data inode is unsafe: a waiter may open the old
+    inode before an atomic writer replaces the path, then later acquire a lock
+    that no longer serializes the live file.  Every reader, writer, appender and
+    archival scanner therefore locks ``<path>.lock`` first and opens the data
+    path only inside that critical section.
+    """
+
+    path = Path(path)
+    if lock_type is None:
+        lock_type = (
+            fcntl.LOCK_EX
+            if any(flag in mode for flag in ("w", "a", "x", "+"))
+            else fcntl.LOCK_SH
+        )
+    normalized = mode.replace("b", "").replace("t", "")
+    flags_by_mode = {
+        "r": os.O_RDONLY,
+        "r+": os.O_RDWR,
+        # Truncating modes are published from a private inode below.  Never
+        # put O_TRUNC on an open of the live path: a path swapped to a
+        # hardlink after lstat() would otherwise damage the linked victim
+        # before descriptor/path authenticity could be checked.
+        "w": os.O_WRONLY | os.O_CREAT,
+        "w+": os.O_RDWR | os.O_CREAT,
+        "a": os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+        "a+": os.O_RDWR | os.O_CREAT | os.O_APPEND,
+        "x": os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        "x+": os.O_RDWR | os.O_CREAT | os.O_EXCL,
+    }
+    if normalized not in flags_by_mode:
+        raise ValueError(f"unsupported locked_file mode: {mode}")
+    creating = any(flag in normalized for flag in ("w", "a", "x"))
+    if creating:
+        _assert_safe_state_parent(path)
+    with _locked_state_sidecar(path, lock_type=lock_type):
+        existing = None
+        if os.path.lexists(path):
+            existing = os.lstat(path)
+            if (
+                not stat.S_ISREG(existing.st_mode)
+                or stat.S_ISLNK(existing.st_mode)
+                or existing.st_nlink != 1
+            ):
+                raise OSError("locked data path must be a single-link regular file")
+        if normalized in {"w", "w+"}:
+            temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            temp_flags = flags_by_mode[normalized] | os.O_EXCL
+            temp_flags |= getattr(os, "O_CLOEXEC", 0)
+            temp_flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = None
+            temporary_identity = None
+            try:
+                descriptor = os.open(temp, temp_flags, 0o600)
+                binary = "b" in mode
+                open_kwargs = (
+                    {} if binary or encoding is None else {"encoding": encoding}
+                )
+                with os.fdopen(descriptor, mode, **open_kwargs) as handle:
+                    descriptor = None
+                    opened = _assert_open_regular_path(
+                        temp,
+                        handle,
+                        label="locked state temporary data",
+                    )
+                    try:
+                        yield handle
+                    finally:
+                        finished = _assert_open_regular_path(
+                            temp,
+                            handle,
+                            label="locked state temporary data",
+                        )
+                        if (
+                            finished.st_dev,
+                            finished.st_ino,
+                        ) != (
+                            opened.st_dev,
+                            opened.st_ino,
+                        ):
+                            raise OSError(
+                                "locked state temporary data inode changed"
+                            )
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                    temporary_identity = os.fstat(handle.fileno())
+
+                # Fail closed if a writer that ignored the sidecar changed the
+                # destination while the private inode was being populated.
+                # Even a last-moment race after this proof is harmless to an
+                # external hardlink victim: os.replace() only removes the
+                # destination directory entry and never writes its inode.
+                if existing is None:
+                    if os.path.lexists(path):
+                        raise OSError(
+                            "locked state data target appeared during atomic write"
+                        )
+                else:
+                    try:
+                        current = os.lstat(path)
+                    except OSError as exc:
+                        raise OSError(
+                            "locked state data target changed during atomic write"
+                        ) from exc
+                    if (
+                        not stat.S_ISREG(current.st_mode)
+                        or stat.S_ISLNK(current.st_mode)
+                        or current.st_nlink != 1
+                        or (current.st_dev, current.st_ino)
+                        != (existing.st_dev, existing.st_ino)
+                    ):
+                        raise OSError(
+                            "locked state data target changed during atomic write"
+                        )
+
+                os.replace(temp, path)
+                published = os.lstat(path)
+                if (
+                    temporary_identity is None
+                    or not stat.S_ISREG(published.st_mode)
+                    or stat.S_ISLNK(published.st_mode)
+                    or published.st_nlink != 1
+                    or (published.st_dev, published.st_ino)
+                    != (temporary_identity.st_dev, temporary_identity.st_ino)
+                    or published.st_size != temporary_identity.st_size
+                ):
+                    raise OSError(
+                        "locked state publication did not retain the temporary inode"
+                    )
+                _fsync_directory(path.parent)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                try:
+                    temp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return
+        flags = flags_by_mode[normalized] | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        binary = "b" in mode
+        open_kwargs = {} if binary or encoding is None else {"encoding": encoding}
+        with os.fdopen(descriptor, mode, **open_kwargs) as handle:
+            opened = _assert_open_regular_path(
+                path,
+                handle,
+                label="locked state data",
+            )
+            if opened.st_nlink != 1:
+                raise OSError("locked state data must have one link")
+            try:
+                yield handle
+            finally:
+                finished = _assert_open_regular_path(
+                    path,
+                    handle,
+                    label="locked state data",
+                )
+                if finished.st_nlink != 1:
+                    raise OSError("locked state data link count changed")
+                if lock_type == fcntl.LOCK_SH and (
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                ) != (
+                    finished.st_size,
+                    finished.st_mtime_ns,
+                    finished.st_ctime_ns,
+                ):
+                    raise OSError("locked state data changed during shared read")
 
 
 def _fsync_directory(path):
@@ -277,6 +488,296 @@ def _fsync_directory(path):
         os.close(descriptor)
 
 
+def _fsync_regular_state_file_and_parent(path):
+    """Re-prove a published state inode and its directory durability."""
+
+    path = Path(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        live = os.lstat(path)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(live.st_mode)
+            or opened.st_nlink != 1
+            or live.st_nlink != 1
+            or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
+        ):
+            raise OSError("state durability target is unsafe")
+        os.fsync(descriptor)
+        live_after = os.lstat(path)
+        if (
+            live_after.st_nlink != 1
+            or (live_after.st_dev, live_after.st_ino)
+            != (opened.st_dev, opened.st_ino)
+        ):
+            raise OSError("state durability target changed")
+    finally:
+        os.close(descriptor)
+    _fsync_directory(path.parent)
+
+
+def _sidecar_lock_path(path):
+    path = Path(path)
+    return path.with_suffix(path.suffix + ".lock")
+
+
+def _assert_safe_state_parent(path):
+    """Reject state publication through a symlink/non-directory parent."""
+
+    parent = Path(path).parent
+    if not os.path.lexists(parent):
+        parent.mkdir(parents=True, exist_ok=True)
+    try:
+        parent_stat = os.lstat(parent)
+    except OSError as exc:
+        raise OSError(
+            f"state parent metadata unavailable: {type(exc).__name__}"
+        ) from exc
+    if not stat.S_ISDIR(parent_stat.st_mode) or stat.S_ISLNK(parent_stat.st_mode):
+        raise OSError("state parent must be a non-symlink directory")
+
+
+def _preflight_state_sidecar(path):
+    _assert_safe_state_parent(path)
+    lock_path = _sidecar_lock_path(path)
+    if os.path.lexists(lock_path):
+        metadata = os.lstat(lock_path)
+        if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+            raise OSError("state sidecar lock must be a non-symlink regular file")
+
+
+def _assert_open_regular_path(path, handle, *, label):
+    """Bind an opened descriptor to the still-live regular-file path."""
+
+    try:
+        path_stat = os.lstat(path)
+        file_stat = os.fstat(handle.fileno())
+    except OSError as exc:
+        raise OSError(
+            f"{label} metadata unavailable: {type(exc).__name__}"
+        ) from exc
+    if (
+        not stat.S_ISREG(path_stat.st_mode)
+        or not stat.S_ISREG(file_stat.st_mode)
+        or path_stat.st_nlink != 1
+        or file_stat.st_nlink != 1
+        or path_stat.st_dev != file_stat.st_dev
+        or path_stat.st_ino != file_stat.st_ino
+    ):
+        raise OSError(f"{label} path is not the opened safe regular file")
+    return file_stat
+
+
+@contextmanager
+def _locked_state_sidecar(path, *, lock_type):
+    """Lock a stable, no-follow sidecar inode shared by readers and writers."""
+
+    path = Path(path)
+    lock_path = _sidecar_lock_path(path)
+    _preflight_state_sidecar(path)
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    with _thread_lock_for(lock_path):
+        held_map = getattr(_STATE_SIDECAR_LOCAL, "held", None)
+        if held_map is None:
+            held_map = {}
+            _STATE_SIDECAR_LOCAL.held = held_map
+        lock_key = str(lock_path.resolve())
+        held = held_map.get(lock_key)
+        if held is not None:
+            # Re-entering an exclusive lock as EX or SH is safe and must not
+            # open/flock a second descriptor: several publication transactions
+            # deliberately call checkpoint readers while owning the checkpoint
+            # CAS lock.  A SH -> EX upgrade is rejected instead of deadlocking
+            # or silently weakening the outer reader lease.
+            if held["lock_type"] != fcntl.LOCK_EX and lock_type == fcntl.LOCK_EX:
+                raise OSError("state sidecar shared lock cannot be upgraded")
+            held["depth"] += 1
+            integrity_error = None
+            try:
+                _assert_open_regular_path(
+                    lock_path,
+                    held["handle"],
+                    label="state sidecar lock",
+                )
+                yield held["handle"]
+            finally:
+                try:
+                    _assert_open_regular_path(
+                        lock_path,
+                        held["handle"],
+                        label="state sidecar lock",
+                    )
+                except BaseException as exc:
+                    integrity_error = exc
+                held["depth"] -= 1
+                if integrity_error is not None:
+                    raise integrity_error
+            return
+        descriptor = os.open(lock_path, flags, 0o600)
+        with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle, lock_type)
+            integrity_error = None
+            try:
+                _assert_open_regular_path(
+                    lock_path,
+                    handle,
+                    label="state sidecar lock",
+                )
+                held_map[lock_key] = {
+                    "handle": handle,
+                    "lock_type": lock_type,
+                    "depth": 1,
+                }
+                yield handle
+            finally:
+                # Run the exit proof even when the protected body raises.  A
+                # body failure must not hide that the lock inode was swapped
+                # while the supposedly serialized effect was in flight.
+                try:
+                    _assert_open_regular_path(
+                        lock_path,
+                        handle,
+                        label="state sidecar lock",
+                    )
+                except BaseException as exc:
+                    integrity_error = exc
+                held_map.pop(lock_key, None)
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                if integrity_error is not None:
+                    raise integrity_error
+
+
+@contextmanager
+def bot_publication_lock(*, results_dir=None):
+    """Lock the one stable no-follow publication/cleanup linearization inode."""
+
+    root = Path(results_dir) if results_dir is not None else Path(RESULTS_DIR)
+    lock_path = root / ".bot_publication.lock"
+    _assert_safe_state_parent(lock_path)
+    if os.path.lexists(lock_path):
+        metadata = os.lstat(lock_path)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or stat.S_ISLNK(metadata.st_mode)
+            or metadata.st_nlink != 1
+        ):
+            raise OSError(
+                "bot publication lock must be a single-link regular file"
+            )
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    with _thread_lock_for(lock_path):
+        descriptor = os.open(lock_path, flags, 0o600)
+        with os.fdopen(descriptor, "a+", encoding="utf-8") as handle:
+            opened = os.fstat(handle.fileno())
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            integrity_error = None
+            try:
+                live = os.lstat(lock_path)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or not stat.S_ISREG(live.st_mode)
+                    or opened.st_nlink != 1
+                    or live.st_nlink != 1
+                    or (opened.st_dev, opened.st_ino)
+                    != (live.st_dev, live.st_ino)
+                ):
+                    raise OSError("bot publication lock path is unsafe")
+                yield handle
+            finally:
+                try:
+                    live_after = os.lstat(lock_path)
+                    opened_after = os.fstat(handle.fileno())
+                    if (
+                        opened_after.st_nlink != 1
+                        or live_after.st_nlink != 1
+                        or (opened_after.st_dev, opened_after.st_ino)
+                        != (opened.st_dev, opened.st_ino)
+                        or (live_after.st_dev, live_after.st_ino)
+                        != (opened.st_dev, opened.st_ino)
+                    ):
+                        raise OSError("bot publication lock inode changed")
+                except BaseException as exc:
+                    integrity_error = exc
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                if integrity_error is not None:
+                    raise integrity_error
+
+
+def _read_regular_state_text(path, *, allow_missing):
+    """Read one state file without following links and revalidate after read."""
+
+    path = Path(path)
+    if not os.path.lexists(path):
+        if allow_missing:
+            return ""
+        raise FileNotFoundError(path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+        _assert_open_regular_path(path, handle, label="state data")
+        raw = handle.read()
+        _assert_open_regular_path(path, handle, label="state data")
+    return raw
+
+
+def _atomic_publish_state_text(path, raw):
+    """Publish complete UTF-8 state bytes atomically; caller owns sidecar EX."""
+
+    path = Path(path)
+    _assert_safe_state_parent(path)
+    if os.path.lexists(path):
+        path_stat = os.lstat(path)
+        if (
+            not stat.S_ISREG(path_stat.st_mode)
+            or stat.S_ISLNK(path_stat.st_mode)
+            or path_stat.st_nlink != 1
+        ):
+            raise OSError(
+                "state data target must be a single-link non-symlink regular file"
+            )
+    temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = None
+    temporary_identity = None
+    try:
+        descriptor = os.open(temp, flags, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = None
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_identity = os.fstat(handle.fileno())
+        os.replace(temp, path)
+        published_stat = os.lstat(path)
+        if (
+            temporary_identity is None
+            or not stat.S_ISREG(published_stat.st_mode)
+            or stat.S_ISLNK(published_stat.st_mode)
+            or published_stat.st_nlink != 1
+            or (published_stat.st_dev, published_stat.st_ino)
+            != (temporary_identity.st_dev, temporary_identity.st_ino)
+            or published_stat.st_size != temporary_identity.st_size
+        ):
+            raise OSError(
+                "atomic state publication did not retain the temporary inode"
+            )
+        _fsync_directory(path.parent)
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def read_locked_json(path, default=None):
     """Read a JSON file with shared lock. Returns default on any error."""
     try:
@@ -286,29 +787,194 @@ def read_locked_json(path, default=None):
         return default
 
 
-def write_locked_json(path, data, indent=2):
-    """Write a JSON file atomically: write to tmp, fsync, replace under exclusive lock."""
+def read_and_maybe_unlink_locked_text(path, should_unlink):
+    """Read and conditionally consume one state inode under its EX sidecar.
+
+    The predicate runs while the stable sidecar is exclusively held.  When it
+    returns true, this function re-proves that the live path is still the exact
+    no-follow, single-link inode that was read before unlinking it and syncing
+    the containing directory.  A cooperating atomic writer therefore runs
+    wholly before the read or wholly after the durable unlink; a later write is
+    never mistaken for the inode selected for consumption.
+
+    Return ``(raw_text, consumed)``.  A missing path is not an error and returns
+    ``(None, False)``.  Predicate, authenticity, unlink, and durability errors
+    are fail-closed and propagate to the caller.
+    """
+
+    if not callable(should_unlink):
+        raise TypeError("state consumption predicate must be callable")
     path = Path(path)
-    os.makedirs(str(path.parent), exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    # Lock the target path without truncating it. Using mode="w" here would
-    # empty the live JSON before the tmp+replace step; if the daemon is killed
-    # between truncate and replace, readers see a permanent 0-byte file.
-    with locked_file(path, "a+", encoding="utf-8", lock_type=fcntl.LOCK_EX) as _lock_guard:
-        # Write to temp file, then atomically replace
-        with open(str(tmp), "w", encoding="utf-8") as f:
-            f.write(json.dumps(data, indent=indent, ensure_ascii=False))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp), str(path))
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(path, flags)
+        except FileNotFoundError:
+            return None, False
+
+        with os.fdopen(descriptor, "r", encoding="utf-8") as handle:
+            opened = _assert_open_regular_path(
+                path,
+                handle,
+                label="consumable state data",
+            )
+            raw = handle.read()
+            finished = _assert_open_regular_path(
+                path,
+                handle,
+                label="consumable state data",
+            )
+            if (
+                (finished.st_dev, finished.st_ino)
+                != (opened.st_dev, opened.st_ino)
+                or (
+                    finished.st_size,
+                    finished.st_mtime_ns,
+                    finished.st_ctime_ns,
+                )
+                != (
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                )
+            ):
+                raise OSError("consumable state data changed during read")
+
+            consume = bool(should_unlink(raw))
+            if not consume:
+                return raw, False
+
+            # The decision and this final path/inode proof share one EX
+            # sidecar lease.  In particular, never perform a path-only unlink
+            # after releasing the lock: an atomic writer may have installed a
+            # new inode by then.
+            current = _assert_open_regular_path(
+                path,
+                handle,
+                label="consumable state data",
+            )
+            if (
+                (current.st_dev, current.st_ino)
+                != (opened.st_dev, opened.st_ino)
+                or (
+                    current.st_size,
+                    current.st_mtime_ns,
+                    current.st_ctime_ns,
+                )
+                != (
+                    opened.st_size,
+                    opened.st_mtime_ns,
+                    opened.st_ctime_ns,
+                )
+            ):
+                raise OSError("consumable state data changed before unlink")
+
+            os.unlink(path)
+            post_unlink_error = None
+            try:
+                retired = os.fstat(handle.fileno())
+                if (
+                    not stat.S_ISREG(retired.st_mode)
+                    or (retired.st_dev, retired.st_ino)
+                    != (opened.st_dev, opened.st_ino)
+                    or retired.st_nlink != 0
+                ):
+                    raise OSError("consumed state inode retirement is unsafe")
+
+                # An uncooperative writer may create a later inode without the
+                # sidecar.  Do not remove it: only prove that it is distinct
+                # from the inode selected above.  Cooperating writers cannot
+                # reach this point until the sidecar is released.
+                if os.path.lexists(path):
+                    replacement = os.lstat(path)
+                    if (
+                        not stat.S_ISREG(replacement.st_mode)
+                        or stat.S_ISLNK(replacement.st_mode)
+                        or replacement.st_nlink != 1
+                        or (replacement.st_dev, replacement.st_ino)
+                        == (opened.st_dev, opened.st_ino)
+                    ):
+                        raise OSError(
+                            "replacement state path after consumption is unsafe"
+                        )
+            except BaseException as exc:
+                post_unlink_error = exc
+
+            try:
+                _fsync_directory(path.parent)
+            except BaseException as sync_exc:
+                if post_unlink_error is not None:
+                    raise post_unlink_error from sync_exc
+                raise
+            if post_unlink_error is not None:
+                raise post_unlink_error
+            return raw, True
+
+
+def write_locked_json(path, data, indent=2):
+    """Atomically and durably publish JSON under the stable sidecar lock."""
+    path = Path(path)
+    raw = json.dumps(
+        data,
+        indent=indent,
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        _atomic_publish_state_text(path, raw)
 
 
 def append_locked_jsonl(path, entry):
-    """Append a JSON entry as a single line to a JSONL file with exclusive lock."""
-    with locked_file(path, "a", encoding="utf-8", lock_type=fcntl.LOCK_EX) as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        f.flush()
-        os.fsync(f.fileno())
+    """Durably append one JSON row under the same stable sidecar lock."""
+    path = Path(path)
+    raw = json.dumps(entry, ensure_ascii=False, allow_nan=False) + "\n"
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        existed = os.path.lexists(path)
+        if existed:
+            metadata = os.lstat(path)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or stat.S_ISLNK(metadata.st_mode)
+                or metadata.st_nlink != 1
+            ):
+                raise OSError("JSONL append target is unsafe")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags, 0o600)
+        try:
+            opened = os.fstat(descriptor)
+            live = os.lstat(path)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or live.st_nlink != 1
+                or (opened.st_dev, opened.st_ino) != (live.st_dev, live.st_ino)
+            ):
+                raise OSError("JSONL append target identity changed")
+            encoded = raw.encode("utf-8")
+            offset = 0
+            while offset < len(encoded):
+                written = os.write(descriptor, encoded[offset:])
+                if written <= 0:
+                    raise OSError("JSONL append made no progress")
+                offset += written
+            os.fsync(descriptor)
+            opened_after = os.fstat(descriptor)
+            live_after = os.lstat(path)
+            if (
+                opened_after.st_nlink != 1
+                or live_after.st_nlink != 1
+                or (opened_after.st_dev, opened_after.st_ino)
+                != (opened.st_dev, opened.st_ino)
+                or (live_after.st_dev, live_after.st_ino)
+                != (opened.st_dev, opened.st_ino)
+            ):
+                raise OSError("JSONL append target changed during write")
+        finally:
+            os.close(descriptor)
+        if not existed:
+            _fsync_directory(path.parent)
 
 
 def update_h2h(h2h, bot_a, bot_b, wins_a, wins_b, draws=0):
@@ -472,6 +1138,185 @@ def _stage_refreshes_repo_baseline(old_stage, new_stage, gate_results=None) -> b
     return bool(required_gate and required_gate in (gate_results or {}))
 
 
+def _publication_checkpoint_reconciliation_allowed(checkpoint, authority):
+    """Recognize only the fully proven intent-bound publication window.
+
+    A missing ``.completed`` is allowed solely because creating that sentinel is
+    itself one of the remaining idempotent recovery effects.  If it exists, its
+    publication id must match exactly.  Lightweight tags, one-tag-only state,
+    wrong-tree refs, invalid certificates, or a mismatched sentinel all fail.
+    """
+
+    if not isinstance(checkpoint, dict) or checkpoint.get("stage") != "publishing":
+        return False
+    target = checkpoint.get("next_v")
+    if (
+        type(target) is not int
+        or int(authority.get("published_high_water") or 0) != target
+    ):
+        return False
+    intent = checkpoint.get("publication_intent")
+    try:
+        from publication_transaction import publication_intent_structure_errors
+
+        if publication_intent_structure_errors(intent):
+            return False
+    except Exception:
+        return False
+    if (
+        intent.get("version") != target
+        or intent.get("workflow_run_id") != checkpoint.get("workflow_run_id")
+        or intent.get("completion_tag") != bot_tag(target)
+    ):
+        return False
+    try:
+        commit_oid = _git(
+            "rev-parse",
+            f"refs/tags/{intent['completion_tag']}^{{commit}}",
+            check=False,
+        ).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_oid):
+            return False
+        _validate_local_publication_refs(intent, commit_oid)
+        _validate_existing_publication_commit(intent, commit_oid)
+
+        from national_runtime_authority import build_pending_local_publication_proof
+
+        bot_dir = get_bot_dir(target)
+        proof = build_pending_local_publication_proof(bot_dir)
+        if (
+            proof.get("version") != target
+            or proof.get("artifact_hash") != intent.get("candidate_artifact_hash")
+            or proof.get("commit_oid") != commit_oid
+            or proof.get("tag") != intent.get("completion_tag")
+        ):
+            return False
+        spec = resolve_national_bot_spec(
+            bot_dir,
+            role=ROLE_PARENT_SOURCE,
+            repo_root=PROJECT_ROOT,
+        )
+        if (
+            not spec.eligible
+            or spec.certificate_digest
+            != intent.get("official_certificate_digest")
+        ):
+            return False
+        sentinel = bot_dir / ".completed"
+        if os.path.lexists(sentinel):
+            metadata = os.lstat(sentinel)
+            if not stat.S_ISREG(metadata.st_mode) or sentinel.is_symlink():
+                return False
+            if sentinel.read_text(encoding="utf-8") != (
+                f"publication_id={intent.get('publication_id')}\n"
+            ):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def partial_publication_checkpoint_recovery_allowed(
+    checkpoint,
+    *,
+    namespace_authority,
+):
+    """Prove the sole one-ref publication crash window without reallocating it."""
+
+    if not isinstance(checkpoint, dict) or checkpoint.get("stage") != "publishing":
+        return False
+    paired = int(getattr(namespace_authority, "high_water", 0) or 0)
+    completion_only = set(
+        getattr(namespace_authority, "unpaired_completion_versions", ()) or ()
+    )
+    high_water_only = set(
+        getattr(namespace_authority, "unpaired_high_water_versions", ()) or ()
+    )
+    occupied = completion_only | high_water_only
+    target = checkpoint.get("next_v")
+    if (
+        type(target) is not int
+        or target != paired + 1
+        or occupied != {target}
+        or target in completion_only.intersection(high_water_only)
+    ):
+        return False
+    try:
+        from bot_artifact import hash_path
+        from checkpoint_schema import (
+            checkpoint_epoch_errors,
+            live_checkpoint_allocation_authority_errors,
+            live_checkpoint_parent_authority_errors,
+            live_policy_epoch_reset_receipt_errors,
+        )
+        from publication_transaction import publication_intent_structure_errors
+
+        if checkpoint_epoch_errors(checkpoint):
+            return False
+        if live_checkpoint_parent_authority_errors(
+            checkpoint,
+            repo_root=PROJECT_ROOT,
+        ):
+            return False
+        if live_policy_epoch_reset_receipt_errors(
+            checkpoint,
+            project_root=PROJECT_ROOT,
+        ):
+            return False
+        receipts = load_abandoned_version_receipts(
+            project_root=PROJECT_ROOT,
+        )
+        abandon_authority = _abandon_authority_from_receipts(
+            receipts,
+            published_high_water=paired,
+            retryable_first_strict=(paired < FIRST_STRICT_POLICY_VERSION),
+        )
+        if target != max(paired, int(abandon_authority["floor"])) + 1:
+            return False
+        if live_checkpoint_allocation_authority_errors(
+            checkpoint,
+            published_high_water=paired,
+            abandoned_receipt_floor=int(abandon_authority["floor"]),
+            abandoned_receipt_head_digest=abandon_authority["head_digest"],
+        ):
+            return False
+        binding = checkpoint.get("epoch_binding") or {}
+        if binding.get("published_high_water") != paired:
+            return False
+        intent = checkpoint.get("publication_intent")
+        if publication_intent_structure_errors(intent):
+            return False
+        if (
+            intent.get("version") != target
+            or intent.get("workflow_run_id") != checkpoint.get("workflow_run_id")
+            or intent.get("completion_tag") != bot_tag(target)
+            or intent.get("high_water_tag") != f"national-high-water-v{target}"
+        ):
+            return False
+        present_tag = (
+            intent["completion_tag"]
+            if target in completion_only
+            else intent["high_water_tag"]
+        )
+        ref = f"refs/tags/{present_tag}"
+        if _git("cat-file", "-t", ref, check=False).strip() != "tag":
+            return False
+        commit_oid = _git(
+            "rev-parse",
+            f"{ref}^{{commit}}",
+            check=False,
+        ).strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", commit_oid):
+            return False
+        _validate_existing_publication_commit(intent, commit_oid)
+        _validate_publication_certificate_file(intent)
+        if hash_path(get_bot_dir(target)) != intent.get("candidate_artifact_hash"):
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
                                gate_results=None, worker_failure_count=None,
@@ -514,18 +1359,23 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         _profile, "national_execution_mode", "native_tcp"
     )
 
-    # Single exclusive lock covers read-merge-write-rename to prevent TOCTOU
-    checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
-        PIPELINE_STATE_FILE.suffix + ".lock"
-    )
     # Lock a stable sidecar inode. Locking PIPELINE_STATE_FILE itself is unsafe
     # because os.replace swaps that inode while waiters may still hold an open
     # descriptor to the retired file and later overwrite a newer projection.
-    with locked_file(checkpoint_lock, "a+", lock_type=fcntl.LOCK_EX):
+    try:
+        _preflight_state_sidecar(PIPELINE_STATE_FILE)
+    except OSError as exc:
+        log.error("Checkpoint sidecar path is unsafe: %s", exc)
+        return False
+    with _locked_state_sidecar(PIPELINE_STATE_FILE, lock_type=fcntl.LOCK_EX):
         try:
-            raw = PIPELINE_STATE_FILE.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            raw = ""
+            raw = _read_regular_state_text(
+                PIPELINE_STATE_FILE,
+                allow_missing=True,
+            )
+        except (OSError, UnicodeError) as exc:
+            log.error("Checkpoint path is unsafe or unreadable: %s", exc)
+            return False
         existing = None
         if raw.strip():
             try:
@@ -539,6 +1389,17 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             if not isinstance(existing, dict):
                 log.error("Refusing non-object pipeline checkpoint")
                 return False
+        try:
+            allocation_authority = checkpoint_allocation_authority(
+                expected_next_v=next_v,
+            )
+        except Exception as exc:
+            log.error(
+                "Checkpoint allocation authority is unavailable: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            return False
         if isinstance(existing, dict):
             try:
                 from pipeline_infrastructure import normalize_checkpoint_infrastructure
@@ -554,9 +1415,41 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 "archived",
                 "abandoned",
             }:
-                from checkpoint_schema import checkpoint_epoch_errors
+                from checkpoint_schema import (
+                    checkpoint_epoch_errors,
+                    live_checkpoint_allocation_authority_errors,
+                    live_checkpoint_parent_authority_errors,
+                )
 
                 epoch_errors = checkpoint_epoch_errors(existing)
+                if not epoch_errors:
+                    epoch_errors.extend(
+                        live_checkpoint_parent_authority_errors(
+                            existing,
+                            repo_root=PROJECT_ROOT,
+                        )
+                    )
+                if not epoch_errors:
+                    epoch_errors.extend(
+                        live_checkpoint_allocation_authority_errors(
+                            existing,
+                            published_high_water=allocation_authority[
+                                "published_high_water"
+                            ],
+                            abandoned_receipt_floor=allocation_authority[
+                                "abandoned_receipt_floor"
+                            ],
+                            abandoned_receipt_head_digest=allocation_authority[
+                                "abandoned_receipt_head_digest"
+                            ],
+                            allow_published_target_reconciliation=(
+                                _publication_checkpoint_reconciliation_allowed(
+                                    existing,
+                                    allocation_authority,
+                                )
+                            ),
+                        )
+                    )
                 if epoch_errors:
                     log.error(
                         "Refusing implicit epoch/schema upgrade of active "
@@ -738,10 +1631,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                     pass
                 return False
 
-        # Explicit reset: run_master produced a fresh plan → clear critic-rejection counter.
-        # Without this, generation_attempt stays >=1 after a critic rejection and
-        # execute_workers' circuit breaker (tool_planning.py:558) loops forever demanding
-        # a new plan that run_master already produced.
+        # Explicit reset: a newly accepted Master plan starts a fresh durable
+        # generation-attempt identity. Critic verdicts are advisory and do not
+        # increment this counter or authorize Worker rework.
         if reset_generation_attempt:
             existing_generation_attempt = 0
         if reset_audit_attempt:
@@ -771,6 +1663,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                     source_v=source_v,
                     parent2_v=existing_parent2_v,
                     audit_context=existing_audit_context,
+                    published_high_water=allocation_authority[
+                        "published_high_water"
+                    ],
+                    abandoned_receipt_floor=allocation_authority[
+                        "abandoned_receipt_floor"
+                    ],
+                    abandoned_receipt_head_digest=allocation_authority[
+                        "abandoned_receipt_head_digest"
+                    ],
                     repo_root=PROJECT_ROOT,
                 )
             except Exception as exc:
@@ -1150,6 +2051,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         from checkpoint_schema import (
             CHECKPOINT_SCHEMA_VERSION,
             checkpoint_epoch_errors,
+            live_checkpoint_allocation_authority_errors,
+            live_checkpoint_parent_authority_errors,
         )
 
         state = {
@@ -1188,6 +2091,34 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         }
 
         epoch_errors = checkpoint_epoch_errors(state)
+        if not epoch_errors:
+            epoch_errors.extend(
+                live_checkpoint_parent_authority_errors(
+                    state,
+                    repo_root=PROJECT_ROOT,
+                )
+            )
+        if not epoch_errors:
+            epoch_errors.extend(
+                live_checkpoint_allocation_authority_errors(
+                    state,
+                    published_high_water=allocation_authority[
+                        "published_high_water"
+                    ],
+                    abandoned_receipt_floor=allocation_authority[
+                        "abandoned_receipt_floor"
+                    ],
+                    abandoned_receipt_head_digest=allocation_authority[
+                        "abandoned_receipt_head_digest"
+                    ],
+                    allow_published_target_reconciliation=(
+                        _publication_checkpoint_reconciliation_allowed(
+                            state,
+                            allocation_authority,
+                        )
+                    ),
+                )
+            )
         if epoch_errors:
             log.error(
                 "Refusing checkpoint whose strict epoch binding does not match "
@@ -1196,14 +2127,11 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             )
             return False
 
-        # Atomic write: tmp + fsync + rename, all under the same lock
-        tmp = PIPELINE_STATE_FILE.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            f.write(json.dumps(state, indent=2))
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(str(tmp), str(PIPELINE_STATE_FILE))
-        _fsync_directory(PIPELINE_STATE_FILE.parent)
+        # Whole-file atomic publication under the stable sidecar lock.
+        _atomic_publish_state_text(
+            PIPELINE_STATE_FILE,
+            json.dumps(state, indent=2, ensure_ascii=False, allow_nan=False),
+        )
 
         # RC2/RC6: refresh event_bus last-known correlation so events emitted
         # after this stage advance — and especially after clear_pipeline_checkpoint
@@ -1227,11 +2155,15 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
 def read_pipeline_checkpoint():
     """Return saved pipeline state dict, or None."""
-    if not PIPELINE_STATE_FILE.exists():
+    if not os.path.lexists(PIPELINE_STATE_FILE):
         return None
     try:
-        with locked_file(PIPELINE_STATE_FILE) as f:
-            checkpoint = json.load(f)
+        with _locked_state_sidecar(PIPELINE_STATE_FILE, lock_type=fcntl.LOCK_SH):
+            raw = _read_regular_state_text(
+                PIPELINE_STATE_FILE,
+                allow_missing=False,
+            )
+        checkpoint = json.loads(raw)
         from pipeline_infrastructure import normalize_checkpoint_infrastructure
 
         return normalize_checkpoint_infrastructure(checkpoint)
@@ -1252,14 +2184,22 @@ def clear_pipeline_checkpoint(
     Uses exclusive lock to prevent race with concurrent writes.
     """
     previous = None
-    checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
-        PIPELINE_STATE_FILE.suffix + ".lock"
+    try:
+        _preflight_state_sidecar(PIPELINE_STATE_FILE)
+    except OSError:
+        return False
+    guard = _locked_state_sidecar(
+        PIPELINE_STATE_FILE,
+        lock_type=fcntl.LOCK_EX,
     )
-    with locked_file(checkpoint_lock, "a+", lock_type=fcntl.LOCK_EX):
+    with guard:
         try:
-            raw = PIPELINE_STATE_FILE.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            raw = ""
+            raw = _read_regular_state_text(
+                PIPELINE_STATE_FILE,
+                allow_missing=True,
+            )
+        except (OSError, UnicodeError):
+            return False
         if raw.strip():
             try:
                 previous = json.loads(raw)
@@ -1976,26 +2916,24 @@ def _official_parent_eligible(bot_dir: Path) -> bool:
         return False
 
 
+def version_namespace_authority():
+    """Return the canonical paired/unpaired annotated publication-ref snapshot."""
+
+    return resolve_version_namespace_authority(
+        lambda *args: _git(*args, check=False)
+    )
+
+
 def find_current_v():
     """Return the immutable version-authority high-water.
 
-    The archived completion/high-water tag namespace fixes the first strict
-    target at v143.  Directory names and runtime sentinels are never numbering
-    authority, so stale or abandoned worktrees cannot skip/reuse a version.
+    Only annotated completion/high-water tags which peel to commits advance the
+    published namespace.  Directory names, sentinels, bare commits, checkpoint
+    counters and runtime ledgers are deliberately absent from this read.
     """
 
-    versions = {ARCHIVED_VERSION_HIGH_WATER}
-    for tag in _git("tag", "-l", bot_tag_glob(), check=False).splitlines():
-        version = parse_tag_version(tag.strip())
-        if version is not None:
-            versions.add(version)
-    for tag in _git(
-        "tag", "-l", "national-high-water-v*", check=False
-    ).splitlines():
-        match = re.fullmatch(r"national-high-water-v([1-9][0-9]*)", tag.strip())
-        if match:
-            versions.add(int(match.group(1)))
-    return max(versions)
+    authority = version_namespace_authority()
+    return int(authority.high_water)
 
 
 def find_latest_active_v():
@@ -2255,6 +3193,29 @@ def _git(*args, check=True):
     return result.stdout.strip()
 
 
+def _git_explicit_presence(*args):
+    """Return a destructive Git predicate only for rc=0/explicit rc=1."""
+
+    try:
+        result = subprocess.run(
+            ["git"] + list(args),
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git {args[0]}: timed out after 30s") from exc
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise RuntimeError(
+        f"git {args[0]} unavailable (rc={result.returncode}): "
+        f"{result.stderr.strip()}"
+    )
+
+
 def _env_flag(name: str, default: bool = False) -> bool:
     value = os.environ.get(name)
     if value is None:
@@ -2468,6 +3429,28 @@ def git_has_tag(version):
     return bool(_git("tag", "-l", bot_tag(version), check=False).strip())
 
 
+def git_has_publication_ref(version):
+    """Return whether either create-only publication tag already exists.
+
+    This is a preservation predicate, not completion authority: an interrupted
+    publication may have only the high-water tag.  Cleanup paths must retain
+    candidate bytes for either partial ref instead of relying on the usual
+    tracked-tree or ``.completed`` implications of a finished publication.
+    """
+
+    target = int(version)
+    names = (bot_tag(target), f"national-high-water-v{target}")
+    return any(
+        _git_explicit_presence(
+            "show-ref",
+            "--verify",
+            "--quiet",
+            f"refs/tags/{name}",
+        )
+        for name in names
+    )
+
+
 def git_dir_is_committed(version):
     """True if the active bot directory has any git-tracked file.
 
@@ -2481,21 +3464,22 @@ def git_dir_is_committed(version):
     a directory with on-disk files but no tracked files is an untracked scratch
     dir (safe to overwrite); a directory with tracked files is committed state.
     """
-    try:
-        return bool(_git("ls-files", "--", bot_relpath(version) + "/", check=False).strip())
-    except Exception:
-        return False
+    return _git_explicit_presence(
+        "ls-files",
+        "--error-unmatch",
+        "--",
+        bot_relpath(version) + "/",
+    )
 
 
 def find_max_committed_v():
-    """Max version whose bot dir is git-tracked, regardless of tag/.completed.
+    """Diagnostic max version whose strict receipt is git-tracked.
 
-    Whereas find_current_v() returns the latest *completed* (tagged) version,
-    this returns the latest version whose code has landed in git at all —
-    including bare commits bypassing commit_bot. prepare_generation() uses
-    max(find_current_v(), find_max_committed_v()) + 1 as the next_v floor so a
-    bare-committed version number is never regenerated/overwritten. Returns 0
-    if no active-epoch bot dir is git-tracked.
+    This legacy diagnostic can expose an untagged direct commit for operator
+    reconciliation, but it is never completion authority and is never an input
+    to version allocation.  Only annotated completion/high-water tags advance
+    the published namespace; only checkpoint-bound abandonment receipts may
+    reserve a consumed label inside the current epoch.
 
     Implementation: a SINGLE `git ls-files bots/{active prefix}*` call (not one
     subprocess per directory) keeps this O(1 git call)/generation regardless
@@ -2524,102 +3508,628 @@ def find_max_committed_v():
     return max_v
 
 
-def find_abandoned_version_floor():
-    """Max abandoned version in the initialized strict policy epoch.
-
-    Before the one-time reset, the file at this path belongs to the retired
-    ``national_native_v1`` runtime.  It is audit material, not numbering
-    authority; allowing it to reserve v143..v167 is how stale v155 state made
-    status and prepare incorrectly announce v168.
-    """
-    initialization = {}
+def _abandoned_receipt_digest(payload):
     try:
-        from epoch_authority import policy_epoch_initialization
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise AbandonedVersionLedgerError(
+            f"abandon receipt is not canonical JSON: {type(exc).__name__}"
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
 
-        initialization = policy_epoch_initialization()
-        if not initialization["initialized"]:
-            return 0
-    except Exception as exc:
-        # Failure to prove epoch ownership must not promote mutable legacy data.
-        log.warning("policy epoch initialization unavailable; abandoned floor ignored: %s", exc)
-        return 0
-    floor = 0
-    # v143 is a reserved first-publication label, not a published identity.
-    # Before the strict pool exists, failed pre-publication attempts retain
-    # their audit rows but do not burn the only label accepted by the signed
-    # first-strict control.  Every retry receives a distinct durable workflow
-    # identity (see abandoned_version_attempt_count), so fenced effects from a
-    # prior attempt cannot be resumed.
-    retryable_first_strict = (
+
+def _canonical_abandon_json_bytes(payload, *, label):
+    try:
+        return json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise AbandonedVersionLedgerError(
+            f"{label} is not canonical JSON: {type(exc).__name__}"
+        ) from exc
+
+
+def _validate_abandon_receipt_bounded_fields(reason, infra_failure):
+    if not isinstance(reason, str) or not reason.strip():
+        raise AbandonedVersionLedgerError("abandon receipt reason is empty")
+    if len(reason.encode("utf-8")) > _ABANDONED_VERSION_REASON_MAX_BYTES:
+        raise AbandonedVersionLedgerError("abandon receipt reason exceeds byte limit")
+    if infra_failure is not None and not isinstance(infra_failure, dict):
+        raise AbandonedVersionLedgerError(
+            "abandon receipt infra_failure must be an object or null"
+        )
+    if infra_failure is not None and len(
+        _canonical_abandon_json_bytes(
+            infra_failure,
+            label="abandon receipt infra_failure",
+        )
+    ) > _ABANDONED_VERSION_INFRA_FAILURE_MAX_BYTES:
+        raise AbandonedVersionLedgerError(
+            "abandon receipt infra_failure exceeds byte limit"
+        )
+
+
+def _abandoned_checkpoint_envelope(checkpoint):
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    audit = checkpoint.get("audit_context")
+    audit = audit if isinstance(audit, dict) else {}
+    protocol_bootstrap = audit.get("protocol_bootstrap")
+    return {
+        "checkpoint_schema_version": checkpoint.get("checkpoint_schema_version"),
+        "evaluation_epoch": checkpoint.get("evaluation_epoch"),
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "parent2_v": checkpoint.get("parent2_v"),
+        "generation_mode": checkpoint.get("generation_mode"),
+        "epoch_binding": checkpoint.get("epoch_binding"),
+        "audit_context": (
+            {"protocol_bootstrap": protocol_bootstrap}
+            if protocol_bootstrap is not None
+            else {}
+        ),
+    }
+
+
+def _validate_abandoned_checkpoint(checkpoint, *, project_root):
+    from checkpoint_schema import (
+        checkpoint_epoch_errors,
+        live_checkpoint_parent_authority_errors,
+        live_policy_epoch_reset_receipt_errors,
+    )
+
+    errors = list(checkpoint_epoch_errors(checkpoint))
+    if not errors:
+        errors.extend(
+            live_checkpoint_parent_authority_errors(
+                checkpoint,
+                repo_root=project_root,
+            )
+        )
+    if not errors:
+        errors.extend(
+            live_policy_epoch_reset_receipt_errors(
+                checkpoint,
+                project_root=project_root,
+            )
+        )
+    stage = checkpoint.get("stage") if isinstance(checkpoint, dict) else None
+    if not isinstance(stage, str) or not stage.strip():
+        errors.append("abandon_checkpoint_stage_missing")
+    elif stage in {"timed_out", "infra_timed_out", "archived", "abandoned"}:
+        errors.append("abandon_checkpoint_stage_not_active")
+    workflow_run_id = (
+        checkpoint.get("workflow_run_id") if isinstance(checkpoint, dict) else None
+    )
+    if not isinstance(workflow_run_id, str) or not workflow_run_id.strip():
+        errors.append("abandon_checkpoint_workflow_run_id_missing")
+    elif checkpoint.get("next_v") == FIRST_STRICT_POLICY_VERSION and re.fullmatch(
+        rf"generation:{int(checkpoint['next_v'])}:workflow-v[1-9][0-9]*",
+        workflow_run_id,
+    ) is None:
+        errors.append("abandon_checkpoint_workflow_run_id_invalid")
+    revision = (
+        checkpoint.get("checkpoint_revision") if isinstance(checkpoint, dict) else None
+    )
+    if type(revision) is not int or revision < 1:
+        errors.append("abandon_checkpoint_revision_invalid")
+    if errors:
+        raise AbandonedVersionLedgerError(
+            "abandon checkpoint is not current-epoch bound: "
+            + "; ".join(dict.fromkeys(map(str, errors)))
+        )
+
+
+def _build_abandoned_version_receipt(
+    checkpoint,
+    *,
+    reason,
+    infra_failure=None,
+    timestamp=None,
+    previous_receipt_digest=None,
+    project_root=None,
+):
+    project_root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    _validate_abandoned_checkpoint(checkpoint, project_root=project_root)
+    reason = str(reason or "").strip()
+    _validate_abandon_receipt_bounded_fields(reason, infra_failure)
+    timestamp = time.time() if timestamp is None else timestamp
+    if (
+        type(timestamp) not in {int, float}
+        or timestamp != timestamp
+        or timestamp < 0
+        or timestamp > 100_000_000_000
+    ):
+        raise AbandonedVersionLedgerError("abandon receipt timestamp is invalid")
+    if previous_receipt_digest is not None and not re.fullmatch(
+        r"[0-9a-f]{64}", str(previous_receipt_digest)
+    ):
+        raise AbandonedVersionLedgerError(
+            "abandon receipt previous digest is invalid"
+        )
+    payload = {
+        "schema_version": ABANDONED_VERSION_RECEIPT_SCHEMA_VERSION,
+        "kind": ABANDONED_VERSION_RECEIPT_KIND,
+        "evaluation_epoch": EVALUATION_EPOCH,
+        "version": checkpoint["next_v"],
+        "source_v": checkpoint["source_v"],
+        "checkpoint_stage": checkpoint["stage"],
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "checkpoint_revision": checkpoint["checkpoint_revision"],
+        "checkpoint_envelope": _abandoned_checkpoint_envelope(checkpoint),
+        "reason": reason,
+        "timestamp": timestamp,
+        "infra_failure": infra_failure,
+        "previous_receipt_digest": previous_receipt_digest,
+    }
+    return {**payload, "receipt_digest": _abandoned_receipt_digest(payload)}
+
+
+def _abandoned_version_receipt_errors(
+    receipt,
+    *,
+    expected_previous_digest,
+    project_root,
+):
+    errors = []
+    if not isinstance(receipt, dict):
+        return ["abandon_receipt_not_object"]
+    if set(receipt) != _ABANDONED_VERSION_RECEIPT_KEYS:
+        errors.append("abandon_receipt_fields_mismatch")
+    if receipt.get("schema_version") != ABANDONED_VERSION_RECEIPT_SCHEMA_VERSION:
+        errors.append("abandon_receipt_schema_mismatch")
+    if receipt.get("kind") != ABANDONED_VERSION_RECEIPT_KIND:
+        errors.append("abandon_receipt_kind_mismatch")
+    if receipt.get("evaluation_epoch") != EVALUATION_EPOCH:
+        errors.append("abandon_receipt_epoch_mismatch")
+    version = receipt.get("version")
+    source_v = receipt.get("source_v")
+    if type(version) is not int or version < FIRST_STRICT_POLICY_VERSION:
+        errors.append("abandon_receipt_version_invalid")
+    if type(source_v) is not int:
+        errors.append("abandon_receipt_source_version_invalid")
+    if receipt.get("previous_receipt_digest") != expected_previous_digest:
+        errors.append("abandon_receipt_chain_mismatch")
+    timestamp = receipt.get("timestamp")
+    if (
+        type(timestamp) not in {int, float}
+        or timestamp != timestamp
+        or timestamp < 0
+        or timestamp > 100_000_000_000
+    ):
+        errors.append("abandon_receipt_timestamp_invalid")
+    try:
+        _validate_abandon_receipt_bounded_fields(
+            receipt.get("reason"),
+            receipt.get("infra_failure"),
+        )
+    except AbandonedVersionLedgerError as exc:
+        errors.append(str(exc).replace(" ", "_"))
+    recorded_digest = receipt.get("receipt_digest")
+    unsigned = {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    try:
+        expected_digest = _abandoned_receipt_digest(unsigned)
+    except AbandonedVersionLedgerError:
+        expected_digest = ""
+    if (
+        not isinstance(recorded_digest, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", recorded_digest)
+        or recorded_digest != expected_digest
+    ):
+        errors.append("abandon_receipt_digest_mismatch")
+
+    envelope = receipt.get("checkpoint_envelope")
+    if not isinstance(envelope, dict):
+        errors.append("abandon_receipt_checkpoint_envelope_not_object")
+    else:
+        if set(envelope) != _ABANDONED_CHECKPOINT_ENVELOPE_KEYS:
+            errors.append("abandon_receipt_checkpoint_envelope_fields_mismatch")
+        checkpoint = {
+            **envelope,
+            "stage": receipt.get("checkpoint_stage"),
+            "workflow_run_id": receipt.get("workflow_run_id"),
+            "checkpoint_revision": receipt.get("checkpoint_revision"),
+        }
+        try:
+            _validate_abandoned_checkpoint(
+                checkpoint,
+                project_root=project_root,
+            )
+        except AbandonedVersionLedgerError as exc:
+            errors.append(str(exc))
+        if envelope.get("next_v") != version:
+            errors.append("abandon_receipt_checkpoint_version_mismatch")
+        if envelope.get("source_v") != source_v:
+            errors.append("abandon_receipt_checkpoint_source_mismatch")
+    return list(dict.fromkeys(errors))
+
+
+def _decode_abandoned_version_receipts(
+    raw,
+    *,
+    allow_empty,
+    project_root,
+):
+    if not isinstance(raw, str):
+        raise AbandonedVersionLedgerError("abandon receipt ledger is not text")
+    if len(raw.encode("utf-8")) > _ABANDONED_VERSION_LEDGER_MAX_BYTES:
+        raise AbandonedVersionLedgerError("abandon receipt ledger exceeds byte limit")
+    if not raw:
+        if allow_empty:
+            return []
+        raise AbandonedVersionLedgerError("abandon receipt ledger is empty")
+    if not raw.endswith("\n"):
+        raise AbandonedVersionLedgerError(
+            "abandon receipt ledger has an incomplete final row"
+        )
+    receipts = []
+    previous_digest = None
+    previous_version = None
+    for line_number, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            raise AbandonedVersionLedgerError(
+                f"abandon receipt ledger blank row at line {line_number}"
+            )
+        try:
+            receipt = json.loads(line)
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise AbandonedVersionLedgerError(
+                f"abandon receipt ledger malformed at line {line_number}: "
+                f"{type(exc).__name__}"
+            ) from exc
+        errors = _abandoned_version_receipt_errors(
+            receipt,
+            expected_previous_digest=previous_digest,
+            project_root=project_root,
+        )
+        if errors:
+            raise AbandonedVersionLedgerError(
+                f"abandon receipt ledger invalid at line {line_number}: "
+                + "; ".join(errors)
+            )
+        version = receipt["version"]
+        if previous_version is not None and version < previous_version:
+            raise AbandonedVersionLedgerError(
+                f"abandon receipt version order regressed at line {line_number}"
+            )
+        receipts.append(receipt)
+        previous_digest = receipt["receipt_digest"]
+        previous_version = version
+    return receipts
+
+
+def load_abandoned_version_receipts(*, path=None, project_root=None):
+    """Load the exact current-epoch receipt chain or raise on any ambiguity."""
+
+    path = Path(path) if path is not None else Path(ABANDONED_VERSIONS_FILE)
+    project_root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    if not os.path.lexists(path):
+        return []
+    try:
+        with _locked_state_sidecar(path, lock_type=fcntl.LOCK_SH):
+            raw = _read_regular_state_text(path, allow_missing=False)
+            if len(raw.encode("utf-8")) > _ABANDONED_VERSION_LEDGER_MAX_BYTES:
+                raise AbandonedVersionLedgerError(
+                    "abandon receipt ledger exceeds byte limit"
+                )
+    except AbandonedVersionLedgerError:
+        raise
+    except (OSError, UnicodeError) as exc:
+        raise AbandonedVersionLedgerError(
+            f"abandon receipt ledger unreadable: {type(exc).__name__}: {exc}"
+        ) from exc
+    return _decode_abandoned_version_receipts(
+        raw,
+        allow_empty=False,
+        project_root=project_root,
+    )
+
+
+def _abandon_authority_from_receipts(
+    receipts,
+    *,
+    published_high_water,
+    retryable_first_strict,
+):
+    versions = [
+        int(receipt["version"])
+        for receipt in receipts
+        if not (
+            retryable_first_strict
+            and int(receipt["version"]) == FIRST_STRICT_POLICY_VERSION
+        )
+    ]
+    return {
+        "published_high_water": int(published_high_water),
+        "floor": max(versions, default=0),
+        "head_digest": receipts[-1]["receipt_digest"] if receipts else None,
+        "receipt_count": len(receipts),
+    }
+
+
+def abandoned_version_authority(
+    *,
+    initialization=None,
+    published_high_water=None,
+    path=None,
+    project_root=None,
+):
+    """Return one validated ledger snapshot (floor and chain head together)."""
+
+    from epoch_authority import policy_epoch_initialization
+
+    if published_high_water is None:
+        published_high_water = find_current_v()
+    published_high_water = int(published_high_water)
+    if initialization is None:
+        initialization = policy_epoch_initialization(current_v=published_high_water)
+    if not isinstance(initialization, dict) or not initialization.get("initialized"):
+        return {
+            "published_high_water": published_high_water,
+            "floor": 0,
+            "head_digest": None,
+            "receipt_count": 0,
+        }
+    receipts = load_abandoned_version_receipts(
+        path=path,
+        project_root=project_root,
+    )
+    retryable_first_strict = bool(
         initialization.get("state") == "fresh_bootstrap_ready"
         and initialization.get("strict_published") is False
     )
+    return _abandon_authority_from_receipts(
+        receipts,
+        published_high_water=published_high_water,
+        retryable_first_strict=retryable_first_strict,
+    )
+
+
+def checkpoint_allocation_authority(*, expected_next_v=None):
+    """Resolve system authority and optionally assert one requested successor."""
+
+    from epoch_authority import policy_epoch_initialization
+
+    published = int(find_current_v())
+    initialization = policy_epoch_initialization(current_v=published)
+    if not initialization.get("initialized"):
+        raise AbandonedVersionLedgerError(
+            "checkpoint allocation requires an initialized policy epoch"
+        )
+    abandoned = abandoned_version_authority(
+        initialization=initialization,
+        published_high_water=published,
+    )
+    authority = {
+        "published_high_water": published,
+        "abandoned_receipt_floor": int(abandoned["floor"]),
+        "abandoned_receipt_head_digest": abandoned["head_digest"],
+        "allocation_floor": max(published, int(abandoned["floor"])),
+    }
+    if expected_next_v is not None and (
+        type(expected_next_v) is not int
+        or expected_next_v != authority["allocation_floor"] + 1
+    ):
+        raise AbandonedVersionLedgerError(
+            "checkpoint target is not the live allocation successor"
+        )
+    return authority
+
+
+def _receipt_identity_matches_checkpoint(receipt, checkpoint):
+    return bool(
+        isinstance(receipt, dict)
+        and receipt.get("workflow_run_id") == checkpoint.get("workflow_run_id")
+        and receipt.get("checkpoint_revision")
+        == checkpoint.get("checkpoint_revision")
+        and receipt.get("checkpoint_stage") == checkpoint.get("stage")
+        and receipt.get("checkpoint_envelope")
+        == _abandoned_checkpoint_envelope(checkpoint)
+    )
+
+
+def recorded_abandon_receipt_for_checkpoint(
+    checkpoint,
+    *,
+    path=None,
+    project_root=None,
+):
+    """Return the sole durable terminal receipt for an uncleared checkpoint."""
+
+    receipts = load_abandoned_version_receipts(
+        path=path,
+        project_root=project_root,
+    )
+    matches = [
+        receipt
+        for receipt in receipts
+        if _receipt_identity_matches_checkpoint(receipt, checkpoint)
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1 or matches[0] is not receipts[-1]:
+        raise AbandonedVersionLedgerError(
+            "recorded abandon checkpoint identity is not the unique chain head"
+        )
+    return dict(matches[0])
+
+
+def append_abandoned_version_receipt(
+    checkpoint,
+    *,
+    reason,
+    infra_failure=None,
+    timestamp=None,
+    path=None,
+    project_root=None,
+):
+    """Append one checkpoint-bound receipt after validating the whole chain."""
+
+    path = Path(path) if path is not None else Path(ABANDONED_VERSIONS_FILE)
+    project_root = Path(project_root) if project_root is not None else PROJECT_ROOT
+    # Validate before opening in append mode so an unauthorized call cannot
+    # manufacture even an empty ledger claim.
+    _validate_abandoned_checkpoint(checkpoint, project_root=project_root)
+    normalized_reason = str(reason or "").strip()
+    _validate_abandon_receipt_bounded_fields(normalized_reason, infra_failure)
     try:
-        if ABANDONED_VERSIONS_FILE.exists():
-            with open(ABANDONED_VERSIONS_FILE, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        version = json.loads(line).get("v")
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    if retryable_first_strict and version == 143:
-                        continue
-                    if isinstance(version, int) and version > floor:
-                        floor = version
-    except Exception as exc:
-        # If this file is unreadable, next_v may reuse an abandoned version. Make
-        # that visible, but keep status/prepare reads best-effort.
-        log.warning("abandoned_versions.jsonl unreadable; next_v floor may be stale: %s", exc)
-        try:
-            from system_log import log_system_event
-            log_system_event(
-                "pipeline.abandoned_floor_unavailable",
-                "warn",
-                f"abandoned_versions.jsonl unreadable; next_v floor may reuse an abandoned version: {exc}",
-                {"error": str(exc)[:200]},
+        with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+            existed = os.path.lexists(path)
+            raw = _read_regular_state_text(path, allow_missing=True)
+            if existed and not raw:
+                raise AbandonedVersionLedgerError(
+                    "abandon receipt ledger is empty"
+                )
+            receipts = _decode_abandoned_version_receipts(
+                raw,
+                allow_empty=not existed,
+                project_root=project_root,
             )
-        except Exception:
-            pass
-    return floor
+            matching = [
+                receipt
+                for receipt in receipts
+                if _receipt_identity_matches_checkpoint(receipt, checkpoint)
+            ]
+            if matching:
+                if len(matching) != 1 or matching[0] is not receipts[-1]:
+                    raise AbandonedVersionLedgerError(
+                        "abandon receipt identity is not the unique chain head"
+                    )
+                prior = matching[0]
+                if (
+                    prior.get("reason") != normalized_reason
+                    or prior.get("infra_failure") != infra_failure
+                ):
+                    raise AbandonedVersionLedgerError(
+                        "abandon receipt identity already exists with different payload"
+                    )
+                # Clear/fsync failure may replay the exact terminal command.
+                # Re-prove both the published inode and its parent.  A prior
+                # atomic replace may have succeeded before the directory fsync
+                # raised, so returning the row without this retry could permit
+                # candidate/checkpoint destruction on a non-durable receipt.
+                _fsync_regular_state_file_and_parent(path)
+                return dict(prior)
+            previous_digest = (
+                receipts[-1]["receipt_digest"] if receipts else None
+            )
+            published = int(find_current_v())
+            retryable_first_strict = published < FIRST_STRICT_POLICY_VERSION
+            authority = _abandon_authority_from_receipts(
+                receipts,
+                published_high_water=published,
+                retryable_first_strict=retryable_first_strict,
+            )
+            from checkpoint_schema import live_checkpoint_allocation_authority_errors
+
+            live_errors = live_checkpoint_allocation_authority_errors(
+                checkpoint,
+                published_high_water=published,
+                abandoned_receipt_floor=int(authority["floor"]),
+                abandoned_receipt_head_digest=authority["head_digest"],
+            )
+            if live_errors:
+                raise AbandonedVersionLedgerError(
+                    "abandon checkpoint allocation authority changed: "
+                    + "; ".join(live_errors)
+                )
+            receipt = _build_abandoned_version_receipt(
+                checkpoint,
+                reason=normalized_reason,
+                infra_failure=infra_failure,
+                timestamp=timestamp,
+                previous_receipt_digest=previous_digest,
+                project_root=project_root,
+            )
+            if receipts and receipt["version"] < receipts[-1]["version"]:
+                raise AbandonedVersionLedgerError(
+                    "abandon receipt version would regress the durable chain"
+                )
+            encoded_row = _canonical_abandon_json_bytes(
+                receipt,
+                label="abandon receipt",
+            ) + b"\n"
+            final_bytes = raw.encode("utf-8") + encoded_row
+            if len(final_bytes) > _ABANDONED_VERSION_LEDGER_MAX_BYTES:
+                raise AbandonedVersionLedgerError(
+                    "abandon receipt ledger would exceed byte limit"
+                )
+            _atomic_publish_state_text(
+                path,
+                final_bytes.decode("utf-8"),
+            )
+        return receipt
+    except AbandonedVersionLedgerError:
+        raise
+    except (OSError, UnicodeError, TypeError, ValueError) as exc:
+        raise AbandonedVersionLedgerError(
+            f"abandon receipt append failed: {type(exc).__name__}: {exc}"
+        ) from exc
+
+
+def find_abandoned_version_floor():
+    """Return the content-bound allocation floor for this initialized epoch.
+
+    A retired/pre-reset file is ignored because it has no epoch authority.  Once
+    the epoch is initialized, however, every row must be a valid digest-chained
+    receipt created from a valid active checkpoint; unreadable, legacy, partial
+    or tampered state raises and therefore blocks allocation.
+    """
+
+    try:
+        return int(abandoned_version_authority()["floor"])
+    except AbandonedVersionLedgerError:
+        raise
+    except Exception as exc:
+        raise AbandonedVersionLedgerError(
+            "policy epoch initialization unavailable while reading abandon receipts: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
 
 
 def abandoned_version_attempt_count(version):
-    """Count durable pre-publication attempts for one version label.
-
-    This is intentionally a count, not numbering authority.  It is used only
-    to allocate a fresh workflow/effect fence when the reserved v143 bootstrap
-    label must be retried before any strict bot has been published.
-    """
+    """Return the greatest validated workflow attempt for a reusable label."""
 
     target = int(version)
-    count = 0
-    try:
-        if ABANDONED_VERSIONS_FILE.exists():
-            with open(ABANDONED_VERSIONS_FILE, "r", encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        row = json.loads(line)
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    if isinstance(row, dict) and row.get("v") == target:
-                        count += 1
-    except OSError:
-        return 0
-    return count
+    attempts = []
+    pattern = re.compile(
+        rf"^generation:{re.escape(str(target))}:workflow-v([1-9][0-9]*)$"
+    )
+    for receipt in load_abandoned_version_receipts():
+        if receipt["version"] != target:
+            continue
+        match = pattern.fullmatch(str(receipt.get("workflow_run_id") or ""))
+        if not match:
+            raise AbandonedVersionLedgerError(
+                f"abandon receipt workflow attempt is invalid for v{target}"
+            )
+        attempts.append(int(match.group(1)))
+    return max(attempts, default=0)
 
 
 def compute_next_generation_v(current_v=None, max_committed_v=None, abandoned_floor=None):
-    """Return the next generation version using the same floors as prepare_generation."""
+    """Return the next free current-epoch label from authoritative inputs only.
+
+    ``max_committed_v`` remains accepted for call-site compatibility but is
+    intentionally ignored.  A bare commit is operator-reconciliation evidence,
+    never published high-water or an allocation receipt.
+    """
+
+    del max_committed_v
     if current_v is None:
         current_v = find_current_v()
-    if max_committed_v is None:
-        max_committed_v = find_max_committed_v()
     if abandoned_floor is None:
         abandoned_floor = find_abandoned_version_floor()
-    return max(int(current_v), int(max_committed_v), int(abandoned_floor)) + 1
+    return max(int(current_v), int(abandoned_floor)) + 1
 
 
 def publish_runtime_expected_head(reason: str = "", version=None) -> str:
@@ -3388,10 +4898,10 @@ def remote_completion_ref_snapshot() -> dict[str, str]:
 def _publication_checkpoint_linearization_lock():
     """Fence publishing checkpoint writers across authority-check + push."""
 
-    checkpoint_lock = PIPELINE_STATE_FILE.with_suffix(
-        PIPELINE_STATE_FILE.suffix + ".lock"
-    )
-    with locked_file(checkpoint_lock, "a+", lock_type=fcntl.LOCK_EX):
+    with _locked_state_sidecar(
+        PIPELINE_STATE_FILE,
+        lock_type=fcntl.LOCK_EX,
+    ):
         yield
 
 
@@ -3552,8 +5062,7 @@ def ensure_bot_git_publication(
     _require_national_epoch_registry_for_commit()
     _git_ensure_main_branch()
 
-    publication_lock = RESULTS_DIR / ".bot_publication.lock"
-    with locked_file(publication_lock, "a+", lock_type=fcntl.LOCK_EX):
+    with bot_publication_lock():
         commit_oid = _resolve_existing_publication_commit(intent)
         if not commit_oid:
             commit_oid = _create_publication_commit(intent)
@@ -3952,113 +5461,1073 @@ def _post_commit_archivist_receipt_validation(
 
 def validate_post_commit_archivist_receipt(version, source_v):
     """Read-only validation for the no-checkpoint runtime guard."""
-    archive_path = ARCHIVE_DIR / f"v{int(version)}.json"
     try:
-        snapshot = json.loads(archive_path.read_text(encoding="utf-8"))
-    except Exception:
-        return False, "post_commit_archivist_archive_unavailable", None
-    return _post_commit_archivist_receipt_validation(
-        snapshot,
-        version,
-        source_v,
-        require_pending=True,
-    )
+        from post_publication_handoff import pending_handoff_route
+
+        route = pending_handoff_route()
+        if route.get("status") != "pending":
+            return False, ";".join(
+                route.get("issues") or ["post_publication_handoff_missing"]
+            ), None
+        if (
+            int(route.get("version")) != int(version)
+            or int(route.get("source_v")) != int(source_v)
+        ):
+            return False, "post_publication_handoff_subject_mismatch", None
+        return True, "", {
+            "receipt_digest": route.get("identity_digest"),
+            "publication_id": route.get("publication_id"),
+            "status": route.get("state"),
+            "version": int(version),
+            "source_v": int(source_v),
+        }
+    except Exception as exc:
+        return False, f"post_publication_handoff_error:{type(exc).__name__}", None
 
 
 def consume_post_commit_archivist_receipt(version, source_v):
-    """Atomically consume the one-shot post-commit Archivist handoff."""
-    archive_path = ARCHIVE_DIR / f"v{int(version)}.json"
+    """Retired consume-before-work API; callers must use the step journal."""
+    return False, "post_commit_archivist_consume_api_retired", None
+
+
+_ROTATION_PLAN_KIND = "append-log-nondestructive-rotation-v2"
+_ROTATION_WATERMARK_KIND = "append-log-archive-watermark-v2"
+_ROTATION_SET_PLAN_KIND = "append-log-nondestructive-rotation-plan"
+_ROTATION_PLAN_KEYS = frozenset({
+    "schema_version", "kind", "version", "source", "start_offset",
+    "end_offset", "archive", "archive_sha256", "new_prefix_sha256",
+    "previous_watermark_digest", "rotation_id", "state", "digest",
+})
+_ROTATION_WATERMARK_KEYS = frozenset({
+    "schema_version", "kind", "source", "end_offset", "prefix_sha256",
+    "last_version", "last_rotation_id", "last_plan_digest",
+    "previous_watermark_digest", "digest",
+})
+_ROTATION_RECEIPT_KEYS = frozenset({
+    "source", "rotation_id", "plan_digest", "archive_sha256",
+    "start_offset", "end_offset", "source_preserved_append_only",
+})
+_ROTATION_SET_PLAN_KEYS = frozenset({
+    "schema_version", "kind", "version", "publication_id",
+    "source_policy", "source_bytes_must_be_preserved", "source_snapshots",
+    "expected_rotations", "source_snapshot_set_digest",
+    "expected_rotation_set_digest", "authority_digest",
+})
+_ROTATION_SOURCE_SNAPSHOT_KEYS = frozenset({
+    "source", "keep_lines", "snapshot_exists", "snapshot_size",
+    "snapshot_sha256", "cold_end_offset", "watermark_end_offset",
+    "watermark_digest", "expected_rotation",
+})
+_ROTATION_SUBJECT_KEYS = frozenset({
+    "version", "source", "archive", "start_offset", "end_offset",
+    "archive_sha256", "new_prefix_sha256", "previous_watermark_digest",
+    "rotation_id", "completed_plan_digest",
+})
+
+
+def _rotation_rules():
+    return (
+        (Path(WORKER_FAILURES_FILE), 200),
+        (Path(MATCH_HISTORY_FILE), 500),
+        (Path(RATING_HISTORY_FILE), 100),
+        (Path(RESULTS_DIR) / "events.jsonl", 1000),
+        (Path(LLM_COSTS_FILE), 200),
+    )
+
+
+def _rotation_digest(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _rotation_paths(source_path: Path, version: int):
+    root = Path(ARCHIVE_DIR)
+    return (
+        root / f"{source_path.stem}_v{int(version)}.jsonl",
+        root / f"{source_path.stem}_v{int(version)}.rotation.json",
+        root / f"{source_path.stem}.rotation-watermark.json",
+    )
+
+
+def _rotation_set_plan_path(version: int):
+    return Path(ARCHIVE_DIR) / f"rotation-set-v{int(version)}.plan.json"
+
+
+def _rotation_record(path: Path, *, kind: str, keys: frozenset[str]):
+    from bot_artifact import canonical_digest
+
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_SH):
+        existed = os.path.lexists(path)
+        raw = _read_regular_state_text(path, allow_missing=True)
+    if not existed:
+        return None
+    if not raw.strip():
+        raise RuntimeError(f"archive record empty: {path.name}")
     try:
-        with locked_file(archive_path, "r+", encoding="utf-8") as handle:
-            snapshot = json.load(handle)
-            ok, reason, receipt = _post_commit_archivist_receipt_validation(
-                snapshot,
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError(f"archive record invalid JSON: {path.name}") from exc
+    if not isinstance(payload, dict) or set(payload) != set(keys):
+        raise RuntimeError(f"archive record fields mismatch: {path.name}")
+    if payload.get("schema_version") != 2 or payload.get("kind") != kind:
+        raise RuntimeError(f"archive record schema mismatch: {path.name}")
+    unsigned = {key: value for key, value in payload.items() if key != "digest"}
+    if payload.get("digest") != canonical_digest(unsigned):
+        raise RuntimeError(f"archive record digest mismatch: {path.name}")
+    return payload
+
+
+def _write_rotation_record(
+    path: Path,
+    payload: dict,
+    *,
+    kind: str,
+    keys: frozenset[str],
+):
+    from bot_artifact import canonical_digest
+
+    unsigned = dict(payload)
+    if set(unsigned) != set(keys) - {"digest"}:
+        raise RuntimeError(f"archive record write fields mismatch: {path.name}")
+    if unsigned.get("schema_version") != 2 or unsigned.get("kind") != kind:
+        raise RuntimeError(f"archive record write schema mismatch: {path.name}")
+    final = {**unsigned, "digest": canonical_digest(unsigned)}
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        _atomic_publish_state_text(
+            path,
+            json.dumps(final, indent=2, ensure_ascii=False, sort_keys=True),
+        )
+    reopened = _rotation_record(path, kind=kind, keys=keys)
+    if reopened != final:
+        raise RuntimeError(f"archive record publication mismatch: {path.name}")
+    return final
+
+
+def _read_rotation_archive(path: Path):
+    if not os.path.lexists(path):
+        return None
+    with locked_file(path, "rb", lock_type=fcntl.LOCK_SH) as handle:
+        return handle.read()
+
+
+def _publish_rotation_archive(path: Path, raw: bytes):
+    path = Path(path)
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        existing = None
+        if os.path.lexists(path):
+            flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            with os.fdopen(descriptor, "rb") as handle:
+                _assert_open_regular_path(path, handle, label="rotation archive")
+                existing = handle.read()
+                _assert_open_regular_path(path, handle, label="rotation archive")
+        if existing is not None:
+            if existing != raw:
+                raise RuntimeError(f"archive content mismatch: {path.name}")
+            _fsync_regular_state_file_and_parent(path)
+            return
+        _assert_safe_state_parent(path)
+        temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = None
+        temporary_identity = None
+        try:
+            descriptor = os.open(temporary, flags, 0o600)
+            offset = 0
+            while offset < len(raw):
+                written = os.write(descriptor, raw[offset:])
+                if written <= 0:
+                    raise OSError("rotation archive write made no progress")
+                offset += written
+            os.fsync(descriptor)
+            temporary_identity = os.fstat(descriptor)
+            os.close(descriptor)
+            descriptor = None
+            os.replace(temporary, path)
+            live = os.lstat(path)
+            if (
+                temporary_identity is None
+                or not stat.S_ISREG(live.st_mode)
+                or live.st_nlink != 1
+                or (live.st_dev, live.st_ino)
+                != (temporary_identity.st_dev, temporary_identity.st_ino)
+                or live.st_size != len(raw)
+            ):
+                raise OSError("rotation archive publication inode changed")
+            _fsync_directory(path.parent)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            temporary.unlink(missing_ok=True)
+
+
+def _base_rotation_watermark(source_path: Path):
+    from bot_artifact import canonical_digest
+
+    unsigned = {
+        "schema_version": 2,
+        "kind": _ROTATION_WATERMARK_KIND,
+        "source": source_path.name,
+        "end_offset": 0,
+        "prefix_sha256": _rotation_digest(b""),
+        "last_version": None,
+        "last_rotation_id": None,
+        "last_plan_digest": None,
+        "previous_watermark_digest": None,
+    }
+    return {**unsigned, "digest": canonical_digest(unsigned)}
+
+
+def _validate_rotation_plan(
+    plan: dict,
+    *,
+    version: int,
+    source_path: Path,
+    raw: bytes,
+    require_completed: bool,
+    require_archive: bool,
+):
+    from bot_artifact import canonical_digest
+
+    archive_path, _plan_path, _watermark_path = _rotation_paths(
+        source_path,
+        version,
+    )
+    if (
+        type(plan.get("version")) is not int
+        or plan["version"] != int(version)
+        or plan.get("source") != source_path.name
+        or plan.get("archive") != archive_path.name
+        or plan.get("state") not in {"planned", "completed"}
+        or (require_completed and plan.get("state") != "completed")
+    ):
+        raise RuntimeError(f"archive plan identity invalid: {source_path.name}")
+    start = plan.get("start_offset")
+    end = plan.get("end_offset")
+    if (
+        type(start) is not int
+        or type(end) is not int
+        or not 0 <= start < end <= len(raw)
+    ):
+        raise RuntimeError(f"archive plan offsets invalid: {source_path.name}")
+    for key in (
+        "archive_sha256", "new_prefix_sha256",
+        "previous_watermark_digest", "rotation_id", "digest",
+    ):
+        value = str(plan.get(key) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise RuntimeError(f"archive plan digest invalid:{source_path.name}:{key}")
+    archived = raw[start:end]
+    subject = {
+        "version": int(version),
+        "source": source_path.name,
+        "start_offset": start,
+        "end_offset": end,
+        "archive_sha256": _rotation_digest(archived),
+        "new_prefix_sha256": _rotation_digest(raw[:end]),
+        "previous_watermark_digest": plan["previous_watermark_digest"],
+    }
+    if (
+        plan.get("archive_sha256") != subject["archive_sha256"]
+        or plan.get("new_prefix_sha256") != subject["new_prefix_sha256"]
+        or plan.get("rotation_id") != canonical_digest(subject)
+    ):
+        raise RuntimeError(f"archive plan derivation mismatch: {source_path.name}")
+    archived_live = _read_rotation_archive(archive_path)
+    if archived_live is not None and archived_live != archived:
+        raise RuntimeError(f"archive bytes mismatch: {archive_path.name}")
+    if require_archive and archived_live is None:
+        raise RuntimeError(f"archive bytes missing: {archive_path.name}")
+    return archived
+
+
+def _load_rotation_watermark(source_path: Path, raw: bytes):
+    _archive, _plan, watermark_path = _rotation_paths(source_path, 0)
+    watermark = _rotation_record(
+        watermark_path,
+        kind=_ROTATION_WATERMARK_KIND,
+        keys=_ROTATION_WATERMARK_KEYS,
+    )
+    if watermark is None:
+        return _base_rotation_watermark(source_path)
+    end = watermark.get("end_offset")
+    if (
+        watermark.get("source") != source_path.name
+        or type(end) is not int
+        or not 0 < end <= len(raw)
+        or watermark.get("prefix_sha256") != _rotation_digest(raw[:end])
+        or type(watermark.get("last_version")) is not int
+        or int(watermark["last_version"]) < FIRST_STRICT_POLICY_VERSION
+    ):
+        raise RuntimeError(f"archive watermark identity invalid: {source_path.name}")
+    for key in (
+        "last_rotation_id", "last_plan_digest", "previous_watermark_digest",
+        "digest",
+    ):
+        value = str(watermark.get(key) or "")
+        if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            raise RuntimeError(f"archive watermark digest invalid:{source_path.name}:{key}")
+    prior_version = int(watermark["last_version"])
+    _prior_archive, prior_plan_path, _prior_watermark = _rotation_paths(
+        source_path,
+        prior_version,
+    )
+    prior_plan = _rotation_record(
+        prior_plan_path,
+        kind=_ROTATION_PLAN_KIND,
+        keys=_ROTATION_PLAN_KEYS,
+    )
+    if prior_plan is None:
+        raise RuntimeError(f"archive watermark plan missing: {source_path.name}")
+    _validate_rotation_plan(
+        prior_plan,
+        version=prior_version,
+        source_path=source_path,
+        raw=raw,
+        require_completed=True,
+        require_archive=True,
+    )
+    if (
+        prior_plan["end_offset"] != end
+        or prior_plan["new_prefix_sha256"] != watermark["prefix_sha256"]
+        or prior_plan["rotation_id"] != watermark["last_rotation_id"]
+        or prior_plan["digest"] != watermark["last_plan_digest"]
+        or prior_plan["previous_watermark_digest"]
+        != watermark["previous_watermark_digest"]
+    ):
+        raise RuntimeError(f"archive watermark chain mismatch: {source_path.name}")
+    return watermark
+
+
+def _rotation_receipt(plan: dict):
+    return {
+        "source": plan["source"],
+        "rotation_id": plan["rotation_id"],
+        "plan_digest": plan["digest"],
+        "archive_sha256": plan["archive_sha256"],
+        "start_offset": plan["start_offset"],
+        "end_offset": plan["end_offset"],
+        "source_preserved_append_only": True,
+    }
+
+
+def _rotation_digest_value(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _completed_rotation_plan_digest(subject):
+    from bot_artifact import canonical_digest
+
+    unsigned = {
+        "schema_version": 2,
+        "kind": _ROTATION_PLAN_KIND,
+        "version": subject["version"],
+        "source": subject["source"],
+        "start_offset": subject["start_offset"],
+        "end_offset": subject["end_offset"],
+        "archive": subject["archive"],
+        "archive_sha256": subject["archive_sha256"],
+        "new_prefix_sha256": subject["new_prefix_sha256"],
+        "previous_watermark_digest": subject["previous_watermark_digest"],
+        "rotation_id": subject["rotation_id"],
+        "state": "completed",
+    }
+    return canonical_digest(unsigned)
+
+
+def _rotation_subject_receipt(subject):
+    return {
+        "source": subject["source"],
+        "rotation_id": subject["rotation_id"],
+        "plan_digest": subject["completed_plan_digest"],
+        "archive_sha256": subject["archive_sha256"],
+        "start_offset": subject["start_offset"],
+        "end_offset": subject["end_offset"],
+        "source_preserved_append_only": True,
+    }
+
+
+def _validate_archive_rotation_plan_shape(
+    rotation_plan,
+    *,
+    version,
+    publication_id=None,
+):
+    """Validate the self-contained high-level plan without reading effects."""
+
+    from bot_artifact import canonical_digest
+
+    version = int(version)
+    if (
+        not isinstance(rotation_plan, dict)
+        or set(rotation_plan) != set(_ROTATION_SET_PLAN_KEYS)
+    ):
+        raise RuntimeError("archive rotation set plan fields mismatch")
+    observed_publication_id = rotation_plan.get("publication_id")
+    if (
+        rotation_plan.get("schema_version") != 1
+        or rotation_plan.get("kind") != _ROTATION_SET_PLAN_KIND
+        or type(rotation_plan.get("version")) is not int
+        or rotation_plan["version"] != version
+        or not _rotation_digest_value(observed_publication_id)
+        or (
+            publication_id is not None
+            and observed_publication_id != publication_id
+        )
+        or rotation_plan.get("source_policy") != "append-only-cold-prefix"
+        or rotation_plan.get("source_bytes_must_be_preserved") is not True
+    ):
+        raise RuntimeError("archive rotation set plan identity invalid")
+    snapshots = rotation_plan.get("source_snapshots")
+    rotations = rotation_plan.get("expected_rotations")
+    rules = list(_rotation_rules())
+    if not isinstance(snapshots, list) or len(snapshots) != len(rules):
+        raise RuntimeError("archive rotation source snapshots incomplete")
+    if not isinstance(rotations, list):
+        raise RuntimeError("archive rotation expected subjects invalid")
+
+    derived_rotations = []
+    seen_sources = set()
+    for snapshot, (source_path, keep_lines) in zip(snapshots, rules):
+        if (
+            not isinstance(snapshot, dict)
+            or set(snapshot) != set(_ROTATION_SOURCE_SNAPSHOT_KEYS)
+        ):
+            raise RuntimeError("archive rotation source snapshot fields mismatch")
+        source_name = source_path.name
+        if source_name in seen_sources:
+            raise RuntimeError("archive rotation rule source duplicated")
+        seen_sources.add(source_name)
+        size = snapshot.get("snapshot_size")
+        cold_end = snapshot.get("cold_end_offset")
+        watermark_end = snapshot.get("watermark_end_offset")
+        if (
+            snapshot.get("source") != source_name
+            or snapshot.get("keep_lines") != keep_lines
+            or type(snapshot.get("snapshot_exists")) is not bool
+            or type(size) is not int
+            or type(cold_end) is not int
+            or type(watermark_end) is not int
+            or not 0 <= watermark_end <= cold_end <= size
+            or not _rotation_digest_value(snapshot.get("snapshot_sha256"))
+            or not _rotation_digest_value(snapshot.get("watermark_digest"))
+        ):
+            raise RuntimeError(
+                f"archive rotation source snapshot invalid: {source_name}"
+            )
+        if snapshot["snapshot_exists"] is False:
+            base = _base_rotation_watermark(source_path)
+            if (
+                size != 0
+                or cold_end != 0
+                or watermark_end != 0
+                or snapshot["snapshot_sha256"] != _rotation_digest(b"")
+                or snapshot["watermark_digest"] != base["digest"]
+            ):
+                raise RuntimeError(
+                    f"archive rotation absent snapshot invalid: {source_name}"
+                )
+
+        expected = snapshot.get("expected_rotation")
+        if cold_end <= watermark_end:
+            if expected is not None:
+                raise RuntimeError(
+                    f"archive rotation unexpected subject: {source_name}"
+                )
+            continue
+        if (
+            not isinstance(expected, dict)
+            or set(expected) != set(_ROTATION_SUBJECT_KEYS)
+        ):
+            raise RuntimeError(
+                f"archive rotation expected subject fields mismatch: {source_name}"
+            )
+        archive_path, _plan_path, _watermark_path = _rotation_paths(
+            source_path,
+            version,
+        )
+        subject = {
+            "version": version,
+            "source": source_name,
+            "start_offset": watermark_end,
+            "end_offset": cold_end,
+            "archive_sha256": expected.get("archive_sha256"),
+            "new_prefix_sha256": expected.get("new_prefix_sha256"),
+            "previous_watermark_digest": snapshot["watermark_digest"],
+        }
+        if (
+            expected.get("version") != version
+            or expected.get("source") != source_name
+            or expected.get("archive") != archive_path.name
+            or expected.get("start_offset") != watermark_end
+            or expected.get("end_offset") != cold_end
+            or not _rotation_digest_value(subject["archive_sha256"])
+            or not _rotation_digest_value(subject["new_prefix_sha256"])
+            or expected.get("previous_watermark_digest")
+            != snapshot["watermark_digest"]
+            or expected.get("rotation_id") != canonical_digest(subject)
+            or expected.get("completed_plan_digest")
+            != _completed_rotation_plan_digest(expected)
+        ):
+            raise RuntimeError(
+                f"archive rotation expected subject invalid: {source_name}"
+            )
+        derived_rotations.append(expected)
+
+    if rotations != derived_rotations:
+        raise RuntimeError("archive rotation expected subject set mismatch")
+    if rotation_plan.get("source_snapshot_set_digest") != canonical_digest(
+        snapshots
+    ):
+        raise RuntimeError("archive rotation source snapshot digest mismatch")
+    if rotation_plan.get("expected_rotation_set_digest") != canonical_digest(
+        rotations
+    ):
+        raise RuntimeError("archive rotation expected subject digest mismatch")
+    unsigned = {
+        key: value
+        for key, value in rotation_plan.items()
+        if key != "authority_digest"
+    }
+    if rotation_plan.get("authority_digest") != canonical_digest(unsigned):
+        raise RuntimeError("archive rotation authority digest mismatch")
+    return derived_rotations
+
+
+def expected_archive_rotation_receipts(
+    rotation_plan,
+    *,
+    version,
+    publication_id=None,
+):
+    """Derive the exact receipt set without relying on low-level plan files."""
+
+    rotations = _validate_archive_rotation_plan_shape(
+        rotation_plan,
+        version=version,
+        publication_id=publication_id,
+    )
+    return [_rotation_subject_receipt(subject) for subject in rotations]
+
+
+def _read_archive_rotation_plan_authority(version, *, missing_ok=False):
+    path = _rotation_set_plan_path(version)
+    if not os.path.lexists(path):
+        if missing_ok:
+            return None
+        raise RuntimeError("archive rotation set plan authority missing")
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_SH):
+        raw = _read_regular_state_text(path, allow_missing=False)
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("archive rotation set plan authority invalid JSON") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("archive rotation set plan authority not object")
+    return payload
+
+
+def _publish_archive_rotation_plan_authority(plan):
+    """Create one immutable plan authority; never replace existing bytes."""
+
+    version = int(plan["version"])
+    path = _rotation_set_plan_path(version)
+    _validate_archive_rotation_plan_shape(
+        plan,
+        version=version,
+        publication_id=plan.get("publication_id"),
+    )
+    Path(ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
+    _fsync_directory(ARCHIVE_DIR)
+    encoded = json.dumps(
+        plan,
+        indent=2,
+        ensure_ascii=False,
+        sort_keys=True,
+        allow_nan=False,
+    ) + "\n"
+    with _locked_state_sidecar(path, lock_type=fcntl.LOCK_EX):
+        if os.path.lexists(path):
+            existing = _read_regular_state_text(path, allow_missing=False)
+            if existing != encoded:
+                raise RuntimeError(
+                    "archive rotation set plan authority already differs"
+                )
+            _fsync_regular_state_file_and_parent(path)
+            return plan
+        # The stable sidecar makes this a create-once publication for every
+        # cooperating producer.  Atomic replace of the private inode has no
+        # link/unlink crash window, unlike a create-only hardlink sequence.
+        _atomic_publish_state_text(path, encoded)
+    reopened = _read_archive_rotation_plan_authority(version)
+    if reopened != plan:
+        raise RuntimeError("archive rotation set plan authority reproof mismatch")
+    return plan
+
+
+def build_archive_rotation_plan(version, publication_id):
+    """Freeze every managed source before any archive effect is allowed."""
+
+    from bot_artifact import canonical_digest
+
+    version = int(version)
+    if version < FIRST_STRICT_POLICY_VERSION:
+        raise RuntimeError("pre_epoch_archive_rotation_forbidden")
+    if not _rotation_digest_value(publication_id):
+        raise RuntimeError("archive rotation publication identity invalid")
+    existing_authority = _read_archive_rotation_plan_authority(
+        version,
+        missing_ok=True,
+    )
+    if existing_authority is not None:
+        validate_archive_rotation_plan(
+            existing_authority,
+            version=version,
+            publication_id=publication_id,
+        )
+        return existing_authority
+
+    snapshots = []
+    rotations = []
+    for source_path, keep_lines in _rotation_rules():
+        current_archive, current_plan, watermark_path = _rotation_paths(
+            source_path,
+            version,
+        )
+        if os.path.lexists(current_archive) or os.path.lexists(current_plan):
+            raise RuntimeError(
+                f"archive rotation effect precedes high-level plan: {source_path.name}"
+            )
+        snapshot_exists = os.path.lexists(source_path)
+        if snapshot_exists:
+            with locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
+                raw = source.read()
+                watermark = _load_rotation_watermark(source_path, raw)
+        else:
+            raw = b""
+            watermark = _base_rotation_watermark(source_path)
+            if os.path.lexists(watermark_path):
+                raise RuntimeError(
+                    f"archive rotation source missing with authority: {source_path.name}"
+                )
+        lines = raw.splitlines(keepends=True)
+        cold_end = (
+            sum(len(line) for line in lines[:-keep_lines])
+            if len(lines) > keep_lines
+            else 0
+        )
+        start = int(watermark["end_offset"])
+        if cold_end < start:
+            cold_end = start
+        expected = None
+        if cold_end > start:
+            archive_path, _plan_path, _watermark_path = _rotation_paths(
+                source_path,
                 version,
-                source_v,
-                require_pending=True,
             )
-            if not ok:
-                return False, reason, receipt
-            receipt = dict(receipt)
-            receipt["status"] = "consumed"
-            receipt["consumed_at"] = time.time()
-            snapshot["post_commit_archivist_receipt"] = receipt
-            handle.seek(0)
-            json.dump(snapshot, handle, indent=2, ensure_ascii=False)
-            handle.truncate()
-        return True, "", receipt
-    except Exception as exc:
-        return False, f"post_commit_archivist_consume_error:{type(exc).__name__}", None
-
-
-def archive_rotate_files(version):
-    """Rotate append-only data files by archiving old entries to archive/."""
-    os.makedirs(ARCHIVE_DIR, exist_ok=True)
-
-    rotation_rules = [
-        (WORKER_FAILURES_FILE, 200),
-        (MATCH_HISTORY_FILE, 500),
-        (RATING_HISTORY_FILE, 100),
-        (RESULTS_DIR / "events.jsonl", 1000),
-    ]
-    if LLM_COSTS_FILE.exists():
-        rotation_rules.append((LLM_COSTS_FILE, 200))
-
-    for filepath, keep_lines in rotation_rules:
-        if not filepath.exists():
-            continue
-        with locked_file(filepath, "r") as f:
-            lines = f.readlines()
-        if len(lines) <= keep_lines:
-            continue
-        archived_lines = lines[:-keep_lines]
-        hot_lines = lines[-keep_lines:]
-        archive_name = f"{filepath.stem}_v{version}.jsonl"
-        archive_path = ARCHIVE_DIR / archive_name
-        with open(archive_path, "w") as f:
-            f.writelines(archived_lines)
-        with locked_file(filepath, "w") as f:
-            f.writelines(hot_lines)
-        # Preserve cost total when archiving LLM costs
-        if filepath == LLM_COSTS_FILE:
-            archived_cost = sum(
-                json.loads(l).get("cost_usd", 0)
-                for l in archived_lines if l.strip()
+            subject = {
+                "version": version,
+                "source": source_path.name,
+                "start_offset": start,
+                "end_offset": cold_end,
+                "archive_sha256": _rotation_digest(raw[start:cold_end]),
+                "new_prefix_sha256": _rotation_digest(raw[:cold_end]),
+                "previous_watermark_digest": watermark["digest"],
+            }
+            expected = {
+                **subject,
+                "archive": archive_path.name,
+                "rotation_id": canonical_digest(subject),
+            }
+            expected["completed_plan_digest"] = (
+                _completed_rotation_plan_digest(expected)
             )
-            summary_file = ARCHIVE_DIR / "cost_summary.json"
-            existing = 0.0
-            if summary_file.exists():
-                try:
-                    existing = json.loads(summary_file.read_text()).get("grand_total", 0.0)
-                except Exception:
-                    pass
-            summary_file.write_text(json.dumps({"grand_total": round(existing + archived_cost, 6)}))
+            rotations.append(expected)
+        snapshots.append({
+            "source": source_path.name,
+            "keep_lines": keep_lines,
+            "snapshot_exists": snapshot_exists,
+            "snapshot_size": len(raw),
+            "snapshot_sha256": _rotation_digest(raw),
+            "cold_end_offset": cold_end,
+            "watermark_end_offset": start,
+            "watermark_digest": watermark["digest"],
+            "expected_rotation": expected,
+        })
+    plan = {
+        "schema_version": 1,
+        "kind": _ROTATION_SET_PLAN_KIND,
+        "version": version,
+        "publication_id": publication_id,
+        "source_policy": "append-only-cold-prefix",
+        "source_bytes_must_be_preserved": True,
+        "source_snapshots": snapshots,
+        "expected_rotations": rotations,
+        "source_snapshot_set_digest": canonical_digest(snapshots),
+        "expected_rotation_set_digest": canonical_digest(rotations),
+    }
+    plan["authority_digest"] = canonical_digest(plan)
+    _validate_archive_rotation_plan_shape(
+        plan,
+        version=version,
+        publication_id=publication_id,
+    )
+    return _publish_archive_rotation_plan_authority(plan)
+
+
+def validate_archive_rotation_plan(
+    rotation_plan,
+    *,
+    version,
+    publication_id=None,
+):
+    """Reprove the frozen source prefixes and current predecessor authority."""
+
+    rotations = _validate_archive_rotation_plan_shape(
+        rotation_plan,
+        version=version,
+        publication_id=publication_id,
+    )
+    authority = _read_archive_rotation_plan_authority(int(version))
+    if authority != rotation_plan:
+        raise RuntimeError("archive rotation set plan authority mismatch")
+    expected_by_source = {item["source"]: item for item in rotations}
+    for snapshot, (source_path, keep_lines) in zip(
+        rotation_plan["source_snapshots"],
+        _rotation_rules(),
+    ):
+        if not os.path.lexists(source_path):
+            if snapshot["snapshot_exists"]:
+                raise RuntimeError(
+                    f"archive rotation snapshot source missing: {source_path.name}"
+                )
+            raw = b""
+            current_watermark = _base_rotation_watermark(source_path)
+        else:
+            with locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
+                raw = source.read()
+                current_watermark = _load_rotation_watermark(source_path, raw)
+        snapshot_size = snapshot["snapshot_size"]
+        if (
+            len(raw) < snapshot_size
+            or _rotation_digest(raw[:snapshot_size])
+            != snapshot["snapshot_sha256"]
+        ):
+            raise RuntimeError(
+                f"archive rotation source prefix changed: {source_path.name}"
+            )
+        frozen = raw[:snapshot_size]
+        lines = frozen.splitlines(keepends=True)
+        cold_end = (
+            sum(len(line) for line in lines[:-keep_lines])
+            if len(lines) > keep_lines
+            else 0
+        )
+        if cold_end < snapshot["watermark_end_offset"]:
+            cold_end = snapshot["watermark_end_offset"]
+        if cold_end != snapshot["cold_end_offset"]:
+            raise RuntimeError(
+                f"archive rotation frozen range changed: {source_path.name}"
+            )
+        expected = expected_by_source.get(source_path.name)
+        _archive_path, low_plan_path, _watermark_path = _rotation_paths(
+            source_path,
+            int(version),
+        )
+        low_plan = None
+        if os.path.lexists(low_plan_path):
+            low_plan = _rotation_record(
+                low_plan_path,
+                kind=_ROTATION_PLAN_KIND,
+                keys=_ROTATION_PLAN_KEYS,
+            )
+        if expected is None:
+            if low_plan is not None:
+                raise RuntimeError(
+                    f"archive rotation unplanned low-level plan: {source_path.name}"
+                )
+            if current_watermark["digest"] != snapshot["watermark_digest"]:
+                raise RuntimeError(
+                    f"archive rotation no-op predecessor changed: {source_path.name}"
+                )
+            continue
+        if low_plan is None:
+            if current_watermark["digest"] != snapshot["watermark_digest"]:
+                raise RuntimeError(
+                    f"archive rotation predecessor changed: {source_path.name}"
+                )
+            continue
+        _validate_rotation_plan(
+            low_plan,
+            version=int(version),
+            source_path=source_path,
+            raw=raw,
+            require_completed=low_plan.get("state") == "completed",
+            require_archive=low_plan.get("state") == "completed",
+        )
+        for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
+            if low_plan.get(key) != expected.get(key):
+                raise RuntimeError(
+                    f"archive rotation low-level plan mismatch: {source_path.name}"
+                )
+        if expected["completed_plan_digest"] != _completed_rotation_plan_digest(
+            expected
+        ):
+            raise RuntimeError(
+                f"archive rotation completion digest mismatch: {source_path.name}"
+            )
+        if (
+            low_plan.get("state") == "completed"
+            and low_plan.get("digest") != expected["completed_plan_digest"]
+        ):
+            raise RuntimeError(
+                f"archive rotation completed plan mismatch: {source_path.name}"
+            )
+    return rotation_plan
+
+
+def archive_rotate_files(version, rotation_plan):
+    """Copy new cold JSONL ranges without truncating their live authority."""
+
+    version = int(version)
+    if version < FIRST_STRICT_POLICY_VERSION:
+        raise RuntimeError("pre_epoch_archive_rotation_forbidden")
+    validate_archive_rotation_plan(
+        rotation_plan,
+        version=version,
+        publication_id=rotation_plan.get("publication_id")
+        if isinstance(rotation_plan, dict)
+        else None,
+    )
+    expected_by_source = {
+        item["source"]: item
+        for item in rotation_plan["expected_rotations"]
+    }
+    Path(ARCHIVE_DIR).mkdir(parents=True, exist_ok=True)
+    _fsync_directory(ARCHIVE_DIR)
+    receipts = []
+    for source_path, _keep_lines in _rotation_rules():
+        expected = expected_by_source.get(source_path.name)
+        if expected is None:
+            continue
+        if not os.path.lexists(source_path):
+            raise RuntimeError(
+                f"archive rotation planned source missing: {source_path.name}"
+            )
+        archive_path, plan_path, watermark_path = _rotation_paths(
+            source_path,
+            version,
+        )
+        with locked_file(source_path, "rb", lock_type=fcntl.LOCK_EX) as source:
+            raw = source.read()
+            watermark = _load_rotation_watermark(source_path, raw)
+            plan = _rotation_record(
+                plan_path,
+                kind=_ROTATION_PLAN_KIND,
+                keys=_ROTATION_PLAN_KEYS,
+            )
+            if plan is None:
+                if os.path.lexists(archive_path):
+                    raise RuntimeError(f"unclaimed archive exists: {archive_path.name}")
+                if watermark["digest"] != expected["previous_watermark_digest"]:
+                    raise RuntimeError(
+                        f"archive rotation planned predecessor mismatch: {source_path.name}"
+                    )
+                plan = _write_rotation_record(
+                    plan_path,
+                    {
+                        "schema_version": 2,
+                        "kind": _ROTATION_PLAN_KIND,
+                        **{
+                            key: value
+                            for key, value in expected.items()
+                            if key != "completed_plan_digest"
+                        },
+                        "state": "planned",
+                    },
+                    kind=_ROTATION_PLAN_KIND,
+                    keys=_ROTATION_PLAN_KEYS,
+                )
+            for key in _ROTATION_SUBJECT_KEYS - {"completed_plan_digest"}:
+                if plan.get(key) != expected.get(key):
+                    raise RuntimeError(
+                        f"archive rotation low-level plan mismatch: {source_path.name}"
+                    )
+            archived = _validate_rotation_plan(
+                plan,
+                version=version,
+                source_path=source_path,
+                raw=raw,
+                require_completed=False,
+                require_archive=False,
+            )
+            start = int(plan["start_offset"])
+            end = int(plan["end_offset"])
+            watermark_end = int(watermark["end_offset"])
+            if watermark_end < start or start < watermark_end < end:
+                raise RuntimeError(f"archive watermark overlaps plan: {source_path.name}")
+            if watermark_end == start:
+                if plan["previous_watermark_digest"] != watermark["digest"]:
+                    raise RuntimeError(f"archive plan predecessor mismatch: {source_path.name}")
+                _publish_rotation_archive(archive_path, archived)
+                if plan["state"] != "completed":
+                    plan = _write_rotation_record(
+                        plan_path,
+                        {key: value for key, value in plan.items() if key != "digest"} | {"state": "completed"},
+                        kind=_ROTATION_PLAN_KIND,
+                        keys=_ROTATION_PLAN_KEYS,
+                    )
+                if plan["digest"] != expected["completed_plan_digest"]:
+                    raise RuntimeError(
+                        f"archive rotation completed plan mismatch: {source_path.name}"
+                    )
+                _write_rotation_record(
+                    watermark_path,
+                    {
+                        "schema_version": 2,
+                        "kind": _ROTATION_WATERMARK_KIND,
+                        "source": source_path.name,
+                        "end_offset": end,
+                        "prefix_sha256": plan["new_prefix_sha256"],
+                        "last_version": version,
+                        "last_rotation_id": plan["rotation_id"],
+                        "last_plan_digest": plan["digest"],
+                        "previous_watermark_digest": plan["previous_watermark_digest"],
+                    },
+                    kind=_ROTATION_WATERMARK_KIND,
+                    keys=_ROTATION_WATERMARK_KEYS,
+                )
+            elif watermark_end >= end:
+                _validate_rotation_plan(
+                    plan,
+                    version=version,
+                    source_path=source_path,
+                    raw=raw,
+                    require_completed=True,
+                    require_archive=True,
+                )
+                if plan["digest"] != expected["completed_plan_digest"]:
+                    raise RuntimeError(
+                        f"archive rotation completed plan mismatch: {source_path.name}"
+                    )
+            receipts.append(_rotation_receipt(plan))
+    validate_archive_rotation_receipts(
+        version,
+        receipts,
+        rotation_plan=rotation_plan,
+    )
+    return receipts
+
+
+def validate_archive_rotation_receipts(version, receipts, *, rotation_plan):
+    """Pure read/reproof of an already planned rotation; creates no files."""
+
+    version = int(version)
+    if not isinstance(receipts, list):
+        raise RuntimeError("archive rotation receipts must be a list")
+    validate_archive_rotation_plan(
+        rotation_plan,
+        version=version,
+        publication_id=rotation_plan.get("publication_id")
+        if isinstance(rotation_plan, dict)
+        else None,
+    )
+    expected_receipts = expected_archive_rotation_receipts(
+        rotation_plan,
+        version=version,
+        publication_id=rotation_plan.get("publication_id")
+        if isinstance(rotation_plan, dict)
+        else None,
+    )
+    by_name = {path.name: path for path, _keep in _rotation_rules()}
+    supplied = {}
+    for receipt in receipts:
+        if not isinstance(receipt, dict) or set(receipt) != set(_ROTATION_RECEIPT_KEYS):
+            raise RuntimeError("archive rotation receipt fields mismatch")
+        source_name = receipt.get("source")
+        if source_name in supplied or source_name not in by_name:
+            raise RuntimeError("archive rotation receipt source invalid")
+        supplied[source_name] = receipt
+
+    # The high-level plan is the authority even before the first low-level
+    # per-source plan exists.  Reject omissions before inspecting effects so a
+    # forged ``rotations=[]`` cannot vacuously certify a cold source.
+    if receipts != expected_receipts:
+        expected_names = {item["source"] for item in expected_receipts}
+        supplied_names = set(supplied)
+        missing = sorted(expected_names - supplied_names)
+        if missing:
+            raise RuntimeError(
+                f"archive rotation receipt missing: {missing[0]}"
+            )
+        unexpected = sorted(supplied_names - expected_names)
+        if unexpected:
+            raise RuntimeError(
+                f"archive rotation receipt unexpected: {unexpected[0]}"
+            )
+        raise RuntimeError("archive rotation receipt set mismatch")
+
+    verified = []
+    expected_by_source = {
+        item["source"]: item for item in expected_receipts
+    }
+    for source_path, _keep_lines in _rotation_rules():
+        source_name = source_path.name
+        if source_name not in expected_by_source:
+            continue
+        _archive_path, plan_path, _watermark_path = _rotation_paths(
+            source_path,
+            version,
+        )
+        if not os.path.lexists(plan_path):
+            raise RuntimeError(f"archive rotation plan missing: {source_name}")
+        if not os.path.lexists(source_path):
+            raise RuntimeError(
+                f"archive rotation source missing: {source_name}"
+            )
+        with locked_file(source_path, "rb", lock_type=fcntl.LOCK_SH) as source:
+            raw = source.read()
+            watermark = _load_rotation_watermark(source_path, raw)
+            plan = _rotation_record(
+                plan_path,
+                kind=_ROTATION_PLAN_KIND,
+                keys=_ROTATION_PLAN_KEYS,
+            )
+            if plan is None:
+                raise RuntimeError(f"archive rotation plan missing: {source_name}")
+            _validate_rotation_plan(
+                plan,
+                version=version,
+                source_path=source_path,
+                raw=raw,
+                require_completed=True,
+                require_archive=True,
+            )
+            if int(watermark["end_offset"]) < int(plan["end_offset"]):
+                raise RuntimeError(f"archive rotation watermark behind: {source_name}")
+            expected = _rotation_receipt(plan)
+            receipt = supplied.get(source_name)
+            if receipt is None:
+                raise RuntimeError(
+                    f"archive rotation receipt missing: {source_name}"
+                )
+            if receipt != expected:
+                raise RuntimeError(f"archive rotation receipt mismatch: {source_name}")
+            verified.append(expected)
+    return verified
 
 
 def archive_old_logs(keep_generations=5):
-    """Compress log directories older than keep_generations into .tar.gz."""
-    current_v = find_current_v()
-    cutoff_v = current_v - keep_generations
-    if cutoff_v <= 0:
-        return
+    """Retired unsafe API; strict handoff cleanup owns explicit log paths."""
 
-    os.makedirs(ARCHIVE_DIR, exist_ok=True)
-    for v in range(1, cutoff_v + 1):
-        log_dir = RESULTS_DIR / f"v{v}" / "logs"
-        if not log_dir.exists():
-            continue
-        archive_path = ARCHIVE_DIR / f"v{v}_logs.tar.gz"
-        if archive_path.exists():
-            shutil.rmtree(log_dir, ignore_errors=True)
-            continue
-        try:
-            import tarfile
-            parent_dir = RESULTS_DIR / f"v{v}"
-            with tarfile.open(str(archive_path), "w:gz") as tar:
-                tar.add(str(log_dir), arcname=f"v{v}/logs")
-            shutil.rmtree(parent_dir, ignore_errors=True)
-        except Exception:
-            pass
+    raise RuntimeError(
+        "archive_old_logs_retired_use_post_publication_strict_log_cleanup"
+    )
 
 
 # ──────────────────────────────────────────────

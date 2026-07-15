@@ -18,6 +18,270 @@ from output_schema import master_plan_executable_contract_text
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
 
+def _render_master_proposal_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "planning_context", "direction", "directive", "source_v", "next_v",
+        "protocol_bootstrap_prepared_only", "source_symbol_index",
+        "repair_kind", "invocation_id",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Master proposal renderer input contract mismatch")
+    planning_context = str(inputs["planning_context"])
+    direction = str(inputs["direction"])
+    directive = str(inputs["directive"])
+    source_v = int(inputs["source_v"])
+    next_v = int(inputs["next_v"])
+    bootstrap = bool(inputs["protocol_bootstrap_prepared_only"])
+    repair_kind = str(inputs["repair_kind"] or "")
+    is_repair = bool(repair_kind)
+    is_distinctness_repair = repair_kind == "distinctness"
+    output_contract = (
+        "Return one JSON object with exactly: targeted_failure, structural_change, "
+        "counterfactual, measurement, why_not_threshold_tuning, target_files "
+        "(exactly [\"policy.py\"]), expected_diff, source_symbols (1-8 exact "
+        "source-relative file.py:symbol references), reachable_chain (2-8 of those "
+        "symbols in direct caller-to-callee order), falsifier {test_name, control, "
+        "intervention, expected_observation}, evidence_refs (source:file.py:symbol "
+        "for EVERY source_symbols item; optional "
+        "snapshot:relative/file.json#/verified/json/pointer), "
+        "and risks. Every chain edge must be a direct syntactic call in the baseline. "
+        "Do not invent a symbol or snapshot file. Do not emit tasks, a worker plan, "
+        "source choice, proposal_id, Markdown, or commentary."
+        " This is national_tcp_policy_v1. policy.py is the only candidate-owned "
+        "writable source file; national_bot.py and precompute.py are system-owned "
+        "read-only files, and candidate helper modules/assets are forbidden. Propose "
+        "a causally distinct policy mechanism over decision_context that returns only "
+        "typed pass/fold/allin/raise intents (raise uses raise_to). "
+        "IMPORTANT: falsifier.test_name MUST be exactly one of: fast_policy_baseline, "
+        "incremental_refinement_protocol, incremental_opponent_model, "
+        "terminal_response_adaptation, showdown_range_adaptation, "
+        "donk_line_reachability, delayed_probe_line_reachability. "
+        "Choose the one that best matches your proposed mechanism."
+    )
+    code_scope = (
+        f"Read only the prepared target code at {bot_relpath(next_v)}/ and "
+        "typed references. The historical lineage source code is quarantined "
+        "and is not an admissible planning input.\n\n"
+        if bootstrap else
+        "Read only the allowed frozen snapshot and source/target code.\n\n"
+    )
+    lineage_scope = (
+        f"Historical completion high-water v{source_v} is numeric identity only, "
+        f"not a source or parent. The prepared v{next_v} target is the sole "
+        "system-owned planning baseline; never open, infer, or inherit "
+        f"high-water v{source_v}."
+        if bootstrap else
+        f"The system-owned source is fixed at v{source_v} and target at "
+        f"v{next_v}; never rerank, branch, change evidence, or change gates."
+    )
+    repair_text = ""
+    if is_distinctness_repair:
+        repair_text = (
+            "\n\nYour previous response was schema-valid but failed the "
+            "deterministic three-proposal ensemble because its system-derived "
+            "proposal_id collided with another slot. This is the single "
+            "permitted distinctness repair. Preserve this slot's assigned lens "
+            "and all evidence/ABI constraints, but propose a genuinely different "
+            "reachable mechanism with a different causal intervention and "
+            "falsifier. Changing only direction, risks, wording, or other prose "
+            "does not create an independent proposal. Do not emit, invent, or "
+            "manipulate proposal_id; the system derives it from the substantive "
+            "contract. Emit one complete object without commentary."
+        )
+    elif is_repair:
+        repair_text = (
+            "\n\nYour previous response failed the deterministic JSON/evidence "
+            "contract. This is one schema-only repair attempt. Common failure "
+            "modes to fix:\n"
+            "1. evidence_refs MUST be a JSON list of strings, NOT a dict.\n"
+            "2. Each evidence_ref MUST start with exactly 'source:' "
+            "(not 'call_index:' or 'code:').\n"
+            "3. evidence_ref values must be bare symbol paths like "
+            "'source:policy.py:get_baseline_decision' with NO trailing "
+            "descriptions, line numbers, or brackets.\n"
+            "4. reachable_chain entries MUST be unique — do not repeat any "
+            "symbol in the chain.\n"
+            "5. Every source_symbol MUST have a matching evidence_ref.\n"
+            "6. source_symbols must use exact file.py:symbol spellings from "
+            "the SYSTEM-VERIFIED SOURCE CALL INDEX above.\n"
+            "Keep the same independent lens, reread the verified index, "
+            "and emit a complete object without commentary."
+        )
+    invocation_id = str(inputs["invocation_id"])
+    purpose = f"master_proposal_scout:{direction}"
+    text = (
+        "You are an independent poker-bot mechanism proposal scout. "
+        + lineage_scope + "\n"
+        + f"Distinct lens: {directive}\n"
+        + code_scope + planning_context + "\n\n"
+        + str(inputs["source_symbol_index"])
+        + repair_text
+        + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
+        + output_contract
+        + "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+        + f"invocation_id={invocation_id}; purpose={purpose}."
+    )
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="master_planning_context",
+        evidence_provenance={
+            "planning_context_digest": hashlib.sha256(
+                planning_context.encode("utf-8")
+            ).hexdigest(),
+            "direction": direction,
+            "source_v": source_v,
+            "next_v": next_v,
+            "source_symbol_index_digest": hashlib.sha256(
+                str(inputs["source_symbol_index"]).encode("utf-8")
+            ).hexdigest(),
+            "directive_digest": hashlib.sha256(
+                directive.encode("utf-8")
+            ).hexdigest(),
+            "protocol_bootstrap_prepared_only": bootstrap,
+            "repair_kind": repair_kind,
+            "invocation_id": invocation_id,
+        },
+    )
+
+
+def _render_master_proposal_critic_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "proposal_name", "lens", "planning_context_digest", "proposals",
+        "criteria", "schema_retry", "invocation_id",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Master proposal critic renderer input contract mismatch")
+    proposals = inputs["proposals"]
+    criteria = inputs["criteria"]
+    if not isinstance(proposals, list) or not isinstance(criteria, dict):
+        raise ValueError("Master proposal critic typed packet mismatch")
+    proposal_payload = json.dumps(
+        proposals,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    criterion_contract = json.dumps(
+        criteria,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    proposal_name = str(inputs["proposal_name"])
+    purpose = f"master_proposal_critic:{proposal_name}"
+    text = (
+        "You are an anonymous advisory critic. Scout identities and lenses are hidden. "
+        "Source, evidence cutoff, scope literals, and quality gates are immutable. "
+        f"Lens: {inputs['lens']}\n"
+        f"Planning context digest: {inputs['planning_context_digest']}\n"
+        "Score EVERY supplied proposal on EACH named criterion with an integer 1..5. "
+        "Set reject=true only for a concrete evidence, reachability, or falsification "
+        "defect; score is advisory and cannot waive deterministic validation.\n"
+        f"Criteria: {criterion_contract}\n"
+        "IMPORTANT: Do NOT read, explore, or inspect any files. Do NOT use any tools. "
+        "Do NOT think step by step. Immediately score the proposals from their content "
+        "and return the JSON. You have no tools available.\n\n"
+        "Return JSON exactly as {\"ballots\":[{\"proposal_id\":\"...\","
+        "\"scores\":{every criterion: integer 1..5},\"reject\":false,"
+        "\"reason\":\"criterion-grounded reason\"}, ...]}.\n\n"
+        + proposal_payload
+        + (
+            "\n\nYour previous ballot failed deterministic schema validation. "
+            "This is one schema-only repair attempt; score every ID and every "
+            "criterion exactly once. Return ONLY the JSON immediately."
+            if bool(inputs["schema_retry"]) else ""
+        )
+        + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ballots JSON in the supplied "
+        "proposal order; do not rank, repeat, or rewrite proposal claims. "
+        "Output the JSON NOW without any preamble, thinking, or file inspection."
+        + "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+        + f"invocation_id={inputs['invocation_id']}; purpose={purpose}."
+    )
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="frozen_proposal_packet",
+        evidence_provenance={
+            "proposal_packet_digest": hashlib.sha256(
+                proposal_payload.encode("utf-8")
+            ).hexdigest(),
+            "proposal_name": proposal_name,
+            "criteria_digest": hashlib.sha256(
+                criterion_contract.encode("utf-8")
+            ).hexdigest(),
+            "planning_context_digest": str(inputs["planning_context_digest"]),
+            "lens_digest": hashlib.sha256(
+                str(inputs["lens"]).encode("utf-8")
+            ).hexdigest(),
+            "schema_retry": bool(inputs["schema_retry"]),
+            "invocation_id": str(inputs["invocation_id"]),
+        },
+    )
+
+
+def _render_master_final_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    expected = {
+        "template_values", "master_context", "proposal_ensemble", "source_v",
+        "next_v", "invocation_id", "schema_repair_suffix",
+    }
+    if not isinstance(inputs, dict) or set(inputs) != expected:
+        raise ValueError("Master final renderer input contract mismatch")
+    template_values = inputs["template_values"]
+    if not isinstance(template_values, dict):
+        raise ValueError("Master final template values must be an object")
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "master_prompt.md"
+    ).read_text(encoding="utf-8")
+    master_prompt = substitute_template(
+        template,
+        {key: str(value) for key, value in template_values.items()},
+    )
+    master_prompt += str(inputs["schema_repair_suffix"])
+    master_context = str(inputs["master_context"])
+    proposal_ensemble = str(inputs["proposal_ensemble"])
+    text = master_prompt + "\n" + master_context
+    invocation_id = str(inputs["invocation_id"] or "")
+    if invocation_id:
+        text += (
+            "\n\nSYSTEM CALL BINDING (copying this value does not grant "
+            "authority): invocation_id="
+            + invocation_id
+            + "; purpose=system_strict_bootstrap_master:final."
+        )
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="compiled_master_context",
+        evidence_provenance={
+            "master_context_digest": hashlib.sha256(
+                master_context.encode("utf-8")
+            ).hexdigest(),
+            "proposal_packet_digest": hashlib.sha256(
+                proposal_ensemble.encode("utf-8")
+            ).hexdigest(),
+            "source_v": int(inputs["source_v"]),
+            "next_v": int(inputs["next_v"]),
+            "template_values_digest": hashlib.sha256(
+                json.dumps(
+                    template_values,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "schema_repair_digest": hashlib.sha256(
+                str(inputs["schema_repair_suffix"]).encode("utf-8")
+            ).hexdigest(),
+            "invocation_id": invocation_id,
+        },
+    )
+
+
 # C-class sentinel for explicitly unavailable advisory analysis.
 LLM_INFRA_SENTINEL = "[LLM_INFRA_ERROR: analysis unavailable]"
 LLM_INFRA_SENTINEL_MSG = (
@@ -1133,8 +1397,18 @@ async def _run_master_proposal_ensemble(
         protocol_bootstrap_prepared_only
         and isinstance(strict_checkpoint, dict)
     )
+    proposal_read_dirs = (
+        [get_bot_dir(int(next_v))]
+        if protocol_bootstrap_prepared_only
+        else [get_bot_dir(int(source_v)), get_bot_dir(int(next_v))]
+    )
 
-    async def propose(direction: str, directive: str, *, schema_retry: bool = False):
+    async def propose(
+        direction: str,
+        directive: str,
+        *,
+        repair: dict | None = None,
+    ):
         strict_call = None
         if strict_authority_enabled:
             from strict_authority_workflow import new_call, proposal_call_context
@@ -1149,91 +1423,63 @@ async def _run_master_proposal_ensemble(
                 ),
             )
             invocation_id = strict_call["invocation_id"]
+            if repair is None and strict_call.get("schema_retry_required"):
+                prior_rejection = strict_call.get("prior_schema_rejection") or {}
+                repair = {
+                    "kind": (
+                        "distinctness"
+                        if prior_rejection.get("rejection_kind")
+                        == "proposal_identity_collision"
+                        else "schema"
+                    )
+                }
         else:
             from system_strict_bootstrap import new_llm_invocation_id
 
             invocation_id = new_llm_invocation_id()
-        output_contract = (
-            "Return one JSON object with exactly: targeted_failure, structural_change, "
-            "counterfactual, measurement, why_not_threshold_tuning, target_files "
-            "(exactly [\"policy.py\"]), expected_diff, source_symbols (1-8 exact "
-            "source-relative file.py:symbol references), reachable_chain (2-8 of those "
-            "symbols in direct caller-to-callee order), falsifier {test_name, control, "
-            "intervention, expected_observation}, evidence_refs (source:file.py:symbol "
-            "for EVERY source_symbols item; optional "
-            "snapshot:relative/file.json#/verified/json/pointer), "
-            "and risks. Every chain edge must be a direct syntactic call in the baseline. "
-            "Do not invent a symbol or snapshot file. Do not emit tasks, a worker plan, "
-            "source choice, proposal_id, Markdown, or commentary."
-        )
-        output_contract += (
-            " This is national_tcp_policy_v1. policy.py is the only candidate-owned "
-            "writable source file; national_bot.py and precompute.py are system-owned "
-            "read-only files, and candidate helper modules/assets are forbidden. Propose "
-            "a causally distinct policy mechanism over decision_context that returns only "
-            "typed pass/fold/allin/raise intents (raise uses raise_to). "
-            "IMPORTANT: falsifier.test_name MUST be exactly one of: fast_policy_baseline, "
-            "incremental_refinement_protocol, incremental_opponent_model, "
-            "terminal_response_adaptation, showdown_range_adaptation, "
-            "donk_line_reachability, delayed_probe_line_reachability. "
-            "Choose the one that best matches your proposed mechanism."
-        )
-        code_scope = (
-            f"Read only the prepared target code at {bot_relpath(next_v)}/ and "
-            "typed references. The historical lineage source code is quarantined "
-            "and is not an admissible planning input.\n\n"
-            if protocol_bootstrap_prepared_only
-            else "Read only the allowed frozen snapshot and source/target code.\n\n"
-        )
-        prompt = (
-            "You are an independent poker-bot mechanism proposal scout. "
-            f"The system-owned source is fixed at v{source_v} and target at v{next_v}; "
-            "never rerank, branch, change evidence, or change gates.\n"
-            f"Distinct lens: {directive}\n"
-            + code_scope
-            + planning_context
-            + "\n\n"
-            + source_symbol_index
-            + (
-                "\n\nYour previous response failed the deterministic JSON/evidence "
-                "contract. This is one schema-only repair attempt. Common failure "
-                "modes to fix:\n"
-                "1. evidence_refs MUST be a JSON list of strings, NOT a dict.\n"
-                "2. Each evidence_ref MUST start with exactly 'source:' "
-                "(not 'call_index:' or 'code:').\n"
-                "3. evidence_ref values must be bare symbol paths like "
-                "'source:policy.py:get_baseline_decision' with NO trailing "
-                "descriptions, line numbers, or brackets.\n"
-                "4. reachable_chain entries MUST be unique — do not repeat any "
-                "symbol in the chain.\n"
-                "5. Every source_symbol MUST have a matching evidence_ref.\n"
-                "6. source_symbols must use exact file.py:symbol spellings from "
-                "the SYSTEM-VERIFIED SOURCE CALL INDEX above.\n"
-                "Keep the same independent lens, reread the verified index, "
-                "and emit a complete object without commentary."
-                if schema_retry else ""
-            )
-            + "\n\nFINAL SCOUT OUTPUT CONTRACT (this overrides the embedded Master output format):\n"
-            + output_contract
-        )
+        repair_kind = str((repair or {}).get("kind") or "")
+        is_repair = bool(repair_kind)
+        is_distinctness_repair = repair_kind == "distinctness"
         purpose = f"master_proposal_scout:{direction}"
-        prompt += (
-            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
-            f"invocation_id={invocation_id}; purpose={purpose}."
-        )
         log_file = log_dir / (
-            f"master_proposal_{direction}_schema_retry_io.txt"
-            if schema_retry
+            f"master_proposal_{direction}_{'distinctness' if is_distinctness_repair else 'schema'}_retry_io.txt"
+            if is_repair
             else f"master_proposal_{direction}_io.txt"
         )
+        retry_label = (
+            " DISTINCTNESS RETRY"
+            if is_distinctness_repair
+            else " SCHEMA RETRY" if is_repair else ""
+        )
+        proposal_role = f"MASTER PROPOSAL {direction}{retry_label}"
+        from llm_query import render_llm_prompt
+
+        rendered_prompt = render_llm_prompt(
+            proposal_role,
+            producer=_render_master_proposal_provider_prompt,
+            renderer_inputs={
+                "planning_context": planning_context,
+                "direction": str(direction),
+                "directive": str(directive),
+                "source_v": int(source_v),
+                "next_v": int(next_v),
+                "protocol_bootstrap_prepared_only": bool(
+                    protocol_bootstrap_prepared_only
+                ),
+                "source_symbol_index": source_symbol_index,
+                "repair_kind": repair_kind,
+                "invocation_id": str(invocation_id),
+            },
+        )
         output, cost_usd, usage = await run_claude_query(
-            prompt,
+            rendered_prompt,
             [],
             ui,
-            f"MASTER PROPOSAL {direction}{' SCHEMA RETRY' if schema_retry else ''}",
+            proposal_role,
             log_file,
             tools=["Read"],
             allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+            allowed_read_dirs=proposal_read_dirs,
             strict_authority=strict_call,
         )
         return {
@@ -1244,9 +1490,9 @@ async def _run_master_proposal_ensemble(
             "purpose": purpose,
             "role": (
                 f"MASTER PROPOSAL {direction}"
-                f"{' SCHEMA RETRY' if schema_retry else ''}"
+                f"{retry_label}"
             ),
-            "prompt": prompt,
+            "prompt": str(rendered_prompt),
             "log_file": str(log_file),
             "strict_call": strict_call,
         }
@@ -1258,11 +1504,14 @@ async def _run_master_proposal_ensemble(
     proposal_invocations: dict[str, dict] = {}
     seen_proposal_ids: set[str] = set()
     proposal_exceptions = []
-    invalid_proposal_specs = []
+    invalid_proposal_specs: list[tuple[str, str, dict]] = []
+    accepted_proposal_directions: dict[str, str] = {}
     for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
         if isinstance(result, BaseException):
             proposal_exceptions.append(result)
-            invalid_proposal_specs.append((direction, _directive))
+            invalid_proposal_specs.append(
+                (direction, _directive, {"kind": "schema"})
+            )
             continue
         output = result.get("output", "") if isinstance(result, dict) else ""
         proposal = _validated_master_proposal(
@@ -1273,10 +1522,27 @@ async def _run_master_proposal_ensemble(
             national_policy_only=True,
         )
         if proposal is None:
-            invalid_proposal_specs.append((direction, _directive))
+            invalid_proposal_specs.append(
+                (direction, _directive, {"kind": "schema"})
+            )
             continue
         proposal_id = proposal["proposal_id"]
         if proposal_id in seen_proposal_ids:
+            if strict_authority_enabled:
+                from strict_authority_workflow import reject_duplicate_proposal
+
+                reject_duplicate_proposal(result["strict_call"])
+            invalid_proposal_specs.append((
+                direction,
+                _directive,
+                {
+                    "kind": "distinctness",
+                    "proposal_id": proposal_id,
+                    "conflicting_direction": accepted_proposal_directions[
+                        proposal_id
+                    ],
+                },
+            ))
             continue
         from system_strict_bootstrap import (
             llm_result_digest,
@@ -1305,15 +1571,16 @@ async def _run_master_proposal_ensemble(
             log_file=result["log_file"],
         )
         seen_proposal_ids.add(proposal_id)
+        accepted_proposal_directions[proposal_id] = direction
         proposals.append(proposal)
     if invalid_proposal_specs:
         retry_results = await gather_llm_fail_fast(
             *(
-                propose(direction, directive, schema_retry=True)
-                for direction, directive in invalid_proposal_specs
+                propose(direction, directive, repair=repair)
+                for direction, directive, repair in invalid_proposal_specs
             ),
         )
-        for (direction, _directive), result in zip(
+        for (direction, _directive, _repair), result in zip(
             invalid_proposal_specs, retry_results
         ):
             if isinstance(result, LLMAvailabilityBlocked):
@@ -1333,6 +1600,10 @@ async def _run_master_proposal_ensemble(
                 continue
             proposal_id = proposal["proposal_id"]
             if proposal_id in seen_proposal_ids:
+                if strict_authority_enabled:
+                    from strict_authority_workflow import reject_duplicate_proposal
+
+                    reject_duplicate_proposal(result["strict_call"])
                 continue
             from system_strict_bootstrap import (
                 llm_result_digest,
@@ -1363,6 +1634,7 @@ async def _run_master_proposal_ensemble(
                 log_file=result["log_file"],
             )
             seen_proposal_ids.add(proposal_id)
+            accepted_proposal_directions[proposal_id] = direction
             proposals.append(proposal)
     if len(proposals) != len(_MASTER_PROPOSAL_DIRECTIONS):
         if len(proposal_exceptions) == len(proposal_results) + len(
@@ -1412,57 +1684,36 @@ async def _run_master_proposal_ensemble(
                 f"{context_digest}:{name}:{item['proposal_id']}".encode("utf-8")
             ).hexdigest()
         )
-        proposal_payload = json.dumps(
-            critic_proposals,
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        criterion_contract = json.dumps(
-            _PROPOSAL_CRITIC_CRITERIA,
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        prompt = (
-            "You are an anonymous advisory critic. Scout identities and lenses are hidden. "
-            "Source, evidence cutoff, scope literals, and quality gates are immutable. "
-            f"Lens: {lens}\n"
-            f"Planning context digest: {context_digest}\n"
-            "Score EVERY supplied proposal on EACH named criterion with an integer 1..5. "
-            "Set reject=true only for a concrete evidence, reachability, or falsification "
-            "defect; score is advisory and cannot waive deterministic validation.\n"
-            f"Criteria: {criterion_contract}\n"
-            "IMPORTANT: Do NOT read, explore, or inspect any files. Do NOT use any tools. "
-            "Do NOT think step by step. Immediately score the proposals from their content "
-            "and return the JSON. You have no tools available.\n\n"
-            "Return JSON exactly as {\"ballots\":[{\"proposal_id\":\"...\","
-            "\"scores\":{every criterion: integer 1..5},\"reject\":false,"
-            "\"reason\":\"criterion-grounded reason\"}, ...]}.\n\n"
-            + proposal_payload
-            + (
-                "\n\nYour previous ballot failed deterministic schema validation. "
-                "This is one schema-only repair attempt; score every ID and every "
-                "criterion exactly once. Return ONLY the JSON immediately."
-                if schema_retry else ""
-            )
-            + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ballots JSON in the supplied "
-            "proposal order; do not rank, repeat, or rewrite proposal claims. "
-            "Output the JSON NOW without any preamble, thinking, or file inspection."
-        )
         purpose = f"master_proposal_critic:{name}"
-        prompt += (
-            "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
-            f"invocation_id={invocation_id}; purpose={purpose}."
-        )
         log_file = log_dir / (
             f"master_proposal_critic_{name}_schema_retry_io.txt"
             if schema_retry
             else f"master_proposal_critic_{name}_io.txt"
         )
+        critic_role = (
+            f"MASTER PROPOSAL CRITIC {name}"
+            f"{' SCHEMA RETRY' if schema_retry else ''}"
+        )
+        from llm_query import render_llm_prompt
+
+        rendered_prompt = render_llm_prompt(
+            critic_role,
+            producer=_render_master_proposal_critic_provider_prompt,
+            renderer_inputs={
+                "proposal_name": str(name),
+                "lens": str(lens),
+                "planning_context_digest": context_digest,
+                "proposals": critic_proposals,
+                "criteria": _PROPOSAL_CRITIC_CRITERIA,
+                "schema_retry": bool(schema_retry),
+                "invocation_id": str(invocation_id),
+            },
+        )
         output, cost_usd, usage = await run_claude_query(
-            prompt,
+            rendered_prompt,
             [],
             ui,
-            f"MASTER PROPOSAL CRITIC {name}{' SCHEMA RETRY' if schema_retry else ''}",
+            critic_role,
             log_file,
             tools=[],
             strict_authority=strict_call,
@@ -1477,7 +1728,7 @@ async def _run_master_proposal_ensemble(
                 f"MASTER PROPOSAL CRITIC {name}"
                 f"{' SCHEMA RETRY' if schema_retry else ''}"
             ),
-            "prompt": prompt,
+            "prompt": str(rendered_prompt),
             "log_file": str(log_file),
             "critic_id": name,
             "strict_call": strict_call,
@@ -1700,6 +1951,91 @@ def _line_budget_summary(bot_v: int, *, baseline_label: str = "source") -> str:
     return "\n".join(lines)
 
 
+def _exact_official_compliance_feedback(baseline_v: int) -> str:
+    """Render only compliance facts bound to this current-epoch artifact.
+
+    Planning must not summarize the newest files in the global official status
+    directory: those files may describe another version, artifact, or epoch.
+    The strict epoch receipt and candidate hash must both bind a fact to the
+    exact readable baseline. Advisory LLM repair prose and EXE outcomes are
+    deliberately excluded.
+    """
+
+    baseline = get_bot_dir(int(baseline_v))
+    label = bot_name(int(baseline_v))
+    unavailable = (
+        f"No exact-identity official-full-v5 compliance fact is available for "
+        f"{label}; feedback from other epochs, versions, or artifact hashes is excluded."
+    )
+    try:
+        from bot_artifact import hash_path
+        from bot_namespace import ROLE_CANDIDATE, resolve_national_bot_spec
+        from official_certification import (
+            FULL_POLICY_ID,
+            _deterministic_status_receipt_issues,
+            read_status,
+        )
+
+        spec = resolve_national_bot_spec(
+            baseline,
+            ROLE_CANDIDATE,
+            require_completion=False,
+            require_certificate=False,
+        )
+        if not spec.eligible:
+            return unavailable
+        artifact_hash = hash_path(baseline)
+        status = read_status(baseline)
+        identity = (
+            status.get("certification_identity")
+            if isinstance(status, dict)
+            else None
+        )
+        if not isinstance(identity, dict):
+            return unavailable
+        if (
+            status.get("bot") != label
+            or status.get("mode") != "full"
+            or status.get("policy_id") != FULL_POLICY_ID
+            or identity.get("policy_id") != FULL_POLICY_ID
+            or identity.get("candidate_hash") != artifact_hash
+        ):
+            return unavailable
+        # Mutable status JSON and issue strings are never planning authority on
+        # their own. Re-open the content-bound deterministic evidence/archive
+        # receipt for this exact live artifact before admitting even a
+        # compliance-only issue. Signed publication certificates cover passes;
+        # this path exists to carry exact failed/inconclusive protocol facts.
+        if _deterministic_status_receipt_issues(status, candidate=baseline):
+            return unavailable
+        receipt = status.get("official_deterministic_status_receipt")
+        verdict = receipt.get("verdict") if isinstance(receipt, dict) else None
+        if not isinstance(verdict, dict):
+            return unavailable
+        issues = verdict.get("issues") or []
+        if not isinstance(issues, list):
+            return unavailable
+        lines = [
+            "Exact current-epoch artifact compliance fact only; official EXE "
+            "wins, losses, chips, THP earnings, and advisory repair prose are excluded.",
+            (
+                f"- {label}: artifact_hash={artifact_hash}, policy={FULL_POLICY_ID}, "
+                f"status={status.get('status')}, "
+                f"classification={verdict.get('classification')}, "
+                f"blocking={bool(verdict.get('blocking'))}, "
+                f"inconclusive={bool(verdict.get('inconclusive'))}"
+            ),
+        ]
+        if issues:
+            lines.append(
+                "  deterministic_issues: "
+                + "; ".join(str(item)[:180] for item in issues[:5])
+            )
+        return "\n".join(lines)
+    except Exception:
+        return unavailable
+
+
 # ──────────────────────────────────────────────
 # Master Analysis
 # ──────────────────────────────────────────────
@@ -1712,7 +2048,9 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                                prepared_baseline=None,
                                protocol_bootstrap=None):
     """Run Master analysis — can run concurrently with daemon evaluation."""
-    master_prompt = (PROMPTS_DIR / "master_prompt.md").read_text()
+    master_prompt = (
+        Path(__file__).resolve().parent / "prompts" / "master_prompt.md"
+    ).read_text(encoding="utf-8")
     protocol_bootstrap_active = isinstance(protocol_bootstrap, dict)
     strict_checkpoint = None
     if protocol_bootstrap_active:
@@ -1770,17 +2108,6 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         ),
         4_000,
     )
-    if protocol_bootstrap_active:
-        official_feedback = (
-            "Historical official-certification feedback was not loaded. Use only "
-            "the repository-pinned official oracle and architecture policy."
-        )
-    else:
-        try:
-            from official_certification import official_feedback_summary
-            official_feedback = _trim_to_budget(official_feedback_summary(), 6_000)
-        except Exception as exc:
-            official_feedback = f"Official EXE compliance feedback unavailable: {type(exc).__name__}: {str(exc)[:200]}"
     planning_baseline_v = (
         next_v
         if isinstance(prepared_baseline, dict) or protocol_bootstrap_active
@@ -1793,6 +2120,16 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         if protocol_bootstrap_active
         else "source_parent"
     )
+    if protocol_bootstrap_active:
+        official_feedback = (
+            "Historical official-certification feedback was not loaded. Use only "
+            "the repository-pinned official oracle and architecture policy."
+        )
+    else:
+        official_feedback = _trim_to_budget(
+            _exact_official_compliance_feedback(int(planning_baseline_v)),
+            6_000,
+        )
     try:
         from national_capability_contract import national_runtime_feedback_summary
         runtime_feedback = _trim_to_budget(
@@ -1906,7 +2243,53 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             )
             return None
 
-    master_prompt = substitute_template(master_prompt, {
+    if protocol_bootstrap_active:
+        planning_code_input_contract = (
+            f"- `{bot_relpath(next_v)}/` — the sole readable prepared code "
+            "baseline and the target Workers must edit and verify.\n"
+            f"- v{source_v} is numeric completion high-water authority only. It "
+            "is not a source, parent, reference, opponent, or readable code input; "
+            "do not open, compare, cite, import, or inherit it."
+        )
+        source_selection_contract = (
+            f"This is the one-time fresh strict bootstrap for v{next_v}. "
+            f"Historical high-water v{source_v} supplies only the next version "
+            "number and is not an ancestor. The prepared target artifact is the "
+            "only code baseline. You MUST NOT set `branch_from`, a parent, or any "
+            "source-override field."
+        )
+        target_path_contract = (
+            f"This bootstrap plans directly on prepared target `{bot_relpath(next_v)}/`. "
+            "Every Worker edit/Read/py_compile command MUST point there; imports, "
+            "smoke and dynamic tests belong to the system quality gate. "
+            "No historical code directory is a readable comparison input; the "
+            "system-owned bootstrap receipt proves fresh lineage."
+        )
+    else:
+        planning_code_input_contract = (
+            f"- `{bot_relpath(source_v)}/` — current source bot code; read-only "
+            "parent/reference.\n"
+            f"- `{bot_relpath(next_v)}/` — target bot directory; Workers must edit "
+            "and verify this directory."
+        )
+        source_selection_contract = (
+            "The source ancestor to evolve from is decided automatically by the "
+            "system in prepare_generation from the frozen selection evidence. You "
+            "MUST NOT set `branch_from` or any source-override field in your plan; "
+            "the system rejects it. Focus only on the task plan and analysis."
+        )
+        target_path_contract = (
+            f"This generation evolves source `{bot_relpath(source_v)}/` into target "
+            f"`{bot_relpath(next_v)}/`.\n\nIn every `worker_prompt`, "
+            f"edit/Read/py_compile commands MUST point at "
+            f"`{bot_relpath(next_v)}/`, never `{bot_relpath(source_v)}/`. The source "
+            "path is read-only comparison evidence; do not ask Workers to edit, "
+            "patch, compile, import from, or run checks inside it. Imports, smoke "
+            "and dynamic tests are system quality-gate work. The Worker "
+            "wrapper already supplies the exact parent-vs-target diff."
+        )
+
+    master_template_values = {
         "stagnation_info": stagnation_info,
         "match_analysis": match_analysis_trimmed,
         "performance_verification": perf_trimmed,
@@ -1923,7 +2306,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "selection_data_file": selection_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
         "master_plan_executable_contract": master_plan_executable_contract_text(),
-    })
+        "planning_code_input_contract": planning_code_input_contract,
+        "source_selection_contract": source_selection_contract,
+        "target_path_contract": target_path_contract,
+    }
+    master_prompt = substitute_template(master_prompt, master_template_values)
     evidence_context = (
         "Protocol bootstrap has no strength snapshot. Do not open live ratings, "
         "H2H, replay, bot_stats, rating_history, or eval_rounds files.\n"
@@ -1942,8 +2329,15 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         if protocol_bootstrap_active
         else f"Source bot directory (read-only parent): {bot_relpath(source_v)}/\n"
     )
+    generation_identity_context = (
+        f"Current strict bootstrap: numeric completion high-water v{source_v}; "
+        f"fresh target v{next_v}. High-water v{source_v} is not a source or parent.\n"
+        if protocol_bootstrap_active
+        else f"Current evolution: v{source_v} → v{next_v}\n"
+    )
     master_ctx = (
-        f"Current evolution: v{source_v} → v{next_v}\n"
+        generation_identity_context
+        +
         f"{source_context}"
         f"Target bot directory (workers edit/verify): {bot_relpath(next_v)}/\n"
         f"Planning baseline: {bot_relpath(planning_baseline_v)}/ ({planning_baseline_label})\n"
@@ -2020,6 +2414,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "evidence, scope, or gates.\n"
     )
 
+    master_schema_repair_suffix = ""
     for attempt in range(MAX_MASTER_RETRIES):
         ui.clear_io()
         strict_final_call = None
@@ -2036,23 +2431,37 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     architecture_policy if isinstance(architecture_policy, dict) else {},
                 ),
             )
-            master_call_prompt = (
-                master_prompt
-                + "\n"
-                + master_ctx
-                + "\n\nSYSTEM CALL BINDING (copying this value does not grant "
-                + "authority): invocation_id="
-                + strict_final_call["invocation_id"]
-                + "; purpose=system_strict_bootstrap_master:final."
-            )
-        else:
-            master_call_prompt = master_prompt + "\n" + master_ctx
         try:
+            from llm_query import render_llm_prompt
+
+            rendered_prompt = render_llm_prompt(
+                final_role,
+                producer=_render_master_final_provider_prompt,
+                renderer_inputs={
+                    "template_values": master_template_values,
+                    "master_context": master_ctx,
+                    "proposal_ensemble": proposal_ensemble,
+                    "source_v": int(source_v),
+                    "next_v": int(next_v),
+                    "invocation_id": str(
+                        (strict_final_call or {}).get("invocation_id") or ""
+                    ),
+                    "schema_repair_suffix": master_schema_repair_suffix,
+                },
+            )
             output, _, _ = await run_claude_query(
-                master_call_prompt, [], ui,
+                rendered_prompt, [], ui,
                 final_role, master_log_file,
                 tools=["Read"],
                 allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
+                allowed_read_dirs=(
+                    [get_bot_dir(int(next_v))]
+                    if protocol_bootstrap_active
+                    else [
+                        get_bot_dir(int(source_v)),
+                        get_bot_dir(int(next_v)),
+                    ]
+                ),
                 strict_authority=strict_final_call,
             )
         except LLMAvailabilityBlocked:
@@ -2215,9 +2624,8 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 # to avoid unbounded prompt growth across retries.
                 if attempt + 1 < MAX_MASTER_RETRIES:
                     err_block = "\n".join(f"- {e}" for e in errors)[:1500]
-                    master_prompt = (
-                        master_prompt
-                        + "\n\n# 上一轮计划校验失败，必须修正：\n"
+                    master_schema_repair_suffix += (
+                        "\n\n# 上一轮计划校验失败，必须修正：\n"
                         + err_block
                         + "\n请重新输出严格符合 schema 的 JSON。"
                     )

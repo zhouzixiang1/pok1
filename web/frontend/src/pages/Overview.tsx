@@ -1,13 +1,16 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { Link } from "react-router";
-import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations } from "../context/DataProvider";
+import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations, useDataStreamStatus } from "../context/DataProvider";
 import { api } from "../api/client";
 import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
-import { PipelineStepper } from "../components/evolution/PipelineStatus";
+import { PipelineStatus } from "../components/evolution/PipelineStatus";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { StabilityStatus } from "../components/evolution/StabilityStatus";
+import { stabilityPresentation } from "../lib/stabilityView";
+import { controlTaskActive } from "../lib/controlRuntimeState";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 
@@ -108,8 +111,9 @@ export default function Overview() {
   const ratings = useRatings();
   const stats = useMatchStats();
   const daemon = useDaemonStatus();
+  const dataStream = useDataStreamStatus();
   const [summary, setSummary] = useState<Record<string, { peak_rating: number; current_rating: number; trend: number; periods: number; peak_h2h_avg_wr?: number; current_h2h_avg_wr?: number; wr_trend?: number }>>({});
-  const { status: controlStatus, loading: controlLoading, error: controlError } = useControlStatus(5_000);
+  const { status: controlStatus, health: controlHealth, loading: controlLoading, error: controlError } = useControlStatus(5_000);
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
@@ -183,6 +187,52 @@ export default function Overview() {
   const daemonAgeStr = effectiveAge != null
     ? effectiveAge < 0 ? "从未" : effectiveAge < 60 ? `${Math.round(effectiveAge)}秒前` : `${Math.round(effectiveAge / 60)}分钟前`
     : "—";
+  const stability = controlStatus?.stability_observation;
+  const stabilityView = stabilityPresentation(stability);
+  const stabilityCountVerified = stability?.verification?.state === "fresh"
+    && stabilityView.variant !== "error";
+  const dataStreamAge = dataStream.last_event_at == null
+    ? null
+    : Math.max(0, (Date.now() - dataStream.last_event_at) / 1000);
+  const dataStreamFresh = dataStream.state === "connected"
+    && dataStreamAge != null
+    && dataStreamAge <= 10;
+  const daemonConfigured = controlHealth?.daemon.configured;
+  const daemonConfigConsistent = daemonConfigured != null
+    && daemonConfigured === controlStatus?.daemon_enabled;
+  const daemonHeartbeatFresh = controlHealth?.daemon.heartbeat_status === "fresh";
+  const daemonActuallyHealthy = Boolean(
+    dataStreamFresh
+    && daemonConfigConsistent
+    && daemonConfigured === true
+    && controlHealth?.daemon.alive === true
+    && daemonHeartbeatFresh
+    && !controlHealth.daemon.health_error
+    && daemon?.process_alive === true
+    && daemon.heartbeat_stale === false
+    && (daemon.status === "active" || daemon.status === "idle"),
+  );
+  const taskActive = controlTaskActive(controlHealth?.task);
+  const orchestratorHealthy = Boolean(
+    controlStatus?.running
+    && controlHealth?.overall === "healthy"
+    && taskActive,
+  );
+  const orchestratorOrphan = Boolean(taskActive && !controlStatus?.running);
+  const daemonStatusLabel = !controlStatus?.epoch_initialized
+    ? "未初始化"
+    : dataStream.state === "disconnected" ? "评分投影流已断开"
+    : dataStream.state === "connecting" ? "评分投影流连接中"
+    : !dataStreamFresh ? "评分投影流已过期"
+    : daemonConfigured == null ? "评分配置权威不可用"
+    : !daemonConfigConsistent ? "评分配置投影不一致"
+    : daemonConfigured === false ? "评分进程未配置"
+    : controlHealth?.daemon.health_error ? "评分健康投影失败"
+    : controlHealth?.daemon.alive !== true ? "评分进程未运行"
+    : !daemonHeartbeatFresh ? `评分心跳${controlHealth?.daemon.heartbeat_status ?? "不可用"}`
+    : daemon?.status === "active" ? "评分进程活跃"
+    : daemon?.status === "idle" ? "评分进程健康等待"
+    : "评分实际状态不可用";
 
   return (
     <>
@@ -207,11 +257,9 @@ export default function Overview() {
             </p>
           </div>
           <span className="text-amber-400/50 text-xs ml-auto">
-            {daemon?.status === "active"
-              ? "评分进程继续运行"
-              : daemon?.status === "idle"
-                ? "评分进程健康空闲，等待可对局池"
-                : "评分进程当前不可确认运行"}
+            {daemonActuallyHealthy
+              ? daemon?.status === "active" ? "评分进程实际运行" : "评分进程健康等待"
+              : "评分进程当前不可确认运行"}
           </span>
         </div>
       )}
@@ -234,27 +282,29 @@ export default function Overview() {
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-center gap-2">
+          <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">
+            {stability && stabilityCountVerified ? `${stability.count}/${stability.target}` : "—"}
+          </span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">连续进化验收</span>
+          <StabilityStatus observation={stability} compact />
+        </div>
+        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
+        <div className="flex items-center gap-2">
           <Badge
-            variant={!controlStatus?.epoch_initialized || daemon?.status === "blocked" || daemon?.status === "disabled" || daemon?.status === "stopped"
-              ? "error"
-              : daemon?.status === "active" || daemon?.status === "idle" ? "success" : "warning"}
+            variant={daemonActuallyHealthy ? "success" : daemonConfigured === false && daemonConfigConsistent ? "neutral" : "error"}
             size="sm"
-            pulse={Boolean(controlStatus?.epoch_initialized && daemon?.status === "active")}
+            pulse={Boolean(daemonActuallyHealthy && daemon?.status === "active")}
           >
-            {!controlStatus?.epoch_initialized
-              ? "未初始化"
-              : daemon?.status === "active" ? "评分进程活跃"
-              : daemon?.status === "idle" && daemon?.activity_state === "waiting_for_first_published_bot" ? "等待首个已发布 Bot"
-              : daemon?.status === "idle" ? "等待第二个已发布 Bot"
-              : daemon?.status === "degraded" ? "评分进程心跳过期"
-              : daemon?.status === "stopped" ? "评分进程已停止"
-              : daemon?.status === "disabled" ? "评分进程未启用"
-              : "评分进程受阻"}
+            {daemonStatusLabel}
           </Badge>
           {controlStatus?.epoch_initialized && (
             <span className="text-[10px] text-gray-400">控制操作请前往控制面板</span>
           )}
           <span className="text-[10px] text-gray-400">心跳 {daemonAgeStr}</span>
+          <span className="text-[10px] text-gray-400">
+            配置意图：{daemonConfigured == null ? "不可用" : daemonConfigured ? "启用" : "禁用"}
+            {" · "}实际进程：{controlHealth?.daemon.alive == null ? "不可用" : controlHealth.daemon.alive ? "运行" : "停止"}
+          </span>
           {controlStatus?.epoch_initialized && (
             <span className="text-[10px] text-gray-400">
               {daemon?.strength_evidence_available
@@ -373,19 +423,21 @@ export default function Overview() {
           </div>
 
           {/* Pipeline status bar */}
-          {controlStatus?.active_generation && checkpoint && (
+          {controlStatus && (controlStatus.active_generation || controlStatus.post_publication_handoff.status !== "none") && (
             <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  <Badge variant={controlStatus?.running ? "success" : "neutral"} size="sm" pulse={controlStatus?.running}>
-                    {controlStatus?.running ? "运行中" : "已停止"}
+                  <Badge variant={orchestratorHealthy ? "success" : controlStatus?.running || orchestratorOrphan ? "error" : "neutral"} size="sm" pulse={orchestratorHealthy}>
+                    {orchestratorHealthy ? "任务健康运行" : orchestratorOrphan ? "孤立任务仍活动" : controlStatus?.running ? "运行标志异常" : "已停止"}
                   </Badge>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
-                    v{controlStatus.active_generation.source_v ?? "—"} → v{controlStatus.active_generation.next_v}
+                    {controlStatus.active_generation
+                      ? `target v${controlStatus.active_generation.next_v} · source_v ${controlStatus.active_generation.source_v == null ? "—" : `v${controlStatus.active_generation.source_v}`}`
+                      : `post-publication v${controlStatus.post_publication_handoff.version ?? "?"}`}
                   </span>
                 </div>
               </div>
-              <PipelineStepper checkpoint={checkpoint} />
+              <PipelineStatus checkpoint={checkpoint} activeGeneration={controlStatus.active_generation} handoff={controlStatus.post_publication_handoff} handoffBlocked={controlHealth?.pipeline.blocked === true} />
             </div>
           )}
         </div>

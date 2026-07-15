@@ -15,6 +15,23 @@ from pathlib import Path
 from typing import Any
 
 
+CURRENT_EVALUATION_EPOCH = "national_tcp_policy_v1"
+CURRENT_EXECUTION_MODE = "native_tcp"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _expected_identity(value: Any) -> str | None:
+    """Normalize an already-validated current evaluation identity.
+
+    This module never derives or falls back to an identity from a history row.
+    Callers that own a current manifest must pass its exact digest; missing or
+    malformed authority makes history inadmissible.
+    """
+
+    candidate = str(value or "")
+    return candidate if _SHA256_RE.fullmatch(candidate) else None
+
+
 def _default_match_history_file() -> Path:
     import evolution_infra
     return evolution_infra.MATCH_HISTORY_FILE
@@ -103,11 +120,20 @@ def _iter_match_history(path: Path):
             yield entry
 
 
-def _admitted_70_hand_history_sample(entry: dict[str, Any]) -> list[int] | None:
+def _admitted_70_hand_history_sample(
+    entry: dict[str, Any],
+    *,
+    expected_evaluation_identity_digest: str,
+) -> list[int] | None:
     """Return proven strength samples, otherwise fail the history row closed."""
 
+    expected_identity = _expected_identity(expected_evaluation_identity_digest)
     if (
-        entry.get("strength_sample_unit") != "70_hand_match"
+        expected_identity is None
+        or entry.get("evaluation_epoch") != CURRENT_EVALUATION_EPOCH
+        or entry.get("execution_mode") != CURRENT_EXECUTION_MODE
+        or entry.get("evaluation_identity_digest") != expected_identity
+        or entry.get("strength_sample_unit") != "70_hand_match"
         or int(entry.get("hands_per_strength_sample", 0) or 0) != 70
         or entry.get("strength_admitted") is not True
         or entry.get("strength_complete") is not True
@@ -144,15 +170,21 @@ def _admitted_70_hand_history_sample(entry: dict[str, Any]) -> list[int] | None:
 def reconstruct_h2h_from_match_history(
     active_bots: list[str] | set[str] | tuple[str, ...],
     match_history_path: Path | str | None = None,
+    *,
+    expected_evaluation_identity_digest: str,
 ) -> dict[str, dict[str, Any]]:
     """Rebuild active-pool H2H from admitted national strength history only."""
     active = set(active_bots or [])
-    if len(active) < 2:
+    expected_identity = _expected_identity(expected_evaluation_identity_digest)
+    if len(active) < 2 or expected_identity is None:
         return {}
     path = Path(match_history_path) if match_history_path is not None else _default_match_history_file()
     rebuilt: dict[str, dict[str, Any]] = {}
     for entry in _iter_match_history(path) or []:
-        if _admitted_70_hand_history_sample(entry) is None:
+        if _admitted_70_hand_history_sample(
+            entry,
+            expected_evaluation_identity_digest=expected_identity,
+        ) is None:
             continue
         bot_a = entry.get("bot0") or entry.get("bot_a")
         bot_b = entry.get("bot1") or entry.get("bot_b")
@@ -168,12 +200,17 @@ def reconstruct_h2h_from_match_history(
 def national_chip_metrics_from_match_history(
     active_bots: list[str] | set[str] | tuple[str, ...],
     match_history_path: Path | str | None = None,
+    *,
+    expected_evaluation_identity_digest: str,
 ) -> dict[str, dict[str, Any]]:
     """Aggregate the secondary chip signal from complete 70-hand samples only."""
 
     from strength_order import summarize_70_hand_net_chips
 
     active = set(active_bots or [])
+    expected_identity = _expected_identity(expected_evaluation_identity_digest)
+    if expected_identity is None:
+        return {}
     path = Path(match_history_path) if match_history_path is not None else _default_match_history_file()
     samples_by_bot: dict[str, list[int]] = {name: [] for name in active}
     for entry in _iter_match_history(path) or []:
@@ -181,7 +218,10 @@ def national_chip_metrics_from_match_history(
         bot_b = str(entry.get("bot1") or "")
         if bot_a not in active or bot_b not in active or bot_a == bot_b:
             continue
-        samples = _admitted_70_hand_history_sample(entry)
+        samples = _admitted_70_hand_history_sample(
+            entry,
+            expected_evaluation_identity_digest=expected_identity,
+        )
         if samples is None:
             continue
         samples_by_bot[bot_a].extend(samples)
@@ -238,12 +278,18 @@ def choose_h2h_source(
     active_bots: list[str] | set[str] | tuple[str, ...],
     stored_h2h: dict[str, Any] | None,
     match_history_path: Path | str | None = None,
+    *,
+    expected_evaluation_identity_digest: str,
 ) -> dict[str, Any]:
     """Choose stored H2H or rebuilt match-history H2H by active-pool coverage."""
     active = list(active_bots or [])
     stored = filter_h2h_to_active(stored_h2h, active)
     stored_cov = h2h_coverage(stored, active)
-    rebuilt = reconstruct_h2h_from_match_history(active, match_history_path)
+    rebuilt = reconstruct_h2h_from_match_history(
+        active,
+        match_history_path,
+        expected_evaluation_identity_digest=expected_evaluation_identity_digest,
+    )
     rebuilt_cov = h2h_coverage(rebuilt, active)
     if rebuilt_cov["covered_pairs"] > stored_cov["covered_pairs"]:
         return {
@@ -372,27 +418,46 @@ def build_strength_rows(
     match_history_path: Path | str | None = None,
     *,
     h2h_is_authoritative: bool = False,
+    expected_evaluation_identity_digest: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return dashboard-ready rows sorted by composite leaderboard strength."""
     if not ratings_data:
         return []
     active = list(active_bots or ratings_data.keys())
     active = [name for name in active if name in ratings_data]
-    if h2h_is_authoritative:
+    expected_identity = _expected_identity(expected_evaluation_identity_digest)
+    if h2h_is_authoritative or expected_identity is None:
         frozen_h2h = filter_h2h_to_active(stored_h2h or {}, active)
         frozen_coverage = h2h_coverage(frozen_h2h, active)
         selected = {
             "h2h": frozen_h2h,
-            "source": "head_to_head_committed_cycle",
+            "source": (
+                "head_to_head_committed_cycle"
+                if h2h_is_authoritative
+                else "head_to_head_history_identity_unavailable"
+            ),
             "coverage": frozen_coverage,
         }
     else:
-        selected = choose_h2h_source(active, stored_h2h or {}, match_history_path)
+        selected = choose_h2h_source(
+            active,
+            stored_h2h or {},
+            match_history_path,
+            expected_evaluation_identity_digest=expected_identity,
+        )
     h2h = selected["h2h"]
     coverage_meta = selected["coverage"]
     opponents_total = max(0, len(active) - 1)
     bot_stats_data = bot_stats_data or {}
-    chip_metrics = national_chip_metrics_from_match_history(active, match_history_path)
+    chip_metrics = (
+        national_chip_metrics_from_match_history(
+            active,
+            match_history_path,
+            expected_evaluation_identity_digest=expected_identity,
+        )
+        if expected_identity is not None
+        else {}
+    )
 
     rows: list[dict[str, Any]] = []
     for name in active:
@@ -498,8 +563,17 @@ def strength_score_map(
     stored_h2h: dict[str, Any] | None = None,
     active_bots: list[str] | set[str] | tuple[str, ...] | None = None,
     match_history_path: Path | str | None = None,
+    *,
+    expected_evaluation_identity_digest: str | None = None,
 ) -> dict[str, float]:
     return {
         row["name"]: float(row["leaderboard_score"])
-        for row in build_strength_rows(ratings_data, bot_stats_data, stored_h2h, active_bots, match_history_path)
+        for row in build_strength_rows(
+            ratings_data,
+            bot_stats_data,
+            stored_h2h,
+            active_bots,
+            match_history_path,
+            expected_evaluation_identity_digest=expected_evaluation_identity_digest,
+        )
     }

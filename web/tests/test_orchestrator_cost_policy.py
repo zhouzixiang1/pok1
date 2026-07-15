@@ -4,6 +4,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
+
+pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
 @pytest.fixture()
@@ -202,7 +205,7 @@ def test_operator_limit_parks_stream_and_preserves_checkpoint(
     async def _one_message():
         yield AssistantMessage(content=[TextBlock(text="continue")], model="sonnet")
 
-    monkeypatch.setattr(orchestrator, "claude_query", lambda prompt, options: _one_message())
+    monkeypatch.setattr(orchestrator, "claude_query", lambda **_kwargs: _one_message())
 
     result = asyncio.run(
         orchestrator._run_one_cycle(
@@ -371,7 +374,11 @@ def test_empty_output_retry_records_every_billed_attempt_once(
     ui = UI()
     texts, cost, usage = asyncio.run(
         llm_query._run_stream_with_signature_retry(
-            "prompt", object(), str(Path("/tmp/cost-audit.log")), ui, "Master"
+            "prompt",
+            ClaudeAgentOptions(),
+            str(Path("/tmp/cost-audit.log")),
+            ui,
+            "Master",
         )
     )
 
@@ -616,7 +623,9 @@ def test_web_ui_emits_zero_cost_policy_binding_and_clear(isolated_cost_policy):
     from web_ui import EventBroadcaster, WebUI
 
     broadcaster = EventBroadcaster()
-    client_id, queue = broadcaster.add_client()
+    authority = "a" * 64
+    broadcaster.bind_authority(authority)
+    client_id, queue = broadcaster.add_client(authority)
     try:
         ui = WebUI(broadcaster)
         scope = policy.activate_generation_cost_scope(

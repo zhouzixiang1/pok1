@@ -21,7 +21,9 @@ from managed_bot_executor import (
     IsolationUnavailable,
     ManagedExecutorError,
     launch_isolated_worker,
+    snapshot_managed_bot_sources,
 )
+from bot_namespace import STRICT_ARTIFACT_FILES
 from national_native import NATIONAL_DECISION_RUNTIME_VERSION
 from national_runtime_probe_scenarios import (
     RUNTIME_PROBE_SCENARIO_DIGEST,
@@ -29,8 +31,9 @@ from national_runtime_probe_scenarios import (
 )
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 12
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 12
+RUNTIME_PROBE_SCHEMA_VERSION = 14
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 14
+RUNTIME_PROBE_WORKER_VERSION = 15
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
@@ -64,7 +67,7 @@ def runtime_probe_limits() -> dict[str, Any]:
         "repeats": RUNTIME_PROBE_REPEATS,
         "max_import_ms": RUNTIME_PROBE_MAX_IMPORT_MS,
         "max_output_bytes": RUNTIME_PROBE_MAX_OUTPUT_BYTES,
-        "sandbox": "central-managed-executor-minimal-ro-inputs-seccomp-v1",
+        "sandbox": "central-managed-executor-sealed-five-file-source-seccomp-v2",
         "managed_executor_sha256": hashlib.sha256(
             executor_path.read_bytes()
         ).hexdigest(),
@@ -81,6 +84,7 @@ RUNTIME_PROBE_WORKER_DIGEST = _trusted_file_digest(
 RUNTIME_PROBE_IDENTITY_DIGEST = _canonical_digest({
     "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
     "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+    "worker_version": RUNTIME_PROBE_WORKER_VERSION,
     "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
     "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
     "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
@@ -104,6 +108,7 @@ def build_runtime_probe_spec(bot_dir: str | Path) -> dict[str, Any]:
     payload = {
         "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
         "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        "expected_worker_version": RUNTIME_PROBE_WORKER_VERSION,
         "scenario_version": RUNTIME_PROBE_SCENARIO_VERSION,
         "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
         "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
@@ -180,18 +185,17 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
             ],
         }
     try:
-        if _bot_code_fingerprint(root) != spec["code_fingerprint"]:
-            return {
-                "ok": False,
-                "failure_class": "candidate_contract",
-                "issues": ["runtime_probe_candidate_changed_before_launch"],
-            }
+        source_snapshot = snapshot_managed_bot_sources(
+            root,
+            expected_artifact_hash=str(spec["code_fingerprint"]),
+            required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
+        )
     except Exception as exc:
         return {
             "ok": False,
             "failure_class": "candidate_contract",
             "issues": [
-                f"runtime_probe_candidate_rehash_failed:{type(exc).__name__}:"
+                f"runtime_probe_candidate_snapshot_failed:{type(exc).__name__}:"
                 f"{str(exc)[:180]}"
             ],
         }
@@ -211,6 +215,16 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
             scenario,
             work_root / "national_runtime_probe_scenarios.py",
         )
+        sealed_bot = work_root / "bot"
+        sealed_bot.mkdir(mode=0o700)
+        for name, payload in source_snapshot.files:
+            target = sealed_bot / name
+            with target.open("xb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            target.chmod(0o444)
+        sealed_bot.chmod(0o555)
         (work_root / "spec.json").write_text(
             json.dumps(spec, sort_keys=True, separators=(",", ":")),
             encoding="utf-8",
@@ -227,7 +241,7 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
             "-I",
             "-B",
             "/work/worker.py",
-            "/inputs/bot",
+            "/work/bot",
             "/output/report.json",
             "/work/spec.json",
         ]
@@ -237,7 +251,6 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
                     work_root,
                     command,
                     environment={"PYTHONHASHSEED": "0"},
-                    readonly_inputs={"bot": root},
                     output_files={
                         "report.json": report_host,
                         "phase.txt": phase_host,
@@ -282,13 +295,11 @@ def _run_once(root: Path, spec: dict[str, Any], timeout_sec: float) -> dict[str,
             else ""
         )
         try:
-            if _bot_code_fingerprint(root) != spec["code_fingerprint"]:
-                return {
-                    "ok": False,
-                    "failure_class": "candidate_contract",
-                    "issues": ["runtime_probe_candidate_changed_during_probe"],
-                    "process_returncode": returncode,
-                }
+            snapshot_managed_bot_sources(
+                root,
+                expected_artifact_hash=str(spec["code_fingerprint"]),
+                required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
+            )
         except Exception as exc:
             return {
                 "ok": False,
@@ -455,8 +466,14 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
 def _identity_issues(result: dict[str, Any], spec: dict[str, Any]) -> list[str]:
     expected = {
         "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+        "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        "worker_version": RUNTIME_PROBE_WORKER_VERSION,
         "scenario_version": RUNTIME_PROBE_SCENARIO_VERSION,
         "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+        "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+        "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
+        "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+        "policy_abi": "decision_context_v1_typed_intent_v1",
         "spec_digest": spec["spec_digest"],
         "code_fingerprint": spec["code_fingerprint"],
     }
@@ -496,7 +513,11 @@ def run_national_runtime_probe(
 
     first = copy.deepcopy(runs[0])
     issues = list(first.get("issues") or [])
-    issues.extend(_identity_issues(first, spec))
+    for run_index, observed in enumerate(runs, start=1):
+        issues.extend(
+            issue if run_index == 1 else f"{issue}:repeat={run_index}"
+            for issue in _identity_issues(observed, spec)
+        )
     if before != after:
         issues.append("runtime_probe_mutated_candidate")
     reference = _repeatability_view(runs[0])
@@ -543,6 +564,7 @@ __all__ = [
     "RUNTIME_PROBE_SCHEMA_VERSION",
     "RUNTIME_PROBE_SCENARIO_DIGEST",
     "RUNTIME_PROBE_WORKER_DIGEST",
+    "RUNTIME_PROBE_WORKER_VERSION",
     "_bot_code_fingerprint",
     "build_runtime_probe_spec",
     "clear_runtime_probe_cache",

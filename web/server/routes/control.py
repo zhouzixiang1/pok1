@@ -1,15 +1,18 @@
 """Read-only status plus explicit, authenticated operator controls."""
 
 import asyncio
+import hashlib
 import json
+import logging
+import math
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, TypeVar
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIR = PROJECT_ROOT / "web"
@@ -17,10 +20,46 @@ RESULTS_DIR = WEB_DIR / "core" / "results"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
-from server.state import app_state
+from server.state import app_state, run_evolution_task
 from server.operator_control import CONTROL_TOKEN_HEADER, require_operator_mutation
+from blocking_runtime import run_blocking_isolated
 
 router = APIRouter(prefix="/api/control", tags=["control"])
+_log = logging.getLogger("pok.control")
+_RUNTIME_LIFECYCLE_LOCK = asyncio.Lock()
+_LifecycleResult = TypeVar("_LifecycleResult")
+
+
+async def _run_lifecycle_operation(
+    factory: Callable[[], Awaitable[_LifecycleResult]],
+) -> _LifecycleResult:
+    """Serialize start/stop/config and drain a transaction on cancellation.
+
+    ``run_blocking_isolated`` cannot stop a Python worker thread after request
+    cancellation.  Shielding and draining the complete lifecycle operation
+    keeps the mutex held until its write/rollback outcome is known, so another
+    request cannot observe and mutate a half-transaction.
+    """
+
+    async with _RUNTIME_LIFECYCLE_LOCK:
+        operation = asyncio.create_task(factory())
+        cancellation: asyncio.CancelledError | None = None
+        while not operation.done():
+            try:
+                await asyncio.shield(operation)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        if cancellation is not None:
+            try:
+                operation.result()
+            except BaseException as exc:
+                _log.error(
+                    "Cancelled lifecycle request completed with %s: %s",
+                    type(exc).__name__,
+                    str(exc)[:240],
+                )
+            raise cancellation
+        return operation.result()
 
 # This is deliberately an explicit HTTP capability registry, not a projection
 # of the Orchestrator's MCP ``all_tools`` registry.  Adding an MCP tool can
@@ -54,13 +93,6 @@ _CONTROL_CAPABILITIES = (
         "id": "update_config",
         "method": "PUT",
         "path": "/api/control/config",
-        "mutation": True,
-        "requires_epoch": True,
-    },
-    {
-        "id": "clear_orchestrator_session",
-        "method": "DELETE",
-        "path": "/api/control/orchestrator/session",
         "mutation": True,
         "requires_epoch": True,
     },
@@ -104,51 +136,12 @@ def _require_initialized_epoch(operation: str) -> dict:
     return state
 
 
-def _pid_alive(pid: int | None) -> bool:
-    if not pid or pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-
-
 def _read_pid_info(path: Path) -> dict:
-    if not path.exists():
-        return {"exists": False, "pid": None, "alive": False}
-    raw = path.read_text(encoding="utf-8", errors="replace").strip()
-    data: dict[str, Any] = {"exists": True, "raw_format": "json"}
-    try:
-        parsed = json.loads(raw)
-        if isinstance(parsed, dict):
-            data.update(parsed)
-        else:
-            data["pid"] = parsed
-            data["raw_format"] = "scalar"
-    except Exception:
-        data["raw_format"] = "plain"
-        try:
-            data["pid"] = int(raw)
-        except Exception:
-            data["pid"] = None
-            data["parse_error"] = raw[:120]
-    try:
-        data["pid"] = int(data.get("pid")) if data.get("pid") is not None else None
-    except Exception:
-        data["pid"] = None
-    data["alive"] = _pid_alive(data.get("pid"))
-    hb = data.get("last_heartbeat")
-    if hb is not None:
-        try:
-            data["heartbeat_age_sec"] = round(time.time() - float(hb), 2)
-        except Exception:
-            data["heartbeat_age_sec"] = None
-    return data
+    # Reuse the lifecycle module's exact, read-only identity proof.  A
+    # heartbeat alone cannot turn a forged PID record into a live daemon.
+    from daemon_management import daemon_pid_record_health
+
+    return daemon_pid_record_health(path)
 
 
 def _read_pipeline_health(status: dict) -> dict:
@@ -170,6 +163,42 @@ def _read_pipeline_health(status: dict) -> dict:
         }
 
     active = status.get("active_generation")
+    handoff = status.get("post_publication_handoff")
+    if isinstance(handoff, dict) and handoff.get("status") != "none":
+        conflict = isinstance(active, dict)
+        blocked = bool(handoff.get("blocked")) or conflict
+        issues = list(handoff.get("issues") or [])
+        if conflict:
+            issues.append("active_generation_and_handoff_overlap")
+        return {
+            "exists": True,
+            "stage": "post_publication_handoff",
+            "authority": "post_publication_handoff_journal",
+            "epoch_state": status.get("epoch_state"),
+            "blocked": blocked,
+            "issues": list(dict.fromkeys(issues)),
+            "next_v": handoff.get("version"),
+            "source_v": handoff.get("source_v"),
+            "workflow_run_id": handoff.get("workflow_run_id"),
+            "checkpoint_revision": handoff.get("record_revision"),
+            "handoff_identity_digest": handoff.get("identity_digest"),
+            "handoff_projection_digest": handoff.get("projection_digest"),
+            "publication_id": handoff.get("publication_id"),
+            "route": None if blocked else {
+                "stage": "post_publication_handoff",
+                "next_tool": "run_archivist",
+                "next_v": handoff.get("version"),
+                "source_v": handoff.get("source_v"),
+                "parent2_v": None,
+                "allowed_tools": ["run_archivist"],
+                "intent": "post_publication_handoff",
+                "directive": (
+                    "Resume the exact durable Archivist handoff before "
+                    "preparing another generation."
+                ),
+                "identity_digest": handoff.get("identity_digest"),
+            },
+        }
     ignored = status.get("ignored_checkpoint")
     if not isinstance(active, dict):
         return {
@@ -202,6 +231,7 @@ def _read_pipeline_health(status: dict) -> dict:
         from evolution_infra import PROJECT_ROOT as CORE_PROJECT_ROOT
         from evolution_infra import read_pipeline_checkpoint
         from pipeline_recovery import checkpoint_recovery_diagnostics
+        from pipeline_state import route_policy
 
         checkpoint = read_pipeline_checkpoint()
         issues = checkpoint_epoch_errors(checkpoint)
@@ -212,17 +242,60 @@ def _read_pipeline_health(status: dict) -> dict:
                     project_root=CORE_PROJECT_ROOT,
                 )
             )
-        expected = (
-            active.get("next_v"),
-            active.get("stage"),
-            active.get("workflow_run_id"),
+        checkpoint_obj = checkpoint if isinstance(checkpoint, dict) else {}
+        observed_generation_attempt = int(
+            checkpoint_obj.get("generation_attempt") or 0
         )
-        observed = (
-            checkpoint.get("next_v") if isinstance(checkpoint, dict) else None,
-            checkpoint.get("stage") if isinstance(checkpoint, dict) else None,
-            checkpoint.get("workflow_run_id") if isinstance(checkpoint, dict) else None,
+        observed_run_id = checkpoint_obj.get("run_id") or (
+            f"{checkpoint_obj.get('next_v')}#{observed_generation_attempt}"
+            if checkpoint_obj.get("next_v") is not None
+            else None
         )
-        if issues or observed != expected:
+        identity_fields = (
+            "next_v",
+            "source_v",
+            "stage",
+            "run_id",
+            "workflow_run_id",
+            "checkpoint_revision",
+        )
+        expected_identity = {
+            "next_v": active.get("next_v"),
+            "source_v": active.get("source_v"),
+            "stage": active.get("stage"),
+            "run_id": active.get("run_id"),
+            "workflow_run_id": active.get("workflow_run_id"),
+            "checkpoint_revision": active.get("checkpoint_revision"),
+        }
+        observed_identity = {
+            "next_v": checkpoint_obj.get("next_v"),
+            "source_v": checkpoint_obj.get("source_v"),
+            "stage": checkpoint_obj.get("stage"),
+            "run_id": observed_run_id,
+            "workflow_run_id": checkpoint_obj.get("workflow_run_id"),
+            "checkpoint_revision": checkpoint_obj.get("checkpoint_revision"),
+        }
+        identity_mismatches = [
+            field
+            for field in identity_fields
+            if observed_identity[field] != expected_identity[field]
+        ]
+        if (
+            type(expected_identity["checkpoint_revision"]) is not int
+            or expected_identity["checkpoint_revision"] <= 0
+            or type(observed_identity["checkpoint_revision"]) is not int
+            or observed_identity["checkpoint_revision"] <= 0
+        ):
+            identity_mismatches.append("checkpoint_revision_invalid")
+        if (
+            not isinstance(expected_identity["run_id"], str)
+            or not expected_identity["run_id"].strip()
+            or not isinstance(observed_identity["run_id"], str)
+            or not observed_identity["run_id"].strip()
+        ):
+            identity_mismatches.append("run_id_invalid")
+        identity_mismatches = list(dict.fromkeys(identity_mismatches))
+        if issues or identity_mismatches:
             return {
                 "exists": True,
                 "stage": active.get("stage"),
@@ -230,9 +303,15 @@ def _read_pipeline_health(status: dict) -> dict:
                 "epoch_state": status.get("epoch_state"),
                 "error": "strict_checkpoint_revalidation_failed",
                 "issues": list(dict.fromkeys(map(str, issues))),
-                "identity_changed": observed != expected,
+                "identity_changed": bool(identity_mismatches),
+                "identity_mismatches": identity_mismatches,
+                "expected_identity": expected_identity,
+                "observed_identity": observed_identity,
             }
         recovery = checkpoint_recovery_diagnostics(checkpoint)
+        route = route_policy(checkpoint)
+        if not isinstance(route, dict):
+            raise RuntimeError("canonical route is not an object")
     except Exception as exc:
         return {
             "exists": True,
@@ -249,6 +328,7 @@ def _read_pipeline_health(status: dict) -> dict:
         "epoch_state": status.get("epoch_state"),
         "run_id": active.get("run_id"),
         "workflow_run_id": active.get("workflow_run_id"),
+        "checkpoint_revision": active.get("checkpoint_revision"),
         "stage": active.get("stage"),
         "next_v": active.get("next_v"),
         "source_v": active.get("source_v"),
@@ -257,6 +337,7 @@ def _read_pipeline_health(status: dict) -> dict:
         "precommit_attempt": attempt.get("precommit"),
         "ignored_checkpoint": None,
         "recovery": recovery,
+        "route": route,
     }
     now = time.time()
     for source_key, target_key in (
@@ -278,11 +359,53 @@ def _daemon_health_snapshot() -> dict:
         from elo_daemon import HEARTBEAT_STALE_SEC
     except Exception:
         HEARTBEAT_STALE_SEC = 120
+    configured = bool(app_state.get_config().get("daemon_enabled"))
+    data["configured"] = configured
     data["heartbeat_stale_sec"] = HEARTBEAT_STALE_SEC
-    hb_age = data.get("heartbeat_age_sec")
-    data["heartbeat_stale"] = (
-        hb_age is not None and hb_age > HEARTBEAT_STALE_SEC
-    )
+    data["heartbeat_age_sec"] = None
+    data["heartbeat_stale"] = False
+    if not configured:
+        data["heartbeat_status"] = "not_applicable"
+        if data.get("alive"):
+            data["health_error"] = "daemon_running_while_disabled"
+        return data
+    if not data.get("alive"):
+        data["heartbeat_status"] = "invalid" if data.get("exists") else "missing"
+        if not data.get("health_error"):
+            data["health_error"] = (
+                "daemon_process_not_alive"
+                if data.get("exists")
+                else "daemon_pid_file_missing"
+            )
+        return data
+
+    raw_heartbeat = data.get("last_heartbeat")
+    if raw_heartbeat is None:
+        data["heartbeat_status"] = "missing"
+        data["health_error"] = "daemon_heartbeat_missing"
+        return data
+    try:
+        if isinstance(raw_heartbeat, bool):
+            raise ValueError("boolean heartbeat")
+        heartbeat = float(raw_heartbeat)
+        if not math.isfinite(heartbeat):
+            raise ValueError("non-finite heartbeat")
+    except (TypeError, ValueError, OverflowError):
+        data["heartbeat_status"] = "invalid"
+        data["health_error"] = "daemon_heartbeat_invalid"
+        return data
+    age = time.time() - heartbeat
+    data["heartbeat_age_sec"] = round(age, 2)
+    if age < -5.0:
+        data["heartbeat_status"] = "future"
+        data["health_error"] = "daemon_heartbeat_from_future"
+    elif age > float(HEARTBEAT_STALE_SEC):
+        data["heartbeat_status"] = "stale"
+        data["heartbeat_stale"] = True
+        data["health_error"] = "daemon_heartbeat_stale"
+    else:
+        data["heartbeat_status"] = "fresh"
+        data["health_error"] = None
     return data
 
 
@@ -291,22 +414,63 @@ def _health_summary(status: dict) -> dict:
     daemon = _daemon_health_snapshot()
     pipeline = _read_pipeline_health(status)
     issues = []
+    task_active = bool(task.get("present") and task.get("done") is False)
     if not status.get("running"):
         issues.append("evolution_not_running")
-    if status.get("running") and (not task.get("present") or task.get("done")):
+    if status.get("running") and not task_active:
         issues.append("orchestrator_task_not_active")
+    if task_active and task.get("shutdown_requested"):
+        issues.append("orchestrator_stop_in_progress")
+    if daemon.get("configured") != bool(status.get("daemon_enabled")):
+        issues.append("daemon_configuration_projection_mismatch")
     if status.get("running") and status.get("daemon_enabled"):
         if not daemon.get("alive"):
             issues.append("daemon_dead")
-        elif daemon.get("heartbeat_stale"):
-            issues.append("daemon_heartbeat_stale")
+        elif daemon.get("heartbeat_status") != "fresh":
+            issues.append(
+                f"daemon_heartbeat_{daemon.get('heartbeat_status') or 'unavailable'}"
+            )
+    if not status.get("daemon_enabled") and daemon.get("alive"):
+        issues.append("daemon_running_while_disabled")
+    if daemon.get("health_error"):
+        issues.append(f"daemon_health_error:{daemon['health_error']}")
     if status.get("active_generation") and not pipeline.get("exists"):
         issues.append("active_generation_without_checkpoint")
+    handoff = status.get("post_publication_handoff")
+    if isinstance(handoff, dict) and handoff.get("blocked") is True:
+        issues.append("post_publication_handoff_blocked")
     if pipeline.get("error"):
         issues.append("pipeline_checkpoint_unreadable")
+    if pipeline.get("blocked") is True:
+        issues.append("pipeline_blocked")
     recovery = pipeline.get("recovery") if isinstance(pipeline.get("recovery"), dict) else {}
     for issue in recovery.get("issues") or []:
         issues.append(f"pipeline_{issue}")
+    stability = status.get("stability_observation")
+    verification = (
+        stability.get("verification")
+        if isinstance(stability, dict)
+        and isinstance(stability.get("verification"), dict)
+        else {}
+    )
+    fresh_until = verification.get("fresh_until")
+    verification_fresh = bool(
+        verification.get("state") == "fresh"
+        and isinstance(fresh_until, (int, float))
+        and not isinstance(fresh_until, bool)
+        and math.isfinite(float(fresh_until))
+        and float(fresh_until) > time.time()
+    )
+    if (
+        status.get("running")
+        and status.get("epoch_initialized")
+        and (
+            not isinstance(stability, dict)
+            or not stability.get("continuity_valid")
+            or not verification_fresh
+        )
+    ):
+        issues.append("stability_observation_unavailable")
 
     if not status.get("running"):
         overall = "stopped"
@@ -327,6 +491,22 @@ def _health_summary(status: dict) -> dict:
     }
 
 
+def _stability_observation_digest(observation: Any) -> str:
+    """Bind paired status/health reads to one exact stability projection."""
+
+    try:
+        encoded = json.dumps(
+            observation,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _sync_evolution_fields(state: dict) -> dict:
     """Overlay cheap authoritative evolution fields for status reads.
 
@@ -336,13 +516,28 @@ def _sync_evolution_fields(state: dict) -> dict:
     with the files the orchestrator actually uses, without mutating AppState
     from a read-only endpoint.
     """
+    sampled_stream_authority_digest = None
     try:
         from epoch_authority import (
+            epoch_stream_authority_digest,
             strict_epoch_projection,
             unpublished_candidate_versions,
         )
+        from server.routes._helpers import (
+            post_publication_handoff_projection,
+            stable_epoch_handoff_sample,
+        )
 
-        epoch = strict_epoch_projection()
+        epoch, handoff, stable_sample = stable_epoch_handoff_sample(
+            strict_epoch_projection,
+            lambda value: post_publication_handoff_projection(
+                enabled=bool(value.get("initialized"))
+            ),
+        )
+        if not stable_sample:
+            raise RuntimeError(
+                "canonical_epoch_changed_during_handoff_projection"
+            )
         current_v = int(epoch["current_v"])
         next_v = int(epoch["next_v"])
         generation_count = int(epoch["strict_generation_count"])
@@ -362,11 +557,40 @@ def _sync_evolution_fields(state: dict) -> dict:
         state["strict_published_versions"] = epoch["strict_published_versions"]
         state["active_bots"] = epoch["active_bots"]
         state["reset_receipt_valid"] = bool(epoch["reset_receipt_valid"])
+        state["reset_receipt_digest"] = epoch.get("reset_receipt_digest")
+        sampled_stream_authority_digest = epoch_stream_authority_digest(epoch)
+        state["stream_authority_digest"] = sampled_stream_authority_digest
         state["reset_receipt_issues"] = epoch["reset_receipt_issues"]
         state["operator_action"] = epoch["operator_action"]
         state["operator_command"] = epoch["operator_command"]
+        state["runtime_reconciliation_claimed"] = bool(
+            epoch.get("runtime_reconciliation_claimed")
+        )
+        state["runtime_reconciliation_kind"] = epoch.get(
+            "runtime_reconciliation_kind"
+        )
+        state["runtime_reconciliation_claim_digest"] = epoch.get(
+            "runtime_reconciliation_claim_digest"
+        )
+        state["runtime_reconciliation_claim_valid"] = bool(
+            epoch.get("runtime_reconciliation_claim_valid")
+        )
+        state["runtime_reconciliation_claim_issues"] = list(
+            epoch.get("runtime_reconciliation_claim_issues") or []
+        )
+        state["publication_recovery_ready"] = bool(
+            epoch.get("publication_recovery_ready")
+        )
+        state["unpaired_completion_versions"] = list(
+            epoch.get("unpaired_completion_versions") or []
+        )
+        state["unpaired_high_water_versions"] = list(
+            epoch.get("unpaired_high_water_versions") or []
+        )
+        state["operator_transition"] = epoch.get("operator_transition")
         state["ignored_checkpoint"] = epoch["ignored_checkpoint"]
         state["unpublished_candidate_versions"] = unpublished_candidate_versions()
+        state["post_publication_handoff"] = handoff
     except Exception as exc:
         # Never fall back to AppState's bootstrap counters: those values may
         # have been initialized from a retired checkpoint or abandoned bot
@@ -386,29 +610,119 @@ def _sync_evolution_fields(state: dict) -> dict:
             "strict_published_versions": [],
             "active_bots": [],
             "reset_receipt_valid": False,
+            "reset_receipt_digest": None,
+            "stream_authority_digest": None,
             "reset_receipt_issues": ["canonical_epoch_projection_unavailable"],
             "operator_action": "inspect_epoch_authority",
             "operator_command": None,
+            "runtime_reconciliation_claimed": False,
+            "runtime_reconciliation_kind": None,
+            "runtime_reconciliation_claim_digest": None,
+            "runtime_reconciliation_claim_valid": False,
+            "runtime_reconciliation_claim_issues": [
+                "canonical_epoch_projection_unavailable"
+            ],
+            "publication_recovery_ready": False,
+            "unpaired_completion_versions": [],
+            "unpaired_high_water_versions": [],
+            "operator_transition": None,
             "ignored_checkpoint": None,
             "unpublished_candidate_versions": [],
         })
         state["status_sync_error"] = str(exc)[:200]
-    return state
+        from server.routes._helpers import post_publication_handoff_projection
 
-
-async def _run_with_cleanup(coro):
-    """Run an evolution coroutine, ensuring app_state.running is cleared on exit."""
+        # Never open a journal after the epoch/checkpoint bracket failed.  A
+        # disabled projection makes the unavailable authority explicit without
+        # mixing a later handoff into the failed sample.
+        state["post_publication_handoff"] = (
+            post_publication_handoff_projection(enabled=False)
+        )
     try:
-        await coro
-    finally:
-        app_state.set_running(False)
+        from stability_observation import stability_observation_cached_projection
+
+        stability = stability_observation_cached_projection(
+            expected_epoch_authority_digest=sampled_stream_authority_digest,
+        )
+        verification = stability.get("verification") if isinstance(
+            stability, dict
+        ) else None
+        authority = verification.get("authority") if isinstance(
+            verification, dict
+        ) else None
+        repository_head = (
+            authority.get("repository_head")
+            if isinstance(authority, dict)
+            else None
+        )
+        repository_branch = (
+            authority.get("repository_branch")
+            if isinstance(authority, dict)
+            else None
+        )
+        if (
+            not isinstance(authority, dict)
+            or authority.get("evaluation_epoch")
+            != state.get("evaluation_epoch")
+            or authority.get("epoch_stream_authority_digest")
+            != sampled_stream_authority_digest
+            or (
+                bool(state.get("epoch_initialized"))
+                and not isinstance(sampled_stream_authority_digest, str)
+            )
+            or not isinstance(repository_head, str)
+            or len(repository_head) != 40
+            or any(
+                char not in "0123456789abcdef"
+                for char in repository_head
+            )
+            or not isinstance(repository_branch, str)
+            or not repository_branch
+            or repository_branch == "HEAD"
+        ):
+            raise RuntimeError("stability_projection_authority_mismatch")
+        state["stability_observation"] = stability
+    except Exception as exc:
+        state["stability_observation"] = {
+            "schema_version": 1,
+            "kind": "national-tcp-uninterrupted-evolution-observation",
+            "authority": "operator_acceptance_only",
+            "strategy_evidence_weight": 0,
+            "strength_evidence_weight": 0,
+            "status": "reset_required",
+            "continuity_valid": False,
+            "count": 0,
+            "target": 10,
+            "remaining": 10,
+            "complete": False,
+            "strength_cycle_ready": False,
+            "strength_cycle": {
+                "ready": False,
+                "reason": "projection_failed",
+            },
+            "continuity_id": None,
+            "last_reset_reason": "projection_failed",
+            "identity_mismatches": [],
+            "errors": [f"projection_failed:{type(exc).__name__}"],
+            "verification": {
+                "state": "failed",
+                "checked_at": time.time(),
+                "fresh_until": None,
+                "error": f"projection_failed:{type(exc).__name__}",
+                "authority": None,
+            },
+        }
+    state["stability_observation_digest"] = _stability_observation_digest(
+        state.get("stability_observation")
+    )
+    return state
 
 
 class ConfigRequest(BaseModel):
     model_config = {"strict": True}
     daemon_enabled: bool | None = None
-    daemon_workers: int | None = None
-    daemon_pairs: int | None = None
+    daemon_workers: int | None = Field(default=None, ge=1, le=12)
+    daemon_pairs: int | None = Field(default=None, ge=1, le=20)
 
     @property
     def safe_updates(self) -> dict:
@@ -423,40 +737,223 @@ class ConfigRequest(BaseModel):
         return result
 
 
+def _runtime_mutation_conflict() -> dict[str, Any] | None:
+    task = app_state.task_snapshot()
+    if app_state.to_dict().get("running"):
+        return {"reason": "evolution_running", "task": task}
+    if task.get("present") and task.get("done") is False:
+        return {"reason": "evolution_task_still_active", "task": task}
+    return None
+
+
+def _require_runtime_stopped(operation: str) -> None:
+    conflict = _runtime_mutation_conflict()
+    if conflict is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "runtime_mutation_while_evolution_active",
+                "operation": operation,
+                **conflict,
+            },
+        )
+
+
+def _bind_and_reset_stability(
+    config: dict[str, Any],
+    reason: str,
+    details: dict[str, Any],
+) -> None:
+    from stability_observation import (
+        bind_runtime_configuration,
+        reset_stability_observation,
+    )
+
+    bind_runtime_configuration({
+        key: config[key]
+        for key in ("daemon_enabled", "daemon_workers", "daemon_pairs")
+    })
+    reset_stability_observation(reason, details=details)
+
+
+def _apply_daemon_configuration(
+    previous: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    daemon_was_alive: bool,
+    transaction_state: dict[str, Any] | None = None,
+) -> None:
+    """Apply config to the actual daemon while the orchestrator is stopped."""
+
+    from evolution_core import start_daemon, stop_daemon
+
+    daemon_settings_changed = any(
+        previous.get(key) != current.get(key)
+        for key in ("daemon_enabled", "daemon_workers", "daemon_pairs")
+    )
+    if daemon_was_alive and daemon_settings_changed:
+        if transaction_state is not None:
+            transaction_state["daemon_mutation_started"] = True
+        stop_daemon()
+    # A stopped runtime stays stopped; enabling the configured daemon does not
+    # launch an ownerless rating process before the orchestrator starts.
+    if daemon_was_alive and current.get("daemon_enabled"):
+        start_daemon(
+            workers=int(current["daemon_workers"]),
+            pairs=int(current["daemon_pairs"]),
+        )
+
+
+def _restore_daemon_configuration(
+    previous: dict[str, Any],
+    *,
+    daemon_was_alive: bool,
+) -> None:
+    from evolution_core import start_daemon, stop_daemon
+
+    if not daemon_was_alive:
+        return
+    # Stop any partially reconfigured process before reconstructing the exact
+    # pre-transaction actual state.
+    try:
+        stop_daemon()
+    except Exception:
+        pass
+    start_daemon(
+        workers=int(previous["daemon_workers"]),
+        pairs=int(previous["daemon_pairs"]),
+    )
+
+
 @router.get("/config")
 async def get_config():
     return app_state.get_config()
 
 
-@router.put("/config")
-async def set_config(req: ConfigRequest, request: Request):
-    require_operator_mutation(request, operation="control_config_update")
+async def _set_config_transaction(req: ConfigRequest) -> dict[str, Any]:
     updates = req.safe_updates
     if not updates:
         return app_state.get_config()
     _require_initialized_epoch("control_config_update")
-    was_enabled = app_state.daemon_enabled
-    result = app_state.update_config(**updates)
-    if "daemon_enabled" in updates and updates["daemon_enabled"] != was_enabled:
-        if updates["daemon_enabled"]:
-            from evolution_core import start_daemon
-            start_daemon(workers=app_state.daemon_workers, pairs=app_state.daemon_pairs)
-        else:
-            from evolution_core import stop_daemon
-            stop_daemon()
+    _require_runtime_stopped("control_config_update")
+    previous_config = app_state.get_config()
+    desired = {**previous_config, **updates}
+    changed = {
+        key: {"before": previous_config.get(key), "after": desired.get(key)}
+        for key in updates
+        if previous_config.get(key) != desired.get(key)
+    }
+    if not changed:
+        return previous_config
+    daemon_was_alive = bool(_daemon_health_snapshot().get("alive"))
+    result: dict[str, Any] | None = None
+    daemon_transaction_state: dict[str, Any] = {}
+    try:
+        result = await run_blocking_isolated(
+            app_state.update_config,
+            **updates,
+            thread_name_prefix="control-config-write",
+        )
+        await run_blocking_isolated(
+            _bind_and_reset_stability,
+            result,
+            "runtime_configuration_changed",
+            {"changes": changed},
+            thread_name_prefix="control-config-stability",
+        )
+        await run_blocking_isolated(
+            _apply_daemon_configuration,
+            previous_config,
+            result,
+            daemon_was_alive=daemon_was_alive,
+            transaction_state=daemon_transaction_state,
+            thread_name_prefix="control-config-daemon",
+        )
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        try:
+            await run_blocking_isolated(
+                app_state.update_config,
+                **{
+                    key: previous_config[key]
+                    for key in ("daemon_enabled", "daemon_workers", "daemon_pairs")
+                },
+                thread_name_prefix="control-config-rollback-write",
+            )
+        except Exception as rollback_exc:
+            rollback_errors.append(
+                f"config:{type(rollback_exc).__name__}:{str(rollback_exc)[:160]}"
+            )
+        if daemon_transaction_state.get("daemon_mutation_started") is True:
+            try:
+                await run_blocking_isolated(
+                    _restore_daemon_configuration,
+                    previous_config,
+                    daemon_was_alive=daemon_was_alive,
+                    thread_name_prefix="control-config-rollback-daemon",
+                )
+            except Exception as rollback_exc:
+                rollback_errors.append(
+                    f"daemon:{type(rollback_exc).__name__}:{str(rollback_exc)[:160]}"
+                )
+        try:
+            await run_blocking_isolated(
+                _bind_and_reset_stability,
+                previous_config,
+                "runtime_configuration_change_rolled_back",
+                {
+                    "changes": changed,
+                    "failure": f"{type(exc).__name__}:{str(exc)[:200]}",
+                },
+                thread_name_prefix="control-config-rollback-stability",
+            )
+        except Exception as rollback_exc:
+            rollback_errors.append(
+                f"stability:{type(rollback_exc).__name__}:{str(rollback_exc)[:160]}"
+            )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "runtime_configuration_transaction_failed",
+                "failure": f"{type(exc).__name__}:{str(exc)[:240]}",
+                "rollback_errors": rollback_errors,
+            },
+        ) from None
     return result
+
+
+@router.put("/config")
+async def set_config(req: ConfigRequest, request: Request):
+    require_operator_mutation(request, operation="control_config_update")
+    return await _run_lifecycle_operation(
+        lambda: _set_config_transaction(req)
+    )
+
+
+def _control_status_snapshot() -> dict[str, Any]:
+    return _sync_evolution_fields(app_state.to_dict())
 
 
 @router.get("/status")
 async def control_status():
-    return _sync_evolution_fields(app_state.to_dict())
+    return await run_blocking_isolated(
+        _control_status_snapshot,
+        thread_name_prefix="control-status-snapshot",
+    )
+
+
+def _control_health_snapshot() -> dict[str, Any]:
+    status = _sync_evolution_fields(app_state.to_dict())
+    return _health_summary(status)
 
 
 @router.get("/health")
 async def control_health():
     """Return a single read-only health snapshot for observers/supervisors."""
-    status = _sync_evolution_fields(app_state.to_dict())
-    return _health_summary(status)
+    return await run_blocking_isolated(
+        _control_health_snapshot,
+        thread_name_prefix="control-health-snapshot",
+    )
 
 
 @router.get("/decisions")
@@ -468,56 +965,144 @@ async def get_decisions(limit: int = 50):
     return decisions[-limit:]
 
 
-@router.post("/start")
-async def start_evolution(request: Request):
-    require_operator_mutation(request, operation="control_start_evolution")
+async def _start_evolution_transaction() -> dict[str, str]:
     _require_initialized_epoch("control_start_evolution")
     if not app_state.try_set_running(True):
-        raise HTTPException(status_code=409, detail="Evolution is already running")
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "evolution_runtime_already_owned",
+                "task": app_state.task_snapshot(),
+            },
+        )
+    owner_id = app_state.runtime_owner_id()
 
     from server.app import web_ui
     web_ui._broadcaster.clear()
     config = app_state.get_config()
 
-    from shutdown_manager import ShutdownManager
-    shutdown_mgr = ShutdownManager(grace_period=15.0)
-    app_state.set_shutdown_mgr(shutdown_mgr)
     try:
-        from llm_query import set_shutdown_manager
-        set_shutdown_manager(shutdown_mgr)
-    except Exception:
-        pass
+        await run_blocking_isolated(
+            _bind_and_reset_stability,
+            config,
+            "orchestrator_restart",
+            {"trigger": "control_start"},
+            thread_name_prefix="control-start-stability",
+        )
+    except Exception as exc:
+        app_state.abort_runtime_owner(owner_id)
+        if "owner_process_still_alive" in str(exc):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "stability_observation_owner_active",
+                    "message": (
+                        "Another live runtime process owns the uninterrupted "
+                        "evolution observation. Stop that runtime before starting."
+                    ),
+                },
+            ) from None
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "stability_observation_reset_failed",
+                "failure": f"{type(exc).__name__}:{str(exc)[:200]}",
+            },
+        ) from None
 
-    from orchestrator import orchestrator_loop
-    task = asyncio.create_task(_run_with_cleanup(orchestrator_loop(
-        web_ui, shutdown_mgr=shutdown_mgr, no_daemon=not config["daemon_enabled"],
-        daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"])))
-    app_state.set_task(task)
+    task: asyncio.Task | None = None
+    try:
+        from shutdown_manager import ShutdownManager
+
+        shutdown_mgr = ShutdownManager(grace_period=15.0)
+        app_state.set_shutdown_mgr(shutdown_mgr, owner_id=owner_id)
+        try:
+            from llm_query import set_shutdown_manager
+            set_shutdown_manager(shutdown_mgr)
+        except Exception:
+            pass
+
+        from orchestrator import orchestrator_loop
+        task = asyncio.create_task(run_evolution_task(orchestrator_loop(
+            web_ui, shutdown_mgr=shutdown_mgr, no_daemon=not config["daemon_enabled"],
+            daemon_workers=config["daemon_workers"], daemon_pairs=config["daemon_pairs"]),
+            owner_id=owner_id,
+        ))
+        app_state.set_task(task, owner_id=owner_id)
+    except BaseException:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        app_state.abort_runtime_owner(owner_id)
+        try:
+            from llm_query import set_shutdown_manager
+            set_shutdown_manager(None)
+        except Exception:
+            pass
+        raise
 
     return {"status": "started", "mode": "orchestrator"}
 
 
-@router.post("/stop")
-async def stop_evolution(request: Request):
-    require_operator_mutation(request, operation="control_stop_evolution")
+@router.post("/start")
+async def start_evolution(request: Request):
+    require_operator_mutation(request, operation="control_start_evolution")
+    return await _run_lifecycle_operation(_start_evolution_transaction)
+
+
+async def _stop_evolution_transaction() -> dict[str, str]:
     app_state.request_shutdown()
     task = app_state.stop_running()
     if task and not task.done():
         task.cancel()
         try:
-            await asyncio.wait_for(task, timeout=10)
+            await asyncio.wait_for(asyncio.shield(task), timeout=10)
         except (asyncio.TimeoutError, asyncio.CancelledError):
             task.cancel()
             try:
-                await asyncio.wait_for(task, timeout=5)
+                await asyncio.wait_for(asyncio.shield(task), timeout=5)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 pass
+    if task is not None and not task.done():
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "evolution_task_stop_timeout",
+                "task": app_state.task_snapshot(),
+            },
+        )
     try:
         from evolution_core import stop_daemon
-        stop_daemon()
-    except Exception:
-        pass
+
+        await run_blocking_isolated(
+            stop_daemon,
+            thread_name_prefix="control-stop-daemon",
+        )
+        await run_blocking_isolated(
+            _bind_and_reset_stability,
+            app_state.get_config(),
+            "orchestrator_stopped",
+            {"trigger": "control_stop"},
+            thread_name_prefix="control-stop-stability",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "evolution_stop_incomplete",
+                "failure": f"{type(exc).__name__}:{str(exc)[:240]}",
+            },
+        ) from None
     return {"status": "stopped"}
+
+
+@router.post("/stop")
+async def stop_evolution(request: Request):
+    require_operator_mutation(request, operation="control_stop_evolution")
+    return await _run_lifecycle_operation(_stop_evolution_transaction)
 
 
 @router.post("/tool/{tool_name}", status_code=410)
@@ -568,55 +1153,48 @@ async def list_tools():
 
 # ── Orchestrator Session Management ──
 
-ORCHESTRATOR_SESSION_FILE = PROJECT_ROOT / "web" / "core" / "results" / "orchestrator_session.json"
+# Compatibility path used only to identify retired debris in operator tests.
+# The control plane must never read it as resumable provider-history authority.
+ORCHESTRATOR_SESSION_FILE = (
+    PROJECT_ROOT / "web" / "core" / "results" / "orchestrator_session.json"
+)
 
 
 @router.get("/orchestrator/session")
 async def get_orchestrator_session():
-    """Return current Orchestrator session ID (if any)."""
+    """Describe the non-resumable provider-history policy.
+
+    Pipeline recovery is owned only by the validated checkpoint.  The opaque
+    provider session id is neither persisted nor rendered as active authority.
+    """
     epoch = _epoch_access_state("control_orchestrator_session_read")
-    if not epoch.get("initialized"):
-        # A retired session id is not resumable authority and must never be
-        # rendered as active before the reset archives it.
-        return {
-            "session_id": None,
-            "active": False,
-            "blocked": True,
-            "epoch_state": epoch.get("state"),
-            "operator_action": epoch.get("operator_action"),
-        }
-    if not ORCHESTRATOR_SESSION_FILE.exists():
-        return {"session_id": None, "active": False, "blocked": False}
-    try:
-        import json as _json
-        data = _json.loads(ORCHESTRATOR_SESSION_FILE.read_text())
-        session_id = data.get("session_id")
-        return {
-            "session_id": session_id,
-            "active": bool(session_id),
-            "blocked": False,
-        }
-    except Exception:
-        return {"session_id": None, "active": False, "blocked": False}
+    return {
+        "session_id": None,
+        "active": False,
+        "blocked": not bool(epoch.get("initialized")),
+        "resume_supported": False,
+        "provider_history_persisted": False,
+        "recovery_authority": "validated_checkpoint_only",
+        "history_policy": "fresh_provider_session_from_checkpoint_projection_only",
+        "epoch_state": epoch.get("state"),
+        "operator_action": epoch.get("operator_action"),
+    }
 
 
 @router.delete("/orchestrator/session")
 async def clear_orchestrator_session(request: Request):
-    """Delete the Orchestrator session file — forces a fresh conversation on next startup."""
+    """Retired: provider sessions are never persisted or resumed."""
     require_operator_mutation(
         request,
         operation="control_orchestrator_session_clear",
     )
-    _require_initialized_epoch("control_orchestrator_session_clear")
-    existed = ORCHESTRATOR_SESSION_FILE.exists()
-    ORCHESTRATOR_SESSION_FILE.unlink(missing_ok=True)
-    try:
-        from system_log import log_system_event
-        log_system_event(
-            "control.session_cleared", "warn",
-            "Control API cleared orchestrator session",
-            {"existed": existed},
-        )
-    except Exception:
-        pass
-    return {"cleared": existed, "message": "Session reset. Next Orchestrator start will begin a new conversation."}
+    raise HTTPException(
+        status_code=410,
+        detail={
+            "code": "orchestrator_provider_session_resume_retired",
+            "recovery_authority": "validated_checkpoint_only",
+            "history_policy": (
+                "fresh_provider_session_from_checkpoint_projection_only"
+            ),
+        },
+    )

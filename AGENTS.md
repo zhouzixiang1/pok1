@@ -176,6 +176,23 @@ boundary closures, terminal response outcomes, settlements, and showdown range
 evidence. Adaptation is confidence-weighted and capped; sparse samples stay
 near the baseline.
 
+Every LLM role has a resolved-path read capability supplied by the system.
+Fresh v143 roles may read only the prepared v143 artifact; normal planning and
+review roles may read only the exact current source, target, and frozen
+generation snapshot assigned to them; Workers may read only their lease
+candidate. `.git`, any archive path, unlisted bots, other live results,
+operator delivery documents, symlinks, parent aliases, globs, shell/Python
+wrappers, and indirect configuration-file reads are denied. Dynamic candidate
+execution belongs to system quality gates; Workers get bounded inspection and
+exact-file `py_compile` only.
+
+Each Agent SDK attempt owns its exact subprocess transport. A timeout or
+cancel-resistant stream must close that transport and prove both the original
+process and pending stream tasks exited before schema, signature, overload, or
+cycle retry. An unresolved owned attempt is an infrastructure failure and
+blocks further provider dispatch; the runtime never kills a process whose
+ownership it cannot prove.
+
 ## Space-for-time assets
 
 Compact system-owned import-time facts are allowed and measured: 1,326 hole
@@ -210,7 +227,11 @@ Active implementation is under `web/core/`. Major responsibilities include:
   dynamic policy-ABI enforcement;
 - `elo_daemon.py` — internal native-match scheduling and immutable evaluation-cycle publication;
 - `tool_gates.py`, `tool_eval.py`, `tool_commit.py` — quality, precommit, signed
-  publication.
+  publication;
+- `post_publication_handoff.py`, `cycle_archivist.py` — publication-linearized,
+  crash-safe post-publication journal and immutable archive annotation;
+- `stability_observation.py` — operator-only uninterrupted-delivery acceptance;
+  zero strategy/strength weight.
 
 Generation order:
 
@@ -231,6 +252,62 @@ Crossover is preparation only and never skips planning or gates. Every prepared
 artifact has a complete manifest/hash. Worker writes are lease-isolated,
 snapshotted, and atomic. Publication cross-checks working bytes, staged Git
 blobs, and immutable tag tree.
+
+Publishing does not authorize the next generation by itself. Before the
+publishing checkpoint is cleared, the publication lock creates and fsyncs an
+exact schema-2 post-publication handoff plus its archive base snapshot. The
+handoff then owns eight ordered steps: `stability_observation`, `reap_signal`,
+`priority_eval`, `archive_rotation`, `log_cleanup`, `pool_reap`,
+`cycle_annotation`, and `housekeeping`. Every step has an exact-key,
+content-bound plan and output receipt; a re-signed alternate shape is invalid.
+Crash recovery resumes the same publication/workflow identity and never skips
+a completed-looking step merely because its receipt digest is syntactically
+valid.
+
+Final handoff completion reopens the operational stability row, reissues the
+exact daemon refresh and priority capabilities, and independently re-proves
+rotation archives, strict-log archives, reap tombstones, Cycle Archivist
+annotation, Git HEAD, and clean worktree. Archive rotation first freezes one
+high-level plan for every managed append-only source and preserves live source
+bytes. Strict-generation log archival is non-destructive: it emits immutable
+archives/manifests while retaining the live log tree and every generation
+sibling. Pool reaping is a schema-2 frozen selection snapshot and target
+sequence, including the zero-target case; it cannot recompute victims after a
+crash. Signal producers and daemon consumers share the same stable sidecar
+lock, so publish/read/unlink cannot race. A missing, corrupt, ambiguous, or
+unreprovable handoff is an active launch barrier.
+
+Generation abandonment is a publication-linearized schema-2 transaction, not
+directory cleanup. Its transaction id binds the exact checkpoint CAS identity,
+reason, candidate manifest, fixed quarantine contract, abandon-ledger prefix and
+Git state. After both the transaction claim and live launch barrier are durable,
+the runtime must revalidate those complete live facts before appending the
+irreversible abandon receipt. It then atomically moves only the claim-bound,
+untracked and unpublished candidate into the transaction quarantine, syncs both
+parents, clears only the exact checkpoint by CAS, writes the terminal receipt,
+and finally clears the live claim. Any active claim, valid or corrupt, makes
+epoch initialization false and exposes no active bots. A completed historical
+receipt remains valid after later legitimate commits and ledger rows because it
+binds its original prefix and exact successor row; it never adopts later bytes.
+
+The operator stability projection reaches 10/10 only for ten consecutive
+fully published generations under one web process, one live rating-daemon
+identity, one effective runtime-configuration digest, and one evaluation-contract
+hash, with no repair, abandonment, version gap, configuration change, restart,
+incomplete publication, or authority drift. Its HTTP projection is served only
+from a coalesced background verification snapshot; pending, expired, or failed
+verification suppresses N/10. Every row binds workflow/gate/certificate/tag/tree/remote
+main, the selected source and frozen cycle/cutoffs; final completion also
+requires the latest bot in the current strict cycle with an admitted complete
+70-hand native sample. The projection is never prompt, selection, rating, or
+strategy evidence.
+
+Backend HTTP and SSE projections bracket the canonical epoch, post-publication
+handoff, and stability identities. A changed sample is withheld rather than
+combined across revisions. The frontend consumes those typed identities,
+rejects stale/out-of-order epoch or handoff events, clears state after stream
+loss, and displays `pending`, `running`, or `blocked` without deriving
+authority from bot directories or local component state.
 
 ## Evidence authority
 
@@ -265,7 +342,7 @@ python web/core/elo_daemon.py --once
 # Tests
 python -m pytest sever/tests -q
 cd web && python -m pytest tests -q
-cd web/frontend && npm run build
+cd web/frontend && npm test && npm run lint && npm run build
 
 # National TCP platform
 cd sever && python main.py
@@ -283,11 +360,16 @@ python scripts/official_certify.py full bots/national_v<N> --wait-if-busy
 python scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
   --control-id first_strict_control_v1 \
   --acknowledge-one-time-first-strict-control --wait-if-busy
+
+# Only after the jobs API projects ready_to_finalize for that exact certificate
+python scripts/official_certify.py finalize-first-strict \
+  --acknowledge-publish-first-strict
 ```
 
 Normal certification is five 70-hand self-play rounds plus three 70-hand rounds
 against an eligible strict-policy opponent. The v143-only system-control
-bootstrap is operator-only, zero-strength, and never an automatic fallback.
+bootstrap and finalize steps are operator-only, zero-strength, and never an
+automatic fallback. The LLM/HTTP control plane can perform neither step.
 The archived v141 signed-ledger chain is validation history and is not executable.
 
 ## Working rules

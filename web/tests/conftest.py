@@ -185,6 +185,75 @@ def sample_h2h():
     }
 
 
+@pytest.fixture
+def synthetic_checkpoint_authority(monkeypatch):
+    """Give legacy checkpoint-behavior tests an explicit synthetic successor.
+
+    Production derives this state from paired publication tags and the durable
+    abandon chain.  Tests that are about stage/CAS behavior rather than version
+    authority opt into this fixture per module, so authority-specific tests
+    continue to exercise the real fail-closed resolver.
+    """
+
+    import checkpoint_schema
+    import evolution_infra
+    from types import SimpleNamespace
+
+    def resolve(*, expected_next_v=None):
+        if type(expected_next_v) is not int or expected_next_v <= 1:
+            raise AssertionError("synthetic checkpoint target must be explicit")
+        published = expected_next_v - 1
+        return {
+            "published_high_water": published,
+            "abandoned_receipt_floor": 0,
+            "abandoned_receipt_head_digest": None,
+            "allocation_floor": published,
+        }
+
+    monkeypatch.setattr(evolution_infra, "checkpoint_allocation_authority", resolve)
+
+    def parent(name, **_kwargs):
+        version = int(str(name).rsplit("national_v", 1)[1])
+        return SimpleNamespace(
+            eligible=True,
+            version=version,
+            issues=(),
+            runtime_manifest={
+                "epoch": "national_tcp_policy_v1",
+                "version": version,
+            },
+            epoch_receipt={
+                "epoch": "national_tcp_policy_v1",
+                "version": version,
+            },
+            publication_identity={
+                "published": True,
+                "tag": f"national-bot-v{version}",
+                "version": version,
+            },
+            certificate_digest="b" * 64,
+        )
+
+    def tags(*, version, **_kwargs):
+        return {
+            "completion_tag": f"national-bot-v{version}",
+            "completion_tag_object_oid": "c" * 40,
+            "high_water_tag": f"national-high-water-v{version}",
+            "high_water_tag_object_oid": "d" * 40,
+            "publication_commit_oid": "e" * 40,
+            "completion_tree_oid": "f" * 40,
+            "tag_artifact_hash": "a" * 64,
+        }
+
+    monkeypatch.setattr(checkpoint_schema, "resolve_national_bot_spec", parent)
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "resolve_published_parent_tag_authority",
+        tags,
+    )
+    return resolve
+
+
 @pytest.fixture(scope="session")
 def active_bot_version():
     versions = _tagged_test_bot_versions()
@@ -322,6 +391,19 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_infra, "ARCHIVE_DIR", results_dir / "archive")
     monkeypatch.setattr(evolution_infra, "LLM_COSTS_FILE", results_dir / "llm_costs.jsonl")
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results_dir / "rating_history.jsonl")
+    import stability_observation
+    monkeypatch.setattr(
+        stability_observation,
+        "STATE_FILE",
+        results_dir / "stability_observation.json",
+    )
+    monkeypatch.setattr(
+        stability_observation,
+        "LOCK_FILE",
+        results_dir / ".stability_observation.lock",
+    )
+    stability_observation.clear_runtime_configuration_binding()
+    stability_observation.invalidate_stability_projection_cache()
     # Publication/official eligibility is covered by dedicated tests.  Generic
     # route and helper tests operate on the isolated tag-backed artifact above.
     monkeypatch.setattr(evolution_infra, "_official_parent_eligible", lambda _path: True)
@@ -359,6 +441,13 @@ def isolate_state(tmp_path, monkeypatch):
 
     # --- 3. Patch app_state config file ---
     monkeypatch.setattr(app_state, "_config_file", iso / "app_config.json")
+
+    import daemon_management as _daemon_management
+    import server.routes.control as _control
+
+    monkeypatch.setattr(_daemon_management, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(_control, "RESULTS_DIR", results_dir)
+    stability_observation.bind_runtime_configuration(app_state.get_config())
 
     # --- 4. Patch route module local constants ---
     # data_stream: PROJECT_ROOT, BOTS_DIR, RESULTS_DIR, RATINGS_FILE, STATS_FILE,
@@ -463,4 +552,5 @@ def isolate_state(tmp_path, monkeypatch):
         app_state.daemon_workers = snapshot["daemon_workers"]
         app_state.daemon_pairs = snapshot["daemon_pairs"]
         app_state.decisions = []
+        stability_observation.clear_runtime_configuration_binding()
         pok_logger.setLevel(orig_level)

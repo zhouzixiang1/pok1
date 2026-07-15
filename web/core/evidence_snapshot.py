@@ -348,7 +348,10 @@ def ensure_generation_h2h_snapshot(
                 continue
             if row.get("bot0") not in active_set or row.get("bot1") not in active_set:
                 continue
-            if _admitted_70_hand_history_sample(row) is None:
+            if _admitted_70_hand_history_sample(
+                row,
+                expected_evaluation_identity_digest=cycle_identity,
+            ) is None:
                 continue
             history_entries.append(row)
         history_entries = history_entries[-512:]

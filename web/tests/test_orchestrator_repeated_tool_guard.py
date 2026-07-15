@@ -34,9 +34,16 @@ def _strict_checkpoint(checkpoint):
         "epoch_receipt_digest": "2" * 64,
         "publication_identity_digest": "3" * 64,
         "certificate_digest": "4" * 64,
+        "completion_tag": f"national-bot-v{source}",
+        "completion_tag_object_oid": "5" * 40,
+        "high_water_tag": f"national-high-water-v{source}",
+        "high_water_tag_object_oid": "6" * 40,
+        "publication_commit_oid": "7" * 40,
+        "completion_tree_oid": "8" * 40,
+        "tag_artifact_hash": "9" * 64,
     }
     binding = {
-        "schema_version": 1,
+        "schema_version": 2,
         "epoch": "national_tcp_policy_v1",
         "mode": "published_strict_parent",
         "next_v": target,
@@ -48,6 +55,10 @@ def _strict_checkpoint(checkpoint):
         "published_parent_identities": [identity],
         "protocol_bootstrap_receipt_digest": None,
         "policy_epoch_reset_receipt_digest": None,
+        "published_high_water": source,
+        "abandoned_receipt_floor": 0,
+        "abandoned_receipt_head_digest": None,
+        "allocation_floor": source,
     }
     encoded = json.dumps(
         binding,
@@ -57,7 +68,7 @@ def _strict_checkpoint(checkpoint):
     ).encode("utf-8")
     return {
         **checkpoint,
-        "checkpoint_schema_version": 1,
+        "checkpoint_schema_version": 2,
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_binding": {
             **binding,

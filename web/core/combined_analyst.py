@@ -1,9 +1,16 @@
 """Generation analyst over one immutable national-native evidence snapshot."""
 
 import json
+import hashlib
 import logging
+from pathlib import Path
 
 log = logging.getLogger('pok.analyst')
+
+CAUSAL_ANALYSIS_UNKNOWN = (
+    "unknown: no content-bound artifact/diff digest is present in this frozen "
+    "analyst envelope"
+)
 
 from bot_namespace import FIRST_STRICT_POLICY_VERSION, bot_name, parse_bot_version
 from llm_availability import LLMAvailabilityBlocked
@@ -14,6 +21,52 @@ from evolution_infra import (
     PROMPTS_DIR,
     Glicko2Player,
 )
+
+
+def _render_combined_provider_prompt(inputs):
+    from llm_query import LLMRenderedMaterial
+
+    if not isinstance(inputs, dict) or set(inputs) != {
+        "source_v", "frozen_bundle",
+    }:
+        raise ValueError("Combined Analyst renderer input contract mismatch")
+    frozen_bundle = inputs["frozen_bundle"]
+    if not isinstance(frozen_bundle, dict):
+        raise ValueError("Combined Analyst frozen bundle must be an object")
+    template_values = frozen_bundle.get("rendered_view")
+    if not isinstance(template_values, dict):
+        raise ValueError("Combined Analyst template values must be an object")
+    expected_values = {
+        "bot_name", "opp_eval", "opp_total", "opp_coverage", "rd_warning",
+        "top_bots", "generation_trend", "lineage", "daemon_history",
+        "bot_stats", "h2h_results",
+    }
+    if set(template_values) != expected_values:
+        raise ValueError("Combined Analyst template value contract mismatch")
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "combined_analyst.md"
+    ).read_text(encoding="utf-8")
+    text = substitute_template(
+        template,
+        {key: str(value) for key, value in template_values.items()},
+    )
+    frozen_bundle_digest = hashlib.sha256(
+        json.dumps(
+            frozen_bundle,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+    return LLMRenderedMaterial(
+        text=text,
+        evidence_kind="immutable_generation_evaluation_bundle",
+        evidence_provenance={
+            "source_v": int(inputs["source_v"]),
+            "frozen_bundle_digest": frozen_bundle_digest,
+        },
+    )
 
 
 def _statistical_stagnation_check(source_v, ratings, history_snaps=None):
@@ -100,6 +153,7 @@ async def _run_combined_analysis(
         "suggestion": None,
         "recommended_source": "",
         "source_rationale": "",
+        "causal_analysis": CAUSAL_ANALYSIS_UNKNOWN,
         "evidence_status": "analysis_unavailable",
         # llm_failed defaults to False: the safe_default only becomes an infra
         # signal when set by the LLM-crash except branch (below). The statistical
@@ -185,6 +239,7 @@ async def _run_combined_analysis(
                 "suggestion": None,
                 "recommended_source": "",
                 "source_rationale": "Statistical pre-check did not evaluate source recommendation — LLM call was skipped.",
+                "causal_analysis": CAUSAL_ANALYSIS_UNKNOWN,
                 "evidence_status": "sufficient_statistical_precheck",
             }
 
@@ -314,12 +369,13 @@ async def _run_combined_analysis(
         )
 
     # ── Build and run prompt ──
-    template_file = PROMPTS_DIR / "combined_analyst.md"
+    template_file = (
+        Path(__file__).resolve().parent / "prompts" / "combined_analyst.md"
+    )
     if not template_file.exists():
         return safe_default
 
-    prompt = template_file.read_text()
-    prompt = substitute_template(prompt, {
+    template_values = {
         "bot_name": source_bot_name,
         "opp_eval": str(opp_eval),
         "opp_total": str(opp_total),
@@ -331,13 +387,39 @@ async def _run_combined_analysis(
         "daemon_history": history_ctx if history_ctx else "  No daemon history",
         "bot_stats": bot_stats_line,
         "h2h_results": "\n".join(l for _, l in h2h_lines) if h2h_lines else "  No H2H data",
-    })
+    }
 
     log_file = get_logs_dir(source_v) / "combined_analysis.txt"
     for attempt in range(3):
         try:
+            from llm_query import render_llm_prompt
+
+            frozen_bundle_receipt = {
+                "active_bots": list(active_bots),
+                "h2h": frozen_h2h_data,
+                "bot_stats": bot_stats_data,
+                "selection_rows": rows,
+                "rating_history": list(rating_history_data),
+                "ratings": {
+                    str(name): {
+                        "r": float(getattr(player, "r", 1500.0)),
+                        "rd": float(getattr(player, "rd", 350.0)),
+                    }
+                    for name, player in sorted((ratings or {}).items())
+                },
+                "rendered_view": template_values,
+            }
+            rendered_prompt = render_llm_prompt(
+                "COMBINED ANALYST",
+                producer=_render_combined_provider_prompt,
+                renderer_inputs={
+                    "source_v": int(source_v),
+                    "frozen_bundle": frozen_bundle_receipt,
+                },
+            )
             output, _, _ = await run_claude_query(
-                prompt, [], ui, "COMBINED ANALYST", log_file,
+                rendered_prompt, [], ui, "COMBINED ANALYST", log_file,
+                tools=[],
             )
             from llm_query import parse_json_output_with_mode
             result, failure_mode = parse_json_output_with_mode(output)
@@ -361,6 +443,12 @@ async def _run_combined_analysis(
                 result.setdefault("suggestion", None)
                 result.setdefault("recommended_source", "")
                 result.setdefault("source_rationale", "")
+                # The current frozen bundle contains outcome/rating rows, not a
+                # content-bound artifact pair or policy diff.  Never accept an
+                # LLM's plausible-sounding code attribution without those
+                # identities; score movement may be described, but code cause
+                # remains unknown.
+                result["causal_analysis"] = CAUSAL_ANALYSIS_UNKNOWN
                 result["evidence_status"] = "sufficient_llm_analysis"
                 return result
             ui.log_history(f"Combined analyst returned empty (attempt {attempt+1}/3, mode={locals().get('failure_mode', 'UNKNOWN')}), retrying...", "warn")

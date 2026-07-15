@@ -17,11 +17,14 @@ Do NOT use Bash to modify `pipeline_state.json`, `glicko_ratings.json`, or any f
 
 <tool_boundary_hard_rules>
 You are a pipeline coordinator, not a code editor.
+- No Bash, Read, Edit, Write, NotebookEdit, Python, Git, or web tools are
+  exposed to this role. Use only the typed evolution MCP tools and their
+  checkpoint-owned results; do not request a built-in tool or reconstruct
+  historical evidence.
 - NEVER use Bash/Edit/Write/NotebookEdit to create, copy, patch, remove, redirect into, or otherwise mutate `bots/national_v*`, `web/core/results/*`, pipeline state files, or git history.
 - Bot code changes MUST happen through `execute_workers` or `run_crossover`.
 - Pipeline state changes MUST happen through MCP tools such as `run_master`, `run_quality_gates`, `run_precommit_eval`, `abandon_generation`, and `commit_bot`.
 - Commits/tags/pushes MUST happen through `commit_bot`; never call `git add`, `git commit`, `git tag`, or `git push` from Bash.
-- Read-only Bash is allowed for inspection only: `diff`, `rg`, `grep`, `sed -n`, `cat`, `ls`, `git status`, `git log`, and `git diff`.
 - If a guard denies Bash/Edit/Write, do NOT retry that direct mutation. Read the denial's "NEXT MCP TOOL" and continue with that MCP tool.
 </tool_boundary_hard_rules>
 
@@ -148,8 +151,14 @@ retry route. Stop immediately. Never select, launch, acknowledge, or consume a
 bootstrap control from the LLM path. For the empty strict pool only, an operator
 must run `bootstrap-first-strict --control-id first_strict_control_v1
 --acknowledge-one-time-first-strict-control`; only after its content-bound
-certificate validates may the operator invoke `commit_bot` manually. Historical
+certificate and completed authorization validate may the operator run
+`finalize-first-strict --acknowledge-publish-first-strict` from the autonomous
+runtime checkout. Never call `commit_bot` directly from the LLM path. Historical
 signed-ledger roots are verification history and are never executable inputs.
+This exception is v143-only and has zero strength weight; v144+ may never use
+it. Every normal candidate instead requires `official-full-v5`: five complete
+70-hand self-play rounds plus three complete 70-hand rounds against an eligible
+published strict-policy opponent.
 </forward_only_guard>
 
 <retry_rules>
@@ -186,7 +195,9 @@ signed-ledger roots are verification history and are never executable inputs.
 - If repeated generations fail, follow the checkpoint-owned recovery action.
   Never reopen live ratings, H2H, match history, or cross-generation analysis;
   the scheduler and planning stages own the exact frozen evidence snapshot.
-- When retrying workers after critic or precommit rejection, pass the exact
-  feedback field **verbatim** as `reviewer_feedback` — do NOT paraphrase or summarize.
+- When retrying workers after a reviewer rejection or native precommit
+  regression, pass the exact feedback field **verbatim** as
+  `reviewer_feedback` — do NOT paraphrase or summarize. Critic advice never
+  authorizes a same-generation Worker retry.
 - Be concise in reasoning; briefly note each tool result; summarize outcome at end
 </safety_rules>

@@ -236,38 +236,38 @@ class TestPromptsWriteLogic:
         assert (temp_prompt_dir / "master_prompt.md").read_bytes() == before
 
 
-# ── control.py: Config clamping ──
+# ── control.py: Strict config bounds ──
 
-class TestConfigClamping:
-    def test_daemon_workers_clamped_low(self, client):
+class TestStrictConfigBounds:
+    def test_daemon_workers_rejects_low(self, client):
+        before = client.get("/api/control/config").json()
         resp = client.put("/api/control/config", json={"daemon_workers": 0})
-        assert resp.status_code == 200
-        assert resp.json()["daemon_workers"] >= 1
+        assert resp.status_code == 422
+        assert client.get("/api/control/config").json() == before
 
-    def test_daemon_workers_clamped_high(self, client):
+    def test_daemon_workers_rejects_high(self, client):
+        before = client.get("/api/control/config").json()
         resp = client.put("/api/control/config", json={"daemon_workers": 100})
-        assert resp.status_code == 200
-        assert resp.json()["daemon_workers"] <= 128
+        assert resp.status_code == 422
+        assert client.get("/api/control/config").json() == before
 
-    def test_daemon_pairs_clamped_low(self, client):
+    def test_daemon_pairs_rejects_low(self, client):
+        before = client.get("/api/control/config").json()
         resp = client.put("/api/control/config", json={"daemon_pairs": -5})
-        assert resp.status_code == 200
-        assert resp.json()["daemon_pairs"] >= 1
+        assert resp.status_code == 422
+        assert client.get("/api/control/config").json() == before
 
-    def test_daemon_pairs_clamped_high(self, client):
+    def test_daemon_pairs_rejects_high(self, client):
+        before = client.get("/api/control/config").json()
         resp = client.put("/api/control/config", json={"daemon_pairs": 50})
-        assert resp.status_code == 200
-        assert resp.json()["daemon_pairs"] <= 20
+        assert resp.status_code == 422
+        assert client.get("/api/control/config").json() == before
 
     def test_bool_not_accepted_as_int(self, client):
+        before = client.get("/api/control/config").json()
         resp = client.put("/api/control/config", json={"daemon_workers": True})
-        # Should be rejected by strict mode or bool-is-not-int guard
-        assert resp.status_code in (422, 200)
-        if resp.status_code == 200:
-            # If accepted, value should not change to 1
-            orig = client.get("/api/control/config").json()
-            # daemon_workers should remain unchanged
-            assert isinstance(orig["daemon_workers"], int)
+        assert resp.status_code == 422
+        assert client.get("/api/control/config").json() == before
 
 
 # ── control.py: Session management ──
@@ -281,9 +281,10 @@ class TestSessionLogic:
 
     def test_delete_when_absent(self, client):
         resp = client.delete("/api/control/orchestrator/session")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "cleared" in data
+        assert resp.status_code == 410
+        assert resp.json()["detail"]["code"] == (
+            "orchestrator_provider_session_resume_retired"
+        )
 
 
 # ── control.py: Tool dispatch ──

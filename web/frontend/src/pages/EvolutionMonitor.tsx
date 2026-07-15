@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useEvolutionSSE, fetchEvolutionState } from "../api/evolution";
 import type { GenerationCostPolicyState, IOLine } from "../api/evolution";
 import { api } from "../api/client";
@@ -17,6 +17,8 @@ import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStat
 import { OfficialCertificationProgress } from "../components/evolution/OfficialCertificationProgress";
 import { useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
+import { epochStreamAuthorityKey } from "../lib/epochStreamAuthority";
+import { controlTaskActive } from "../lib/controlRuntimeState";
 
 type TabKey = "pipeline" | "metrics" | "history";
 
@@ -49,7 +51,7 @@ let _msgId = 0;
 const nextId = () => ++_msgId + Date.now();
 
 export default function EvolutionMonitor() {
-  const { status: epochStatus, loading: epochLoading, error: epochError } = useControlStatus(5_000);
+  const { status: epochStatus, health: controlHealth, loading: epochLoading, error: epochError, refresh: refreshControlStatus } = useControlStatus(5_000);
   const [messages, setMessages] = useState<ConvMsg[]>([]);
   const [historyLines, setHistoryLines] = useState<Array<{ msg: string; status: string }>>([]);
   const [status, setStatus] = useState("连接中...");
@@ -68,13 +70,15 @@ export default function EvolutionMonitor() {
   const [filterRole, setFilterRole] = useState<string>("");
   const [activeRole, setActiveRole] = useState<string>("");
   const [knownRoles, setKnownRoles] = useState<string[]>([]);
+  const [streamState, setStreamState] = useState<"connecting" | "connected" | "disconnected" | "blocked">("connecting");
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
   const thinkingId = useRef<number | null>(null);
   const activeRoleRef = useRef<string>(activeRole);
   activeRoleRef.current = activeRole;
-  const epochReady = Boolean(epochStatus?.epoch_initialized);
+  const streamAuthorityKey = epochStreamAuthorityKey(epochStatus);
+  const epochReady = streamAuthorityKey !== null;
 
   const clearEpochProjection = useCallback(() => {
     setMessages([]);
@@ -96,6 +100,14 @@ export default function EvolutionMonitor() {
     openToolId.current = null;
     thinkingId.current = null;
   }, []);
+
+  useLayoutEffect(() => {
+    // Reset-receipt, published high-water, or active-pool movement replaces the
+    // stream identity even when epoch_initialized remains true. Clear before
+    // paint; the following passive effect opens only the new controller.
+    clearEpochProjection();
+    setStreamState(streamAuthorityKey ? "connecting" : "blocked");
+  }, [clearEpochProjection, streamAuthorityKey]);
 
   // ── Message management (unchanged from original) ──
 
@@ -137,6 +149,11 @@ export default function EvolutionMonitor() {
   // ── SSE connection (unchanged from original) ──
 
   const connect = useEvolutionSSE({
+    onPostPublicationHandoff: (handoff) => {
+      if (handoff.stream_authority_digest === streamAuthorityKey) {
+        void refreshControlStatus();
+      }
+    },
     onHistory: (msg, s) => {
       if (!epochStatus?.epoch_initialized) return;
       setHistoryLines((prev) => [...prev.slice(-200), { msg, status: s }]);
@@ -258,6 +275,16 @@ export default function EvolutionMonitor() {
       if (role) setKnownRoles((prev) => prev.includes(role) ? prev : [...prev, role]);
       addMsg({ id, type: "tool_call", text: data.tool_name, role, toolName: data.tool_name, toolArgs: data.args, toolOutput: [], toolDone: false });
     },
+    onLogEventDropped: (data) => {
+      if (!epochStatus?.epoch_initialized) return;
+      addMsg({
+        id: nextId(),
+        type: "raw",
+        text: `[SSE 限流] ${data.msg}`,
+        toolOutput: [],
+        toolDone: true,
+      });
+    },
     onEvalTable: (rows) => {
       if (!epochStatus?.epoch_initialized) {
         setLeaderboard([]);
@@ -274,38 +301,59 @@ export default function EvolutionMonitor() {
     onEpochBlocked: () => clearEpochProjection(),
     onConnect: () => {
       if (!epochStatus?.epoch_initialized) return;
+      setStreamState("connected");
       setRoleCosts([]); setMessages([]); setHistoryLines([]); setWorkers([]);
       setFilterRole(""); setActiveRole(""); setKnownRoles([]);
       openToolId.current = null; thinkingId.current = null;
     },
-  }, epochReady);
+    onDisconnect: (reason) => {
+      if (reason === "epoch_blocked") clearEpochProjection();
+      setStreamState(reason === "epoch_blocked" ? "blocked" : "disconnected");
+      setIsWorking(false);
+      const interruptedIds = new Set(
+        [openToolId.current, thinkingId.current].filter((value): value is number => value != null),
+      );
+      if (interruptedIds.size > 0) {
+        setMessages((previous) => previous.map((message) => (
+          interruptedIds.has(message.id) ? { ...message, interrupted: true } : message
+        )));
+      }
+      setWorkers((previous) => previous.map((worker) => (
+        worker.status === "running" ? { ...worker, status: "unknown" as const } : worker
+      )));
+      openToolId.current = null;
+      thinkingId.current = null;
+    },
+  }, streamAuthorityKey);
 
   useEffect(() => {
     if (!epochReady) {
+      setStreamState("blocked");
       clearEpochProjection();
       return;
     }
 
+    setStreamState("connecting");
     let cancelled = false;
     fetchEvolutionState().then((state) => {
       if (cancelled) return;
-      if (state.epoch_initialized && state.evaluation_epoch === "national_tcp_policy_v1") {
+      if (
+        state.epoch_initialized
+        && state.evaluation_epoch === "national_tcp_policy_v1"
+        && state.stream_authority_digest === streamAuthorityKey
+      ) {
         setStatus(state.status);
         setIsWorking(state.is_working);
         setGrand(state.grand_cost_total ?? 0);
         setGen(state.gen_cost_total ?? 0);
         setCostPolicy(state.generation_cost_policy ?? null);
+        setLeaderboard((state.ratings ?? []).filter((row) => (
+          Number.isFinite(row.selection_score ?? row.leaderboard_score)
+        )));
       } else {
         clearEpochProjection();
       }
     }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
-    const refreshLeaderboard = () => api.ratings().then((rows) => {
-      if (!cancelled) {
-        setLeaderboard(rows.filter((row) => Number.isFinite(row.selection_score ?? row.leaderboard_score)));
-      }
-    }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
-    refreshLeaderboard();
-    const lbInterval = setInterval(refreshLeaderboard, 15000);
     const refreshPipeline = () => api.pipelineCheckpoint().then((value) => {
       if (!cancelled) setCheckpoint(value);
     }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
@@ -319,12 +367,11 @@ export default function EvolutionMonitor() {
     const disconnect = connect();
     return () => {
       cancelled = true;
-      clearInterval(lbInterval);
       clearInterval(pipeInterval);
       clearInterval(failInterval);
       disconnect();
     };
-  }, [clearEpochProjection, connect, epochReady]);
+  }, [clearEpochProjection, connect, epochReady, streamAuthorityKey]);
 
   useEffect(() => {
     if (autoScroll && ioRef.current) {
@@ -352,7 +399,31 @@ export default function EvolutionMonitor() {
     return messages.filter((m) => m.role === filterRole);
   }, [epochStatus?.epoch_initialized, messages, filterRole]);
 
-  const authoritativeWorking = Boolean(epochStatus?.epoch_initialized && epochStatus.running && isWorking);
+  const taskActive = controlTaskActive(controlHealth?.task);
+  const runtimeHealthy = Boolean(
+    epochStatus?.epoch_initialized
+    && epochStatus.running
+    && controlHealth?.overall === "healthy"
+    && taskActive,
+  );
+  const authoritativeWorking = Boolean(runtimeHealthy && streamState === "connected" && isWorking);
+  const monitorState = !epochStatus
+    ? { label: "控制权威不可用", variant: "error" as const }
+    : !epochStatus.epoch_initialized
+      ? { label: "等待 epoch 初始化", variant: "neutral" as const }
+      : !epochStatus.running && taskActive
+        ? { label: "running=false 但编排器任务仍活动", variant: "error" as const }
+      : epochStatus.running && controlHealth?.overall === "degraded"
+        ? { label: "运行健康异常", variant: "error" as const }
+        : epochStatus.running && !taskActive
+          ? { label: "运行标志存在但任务未活动", variant: "error" as const }
+          : epochStatus.running && streamState !== "connected"
+            ? { label: streamState === "connecting" ? "运行中，SSE 连接中" : "运行中，SSE 已断开", variant: "warning" as const }
+            : authoritativeWorking
+              ? { label: "正在执行工具", variant: "success" as const }
+              : runtimeHealthy
+                ? { label: "编排器运行，等待下一动作", variant: "warning" as const }
+                : { label: "已停止", variant: "neutral" as const };
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: "pipeline", label: "流水线" },
@@ -373,9 +444,10 @@ export default function EvolutionMonitor() {
       {/* Compact status bar */}
       <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
         <div className="flex items-center gap-2">
-          <Badge variant={authoritativeWorking ? "success" : status === "连接中..." ? "neutral" : "warning"} size="sm" pulse={authoritativeWorking}>
-            {!epochStatus?.epoch_initialized ? "等待 epoch 初始化" : authoritativeWorking ? "运行中" : status === "连接中..." ? "连接中" : "空闲"}
+          <Badge variant={monitorState.variant} size="sm" pulse={authoritativeWorking}>
+            {monitorState.label}
           </Badge>
+          {epochStatus?.epoch_initialized && <span className="max-w-96 truncate text-xs text-gray-500">事件状态：{status}</span>}
         </div>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
         <span className="text-gray-600 dark:text-gray-400">
@@ -383,13 +455,10 @@ export default function EvolutionMonitor() {
         </span>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
         <span className="text-gray-600 dark:text-gray-400">
-          成功率 <span className={cn(
+          最近一次发布完成 <span className={cn(
             "font-semibold",
-            epochStatus?.epoch_initialized && metrics.success_rate != null && metrics.success_rate >= 0.8 ? "text-success-600 dark:text-success-400"
-            : epochStatus?.epoch_initialized && metrics.success_rate != null && metrics.success_rate >= 0.5 ? "text-warning-600 dark:text-warning-400"
-            : epochStatus?.epoch_initialized && metrics.success_rate != null ? "text-error-600 dark:text-error-400"
-            : "text-gray-900 dark:text-white",
-          )}>{epochStatus?.epoch_initialized && metrics.success_rate != null ? `${(metrics.success_rate * 100).toFixed(0)}%` : "—"}</span>
+            epochStatus?.epoch_initialized && metrics.success_rate === 1 ? "text-success-600 dark:text-success-400" : "text-gray-900 dark:text-white",
+          )}>{epochStatus?.epoch_initialized && metrics.success_rate != null ? metrics.success_rate === 1 ? "是" : "否" : "—"}</span>
         </span>
         <div className="w-px h-4 bg-gray-200 dark:bg-gray-700" />
         <span className="text-gray-600 dark:text-gray-400">
@@ -508,7 +577,7 @@ export default function EvolutionMonitor() {
                   {msg.type === "tool_call" ? (
                     <ToolCard msg={msg} />
                   ) : msg.type === "thinking" ? (
-                    <ThinkingBlock text={msg.text} done={msg.toolDone} />
+                    <ThinkingBlock text={msg.text} done={msg.toolDone} interrupted={msg.interrupted} />
                   ) : msg.type === "error" ? (
                     <div className={cn("my-0.5 border-l-2 rounded px-2 py-0.5 font-medium", roleColor ? `${roleColor.border} bg-red-950/30 ${roleColor.text}` : "border-red-500 bg-red-950/40 text-red-400")}>
                       <CrossIcon className="inline mr-1 w-3 h-3" /> {msg.text}
@@ -571,7 +640,7 @@ export default function EvolutionMonitor() {
           <div className="flex-1 overflow-y-auto">
             {activeTab === "pipeline" && (
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                <PipelineStatus checkpoint={checkpoint} activeGeneration={epochStatus?.active_generation ?? null} />
+                <PipelineStatus checkpoint={checkpoint} activeGeneration={epochStatus?.active_generation ?? null} handoff={epochStatus?.post_publication_handoff ?? null} handoffBlocked={controlHealth?.pipeline.blocked === true} />
                 <WorkerProgress workers={workers} />
                 {epochStatus?.epoch_initialized && (
                   <CostBreakdown costs={roleCosts} grand={grand} gen={gen} policy={costPolicy} onReset={() => { setRoleCosts([]); setGen(0); }} />
@@ -583,7 +652,7 @@ export default function EvolutionMonitor() {
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
                 {!epochStatus?.epoch_initialized && (
                   <div className="p-4 text-xs text-gray-500">
-                    epoch 未初始化：旧评分、H2H、成本和成功率不属于当前权威视图。
+                    epoch 未初始化：旧评分、H2H、成本和最近发布完成标记不属于当前权威视图。
                   </div>
                 )}
                 {epochStatus?.epoch_initialized && Object.keys(metrics).length === 0 && leaderboard.length === 0 && failures.length === 0 && (
@@ -598,9 +667,9 @@ export default function EvolutionMonitor() {
                     <div className="space-y-1.5 text-xs">
                       {metrics.success_rate != null && (
                         <div className="flex justify-between">
-                          <span className="text-gray-500">成功率</span>
-                          <span className={metrics.success_rate >= 0.8 ? "text-success-600 font-medium" : metrics.success_rate >= 0.5 ? "text-warning-600 font-medium" : "text-error-600 font-medium"}>
-                            {(metrics.success_rate * 100).toFixed(0)}%
+                          <span className="text-gray-500">最近一次发布完成</span>
+                          <span className={metrics.success_rate === 1 ? "text-success-600 font-medium" : "text-gray-500 font-medium"}>
+                            {metrics.success_rate === 1 ? "是" : "否"}
                           </span>
                         </div>
                       )}

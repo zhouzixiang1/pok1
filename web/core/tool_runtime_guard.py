@@ -94,15 +94,26 @@ def _same_int(left: Any, right: Any) -> bool:
 
 
 def _operator_bootstrap_certificate_valid(candidate_v: int | None) -> bool:
-    """Fail closed unless the parked candidate has a full valid certificate."""
+    """Fail closed unless the parked candidate has completed authorization."""
     if candidate_v is None:
         return False
     try:
+        from official_bootstrap import (
+            validate_completed_operator_bootstrap_authorization,
+        )
         from official_certification import official_full_certified, read_status
 
         candidate = PROJECT_ROOT / bot_relpath(int(candidate_v))
         status = read_status(candidate)
-        return bool(official_full_certified(status, candidate))
+        if not official_full_certified(status, candidate):
+            return False
+        checkpoint = read_pipeline_checkpoint()
+        completed = validate_completed_operator_bootstrap_authorization(
+            status,
+            candidate,
+            checkpoint=checkpoint,
+        )
+        return completed.get("valid") is True
     except Exception:
         return False
 
@@ -231,12 +242,32 @@ def _pipeline_route_guard(
     if (
         checkpoint.get("stage") == "official_bootstrap_required"
         and tool_name == "commit_bot"
-        and not _operator_bootstrap_certificate_valid(candidate_v)
     ):
+        operator_finalize = (
+            os.environ.get("POK_OPERATOR_FIRST_STRICT_FINALIZE")
+            == str(os.getpid())
+        )
+        if (
+            operator_finalize
+            and _operator_bootstrap_certificate_valid(candidate_v)
+        ):
+            # This is not an Orchestrator route.  The explicit runtime-only
+            # finalize-first-strict CLI may enter commit_bot after reopening
+            # the complete signed certificate; normal route.allowed_tools
+            # remains empty while the checkpoint is parked.
+            return True, {
+                "operator_only_finalize": True,
+                "candidate_v": candidate_v,
+                "checkpoint_stage": checkpoint.get("stage"),
+            }
         payload = {
             "error": "pipeline_route_guard_blocked",
             "blocked": True,
-            "reason": "official_bootstrap_certificate_required",
+            "reason": (
+                "official_bootstrap_certificate_required"
+                if operator_finalize
+                else "operator_finalize_command_required"
+            ),
             "tool": tool_name,
             "requested_v": candidate_v,
             "active_v": ckpt_next,
@@ -246,9 +277,10 @@ def _pipeline_route_guard(
             "allowed_tools": allowed_tools,
             "route": route,
             "directive": (
-                "The candidate is parked for explicit operator bootstrap. Run "
-                "bootstrap-first-strict outside the orchestrator; commit_bot remains blocked "
-                "until the complete content-bound certificate validates."
+                "The candidate is parked for explicit operator control. Run the "
+                "checkpoint-bound bootstrap command first; after it succeeds, use "
+                "finalize-first-strict from the autonomous runtime checkout. Direct "
+                "Orchestrator commit_bot calls remain forbidden."
             ),
         }
         _log_guard_event(

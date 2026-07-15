@@ -11,6 +11,7 @@ Usage:
 import os
 import sys
 import json
+import math
 import random
 import signal
 import argparse
@@ -53,8 +54,9 @@ sys.path.insert(0, str(CORE_DIR))
 from glicko2 import Glicko2Player, update_rating_period, decay_rd
 from evolution_infra import (
     pair_key,
-    get_active_bots, load_ratings,
+    get_active_bots,
     read_locked_json, write_locked_json, append_locked_jsonl, locked_file,
+    read_and_maybe_unlink_locked_text,
     update_h2h, update_bot_stats,
 )
 from bot_action_stats import (
@@ -195,6 +197,24 @@ def _write_heartbeat(
             info = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
             info = {}
+        # A retiring daemon must never overwrite the PID record of its
+        # replacement.  Match both the process PID and the per-launch owner
+        # token before publishing through the shared atomic heartbeat path.
+        import hashlib
+
+        owner_token = os.environ.get("POK_DAEMON_OWNER_TOKEN", "")
+        owner_digest = (
+            hashlib.sha256(owner_token.encode("ascii")).hexdigest()
+            if owner_token
+            else ""
+        )
+        if (
+            not isinstance(info, dict)
+            or int(info.get("pid") or 0) != os.getpid()
+            or not owner_digest
+            or info.get("owner_token_digest") != owner_digest
+        ):
+            return
         info["last_heartbeat"] = time.time()
         info["activity_state"] = str(activity_state)
         info["minimum_rating_pool_bots"] = MIN_RATING_POOL_BOTS
@@ -270,7 +290,6 @@ def _wait_for_minimum_rating_pool(
     committed by real complete matches.
     """
 
-    global running
     announced = None
     while running and len(active_bots) < MIN_RATING_POOL_BOTS:
         state = (
@@ -481,7 +500,12 @@ def save_ratings(
         h2h = dict(h2h_snapshot) if h2h_snapshot is not None else load_h2h()
         try:
             from rating_snapshot import choose_h2h_source
-            h2h = choose_h2h_source(list(ratings.keys()), h2h, MATCH_HISTORY_FILE)["h2h"]
+            h2h = choose_h2h_source(
+                list(ratings.keys()),
+                h2h,
+                MATCH_HISTORY_FILE,
+                expected_evaluation_identity_digest=evaluation_identity_digest,
+            )["h2h"]
         except Exception:
             pass
         bot_stats = (
@@ -501,6 +525,9 @@ def save_ratings(
                     active_bots=list(ratings.keys()),
                     match_history_path=MATCH_HISTORY_FILE,
                     h2h_is_authoritative=True,
+                    expected_evaluation_identity_digest=(
+                        evaluation_identity_digest
+                    ),
                 )
             }
         except Exception:
@@ -530,6 +557,8 @@ def save_ratings(
             "period": save_num,
             "timestamp": datetime.now().isoformat(timespec="seconds"),
             "daemon_run_id": daemon_run_id,  # None for ad-hoc calls; set in main()
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "execution_mode": "native_tcp",
             "evaluation_identity_digest": evaluation_identity_digest,
             "ratings": {name: {"r": p.r, "rd": p.rd, "sigma": p.sigma} for name, p in ratings.items()},
             "win_rates": win_rates,
@@ -616,22 +645,59 @@ PRIORITY_EVAL_FILE = RESULTS_DIR / "priority_eval.json"
 def _load_priority_eval():
     """Load the priority eval bot name. Expires when bot reaches min_games."""
     try:
-        data = read_locked_json(PRIORITY_EVAL_FILE)
-        if not data:
-            return None
-        bot = data.get("bot")
-        if not bot:
-            return None
-        # Expire when bot has reached min_games (not by timeout — daemon may be stopped/restarted)
-        min_games = data.get("min_games", 100)
-        stats = load_bot_stats()
-        if stats.get(bot, {}).get("games", 0) >= min_games:
-            PRIORITY_EVAL_FILE.unlink(missing_ok=True)
-            return None
-        return bot
+        priority_bot = None
+
+        def expire_if_satisfied(raw):
+            nonlocal priority_bot
+            data = json.loads(raw)
+            if not isinstance(data, dict):
+                return False
+            bot = data.get("bot")
+            if not bot:
+                return False
+            # Expire when the bot reaches min_games (not by timeout — the
+            # daemon may be stopped/restarted).  Both this criterion and the
+            # exact-inode unlink run under priority_eval.json's EX sidecar.
+            min_games = data.get("min_games", 100)
+            stats = load_bot_stats()
+            if stats.get(bot, {}).get("games", 0) >= min_games:
+                return True
+            priority_bot = bot
+            return False
+
+        read_and_maybe_unlink_locked_text(
+            PRIORITY_EVAL_FILE,
+            expire_if_satisfied,
+        )
+        return priority_bot
     except Exception as e:
         log.debug("Priority eval load failed: %s", e)
         return None
+
+
+def _consume_reap_signal(path=None):
+    """Consume one daemon-refresh signal without racing its atomic writer."""
+
+    signal_path = Path(path) if path is not None else RESULTS_DIR / ".reap_signal"
+    refresh_requested = False
+
+    def consume(raw):
+        nonlocal refresh_requested
+        try:
+            ts = float(raw.strip())
+            # The file is a one-shot capability, not a freshness cache.  A
+            # crash-safe handoff must be able to reissue its exact frozen bytes
+            # hours later and still force the daemon to reload the active pool.
+            refresh_requested = math.isfinite(ts)
+        except ValueError:
+            # Empty/non-numeric files are the legacy refresh capability.  They
+            # are still consumed, but filesystem/authenticity errors above are
+            # never downgraded to this compatibility path.
+            refresh_requested = True
+        return True
+
+    _raw, consumed = read_and_maybe_unlink_locked_text(signal_path, consume)
+    return refresh_requested if consumed else False
 
 
 def _log_pick_matches(selected_count: int, candidate_count: int, priority_bot, bot_count: int) -> None:
@@ -951,42 +1017,21 @@ def _rating_protocol_config(n_pairs=None):
 
 
 def _rotate_jsonl(filepath, max_lines):
-    """Trim a JSONL file to keep only the last `max_lines` lines.
+    """Retain append-only authority; cold-range archiving owns compaction.
 
-    Uses fcntl LOCK_EX to serialize with concurrent writers (workers, web process)
-    who also use locked_file() with LOCK_EX for appends.
-    Only rotates files OWNED by the daemon (written in save_cycle).
+    Replacing a data path while another process may already be waiting on that
+    data inode splits one logical lock into two.  The daemon therefore never
+    destructively trims authoritative JSONL.  The post-publication archival
+    journal may copy digest-bound cold ranges under the shared stable sidecar,
+    while the live source remains append-only.
     """
-    if not filepath.exists():
-        return
-    try:
-        # Quick size check — skip if small
-        if filepath.stat().st_size < 1_000_000:  # < 1MB
-            return
-        # Acquire exclusive lock to prevent concurrent writers from losing data
-        fd = open(filepath, "r")
-        try:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            content = fd.read()
-            lines = content.splitlines() if content else []
-            if len(lines) <= max_lines:
-                return
-            trimmed = lines[-max_lines:]
-            tmp = filepath.with_suffix(".tmp")
-            tmp.write_text("\n".join(trimmed) + "\n", encoding="utf-8")
-            os.replace(str(tmp), str(filepath))
-            log.debug("Rotated %s: %d → %d lines", filepath.name, len(lines), max_lines)
-        finally:
-            import fcntl
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            fd.close()
-        # Clean up stale .tmp if present from a previous crash
-        stale_tmp = filepath.with_suffix(".tmp")
-        if stale_tmp.exists():
-            stale_tmp.unlink(missing_ok=True)
-    except Exception as e:
-        log.debug("JSONL rotation failed for %s: %s", filepath.name, e)
+
+    return {
+        "rotated": False,
+        "reason": "append_only_authority_preserved",
+        "path": str(filepath),
+        "requested_max_lines": int(max_lines),
+    }
 
 
 def _run_national_rating_match(
@@ -1264,9 +1309,14 @@ def admit_internal_match_result(result, ratings, h2h, bot_stats, *, verbose=Fals
             raise RuntimeError("staged match admission payload is invalid")
         if parsed.get("evaluation_identity_digest") != expected_identity:
             raise RuntimeError("staged replay identity mismatch")
+        if parsed.get("evaluation_epoch") != "national_tcp_policy_v1":
+            raise RuntimeError("staged replay evaluation epoch mismatch")
+        if parsed.get("execution_mode") != "native_tcp":
+            raise RuntimeError("staged replay execution mode mismatch")
         summary_fields = (
-            "id", "timestamp", "bot0", "bot1", "bot0_wins", "bot1_wins",
-            "draws", "evaluation_identity_digest", "strength_sample_unit",
+            "id", "timestamp", "execution_mode", "evaluation_epoch", "bot0",
+            "bot1", "bot0_wins", "bot1_wins", "draws",
+            "evaluation_identity_digest", "strength_sample_unit",
             "hands_per_strength_sample", "strength_admitted", "strength_complete",
             "strength_compliance_passed", "strength_sample_count",
             "net_chips_bot0", "strength_order",
@@ -1473,12 +1523,27 @@ def _current_rating_history_tail(max_rows=10):
     return parsed[-max(1, int(max_rows)):]
 
 
-def _project_rating_history_tail(active_bots, save_num, max_rows=10):
+def _project_rating_history_tail(
+    active_bots,
+    save_num,
+    *,
+    expected_evaluation_identity_digest,
+    max_rows=10,
+):
     """Keep frozen trend context inside the current cycle's active pool/cutoff."""
     active = {str(name) for name in active_bots}
+    expected_identity = str(expected_evaluation_identity_digest or "")
+    if len(expected_identity) != 64:
+        return []
     projected = []
     for row in _current_rating_history_tail(max_rows=max_rows):
         if not isinstance(row, dict):
+            continue
+        if (
+            row.get("evaluation_epoch") != "national_tcp_policy_v1"
+            or row.get("execution_mode") != "native_tcp"
+            or row.get("evaluation_identity_digest") != expected_identity
+        ):
             continue
         try:
             if int(row.get("period", -1)) > int(save_num):
@@ -1563,6 +1628,7 @@ def _save_authoritative_evaluation_cycle(
             active_bots=list(active_bots),
             match_history_path=MATCH_HISTORY_FILE,
             h2h_is_authoritative=True,
+            expected_evaluation_identity_digest=current_identity,
         )
         write_locked_json(
             SELECTION_SNAPSHOT_FILE,
@@ -1575,6 +1641,7 @@ def _save_authoritative_evaluation_cycle(
                 "rating_history_tail": _project_rating_history_tail(
                     active_bots,
                     save_num,
+                    expected_evaluation_identity_digest=current_identity,
                     max_rows=10,
                 ),
             },
@@ -1638,7 +1705,14 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
     h2h_out = _h2h_with_win_rates(h2h)
     try:
         from rating_snapshot import choose_h2h_source
-        h2h_selection = choose_h2h_source(active_bots, h2h_out, MATCH_HISTORY_FILE)
+        h2h_selection = choose_h2h_source(
+            active_bots,
+            h2h_out,
+            MATCH_HISTORY_FILE,
+            expected_evaluation_identity_digest=(
+                daemon_evaluation_identity_digest or ""
+            ),
+        )
         selected_h2h = _h2h_with_win_rates(h2h_selection["h2h"])
         if h2h_selection["source"] == "match_history_rebuilt":
             stored_cov = h2h_selection["stored_coverage"]
@@ -2229,15 +2303,7 @@ def main():
 
                     # Check for reap signal — immediate bot list refresh
                     try:
-                        reap_signal = Path(__file__).parent / "results" / ".reap_signal"
-                        reap_fresh = False
-                        if reap_signal.exists():
-                            try:
-                                ts = float(reap_signal.read_text().strip())
-                                reap_fresh = time.time() - ts <= 300
-                            except (ValueError, OSError):
-                                reap_fresh = True  # No timestamp = legacy signal, process anyway
-                            reap_signal.unlink(missing_ok=True)
+                        reap_fresh = _consume_reap_signal()
                         if reap_fresh:
                             last_bot_refresh_time = time.time()  # Reset timer since we just refreshed
                             new_bots = get_active_bots()

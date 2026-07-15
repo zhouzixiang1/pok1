@@ -15,10 +15,10 @@ strategy scores.
 - five candidate self-play rounds;
 - three rounds against one policy-eligible native opponent;
 - exactly 70 hands in every round;
-- an exact completion proof: normally 70 paired TCP settlements, or the
-  official 2021 EXE terminal form with wire hands 1..70, wire settlements
-  1..69, and a strict 70-state THP whose named earnings and footer cross-bind
-  the omitted terminal settlement;
+- the exact natural-hand-70 proof emitted by the official 2021 EXE: wire hand
+  starts 1..70, wire settlements 1..69, and a strict 70-state THP whose named
+  earnings and footer cross-bind the omitted terminal settlement; a synthetic
+  70th wire settlement is not accepted by the formal profile;
 - complete THP, wire capture/replay, bot logs, stdout/stderr, platform log, and
   screenshot evidence;
 - sealed read-only bot artifacts launched in an isolated network namespace with
@@ -175,23 +175,26 @@ This is an operational state-machine guarantee, not a cryptographic guarantee
 against a same-uid rollback of both the ledger and its signed head; durable
 rollback resistance would require an independently protected monotonic anchor.
 
-After that manual suite succeeds, `commit_bot` may reuse only the exact existing
-certificate that passes the complete content-bound validator (candidate hash,
-signed receipt, evidence, ledger, control-selection receipt, job envelope, parked
-checkpoint, workflow/evaluation contract, and policy). It skips a second
-opponent selection/job for that handoff, then reruns the consumed-control-aware
-authorization immediately before staging and tagging. A status label, mutable
-JSON, or ledger entry alone is insufficient. Publishing that first attestation
-creates the first normal full-v5 opponent; subsequent candidates use the
-ordinary policy path.
+After that manual suite succeeds, the jobs API may project
+`ready_to_finalize` only for the exact existing certificate that passes the
+complete content-bound validator (candidate hash, signed receipt, evidence,
+ledger, control-selection receipt, job envelope, parked checkpoint,
+workflow/evaluation contract, and policy). The operator must then run
+`finalize-first-strict --acknowledge-publish-first-strict`. That CLI establishes
+a process-ID-scoped guard immediately around the internal publication handler,
+which reruns the consumed-control-aware authorization before staging and
+tagging. `commit_bot` remains unavailable to the LLM and ordinary HTTP path. A
+status label, mutable JSON, or ledger entry alone is insufficient. Publishing
+that first attestation creates the first normal full-v5 opponent; subsequent
+candidates use the ordinary policy path.
 
 When the first verified candidate finds no normal opponent, the pipeline parks
 at `official_bootstrap_required`. This is a deliberate stop barrier:
 `next_tool` is empty, automatic recovery exits, and the LLM cannot call
-`commit_bot` again or initiate bootstrap. The runtime guard unlocks the manual
-commit handoff only after the external `bootstrap-first-strict` result passes the full
-validator. Missing, forged, stale, or candidate-mismatched certificates remain
-fail-closed.
+`commit_bot` again or initiate bootstrap. The runtime guard unlocks publication
+only inside the acknowledged operator finalize process and only after the
+external `bootstrap-first-strict` result passes the full validator. Missing,
+forged, stale, or candidate-mismatched certificates remain fail-closed.
 
 While that exact v143 checkpoint remains parked, its sole request-bound manual
 bootstrap durable job is visible read-only through
@@ -202,6 +205,15 @@ launch or cancellation authority: HTTP enqueue remains retired with status
 `POST /api/certification/jobs/{job_id}/cancel` returns 404 for the bootstrap
 job. Unbound bootstrap jobs, old-epoch jobs, v155 debris, identity drift, and
 ambiguous duplicate jobs are hidden fail-closed.
+
+The jobs projection also exposes a digest-bound operator transition:
+`bootstrap_required` when no exact job exists, `bootstrap_running` for a live
+job, `bootstrap_failed` with an explicit `--force` retry command for a terminal
+failure, and `ready_to_finalize` only for the fully revalidated certificate and
+completed bootstrap authorization. Every bootstrap job declares
+`first_strict_control_v1`, `system_control`, exact 5/3×70, and zero strategy and
+strength weight. Published certificate status derives the same profile from the
+signed certificate spec rather than version arithmetic or mutable status JSON.
 
 Lifecycle state is durable in annotated Git tags:
 
@@ -231,6 +243,10 @@ python3 scripts/official_certify.py bootstrap-first-strict bots/national_v143 \
   --control-id first_strict_control_v1 \
   --acknowledge-one-time-first-strict-control \
   --wait-if-busy
+
+# Publish only the exact ready_to_finalize first-strict certificate
+python3 scripts/official_certify.py finalize-first-strict \
+  --acknowledge-publish-first-strict
 
 # Inspect/reconcile durable jobs
 python3 scripts/official_certify.py jobs-status

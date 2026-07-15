@@ -198,6 +198,28 @@ Do not claim pass until you have actually received every Read and Bash result.
 """
 
 
+def _render_operator_probe_provider_prompt(inputs: dict[str, Any]):
+    from llm_query import LLMRenderedMaterial
+
+    if not isinstance(inputs, dict) or set(inputs) != {"repo_root", "evidence"}:
+        raise ValueError("Operator probe renderer input contract mismatch")
+    evidence = inputs["evidence"]
+    if not isinstance(evidence, dict):
+        raise ValueError("Operator probe evidence must be an object")
+    evidence_json = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+
+    return LLMRenderedMaterial(
+        text=build_probe_prompt(Path(inputs["repo_root"]), evidence),
+        evidence_kind="operator_exact_file_probe",
+        evidence_provenance={
+            "repo_root": str(inputs["repo_root"]),
+            "local_evidence_digest": _sha256_bytes(
+                evidence_json.encode("utf-8")
+            ),
+        },
+    )
+
+
 def _resolve_read_path(repo_root: Path, raw_path: object) -> str:
     path = Path(str(raw_path or ""))
     if not path.is_absolute():
@@ -383,9 +405,16 @@ async def run_operator_probe(
     try:
         if query_runner is None:
             from llm_query import run_claude_query as query_runner
-        from llm_query import capture_llm_tool_trace
+        from llm_query import capture_llm_tool_trace, render_llm_prompt
 
-        prompt = build_probe_prompt(repo_root.resolve(), before)
+        rendered_prompt = render_llm_prompt(
+            ROLE_NAME,
+            producer=_render_operator_probe_provider_prompt,
+            renderer_inputs={
+                "repo_root": str(repo_root.resolve()),
+                "evidence": before,
+            },
+        )
         temp_base = Path(tempfile.gettempdir()).resolve()
         try:
             temp_base.relative_to(repo_root.resolve())
@@ -403,7 +432,7 @@ async def run_operator_probe(
             with capture_llm_tool_trace() as trace:
                 output, cost_usd, usage = await asyncio.wait_for(
                     query_runner(
-                        prompt,
+                        rendered_prompt,
                         [],
                         None,
                         ROLE_NAME,
@@ -411,6 +440,12 @@ async def run_operator_probe(
                         model=model,
                         tools=list(SDK_TOOLS),
                         allowed_write_dir=None,
+                        allowed_read_dirs={
+                            "files": [
+                                repo_root / relative
+                                for relative in READ_RELATIVE_PATHS
+                            ]
+                        },
                         exact_bash_commands=EXACT_BASH_COMMANDS,
                     ),
                     timeout=max(0.001, float(timeout_seconds)),

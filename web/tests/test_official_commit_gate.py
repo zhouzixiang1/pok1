@@ -26,7 +26,6 @@ def _allow_tmp_candidate_publication_shape(monkeypatch) -> None:
 def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
     import official_certification
     import official_certification_job
-    import official_bootstrap
     import tool_commit
 
     monkeypatch.setenv("POK_OFFICIAL_CERT_DIR", str(tmp_path / "cert"))
@@ -697,7 +696,7 @@ def test_commit_bot_revalidates_completed_bootstrap_immediately_before_git(
     monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: False)
     monkeypatch.setattr(
         tool_commit,
-        "git_commit_bot",
+            "ensure_bot_git_publication",
         lambda *_args, **_kwargs: git_calls.append(True) or True,
     )
 
@@ -785,7 +784,7 @@ def test_commit_bot_replays_final_ledger_after_official_pass_before_git(
     monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: False)
     monkeypatch.setattr(
         tool_commit,
-        "git_commit_bot",
+            "ensure_bot_git_publication",
         lambda *_a, **_k: git_calls.append(True) or True,
     )
 
@@ -847,7 +846,7 @@ def test_commit_bot_parks_no_opponent_without_git(monkeypatch, tmp_path):
     monkeypatch.setattr(tool_commit, "log_system_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         tool_commit,
-        "git_commit_bot",
+            "ensure_bot_git_publication",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("operator bootstrap parking must not mutate Git")
         ),
@@ -909,9 +908,9 @@ def test_commit_bot_never_invokes_git_when_official_gate_fails(monkeypatch, tmp_
     monkeypatch.setattr(tool_commit, "log_system_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         tool_commit,
-        "git_commit_bot",
+            "ensure_bot_git_publication",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("git_commit_bot must not run after official gate failure")
+                AssertionError("Git publication must not run after official gate failure")
         ),
     )
 
@@ -982,7 +981,7 @@ def test_commit_bot_attaches_pending_official_job_without_git(monkeypatch, tmp_p
     monkeypatch.setattr(tool_commit, "log_system_event", lambda *_a, **_k: None)
     monkeypatch.setattr(
         tool_commit,
-        "git_commit_bot",
+            "ensure_bot_git_publication",
         lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("pending job must not mutate Git")),
     )
 
@@ -1002,6 +1001,7 @@ def test_commit_bot_attaches_pending_official_job_without_git(monkeypatch, tmp_p
 def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeypatch, tmp_path):
     import national_runtime_authority
     import official_certification
+    import post_publication_handoff
     import publication_transaction
     import tool_commit
 
@@ -1031,6 +1031,7 @@ def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeyp
     checkpoint_cleared = []
     ensure_calls = []
     remote_calls = []
+    handoff_calls = []
     pending_proofs = []
     strict_pool = ["national_v143"]
     monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _version: candidate)
@@ -1094,6 +1095,27 @@ def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeyp
     monkeypatch.setattr(tool_commit, "ensure_bot_git_publication", ensure)
     monkeypatch.setattr(tool_commit, "verify_remote_bot_publication", verify)
     monkeypatch.setattr(tool_commit, "evolution_git_push_required", lambda: True)
+    def ensure_handoff(**kwargs):
+        # This test isolates remote publication recovery from the handoff's
+        # filesystem journal, but it must still prove that checkpoint clearing
+        # is downstream of the exact durable-handoff contract.
+        assert kwargs["version"] == 143
+        assert kwargs["source_v"] == 142
+        assert kwargs["publishing_checkpoint"] is checkpoint
+        assert kwargs["allow_local_only"] is False
+        publication = kwargs["publication_result"]
+        assert publication["committed"] is True
+        assert publication["publication_id"] == intent["publication_id"]
+        assert publication["completed_sentinel_written"] is True
+        assert publication["remote_proof"]["valid"] is True
+        handoff_calls.append(kwargs)
+        return {"identity_digest": "d" * 64, "state": "pending"}
+
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "ensure_post_publication_handoff",
+        ensure_handoff,
+    )
     monkeypatch.setattr(
         tool_commit,
         "clear_pipeline_checkpoint",
@@ -1110,6 +1132,7 @@ def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeyp
     assert not (candidate / ".completed").exists()
     assert checkpoint_cleared == []
     assert pending_proofs == [proof]
+    assert handoff_calls == []
 
     # This transaction is now independently proven on the remote.  A later
     # strict publication must not reopen its dynamic pre-push authority and
@@ -1128,6 +1151,8 @@ def test_required_push_failure_keeps_checkpoint_and_candidate_incomplete(monkeyp
     assert pending_proofs == [proof]
     assert len(checkpoint_cleared) == 1
     assert checkpoint_cleared[0]["expected_checkpoint_stage"] == "publishing"
+    assert len(handoff_calls) == 1
+    assert recovered["post_publication_handoff_identity_digest"] == "d" * 64
 
 
 def test_git_commit_bot_rejects_certificate_drift_before_staging(monkeypatch, tmp_path):

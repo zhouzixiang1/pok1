@@ -3,6 +3,7 @@ import sqlite3
 
 from candidate_store import (
     append_candidate_event,
+    candidate_observability_identity,
     count_candidate_children,
     get_candidate_summary,
     read_candidate_artifacts,
@@ -51,6 +52,43 @@ def test_candidate_store_appends_locked_jsonl(tmp_path, monkeypatch):
     assert entities[0]["candidate_id"] == "national_v245_from_national_v244"
     assert entities[0]["latest_event_type"] == "quality_finished"
     assert entities[0]["latest_metrics"]["all_passed"] is True
+
+
+def test_first_strict_candidate_ledger_has_numeric_high_water_not_parent(
+    tmp_path,
+):
+    identity = candidate_observability_identity(143, 142)
+    assert identity == {
+        "candidate_id": "national_v143_numeric_high_water_v142",
+        "parent_ids": [],
+        "lineage_kind": "numeric_high_water_only",
+        "numeric_high_water_version": 142,
+        "source_artifact_inherited": False,
+    }
+
+    ledger = tmp_path / "candidates.jsonl"
+    entry = append_candidate_event(
+        "quality_started",
+        version=143,
+        source_v=142,
+        candidate_id="national_v143_from_national_v142",
+        parent_ids=["national_v142"],
+        metrics={
+            "probe": "kept",
+            "lineage_kind": "forged_parent",
+            "source_artifact_inherited": True,
+        },
+        path=ledger,
+    )
+
+    assert entry["candidate_id"] == "national_v143_numeric_high_water_v142"
+    assert entry["parent_ids"] == []
+    assert entry["metrics"] == {
+        "lineage_kind": "numeric_high_water_only",
+        "numeric_high_water_version": 142,
+        "probe": "kept",
+        "source_artifact_inherited": False,
+    }
 
 
 def test_candidate_store_records_artifacts_and_children(tmp_path, monkeypatch):

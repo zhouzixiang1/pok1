@@ -210,6 +210,7 @@ def test_exact_current_workflow_delegates_to_fenced_abandon_only(
         "reason": "cleanup_incomplete_exact_workflow",
         "expected_workflow_run_id": checkpoint["workflow_run_id"],
         "expected_next_v": 143,
-        "expected_source_v": 142,
-        "expected_checkpoint_revision": 7,
-    }
+            "expected_source_v": 142,
+            "expected_checkpoint_revision": 7,
+            "expected_checkpoint_stage": "master_planned",
+        }

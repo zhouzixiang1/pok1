@@ -9,11 +9,15 @@ shapes are never consulted.
 from __future__ import annotations
 
 from collections import Counter
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import secrets
+import stat
+import threading
 from typing import Any, Iterable
 
 from bot_namespace import (
@@ -21,15 +25,35 @@ from bot_namespace import (
     FIRST_STRICT_POLICY_VERSION,
     parse_bot_version,
 )
-from evolution_infra import RESULTS_DIR, write_locked_json
+from evolution_infra import RESULTS_DIR
 from replay_analysis import STREETS, validate_native_replay
 
 
 MAX_ACTION_STATS_CYCLE_LAG = 5
-ACTION_STATS_CACHE_SCHEMA_VERSION = 3
+ACTION_STATS_CACHE_SCHEMA_VERSION = 4
 _ETAG_FILENAME = ".stats_etag.json"
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_ETAG = re.compile(r"^[0-9]+:[0-9]+$")
 _ACTIONS = ("fold", "call", "check", "raise", "allin")
+_CACHE_KEYS = frozenset({
+    "schema_version",
+    "epoch",
+    "execution_mode",
+    "evaluation_identity_digest",
+    "files",
+    "payload_digest",
+})
+_CACHE_ROW_KEYS = frozenset({
+    "etag",
+    "replay_sha256",
+    "contribution_digest",
+    "row_digest",
+})
+_MAX_REPLAY_BYTES = 64 * 1024 * 1024
+_MAX_CACHE_BYTES = 16 * 1024 * 1024
+_READ_CHUNK_BYTES = 1024 * 1024
+_CACHE_THREAD_LOCKS: dict[str, threading.RLock] = {}
+_CACHE_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 def _strict_label(value: Any) -> bool:
@@ -490,56 +514,289 @@ def get_global_stats(stats: dict[str, Any], bot: str) -> dict[str, Any]:
     }
 
 
-def _file_etags(root: Path, allowed: set[str] | None) -> dict[str, str]:
-    result: dict[str, str] = {}
+def _canonical_digest(value: Any) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _safe_regular_read(
+    path: Path,
+    *,
+    max_bytes: int,
+) -> tuple[bytes, os.stat_result] | None:
+    """Read one single-link regular file without following a directory entry.
+
+    The pre-open, opened, and post-read identities must agree.  A replay cache
+    is never worth accepting an ambiguous inode or a file that changed while
+    it was being hashed.
+    """
+
     try:
-        entries = list(root.iterdir())
+        expected = os.lstat(path)
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(expected.st_mode)
+        or expected.st_nlink != 1
+        or expected.st_size < 0
+        or expected.st_size > max_bytes
+    ):
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_size > max_bytes
+            or _file_identity(opened) != _file_identity(expected)
+        ):
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(_READ_CHUNK_BYTES, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+        finished = os.fstat(descriptor)
+        try:
+            live = os.lstat(path)
+        except OSError:
+            return None
+        if (
+            total != opened.st_size
+            or _file_identity(finished) != _file_identity(opened)
+            or _file_identity(live) != _file_identity(finished)
+        ):
+            return None
+        return b"".join(chunks), opened
+    except OSError:
+        return None
+    finally:
+        os.close(descriptor)
+
+
+def _candidate_replay_names(
+    root: Path,
+    allowed: set[str] | None,
+    *,
+    excluded_name: str | None,
+) -> list[str]:
+    result: list[str] = []
+    try:
+        entries = list(os.scandir(root))
     except OSError:
         return result
-    for path in entries:
+    for entry in entries:
+        name = entry.name
         if (
-            not path.is_file()
-            or path.is_symlink()
-            or path.suffix != ".json"
-            or path.name.startswith(".")
-            or (allowed is not None and path.name not in allowed)
+            not name.endswith(".json")
+            or name.startswith(".")
+            or name == excluded_name
+            or (allowed is not None and name not in allowed)
         ):
             continue
         try:
-            stat = path.stat()
+            metadata = entry.stat(follow_symlinks=False)
         except OSError:
             continue
-        result[path.name] = f"{stat.st_mtime_ns}:{stat.st_size}"
-    return result
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+            result.append(name)
+    return sorted(result)
+
+
+def _valid_cache_row(row: Any) -> bool:
+    if not isinstance(row, dict) or set(row) != _CACHE_ROW_KEYS:
+        return False
+    if not isinstance(row.get("etag"), str) or not _ETAG.fullmatch(row["etag"]):
+        return False
+    for key in ("replay_sha256", "contribution_digest", "row_digest"):
+        if not isinstance(row.get(key), str) or not _HEX64.fullmatch(row[key]):
+            return False
+    unsigned = {key: row[key] for key in _CACHE_ROW_KEYS if key != "row_digest"}
+    return row["row_digest"] == _canonical_digest(unsigned)
 
 
 def _load_cache(path: Path, identity: str) -> dict[str, Any]:
-    if not path.is_file() or path.is_symlink():
+    loaded = _safe_regular_read(path, max_bytes=_MAX_CACHE_BYTES)
+    if loaded is None:
         return {}
+    raw, _metadata = loaded
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return {}
     if (
         not isinstance(payload, dict)
+        or set(payload) != _CACHE_KEYS
         or payload.get("schema_version") != ACTION_STATS_CACHE_SCHEMA_VERSION
         or payload.get("epoch") != EVALUATION_EPOCH
         or payload.get("execution_mode") != "native_tcp"
         or payload.get("evaluation_identity_digest") != identity
         or not isinstance(payload.get("files"), dict)
+        or not isinstance(payload.get("payload_digest"), str)
+        or not _HEX64.fullmatch(payload["payload_digest"])
     ):
         return {}
+    unsigned = {key: payload[key] for key in _CACHE_KEYS if key != "payload_digest"}
+    if payload["payload_digest"] != _canonical_digest(unsigned):
+        return {}
+    for filename, row in payload["files"].items():
+        if (
+            not isinstance(filename, str)
+            or Path(filename).name != filename
+            or filename.startswith(".")
+            or not filename.endswith(".json")
+            or not _valid_cache_row(row)
+        ):
+            return {}
     return payload["files"]
 
 
-def _save_cache(path: Path, identity: str, files: dict[str, Any]) -> None:
-    write_locked_json(path, {
+def _cache_row(
+    *,
+    etag: str,
+    replay_sha256: str,
+    contribution_digest: str,
+) -> dict[str, str]:
+    unsigned = {
+        "etag": etag,
+        "replay_sha256": replay_sha256,
+        "contribution_digest": contribution_digest,
+    }
+    return {**unsigned, "row_digest": _canonical_digest(unsigned)}
+
+
+def _cache_payload(identity: str, files: dict[str, Any]) -> dict[str, Any]:
+    unsigned = {
         "schema_version": ACTION_STATS_CACHE_SCHEMA_VERSION,
         "epoch": EVALUATION_EPOCH,
         "execution_mode": "native_tcp",
         "evaluation_identity_digest": identity,
         "files": files,
-    })
+    }
+    return {**unsigned, "payload_digest": _canonical_digest(unsigned)}
+
+
+def _cache_thread_lock(path: Path) -> threading.RLock:
+    key = os.path.abspath(os.fspath(path))
+    with _CACHE_THREAD_LOCKS_GUARD:
+        return _CACHE_THREAD_LOCKS.setdefault(key, threading.RLock())
+
+
+def _cache_target_is_safe(path: Path) -> bool:
+    try:
+        metadata = os.lstat(path)
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
+
+
+def _save_cache(path: Path, identity: str, files: dict[str, Any]) -> None:
+    """Atomically publish a non-authoritative cache without following links."""
+
+    payload = _cache_payload(identity, files)
+    raw = json.dumps(
+        payload,
+        sort_keys=True,
+        indent=2,
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    if len(raw) > _MAX_CACHE_BYTES:
+        return
+    parent = path.parent
+    try:
+        parent_metadata = os.lstat(parent)
+    except OSError:
+        return
+    if not stat.S_ISDIR(parent_metadata.st_mode) or stat.S_ISLNK(parent_metadata.st_mode):
+        return
+    lock_path = path.with_name(f".{path.name}.lock")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    with _cache_thread_lock(path):
+        try:
+            lock_descriptor = os.open(lock_path, flags, 0o600)
+        except OSError:
+            return
+        temp_path = parent / (
+            f".{path.name}.{os.getpid()}.{threading.get_ident()}."
+            f"{secrets.token_hex(8)}.tmp"
+        )
+        temp_descriptor: int | None = None
+        try:
+            lock_metadata = os.fstat(lock_descriptor)
+            if not stat.S_ISREG(lock_metadata.st_mode) or lock_metadata.st_nlink != 1:
+                return
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+            if not _cache_target_is_safe(path):
+                return
+            temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            temp_flags |= getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+            temp_descriptor = os.open(temp_path, temp_flags, 0o600)
+            offset = 0
+            while offset < len(raw):
+                offset += os.write(temp_descriptor, raw[offset:])
+            os.fsync(temp_descriptor)
+            os.close(temp_descriptor)
+            temp_descriptor = None
+            if not _cache_target_is_safe(path):
+                return
+            os.replace(temp_path, path)
+            directory_descriptor = os.open(
+                parent,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0),
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+        except OSError:
+            return
+        finally:
+            if temp_descriptor is not None:
+                os.close(temp_descriptor)
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            try:
+                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(lock_descriptor)
 
 
 def compute_all_bot_stats(
@@ -560,48 +817,60 @@ def compute_all_bot_stats(
     if identity is None:
         return {bot: {} for bot in bots}
     root = Path(replays_dir)
-    if not root.is_dir() or root.is_symlink():
+    try:
+        root_metadata = os.lstat(root)
+    except OSError:
+        return {bot: {} for bot in bots}
+    if not stat.S_ISDIR(root_metadata.st_mode) or stat.S_ISLNK(root_metadata.st_mode):
         return {bot: {} for bot in bots}
     allowed = None if allowed_replay_ids is None else {str(value) for value in allowed_replay_ids}
-    current = _file_etags(root, allowed)
     cache_path = Path(etag_path) if etag_path is not None else root / _ETAG_FILENAME
+    excluded_name = None
+    if os.path.abspath(os.fspath(cache_path.parent)) == os.path.abspath(os.fspath(root)):
+        excluded_name = cache_path.name
+    replay_names = _candidate_replay_names(
+        root,
+        allowed,
+        excluded_name=excluded_name,
+    )
     cached = {} if force_full else _load_cache(cache_path, identity)
     next_cache: dict[str, Any] = {}
     totals = {bot: _new_bot_totals() for bot in bots}
     bot_set = set(bots)
-    for filename in sorted(current):
+    for filename in replay_names:
+        loaded = _safe_regular_read(root / filename, max_bytes=_MAX_REPLAY_BYTES)
+        if loaded is None:
+            continue
+        raw, metadata = loaded
+        replay_sha256 = hashlib.sha256(raw).hexdigest()
+        try:
+            replay = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        validation = validate_native_replay(
+            replay,
+            expected_evaluation_identity_digest=identity,
+            expected_replay_id=filename,
+        )
+        if not validation.accepted:
+            continue
+        if replay["bot0"] not in bot_set and replay["bot1"] not in bot_set:
+            continue
+        # A canonical digest is an integrity check, not an authenticity proof:
+        # anyone able to alter the cache can recompute it.  Derive the only
+        # contribution that may reach totals from validated replay bytes on
+        # every call, then use the cache solely as replaceable fingerprint
+        # metadata.  This makes a re-signed forged cache non-authoritative.
+        contribution = _build_contribution(replay)
+        contribution_digest = _canonical_digest(contribution)
+        etag = f"{metadata.st_mtime_ns}:{metadata.st_size}"
+        derived_row = _cache_row(
+            etag=etag,
+            replay_sha256=replay_sha256,
+            contribution_digest=contribution_digest,
+        )
         cached_row = cached.get(filename)
-        contribution = None
-        if (
-            isinstance(cached_row, dict)
-            and cached_row.get("etag") == current[filename]
-            and isinstance(cached_row.get("replay_sha256"), str)
-            and isinstance(cached_row.get("contribution"), dict)
-        ):
-            contribution = cached_row["contribution"]
-            next_cache[filename] = cached_row
-        else:
-            path = root / filename
-            try:
-                raw = path.read_bytes()
-                replay = json.loads(raw.decode("utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            validation = validate_native_replay(
-                replay,
-                expected_evaluation_identity_digest=identity,
-                expected_replay_id=filename,
-            )
-            if not validation.accepted:
-                continue
-            if replay["bot0"] not in bot_set and replay["bot1"] not in bot_set:
-                continue
-            contribution = _build_contribution(replay)
-            next_cache[filename] = {
-                "etag": current[filename],
-                "replay_sha256": hashlib.sha256(raw).hexdigest(),
-                "contribution": contribution,
-            }
+        next_cache[filename] = cached_row if cached_row == derived_row else derived_row
         _apply_contribution(totals, bot_set, contribution)
     _save_cache(cache_path, identity, next_cache)
     return _finalize_totals(totals, bots)

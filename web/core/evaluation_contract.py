@@ -15,7 +15,12 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
-from bot_namespace import ACTIVE_BOT_PREFIX, bot_relpath, parse_bot_version
+from bot_namespace import (
+    ACTIVE_BOT_PREFIX,
+    FIRST_STRICT_POLICY_VERSION,
+    bot_relpath,
+    parse_bot_version,
+)
 from evolution_scope import (
     CRITICAL_EVALUATION_GATE_EXACT,
     CRITICAL_EXACT,
@@ -32,7 +37,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 26
+CONTRACT_VERSION = 31
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -46,11 +51,14 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/bot_namespace.py",
     "web/core/candidate_sandbox.py",
     "web/core/checkpoint_schema.py",
+    "web/core/daemon_management.py",
     "web/core/evaluation_contract.py",
     "web/core/evaluation_data_identity.py",
     "web/core/epoch_authority.py",
     "web/core/evolution_infra.py",
+    "web/core/evolution_core.py",
     "web/core/evolution_scope.py",
+    "web/core/generation_evidence.py",
     "web/core/managed_bot_executor.py",
     "web/core/managed_bot_socket.py",
     "web/core/national_epoch_registry.py",
@@ -90,10 +98,14 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_infrastructure.py",
     "web/core/pipeline_state.py",
+    "web/core/post_publication_handoff.py",
     "web/core/publish_reconcile.py",
     "web/core/publication_transaction.py",
     "web/core/repo_state.py",
+    "web/core/stability_observation.py",
     "web/core/tool_runtime_guard.py",
+    "web/core/tool_pipeline.py",
+    "web/core/tools.py",
     "web/core/runtime_capacity.py",
     "web/core/workflow_profiles.py",
     "web/core/workflow_kernel.py",
@@ -132,6 +144,8 @@ PREPARE_STAGE_EXACT = frozenset().union(
         "web/core/llm_query.py",
         "web/core/output_schema.py",
         "web/core/tool_bot_management.py",
+        "web/core/tool_commit.py",  # owns run_crossover preparation
+        "web/core/tool_gates.py",  # owns prepare_next_gen
         "web/core/tool_helpers.py",
         "web/core/tool_planning.py",
         "web/core/prompts/crossover_compatibility.md",
@@ -165,11 +179,13 @@ MASTER_STAGE_EXACT = frozenset().union(
         "web/core/evidence_snapshot.py",
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
+        "web/core/master_context_contract.py",
         "web/core/output_schema.py",
         "web/core/strategy_reference_pack.py",
         "web/core/poker_assets.py",
         "web/core/plan_compiler.py",
         "web/core/research_governance.py",
+        "web/core/replay_spotlight.py",
         "web/core/skill_library.py",
         "web/core/tool_helpers.py",
         "web/core/tool_planning.py",
@@ -197,6 +213,7 @@ WORKER_REPAIR_STAGE_EXACT = frozenset().union(
         "web/core/tool_planning.py",
         "web/core/prompts/debug_worker_prompt.md",
         "web/core/prompts/worker_cot_check.md",
+        "web/core/prompts/worker_profile_national_native.md",
         "web/core/prompts/worker_prompt.md",
     },
 )
@@ -230,6 +247,7 @@ REVIEW_STAGE_EXACT = frozenset().union(
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
         "web/core/output_schema.py",
+        "web/core/tool_gates.py",
         "web/core/prompts/reviewer_prompt.md",
     },
 )
@@ -237,10 +255,12 @@ REVIEW_STAGE_EXACT = frozenset().union(
 CRITIC_STAGE_EXACT = frozenset().union(
     ALWAYS_CRITICAL_EXACT,
     {
+        "web/core/agent_review.py",
         "web/core/audit_agents.py",
         "web/core/llm_failure.py",
         "web/core/llm_query.py",
         "web/core/output_schema.py",
+        "web/core/tool_gates.py",
         "web/core/prompts/critic_prompt.md",
     },
 )
@@ -276,6 +296,7 @@ COMMIT_STAGE_EXACT = frozenset().union(
         "web/core/official_certification_job.py",
         "web/core/official_evidence_archive.py",
         "web/core/tool_commit.py",
+        "web/core/prompts/official_platform_analysis.md",
     },
 )
 
@@ -402,7 +423,15 @@ def contract_bot_versions(
         version = _as_int(value)
         if version is not None:
             versions.add(version)
-    return sorted(versions)
+    # Retired pre-epoch bots are numeric/tag namespace continuity only.  They
+    # must never become filesystem inputs merely because an active checkpoint
+    # (notably fresh v143) carries source_v=142.  Normal strict parents begin at
+    # FIRST_STRICT_POLICY_VERSION and remain included below.
+    return sorted(
+        version
+        for version in versions
+        if version >= FIRST_STRICT_POLICY_VERSION
+    )
 
 
 def _contract_stage(checkpoint: dict[str, Any] | None, stage: str | None = None) -> str:

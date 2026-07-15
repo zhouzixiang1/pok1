@@ -30,16 +30,22 @@ def _epoch_projection() -> dict:
     """Return the live authority used to fence one SSE connection."""
 
     try:
-        from epoch_authority import strict_epoch_projection
+        from epoch_authority import (
+            epoch_stream_authority_digest,
+            strict_epoch_projection,
+        )
 
         value = strict_epoch_projection(include_checkpoint=False)
+        stream_authority_digest = epoch_stream_authority_digest(value)
     except Exception:
         value = {}
+        stream_authority_digest = None
     return {
         "evaluation_epoch": "national_tcp_policy_v1",
         "epoch_state": str(value.get("state") or "epoch_authority_unavailable"),
         "epoch_initialized": value.get("initialized") is True,
         "epoch_reset_receipt_digest": value.get("reset_receipt_digest"),
+        "stream_authority_digest": stream_authority_digest,
     }
 
 
@@ -142,27 +148,30 @@ _log = logging.getLogger("data_stream")
 
 @router.get("/data/stream")
 async def data_stream(request: Request):
+    expected_authority_digest = str(
+        request.query_params.get("authority") or ""
+    )
+    expected_identity_valid = bool(
+        len(expected_authority_digest) == 64
+        and all(char in "0123456789abcdef" for char in expected_authority_digest)
+    )
+
     async def generate():
         tick = 0
-        connection_receipt_digest: str | None = None
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 epoch = _epoch_projection()
-                receipt_digest = epoch.get("epoch_reset_receipt_digest")
-                if connection_receipt_digest is None and epoch["epoch_initialized"]:
-                    connection_receipt_digest = (
-                        str(receipt_digest) if receipt_digest else None
-                    )
+                authority_digest = epoch.get("stream_authority_digest")
                 if (
                     not epoch["epoch_initialized"]
-                    or not connection_receipt_digest
-                    or receipt_digest != connection_receipt_digest
+                    or not expected_identity_valid
+                    or authority_digest != expected_authority_digest
                 ):
                     # Close the browser cache at the same boundary that makes
                     # the server-side evidence projection unavailable or moves
-                    # it to a different reset receipt.
+                    # it to a different reset/publication identity.
                     yield _event("epoch_blocked", epoch)
                     break
                 snapshot = _strict_snapshot()
@@ -191,6 +200,14 @@ async def data_stream(request: Request):
                         _log.warning("SSE data fetch error (3s): %s", e)
                         events = []
                     for evt in events:
+                        delivery_epoch = _epoch_projection()
+                        if (
+                            not delivery_epoch["epoch_initialized"]
+                            or delivery_epoch.get("stream_authority_digest")
+                            != expected_authority_digest
+                        ):
+                            yield _event("epoch_blocked", delivery_epoch)
+                            return
                         try:
                             yield evt
                         except Exception as e:
@@ -205,6 +222,14 @@ async def data_stream(request: Request):
                         _log.warning("SSE data fetch error (10s): %s", e)
                         events = []
                     for evt in events:
+                        delivery_epoch = _epoch_projection()
+                        if (
+                            not delivery_epoch["epoch_initialized"]
+                            or delivery_epoch.get("stream_authority_digest")
+                            != expected_authority_digest
+                        ):
+                            yield _event("epoch_blocked", delivery_epoch)
+                            return
                         try:
                             yield evt
                         except Exception as e:
@@ -221,11 +246,27 @@ async def data_stream(request: Request):
                         _log.warning("SSE data fetch error (15s): %s", e)
                         events = []
                     for evt in events:
+                        delivery_epoch = _epoch_projection()
+                        if (
+                            not delivery_epoch["epoch_initialized"]
+                            or delivery_epoch.get("stream_authority_digest")
+                            != expected_authority_digest
+                        ):
+                            yield _event("epoch_blocked", delivery_epoch)
+                            return
                         try:
                             yield evt
                         except Exception as e:
                             _log.warning("SSE event error: %s", e)
                 if tick % 30 == 0:
+                    delivery_epoch = _epoch_projection()
+                    if (
+                        not delivery_epoch["epoch_initialized"]
+                        or delivery_epoch.get("stream_authority_digest")
+                        != expected_authority_digest
+                    ):
+                        yield _event("epoch_blocked", delivery_epoch)
+                        return
                     yield {"event": "ping", "data": "{}"}
                 await asyncio.sleep(1)
                 tick += 1

@@ -316,7 +316,12 @@ async def _execute_exhausted_infrastructure_failure(
     from tool_bot_management import _do_abandon_generation
 
     abandon_result = await _do_abandon_generation(
-        reason=f"infrastructure_exhausted:{failure.get('component')}"
+        reason=f"infrastructure_exhausted:{failure.get('component')}",
+        expected_workflow_run_id=checkpoint.get("workflow_run_id"),
+        expected_next_v=checkpoint.get("next_v"),
+        expected_source_v=checkpoint.get("source_v"),
+        expected_checkpoint_revision=checkpoint.get("checkpoint_revision"),
+        expected_checkpoint_stage=checkpoint.get("stage"),
     )
     return {
         "failure_class": "infrastructure",
@@ -440,8 +445,22 @@ async def _record_infrastructure_failure(
     if overlay["exhausted"] and recorded:
         from tool_bot_management import _do_abandon_generation
 
+        abandon_checkpoint = _matching_checkpoint(version, source_v)
+        if not isinstance(abandon_checkpoint, dict):
+            result["abandon_result"] = {
+                "abandoned": False,
+                "reason": "forced_abandon_checkpoint_identity_unavailable",
+            }
+            return result
         abandon_result = await _do_abandon_generation(
-            reason=f"infrastructure_exhausted:{component}"
+            reason=f"infrastructure_exhausted:{component}",
+            expected_workflow_run_id=abandon_checkpoint.get("workflow_run_id"),
+            expected_next_v=abandon_checkpoint.get("next_v"),
+            expected_source_v=abandon_checkpoint.get("source_v"),
+            expected_checkpoint_revision=abandon_checkpoint.get(
+                "checkpoint_revision"
+            ),
+            expected_checkpoint_stage=abandon_checkpoint.get("stage"),
         )
         result["abandon_result"] = abandon_result
         result["abandoned"] = bool(abandon_result.get("abandoned"))
@@ -669,17 +688,22 @@ def _match_history_file():
 
 def _rating_rows_for_active():
     import evolution_infra
+    from evaluation_bundle import validated_evaluation_identity_digest
     from rating_snapshot import build_strength_rows
     h2h_data = _load_h2h_data()
     bot_stats_data = _read_json(evolution_infra.RESULTS_DIR / "bot_stats.json", {})
     ratings = load_ratings()
     active = list(get_active_bots())
+    evaluation_identity = validated_evaluation_identity_digest(
+        evolution_infra.RESULTS_DIR
+    )
     return build_strength_rows(
         ratings,
         bot_stats_data,
         h2h_data,
         active_bots=active,
         match_history_path=_match_history_file(),
+        expected_evaluation_identity_digest=evaluation_identity,
     )
 
 
@@ -1001,6 +1025,7 @@ def _validate_worker_boundaries(
     worker_snapshots=None,
     *,
     candidate_dir=None,
+    source_artifact_inherited=True,
 ):
     """Validate that workers respected their role boundaries.
 
@@ -1012,7 +1037,12 @@ def _validate_worker_boundaries(
             before that worker ran. Enables accurate per-worker boundary checking
             when multiple workers share a target file.
     """
-    source_dir = get_bot_dir(source_v)
+    # The one-time v142 -> v143 transition carries only a numeric high-water
+    # identity.  Its historical bot path is not a fallback baseline and must
+    # never be resolved, stat'ed, or read.  The strict system Worker always
+    # supplies exact per-task snapshots; missing snapshots therefore fail
+    # closed below instead of reopening numeric-only lineage bytes.
+    source_dir = get_bot_dir(source_v) if source_artifact_inherited else None
     next_dir = Path(candidate_dir) if candidate_dir is not None else get_bot_dir(next_v)
     all_targets = set()
     errors = []
@@ -1028,7 +1058,15 @@ def _validate_worker_boundaries(
     # isolated each worker's actual writes. Re-running the whole-candidate diff
     # during in-place quality repair would falsely blame earlier sibling repair
     # edits on the current one.
-    if not worker_snapshots:
+    if not worker_snapshots and source_dir is None:
+        errors.append({
+            "type": "worker_boundary_baseline_missing",
+            "message": (
+                "Numeric-only lineage requires exact Worker preimage snapshots; "
+                "historical source bytes are not an admissible fallback."
+            ),
+        })
+    elif not worker_snapshots:
         changed_files = _py_files_changed_between(source_dir, next_dir)
         for rel in changed_files:
             if rel not in all_targets:
@@ -1066,6 +1104,16 @@ def _validate_worker_boundaries(
             if worker_snapshots and (task_idx, rel) in worker_snapshots:
                 before = worker_snapshots[(task_idx, rel)]
             else:
+                if source_dir is None:
+                    errors.append({
+                        "type": "worker_boundary_snapshot_missing",
+                        "file": rel,
+                        "message": (
+                            "Numeric-only lineage has no readable source fallback "
+                            "for this Worker target."
+                        ),
+                    })
+                    continue
                 src = source_dir / rel
                 before = src.read_text() if src.exists() else ""
             dst = next_dir / rel

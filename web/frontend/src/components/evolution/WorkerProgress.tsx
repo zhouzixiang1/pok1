@@ -1,7 +1,7 @@
 /* eslint-disable react-refresh/only-export-components -- This component module also exports the parser used by EvolutionMonitor. */
 import { StatusDot, CheckIcon, CrossIcon } from "./icons";
 
-export type WorkerStatus = "running" | "done" | "failed";
+export type WorkerStatus = "running" | "done" | "failed" | "unknown";
 
 export interface WorkerInfo {
   id: number;
@@ -29,12 +29,14 @@ export function WorkerProgress({ workers }: { workers: WorkerInfo[] }) {
           <div key={w.id} className="flex items-center gap-2 text-xs">
             <span className={
               w.status === "running" ? "text-blue-light-500 animate-pulse" :
-              w.status === "done" ? "text-success-500" : "text-error-500"
+              w.status === "done" ? "text-success-500" :
+              w.status === "failed" ? "text-error-500" : "text-gray-400"
             }>
-              {w.status === "running" ? <StatusDot className="inline" /> : w.status === "done" ? <CheckIcon className="inline" /> : <CrossIcon className="inline" />}
+              {w.status === "running" ? <StatusDot className="inline" /> : w.status === "done" ? <CheckIcon className="inline" /> : w.status === "failed" ? <CrossIcon className="inline" /> : "?"}
             </span>
             <span className="text-gray-600 dark:text-gray-300">
               Worker {w.id}{w.role ? ` (${w.role})` : ""}
+              {w.status === "unknown" ? " · 状态未知（流中断）" : ""}
             </span>
           </div>
         ))}
