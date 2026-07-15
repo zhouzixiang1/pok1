@@ -88,8 +88,8 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented; focused green, merge verification pending | 19-role semantic-producer, provenance, poison/render/path/symlink/TOCTOU/hook/budget tests |
 | P3 | Master stream/effect recovery and bounded retries | implemented; final combined rerun green | timeout/lease/replay/provider-termination tests |
 | P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | implemented; final combined rerun green | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | final rerun green; commit/push/merge pending | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | not started in operator checkout | tags, certificates, immutable cycles and live observation ledger |
+| P5 | full verification and merge to `origin/main` | complete through recovery commit `291f2d40c0301c4262c1848fe549e8999ac83174`; later runtime repairs repeat the same merge gate | full suites, Git and remote identities |
+| P6 | runtime recovery, v143/v144 publication and ten generations | reconciliation/identity rotation complete; v143 is prepared and direction-audited; Master retry pending | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -816,12 +816,28 @@ strand the single-flight flag when a `BaseException` escaped its thread; all
 thread exits now publish a failed refresh and unconditionally release the slot
 so invalidation/retry can progress. Both paths have dedicated regressions.
 
+After commit `291f2d40c0301c4262c1848fe549e8999ac83174` reached
+`origin/main` and the stopped runtime, canonical one-generation recovery
+successfully prepared the exact five-file v143 artifact and advanced workflow-v19
+to `direction_audited`. The first live Master call then exposed a third
+recovery-only defect: while its nested proposal roles were still producing
+current-generation progress, the independent five-minute actionable-stage
+poller treated the unchanged startup `direction_audited` stage as abandoned and
+cancelled `run_master`. The stream poller now fences the workflow/stage/version
+plus authoritative next-tool/intent identity owned by the in-flight tool,
+ignoring same-route revision metadata; post-message handoff still uses the full
+revision/stage identity, while a real stage change or a different authoritative
+same-stage route still enables deterministic recovery. Dedicated
+regressions hold a delayed Master result past repeated actionable polls and
+exercise the same-stage route transition while preserving the existing
+stage-transition timeout test.
+
 Final frozen-tree combined verification after the implementation and stale
 fixture migrations was:
 
 ```text
 cd web && python -m pytest tests -q
-2522 passed, 20 skipped
+2526 passed, 20 skipped
 
 python -m pytest sever/tests -q
 31 passed
@@ -836,19 +852,24 @@ cd web/frontend && npm run build
 passed
 ```
 
-The source quality gates are final and green: all suites, active-source
-`py_compile`, and `git diff --check` passed after the implementation tree
-stopped changing. P5 baseline commit
+The current stream-ownership repair tree is green: all suites, active-source
+`py_compile`, and `git diff --check` passed after the implementation stopped
+changing. Its merged parent recovery commit is
+`291f2d40c0301c4262c1848fe549e8999ac83174`. P5 baseline commit
 `94714124711e51044f5a91411e47297f340fb265` was pushed and fast-forwarded to
 `origin/main`, then synchronized into the stopped runtime. The schema-1
 workflow-v18 checkpoint/candidate/ledger were durably quarantined through the
 canonical reconciliation transaction, the evaluator identity was explicitly
 rotated without carrying strength rows, and official doctor passed. The first
-live workflow-v19 launch stopped safely at v143 `selected` and exposed the
-one-gen/single-flight recovery repair recorded above; that repair must be
-merged and synchronized before resume. No strict v143/v144 publication,
-immutable rating cycle, or post-restart 10-generation observation has yet been
-executed.
+live workflow-v19 launch exposed and then recovered from the one-gen and
+single-flight defects above. Runtime HEAD is now that recovery commit and the
+stopped checkpoint is v143 `direction_audited`, revision 6, with
+`master_plan=null`. One schema-valid scout proposal receipt exists, but no
+three-proposal packet, ballots, selected mechanism, compiled Worker plan, or
+`master_planned` stage was accepted. The third stream-ownership repair must
+pass the merge gate and synchronize before the exact frozen Master attempt is
+retried. No strict v143/v144 publication, immutable rating cycle, or
+post-restart 10-generation observation has yet been executed.
 The `fc7d62d30783d2ae8710dc8f331d717f3d902e36` verdict remains unchanged:
 semantically superseded, history-only, and not cherry-picked.
 

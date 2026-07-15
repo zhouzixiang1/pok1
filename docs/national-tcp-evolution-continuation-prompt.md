@@ -106,17 +106,25 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 每次交付收口时更新以下字段；它们只帮助操作员定位，不替代实时权威查询。
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
-  merged baseline is `94714124711e51044f5a91411e47297f340fb265`; the
-  post-launch one-gen/single-flight recovery fix is tested but not yet committed;
-- final frozen-tree verification after that fix: Web `2522 passed, 20 skipped`; sever
+  merged recovery parent is `291f2d40c0301c4262c1848fe549e8999ac83174`;
+  this document travels in the fully verified in-flight Master stage-ownership
+  repair, so query the branch for its final commit rather than guessing a SHA;
+- final frozen-tree verification after the in-flight Master repair: Web
+  `2526 passed, 20 skipped`; sever
   `31 passed`; frontend `13 passed` plus lint/build; active-source `py_compile`
-  and `git diff --check` passed;
-- `origin/main`: `94714124711e51044f5a91411e47297f340fb265`; query again
-  before integrating the recovery fix;
-- runtime HEAD: stopped at the same merged baseline after identity migration;
+  and `git diff --check` passed. The later repair also has `129 passed`
+  across the focused orchestrator/stability shards;
+- `origin/main`: before this repair was integrated it was
+  `291f2d40c0301c4262c1848fe549e8999ac83174`; runtime resume requires the
+  commit carrying this document to be present in `origin/main`;
+- runtime HEAD: the pre-integration evidence was the same stopped recovery
+  parent after identity migration; re-query after Git-only synchronization;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
-  abandoned; the live checkpoint is v143 `selected`, workflow-v19, revision 1;
-  it must be resumed only after the recovery fix reaches `origin/main`;
+  abandoned; the live checkpoint is v143 `direction_audited`, workflow-v19,
+  revision 6, with `master_plan=null`. The prepared five-file artifact is still
+  content-bound to its checkpoint. One scout proposal receipt exists, but no
+  complete proposal packet, ballot result, selected mechanism or Worker plan
+  was accepted; retry only after the stage-ownership repair reaches `origin/main`;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published;
 - immutable rating cycle: none for the new strict two-bot pool;

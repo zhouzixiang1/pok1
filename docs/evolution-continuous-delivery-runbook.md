@@ -221,13 +221,20 @@ Every later publication has the same eight-step handoff barrier; a daemon or
 orchestrator restart resumes its exact active pointer before scheduling a new
 generation.
 
-A fresh Orchestrator provider stream owns the exact checkpoint identity present
-when that stream starts. It may hand off only after an MCP effect advances the
-workflow revision or stage; treating the unchanged startup checkpoint as a new
-effect creates a restart livelock. Background stability verification follows
-the same progress rule: every thread exit, including cancellation-class
-exceptions, releases the single-flight slot and projects a failed refresh
-before a later retry.
+A fresh Orchestrator provider stream owns two related fences. At a returned
+provider-message boundary, exact workflow/revision/stage/version drift proves a
+new effect and permits immediate handoff. While a nested MCP tool is still
+running and the provider stream is silent, the actionable-stage poller instead
+compares workflow, stage, versions, authoritative `next_tool`, and route
+`intent`, deliberately ignoring same-route revision metadata. This lets a long
+Master audit retry retain `direction_audited` ownership, while a different
+authoritative route projected for the same stage still becomes recoverable.
+Treating the unchanged startup route as a new effect creates a restart
+livelock; treating an in-flight revision update as abandoned cancels healthy
+work. The generic no-progress stream ceiling remains active for a genuinely
+dead owner. Background stability verification follows the same progress rule:
+every thread exit, including cancellation-class exceptions, releases the
+single-flight slot and projects a failed refresh before a later retry.
 
 ## Ten-generation observation
 

@@ -1028,6 +1028,15 @@ def _detect_actionable_stage_stall(timeout_sec=None):
         "timeout_sec": timeout,
         "next_tool": route.get("next_tool"),
         "directive": route.get("directive"),
+        "checkpoint_actionable_identity": _checkpoint_actionable_identity(
+            checkpoint
+        ),
+        "stream_owned_route_identity": (
+            _checkpoint_stream_owned_route_identity(
+                checkpoint,
+                resolved_route=route,
+            )
+        ),
     }
 
 
@@ -1050,22 +1059,46 @@ def _checkpoint_actionable_identity(checkpoint):
     )
 
 
+def _checkpoint_stream_owned_route_identity(checkpoint, *, resolved_route=None):
+    """Return the semantic route owned by an in-flight provider tool call.
+
+    Long-running tools may publish runtime heartbeats or same-stage retry
+    metadata while they still own the call.  Those updates must not make the
+    orchestrator's idle poller treat the stage that the fresh stream was
+    launched to execute as abandoned.  The route tool and intent are included
+    because authoritative recovery policy can expose different tools for the
+    same persisted stage as its bound gate metadata advances.
+    """
+
+    if not isinstance(checkpoint, dict):
+        return None
+    route = resolved_route
+    if route is None:
+        route = _resolve_recovery_route(checkpoint)
+    if not isinstance(route, dict):
+        return None
+    policy = route.get("route") or {}
+    if not isinstance(policy, dict):
+        policy = {}
+    return (
+        checkpoint.get("workflow_run_id"),
+        checkpoint.get("stage"),
+        checkpoint.get("next_v"),
+        checkpoint.get("source_v"),
+        route.get("next_tool"),
+        policy.get("intent"),
+    )
+
+
 def _detect_actionable_stage_handoff(*, baseline_checkpoint_identity=None):
     """Return route data when an MCP gate has just produced a deterministic step."""
     stall = _detect_actionable_stage_stall(timeout_sec=0)
-    if stall:
-        try:
-            from evolution_core import read_pipeline_checkpoint
-
-            current_checkpoint = read_pipeline_checkpoint()
-        except Exception:
-            current_checkpoint = None
-        if (
-            baseline_checkpoint_identity is None
-            or _checkpoint_actionable_identity(current_checkpoint)
-            != baseline_checkpoint_identity
-        ):
-            return stall
+    if stall and (
+        baseline_checkpoint_identity is None
+        or stall.get("checkpoint_actionable_identity")
+        != baseline_checkpoint_identity
+    ):
+        return stall
     try:
         from evolution_core import read_pipeline_checkpoint
 
@@ -1111,7 +1144,13 @@ def _detect_actionable_stage_handoff(*, baseline_checkpoint_identity=None):
     return None
 
 
-async def _await_next_stream_message(stream_iter, last_message_at=None, *, stream_started_at=None):
+async def _await_next_stream_message(
+    stream_iter,
+    last_message_at=None,
+    *,
+    stream_started_at=None,
+    baseline_owned_route_identity=None,
+):
     """Wait for the next orchestrator stream message with checkpoint-aware polling.
 
     D (2026-07-09): also enforce a generic mid-stream stall ceiling
@@ -1191,6 +1230,21 @@ async def _await_next_stream_message(stream_iter, last_message_at=None, *, strea
                         )
                         raise _OrchStreamStallTimeout(msg)
                 stall = _detect_actionable_stage_stall()
+                if (
+                    stall
+                    and baseline_owned_route_identity is not None
+                    and ORCH_STREAM_STALL_TIMEOUT > 0
+                ):
+                    if (
+                        stall.get("stream_owned_route_identity")
+                        == baseline_owned_route_identity
+                    ):
+                        # The fresh stream still owns the exact semantic route
+                        # it was started to execute. Its nested role may
+                        # legitimately run longer than the stale-actionable
+                        # ceiling; generic stream/tool progress supervision
+                        # remains in force.
+                        stall = None
                 if not stall:
                     continue
                 next_v = stall.get("next_v")
@@ -1419,6 +1473,9 @@ async def _run_one_cycle(
     from evolution_core import read_pipeline_checkpoint
     checkpoint = read_pipeline_checkpoint()
     baseline_checkpoint_identity = _checkpoint_actionable_identity(checkpoint)
+    baseline_owned_route_identity = _checkpoint_stream_owned_route_identity(
+        checkpoint
+    )
     _bind_generation_cost_runtime(
         checkpoint,
         gen_ctx=gen_ctx,
@@ -1527,6 +1584,9 @@ async def _run_one_cycle(
                                 _stream_iter,
                                 last_message_at=_last_message_at,
                                 stream_started_at=_stream_started_at,
+                                baseline_owned_route_identity=(
+                                    baseline_owned_route_identity
+                                ),
                             )
                             _last_message_at = time.time()
                     except StopAsyncIteration:

@@ -1069,6 +1069,230 @@ def test_stream_stall_timeout_extends_on_current_generation_progress(monkeypatch
     assert any(e[0] == "pipeline.orchestrator_stream_stall_timeout" for e in events)
 
 
+def test_actionable_timeout_does_not_cancel_fresh_stream_owned_route(monkeypatch):
+    """A long Master call still owns the direction_audited startup stage."""
+    import orchestrator
+
+    baseline_checkpoint = {
+        "workflow_run_id": "generation:143:workflow-v19",
+        "checkpoint_revision": 6,
+        "stage": "direction_audited",
+        "next_v": 143,
+        "source_v": 142,
+    }
+    # Same-stage Master retry metadata may advance the durable revision while
+    # the nested call is still running.  That is not a new recovery route.
+    current_checkpoint = {
+        **baseline_checkpoint,
+        "checkpoint_revision": 7,
+    }
+    resolved_route = {
+        "next_tool": "run_master",
+        "route": {"intent": "pipeline"},
+    }
+    baseline_owner = orchestrator._checkpoint_stream_owned_route_identity(
+        baseline_checkpoint,
+        resolved_route=resolved_route,
+    )
+    current_owner = orchestrator._checkpoint_stream_owned_route_identity(
+        current_checkpoint,
+        resolved_route=resolved_route,
+    )
+    route = {
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "direction_audited",
+        "next_tool": "run_master",
+        "elapsed_sec": 300.0,
+        "stream_owned_route_identity": current_owner,
+    }
+    events = []
+    actionable_polls = {"count": 0}
+
+    async def _delayed_message():
+        await asyncio.sleep(0.2)
+        yield "master-result"
+
+    def _stale_owned_route(timeout_sec=None):
+        actionable_polls["count"] += 1
+        return dict(route)
+
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_STALL_TIMEOUT", 1.0)
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        _stale_owned_route,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    stream = _delayed_message().__aiter__()
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            orchestrator._await_next_stream_message(
+                stream,
+                baseline_owned_route_identity=baseline_owner,
+            )
+        )
+    finally:
+        loop.run_until_complete(stream.aclose())
+        loop.close()
+
+    assert result == "master-result"
+    assert baseline_owner == current_owner
+    assert actionable_polls["count"] >= 1
+    assert not any(e[0] == "pipeline.actionable_stage_timeout" for e in events)
+
+
+def test_fresh_stream_owned_route_deadlock_uses_generic_stall_ceiling(monkeypatch):
+    """Owned-route suppression cannot disable the generic dead-stream bound."""
+    import orchestrator
+
+    owner = (
+        "generation:143:workflow-v19",
+        "direction_audited",
+        143,
+        142,
+        "run_master",
+        "pipeline",
+    )
+    route = {
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "direction_audited",
+        "next_tool": "run_master",
+        "elapsed_sec": 300.0,
+        "stream_owned_route_identity": owner,
+    }
+    actionable_polls = {"count": 0}
+
+    async def _never_yields():
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    def _stale_owned_route(timeout_sec=None):
+        actionable_polls["count"] += 1
+        return dict(route)
+
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_STALL_TIMEOUT", 0.3)
+    monkeypatch.setattr(
+        orchestrator,
+        "_latest_orchestrator_external_progress",
+        lambda _since: None,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        _stale_owned_route,
+    )
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *a, **kw: None)
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(orchestrator._OrchStreamStallTimeout):
+            loop.run_until_complete(
+                orchestrator._await_next_stream_message(
+                    _never_yields().__aiter__(),
+                    last_message_at=time.time(),
+                    baseline_owned_route_identity=owner,
+                )
+            )
+    finally:
+        loop.close()
+
+    assert actionable_polls["count"] >= 1
+
+
+def test_actionable_timeout_detects_real_same_stage_route_transition(
+    tmp_path,
+    monkeypatch,
+):
+    """Production route policy distinguishes two critic_checked routes."""
+    import orchestrator
+
+    checkpoint = _write_checkpoint(tmp_path, "critic_checked")
+    regression_checkpoint = {
+        **checkpoint,
+        "gate_results": {
+            "precommit_eval": {
+                "passed": False,
+                "blockers": [{"reason": "chip_regression"}],
+            }
+        },
+    }
+    passed_checkpoint = {
+        **checkpoint,
+        "gate_results": {
+            "precommit_eval": {
+                "passed": True,
+                "blockers": [],
+            }
+        },
+    }
+    regression_route = orchestrator._resolve_recovery_route(
+        regression_checkpoint
+    )
+    passed_route = orchestrator._resolve_recovery_route(passed_checkpoint)
+    assert regression_route["next_tool"] == "execute_workers"
+    assert regression_route["route"]["intent"] == "precommit_rework"
+    assert passed_route["next_tool"] == "run_precommit_eval"
+    assert passed_route["route"]["intent"] == "precommit_eval"
+
+    regression_owner = orchestrator._checkpoint_stream_owned_route_identity(
+        regression_checkpoint,
+        resolved_route=regression_route,
+    )
+    passed_owner = orchestrator._checkpoint_stream_owned_route_identity(
+        passed_checkpoint,
+        resolved_route=passed_route,
+    )
+    route = {
+        "next_v": checkpoint["next_v"],
+        "source_v": checkpoint["source_v"],
+        "stage": "critic_checked",
+        "next_tool": "run_precommit_eval",
+        "elapsed_sec": 300.0,
+        "stream_owned_route_identity": passed_owner,
+    }
+
+    async def _never_yields():
+        await asyncio.sleep(999)
+        if False:
+            yield  # pragma: no cover
+
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_POLL_INTERVAL", 0.01)
+    monkeypatch.setattr(orchestrator, "ORCH_STREAM_STALL_TIMEOUT", 1.0)
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        lambda timeout_sec=None: dict(route),
+    )
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *a, **kw: None)
+
+    loop = asyncio.new_event_loop()
+    try:
+        with pytest.raises(orchestrator._OrchActionableStageTimeout):
+            loop.run_until_complete(
+                orchestrator._await_next_stream_message(
+                    _never_yields().__aiter__(),
+                    baseline_owned_route_identity=regression_owner,
+                )
+            )
+    finally:
+        loop.close()
+
+    assert regression_owner != passed_owner
+
+
 @pytest.mark.parametrize(
     "stage",
     ["master_planned", "quality_failed", "repair_planned", "rework_running", "precommit_failed"],
@@ -1982,6 +2206,9 @@ def test_actionable_handoff_fences_checkpoint_already_owned_by_fresh_stream(
         "source_v": 142,
         "stage": "selected",
         "next_tool": "prepare_next_gen",
+        "checkpoint_actionable_identity": (
+            orchestrator._checkpoint_actionable_identity(checkpoint)
+        ),
     }
     monkeypatch.setattr(
         orchestrator,
@@ -2001,10 +2228,72 @@ def test_actionable_handoff_fences_checkpoint_already_owned_by_fresh_stream(
 
     checkpoint["checkpoint_revision"] = 2
     checkpoint["stage"] = "prepared"
-    route.update({"stage": "prepared", "next_tool": "run_direction_audit"})
+    route.update({
+        "stage": "prepared",
+        "next_tool": "run_direction_audit",
+        "checkpoint_actionable_identity": (
+            orchestrator._checkpoint_actionable_identity(checkpoint)
+        ),
+    })
     assert orchestrator._detect_actionable_stage_handoff(
         baseline_checkpoint_identity=baseline
     ) == route
+
+
+def test_actionable_stall_carries_identities_from_one_checkpoint_snapshot(
+    monkeypatch,
+):
+    """Polling must not re-read a drifting checkpoint to build its fences."""
+    import evolution_core
+    import orchestrator
+    import pipeline_state
+
+    checkpoint = {
+        "workflow_run_id": "generation:143:workflow-v19",
+        "checkpoint_revision": 6,
+        "stage": "direction_audited",
+        "next_v": 143,
+        "source_v": 142,
+        "last_update_ts": time.time() - 600,
+        "last_stage_change_ts": time.time() - 600,
+    }
+    resolved_route = {
+        "next_tool": "run_master",
+        "directive": "Call run_master",
+        "route": {"next_tool": "run_master", "intent": "pipeline"},
+    }
+    reads = {"count": 0}
+
+    def _read_once():
+        reads["count"] += 1
+        if reads["count"] > 1:
+            raise AssertionError("checkpoint reread")
+        return dict(checkpoint)
+
+    monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", _read_once)
+    monkeypatch.setattr(
+        pipeline_state,
+        "pipeline_runtime_activity_ts",
+        lambda _checkpoint: 0.0,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_resolve_recovery_route",
+        lambda _checkpoint: dict(resolved_route),
+    )
+
+    stall = orchestrator._detect_actionable_stage_stall(timeout_sec=0)
+
+    assert reads["count"] == 1
+    assert stall["checkpoint_actionable_identity"] == (
+        orchestrator._checkpoint_actionable_identity(checkpoint)
+    )
+    assert stall["stream_owned_route_identity"] == (
+        orchestrator._checkpoint_stream_owned_route_identity(
+            checkpoint,
+            resolved_route=resolved_route,
+        )
+    )
 
 
 def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, monkeypatch):
