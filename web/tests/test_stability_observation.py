@@ -429,6 +429,46 @@ def test_cached_projection_reports_background_failure_without_raising(monkeypatc
     assert failed["count"] == 0
 
 
+def test_background_base_exception_releases_single_flight_for_retry(monkeypatch):
+    import stability_observation as observation
+
+    class VerifierAbort(BaseException):
+        pass
+
+    observation.invalidate_stability_projection_cache()
+    monkeypatch.setattr(
+        observation,
+        "stability_observation_projection",
+        lambda: (_ for _ in ()).throw(VerifierAbort("cancelled verifier")),
+    )
+    assert observation.stability_observation_cached_projection()["verification"][
+        "state"
+    ] == "pending"
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        failed = observation.stability_observation_cached_projection()
+        if failed["verification"]["state"] == "failed":
+            break
+        time.sleep(0.01)
+    assert failed["verification"]["state"] == "failed"
+    assert "VerifierAbort" in failed["verification"]["error"]
+
+    observation.invalidate_stability_projection_cache()
+    monkeypatch.setattr(
+        observation,
+        "stability_observation_projection",
+        lambda: _projection_fixture(count=2),
+    )
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        recovered = observation.stability_observation_cached_projection()
+        if recovered["verification"]["state"] == "fresh":
+            break
+        time.sleep(0.01)
+    assert recovered["verification"]["state"] == "fresh"
+    assert recovered["count"] == 2
+
+
 def test_cached_projection_drops_green_on_epoch_or_head_authority_change(
     monkeypatch,
 ):

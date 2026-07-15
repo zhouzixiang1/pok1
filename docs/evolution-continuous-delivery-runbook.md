@@ -221,6 +221,14 @@ Every later publication has the same eight-step handoff barrier; a daemon or
 orchestrator restart resumes its exact active pointer before scheduling a new
 generation.
 
+A fresh Orchestrator provider stream owns the exact checkpoint identity present
+when that stream starts. It may hand off only after an MCP effect advances the
+workflow revision or stage; treating the unchanged startup checkpoint as a new
+effect creates a restart livelock. Background stability verification follows
+the same progress rule: every thread exit, including cancellation-class
+exceptions, releases the single-flight slot and projects a failed refresh
+before a later retry.
+
 ## Ten-generation observation
 
 The count begins with the first successful publication after the final code or

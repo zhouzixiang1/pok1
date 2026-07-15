@@ -1015,7 +1015,11 @@ async def test_orchestrator_direct_provider_binds_real_mcp_object(monkeypatch, t
     monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **_kwargs: None)
     monkeypatch.setattr(orchestrator, "_bind_generation_cost_runtime", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(orchestrator, "_check_generation_cost_policy", lambda *_args: None)
-    monkeypatch.setattr(orchestrator, "_detect_actionable_stage_handoff", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_handoff",
+        lambda **_kwargs: None,
+    )
     monkeypatch.setattr(orchestrator, "record_generation_cost", lambda *_args, **_kwargs: {"active": False, "recorded": False})
     monkeypatch.setattr(orchestrator, "log_system_event", lambda *_args, **_kwargs: None)
 

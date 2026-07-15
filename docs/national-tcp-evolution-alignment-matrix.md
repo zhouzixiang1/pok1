@@ -53,7 +53,7 @@ does not reinterpret them and has zero rating or strategy authority.
 
 ## Completion rule
 
-Final frozen-tree verification is Web `2520 passed, 20 skipped`, sever
+Final frozen-tree verification is Web `2522 passed, 20 skipped`, sever
 `31 passed`, frontend `13 passed` plus successful lint/build, active-source
 `py_compile`, and `git diff --check`. These counts do not replace merged-commit
 or live runtime evidence.

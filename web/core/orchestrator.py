@@ -1031,11 +1031,41 @@ def _detect_actionable_stage_stall(timeout_sec=None):
     }
 
 
-def _detect_actionable_stage_handoff():
+def _checkpoint_actionable_identity(checkpoint):
+    """Return the persisted identity that fences a provider-cycle handoff.
+
+    A checkpoint already actionable when a fresh provider session starts is
+    the work that session must execute.  Only a different revision/stage
+    produced after the session began authorizes disposing that stream.
+    """
+
+    if not isinstance(checkpoint, dict):
+        return None
+    return (
+        checkpoint.get("workflow_run_id"),
+        checkpoint.get("checkpoint_revision"),
+        checkpoint.get("stage"),
+        checkpoint.get("next_v"),
+        checkpoint.get("source_v"),
+    )
+
+
+def _detect_actionable_stage_handoff(*, baseline_checkpoint_identity=None):
     """Return route data when an MCP gate has just produced a deterministic step."""
     stall = _detect_actionable_stage_stall(timeout_sec=0)
     if stall:
-        return stall
+        try:
+            from evolution_core import read_pipeline_checkpoint
+
+            current_checkpoint = read_pipeline_checkpoint()
+        except Exception:
+            current_checkpoint = None
+        if (
+            baseline_checkpoint_identity is None
+            or _checkpoint_actionable_identity(current_checkpoint)
+            != baseline_checkpoint_identity
+        ):
+            return stall
     try:
         from evolution_core import read_pipeline_checkpoint
 
@@ -1388,6 +1418,7 @@ async def _run_one_cycle(
     # server-side history capabilities and are never loaded into SDK ``resume``.
     from evolution_core import read_pipeline_checkpoint
     checkpoint = read_pipeline_checkpoint()
+    baseline_checkpoint_identity = _checkpoint_actionable_identity(checkpoint)
     _bind_generation_cost_runtime(
         checkpoint,
         gen_ctx=gen_ctx,
@@ -1610,7 +1641,11 @@ async def _run_one_cycle(
                         # ledger by this point.  Default mode only emits telemetry;
                         # an explicit operator hard limit stops the stream.
                         _check_generation_cost_policy(ui)
-                        handoff = _detect_actionable_stage_handoff()
+                        handoff = _detect_actionable_stage_handoff(
+                            baseline_checkpoint_identity=(
+                                baseline_checkpoint_identity
+                            ),
+                        )
                         if handoff:
                             next_v = handoff.get("next_v")
                             stage = handoff.get("stage")

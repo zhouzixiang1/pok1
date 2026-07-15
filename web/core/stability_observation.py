@@ -1047,7 +1047,11 @@ def _stability_projection_refresh_worker(
             raise StabilityObservationError(
                 "projection_repository_authority_changed"
             )
-    except Exception as exc:
+    except BaseException as exc:
+        # This verifier runs in a detached background thread.  Cancellation,
+        # test fail-fast sentinels, and interpreter-level thread exits must not
+        # strand the single-flight lease forever; project them as a failed
+        # refresh so a later invalidation/retry can make progress.
         error = f"{type(exc).__name__}:{str(exc)[:240]}"
     checked_at = _now()
     with _PROJECTION_CACHE_LOCK:

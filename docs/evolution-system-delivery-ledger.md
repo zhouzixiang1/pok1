@@ -806,12 +806,22 @@ accept only that typed identity, discard stale/out-of-order events, clear state
 after stream loss or epoch change, and render the real
 `pending`/`running`/`blocked` launch barrier rather than an inferred idle state.
 
+The first stopped-runtime v143 launch then exposed two recovery-only defects
+that the source-only suites had not exercised together. A fresh `--one-gen`
+provider session repeatedly handed off the same pre-existing `selected`
+checkpoint before it could call `prepare_next_gen`; the stream now owns its
+startup checkpoint identity and hands off only after that session observes a
+different revision/stage. Separately, a detached stability verifier could
+strand the single-flight flag when a `BaseException` escaped its thread; all
+thread exits now publish a failed refresh and unconditionally release the slot
+so invalidation/retry can progress. Both paths have dedicated regressions.
+
 Final frozen-tree combined verification after the implementation and stale
 fixture migrations was:
 
 ```text
 cd web && python -m pytest tests -q
-2520 passed, 20 skipped
+2522 passed, 20 skipped
 
 python -m pytest sever/tests -q
 31 passed
@@ -828,19 +838,24 @@ passed
 
 The source quality gates are final and green: all suites, active-source
 `py_compile`, and `git diff --check` passed after the implementation tree
-stopped changing. P5 still requires commit, push, reviewable integration and
-merge, so these results are not merged-commit evidence.
-No alignment byte has been synchronized into `.evolution_pok`; the runtime is
-still stopped on the pre-delivery `8df50853bd3d57ff07e6e768f7cae1b8ae12eedb`
-main with its old v143 control state. No strict v143/v144 publication, immutable
-rating cycle, or post-restart 10-generation observation has been executed.
+stopped changing. P5 baseline commit
+`94714124711e51044f5a91411e47297f340fb265` was pushed and fast-forwarded to
+`origin/main`, then synchronized into the stopped runtime. The schema-1
+workflow-v18 checkpoint/candidate/ledger were durably quarantined through the
+canonical reconciliation transaction, the evaluator identity was explicitly
+rotated without carrying strength rows, and official doctor passed. The first
+live workflow-v19 launch stopped safely at v143 `selected` and exposed the
+one-gen/single-flight recovery repair recorded above; that repair must be
+merged and synchronized before resume. No strict v143/v144 publication,
+immutable rating cycle, or post-restart 10-generation observation has yet been
+executed.
 The `fc7d62d30783d2ae8710dc8f331d717f3d902e36` verdict remains unchanged:
 semantically superseded, history-only, and not cherry-picked.
 
 ### Rollback boundary
 
-No infrastructure byte is synchronized to `.evolution_pok` until focused and
-full tests pass, the task branch is merged to `origin/main`, and the runtime is
-at a stopped safe point. A contract-changing merge invalidates or restricts
-the old v143 recovery path; the checkpoint must be handled through canonical
-recovery/abandon/re-prepare logic, never by deleting files.
+Infrastructure is synchronized to `.evolution_pok` only after focused/full
+tests pass, the exact task commit reaches `origin/main`, and the runtime is at
+a stopped safe point. A later contract-changing repair must repeat that gate;
+the current v143 checkpoint is resumed or terminally abandoned only through
+canonical recovery logic, never by deleting files.

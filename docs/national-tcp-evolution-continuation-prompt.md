@@ -106,17 +106,17 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 每次交付收口时更新以下字段；它们只帮助操作员定位，不替代实时权威查询。
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
-  implementation remains uncommitted after the final frozen-tree verification;
-- final frozen-tree verification: Web `2520 passed, 20 skipped`; sever
+  merged baseline is `94714124711e51044f5a91411e47297f340fb265`; the
+  post-launch one-gen/single-flight recovery fix is tested but not yet committed;
+- final frozen-tree verification after that fix: Web `2522 passed, 20 skipped`; sever
   `31 passed`; frontend `13 passed` plus lint/build; active-source `py_compile`
   and `git diff --check` passed;
-- `origin/main`: `8df50853bd3d57ff07e6e768f7cae1b8ae12eedb` at this
-  handoff; query again before integration;
-- runtime HEAD: stopped, still on the same pre-delivery commit; alignment bytes
-  have not been synchronized into `.evolution_pok`;
-- strict epoch/checkpoint: pre-delivery v143 `direction_audited`, workflow-v18
-  control state; query through `strict_epoch_projection` after synchronization
-  and use governed reconcile/abandon/re-prepare rather than direct resume;
+- `origin/main`: `94714124711e51044f5a91411e47297f340fb265`; query again
+  before integrating the recovery fix;
+- runtime HEAD: stopped at the same merged baseline after identity migration;
+- strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
+  abandoned; the live checkpoint is v143 `selected`, workflow-v19, revision 1;
+  it must be resumed only after the recovery fix reaches `origin/main`;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published;
 - immutable rating cycle: none for the new strict two-bot pool;

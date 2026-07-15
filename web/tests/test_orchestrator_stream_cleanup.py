@@ -142,7 +142,11 @@ def isolated_cycle(monkeypatch, tmp_path):
     monkeypatch.setattr(orchestrator, "_save_orchestrator_session", lambda *_args: None)
     monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", lambda **_kwargs: None)
     monkeypatch.setattr(orchestrator, "_check_generation_cost_policy", lambda *_args: None)
-    monkeypatch.setattr(orchestrator, "_detect_actionable_stage_handoff", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_handoff",
+        lambda **_kwargs: None,
+    )
     monkeypatch.setattr(
         orchestrator,
         "record_generation_cost",

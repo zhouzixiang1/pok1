@@ -856,7 +856,7 @@ def test_actionable_stage_idle_timeout_is_infra_and_preserves_checkpoint(tmp_pat
     monkeypatch.setattr(
         orchestrator,
         "_detect_actionable_stage_handoff",
-        lambda: None,
+        lambda **_kwargs: None,
     )
     monkeypatch.setattr(
         orchestrator,
@@ -1961,6 +1961,50 @@ def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch
         for e in events
     )
     assert not any(e[0] == "pipeline.sdk_stream_error" for e in events)
+
+
+def test_actionable_handoff_fences_checkpoint_already_owned_by_fresh_stream(
+    monkeypatch,
+):
+    """A restarted one-gen stream must execute its existing next tool once."""
+    import evolution_core
+    import orchestrator
+
+    checkpoint = {
+        "workflow_run_id": "generation:143:workflow-v19",
+        "checkpoint_revision": 1,
+        "stage": "selected",
+        "next_v": 143,
+        "source_v": 142,
+    }
+    route = {
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "selected",
+        "next_tool": "prepare_next_gen",
+    }
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        lambda timeout_sec=0: dict(route),
+    )
+    monkeypatch.setattr(
+        evolution_core,
+        "read_pipeline_checkpoint",
+        lambda: dict(checkpoint),
+    )
+    baseline = orchestrator._checkpoint_actionable_identity(checkpoint)
+
+    assert orchestrator._detect_actionable_stage_handoff(
+        baseline_checkpoint_identity=baseline
+    ) is None
+
+    checkpoint["checkpoint_revision"] = 2
+    checkpoint["stage"] = "prepared"
+    route.update({"stage": "prepared", "next_tool": "run_direction_audit"})
+    assert orchestrator._detect_actionable_stage_handoff(
+        baseline_checkpoint_identity=baseline
+    ) == route
 
 
 def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, monkeypatch):

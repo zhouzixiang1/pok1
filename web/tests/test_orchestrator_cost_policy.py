@@ -195,7 +195,11 @@ def test_operator_limit_parks_stream_and_preserves_checkpoint(
         "_clear_orchestrator_session",
         lambda reason=None: cleared.append(reason),
     )
-    monkeypatch.setattr(orchestrator, "_detect_actionable_stage_handoff", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_handoff",
+        lambda **_kwargs: None,
+    )
     monkeypatch.setattr(orchestrator, "log_system_event", lambda *_args, **_kwargs: None)
 
     selected = policy.GenerationCostPolicy(hard_limit_usd=5.0)
