@@ -61,8 +61,8 @@ class NativeBlueprintClient:
     ) -> None:
         if type(bot_name) is not str or not bot_name or not bot_name.isascii():
             raise ValueError("native bot name must be nonempty ASCII")
-        if type(policy) is not BlueprintPolicy:
-            raise TypeError("native client requires exact BlueprintPolicy")
+        if not isinstance(policy, BlueprintPolicy):
+            raise TypeError("native client requires BlueprintPolicy")
         if type(policy_seed) is not int:
             raise TypeError("policy_seed must be an exact integer")
         if wire_mode not in WIRE_MODES:
