@@ -19,6 +19,13 @@ Use the outer checkout for development and `.evolution_pok` for the running
 service; synchronize through Git only. Before edits, follow
 `docs/evolution-dual-checkout-sync-policy.md`.
 
+Strict Master/Reviewer/Critic calls never share a flat role log. Each accepted
+call binds exactly one generation-scoped `strict_invocations/<invocation_id>`
+provider log; historic flat logs and their evidence trailers have zero recovery
+or prompt authority. Generation abandonment fences both the Worker and strict
+child journals, including an abandoned tombstone before first dispatch. The log
+API/frontend use a validated opaque id and never infer authority from a path.
+
 Primary references:
 
 - `docs/national-tcp-policy-epoch.md`

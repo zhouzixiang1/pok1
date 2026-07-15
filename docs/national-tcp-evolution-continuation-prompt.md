@@ -57,10 +57,13 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 8. 首个严格工作流的六个 Master 槽位共享第一条 durable effect 冻结的 phase revision，
    但每个槽位拥有自己的 context binding；accepted/rejected/unaccepted effects 都要重证。
    proposal/ballot/Reviewer/Critic 的调用证据必须绑定 accepted effect 的最终 provider
-   prompt、terminal output/result/usage、role projection 和原始非空普通日志。Review/Critic
+   prompt、terminal output/result/usage、role projection 和 generation-bound 的单次调用
+   日志。每次调用只能落在 `RESULTS_DIR/v<N>/logs/strict_invocations/<id>/`，后端只通过
+   opaque id 和 results-root no-follow fd walk 读取，前端不得推导路径。Review/Critic
    prompt 只能由 durable descriptor 渲染；v143 Critic 的 strength read scope 必须为空。
-   任一权限/上下文/prompt/log 漂移走 canonical control-plane abandon，不能消耗 LLM
-   infrastructure retry。
+   generation abandon 必须同时终止 Worker journal，并为不存在的 strict child 建立
+   abandoned tombstone；真实/replay dispatch 都必须复核 running。任一权限/上下文/
+   prompt/log 漂移走 canonical control-plane abandon，不能消耗 LLM infrastructure retry。
 9. UI 必须把 Critic 的 `approved` 解释为 advisory 调用完成，只用
    `advisory_approved` 显示建议方向；独立 checkpoint 只有在 schema-2、正整数 revision
    及 epoch/version/stage/run/workflow 全部与 active generation 相同时才可显示。
@@ -123,31 +126,33 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 每次交付收口时更新以下字段；它们只帮助操作员定位，不替代实时权威查询。
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
-  merged stream-ownership parent is
-  `0a26795aa71fa92049acebef94968a0c9f7553d7`; this document travels in the
-  strict-authority recovery repair, so query the branch for its final
-  commit rather than guessing a SHA;
-- final frozen-tree verification after the strict-authority recovery repair: Web
-  `2554 passed, 20 skipped`; sever
+  strict invocation/evidence implementation is
+  `baadaa821d979b4b651260852ebcc48ae0a6aba8`; query the branch for the later
+  documentation/runtime-record commit rather than guessing its SHA;
+- final frozen-tree verification after the strict invocation repair: Web
+  `2580 passed, 20 skipped`; sever
   `31 passed`; frontend `15 passed` plus lint/build; active-source `py_compile`
   and `git diff --check` passed; official doctor is green on tracked execution
-  profile v7. The repair has `242 passed` across its focused
-  authority/Master/role shards and `94 passed` across the final backend/frontend
-  route and presentation-contract shard;
-- `origin/main`: before this repair is integrated it is
-  `0a26795aa71fa92049acebef94968a0c9f7553d7`; runtime resume requires the
-  commit carrying this document to be present in `origin/main`;
-- runtime HEAD: stopped at the same stream-ownership parent; re-query after
-  Git-only synchronization;
+  profile v7. Final focused authority/Master/Reviewer/Critic/API coverage is
+  `188 passed`; the strict child/root/fd-walk shard is `94 passed`;
+- `origin/main`: before this delivery push it is
+  `eea8e21193be1ae17f8d7b47a692975694744bb3`; runtime resume requires both
+  the implementation commit above and the commit carrying this document;
+- runtime HEAD: stopped and clean at
+  `eea8e21193be1ae17f8d7b47a692975694744bb3`; no evolution process is live;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
-  drift. The live checkpoint is v143 `direction_audited`, workflow-v20,
-  revision 6, with `master_plan=null` and a retryable-but-misclassified
-  `master_llm` overlay. Its strict journal has exactly two accepted proposals
-  at authority revision 4 and one missing-slot schema rejection; no complete
-  packet, ballot result, selected mechanism or Worker plan was accepted. After
-  the strict-authority recovery repair reaches `origin/main`, canonically abandon
-  workflow-v20 and prepare a fresh v143 workflow; do not retry the stale overlay;
+  drift. Workflow-v20 was canonically abandoned with receipt
+  `3782a404bf8d6450ce2855f90809d07ed7552b8450c0a146eee608c995fd0c22`.
+  Workflow-v21 accepted one counterfactual proposal only after its schema retry,
+  then the legacy flat log's multiple evidence markers correctly failed closed;
+  it was canonically abandoned with ledger head
+  `0673012c2aee294f006d8b388e291d17721588901de3f8da61b67e16b33c12c6`
+  and finalize receipt
+  `7ddd059c78a2de449438c8147b9d312413d052ed39454b9cdef01a76a79a42ec`.
+  There is now no active checkpoint or candidate: current_v=142, next_v=143,
+  active_bots=0, and the sole legal route is `prepare_generation` for a fresh
+  workflow-v22 after Git sync and evaluation-identity rotation;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published;
 - immutable rating cycle: none for the new strict two-bot pool;
@@ -156,4 +161,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   consecutive generation has run, so the live acceptance remains `0/10`;
 - legacy branch verdict: `fc7d62d30783d2ae8710dc8f331d717f3d902e36`
   is semantically superseded, history-only, and must not be cherry-picked;
-- known operator action: none may be inferred from this document.
+- current evaluation identity before the required post-repair rotation is
+  manifest `4193eb096dbbd1b9d15d7c1050dd67ee82f19335149c72be81684634a003ea5c`
+  / identity `ca708c5c01fff7310c89f6903de66b4289b24f2349a998f958d884b1f9546855`;
+  it must not be reused after the evaluation-critical code commit;
+- known next action: push the reviewed commits, fast-forward the stopped runtime,
+  archive/reinitialize evaluation identity, rerun doctor/status, then prepare
+  workflow-v22. No first-strict official operator action is yet available.

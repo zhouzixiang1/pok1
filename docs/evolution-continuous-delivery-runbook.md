@@ -261,6 +261,21 @@ while constructing or rendering Reviewer/Critic descriptors before provider
 dispatch, use the canonical control-plane abandon transaction with zero LLM
 infrastructure retry debt.
 
+The log is not version/role append state. Every strict dispatch has one
+immutable path derived from its durable generation and invocation identities:
+`RESULTS_DIR/v<N>/logs/strict_invocations/<invocation_id>/<role>_io.txt`.
+Foreign roots, wrong versions, flat role logs, and a second marker are rejected.
+The generation-log API publishes only a validated opaque identifier
+`strict@<invocation_id>@<basename>` and opens every directory component from
+the trusted results root with no-follow descriptors; React validates and URL-
+encodes that identifier and never derives an on-disk path.
+
+Canonical generation abandonment fences both journals before candidate or
+checkpoint cleanup. If the strict child does not exist, abandonment creates a
+terminal tombstone; if it exists, all unfinished effects are cancelled. Both a
+new provider dispatch and an accepted-effect replay recheck that the child is
+running, preventing a stale pre-dispatch descriptor from resurrecting work.
+
 The first-strict Reviewer and Critic never rebuild their prompts from live
 checkpoint or evidence state after call creation. Their descriptor freezes the
 semantic renderer inputs and the checked-in producer/template identity. The

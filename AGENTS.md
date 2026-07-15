@@ -271,9 +271,15 @@ and one phase revision; mixed revisions, rollback, same-slot context drift, or a
 new workflow fail closed. Proposal, ballot, Reviewer, and Critic execution
 evidence additionally binds the accepted effect's provider-visible prompt,
 terminal output, result/usage identity, role projection, and exact append-only
-role log. A crash between acceptance and evidence binding may append or reuse
-exactly one matching evidence trailer; a missing/empty/non-regular log,
-duplicate trailer, mismatch, or later byte drift is a control-plane failure.
+role log. Each call owns exactly
+`RESULTS_DIR/v<N>/logs/strict_invocations/<invocation_id>/<role>_io.txt`;
+the generation binding derives `N`, so a flat, foreign-version, or arbitrary
+log root cannot become evidence. Backend log reads expose these files only
+through a validated opaque invocation id and a no-follow descriptor walk from
+`RESULTS_DIR`; the frontend never reconstructs a filesystem path. A crash
+between acceptance and evidence binding may append or reuse exactly one
+matching evidence trailer; a missing/empty/non-regular log, duplicate trailer,
+mismatch, or later byte drift is a control-plane failure.
 
 First-strict Reviewer and Critic prompts render only from their durable call
 descriptors, which bind the exact semantic inputs plus checked-in
@@ -312,7 +318,11 @@ Generation abandonment is a publication-linearized schema-2 transaction, not
 directory cleanup. Its transaction id binds the exact checkpoint CAS identity,
 reason, candidate manifest, fixed quarantine contract, abandon-ledger prefix and
 Git state. After both the transaction claim and live launch barrier are durable,
-the runtime must revalidate those complete live facts before appending the
+the outer Worker journal is terminally fenced and the strict-authority child
+gets an `abandoned` tombstone even when no provider effect has yet been
+dispatched. Real and replay dispatch both require a running child journal, so a
+stale descriptor cannot recreate a child after abandonment. The runtime then
+must revalidate those complete live facts before appending the
 irreversible abandon receipt. It then atomically moves only the claim-bound,
 untracked and unpublished candidate into the transaction quarantine, syncs both
 parents, clears only the exact checkpoint by CAS, writes the terminal receipt,

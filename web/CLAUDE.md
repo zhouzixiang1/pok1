@@ -22,6 +22,14 @@ active `national_tcp_policy_v1` architecture.
 - Do not read retired result files or archive analyses into Master/Worker
   prompts. Planning evidence must come from the immutable current-epoch
   snapshot and carry its identity/digest.
+- Proposal, ballot, Reviewer, and Critic evidence must bind the durable provider
+  effect to one `RESULTS_DIR/v<N>/logs/strict_invocations/<invocation_id>` log.
+  Reject flat/foreign roots and duplicate trailers. Backend reads use opaque
+  ids and a no-follow results-root descriptor walk; frontend only validates and
+  renders those ids.
+- Canonical abandon fences the outer Worker journal and creates or terminally
+  transitions the strict child. Real and replay dispatch require `running` and
+  cannot resurrect a stale pre-dispatch descriptor.
 - Arena and official EXE chip output have zero strength authority.
 - The official raise-boundary and terminal-settlement oracle files are exact,
   pinned evaluation inputs.

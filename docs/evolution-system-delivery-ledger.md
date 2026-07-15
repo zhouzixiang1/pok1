@@ -85,11 +85,11 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | Batch | Scope | State | Completion evidence |
 |---|---|---|---|
 | P1 | official replay, board/showdown evidence, hand-70/full-v5 | implemented; focused green | protocol/harness/certification positive and negative suites |
-| P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented; strict invocation/gate-descriptor repair and frozen-tree suites green, merge pending | 19-role semantic-producer, provenance, poison/render/path/symlink/TOCTOU/hook/budget and accepted-effect/log tests |
-| P3 | Master stream/effect recovery and bounded retries | implemented; phase-revision/per-slot-context/control-plane classification and frozen-tree suites green, merge pending | timeout/lease/replay/provider-termination/partial-packet tests |
-| P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | implemented; backend/frontend and final frozen-tree suites green, merge pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | complete through stream-ownership commit `0a26795aa71fa92049acebef94968a0c9f7553d7`; the strict-authority recovery repair repeats the same merge gate | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | reconciliation/identity rotation complete; stale workflow-v20 is stopped at v143 direction-audited and must be canonically abandoned after merge, never retried | tags, certificates, immutable cycles and live observation ledger |
+| P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented at `baadaa821d979b4b651260852ebcc48ae0a6aba8`; per-invocation evidence/log/UI contract green | 19-role semantic-producer, provenance, poison/render/root/path/symlink/fd-walk/TOCTOU/hook/budget and accepted-effect/log tests |
+| P3 | Master stream/effect recovery and bounded retries | implemented; frozen phase, durable binding recovery, child tombstone and real/replay dispatch fence green | timeout/lease/replay/provider-termination/partial-packet/final-projection/abandon tests |
+| P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | source implementation and frontend/backend/actual-log parity green; live publication observation pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
+| P5 | full verification and merge to `origin/main` | frozen-tree verification complete for `baadaa821d979b4b651260852ebcc48ae0a6aba8`; documentation/push/runtime sync is the current delivery step | full suites, Git and remote identities |
+| P6 | runtime recovery, v143/v144 publication and ten generations | workflows v20/v21 canonically abandoned; no active checkpoint/candidate; fresh v22 awaits repaired HEAD sync and evaluation-identity rotation | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -867,8 +867,8 @@ proves that a partial packet followed by checkpoint metadata advancement makes
 no second provider call for the two accepted proposals, calls only the missing
 proposal, completes both ballots, and validates every receipt at the original
 revision. Runtime remains stopped at workflow-v20 revision 6 with
-`master_plan=null`; after this repair reaches `origin/main`, canonical abandon
-must quarantine workflow-v20 before a fresh v143 workflow is prepared.
+`master_plan=null` at that recovery point; the later runtime record below
+supersedes that stopped checkpoint.
 
 Cross-review then found two adjacent evidence boundaries that the phase anchor
 alone did not close. Proposal/ballot packet evidence and Reviewer/Critic gate
@@ -930,12 +930,59 @@ binding, mismatch cleanup, and the no-owner path; the original dynamic race ran
 hash and owner-barrier contract so `official_certify.py doctor` detects any
 future unsynchronized executor edit.
 
-Final frozen-tree combined verification after the implementation and stale
-fixture migrations was:
+After `eea8e21193be1ae17f8d7b47a692975694744bb3` reached both `origin/main`
+and the stopped runtime, workflow-v20 was canonically abandoned rather than
+replayed. Its transaction was
+`f61e054d4ebb65eb37d1a527132a1f13c607944817d74ce444c6bd410491d08e`,
+abandon-chain receipt was
+`3782a404bf8d6450ce2855f90809d07ed7552b8450c0a146eee608c995fd0c22`,
+and finalize receipt was
+`d3b9129857517a0db9bfb78a7c64b9eae8313d6f1395409db1f2a829d7844963`.
+Evaluation data was then explicitly archived at
+`web/core/results/archive/evaluation_identity/20260716_025514`; the fresh
+manifest digest was
+`4193eb096dbbd1b9d15d7c1050dd67ee82f19335149c72be81684634a003ea5c`
+and base identity digest was
+`ca708c5c01fff7310c89f6903de66b4289b24f2349a998f958d884b1f9546855`.
+No prior strength row was admitted.
+
+Fresh workflow-v21 exercised the repaired phase recovery. One counterfactual
+proposal passed on its sole schema retry and reached `StrictRoleAccepted` at
+strict journal sequence 26. Evidence binding then failed closed. The cause was
+not poker strategy: the version/role flat append logs were shared by prior
+reprepared v143 workflows and contained between three and nine system evidence
+markers. A newly accepted call therefore could not prove that the flat file was
+its own immutable provider transcript. Workflow-v21 was canonically abandoned
+under transaction
+`1f58ae83bcd12bad4aeb2047083d51a1e40ef634a496fcec656a476b353e95e7`,
+chain head
+`0673012c2aee294f006d8b388e291d17721588901de3f8da61b67e16b33c12c6`,
+and finalize receipt
+`7ddd059c78a2de449438c8147b9d312413d052ed39454b9cdef01a76a79a42ec`.
+The candidate and checkpoint were removed only through that transaction. Live
+authority is again current_v=142, next_v=143, active_bots=0, with no active
+generation and `prepare_generation` as the only legal successor.
+
+The root repair is commit
+`baadaa821d979b4b651260852ebcc48ae0a6aba8`. Every strict provider call now
+owns a generation-bound immutable log below
+`strict_invocations/<invocation_id>/`; accepted evidence reopens the durable
+effect input to derive the exact version/root. Flat, wrong-version, arbitrary,
+symlinked, multiply linked, duplicate-marker, and drifted evidence fails
+closed. Master, Reviewer, and Critic all pass that same path to provider
+execution and receipt construction. The API lists it as an opaque id and reads
+from `RESULTS_DIR` with a component-by-component no-follow descriptor walk;
+the TypeScript client validates and encodes the same id. A generation abandon
+also creates an abandoned strict-child tombstone when no child exists, cancels
+existing effects, and makes both real and replay dispatch recheck `running` so
+stale calls cannot recreate work. Final Master replay also imports and uses its
+production regex parser rather than failing only on the recovery path.
+
+Final frozen-tree combined verification for that implementation was:
 
 ```text
 cd web && python -m pytest tests -q
-2554 passed, 20 skipped
+2580 passed, 20 skipped
 
 python -m pytest sever/tests -q
 31 passed
@@ -953,21 +1000,21 @@ python scripts/official_certify.py doctor
 ok=true; execution_profile=official-exe-2021-wine9-managed-executor-v7
 ```
 
-The current strict-authority recovery repair tree is green: all suites, active-source
-`py_compile`, and `git diff --check` passed after the implementation stopped
-changing. Its merged parent stream-ownership commit is
-`0a26795aa71fa92049acebef94968a0c9f7553d7`. P5 baseline commit
-`94714124711e51044f5a91411e47297f340fb265` was pushed and fast-forwarded to
-`origin/main`, then synchronized into the stopped runtime. The schema-1
-workflow-v18 checkpoint/candidate/ledger were durably quarantined through the
-canonical reconciliation transaction, the evaluator identity was explicitly
-rotated without carrying strength rows, and official doctor passed. The first
-live workflow-v19 launch exposed and then recovered from the one-gen and
-single-flight defects above. Workflow-v20 then supplied the stream and strict-
-authority evidence recorded above. No complete three-proposal packet, ballots,
-selected mechanism, compiled Worker plan, or `master_planned` stage was
-accepted. No strict v143/v144 publication, immutable rating cycle, or
-post-restart 10-generation observation has yet been executed.
+Focused authority/Master/Reviewer/Critic/API coverage was `188 passed`; the
+strict child/root/fd-walk shard was `94 passed`. All active tracked Python
+sources compiled, `git diff --check` passed, and an independent post-fix review
+found no remaining P1/P2 front/backend/actual-log mismatch. A same-UID actor
+swapping a strict writer's parent directory between allocation and append is a
+documented defense-in-depth P3: active LLM roles have no result-tree write
+capability and final evidence reproof fails closed, but a future common dirfd
+writer can remove that residual assumption.
+
+No complete three-proposal packet, ballots, selected mechanism, compiled Worker
+plan, strict v143/v144 publication, immutable new-pool rating cycle, or
+post-repair 10-generation observation has yet been accepted. The next runtime
+step is not a v21 retry: the reviewed commits must reach `origin/main`, the
+stopped runtime must fast-forward, and the evaluation identity must be archived
+and initialized again before preparing fresh workflow-v22.
 The `fc7d62d30783d2ae8710dc8f331d717f3d902e36` verdict remains unchanged:
 semantically superseded, history-only, and not cherry-picked.
 
@@ -976,5 +1023,5 @@ semantically superseded, history-only, and not cherry-picked.
 Infrastructure is synchronized to `.evolution_pok` only after focused/full
 tests pass, the exact task commit reaches `origin/main`, and the runtime is at
 a stopped safe point. A later contract-changing repair must repeat that gate;
-the current v143 checkpoint is resumed or terminally abandoned only through
+any future v143 checkpoint is resumed or terminally abandoned only through
 canonical recovery logic, never by deleting files.
