@@ -9,6 +9,11 @@ import {
   type PipelineStage,
 } from "../../constants/pipeline";
 import { cn } from "../../lib/utils";
+import {
+  criticAdvisoryComplete,
+  criticAdvisoryVerdict,
+  pipelineCheckpointIdentityIssues,
+} from "../../lib/pipelinePresentation";
 import { CheckIcon, CrossIcon } from "./icons";
 
 export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
@@ -152,14 +157,7 @@ export function PipelineStatus({
     );
   }
 
-  const identityIssues = [
-    checkpoint.evaluation_epoch !== "national_tcp_policy_v1" ? "evaluation_epoch" : null,
-    checkpoint.next_v !== activeGeneration.next_v ? "next_v" : null,
-    checkpoint.source_v !== activeGeneration.source_v ? "source_v" : null,
-    checkpoint.stage !== activeGeneration.stage ? "stage" : null,
-    checkpoint.workflow_run_id !== activeGeneration.workflow_run_id ? "workflow_run_id" : null,
-    checkpoint.run_id !== activeGeneration.run_id ? "run_id" : null,
-  ].filter((value): value is string => value !== null);
+  const identityIssues = pipelineCheckpointIdentityIssues(checkpoint, activeGeneration);
   if (identityIssues.length > 0) {
     return (
       <div className="p-3">
@@ -275,12 +273,8 @@ export function PipelineStatus({
                   {Object.entries(gates).map(([key, g]) => {
                     const gate = g as PipelineGateResult;
                     if (key === "critic") {
-                      const advisoryComplete = gate.schema_valid === true
-                        && gate.llm_invoked === true
-                        && gate.critic_llm_executed === true
-                        && !gate.llm_failed
-                        && !gate.parse_failed;
-                      const advisoryVerdict = gate.approved === true ? "建议支持" : "建议保留意见";
+                      const advisoryComplete = criticAdvisoryComplete(gate);
+                      const advisoryVerdict = criticAdvisoryVerdict(gate);
                       return (
                         <div key={key} className="flex items-start gap-1.5 border-l-2 border-violet-300 pl-2 text-[10px]">
                           <span className="shrink-0 text-violet-500">◇</span>

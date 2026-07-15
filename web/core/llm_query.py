@@ -6349,12 +6349,20 @@ async def run_claude_query(
     ui.log_io(prompt[:200] + "...\n[Context Attached]", "prompt", role_name)
     ui.log_io("\n[WAITING FOR CLAUDE...]\n", "prompt", role_name)
 
-    _append_role_io(
-        log_file_path,
-        f"\n[{role_name} PROMPT]\n=============================\n"
-        + full_prompt
-        + "\n=============================\n[CLAUDE OUTPUT]\n",
-    )
+    # An accepted strict result is replayed from its completed durable effect;
+    # it is not a second provider invocation.  Keep the original invocation log
+    # byte-for-byte stable so embedded proposal/ballot evidence can reuse the
+    # original log digest and packet identity after a process restart.
+    if not (
+        strict_authority is not None
+        and strict_authority.get("replay_provider")
+    ):
+        _append_role_io(
+            log_file_path,
+            f"\n[{role_name} PROMPT]\n=============================\n"
+            + full_prompt
+            + "\n=============================\n[CLAUDE OUTPUT]\n",
+        )
 
     # Install runtime hooks:
     # - cost guard for read-only but unbounded Bash (Master git-log stalls)

@@ -18,6 +18,64 @@ import {
   controlTaskActive,
   controlTaskStopping,
 } from "../node_modules/.tmp/sse-tests/lib/controlRuntimeState.js";
+import {
+  criticAdvisoryComplete,
+  criticAdvisoryVerdict,
+  pipelineCheckpointIdentityIssues,
+} from "../node_modules/.tmp/sse-tests/lib/pipelinePresentation.js";
+import {
+  expectPipelineCheckpoint,
+} from "../node_modules/.tmp/sse-tests/api/pipeline.js";
+
+test("Critic presentation uses the advisory verdict, not execution completion", () => {
+  const negativeAdvice = {
+    approved: true,
+    advisory_approved: false,
+    schema_valid: true,
+    llm_invoked: true,
+    critic_llm_executed: true,
+    llm_failed: false,
+    parse_failed: false,
+  };
+
+  assert.equal(criticAdvisoryComplete(negativeAdvice), true);
+  assert.equal(criticAdvisoryVerdict(negativeAdvice), "建议保留意见");
+  assert.equal(criticAdvisoryVerdict({ ...negativeAdvice, advisory_approved: true }), "建议支持");
+  assert.equal(criticAdvisoryVerdict({ ...negativeAdvice, advisory_approved: undefined }), "建议结论不可用");
+});
+
+test("checkpoint API and presentation reject a stale same-stage revision", () => {
+  const checkpoint = expectPipelineCheckpoint({
+    checkpoint_schema_version: 2,
+    evaluation_epoch: "national_tcp_policy_v1",
+    checkpoint_revision: 7,
+    next_v: 143,
+    source_v: 142,
+    stage: "reviewed",
+    workflow_run_id: "workflow-v1",
+    run_id: "143#1",
+  });
+  assert.ok(checkpoint);
+  const active = {
+    next_v: 143,
+    source_v: 142,
+    stage: "reviewed",
+    workflow_run_id: "workflow-v1",
+    run_id: "143#1",
+    checkpoint_revision: 8,
+    attempt: { generation: 1, audit: 0, precommit: 0 },
+  };
+
+  assert.deepEqual(pipelineCheckpointIdentityIssues(checkpoint, active), ["checkpoint_revision"]);
+  assert.deepEqual(
+    pipelineCheckpointIdentityIssues({ ...checkpoint, checkpoint_revision: 8 }, active),
+    [],
+  );
+  assert.throws(
+    () => expectPipelineCheckpoint({ ...checkpoint, checkpoint_revision: undefined }),
+    /pipeline checkpoint is structurally incomplete/,
+  );
+});
 
 test("unfinished control task retains ownership through cancel and shutdown requests", () => {
   const fixture = {

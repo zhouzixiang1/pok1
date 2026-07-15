@@ -164,6 +164,14 @@ Candidate code must not:
 - scan the full hand history during each decision;
 - access any file under `archive/`.
 
+Managed launches that declare a host process owner use a one-shot Bubblewrap
+`--block-fd` start barrier. Before release, the host must observe exactly the
+single owner marker in `/proc/<pid>/environ`; only the observed transient empty
+Bubblewrap setup window may be retried for a short bounded interval. Any other
+value, timeout, read failure, or release failure terminates and reaps the
+process before returning. The owner marker is never injected into the sandbox,
+and launches without an owner do not acquire this barrier.
+
 The runtime computes an always-legal fallback before candidate work. It targets
 a 250 ms policy baseline, allows bounded refinement through 54 seconds, and
 returns by a 55 second hard deadline, reserving the remaining official minute
@@ -253,6 +261,29 @@ artifact has a complete manifest/hash. Worker writes are lease-isolated,
 snapshotted, and atomic. Publication cross-checks working bytes, staged Git
 blobs, and immutable tag tree.
 
+The first-strict authority journal freezes one checkpoint revision for all six
+Master slots at the first durable provider effect. Later checkpoint metadata or
+infrastructure-overlay revisions may only move forward; accepted slots replay,
+missing slots consume their original bounded schema budget, and ballots/final
+remain on that frozen phase revision. The journal must have one internally
+consistent generation/stage/role/input binding, one context binding per slot,
+and one phase revision; mixed revisions, rollback, same-slot context drift, or a
+new workflow fail closed. Proposal, ballot, Reviewer, and Critic execution
+evidence additionally binds the accepted effect's provider-visible prompt,
+terminal output, result/usage identity, role projection, and exact append-only
+role log. A crash between acceptance and evidence binding may append or reuse
+exactly one matching evidence trailer; a missing/empty/non-regular log,
+duplicate trailer, mismatch, or later byte drift is a control-plane failure.
+
+First-strict Reviewer and Critic prompts render only from their durable call
+descriptors, which bind the exact semantic inputs plus checked-in
+producer/template identities. The Critic descriptor also owns its evidence read
+scope. Because the v143 pool is empty, that scope is empty and its prompt carries
+an explicit no-strength contract; it must not open rating, H2H, replay, Arena,
+official, retired-bot, or historical-experience material. Any strict journal,
+prompt, context, or invocation-evidence violation canonically abandons the
+generation with zero provider-infrastructure retry debt.
+
 Publishing does not authorize the next generation by itself. Before the
 publishing checkpoint is cleared, the publication lock creates and fsyncs an
 exact schema-2 post-publication handoff plus its archive base snapshot. The
@@ -307,7 +338,15 @@ handoff, and stability identities. A changed sample is withheld rather than
 combined across revisions. The frontend consumes those typed identities,
 rejects stale/out-of-order epoch or handoff events, clears state after stream
 loss, and displays `pending`, `running`, or `blocked` without deriving
-authority from bot directories or local component state.
+authority from bot directories or local component state. An independently
+fetched pipeline checkpoint is rendered only when its schema-2 positive
+`checkpoint_revision` and full epoch/version/stage/run/workflow identity match
+the paired active-generation projection; a same-stage older revision is stale.
+Critic `approved` means the advisory role completed, while
+`advisory_approved` is the actual non-authoritative recommendation; UI text must
+never substitute one for the other. `daemon_enabled=false` is a supported
+runtime mode: an absent daemon PID is `not_applicable`, while a live disabled
+daemon or an enabled-but-missing daemon remains unhealthy.
 
 ## Evidence authority
 

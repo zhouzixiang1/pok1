@@ -33,6 +33,7 @@ from tool_helpers import (
     _record_infrastructure_failure,
     _prepare_official_profile_refresh,
     _quality_gate_ok, _review_gate_ok, _critic_gate_ok,
+    _critic_result_to_preserve,
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
     _set_pipeline_status, read_pipeline_checkpoint,
 )
@@ -162,6 +163,38 @@ def _render_reviewer_provider_prompt(inputs):
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest(),
+        },
+    )
+
+
+async def _abandon_strict_gate_authority(
+    checkpoint,
+    *,
+    gate_name,
+    error,
+):
+    """Canonically abandon first-strict gate authority drift without retries."""
+
+    from system_strict_bootstrap import abandon_rejected_blueprint
+
+    validation_errors = list(
+        getattr(error, "errors", ()) or (str(error),)
+    )
+    label = "REVIEW" if gate_name == "review" else "CRITIC"
+    return await abandon_rejected_blueprint(
+        checkpoint,
+        reason=f"system_strict_bootstrap_{gate_name}_authority_invalid",
+        result={
+            "error": f"SYSTEM_STRICT_BOOTSTRAP_{label}_AUTHORITY_INVALID",
+            "approved": False,
+            "success": False,
+            "failure_class": "control_plane",
+            "validation_errors": validation_errors,
+            "directive": (
+                f"The first-strict {gate_name} authority context, prompt, or "
+                "journal drifted. The generation was canonically abandoned; "
+                "do not consume an LLM infrastructure retry."
+            ),
         },
     )
 
@@ -3351,47 +3384,59 @@ async def run_review(args):
     _review_invocation_id = None
     _review_strict_call = None
     if _strict_bootstrap:
-        from strict_authority_workflow import gate_call_context, new_call
-
-        _review_strict_call = new_call(
-            ckpt,
-            slot="review",
-            context_binding=gate_call_context(
-                ckpt,
-                gate_name="review",
-                candidate_dir=get_bot_dir(v),
-            ),
+        from strict_authority_workflow import (
+            StrictAuthorityError,
+            gate_call_context,
+            new_call,
+            render_gate_provider_prompt,
         )
-        _review_invocation_id = _review_strict_call["invocation_id"]
 
-    # Inject Worker CoT audit_focus_areas into reviewer prompt
-    _review_ckpt = _matching_checkpoint(v, source_v)
-    _focus_areas = []
-    if _review_ckpt:
-        _audit_context = _review_ckpt.get("audit_context", {}) or {}
-        _focus_areas = _audit_context.get("worker_cot_focus_areas", [])
-        if not _focus_areas:
-            # Also check gate_results for audit_focus_areas stored by execute_workers
-            _worker_gate = _review_ckpt.get("gate_results", {}).get("workers", {})
-            _focus_areas = _worker_gate.get("audit_focus_areas", [])
+        try:
+            _review_strict_call = new_call(
+                ckpt,
+                slot="review",
+                context_binding=gate_call_context(
+                    ckpt,
+                    gate_name="review",
+                    candidate_dir=get_bot_dir(v),
+                ),
+            )
+            _review_invocation_id = _review_strict_call["invocation_id"]
+            rendered_prompt = render_gate_provider_prompt(_review_strict_call)
+        except StrictAuthorityError as exc:
+            return _json_tool_result(
+                await _abandon_strict_gate_authority(
+                    ckpt,
+                    gate_name="review",
+                    error=exc,
+                )
+            )
+    else:
+        # Inject Worker CoT audit_focus_areas into the ordinary reviewer.  The
+        # strict path above derives this evidence once inside its descriptor.
+        _review_ckpt = _matching_checkpoint(v, source_v)
+        _focus_areas = []
+        if _review_ckpt:
+            _audit_context = _review_ckpt.get("audit_context", {}) or {}
+            _focus_areas = _audit_context.get("worker_cot_focus_areas", [])
+            if not _focus_areas:
+                _worker_gate = _review_ckpt.get("gate_results", {}).get("workers", {})
+                _focus_areas = _worker_gate.get("audit_focus_areas", [])
 
-    # The registered producer, not this caller, is the provider prompt
-    # authority. It reopens the pinned template and reconstructs the exact
-    # strict/non-strict and CoT-focus structure from typed inputs.
-    from llm_query import render_llm_prompt
+        from llm_query import render_llm_prompt
 
-    rendered_prompt = render_llm_prompt(
-        "LEAD CODE REVIEWER",
-        producer=_render_reviewer_provider_prompt,
-        renderer_inputs={
-            "master_plan": authoritative_plan,
-            "source_v": int(source_v),
-            "next_v": int(v),
-            "strict_bootstrap": bool(_strict_bootstrap),
-            "invocation_id": str(_review_invocation_id or ""),
-            "focus_areas": [str(item) for item in _focus_areas],
-        },
-    )
+        rendered_prompt = render_llm_prompt(
+            "LEAD CODE REVIEWER",
+            producer=_render_reviewer_provider_prompt,
+            renderer_inputs={
+                "master_plan": authoritative_plan,
+                "source_v": int(source_v),
+                "next_v": int(v),
+                "strict_bootstrap": False,
+                "invocation_id": "",
+                "focus_areas": [str(item) for item in _focus_areas],
+            },
+        )
     _review_attempt_key, _review_infra_metadata = _llm_gate_infrastructure_identity(
         component="reviewer_llm",
         role="LEAD CODE REVIEWER",
@@ -3432,6 +3477,17 @@ async def run_review(args):
         # infrastructure attempts.
         raise
     except Exception as e:
+        if _strict_bootstrap:
+            from strict_authority_workflow import StrictAuthorityError
+
+            if isinstance(e, StrictAuthorityError):
+                return _json_tool_result(
+                    await _abandon_strict_gate_authority(
+                        ckpt,
+                        gate_name="review",
+                        error=e,
+                    )
+                )
         issue = f"{type(e).__name__}: {str(e)[:500]}"
         infra_result = await _record_infrastructure_failure(
             v,
@@ -3593,12 +3649,14 @@ async def run_review(args):
             from system_strict_bootstrap import (
                 SystemStrictBootstrapError,
                 build_system_gate_receipt,
-                llm_result_digest,
-                record_llm_invocation_evidence,
             )
 
             try:
-                from strict_authority_workflow import accept_role_result
+                from strict_authority_workflow import (
+                    StrictAuthorityError,
+                    accept_role_result,
+                    record_bound_invocation_evidence,
+                )
 
                 gate["llm_role_result"] = data
                 gate["llm_authority_receipt"] = accept_role_result(
@@ -3607,26 +3665,8 @@ async def run_review(args):
                     parse_contract="reviewer-output-schema-v1",
                 )
                 gate["llm_execution_evidence"] = (
-                    record_llm_invocation_evidence(
-                        invocation_id=_review_invocation_id,
-                        purpose="system_strict_bootstrap_gate:review",
-                        role="LEAD CODE REVIEWER",
-                        # ``run_claude_query`` mutates the private strict call
-                        # only after binding the renderer output plus the
-                        # provider contract suffix.  Its digest is therefore
-                        # the exact provider-visible prompt authority; the old
-                        # caller-owned ``reviewer_prompt`` no longer exists.
-                        prompt_digest=str(
-                            _review_strict_call.get("prompt_digest") or ""
-                        ),
-                        raw_output_digest=hashlib.sha256(
-                            (output or "").encode("utf-8")
-                        ).hexdigest(),
-                        result_digest=llm_result_digest(
-                            _review_cost_usd,
-                            _review_usage,
-                        ),
-                        role_result=data,
+                    record_bound_invocation_evidence(
+                        _review_strict_call,
                         log_file=log_file,
                     )
                 )
@@ -3636,7 +3676,7 @@ async def run_review(args):
                     candidate_dir=get_bot_dir(v),
                     llm_gate=gate,
                 )
-            except SystemStrictBootstrapError as exc:
+            except (SystemStrictBootstrapError, StrictAuthorityError) as exc:
                 from system_strict_bootstrap import abandon_rejected_blueprint
 
                 rejected = await abandon_rejected_blueprint(
@@ -3792,7 +3832,11 @@ async def run_critic(args):
             {"version": v, "source_v": source_v},
         )
     master_plan_str = json.dumps(authoritative_plan, indent=2, ensure_ascii=False)
-    prev_critic = ckpt.get("gate_results", {}).get("critic", {}).get("prev_critic") if ckpt else None
+    # Match _record_gate exactly: after a successful replacement the checkpoint
+    # stores the current gate as ``prev_critic``.  Binding that same object before
+    # dispatch keeps prompt semantics stable across the write and later verifier
+    # reconstruction.
+    prev_critic = _critic_result_to_preserve(ckpt)
     critic_prompt_source = PROJECT_ROOT / "web" / "core" / "prompts" / "critic_prompt.md"
     critic_prompt_identity = (
         critic_prompt_source.read_text(encoding="utf-8")
@@ -3824,27 +3868,54 @@ async def run_critic(args):
     _critic_invocation_id = None
     _critic_strict_call = None
     if _strict_bootstrap:
-        from strict_authority_workflow import gate_call_context, new_call
-
-        _critic_strict_call = new_call(
-            ckpt,
-            slot="critic",
-            context_binding=gate_call_context(
-                ckpt,
-                gate_name="critic",
-                candidate_dir=get_bot_dir(v),
-            ),
+        from strict_authority_workflow import (
+            StrictAuthorityError,
+            gate_call_context,
+            new_call,
         )
-        _critic_invocation_id = _critic_strict_call["invocation_id"]
-    data = await _run_critic(
-        v,
-        source_v,
-        master_plan_str,
-        ui,
-        prev_critic_result=prev_critic,
-        execution_invocation_id=_critic_invocation_id,
-        strict_authority=_critic_strict_call,
-    )
+
+        try:
+            _critic_strict_call = new_call(
+                ckpt,
+                slot="critic",
+                context_binding=gate_call_context(
+                    ckpt,
+                    gate_name="critic",
+                    candidate_dir=get_bot_dir(v),
+                ),
+            )
+            _critic_invocation_id = _critic_strict_call["invocation_id"]
+        except StrictAuthorityError as exc:
+            return _json_tool_result(
+                await _abandon_strict_gate_authority(
+                    ckpt,
+                    gate_name="critic",
+                    error=exc,
+                )
+            )
+    try:
+        data = await _run_critic(
+            v,
+            source_v,
+            master_plan_str,
+            ui,
+            prev_critic_result=prev_critic,
+            execution_invocation_id=_critic_invocation_id,
+            strict_authority=_critic_strict_call,
+        )
+    except Exception as exc:
+        if _strict_bootstrap:
+            from strict_authority_workflow import StrictAuthorityError
+
+            if isinstance(exc, StrictAuthorityError):
+                return _json_tool_result(
+                    await _abandon_strict_gate_authority(
+                        ckpt,
+                        gate_name="critic",
+                        error=exc,
+                    )
+                )
+        raise
     _critic_execution_material = (
         data.pop("_llm_execution_material", None)
         if isinstance(data, dict)
@@ -3943,16 +4014,14 @@ async def run_critic(args):
         from system_strict_bootstrap import (
             SystemStrictBootstrapError,
             build_system_gate_receipt,
-            record_llm_invocation_evidence,
         )
 
         try:
-            material = (
-                _critic_execution_material
-                if isinstance(_critic_execution_material, dict)
-                else {}
+            from strict_authority_workflow import (
+                StrictAuthorityError,
+                accept_role_result,
+                record_bound_invocation_evidence,
             )
-            from strict_authority_workflow import accept_role_result
 
             gate["llm_role_result"] = data
             gate["llm_authority_receipt"] = accept_role_result(
@@ -3960,15 +4029,9 @@ async def run_critic(args):
                 role_result=data,
                 parse_contract="critic-output-schema-v1",
             )
-            gate["llm_execution_evidence"] = record_llm_invocation_evidence(
-                invocation_id=str(material.get("invocation_id") or ""),
-                purpose=str(material.get("purpose") or ""),
-                role=str(material.get("role") or ""),
-                prompt_digest=str(material.get("prompt_digest") or ""),
-                raw_output_digest=str(material.get("raw_output_digest") or ""),
-                result_digest=str(material.get("result_digest") or ""),
-                role_result=data,
-                log_file=str(material.get("log_file") or ""),
+            gate["llm_execution_evidence"] = record_bound_invocation_evidence(
+                _critic_strict_call,
+                log_file=get_logs_dir(v) / "critic_io.txt",
             )
             gate["system_verifier_receipt"] = build_system_gate_receipt(
                 ckpt,
@@ -3976,7 +4039,7 @@ async def run_critic(args):
                 candidate_dir=get_bot_dir(v),
                 llm_gate=gate,
             )
-        except SystemStrictBootstrapError as exc:
+        except (SystemStrictBootstrapError, StrictAuthorityError) as exc:
             from system_strict_bootstrap import abandon_rejected_blueprint
 
             rejected = await abandon_rejected_blueprint(

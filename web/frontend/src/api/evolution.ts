@@ -25,7 +25,8 @@ export interface EvolutionState {
   header: string;
   metrics: Record<string, number>;
   ratings: BotRating[];
-  pipeline_stage?: string | null;
+  pipeline_stage: string | null;
+  pipeline_checkpoint_revision: number | null;
   post_publication_handoff: PostPublicationHandoffStatus;
   current_v?: number;
   next_v?: number;

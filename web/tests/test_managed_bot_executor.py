@@ -8,6 +8,7 @@ import socket
 
 import pytest
 
+import managed_bot_executor as executor
 from managed_bot_executor import (
     BotTiming,
     EndpointLease,
@@ -302,6 +303,172 @@ open("/output/phase.txt", "w", encoding="utf-8").write("complete\n")
         ("RLIMIT_FSIZE", 16_777_216),
         ("RLIMIT_CORE", 0),
     )
+
+
+def test_owner_start_barrier_binds_command_fd_and_exact_environment(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        pid = 424_242
+        returncode = None
+
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            marker = command.index("--block-fd")
+            self.barrier_reader = os.dup(int(command[marker + 1]))
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(executor.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        executor.Path,
+        "read_bytes",
+        lambda path: (
+            b"POK_MANAGED_PROCESS_OWNER=owner-1\x00"
+            if path == Path("/proc/424242/environ")
+            else pytest.fail(f"unexpected read: {path}")
+        ),
+    )
+    program_read, program_write = os.pipe()
+    inherited_read, inherited_write = os.pipe()
+    os.close(program_write)
+    closed = []
+    program = executor._SeccompProgram(
+        fd=program_read,
+        bpf_sha256="a" * 64,
+        policy_sha256="b" * 64,
+        size=1,
+    )
+    try:
+        launched = executor._spawn(
+            ("/usr/bin/bwrap", "--die-with-parent", "/usr/bin/true"),
+            program=program,
+            inherited_fds=(inherited_read,),
+            close_callbacks=(lambda: closed.append(True),),
+            host_process_owner="owner-1",
+            start_new_session=True,
+        )
+        command = captured["command"]
+        barrier_fd = int(command[2])
+        assert command == (
+            "/usr/bin/bwrap",
+            "--block-fd",
+            str(barrier_fd),
+            "--die-with-parent",
+            "/usr/bin/true",
+        )
+        assert set(captured["kwargs"]["pass_fds"]) == {
+            program_read,
+            inherited_read,
+            barrier_fd,
+        }
+        assert captured["kwargs"]["env"] == {
+            "POK_MANAGED_PROCESS_OWNER": "owner-1"
+        }
+        assert captured["kwargs"]["start_new_session"] is True
+        assert os.read(launched.process.barrier_reader, 1) == b"1"
+        assert program.fd == -1
+        assert closed == [True]
+    finally:
+        os.close(inherited_read)
+        os.close(inherited_write)
+        if "launched" in locals():
+            os.close(launched.process.barrier_reader)
+
+
+def test_owner_start_barrier_mismatch_terminates_reaps_and_cleans(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        pid = 434_343
+        returncode = None
+        terminated = False
+        waited = False
+
+        def __init__(self, command, **kwargs):
+            captured["process"] = self
+            marker = command.index("--block-fd")
+            self.barrier_reader = os.dup(int(command[marker + 1]))
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return self.returncode
+
+    monkeypatch.setattr(executor.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        executor.Path,
+        "read_bytes",
+        lambda _path: b"UNEXPECTED=authority\x00",
+    )
+    program_read, program_write = os.pipe()
+    os.close(program_write)
+    closed = []
+    program = executor._SeccompProgram(
+        fd=program_read,
+        bpf_sha256="c" * 64,
+        policy_sha256="d" * 64,
+        size=1,
+    )
+    with pytest.raises(ManagedExecutorError, match="verification failed"):
+        executor._spawn(
+            ("/usr/bin/bwrap", "/usr/bin/true"),
+            program=program,
+            close_callbacks=(lambda: closed.append(True),),
+            host_process_owner="owner-2",
+        )
+    process = captured["process"]
+    try:
+        assert process.terminated is True
+        assert process.waited is True
+        assert os.read(process.barrier_reader, 1) == b""
+        assert program.fd == -1
+        assert closed == [True]
+    finally:
+        os.close(process.barrier_reader)
+
+
+def test_spawn_without_owner_does_not_add_start_barrier(monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        pid = 444_444
+
+        def __init__(self, command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+
+    monkeypatch.setattr(executor.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(
+        executor.Path,
+        "read_bytes",
+        lambda _path: pytest.fail("owner environment must not be inspected"),
+    )
+    program_read, program_write = os.pipe()
+    os.close(program_write)
+    program = executor._SeccompProgram(
+        fd=program_read,
+        bpf_sha256="e" * 64,
+        policy_sha256="f" * 64,
+        size=1,
+    )
+    launched = executor._spawn(
+        ("/usr/bin/bwrap", "/usr/bin/true"),
+        program=program,
+    )
+    assert launched.process.pid == 444_444
+    assert captured["command"] == ("/usr/bin/bwrap", "/usr/bin/true")
+    assert captured["kwargs"]["pass_fds"] == (program_read,)
+    assert captured["kwargs"]["env"] == {}
+    assert program.fd == -1
 
 
 def test_managed_bot_uses_one_exact_stream_log_and_clean_environment(

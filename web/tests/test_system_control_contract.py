@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 
 SYSTEM_BOOTSTRAP_FILES = {
     "scripts/reset_national_tcp_policy_epoch.py",
@@ -203,9 +205,13 @@ def test_first_strict_review_records_final_provider_prompt_authority(
             {"input_tokens": 10, "output_tokens": 5},
         )
 
-    def record_evidence(**kwargs):
-        captured["evidence"] = kwargs
-        return {"kind": "test-llm-execution-evidence"}
+    def record_evidence(call, *, log_file):
+        captured["evidence_call"] = call
+        captured["evidence_log_file"] = log_file
+        return {
+            "kind": "test-llm-execution-evidence",
+            "prompt_digest": call["prompt_digest"],
+        }
 
     def record_gate(_v, _source_v, gate_name, gate, **kwargs):
         captured["gate_name"] = gate_name
@@ -244,11 +250,6 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     )
     monkeypatch.setattr(
         system_strict_bootstrap,
-        "record_llm_invocation_evidence",
-        record_evidence,
-    )
-    monkeypatch.setattr(
-        system_strict_bootstrap,
         "build_system_gate_receipt",
         lambda *_args, **_kwargs: {"kind": "test-system-review-receipt"},
     )
@@ -264,8 +265,18 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     )
     monkeypatch.setattr(
         strict_authority_workflow,
+        "render_gate_provider_prompt",
+        lambda _call: "sealed strict reviewer prompt",
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
         "accept_role_result",
         lambda *_args, **_kwargs: {"kind": "test-authority-receipt"},
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "record_bound_invocation_evidence",
+        record_evidence,
     )
 
     result = asyncio.run(
@@ -279,13 +290,311 @@ def test_first_strict_review_records_final_provider_prompt_authority(
 
     assert payload["approved"] is True
     assert payload["checkpoint_recorded"] is True
-    assert captured["evidence"]["prompt_digest"] == final_provider_prompt_digest
-    assert captured["evidence"]["invocation_id"] == strict_call["invocation_id"]
+    assert captured["gate"]["llm_execution_evidence"]["prompt_digest"] == (
+        final_provider_prompt_digest
+    )
+    assert captured["evidence_call"] is strict_call
     assert captured["gate_name"] == "review"
     assert captured["stage"] == "reviewed"
     assert captured["gate"]["system_verifier_receipt"] == {
         "kind": "test-system-review-receipt"
     }
+
+
+@pytest.mark.parametrize(
+    ("gate_name", "stage", "error_code"),
+    [
+        ("review", "quality_passed", "SYSTEM_STRICT_BOOTSTRAP_REVIEW_AUTHORITY_INVALID"),
+        ("critic", "reviewed", "SYSTEM_STRICT_BOOTSTRAP_CRITIC_AUTHORITY_INVALID"),
+    ],
+)
+def test_strict_gate_predispatch_authority_drift_canonically_abandons(
+    tmp_path,
+    monkeypatch,
+    gate_name,
+    stage,
+    error_code,
+):
+    import strict_authority_workflow as authority
+    import system_strict_bootstrap
+    import tool_gates
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    checkpoint = {
+        "next_v": 143,
+        "source_v": 142,
+        "stage": stage,
+        "checkpoint_revision": 9,
+        "workflow_run_id": f"generation:143:{gate_name}-authority-drift",
+        "master_plan": {"tasks": []},
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+            },
+            "review": {"approved": True, "passed": True},
+        },
+        "audit_context": {},
+    }
+    captured = {}
+
+    async def no_exhaustion(*_args, **_kwargs):
+        return None
+
+    async def abandon(_checkpoint, *, reason, result):
+        captured.update({"checkpoint": _checkpoint, "reason": reason, **result})
+        return {**result, "action": "abandon_generation", "abandoned": True}
+
+    def drift(*_args, **_kwargs):
+        raise authority.StrictAuthorityError(f"{gate_name} context drift")
+
+    monkeypatch.setattr(tool_gates, "_set_pipeline_status", lambda *_args: None)
+    monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_gates,
+        "_owned_infrastructure_failure",
+        lambda *_args: (None, None),
+    )
+    monkeypatch.setattr(
+        tool_gates,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhaustion,
+    )
+    monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *_a, **_k: None)
+    monkeypatch.setattr(tool_gates, "_quality_gate_ok", lambda _ckpt: True)
+    monkeypatch.setattr(tool_gates, "_review_gate_ok", lambda _ckpt: True)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(
+        tool_gates,
+        "_llm_gate_infrastructure_identity",
+        lambda **_kwargs: ("attempt", {}),
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "abandon_rejected_blueprint",
+        abandon,
+    )
+    monkeypatch.setattr(authority, "gate_call_context", drift)
+
+    tool = tool_gates.run_review if gate_name == "review" else tool_gates.run_critic
+    raw_handler = tool.handler.__wrapped__
+    result = asyncio.run(raw_handler({"version": 143, "source_v": 142}))
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["error"] == error_code
+    assert payload["failure_class"] == "control_plane"
+    assert payload["abandoned"] is True
+    assert captured["reason"] == (
+        f"system_strict_bootstrap_{gate_name}_authority_invalid"
+    )
+    assert captured["validation_errors"] == [f"{gate_name} context drift"]
+
+
+def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
+    tmp_path,
+):
+    import strict_authority_workflow as authority
+    from workflow_kernel import content_digest
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("POLICY = 1\n", encoding="utf-8")
+    checkpoint = {
+        "source_v": 142,
+        "next_v": 143,
+        "master_plan": {"tasks": [{"worker_id": "W1"}]},
+        "gate_results": {"quality": {"all_passed": True}},
+        "audit_context": {
+            "worker_cot_focus_areas": [
+                "  sizing   boundary ",
+                "range update",
+                "range update",
+                "sizing boundary",
+            ],
+            "system_strict_bootstrap": {
+                "receipt_digest": "a" * 64,
+                "plan_digest": "b" * 64,
+            },
+        },
+    }
+
+    context = authority.gate_call_context(
+        checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+    semantics = context["renderer_semantics"]
+    assert semantics["semantic_inputs"]["focus_areas"] == [
+        "  sizing   boundary ",
+        "range update",
+        "range update",
+        "sizing boundary",
+    ]
+    static = semantics["renderer_static_identity"]
+    assert static["producer_file"] == "web/core/tool_gates.py"
+    assert len(static["producer_function_sha256"]) == 64
+    assert static["template_digests"]
+    assert len(semantics["sentinel_rendered_prompt_sha256"]) == 64
+
+    call = {
+        "slot": "review",
+        "invocation_id": "1" * 32,
+        "context_binding": context,
+        "context_binding_digest": content_digest(context),
+    }
+    rendered = authority.render_gate_provider_prompt(call)
+    replay_inputs = json.loads(rendered.renderer_inputs_json)
+    assert replay_inputs["focus_areas"] == [
+        "  sizing   boundary ",
+        "range update",
+        "range update",
+        "sizing boundary",
+    ]
+    assert replay_inputs["invocation_id"] == "1" * 32
+    assert authority.gate_call_context(
+        deepcopy(checkpoint),
+        gate_name="review",
+        candidate_dir=candidate,
+    ) == context
+
+    changed = deepcopy(checkpoint)
+    changed["audit_context"]["worker_cot_focus_areas"] = ["different focus"]
+    assert authority.gate_call_context(
+        changed,
+        gate_name="review",
+        candidate_dir=candidate,
+    ) != context
+    tampered_call = deepcopy(call)
+    tampered_call["context_binding"]["renderer_semantics"][
+        "sentinel_rendered_prompt_sha256"
+    ] = "0" * 64
+    tampered_call["context_binding_digest"] = content_digest(
+        tampered_call["context_binding"]
+    )
+    with pytest.raises(
+        authority.StrictAuthorityError,
+        match="strict_authority_gate_renderer_semantics_drift:review",
+    ):
+        authority.render_gate_provider_prompt(tampered_call)
+
+
+def test_strict_critic_context_binds_all_reconstructable_semantics(
+    tmp_path,
+    monkeypatch,
+):
+    import agent_review
+    import strict_authority_workflow as authority
+    from workflow_kernel import content_digest
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    policy = "def decide(context):\n    return {'kind': 'pass'}\n"
+    (candidate / "policy.py").write_text(policy, encoding="utf-8")
+    monkeypatch.setattr(
+        agent_review,
+        "_critic_h2h_snapshot_material",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("first-strict Critic must not open strength snapshots")
+        ),
+    )
+    checkpoint = {
+        "source_v": 142,
+        "next_v": 143,
+        "stage": "reviewed",
+        "master_plan": {"tasks": [{"worker_id": "W1", "goal": "value"}]},
+        "gate_results": {
+            "quality": {"all_passed": True},
+            "review": {
+                "system_verifier_receipt": {"receipt_digest": "c" * 64}
+            },
+            "critic": {
+                "score": 4,
+                "approved": False,
+                "feedback": "fix sizing",
+            },
+        },
+        "audit_context": {
+            "system_strict_bootstrap": {
+                "receipt_digest": "a" * 64,
+                "plan_digest": "b" * 64,
+            },
+        },
+    }
+
+    context = authority.gate_call_context(
+        checkpoint,
+        gate_name="critic",
+        candidate_dir=candidate,
+    )
+    inputs = context["renderer_semantics"]["semantic_inputs"]
+    assert json.loads(inputs["master_plan"])["tasks"][0]["goal"] == "value"
+    assert inputs["code_evidence"]["target_artifact_hash"] == context[
+        "candidate_artifact_hash"
+    ]
+    assert policy.rstrip() in inputs["code_evidence"]["prompt_section"]
+    assert "FIRST-STRICT NO-STRENGTH" in inputs["h2h_snapshot_contract"]
+    assert inputs["previous_critic"] == {
+        "approved": False,
+        "feedback": "fix sizing",
+        "score": 4,
+    }
+    call = {
+        "slot": "critic",
+        "invocation_id": "2" * 32,
+        "context_binding": context,
+        "context_binding_digest": content_digest(context),
+    }
+    assert "FIRST-STRICT NO-STRENGTH" in authority.render_gate_provider_prompt(call)
+    assert authority.gate_provider_evidence_snapshot_dir(call) is None
+    assert context["provider_evidence_scope"][
+        "allowed_evidence_snapshot_dir"
+    ] is None
+    assert authority.gate_call_context(
+        deepcopy(checkpoint),
+        gate_name="critic",
+        candidate_dir=candidate,
+    ) == context
+
+    variants = []
+    changed_plan = deepcopy(checkpoint)
+    changed_plan["master_plan"]["tasks"][0]["goal"] = "changed"
+    variants.append(changed_plan)
+    changed_previous = deepcopy(checkpoint)
+    changed_previous["gate_results"]["critic"]["score"] = 5
+    variants.append(changed_previous)
+    for changed in variants:
+        assert authority.gate_call_context(
+            changed,
+            gate_name="critic",
+            candidate_dir=candidate,
+        ) != context
+
+    projected = deepcopy(checkpoint)
+    projected["stage"] = "critic_checked"
+    projected["gate_results"]["critic"] = {
+        "score": 8,
+        "approved": True,
+        "feedback": "current result",
+        "prev_critic": deepcopy(checkpoint["gate_results"]["critic"]),
+    }
+    assert authority.gate_call_context(
+        projected,
+        gate_name="critic",
+        candidate_dir=candidate,
+    ) == context
+
+    (candidate / "policy.py").write_text(policy + "# changed\n", encoding="utf-8")
+    assert authority.gate_call_context(
+        checkpoint,
+        gate_name="critic",
+        candidate_dir=candidate,
+    ) != context
 
 
 def test_master_evidence_producers_are_exact_at_master_stage():

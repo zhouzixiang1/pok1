@@ -24,6 +24,7 @@ import stat
 import subprocess
 import tempfile
 import threading
+import time
 from typing import IO, Mapping, Sequence
 
 from managed_bot_socket import (
@@ -1190,6 +1191,90 @@ def _resource_bounded_command(
     ]
 
 
+def _terminate_failed_owner_spawn(process: subprocess.Popen[bytes]) -> None:
+    """Reap a bwrap process that cannot pass owner-environment verification."""
+
+    try:
+        running = process.poll() is None
+    except OSError:
+        running = True
+    if running:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=5.0)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    except OSError:
+        return
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=5.0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _release_verified_owner_spawn(
+    process: subprocess.Popen[bytes],
+    owner_environment: Mapping[str, str],
+    release_fd: int,
+) -> None:
+    """Verify the blocked host bwrap environment, then release it exactly once."""
+
+    owner = owner_environment.get(_HOST_OWNER_ENV)
+    if owner is None or len(owner_environment) != 1:
+        raise ManagedExecutorError(
+            "managed executor owner start barrier environment is invalid"
+        )
+    if process.poll() is not None:
+        raise ManagedExecutorError(
+            "managed executor exited before owner environment verification"
+        )
+    expected = os.fsencode(f"{_HOST_OWNER_ENV}={owner}") + b"\x00"
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            observed = Path(f"/proc/{process.pid}/environ").read_bytes()
+        except OSError as exc:
+            raise ManagedExecutorError(
+                "managed executor owner environment cannot be verified"
+            ) from exc
+        if observed == expected:
+            break
+        # During bwrap's initial clone/setup window Linux can expose an empty
+        # environment for the monitor PID.  The block-fd keeps execution
+        # fenced while that monitor reaches its stable, original environment.
+        if observed or time.monotonic() >= deadline:
+            raise ManagedExecutorError(
+                "managed executor owner environment verification failed"
+            )
+        if process.poll() is not None:
+            raise ManagedExecutorError(
+                "managed executor exited during owner environment verification"
+            )
+        time.sleep(0.001)
+    if process.poll() is not None:
+        raise ManagedExecutorError(
+            "managed executor exited during owner environment verification"
+        )
+    try:
+        written = os.write(release_fd, b"1")
+    except OSError as exc:
+        raise ManagedExecutorError(
+            "managed executor owner start barrier release failed"
+        ) from exc
+    if written != 1:
+        raise ManagedExecutorError(
+            "managed executor owner start barrier release was incomplete"
+        )
+
+
 def _spawn(
     command: Sequence[str],
     *,
@@ -1202,18 +1287,58 @@ def _spawn(
     start_new_session: bool = False,
     host_process_owner: str | None = None,
 ) -> ManagedProcess:
-    pass_fds = tuple(dict.fromkeys((program.fd, *map(int, inherited_fds))))
+    owner_environment = _host_owner_environment(host_process_owner)
+    spawn_command = tuple(command)
+    owner_read_fd = -1
+    owner_write_fd = -1
     try:
+        if owner_environment:
+            try:
+                owner_read_fd, owner_write_fd = os.pipe()
+                os.set_inheritable(owner_read_fd, False)
+                os.set_inheritable(owner_write_fd, False)
+            except OSError as exc:
+                raise IsolationUnavailable(
+                    "managed_executor_owner_start_barrier_unavailable"
+                ) from exc
+            spawn_command = (
+                spawn_command[0],
+                "--block-fd",
+                str(owner_read_fd),
+                *spawn_command[1:],
+            )
+        pass_fds = tuple(
+            dict.fromkeys(
+                (
+                    program.fd,
+                    *map(int, inherited_fds),
+                    *((owner_read_fd,) if owner_read_fd >= 0 else ()),
+                )
+            )
+        )
         process = subprocess.Popen(
-            tuple(command),
+            spawn_command,
             stdin=stdin,
             stdout=stdout,
             stderr=stderr,
-            env=_host_owner_environment(host_process_owner),
+            env=owner_environment,
             close_fds=True,
             pass_fds=pass_fds,
             start_new_session=bool(start_new_session),
         )
+        if owner_read_fd >= 0:
+            os.close(owner_read_fd)
+            owner_read_fd = -1
+        if owner_environment:
+            try:
+                _release_verified_owner_spawn(
+                    process,
+                    owner_environment,
+                    owner_write_fd,
+                )
+            except BaseException:
+                _terminate_failed_owner_spawn(process)
+                raise
         return ManagedProcess(
             process=process,
             isolation=IsolationIdentity(
@@ -1223,6 +1348,12 @@ def _spawn(
             ),
         )
     finally:
+        for descriptor in (owner_read_fd, owner_write_fd):
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
         program.close()
         for callback in close_callbacks:
             callback()  # type: ignore[operator]

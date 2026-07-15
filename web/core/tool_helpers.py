@@ -156,6 +156,35 @@ def _matching_checkpoint(version, source_v=None):
     return ckpt
 
 
+def _critic_result_to_preserve(checkpoint):
+    """Return the current Critic result a replacement gate will preserve."""
+
+    if not isinstance(checkpoint, dict):
+        return None
+    existing = (checkpoint.get("gate_results") or {}).get("critic")
+    if not isinstance(existing, dict):
+        return None
+    try:
+        has_score = float(existing.get("score", 0) or 0) > 0
+    except (TypeError, ValueError):
+        has_score = False
+    return existing if has_score else None
+
+
+def _previous_critic_result(checkpoint):
+    """Reconstruct the exact previous-Critic value used by its provider call."""
+
+    current = _critic_result_to_preserve(checkpoint)
+    if str((checkpoint or {}).get("stage") or "") == "reviewed":
+        # Pre-dispatch (and crash-before-projection) state: the current gate is
+        # what _record_gate will preserve as the new result's prev_critic.
+        return current
+    if not isinstance(current, dict):
+        return None
+    previous = current.get("prev_critic")
+    return previous if isinstance(previous, dict) else None
+
+
 def _record_gate(version, source_v, gate_name, gate_data, stage=None,
                  master_plan=None, reviewer_feedback=None, generation_attempt=None,
                  infra_failure=None, clear_infra_failure=False,
@@ -177,8 +206,8 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
     current_stage = ckpt.get("stage", "")
     # Preserve previous critic result when overwriting with a new one
     if gate_name == "critic":
-        existing_critic = ckpt.get("gate_results", {}).get("critic")
-        if existing_critic and existing_critic.get("score", 0) > 0:
+        existing_critic = _critic_result_to_preserve(ckpt)
+        if existing_critic is not None:
             gate_data = {**gate_data, "prev_critic": existing_critic}
     # Use provided generation_attempt or preserve existing
     if generation_attempt is None:

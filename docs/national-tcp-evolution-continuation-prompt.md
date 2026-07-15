@@ -54,6 +54,22 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    output 都是 exact-key 且 digest-bound；finalize 必须重证 stability 行、锁保护的
    signal/priority、rotation/log archive、reap tombstone、annotation、HEAD/worktree。
    pending/running/blocked handoff 是启动围栏，绝不能被当作 idle 或跳过。
+8. 首个严格工作流的六个 Master 槽位共享第一条 durable effect 冻结的 phase revision，
+   但每个槽位拥有自己的 context binding；accepted/rejected/unaccepted effects 都要重证。
+   proposal/ballot/Reviewer/Critic 的调用证据必须绑定 accepted effect 的最终 provider
+   prompt、terminal output/result/usage、role projection 和原始非空普通日志。Review/Critic
+   prompt 只能由 durable descriptor 渲染；v143 Critic 的 strength read scope 必须为空。
+   任一权限/上下文/prompt/log 漂移走 canonical control-plane abandon，不能消耗 LLM
+   infrastructure retry。
+9. UI 必须把 Critic 的 `approved` 解释为 advisory 调用完成，只用
+   `advisory_approved` 显示建议方向；独立 checkpoint 只有在 schema-2、正整数 revision
+   及 epoch/version/stage/run/workflow 全部与 active generation 相同时才可显示。
+   `--no-daemon` 且 PID 不存在是健康的 `not_applicable`，但 enabled-missing 或
+   disabled-live daemon 仍必须 degraded。
+10. 需要 host process owner 的 Bubblewrap 启动必须先停在一次性 `--block-fd`
+    屏障，宿主精确验证唯一 owner environment 后才释放；空值只允许在有界 setup
+    窗口重试，任一非空不匹配/超时/读取或释放失败都必须 terminate/reap。owner
+    marker 不得进入 sandbox；无 owner 启动不得改变 argv/FD/env。
 
 工作方式：
 - /home/zzx/project/pok 是 operator checkout；保留其 dirty 用户文件。
@@ -71,7 +87,8 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 1. 验证当前分支/HEAD/dirty 状态和进程；安全清理仅限已合并且干净的工作分支，
    不用 reset、clean、force，不碰 Arena/dirty/unmerged 数据。
 2. 对每个协议行核对 authority→producer→consumer→dynamic gate→rendered prompt→
-   frozen evidence→frontend，并补正反测试和 fail-closed 语义。
+   frozen evidence→backend typed projection→frontend，并补正反测试和 fail-closed 语义；
+   UI 文案、按钮可用性、API state/reason、实际工具路由必须逐项相同。
 3. 运行 focused tests，然后运行 sever 全套、web 全套、frontend test/lint/build、
    active Python 精确文件 `py_compile`（排除 archive 与 runtime results，不做
    `compileall` 扫描）、git diff --check。
@@ -106,25 +123,30 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 每次交付收口时更新以下字段；它们只帮助操作员定位，不替代实时权威查询。
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
-  merged recovery parent is `291f2d40c0301c4262c1848fe549e8999ac83174`;
-  this document travels in the fully verified in-flight Master stage-ownership
-  repair, so query the branch for its final commit rather than guessing a SHA;
-- final frozen-tree verification after the in-flight Master repair: Web
-  `2526 passed, 20 skipped`; sever
-  `31 passed`; frontend `13 passed` plus lint/build; active-source `py_compile`
-  and `git diff --check` passed. The later repair also has `129 passed`
-  across the focused orchestrator/stability shards;
-- `origin/main`: before this repair was integrated it was
-  `291f2d40c0301c4262c1848fe549e8999ac83174`; runtime resume requires the
+  merged stream-ownership parent is
+  `0a26795aa71fa92049acebef94968a0c9f7553d7`; this document travels in the
+  strict-authority recovery repair, so query the branch for its final
+  commit rather than guessing a SHA;
+- final frozen-tree verification after the strict-authority recovery repair: Web
+  `2554 passed, 20 skipped`; sever
+  `31 passed`; frontend `15 passed` plus lint/build; active-source `py_compile`
+  and `git diff --check` passed. The repair has `242 passed` across its focused
+  authority/Master/role shards and `94 passed` across the final backend/frontend
+  route and presentation-contract shard;
+- `origin/main`: before this repair is integrated it is
+  `0a26795aa71fa92049acebef94968a0c9f7553d7`; runtime resume requires the
   commit carrying this document to be present in `origin/main`;
-- runtime HEAD: the pre-integration evidence was the same stopped recovery
-  parent after identity migration; re-query after Git-only synchronization;
+- runtime HEAD: stopped at the same stream-ownership parent; re-query after
+  Git-only synchronization;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
-  abandoned; the live checkpoint is v143 `direction_audited`, workflow-v19,
-  revision 6, with `master_plan=null`. The prepared five-file artifact is still
-  content-bound to its checkpoint. One scout proposal receipt exists, but no
-  complete proposal packet, ballot result, selected mechanism or Worker plan
-  was accepted; retry only after the stage-ownership repair reaches `origin/main`;
+  abandoned; workflow-v19 was later canonically quarantined after contract HEAD
+  drift. The live checkpoint is v143 `direction_audited`, workflow-v20,
+  revision 6, with `master_plan=null` and a retryable-but-misclassified
+  `master_llm` overlay. Its strict journal has exactly two accepted proposals
+  at authority revision 4 and one missing-slot schema rejection; no complete
+  packet, ballot result, selected mechanism or Worker plan was accepted. After
+  the strict-authority recovery repair reaches `origin/main`, canonically abandon
+  workflow-v20 and prepare a fresh v143 workflow; do not retry the stale overlay;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published;
 - immutable rating cycle: none for the new strict two-bot pool;

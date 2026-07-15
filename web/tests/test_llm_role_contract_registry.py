@@ -637,6 +637,93 @@ def test_strict_authority_uses_internal_copy_after_quota_wait(
     assert owner["provider_completed"] is True
 
 
+def test_strict_provider_replay_keeps_original_log_bytes(monkeypatch, tmp_path):
+    import agent_master
+    import llm_availability_store
+    import llm_query
+    import orchestrator_cost_policy
+    import rate_limiter
+    import strict_authority_workflow
+
+    log_file = tmp_path / "master_proposal_mechanism_io.txt"
+    log_file.write_bytes(b"original sealed invocation log\n")
+    original_bytes = log_file.read_bytes()
+    provider_called = False
+    owner = {
+        "schema_version": 1,
+        "slot": "proposal:mechanism",
+        "role": "MASTER PROPOSAL mechanism",
+        "replay_provider": True,
+        "replay_raw_output": '{"replayed":true}',
+        "replay_cost_usd": 0.01,
+        "replay_usage": {"input_tokens": 1, "output_tokens": 1},
+        "provider_completed": True,
+    }
+
+    async def forbidden_provider(*_args, **_kwargs):
+        nonlocal provider_called
+        provider_called = True
+        return ["forbidden"], 0.0, {}
+
+    def dispatch(call, **_kwargs):
+        assert call.get("replay_provider") is True
+        call["dispatched"] = True
+
+    monkeypatch.setattr(
+        orchestrator_cost_policy,
+        "assert_operator_cost_limit_available",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        llm_availability_store,
+        "raise_if_llm_paused",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "schema_retry_prompt",
+        lambda _call: "",
+    )
+    monkeypatch.setattr(strict_authority_workflow, "dispatch_call", dispatch)
+    monkeypatch.setattr(
+        llm_query,
+        "_run_stream_with_signature_retry",
+        forbidden_provider,
+    )
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda *_args, **_kwargs: None,
+    )
+    role = "MASTER PROPOSAL mechanism"
+    rendered = llm_query.render_llm_prompt(
+        role,
+        producer=agent_master._render_master_proposal_provider_prompt,
+        renderer_inputs=_renderer_inputs(
+            "master_proposal",
+            "strict replay context",
+        ),
+    )
+
+    output, cost, usage = asyncio.run(llm_query.run_claude_query(
+        rendered,
+        [],
+        _UI(),
+        role,
+        log_file,
+        tools=["Read"],
+        allowed_read_dirs=[ROOT / "bots/national_v143"],
+        strict_authority=owner,
+    ))
+
+    assert output == '{"replayed":true}'
+    assert cost == 0.01
+    assert usage == {"input_tokens": 1, "output_tokens": 1}
+    assert provider_called is False
+    assert log_file.read_bytes() == original_bytes
+
+
 def test_oversized_sealed_prompt_fails_without_truncation(monkeypatch):
     import evolution_infra
     import llm_query
@@ -976,9 +1063,10 @@ def test_active_render_callers_cannot_reintroduce_caller_owned_full_prompts():
                 }
                 assert not (literal_keys & forbidden_input_keys)
 
-    # Nineteen active provider roles: Orchestrator plus eighteen subagent
-    # families.  A new call site must be registered and covered deliberately.
-    assert len(render_calls) == 19
+    # Nineteen active provider roles plus the strict gate authority's
+    # descriptor-owned semantic replay helper. A new call site must be
+    # registered and covered deliberately.
+    assert len(render_calls) == 20
 
 
 def test_durable_worker_effect_supplies_no_external_context_files():

@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from pathlib import Path
 import time
 import uuid
@@ -44,7 +45,11 @@ RUN_SUFFIX = "strict-authority-v1"
 EFFECT_KIND = "first-strict-llm-provider-call-v1"
 ACCEPTED_EVENT = "StrictRoleAccepted"
 REJECTED_EVENT = "StrictRoleRejected"
+INVOCATION_EVIDENCE_BOUND_EVENT = "StrictInvocationEvidenceBound"
 RECEIPT_KIND = "first-strict-llm-authority-receipt-v1"
+INVOCATION_EVIDENCE_BINDING_KIND = (
+    "first-strict-invocation-evidence-binding-v1"
+)
 MAX_SCHEMA_ATTEMPTS_PER_SLOT = 2
 
 MASTER_SLOTS = (
@@ -57,6 +62,7 @@ MASTER_SLOTS = (
 )
 GATE_SLOTS = ("review", "critic")
 ALL_SLOTS = MASTER_SLOTS + GATE_SLOTS
+INVOCATION_EVIDENCE_SLOTS = MASTER_SLOTS[:5] + GATE_SLOTS
 
 SLOT_CONTRACTS = {
     "proposal:mechanism": (
@@ -389,6 +395,236 @@ def expected_master_role_results(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def expected_master_invocation_evidence(
+    plan: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Extract the five packet evidence receipts by their authority slots."""
+
+    packet = (plan or {}).get("proposal_ensemble")
+    if not isinstance(packet, dict):
+        raise StrictAuthorityError("strict_authority_proposal_packet_missing")
+    proposals = packet.get("ordered_proposals")
+    proposal_invocations = packet.get("proposal_invocations")
+    reviews = packet.get("critic_reviews")
+    if (
+        not isinstance(proposals, list)
+        or len(proposals) != 3
+        or not isinstance(proposal_invocations, dict)
+        or not isinstance(reviews, list)
+        or len(reviews) != 2
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_master_invocation_evidence_invalid"
+        )
+    result: dict[str, dict[str, Any]] = {}
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            raise StrictAuthorityError(
+                "strict_authority_master_invocation_evidence_invalid"
+            )
+        slot = f"proposal:{proposal.get('direction')}"
+        evidence = proposal_invocations.get(proposal.get("proposal_id"))
+        if slot not in MASTER_SLOTS[:3] or not isinstance(evidence, dict):
+            raise StrictAuthorityError(
+                "strict_authority_master_invocation_evidence_invalid"
+            )
+        result[slot] = _json_value(evidence)
+    for review in reviews:
+        if not isinstance(review, dict):
+            raise StrictAuthorityError(
+                "strict_authority_master_invocation_evidence_invalid"
+            )
+        slot = f"ballot:{review.get('critic_id')}"
+        evidence = review.get("invocation_evidence")
+        if slot not in MASTER_SLOTS[3:5] or not isinstance(evidence, dict):
+            raise StrictAuthorityError(
+                "strict_authority_master_invocation_evidence_invalid"
+            )
+        result[slot] = _json_value(evidence)
+    if set(result) != set(MASTER_SLOTS[:5]):
+        raise StrictAuthorityError(
+            "strict_authority_master_invocation_evidence_invalid"
+        )
+    return result
+
+
+_GATE_RENDER_INVOCATION_SENTINEL = "0" * 32
+_STRICT_CRITIC_NO_STRENGTH_CONTRACT = (
+    "# SYSTEM-SUPPLIED FIRST-STRICT NO-STRENGTH CONTRACT\n"
+    "The national_tcp_policy_v1 pool is empty. No rating, H2H, replay, Arena, "
+    "official-EXE result, retired bot, or historical experience is admissible "
+    "for this one-time v143 Critic call. Evaluate only the prepared policy, the "
+    "content-bound Master plan, the national ABI, and the completed quality and "
+    "Reviewer receipts."
+)
+
+
+def _normalized_reviewer_focus_areas(
+    checkpoint: dict[str, Any],
+) -> list[str]:
+    gates = checkpoint.get("gate_results") or {}
+    audit = checkpoint.get("audit_context") or {}
+    raw = audit.get("worker_cot_focus_areas") or (
+        (gates.get("workers") or {}).get("audit_focus_areas") or []
+    )
+    if not isinstance(raw, list) or any(
+        not isinstance(item, str) for item in raw
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_review_focus_areas_invalid"
+        )
+    # Preserve the exact established prompt semantics: order, duplicates,
+    # whitespace, and empty strings all remain provider-visible.  JSON
+    # normalization below supplies stable serialization without rewriting the
+    # evidence itself.
+    return list(raw)
+
+
+def _gate_renderer_components(gate_name: str):
+    if gate_name == "review":
+        from tool_gates import _render_reviewer_provider_prompt
+
+        return "LEAD CODE REVIEWER", _render_reviewer_provider_prompt
+    if gate_name == "critic":
+        from agent_review import _render_critic_provider_prompt
+
+        return "STRATEGY CRITIC", _render_critic_provider_prompt
+    raise StrictAuthorityError("strict_authority_gate_name_invalid")
+
+
+def _render_registered_gate_prompt(
+    gate_name: str,
+    renderer_inputs: dict[str, Any],
+):
+    role, producer = _gate_renderer_components(gate_name)
+    from llm_query import render_llm_prompt
+
+    return render_llm_prompt(
+        role,
+        producer=producer,
+        renderer_inputs=renderer_inputs,
+    )
+
+
+def _gate_renderer_semantic_contract(
+    gate_name: str,
+    semantic_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    """Seal actual producer/template semantics with a normalized invocation."""
+
+    role, _producer = _gate_renderer_components(gate_name)
+    normalized_inputs = _json_value(semantic_inputs)
+    rendered = _render_registered_gate_prompt(
+        gate_name,
+        {
+            **deepcopy(normalized_inputs),
+            "invocation_id": _GATE_RENDER_INVOCATION_SENTINEL,
+        },
+    )
+    receipt = rendered.dispatch_receipt
+    renderer = receipt.renderer
+    evidence = receipt.evidence
+    static_identity = {
+        "producer_file": renderer.producer_file,
+        "producer_name": renderer.producer_name,
+        "producer_file_sha256": renderer.producer_file_sha256,
+        "producer_function_sha256": renderer.producer_function_sha256,
+        "template_digests": _json_value(renderer.template_digests),
+    }
+    subject = {
+        "schema_version": 1,
+        "role": role,
+        "invocation_normalization": "fixed-32-byte-sentinel-v1",
+        "semantic_inputs": normalized_inputs,
+        "semantic_inputs_digest": content_digest(normalized_inputs),
+        "renderer_static_identity": static_identity,
+        "renderer_static_identity_digest": content_digest(static_identity),
+        "sentinel_rendered_prompt_sha256": renderer.rendered_prompt_sha256,
+        "sentinel_rendered_prompt_chars": renderer.rendered_prompt_chars,
+        "sentinel_evidence_kind": evidence.provenance_kind,
+        "sentinel_evidence_provenance_sha256": evidence.provenance_sha256,
+        "sentinel_renderer_receipt_digest": renderer.receipt_digest,
+        "sentinel_evidence_receipt_digest": evidence.receipt_digest,
+        "sentinel_dispatch_receipt_digest": receipt.receipt_digest,
+    }
+    return {**subject, "contract_digest": content_digest(subject)}
+
+
+def _gate_semantic_inputs(
+    checkpoint: dict[str, Any],
+    *,
+    gate_name: str,
+    candidate_dir: Path,
+    candidate_artifact_hash: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    source_v = checkpoint.get("source_v")
+    next_v = checkpoint.get("next_v")
+    master_plan = checkpoint.get("master_plan")
+    if (
+        not _plain_int(source_v)
+        or not _plain_int(next_v)
+        or not isinstance(master_plan, dict)
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_gate_checkpoint_semantics_invalid"
+        )
+    normalized_plan = _json_value(master_plan)
+    if gate_name == "review":
+        return ({
+            "master_plan": normalized_plan,
+            "source_v": int(source_v),
+            "next_v": int(next_v),
+            "strict_bootstrap": True,
+            "focus_areas": _normalized_reviewer_focus_areas(checkpoint),
+        }, None)
+
+    from agent_review import _critic_code_evidence
+    from tool_helpers import _previous_critic_result
+
+    code_evidence = _critic_code_evidence(
+        int(next_v),
+        int(source_v),
+        protocol_bootstrap_prepared_only=True,
+        target_dir=candidate_dir,
+    )
+    if code_evidence.get("target_artifact_hash") != candidate_artifact_hash:
+        raise StrictAuthorityError(
+            "strict_authority_critic_code_artifact_mismatch"
+        )
+    h2h_contract = _STRICT_CRITIC_NO_STRENGTH_CONTRACT
+    snapshot_dir = None
+    previous = _previous_critic_result(checkpoint)
+    if previous is not None and not isinstance(previous, dict):
+        raise StrictAuthorityError(
+            "strict_authority_critic_previous_result_invalid"
+        )
+    semantic_inputs = {
+        "source_v": int(source_v),
+        "next_v": int(next_v),
+        "master_plan": json.dumps(
+            normalized_plan,
+            indent=2,
+            ensure_ascii=False,
+        ),
+        # _critic_code_evidence enforces the existing 400k policy/diff bound;
+        # the snapshot producer above retains the existing 12k JSON bound.
+        "code_evidence": _json_value(code_evidence),
+        "h2h_snapshot_contract": str(h2h_contract),
+        "previous_critic": _json_value(previous),
+    }
+    evidence_scope = {
+        "schema_version": 1,
+        "allowed_evidence_snapshot_dir": (
+            str(snapshot_dir) if snapshot_dir is not None else None
+        ),
+        "h2h_snapshot_contract_digest": hashlib.sha256(
+            str(h2h_contract).encode("utf-8")
+        ).hexdigest(),
+    }
+    evidence_scope["scope_digest"] = content_digest(evidence_scope)
+    return semantic_inputs, evidence_scope
+
+
 def gate_call_context(
     checkpoint: dict[str, Any],
     *,
@@ -399,12 +635,14 @@ def gate_call_context(
         raise StrictAuthorityError("strict_authority_gate_name_invalid")
     from bot_artifact import hash_path
 
+    candidate = Path(candidate_dir)
+    candidate_artifact_hash = hash_path(candidate)
     gates = checkpoint.get("gate_results") or {}
     audit = checkpoint.get("audit_context") or {}
     master_receipt = audit.get("system_strict_bootstrap") or {}
     subject = {
         "phase": gate_name,
-        "candidate_artifact_hash": hash_path(Path(candidate_dir)),
+        "candidate_artifact_hash": candidate_artifact_hash,
         "quality_gate_digest": content_digest(gates.get("quality") or {}),
         "master_receipt_digest": master_receipt.get("receipt_digest"),
         "master_plan_digest": master_receipt.get("plan_digest"),
@@ -415,7 +653,144 @@ def gate_call_context(
                 "receipt_digest"
             )
         )
+    semantic_inputs, evidence_scope = _gate_semantic_inputs(
+        checkpoint,
+        gate_name=gate_name,
+        candidate_dir=candidate,
+        candidate_artifact_hash=candidate_artifact_hash,
+    )
+    subject["renderer_semantics"] = _gate_renderer_semantic_contract(
+        gate_name,
+        semantic_inputs,
+    )
+    if gate_name == "critic":
+        subject["provider_evidence_scope"] = evidence_scope
     return subject
+
+
+def render_gate_provider_prompt(call: dict[str, Any]):
+    """Render a gate only from its durable descriptor-owned semantics."""
+
+    slot = str((call or {}).get("slot") or "")
+    if slot not in GATE_SLOTS:
+        raise StrictAuthorityError(
+            "strict_authority_gate_render_call_invalid"
+        )
+    context = (call or {}).get("context_binding")
+    if (
+        not isinstance(context, dict)
+        or content_digest(context) != call.get("context_binding_digest")
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_gate_render_context_invalid"
+        )
+    contract = context.get("renderer_semantics")
+    if not isinstance(contract, dict):
+        raise StrictAuthorityError(
+            "strict_authority_gate_renderer_semantics_missing"
+        )
+    semantic_inputs = contract.get("semantic_inputs")
+    if not isinstance(semantic_inputs, dict) or (
+        _gate_renderer_semantic_contract(slot, semantic_inputs) != contract
+    ):
+        raise StrictAuthorityError(
+            f"strict_authority_gate_renderer_semantics_drift:{slot}"
+        )
+
+    invocation_id = str(call.get("invocation_id") or "")
+    if len(invocation_id) != 32:
+        raise StrictAuthorityError(
+            "strict_authority_gate_render_invocation_invalid"
+        )
+    actual_inputs = {
+        **deepcopy(semantic_inputs),
+        "invocation_id": invocation_id,
+    }
+    rendered = _render_registered_gate_prompt(
+        slot,
+        actual_inputs,
+    )
+    try:
+        replay_inputs = json.loads(rendered.renderer_inputs_json)
+        renderer = rendered.dispatch_receipt.renderer
+        actual_static = {
+            "producer_file": renderer.producer_file,
+            "producer_name": renderer.producer_name,
+            "producer_file_sha256": renderer.producer_file_sha256,
+            "producer_function_sha256": renderer.producer_function_sha256,
+            "template_digests": _json_value(renderer.template_digests),
+        }
+    except Exception as exc:
+        raise StrictAuthorityError(
+            "strict_authority_gate_render_receipt_invalid"
+        ) from exc
+    if (
+        _json_value(replay_inputs) != _json_value(actual_inputs)
+        or actual_static != contract.get("renderer_static_identity")
+    ):
+        raise StrictAuthorityError(
+            f"strict_authority_gate_render_receipt_drift:{slot}"
+        )
+    return rendered
+
+
+def gate_provider_evidence_snapshot_dir(
+    call: dict[str, Any],
+) -> Path | None:
+    """Return the Critic read scope frozen beside its renderer semantics."""
+
+    if str((call or {}).get("slot") or "") != "critic":
+        raise StrictAuthorityError(
+            "strict_authority_gate_evidence_scope_call_invalid"
+        )
+    context = (call or {}).get("context_binding")
+    if (
+        not isinstance(context, dict)
+        or content_digest(context) != call.get("context_binding_digest")
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_gate_evidence_scope_context_invalid"
+        )
+    scope = context.get("provider_evidence_scope")
+    expected_fields = {
+        "schema_version",
+        "allowed_evidence_snapshot_dir",
+        "h2h_snapshot_contract_digest",
+        "scope_digest",
+    }
+    scope_subject = {
+        key: value for key, value in (scope or {}).items()
+        if key != "scope_digest"
+    }
+    semantic_inputs = (
+        (context.get("renderer_semantics") or {}).get("semantic_inputs") or {}
+    )
+    h2h_contract = semantic_inputs.get("h2h_snapshot_contract")
+    if (
+        not isinstance(scope, dict)
+        or set(scope) != expected_fields
+        or scope.get("schema_version") != 1
+        or scope.get("scope_digest") != content_digest(scope_subject)
+        or not isinstance(h2h_contract, str)
+        or scope.get("h2h_snapshot_contract_digest")
+        != hashlib.sha256(h2h_contract.encode("utf-8")).hexdigest()
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_gate_evidence_scope_invalid"
+        )
+    value = scope.get("allowed_evidence_snapshot_dir")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise StrictAuthorityError(
+            "strict_authority_gate_evidence_scope_path_invalid"
+        )
+    path = Path(value)
+    if not path.is_absolute():
+        raise StrictAuthorityError(
+            "strict_authority_gate_evidence_scope_path_invalid"
+        )
+    return path
 
 
 def _recover_accepted_call(descriptor: dict[str, Any]) -> dict[str, Any] | None:
@@ -902,6 +1277,134 @@ def schema_retry_prompt(call: dict[str, Any]) -> str:
     )
 
 
+def _authority_phase(slot: str) -> tuple[str, tuple[str, ...]]:
+    if slot in MASTER_SLOTS:
+        return "master", MASTER_SLOTS
+    if slot in GATE_SLOTS:
+        return slot, (slot,)
+    raise StrictAuthorityError(f"strict_authority_slot_invalid:{slot}")
+
+
+def _frozen_phase_checkpoint_revision(
+    checkpoint: dict[str, Any],
+    *,
+    slot: str,
+    binding: dict[str, Any],
+    current_revision: int,
+    expected_context_binding: dict[str, Any] | None = None,
+) -> int:
+    """Return the first durable revision for one authority phase.
+
+    Checkpoint metadata can advance after a partial Master packet or a neutral
+    infrastructure overlay.  The provider effects themselves remain one
+    append-only authority phase: accepted slots must replay, missing slots must
+    consume only their remaining schema budget, and later ballots/final output
+    must use the same revision.  Deriving the anchor from verified effect input
+    keeps recovery fail-closed without weakening receipt equality.
+    """
+
+    phase_name, phase_slots = _authority_phase(slot)
+    run_id = authority_run_id(binding["workflow_run_id"])
+    store = _store()
+    try:
+        if not store.instance(run_id):
+            return int(current_revision)
+        events = store.events(run_id)
+    except Exception as exc:
+        raise StrictAuthorityError(
+            f"strict_authority_phase_revision_unavailable:{phase_name}:"
+            f"{type(exc).__name__}"
+        ) from exc
+
+    revisions: set[int] = set()
+    context_digests_by_slot: dict[str, set[str]] = {}
+    expected_binding_digest = content_digest(binding)
+    for event in events:
+        if event.event_type != "EffectRequested":
+            continue
+        if event.payload.get("kind") != EFFECT_KIND:
+            continue
+        effect_id = str(event.payload.get("effect_id") or "")
+        effect = store.effect(effect_id)
+        input_payload = effect.get("input_payload") or {}
+        if (
+            not effect_id
+            or effect.get("effect_id") != effect_id
+            or effect.get("run_id") != run_id
+            or effect.get("kind") != EFFECT_KIND
+            or not isinstance(input_payload, dict)
+            or effect.get("input_digest") != content_digest(input_payload)
+            or event.payload.get("input_digest") != effect.get("input_digest")
+            or event.payload.get("max_attempts") != 1
+        ):
+            raise StrictAuthorityError(
+                f"strict_authority_phase_effect_invalid:{phase_name}"
+            )
+        effect_slot = str(input_payload.get("slot") or "")
+        if effect_slot not in ALL_SLOTS:
+            raise StrictAuthorityError(
+                f"strict_authority_phase_effect_slot_invalid:{phase_name}"
+            )
+        if effect_slot not in phase_slots:
+            continue
+        expected_role, expected_purpose = SLOT_CONTRACTS[effect_slot]
+        context_binding = input_payload.get("context_binding")
+        revision = input_payload.get("checkpoint_revision")
+        if (
+            input_payload.get("schema_version") != 1
+            or input_payload.get("role") != expected_role
+            or input_payload.get("purpose") != expected_purpose
+            or input_payload.get("generation_binding") != binding
+            or input_payload.get("generation_binding_digest")
+            != expected_binding_digest
+            or input_payload.get("checkpoint_stage")
+            != SLOT_STAGES[effect_slot]
+            or not isinstance(context_binding, dict)
+            or not context_binding
+            or input_payload.get("context_binding_digest")
+            != content_digest(context_binding)
+            or not _plain_int(revision)
+            or int(revision) < 0
+        ):
+            raise StrictAuthorityError(
+                f"strict_authority_phase_effect_binding_invalid:{phase_name}"
+            )
+        revisions.add(int(revision))
+        context_digests_by_slot.setdefault(effect_slot, set()).add(
+            str(input_payload["context_binding_digest"])
+        )
+
+    if not revisions:
+        return int(current_revision)
+    if len(revisions) != 1:
+        raise StrictAuthorityError(
+            f"strict_authority_phase_checkpoint_revision_drift:{phase_name}"
+        )
+    for effect_slot, context_digests in context_digests_by_slot.items():
+        if len(context_digests) != 1:
+            raise StrictAuthorityError(
+                "strict_authority_phase_slot_context_drift:"
+                f"{phase_name}:{effect_slot}"
+            )
+    existing_context_digests = context_digests_by_slot.get(slot)
+    if (
+        existing_context_digests
+        and expected_context_binding is not None
+        and existing_context_digests
+        != {content_digest(_json_value(expected_context_binding))}
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_phase_slot_context_drift:"
+            f"{phase_name}:{slot}"
+        )
+    frozen_revision = next(iter(revisions))
+    if int(current_revision) < frozen_revision:
+        raise StrictAuthorityError(
+            f"strict_authority_phase_checkpoint_revision_regressed:{phase_name}"
+        )
+    return frozen_revision
+
+
 def new_call(
     checkpoint: dict[str, Any],
     *,
@@ -924,8 +1427,8 @@ def new_call(
     if purpose != expected_purpose:
         raise StrictAuthorityError(f"strict_authority_purpose_mismatch:{slot}")
     binding = generation_binding(checkpoint)
-    revision = checkpoint.get("checkpoint_revision")
-    if not _plain_int(revision) or int(revision) < 0:
+    current_revision = checkpoint.get("checkpoint_revision")
+    if not _plain_int(current_revision) or int(current_revision) < 0:
         raise StrictAuthorityError("strict_authority_checkpoint_revision_invalid")
     stage = str(checkpoint.get("stage") or "").strip()
     if stage != SLOT_STAGES[slot]:
@@ -937,6 +1440,13 @@ def new_call(
             f"strict_authority_context_binding_missing:{slot}"
         )
     normalized_context = _json_value(context_binding)
+    revision = _frozen_phase_checkpoint_revision(
+        checkpoint,
+        slot=slot,
+        binding=binding,
+        current_revision=int(current_revision),
+        expected_context_binding=normalized_context,
+    )
     descriptor = {
         "schema_version": 1,
         "run_id": authority_run_id(binding["workflow_run_id"]),
@@ -1643,6 +2153,346 @@ def accept_role_result(
     return ref
 
 
+def _invocation_evidence_log_name(slot: str, actual_role: str) -> str:
+    """Return the sole log filename admitted for an evidence-bearing role."""
+
+    if slot in MASTER_SLOTS[:3]:
+        direction = slot.split(":", 1)[1]
+        base_role = f"MASTER PROPOSAL {direction}"
+        if actual_role == base_role:
+            suffix = ""
+        elif actual_role == base_role + " SCHEMA RETRY":
+            suffix = "_schema_retry"
+        elif actual_role == base_role + " DISTINCTNESS RETRY":
+            suffix = "_distinctness_retry"
+        else:
+            raise StrictAuthorityError(
+                f"strict_authority_invocation_evidence_role_invalid:{slot}"
+            )
+        return f"master_proposal_{direction}{suffix}_io.txt"
+    if slot in MASTER_SLOTS[3:5]:
+        critic_id = slot.split(":", 1)[1]
+        base_role = f"MASTER PROPOSAL CRITIC {critic_id}"
+        if actual_role == base_role:
+            suffix = ""
+        elif actual_role == base_role + " SCHEMA RETRY":
+            suffix = "_schema_retry"
+        else:
+            raise StrictAuthorityError(
+                f"strict_authority_invocation_evidence_role_invalid:{slot}"
+            )
+        return f"master_proposal_critic_{critic_id}{suffix}_io.txt"
+    if slot == "review" and actual_role == "LEAD CODE REVIEWER":
+        return "reviewer_io.txt"
+    if slot == "critic" and actual_role == "STRATEGY CRITIC":
+        return "critic_io.txt"
+    raise StrictAuthorityError(
+        f"strict_authority_invocation_evidence_slot_invalid:{slot}"
+    )
+
+
+def _invocation_evidence_authority(
+    call: dict[str, Any],
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """Re-open the exact accepted role and completed provider effect."""
+
+    slot = str((call or {}).get("slot") or "")
+    if slot not in INVOCATION_EVIDENCE_SLOTS:
+        raise StrictAuthorityError(
+            f"strict_authority_invocation_evidence_slot_invalid:{slot}"
+        )
+    run_id = str(call.get("run_id") or "")
+    effect_id = str(call.get("effect_id") or "")
+    store = _store()
+    accepted = [
+        event
+        for event in store.events(run_id)
+        if event.event_type == ACCEPTED_EVENT
+        and event.payload.get("effect_id") == effect_id
+        and event.payload.get("slot") == slot
+    ]
+    if len(accepted) != 1:
+        raise StrictAuthorityError(
+            f"strict_authority_invocation_evidence_accepted_count:{slot}:"
+            f"{len(accepted)}"
+        )
+    accepted_event = accepted[0]
+    accepted_payload = accepted_event.payload
+    accepted_subject = {
+        key: value
+        for key, value in accepted_payload.items()
+        if key != "receipt_digest"
+    }
+    if (
+        accepted_event.payload_digest != content_digest(accepted_payload)
+        or accepted_payload.get("receipt_digest")
+        != content_digest(accepted_subject)
+        or accepted_payload.get("role_result_digest")
+        != content_digest(_json_value(accepted_payload.get("role_result")))
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_accepted_invalid"
+        )
+    effect = store.effect(effect_id)
+    provider = effect.get("result_payload") or {}
+    input_payload = effect.get("input_payload") or {}
+    provider_subject = {
+        key: value for key, value in provider.items() if key != "result_digest"
+    }
+    stable_fields = (
+        "slot",
+        "role",
+        "purpose",
+        "invocation_id",
+        "generation_binding_digest",
+        "context_binding_digest",
+        "checkpoint_stage",
+        "checkpoint_revision",
+        "prompt_digest",
+        "actual_role",
+        "model",
+        "tools",
+    )
+    if (
+        effect.get("status") != "completed"
+        or effect.get("kind") != EFFECT_KIND
+        or effect.get("run_id") != run_id
+        or provider.get("result_digest") != content_digest(provider_subject)
+        or any(
+            input_payload.get(field) != accepted_payload.get(field)
+            or provider.get(field) != accepted_payload.get(field)
+            or call.get(field) != accepted_payload.get(field)
+            for field in stable_fields
+        )
+        or provider.get("raw_output_digest")
+        != accepted_payload.get("raw_output_digest")
+        or provider.get("result_digest")
+        != accepted_payload.get("provider_result_digest")
+        or provider.get("projected_role_result_digest")
+        != accepted_payload.get("role_result_digest")
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_effect_invalid"
+        )
+    return accepted_event, accepted_payload, provider
+
+
+def _validate_bound_invocation_evidence(
+    evidence: Any,
+    *,
+    call: dict[str, Any],
+    accepted_payload: dict[str, Any],
+    provider: dict[str, Any],
+) -> None:
+    from system_strict_bootstrap import (
+        llm_result_digest,
+        validate_llm_invocation_evidence,
+    )
+
+    slot = str(call.get("slot") or "")
+    actual_role = str(accepted_payload.get("actual_role") or "")
+    errors = validate_llm_invocation_evidence(
+        evidence,
+        expected_purpose=str(accepted_payload.get("purpose") or ""),
+        expected_role=actual_role,
+        expected_log_name=_invocation_evidence_log_name(slot, actual_role),
+    )
+    if isinstance(evidence, dict):
+        expected = {
+            "invocation_id": accepted_payload.get("invocation_id"),
+            "prompt_digest": accepted_payload.get("prompt_digest"),
+            "raw_output_digest": accepted_payload.get("raw_output_digest"),
+            "result_digest": llm_result_digest(
+                provider.get("provider_cost_usd"),
+                provider.get("provider_usage"),
+            ),
+            "role_result_digest": accepted_payload.get("role_result_digest"),
+        }
+        errors.extend(
+            f"strict_authority_invocation_evidence_{field}_mismatch"
+            for field, value in expected.items()
+            if evidence.get(field) != value
+        )
+    if errors:
+        raise StrictAuthorityError(errors)
+
+
+def bound_invocation_evidence(
+    call: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return the exact journal-bound evidence and revalidate its live log."""
+
+    accepted_event, accepted_payload, provider = _invocation_evidence_authority(
+        call
+    )
+    store = _store()
+    events = [
+        event
+        for event in store.events(str(call.get("run_id") or ""))
+        if event.event_type == INVOCATION_EVIDENCE_BOUND_EVENT
+        and event.payload.get("effect_id") == call.get("effect_id")
+    ]
+    if not events:
+        return None
+    if len(events) != 1:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_binding_count_invalid"
+        )
+    event = events[0]
+    payload = event.payload
+    expected_fields = {
+        "schema_version",
+        "kind",
+        "run_id",
+        "slot",
+        "effect_id",
+        "invocation_id",
+        "accepted_event_seq",
+        "accepted_event_payload_digest",
+        "invocation_evidence_digest",
+        "invocation_evidence",
+    }
+    evidence = payload.get("invocation_evidence")
+    if (
+        set(payload) != expected_fields
+        or event.payload_digest != content_digest(payload)
+        or payload.get("schema_version") != 1
+        or payload.get("kind") != INVOCATION_EVIDENCE_BINDING_KIND
+        or payload.get("run_id") != call.get("run_id")
+        or payload.get("slot") != call.get("slot")
+        or payload.get("effect_id") != call.get("effect_id")
+        or payload.get("invocation_id") != call.get("invocation_id")
+        or payload.get("accepted_event_seq") != int(accepted_event.seq)
+        or payload.get("accepted_event_payload_digest")
+        != accepted_event.payload_digest
+        or payload.get("invocation_evidence_digest")
+        != content_digest(_json_value(evidence))
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_binding_invalid"
+        )
+    _validate_bound_invocation_evidence(
+        evidence,
+        call=call,
+        accepted_payload=accepted_payload,
+        provider=provider,
+    )
+    return deepcopy(evidence)
+
+
+def bind_invocation_evidence(
+    call: dict[str, Any],
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Idempotently bind one accepted strict role to its log evidence."""
+
+    existing = bound_invocation_evidence(call)
+    if existing is not None:
+        if _json_value(existing) != _json_value(evidence):
+            raise StrictAuthorityError(
+                "strict_authority_invocation_evidence_rebind_mismatch"
+            )
+        return existing
+    accepted_event, accepted_payload, provider = _invocation_evidence_authority(
+        call
+    )
+    _validate_bound_invocation_evidence(
+        evidence,
+        call=call,
+        accepted_payload=accepted_payload,
+        provider=provider,
+    )
+    payload = {
+        "schema_version": 1,
+        "kind": INVOCATION_EVIDENCE_BINDING_KIND,
+        "run_id": call["run_id"],
+        "slot": call["slot"],
+        "effect_id": call["effect_id"],
+        "invocation_id": call["invocation_id"],
+        "accepted_event_seq": int(accepted_event.seq),
+        "accepted_event_payload_digest": accepted_event.payload_digest,
+        "invocation_evidence_digest": content_digest(_json_value(evidence)),
+        "invocation_evidence": _json_value(evidence),
+    }
+    try:
+        _store().append_event(
+            call["run_id"],
+            INVOCATION_EVIDENCE_BOUND_EVENT,
+            payload,
+            causation_id=(
+                "strict-invocation-evidence-bound:" + str(call["effect_id"])
+            ),
+        )
+    except WorkflowConflict as exc:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_binding_conflict"
+        ) from exc
+    rebound = bound_invocation_evidence(call)
+    if rebound is None:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_binding_missing"
+        )
+    return rebound
+
+
+def record_bound_invocation_evidence(
+    call: dict[str, Any],
+    *,
+    log_file: str | Path,
+) -> dict[str, Any]:
+    """Return an existing binding or seal and bind its sole recoverable log."""
+
+    existing = bound_invocation_evidence(call)
+    if existing is not None:
+        return existing
+    path = Path(log_file)
+    try:
+        mode = path.lstat().st_mode
+        if (
+            stat.S_ISLNK(mode)
+            or not stat.S_ISREG(mode)
+            or path.stat().st_size <= 0
+        ):
+            raise OSError("provider log is not a nonempty regular file")
+    except OSError as exc:
+        raise StrictAuthorityError(
+            "strict_authority_invocation_evidence_provider_log_invalid"
+        ) from exc
+    _accepted_event, accepted_payload, provider = (
+        _invocation_evidence_authority(call)
+    )
+    from system_strict_bootstrap import (
+        SystemStrictBootstrapError,
+        llm_result_digest,
+        record_llm_invocation_evidence,
+    )
+
+    try:
+        evidence = record_llm_invocation_evidence(
+            invocation_id=str(accepted_payload["invocation_id"]),
+            purpose=str(accepted_payload["purpose"]),
+            role=str(accepted_payload["actual_role"]),
+            prompt_digest=str(accepted_payload["prompt_digest"]),
+            raw_output_digest=str(accepted_payload["raw_output_digest"]),
+            result_digest=llm_result_digest(
+                provider.get("provider_cost_usd"),
+                provider.get("provider_usage"),
+            ),
+            role_result=accepted_payload["role_result"],
+            log_file=path,
+            recover_or_record=True,
+        )
+    except SystemStrictBootstrapError as exc:
+        raise StrictAuthorityError(exc.errors) from exc
+    return bind_invocation_evidence(call, evidence)
+
+
+# Compatibility aliases for the first implementation name. Active callers use
+# the generic API above; keeping these aliases avoids breaking diagnostic code.
+bound_master_invocation_evidence = bound_invocation_evidence
+bind_master_invocation_evidence = bind_invocation_evidence
+
+
 def _accepted_events(checkpoint: dict[str, Any]) -> tuple[list[Any], list[str]]:
     try:
         binding = generation_binding(checkpoint)
@@ -1677,6 +2527,29 @@ def validate_receipts(
         binding_digest = content_digest(binding)
     except StrictAuthorityError as exc:
         return {}, list(exc.errors)
+    current_revision = checkpoint.get("checkpoint_revision")
+    phase_representatives: dict[str, str] = {}
+    for slot in required:
+        phase_name, _phase_slots = _authority_phase(slot)
+        phase_representatives.setdefault(phase_name, slot)
+    phase_anchors: dict[str, int] = {}
+    if not _plain_int(current_revision) or int(current_revision) < 0:
+        errors.append("strict_authority_checkpoint_revision_invalid")
+    else:
+        # Final receipt authority covers the complete durable phase, not only
+        # its accepted projection.  Re-open every strict EffectRequested row
+        # in each required phase so an unaccepted/rejected call cannot smuggle
+        # a second checkpoint revision past an otherwise uniform receipt set.
+        for phase_name, representative in phase_representatives.items():
+            try:
+                phase_anchors[phase_name] = _frozen_phase_checkpoint_revision(
+                    checkpoint,
+                    slot=representative,
+                    binding=binding,
+                    current_revision=int(current_revision),
+                )
+            except StrictAuthorityError as exc:
+                errors.extend(exc.errors)
     accepted, journal_errors = _accepted_events(checkpoint)
     errors.extend(journal_errors)
     store = _store()
@@ -1875,6 +2748,18 @@ def validate_receipts(
         extras = sorted(set(by_slot) - set(required))
         if extras:
             errors.append("strict_authority_unexpected_accepted_slots:" + ",".join(extras))
+    for phase_name, representative in phase_representatives.items():
+        anchor = phase_anchors.get(phase_name)
+        if anchor is None:
+            continue
+        _name, phase_slots = _authority_phase(representative)
+        accepted_phase_revisions = {
+            revisions[slot] for slot in phase_slots if slot in revisions
+        }
+        if accepted_phase_revisions and accepted_phase_revisions != {anchor}:
+            errors.append(
+                f"strict_authority_phase_checkpoint_revision_drift:{phase_name}"
+            )
     master_revisions = {
         revisions[slot] for slot in MASTER_SLOTS if slot in revisions
     }
@@ -1927,6 +2812,27 @@ def validate_master_final_projection(
     accepted, journal_errors = _accepted_events(checkpoint)
     if journal_errors:
         return {}, journal_errors
+    try:
+        expected_invocations = expected_master_invocation_evidence(plan)
+        for slot in MASTER_SLOTS[:5]:
+            slot_events = [
+                event
+                for event in accepted
+                if event.payload.get("slot") == slot
+            ]
+            if len(slot_events) != 1:
+                continue
+            bound = bound_invocation_evidence(
+                dict(slot_events[0].payload)
+            )
+            if _json_value(bound) != _json_value(expected_invocations[slot]):
+                errors.append(
+                    f"strict_authority_{slot}_invocation_evidence_mismatch"
+                )
+    except StrictAuthorityError as exc:
+        errors.extend(exc.errors)
+    if errors:
+        return {}, list(dict.fromkeys(errors))
     final_events = [
         event for event in accepted
         if event.payload.get("slot") == "master:final"
@@ -2094,8 +3000,11 @@ def authority_summary(
     required_slots: Iterable[str],
     expected_role_results: dict[str, Any] | None = None,
     expected_context_bindings: dict[str, dict[str, Any]] | None = None,
+    expected_invocation_evidence: dict[str, dict[str, Any]] | None = None,
     require_no_other_accepted: bool = False,
 ) -> dict[str, Any]:
+    required_slots = tuple(required_slots)
+    expected_invocation_evidence = expected_invocation_evidence or {}
     refs, errors = validate_receipts(
         checkpoint,
         required_slots=required_slots,
@@ -2103,6 +3012,59 @@ def authority_summary(
         expected_context_bindings=expected_context_bindings,
         require_no_other_accepted=require_no_other_accepted,
     )
+    required_set = set(required_slots)
+    invalid_expected_slots = set(expected_invocation_evidence) - (
+        required_set & set(INVOCATION_EVIDENCE_SLOTS)
+    )
+    if invalid_expected_slots:
+        errors.append(
+            "strict_authority_expected_invocation_evidence_slots_invalid:"
+            + ",".join(sorted(invalid_expected_slots))
+        )
+    bound_slots: list[str] = []
+    if set(MASTER_SLOTS).issubset(required_set):
+        bound_slots.extend(MASTER_SLOTS[:5])
+    bound_slots.extend(slot for slot in GATE_SLOTS if slot in required_set)
+    if not errors and bound_slots:
+        accepted, journal_errors = _accepted_events(checkpoint)
+        errors.extend(journal_errors)
+        expected_invocations = dict(expected_invocation_evidence)
+        final_context = (expected_context_bindings or {}).get("master:final")
+        if isinstance(final_context, dict) and isinstance(
+            final_context.get("proposal_packet"), dict
+        ):
+            try:
+                expected_invocations.update(expected_master_invocation_evidence({
+                    "proposal_ensemble": final_context["proposal_packet"],
+                }))
+            except StrictAuthorityError as exc:
+                errors.extend(exc.errors)
+        for slot in bound_slots:
+            slot_events = [
+                event
+                for event in accepted
+                if event.payload.get("slot") == slot
+            ]
+            if len(slot_events) != 1:
+                continue
+            try:
+                bound = bound_invocation_evidence(
+                    dict(slot_events[0].payload)
+                )
+                if bound is None:
+                    errors.append(
+                        f"strict_authority_{slot}_invocation_evidence_unbound"
+                    )
+                elif (
+                    slot in expected_invocations
+                    and _json_value(bound)
+                    != _json_value(expected_invocations[slot])
+                ):
+                    errors.append(
+                        f"strict_authority_{slot}_invocation_evidence_mismatch"
+                    )
+            except StrictAuthorityError as exc:
+                errors.extend(exc.errors)
     if errors:
         raise StrictAuthorityError(errors)
     subject = {
@@ -2118,23 +3080,32 @@ def authority_summary(
 __all__ = [
     "ALL_SLOTS",
     "GATE_SLOTS",
+    "INVOCATION_EVIDENCE_SLOTS",
     "MASTER_SLOTS",
     "StrictAuthorityError",
     "accept_role_result",
     "authority_run_id",
     "authority_summary",
+    "bind_invocation_evidence",
+    "bind_master_invocation_evidence",
+    "bound_invocation_evidence",
+    "bound_master_invocation_evidence",
     "canonical_provider_output",
     "complete_provider_call",
     "dispatch_call",
     "fail_provider_call",
     "generation_binding",
     "gate_call_context",
+    "gate_provider_evidence_snapshot_dir",
     "expected_master_contexts",
+    "expected_master_invocation_evidence",
     "expected_master_role_results",
     "final_master_call_context",
     "new_call",
     "ballot_call_context",
     "proposal_call_context",
+    "record_bound_invocation_evidence",
+    "render_gate_provider_prompt",
     "reject_duplicate_proposal",
     "schema_retry_prompt",
     "validate_master_final_projection",

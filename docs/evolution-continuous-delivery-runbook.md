@@ -236,6 +236,47 @@ dead owner. Background stability verification follows the same progress rule:
 every thread exit, including cancellation-class exceptions, releases the
 single-flight slot and projects a failed refresh before a later retry.
 
+First-strict Master recovery has a second immutable boundary. The first
+durable proposal effect freezes the authority-phase checkpoint revision for
+all three proposals, both anonymous ballots, and final Master output. A
+partial packet may advance checkpoint retry metadata, but a restart must
+replay already accepted slots, continue only a missing slot's remaining schema
+budget, and keep every later Master receipt on the frozen revision. Before
+using that anchor, recovery reopens the append-only journal and proves the
+effect input digest, workflow/generation binding, stage, role/purpose, and
+per-slot context binding. Multiple phase revisions, a checkpoint revision
+rollback, same-slot context drift, or any other binding mismatch is a
+control-plane failure, never provider unavailability and never permission to
+open a second authority budget.
+
+Each accepted proposal, ballot, Reviewer, and Critic effect also owns one
+content-bound invocation-evidence receipt. It uses the accepted effect's final
+provider-visible prompt digest and binds terminal output, provider result/usage,
+deterministic role projection, and the exact role log. If the process stops
+after acceptance but before this binding, recovery may add the one matching
+trailer to an existing non-empty regular provider log, or reuse that exact
+trailer read-only. Missing, empty, non-regular, multiply marked, mismatched, or
+subsequently changed logs fail closed. Such failures, including those found
+while constructing or rendering Reviewer/Critic descriptors before provider
+dispatch, use the canonical control-plane abandon transaction with zero LLM
+infrastructure retry debt.
+
+The first-strict Reviewer and Critic never rebuild their prompts from live
+checkpoint or evidence state after call creation. Their descriptor freezes the
+semantic renderer inputs and the checked-in producer/template identity. The
+Critic also freezes its read scope; for the empty v143 pool the scope is `None`
+and the prompt explicitly prohibits every strength/history source. The normal
+post-v143 Critic continues to use only its immutable generation snapshot.
+
+Frontend operational detail follows the same identity boundary. The separately
+polled schema-2 checkpoint must carry a positive `checkpoint_revision` and is
+displayed only when revision, epoch, versions, stage, run, and workflow match
+the paired active-generation state. Critic `approved=true` records completed
+advisory execution; only `advisory_approved` supplies the displayed
+recommendation. The supported `--no-daemon` mode projects heartbeat
+`not_applicable` and does not treat an absent PID file as degraded. An enabled
+daemon with no PID, or a live daemon while disabled, remains a health failure.
+
 ## Ten-generation observation
 
 The count begins with the first successful publication after the final code or

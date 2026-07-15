@@ -10,6 +10,38 @@ import tool_planning
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
 
+def test_strict_authority_failure_uses_control_plane_abandon(monkeypatch):
+    from strict_authority_workflow import StrictAuthorityError
+
+    captured = {}
+
+    async def fake_abandon(next_v, source_v, **kwargs):
+        captured.update({"next_v": next_v, "source_v": source_v, **kwargs})
+        return {"classified": "control_plane"}
+
+    monkeypatch.setattr(
+        tool_planning,
+        "_abandon_master_generation",
+        fake_abandon,
+    )
+    result = asyncio.run(tool_planning._abandon_strict_master_authority(
+        143,
+        142,
+        error=StrictAuthorityError([
+            "strict_authority_phase_slot_context_drift:master:proposal:mechanism"
+        ]),
+        ui=None,
+    ))
+
+    assert result == {"classified": "control_plane"}
+    assert captured["error"] == "SYSTEM_STRICT_AUTHORITY_INVALID"
+    assert captured["fail_count"] == 0
+    assert captured["payload"]["failure_class"] == "control_plane"
+    assert captured["payload"]["validation_errors"] == [
+        "strict_authority_phase_slot_context_drift:master:proposal:mechanism"
+    ]
+
+
 def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     tmp_path,
     monkeypatch,

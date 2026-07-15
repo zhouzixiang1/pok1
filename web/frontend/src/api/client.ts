@@ -1,12 +1,13 @@
 import type {
   BotRating, MatchStats, MatchMatrix, HistoryEntry, GenerationLog, LogContent,
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
-  PipelineCheckpoint, WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
+  WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
   H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
   OfficialCertificationJobsProjection,
   ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
 } from "./types";
+import { expectPipelineCheckpoint } from "./pipeline";
 const BASE = "/api";
 const FETCH_TIMEOUT = 30_000;
 
@@ -201,7 +202,9 @@ export const api = {
     ),
 
   // Pipeline
-  pipelineCheckpoint: () => fetchJSON<PipelineCheckpoint | null>(`${BASE}/pipeline/checkpoint`),
+  pipelineCheckpoint: async () => expectPipelineCheckpoint(
+    await fetchJSON<unknown>(`${BASE}/pipeline/checkpoint`),
+  ),
   pipelineFailures: (limit = 10) => fetchJSON<WorkerFailure[]>(`${BASE}/pipeline/failures?limit=${limit}`),
 
   // Prompts

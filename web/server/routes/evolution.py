@@ -282,6 +282,7 @@ async def evolution_state():
             "ratings": [],
             "active_bots": [],
             "pipeline_stage": None,
+            "pipeline_checkpoint_revision": None,
             "grand_cost_total": 0.0,
             "gen_cost_total": 0.0,
             "generation_cost_identity": None,
@@ -299,6 +300,9 @@ async def evolution_state():
         state["ratings"] = []
         state["active_bots"] = []
     state["pipeline_stage"] = checkpoint.get("stage") if checkpoint else None
+    state["pipeline_checkpoint_revision"] = (
+        checkpoint.get("checkpoint_revision") if checkpoint else None
+    )
     state["post_publication_handoff"] = handoff
     if checkpoint is None and handoff.get("status") != "none":
         state["pipeline_stage"] = "post_publication_handoff"

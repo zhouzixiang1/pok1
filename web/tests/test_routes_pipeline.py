@@ -28,6 +28,30 @@ class TestPipelineCheckpoint:
         assert resp.status_code == 200
         assert resp.json() is None
 
+    def test_current_checkpoint_projection_carries_revision(self, client, monkeypatch):
+        from server.routes import pipeline
+
+        checkpoint = {
+            "checkpoint_schema_version": 2,
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "checkpoint_revision": 7,
+            "next_v": 143,
+            "source_v": 142,
+            "stage": "reviewed",
+            "workflow_run_id": "workflow-v1",
+            "run_id": "143#1",
+        }
+        monkeypatch.setattr(
+            pipeline,
+            "load_strict_pipeline_checkpoint",
+            lambda *_args, **_kwargs: checkpoint,
+        )
+
+        resp = client.get("/api/pipeline/checkpoint")
+
+        assert resp.status_code == 200
+        assert resp.json()["checkpoint_revision"] == 7
+
 
 class TestPipelineFailures:
     def test_returns_list(self, client):

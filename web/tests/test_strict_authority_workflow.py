@@ -193,13 +193,19 @@ def test_projection_rejection_is_not_replayed_as_poison(authority, monkeypatch):
         for event in store.events(call["run_id"])
     )
 
+    advanced_checkpoint = {
+        **checkpoint,
+        "checkpoint_revision": checkpoint["checkpoint_revision"] + 1,
+        "audit_attempt": 1,
+    }
     fresh = module.new_call(
-        checkpoint,
+        advanced_checkpoint,
         slot="proposal:mechanism",
         context_binding={"slot": "proposal:mechanism", "suffix": "poison"},
     )
     assert fresh.get("replay_provider") is not True
     assert fresh["invocation_id"] != call["invocation_id"]
+    assert fresh["checkpoint_revision"] == checkpoint["checkpoint_revision"]
     assert fresh["schema_retry_required"] is True
     assert fresh["schema_attempt"] == 2
     assert "single permitted" in module.schema_retry_prompt(fresh)
@@ -233,7 +239,7 @@ def test_projection_rejection_is_not_replayed_as_poison(authority, monkeypatch):
     )
     with pytest.raises(module.StrictAuthorityError, match="schema_retry_exhausted"):
         module.new_call(
-            checkpoint,
+            advanced_checkpoint,
             slot="proposal:mechanism",
             context_binding={"slot": "proposal:mechanism", "suffix": "poison"},
         )
@@ -635,12 +641,46 @@ def test_wrong_stage_and_parse_contract_fail_closed(authority):
         )
 
 
-def test_master_revision_drift_and_reverse_gate_revision_are_rejected(authority):
+def test_master_revision_drift_and_reverse_gate_revision_are_rejected(
+    authority,
+    monkeypatch,
+):
     module, _store = authority
-    for index, slot in enumerate(module.MASTER_SLOTS):
-        _call(module, _checkpoint(revision=10 + (index == 5)), slot)
+    for slot in module.MASTER_SLOTS:
+        _call(module, _checkpoint(revision=10), slot)
     _call(module, _checkpoint(stage="quality_passed", revision=9), "review")
     _call(module, _checkpoint(stage="reviewed", revision=8), "critic")
+
+    accepted, accepted_errors = module._accepted_events(
+        _checkpoint(stage="reviewed", revision=99)
+    )
+    assert accepted_errors == []
+    tampered = []
+    for event in accepted:
+        if event.payload.get("slot") != "master:final":
+            tampered.append(event)
+            continue
+        payload = deepcopy(event.payload)
+        payload["checkpoint_revision"] = 11
+        payload["receipt_digest"] = module.content_digest({
+            key: value
+            for key, value in payload.items()
+            if key != "receipt_digest"
+        })
+        tampered.append(type(event)(
+            run_id=event.run_id,
+            seq=event.seq,
+            event_type=event.event_type,
+            schema_version=event.schema_version,
+            payload=payload,
+            payload_digest=module.content_digest(payload),
+            causation_id=event.causation_id,
+        ))
+    monkeypatch.setattr(
+        module,
+        "_accepted_events",
+        lambda _checkpoint: (list(tampered), []),
+    )
 
     _refs, errors = module.validate_receipts(
         _checkpoint(stage="reviewed", revision=99),
@@ -650,6 +690,145 @@ def test_master_revision_drift_and_reverse_gate_revision_are_rejected(authority)
     assert "strict_authority_master_checkpoint_revision_drift" in errors
     assert "strict_authority_review_revision_precedes_master" in errors
     assert "strict_authority_critic_revision_precedes_review" in errors
+
+
+def test_master_phase_revision_survives_checkpoint_metadata_updates(authority):
+    module, _store = authority
+    original_checkpoint = _checkpoint(revision=10)
+    original, role_result, receipt = _call(
+        module,
+        original_checkpoint,
+        "proposal:mechanism",
+    )
+    advanced_checkpoint = {
+        **original_checkpoint,
+        "checkpoint_revision": 12,
+        "audit_attempt": 1,
+    }
+
+    recovered = module.new_call(
+        advanced_checkpoint,
+        slot="proposal:mechanism",
+        context_binding={"slot": "proposal:mechanism", "suffix": "one"},
+    )
+    assert recovered["replay_provider"] is True
+    assert recovered["checkpoint_revision"] == 10
+    assert recovered["effect_id"] == original["effect_id"]
+    assert recovered["accepted_receipt"] == receipt
+    assert recovered["accepted_role_result"] == role_result
+
+    expected_results = {"proposal:mechanism": role_result}
+    for slot in module.MASTER_SLOTS[1:]:
+        fresh, fresh_result, _fresh_receipt = _call(
+            module,
+            advanced_checkpoint,
+            slot,
+        )
+        assert fresh.get("replay_provider") is not True
+        assert fresh["checkpoint_revision"] == 10
+        expected_results[slot] = fresh_result
+
+    _refs, errors = module.validate_receipts(
+        advanced_checkpoint,
+        required_slots=module.MASTER_SLOTS,
+        expected_role_results=expected_results,
+        require_no_other_accepted=True,
+    )
+    assert errors == []
+
+
+def test_master_phase_revision_rejects_checkpoint_regression(authority):
+    module, _store = authority
+    _call(module, _checkpoint(revision=10), "proposal:mechanism")
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_phase_checkpoint_revision_regressed:master",
+    ):
+        module.new_call(
+            _checkpoint(revision=9),
+            slot="proposal:counterfactual",
+            context_binding={"slot": "proposal:counterfactual"},
+        )
+
+
+def test_master_phase_revision_rejects_mixed_durable_effect_anchors(authority):
+    module, store = authority
+    original, _role_result, _receipt = _call(
+        module,
+        _checkpoint(revision=10),
+        "proposal:mechanism",
+    )
+    mixed_input = deepcopy(store.effect(original["effect_id"])["input_payload"])
+    mixed_context = {"slot": "proposal:counterfactual", "suffix": "mixed"}
+    mixed_input.update({
+        "slot": "proposal:counterfactual",
+        "role": module.SLOT_CONTRACTS["proposal:counterfactual"][0],
+        "purpose": module.SLOT_CONTRACTS["proposal:counterfactual"][1],
+        "invocation_id": "d" * 32,
+        "checkpoint_revision": 11,
+        "context_binding": mixed_context,
+        "context_binding_digest": module.content_digest(mixed_context),
+        "prompt_digest": "e" * 64,
+        "actual_role": module.SLOT_CONTRACTS["proposal:counterfactual"][0],
+    })
+    store.request_effect(
+        run_id=original["run_id"],
+        effect_id="strict-llm-" + "f" * 64,
+        kind=module.EFFECT_KIND,
+        input_payload=mixed_input,
+        causation_id="pytest-mixed-master-revision",
+        max_attempts=1,
+    )
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_phase_checkpoint_revision_drift:master",
+    ):
+        module.new_call(
+            _checkpoint(revision=11),
+            slot="ballot:scope",
+            context_binding={"slot": "ballot:scope"},
+        )
+
+
+def test_final_receipts_reject_unaccepted_mixed_phase_revision(authority):
+    module, store = authority
+    checkpoint = _checkpoint(revision=10)
+    original, role_result, _receipt = _call(
+        module,
+        checkpoint,
+        "proposal:mechanism",
+    )
+    mixed_input = deepcopy(store.effect(original["effect_id"])["input_payload"])
+    mixed_context = {"slot": "proposal:counterfactual", "suffix": "unaccepted"}
+    mixed_input.update({
+        "slot": "proposal:counterfactual",
+        "role": module.SLOT_CONTRACTS["proposal:counterfactual"][0],
+        "purpose": module.SLOT_CONTRACTS["proposal:counterfactual"][1],
+        "invocation_id": "1" * 32,
+        "checkpoint_revision": 11,
+        "context_binding": mixed_context,
+        "context_binding_digest": module.content_digest(mixed_context),
+        "prompt_digest": "2" * 64,
+        "actual_role": module.SLOT_CONTRACTS["proposal:counterfactual"][0],
+    })
+    store.request_effect(
+        run_id=original["run_id"],
+        effect_id="strict-llm-" + "3" * 64,
+        kind=module.EFFECT_KIND,
+        input_payload=mixed_input,
+        causation_id="pytest-unaccepted-mixed-master-revision",
+        max_attempts=1,
+    )
+
+    _refs, errors = module.validate_receipts(
+        {**checkpoint, "checkpoint_revision": 11},
+        required_slots=("proposal:mechanism",),
+        expected_role_results={"proposal:mechanism": role_result},
+        require_no_other_accepted=True,
+    )
+    assert "strict_authority_phase_checkpoint_revision_drift:master" in errors
 
 
 def test_provider_event_reuse_across_slots_is_rejected(authority):
@@ -693,6 +872,82 @@ def test_wrong_context_binding_is_rejected(authority):
         },
     )
     assert "strict_authority_proposal:mechanism_context_binding_mismatch" in errors
+
+
+def test_gate_phase_revision_replays_only_identical_semantics(authority):
+    module, _store = authority
+    checkpoint = _checkpoint(stage="quality_passed", revision=20)
+    original = module.new_call(
+        checkpoint,
+        slot="review",
+        context_binding={"semantic": "focus-a"},
+    )
+    module.dispatch_call(
+        original,
+        full_prompt="review focus a",
+        tools=module.SLOT_TOOLS["review"],
+        owner="pytest",
+    )
+    module.fail_provider_call(original, "provider unavailable")
+
+    advanced = deepcopy(checkpoint)
+    advanced["checkpoint_revision"] = 21
+    retry = module.new_call(
+        advanced,
+        slot="review",
+        context_binding={"semantic": "focus-a"},
+    )
+    assert retry["checkpoint_revision"] == 20
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_phase_slot_context_drift:review:review",
+    ):
+        module.new_call(
+            advanced,
+            slot="review",
+            context_binding={"semantic": "focus-b"},
+        )
+
+
+def test_master_phase_revision_replays_only_identical_per_slot_context(authority):
+    module, _store = authority
+    checkpoint = _checkpoint(revision=10)
+    original = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding={"semantic": "planning-context-a"},
+    )
+    module.dispatch_call(
+        original,
+        full_prompt="master mechanism context a",
+        tools=module.SLOT_TOOLS["proposal:mechanism"],
+        owner="pytest",
+    )
+    module.fail_provider_call(original, "provider unavailable")
+
+    advanced = deepcopy(checkpoint)
+    advanced["checkpoint_revision"] = 11
+    retry = module.new_call(
+        advanced,
+        slot="proposal:mechanism",
+        context_binding={"semantic": "planning-context-a"},
+    )
+    assert retry["checkpoint_revision"] == 10
+    assert retry.get("replay_provider") is not True
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match=(
+            "strict_authority_phase_slot_context_drift:"
+            "master:proposal:mechanism"
+        ),
+    ):
+        module.new_call(
+            advanced,
+            slot="proposal:mechanism",
+            context_binding={"semantic": "planning-context-b"},
+        )
 
 
 def test_master_summary_rejects_missing_separate_final_master_receipt(authority):
@@ -847,3 +1102,175 @@ def test_retry_attempt_receipt_replays_from_initial_attempt_prompt(
         require_no_other_accepted=True,
     )
     assert errors == []
+
+
+def test_accept_before_evidence_record_recovers_once_and_binds(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    original, _role_result, _receipt = _call(
+        module,
+        checkpoint,
+        "proposal:mechanism",
+    )
+    log_file = store.path.parent / "master_proposal_mechanism_io.txt"
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_evidence_provider_log_invalid",
+    ):
+        module.record_bound_invocation_evidence(
+            original,
+            log_file=log_file,
+        )
+    log_file.write_text("", encoding="utf-8")
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_evidence_provider_log_invalid",
+    ):
+        module.record_bound_invocation_evidence(
+            original,
+            log_file=log_file,
+        )
+    log_file.write_text("completed provider log\n", encoding="utf-8")
+
+    first = module.record_bound_invocation_evidence(
+        original,
+        log_file=log_file,
+    )
+    recovered = module.new_call(
+        {**checkpoint, "checkpoint_revision": 11},
+        slot="proposal:mechanism",
+        context_binding={
+            "slot": "proposal:mechanism",
+            "suffix": "one",
+        },
+    )
+    second = module.record_bound_invocation_evidence(
+        recovered,
+        log_file=log_file,
+    )
+
+    assert second == first
+    assert log_file.read_text(encoding="utf-8").count(
+        "[SYSTEM LLM INVOCATION EVIDENCE]"
+    ) == 1
+    bindings = [
+        event
+        for event in store.events(original["run_id"])
+        if event.event_type == module.INVOCATION_EVIDENCE_BOUND_EVENT
+    ]
+    assert len(bindings) == 1
+
+
+def test_gate_evidence_replay_is_stable_and_log_drift_fails(authority):
+    module, store = authority
+    checkpoint = _checkpoint(stage="quality_passed", revision=20)
+    original, _role_result, _receipt = _call(
+        module,
+        checkpoint,
+        "review",
+    )
+    log_file = store.path.parent / "reviewer_io.txt"
+    log_file.write_text("completed provider log\n", encoding="utf-8")
+    first = module.record_bound_invocation_evidence(
+        original,
+        log_file=log_file,
+    )
+    recovered = module.new_call(
+        {**checkpoint, "checkpoint_revision": 21},
+        slot="review",
+        context_binding={"slot": "review", "suffix": "one"},
+    )
+    second = module.record_bound_invocation_evidence(
+        recovered,
+        log_file=log_file,
+    )
+    assert second == first
+
+    with log_file.open("a", encoding="utf-8") as handle:
+        handle.write("post-binding drift\n")
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="system_bootstrap_llm_invocation_log_digest_mismatch",
+    ):
+        module.record_bound_invocation_evidence(
+            recovered,
+            log_file=log_file,
+        )
+
+
+def test_invocation_evidence_prompt_digest_must_match_provider_effect(
+    authority,
+):
+    module, store = authority
+    checkpoint = _checkpoint()
+    call, role_result, _receipt = _call(
+        module,
+        checkpoint,
+        "proposal:mechanism",
+    )
+    provider = store.effect(call["effect_id"])["result_payload"]
+    from system_strict_bootstrap import (
+        llm_result_digest,
+        record_llm_invocation_evidence,
+    )
+
+    evidence = record_llm_invocation_evidence(
+        invocation_id=call["invocation_id"],
+        purpose=call["purpose"],
+        role=call["actual_role"],
+        prompt_digest="f" * 64,
+        raw_output_digest=call["raw_output_digest"],
+        result_digest=llm_result_digest(
+            provider["provider_cost_usd"],
+            provider["provider_usage"],
+        ),
+        role_result=role_result,
+        log_file=store.path.parent / "master_proposal_mechanism_io.txt",
+    )
+    assert evidence["prompt_digest"] != call["prompt_digest"]
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_invocation_evidence_prompt_digest_mismatch",
+    ):
+        module.bind_invocation_evidence(call, evidence)
+
+
+def test_evidence_recovery_error_becomes_strict_authority(authority):
+    module, store = authority
+    call, role_result, _receipt = _call(
+        module,
+        _checkpoint(),
+        "proposal:mechanism",
+    )
+    provider = store.effect(call["effect_id"])["result_payload"]
+    from system_strict_bootstrap import (
+        llm_result_digest,
+        record_llm_invocation_evidence,
+    )
+
+    log_file = store.path.parent / "master_proposal_mechanism_io.txt"
+    log_file.write_text("completed provider log\n", encoding="utf-8")
+    kwargs = {
+        "invocation_id": call["invocation_id"],
+        "purpose": call["purpose"],
+        "role": call["actual_role"],
+        "prompt_digest": call["prompt_digest"],
+        "raw_output_digest": call["raw_output_digest"],
+        "result_digest": llm_result_digest(
+            provider["provider_cost_usd"],
+            provider["provider_usage"],
+        ),
+        "role_result": role_result,
+        "log_file": log_file,
+    }
+    record_llm_invocation_evidence(**kwargs)
+    record_llm_invocation_evidence(**kwargs)
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="system_bootstrap_llm_invocation_recovery_evidence_invalid",
+    ):
+        module.record_bound_invocation_evidence(
+            call,
+            log_file=log_file,
+        )

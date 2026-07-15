@@ -793,6 +793,91 @@ class TestStatus:
         assert "orchestrator_task_not_active" in data["issues"]
         app_state.set_running(False)
 
+    @pytest.mark.parametrize(
+        ("daemon_enabled", "expected_overall", "expected_health_error"),
+        (
+            (False, "healthy", None),
+            (True, "degraded", "daemon_pid_file_missing"),
+        ),
+    )
+    def test_running_health_distinguishes_no_daemon_from_missing_enabled_daemon(
+        self,
+        client,
+        monkeypatch,
+        daemon_enabled,
+        expected_overall,
+        expected_health_error,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.set_running(True)
+        app_state.override_runtime_config(daemon_enabled=daemon_enabled)
+        monkeypatch.setattr(
+            app_state,
+            "task_snapshot",
+            lambda: {
+                "present": True,
+                "done": False,
+                "cancelled": False,
+                "shutdown_requested": False,
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_sync_evolution_fields",
+            lambda _state: {
+                "running": True,
+                "daemon_enabled": daemon_enabled,
+                "epoch_initialized": True,
+                "active_generation": None,
+                "post_publication_handoff": None,
+                "stability_observation": {
+                    "continuity_valid": True,
+                    "verification": {
+                        "state": "fresh",
+                        "fresh_until": time.time() + 60,
+                    },
+                },
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pid_info",
+            lambda _path: {
+                "exists": False,
+                "pid": None,
+                "alive": False,
+                "process_identity": "missing",
+                "health_error": "daemon_pid_file_missing",
+            },
+        )
+        monkeypatch.setattr(
+            control,
+            "_read_pipeline_health",
+            lambda _status: {"exists": False, "stage": None},
+        )
+
+        response = client.get("/api/control/health")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["overall"] == expected_overall
+        assert payload["daemon"]["configured"] is daemon_enabled
+        assert payload["daemon"]["health_error"] == expected_health_error
+        assert payload["daemon"]["heartbeat_status"] == (
+            "missing" if daemon_enabled else "not_applicable"
+        )
+        if daemon_enabled:
+            assert "daemon_dead" in payload["issues"]
+            assert (
+                "daemon_health_error:daemon_pid_file_missing"
+                in payload["issues"]
+            )
+        else:
+            assert payload["issues"] == []
+        app_state.set_running(False)
+
     def test_shutdown_requested_unfinished_task_retains_runtime_ownership(
         self,
         monkeypatch,
@@ -1167,6 +1252,25 @@ class TestStatus:
         assert disabled["alive"] is True
         assert disabled["heartbeat_status"] == "not_applicable"
         assert disabled["health_error"] == "daemon_running_while_disabled"
+
+    def test_disabled_daemon_treats_missing_pid_as_not_applicable(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        monkeypatch.setattr(control, "RESULTS_DIR", tmp_path)
+        app_state.override_runtime_config(daemon_enabled=False)
+
+        snapshot = control._daemon_health_snapshot()
+
+        assert snapshot["configured"] is False
+        assert snapshot["exists"] is False
+        assert snapshot["alive"] is False
+        assert snapshot["heartbeat_status"] == "not_applicable"
+        assert snapshot["health_error"] is None
 
     @pytest.mark.parametrize(
         ("identity", "health_error"),

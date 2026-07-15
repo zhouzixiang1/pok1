@@ -2,6 +2,8 @@ import asyncio
 import hashlib
 import json
 
+import pytest
+
 
 class _UI:
     costs = {}
@@ -93,6 +95,7 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
     tmp_path,
 ):
     import agent_review
+    import strict_authority_workflow
 
     captured = {}
     monkeypatch.setattr(
@@ -132,6 +135,19 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
         }), 0.0, {}
 
     monkeypatch.setattr(agent_review, "run_claude_query", fake_query)
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "render_gate_provider_prompt",
+        lambda _call: (
+            "# SYSTEM-SUPPLIED STRICT BOOTSTRAP POLICY\n"
+            "target=bots/national_v143/policy.py"
+        ),
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "gate_provider_evidence_snapshot_dir",
+        lambda _call: None,
+    )
 
     result = asyncio.run(agent_review._run_critic(
         143,
@@ -149,6 +165,41 @@ def test_rendered_bootstrap_critic_has_read_only_tool_and_no_v142_path(
     assert "national-bot-v142" not in captured["prompt"]
     assert "SYSTEM-SUPPLIED STRICT BOOTSTRAP POLICY" in captured["prompt"]
     assert "Use Bash" not in captured["prompt"]
+
+
+def test_strict_critic_renderer_authority_error_is_not_infrastructure(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_review
+    import strict_authority_workflow as authority
+
+    monkeypatch.setattr(agent_review, "get_logs_dir", lambda _version: tmp_path)
+    monkeypatch.setattr(
+        agent_review,
+        "get_bot_dir",
+        lambda version: tmp_path / f"national_v{version}",
+    )
+    monkeypatch.setattr(
+        authority,
+        "gate_provider_evidence_snapshot_dir",
+        lambda _call: None,
+    )
+
+    def authority_drift(_call):
+        raise authority.StrictAuthorityError("critic renderer drift")
+
+    monkeypatch.setattr(authority, "render_gate_provider_prompt", authority_drift)
+
+    with pytest.raises(authority.StrictAuthorityError, match="critic renderer drift"):
+        asyncio.run(agent_review._run_critic(
+            143,
+            142,
+            "{}",
+            _UI(),
+            execution_invocation_id="1" * 32,
+            strict_authority={"invocation_id": "1" * 32},
+        ))
 
 
 def test_normal_critic_read_scope_is_exact_source_target_and_snapshot(

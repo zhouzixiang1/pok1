@@ -368,6 +368,12 @@ def _daemon_health_snapshot() -> dict:
         data["heartbeat_status"] = "not_applicable"
         if data.get("alive"):
             data["health_error"] = "daemon_running_while_disabled"
+        elif not data.get("exists"):
+            # ``--no-daemon`` is a complete, supported runtime mode.  In
+            # that mode an absent PID record proves the desired process
+            # state; the lifecycle reader's fail-closed missing-file error is
+            # only applicable when a daemon is configured.
+            data["health_error"] = None
         return data
     if not data.get("alive"):
         data["heartbeat_status"] = "invalid" if data.get("exists") else "missing"

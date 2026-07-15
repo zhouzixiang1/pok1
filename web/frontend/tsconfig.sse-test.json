@@ -18,6 +18,8 @@
     "src/lib/dataStreamController.ts",
     "src/lib/evolutionStreamController.ts",
     "src/lib/epochStreamAuthority.ts",
-    "src/lib/controlRuntimeState.ts"
+    "src/lib/controlRuntimeState.ts",
+    "src/lib/pipelinePresentation.ts",
+    "src/api/pipeline.ts"
   ]
 }

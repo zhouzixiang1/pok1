@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 import re
 
 import pytest
@@ -553,6 +554,334 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
         "MASTER PROPOSAL counterfactual DISTINCTNESS RETRY"
         in observed_roles
     )
+
+
+@pytest.mark.asyncio
+async def test_strict_partial_packet_replays_accepted_slots_across_revision(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as authority
+    from claude_agent_sdk import ResultMessage
+    from workflow_kernel import WorkflowStore
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = source_dir / ".protocol_bootstrap_no_strength_evidence"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    store = WorkflowStore(tmp_path / "strict-authority.sqlite3")
+    monkeypatch.setattr(authority, "_store", lambda: store)
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: source_dir)
+
+    provider_slots = []
+    compute_calls = {"count": 0}
+    provider_counter = {"value": 0}
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **kwargs):
+        call = kwargs["strict_authority"]
+        log_file = Path(_args[0])
+        authority.dispatch_call(
+            call,
+            full_prompt=str(prompt),
+            tools=kwargs["tools"],
+            owner="pytest-strict-partial-packet",
+            actual_role=role_name,
+        )
+        if call.get("replay_provider"):
+            return (
+                call["replay_raw_output"],
+                float(call.get("replay_cost_usd") or 0.0),
+                call.get("replay_usage") or {},
+            )
+
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"provider call for {role_name}\n")
+
+        slot = call["slot"]
+        provider_slots.append(slot)
+        if slot == "proposal:compute_memory":
+            compute_calls["count"] += 1
+            if compute_calls["count"] == 1:
+                error = RuntimeError("simulated provider cleanup failure")
+                authority.fail_provider_call(call, error)
+                raise error
+            output = (
+                "not a schema-valid proposal"
+                if compute_calls["count"] == 2
+                else _proposal("compute_memory")
+            )
+        elif slot.startswith("proposal:"):
+            output = _proposal(slot.split(":", 1)[1])
+        else:
+            proposal_ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"',
+                str(prompt),
+            )))
+            output = _critic_output(agent_master, proposal_ids)
+
+        provider_counter["value"] += 1
+        result = ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id=f"strict-partial-{provider_counter['value']}",
+            total_cost_usd=0.01,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            result=output,
+        )
+        authority._observe_provider_result(
+            result,
+            invocation_id=call["invocation_id"],
+            effect_id=call["effect_id"],
+        )
+        authority.complete_provider_call(
+            call,
+            raw_output=output,
+            provider_results=[result],
+        )
+        return output, 0.01, result.usage
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    checkpoint = {
+        "workflow_run_id": "generation:143:workflow-v-test",
+        "source_v": 142,
+        "next_v": 143,
+        "stage": "direction_audited",
+        "checkpoint_revision": 10,
+        "audit_context": {
+            "protocol_bootstrap": {"receipt_digest": "a" * 64},
+            "prepared_artifact_contract": {
+                "contract_digest": "b" * 64,
+                "prepared_artifact_hash": "c" * 64,
+            },
+        },
+    }
+    kwargs = {
+        "planning_context": "frozen strict partial packet context",
+        "source_v": 142,
+        "next_v": 143,
+        "ui": _UI(),
+        "log_dir": tmp_path,
+        "allowed_evidence_snapshot_dir": str(snapshot_dir),
+        "baseline_v": 143,
+        "protocol_bootstrap_prepared_only": True,
+    }
+
+    first = json.loads(await agent_master._run_master_proposal_ensemble(
+        strict_checkpoint=checkpoint,
+        **kwargs,
+    ))
+    assert first["valid"] is False
+    assert first["reason"].endswith("got_2")
+    accepted_before = [
+        event.payload["slot"]
+        for event in store.events(authority.authority_run_id(
+            checkpoint["workflow_run_id"]
+        ))
+        if event.event_type == authority.ACCEPTED_EVENT
+    ]
+    assert sorted(accepted_before) == [
+        "proposal:counterfactual",
+        "proposal:mechanism",
+    ]
+
+    provider_count_before_retry = len(provider_slots)
+    advanced_checkpoint = {
+        **checkpoint,
+        "checkpoint_revision": 11,
+        "audit_attempt": 1,
+    }
+    second = json.loads(await agent_master._run_master_proposal_ensemble(
+        strict_checkpoint=advanced_checkpoint,
+        **kwargs,
+    ))
+    assert second["valid"] is True
+    retry_provider_slots = provider_slots[provider_count_before_retry:]
+    assert "proposal:mechanism" not in retry_provider_slots
+    assert "proposal:counterfactual" not in retry_provider_slots
+    assert retry_provider_slots.count("proposal:compute_memory") == 1
+    assert retry_provider_slots.count("ballot:falsification") == 1
+    assert retry_provider_slots.count("ballot:scope") == 1
+
+    _refs, errors = authority.validate_receipts(
+        advanced_checkpoint,
+        required_slots=authority.MASTER_SLOTS[:5],
+        require_no_other_accepted=True,
+    )
+    assert errors == []
+    accepted_revisions = {
+        event.payload["checkpoint_revision"]
+        for event in store.events(authority.authority_run_id(
+            checkpoint["workflow_run_id"]
+        ))
+        if event.event_type == authority.ACCEPTED_EVENT
+    }
+    assert accepted_revisions == {10}
+
+    # Complete the sixth MASTER slot against this exact evidence-bearing packet.
+    # This is the crash boundary that matters in production: all provider and
+    # schema effects are durable, but the outer checkpoint has not projected the
+    # accepted plan yet.
+    from runtime_architecture_policy import native_policy_runtime_contract
+    from tests.test_master_success_return import _strict_prompt_plan
+
+    architecture_policy = {
+        "epoch": "national_tcp_policy_v1",
+        "policy_abi": native_policy_runtime_contract()["policy_abi"],
+    }
+    selected = second["ordered_proposals"][0]
+    final_plan = _strict_prompt_plan()
+    final_plan["selected_proposal_id"] = selected["proposal_id"]
+    final_plan["targeted_failure"] = selected["targeted_failure"]
+    final_output = "```json\n" + json.dumps(final_plan) + "\n```\n"
+    final_call = authority.new_call(
+        advanced_checkpoint,
+        slot="master:final",
+        role="MASTER (Try 1)",
+        context_binding=authority.final_master_call_context(
+            second,
+            architecture_policy,
+        ),
+    )
+    authority.dispatch_call(
+        final_call,
+        full_prompt="sealed final Master prompt",
+        tools=["Read"],
+        owner="pytest-strict-final-master",
+        actual_role="MASTER (Try 1)",
+    )
+    final_result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="strict-final-master",
+        total_cost_usd=0.01,
+        usage={"input_tokens": 1, "output_tokens": 1},
+        result=final_output,
+    )
+    authority._observe_provider_result(
+        final_result,
+        invocation_id=final_call["invocation_id"],
+        effect_id=final_call["effect_id"],
+    )
+    authority.complete_provider_call(
+        final_call,
+        raw_output=final_output,
+        provider_results=[final_result],
+    )
+    accepted_final_plan = final_call["projected_role_result"]
+    authority.accept_role_result(
+        final_call,
+        role_result=accepted_final_plan,
+        parse_contract="master-plan-schema-v1",
+    )
+    _refs, errors = authority.validate_receipts(
+        advanced_checkpoint,
+        required_slots=authority.MASTER_SLOTS,
+        require_no_other_accepted=True,
+    )
+    assert errors == []
+    expected_contexts = authority.expected_master_contexts(
+        accepted_final_plan
+    )
+    expected_contexts["master:final"] = authority.final_master_call_context(
+        second,
+        architecture_policy,
+    )
+    summary = authority.authority_summary(
+        advanced_checkpoint,
+        required_slots=authority.MASTER_SLOTS,
+        expected_role_results=(
+            authority.expected_master_role_results(accepted_final_plan)
+        ),
+        expected_context_bindings=expected_contexts,
+        require_no_other_accepted=True,
+    )
+    assert set(summary["receipts"]) == set(authority.MASTER_SLOTS)
+
+    # Advancing checkpoint metadata must replay all five packet roles without
+    # appending their logs or minting new invocation evidence.  The exact packet
+    # bytes, and therefore the master:final context digest, stay unchanged.
+    packet_before = json.dumps(
+        second,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    provider_count_before_full_replay = len(provider_slots)
+    fully_advanced_checkpoint = {
+        **checkpoint,
+        "checkpoint_revision": 12,
+        "audit_attempt": 2,
+    }
+    third = json.loads(await agent_master._run_master_proposal_ensemble(
+        strict_checkpoint=fully_advanced_checkpoint,
+        **kwargs,
+    ))
+    packet_after = json.dumps(
+        third,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert packet_after == packet_before
+    assert len(provider_slots) == provider_count_before_full_replay
+
+    replay_final = authority.new_call(
+        fully_advanced_checkpoint,
+        slot="master:final",
+        role="MASTER (Try 1)",
+        context_binding=authority.final_master_call_context(
+            third,
+            architecture_policy,
+        ),
+    )
+    assert replay_final["replay_provider"] is True
+    assert replay_final["invocation_id"] == final_call["invocation_id"]
+    authority.dispatch_call(
+        replay_final,
+        full_prompt="re-rendered final Master prompt after restart",
+        tools=["Read"],
+        owner="pytest-strict-final-master-replay",
+        actual_role="MASTER (Try 1)",
+    )
+    replay_projection, replay_errors = (
+        agent_master._project_strict_final_master_result(
+            replay_final["replay_raw_output"],
+            proposal_packet=third,
+            architecture_policy=architecture_policy,
+        )
+    )
+    assert replay_errors == []
+    assert replay_projection == accepted_final_plan
+    authority.accept_role_result(
+        replay_final,
+        role_result=replay_projection,
+        parse_contract="master-plan-schema-v1",
+    )
+    assert len(provider_slots) == provider_count_before_full_replay
+
+    bound_log = Path(next(iter(
+        third["proposal_invocations"].values()
+    ))["io_log_path"])
+    with bound_log.open("a", encoding="utf-8") as handle:
+        handle.write("\npost-binding mutation\n")
+    with pytest.raises(
+        authority.StrictAuthorityError,
+        match="system_bootstrap_llm_invocation_log_digest_mismatch",
+    ):
+        await agent_master._run_master_proposal_ensemble(
+            strict_checkpoint=fully_advanced_checkpoint,
+            **kwargs,
+        )
+    assert len(provider_slots) == provider_count_before_full_replay
 
 
 def test_proposal_id_is_stable_and_not_scout_identity(monkeypatch, tmp_path):

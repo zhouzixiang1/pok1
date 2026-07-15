@@ -1686,6 +1686,42 @@ async def _abandon_master_generation(next_v, source_v, *, error, fail_count, rea
     return _json_tool_result(result)
 
 
+async def _abandon_strict_master_authority(
+    next_v,
+    source_v,
+    *,
+    error,
+    ui,
+):
+    """Classify durable strict-authority drift as control-plane failure."""
+
+    validation_errors = list(getattr(error, "errors", ()) or (str(error),))
+    return await _abandon_master_generation(
+        next_v,
+        source_v,
+        error="SYSTEM_STRICT_AUTHORITY_INVALID",
+        fail_count=0,
+        reason=(
+            "system_strict_authority_invalid:"
+            + ";".join(validation_errors)[:700]
+        ),
+        event_type="pipeline.system_strict_authority_invalid",
+        event_message=(
+            f"Strict provider/evidence authority failed closed for v{next_v}"
+        ),
+        ui=ui,
+        payload={
+            "failure_class": "control_plane",
+            "validation_errors": validation_errors,
+        },
+        directive=(
+            "The strict authority journal, prompt, context, or invocation evidence "
+            "drifted. The generation was canonically abandoned; prepare a fresh "
+            "v143 workflow and do not consume an LLM infrastructure retry."
+        ),
+    )
+
+
 async def _force_abandon_official_rework_generation(
     next_v,
     source_v,
@@ -3877,7 +3913,15 @@ async def run_master(args):
         raise
     except Exception as exc:
         from agent_master import MasterInfrastructureError
+        from strict_authority_workflow import StrictAuthorityError
 
+        if isinstance(exc, StrictAuthorityError):
+            return await _abandon_strict_master_authority(
+                next_v,
+                source_v,
+                error=exc,
+                ui=ui,
+            )
         if not isinstance(exc, MasterInfrastructureError):
             raise
         return await _handle_master_llm_infrastructure(
@@ -4297,7 +4341,15 @@ async def run_master(args):
                 raise
             except Exception as exc:
                 from agent_master import MasterInfrastructureError
+                from strict_authority_workflow import StrictAuthorityError
 
+                if isinstance(exc, StrictAuthorityError):
+                    return await _abandon_strict_master_authority(
+                        next_v,
+                        source_v,
+                        error=exc,
+                        ui=ui,
+                    )
                 if not isinstance(exc, MasterInfrastructureError):
                     raise
                 return await _handle_master_llm_infrastructure(

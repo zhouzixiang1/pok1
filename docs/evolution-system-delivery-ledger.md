@@ -85,11 +85,11 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | Batch | Scope | State | Completion evidence |
 |---|---|---|---|
 | P1 | official replay, board/showdown evidence, hand-70/full-v5 | implemented; focused green | protocol/harness/certification positive and negative suites |
-| P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented; focused green, merge verification pending | 19-role semantic-producer, provenance, poison/render/path/symlink/TOCTOU/hook/budget tests |
-| P3 | Master stream/effect recovery and bounded retries | implemented; final combined rerun green | timeout/lease/replay/provider-termination tests |
-| P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | implemented; final combined rerun green | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | complete through recovery commit `291f2d40c0301c4262c1848fe549e8999ac83174`; later runtime repairs repeat the same merge gate | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | reconciliation/identity rotation complete; v143 is prepared and direction-audited; Master retry pending | tags, certificates, immutable cycles and live observation ledger |
+| P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented; strict invocation/gate-descriptor repair and frozen-tree suites green, merge pending | 19-role semantic-producer, provenance, poison/render/path/symlink/TOCTOU/hook/budget and accepted-effect/log tests |
+| P3 | Master stream/effect recovery and bounded retries | implemented; phase-revision/per-slot-context/control-plane classification and frozen-tree suites green, merge pending | timeout/lease/replay/provider-termination/partial-packet tests |
+| P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | implemented; backend/frontend and final frozen-tree suites green, merge pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
+| P5 | full verification and merge to `origin/main` | complete through stream-ownership commit `0a26795aa71fa92049acebef94968a0c9f7553d7`; the strict-authority recovery repair repeats the same merge gate | full suites, Git and remote identities |
+| P6 | runtime recovery, v143/v144 publication and ten generations | reconciliation/identity rotation complete; stale workflow-v20 is stopped at v143 direction-audited and must be canonically abandoned after merge, never retried | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -832,18 +832,112 @@ regressions hold a delayed Master result past repeated actionable polls and
 exercise the same-stage route transition while preserving the existing
 stage-transition timeout test.
 
+That repair was committed as
+`0a26795aa71fa92049acebef94968a0c9f7553d7`, fast-forwarded to
+`origin/main`, and synchronized into the stopped runtime. The critical-input
+HEAD drift was correctly refused at workflow-v19 `direction_audited`; the
+canonical abandon transaction quarantined its exact five-file candidate under
+receipt `e19b0aafe79bdae5b6ed902d985efb6c67588f60a195215a806c90893a49b6ad`.
+Because the strict pool is still empty, the retryable-first-strict rule kept
+the allocation successor at v143 and created workflow-v20 rather than skipping
+to v144. Preparation and direction audit then completed on the new baseline.
+
+The live workflow-v20 Master proved the stream-ownership repair by continuing
+past five minutes without an actionable-stage cancellation. It then exposed a
+fourth recovery-only producer/consumer mismatch. Its revision-4 authority
+journal durably accepted the mechanism and counterfactual proposals and
+recorded one compute-memory schema rejection; the exact packet therefore
+failed closed at two proposals. Persisting the bounded Master failure advanced
+the checkpoint to revision 5. The next call looked up those same accepted
+slots using revision 5 instead of their authority-phase revision 4, raised
+`strict_authority_recovery_checkpoint_revision_mismatch`, and incorrectly
+projected that control-plane mismatch as a retryable `master_llm` overlay at
+revision 6. No new provider effect, plan, Worker edit, or candidate mutation
+occurred on that second call.
+
+The repaired strict authority derives one frozen revision from the first
+durable effect in each phase. It verifies the complete effect input and
+generation/stage/role binding plus one frozen context per slot before reusing
+the anchor, replays accepted slots, lets only missing slots consume their
+original schema budget, and rejects mixed revisions, rollback, or same-slot
+context drift. Final validation scans rejected and otherwise unaccepted effects
+as well as accepted receipts, so a failed call cannot hide a second phase
+revision. A real two-invocation ensemble test
+proves that a partial packet followed by checkpoint metadata advancement makes
+no second provider call for the two accepted proposals, calls only the missing
+proposal, completes both ballots, and validates every receipt at the original
+revision. Runtime remains stopped at workflow-v20 revision 6 with
+`master_plan=null`; after this repair reaches `origin/main`, canonical abandon
+must quarantine workflow-v20 before a fresh v143 workflow is prepared.
+
+Cross-review then found two adjacent evidence boundaries that the phase anchor
+alone did not close. Proposal/ballot packet evidence and Reviewer/Critic gate
+evidence are now bound to the accepted provider effect's final prompt digest,
+terminal output, result/usage identity, deterministic role result, and exact
+append-only log. Accepted-effect replay does not append a second prompt/output.
+If a process stops between acceptance and evidence binding, recovery may append
+one matching trailer to an existing non-empty regular log or reuse exactly one
+matching trailer; missing, empty, symlink/non-regular, duplicate, mismatched, or
+later changed logs fail closed. The packet and system receipt re-open those
+bindings instead of trusting a caller-created evidence object.
+
+Reviewer and Critic strict call descriptors now own every semantic renderer
+input and bind the real checked-in producer/template identity. Provider
+rendering consumes only those descriptor bytes, and the Critic read scope is
+frozen beside them. The first-strict Critic deliberately receives an explicit
+no-strength contract and `None` evidence-snapshot scope; it never calls the
+normal H2H snapshot producer. The previous-Critic value is reconstructed
+identically before dispatch and after gate projection. Any journal, renderer,
+context, prompt, log, or invocation-evidence violation found before dispatch,
+during provider execution, or during receipt construction is classified as a
+control-plane failure and uses the canonical abandon transaction with zero LLM
+infrastructure retry debt. Final Master needs no additional mutable-log
+dependency: its provider prompt/output/session/result are already bound by the
+completed effect, accepted receipt, authority summary, and deterministic final
+projection.
+
+A final backend/frontend/actual-transition audit found three presentation
+differences that existing green tests had not exercised. A schema-valid Critic
+always advances with `approved=true` because its verdict is advisory, but the UI
+was incorrectly using that execution bit as the recommendation; it now renders
+the real `advisory_approved` value and shows an unavailable verdict when the
+field is absent. The independent pipeline-checkpoint response now passes a
+schema-2/positive-revision runtime parser before React state and its revision is
+part of the full active-generation identity fence, so a same-stage older
+response is withheld. The evolution initial-state projection also carries that
+revision without inventing an SSE event. Finally, explicit `--no-daemon` mode
+now treats a missing daemon PID as `not_applicable`, while enabled-but-missing
+and disabled-but-live cases remain degraded. Dynamic negative-Critic,
+old-revision, and both daemon-configuration regressions cover the real consumer
+paths.
+
+The final combined rerun also exposed an older managed-launch ownership race.
+The host test inspected Bubblewrap's unique process-owner environment
+immediately after `Popen`, while Bubblewrap could already be replacing that
+environment for the sandbox. Under concurrent load `/proc/<pid>/environ`
+occasionally appeared empty and made the quality gate nondeterministic. Owner-
+marked launches now insert a one-shot Bubblewrap `--block-fd` pipe, verify the
+exact single owner marker while execution is fenced, then write one byte to
+release. A short bounded poll accepts only the directly observed transient empty
+setup window; any non-empty mismatch fails immediately. Verification or release
+failure terminates, waits, then kills/reaps if necessary, and every barrier,
+seccomp, inherited, and callback-owned descriptor is closed. No-owner launches
+keep their original argv, environment, and FD set. Unit tests cover command/FD
+binding, mismatch cleanup, and the no-owner path; the original dynamic race ran
+20/20 under concurrent load.
+
 Final frozen-tree combined verification after the implementation and stale
 fixture migrations was:
 
 ```text
 cd web && python -m pytest tests -q
-2526 passed, 20 skipped
+2554 passed, 20 skipped
 
 python -m pytest sever/tests -q
 31 passed
 
 cd web/frontend && npm test
-13 passed
+15 passed
 
 cd web/frontend && npm run lint
 passed
@@ -852,23 +946,20 @@ cd web/frontend && npm run build
 passed
 ```
 
-The current stream-ownership repair tree is green: all suites, active-source
+The current strict-authority recovery repair tree is green: all suites, active-source
 `py_compile`, and `git diff --check` passed after the implementation stopped
-changing. Its merged parent recovery commit is
-`291f2d40c0301c4262c1848fe549e8999ac83174`. P5 baseline commit
+changing. Its merged parent stream-ownership commit is
+`0a26795aa71fa92049acebef94968a0c9f7553d7`. P5 baseline commit
 `94714124711e51044f5a91411e47297f340fb265` was pushed and fast-forwarded to
 `origin/main`, then synchronized into the stopped runtime. The schema-1
 workflow-v18 checkpoint/candidate/ledger were durably quarantined through the
 canonical reconciliation transaction, the evaluator identity was explicitly
 rotated without carrying strength rows, and official doctor passed. The first
 live workflow-v19 launch exposed and then recovered from the one-gen and
-single-flight defects above. Runtime HEAD is now that recovery commit and the
-stopped checkpoint is v143 `direction_audited`, revision 6, with
-`master_plan=null`. One schema-valid scout proposal receipt exists, but no
-three-proposal packet, ballots, selected mechanism, compiled Worker plan, or
-`master_planned` stage was accepted. The third stream-ownership repair must
-pass the merge gate and synchronize before the exact frozen Master attempt is
-retried. No strict v143/v144 publication, immutable rating cycle, or
+single-flight defects above. Workflow-v20 then supplied the stream and strict-
+authority evidence recorded above. No complete three-proposal packet, ballots,
+selected mechanism, compiled Worker plan, or `master_planned` stage was
+accepted. No strict v143/v144 publication, immutable rating cycle, or
 post-restart 10-generation observation has yet been executed.
 The `fc7d62d30783d2ae8710dc8f331d717f3d902e36` verdict remains unchanged:
 semantically superseded, history-only, and not cherry-picked.

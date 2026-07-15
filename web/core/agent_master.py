@@ -1355,6 +1355,47 @@ def _project_strict_final_master_result(
     return data, []
 
 
+def _record_master_invocation_evidence(
+    result: dict,
+    *,
+    output: str,
+    role_result: dict,
+) -> dict:
+    """Record a new invocation or reuse the exact accepted replay evidence."""
+
+    from system_strict_bootstrap import (
+        llm_result_digest,
+        record_llm_invocation_evidence,
+    )
+
+    strict_call = result.get("strict_call")
+    journal_bound = bool(
+        isinstance(strict_call, dict)
+        and strict_call.get("effect_id")
+        and strict_call.get("accepted_receipt")
+    )
+    if journal_bound:
+        from strict_authority_workflow import record_bound_invocation_evidence
+
+        return record_bound_invocation_evidence(
+            strict_call,
+            log_file=result["log_file"],
+        )
+    evidence = record_llm_invocation_evidence(
+        invocation_id=result["invocation_id"],
+        purpose=result["purpose"],
+        role=result["role"],
+        prompt_digest=hashlib.sha256(
+            result["prompt"].encode("utf-8")
+        ).hexdigest(),
+        raw_output_digest=hashlib.sha256(output.encode("utf-8")).hexdigest(),
+        result_digest=llm_result_digest(result["cost_usd"], result["usage"]),
+        role_result=role_result,
+        log_file=result["log_file"],
+    )
+    return evidence
+
+
 async def _run_master_proposal_ensemble(
     planning_context: str,
     *,
@@ -1423,6 +1464,18 @@ async def _run_master_proposal_ensemble(
                 ),
             )
             invocation_id = strict_call["invocation_id"]
+            if repair is None and strict_call.get("replay_provider"):
+                replay_role = str(strict_call.get("actual_role") or "")
+                base_role = f"MASTER PROPOSAL {direction}"
+                if replay_role == base_role + " DISTINCTNESS RETRY":
+                    repair = {"kind": "distinctness"}
+                elif replay_role == base_role + " SCHEMA RETRY":
+                    repair = {"kind": "schema"}
+                elif replay_role != base_role:
+                    raise RuntimeError(
+                        "strict_proposal_replay_role_invalid:"
+                        f"{direction}:{replay_role}"
+                    )
             if repair is None and strict_call.get("schema_retry_required"):
                 prior_rejection = strict_call.get("prior_schema_rejection") or {}
                 repair = {
@@ -1544,11 +1597,6 @@ async def _run_master_proposal_ensemble(
                 },
             ))
             continue
-        from system_strict_bootstrap import (
-            llm_result_digest,
-            record_llm_invocation_evidence,
-        )
-
         if strict_authority_enabled:
             from strict_authority_workflow import accept_role_result
 
@@ -1558,17 +1606,10 @@ async def _run_master_proposal_ensemble(
                 parse_contract=_PROPOSAL_SCHEMA_VERSION,
             )
 
-        proposal_invocations[proposal_id] = record_llm_invocation_evidence(
-            invocation_id=result["invocation_id"],
-            purpose=result["purpose"],
-            role=result["role"],
-            prompt_digest=hashlib.sha256(
-                result["prompt"].encode("utf-8")
-            ).hexdigest(),
-            raw_output_digest=hashlib.sha256(output.encode("utf-8")).hexdigest(),
-            result_digest=llm_result_digest(result["cost_usd"], result["usage"]),
+        proposal_invocations[proposal_id] = _record_master_invocation_evidence(
+            result,
+            output=output,
             role_result=proposal,
-            log_file=result["log_file"],
         )
         seen_proposal_ids.add(proposal_id)
         accepted_proposal_directions[proposal_id] = direction
@@ -1605,11 +1646,6 @@ async def _run_master_proposal_ensemble(
 
                     reject_duplicate_proposal(result["strict_call"])
                 continue
-            from system_strict_bootstrap import (
-                llm_result_digest,
-                record_llm_invocation_evidence,
-            )
-
             if strict_authority_enabled:
                 from strict_authority_workflow import accept_role_result
 
@@ -1619,19 +1655,10 @@ async def _run_master_proposal_ensemble(
                     parse_contract=_PROPOSAL_SCHEMA_VERSION,
                 )
 
-            proposal_invocations[proposal_id] = record_llm_invocation_evidence(
-                invocation_id=result["invocation_id"],
-                purpose=result["purpose"],
-                role=result["role"],
-                prompt_digest=hashlib.sha256(
-                    result["prompt"].encode("utf-8")
-                ).hexdigest(),
-                raw_output_digest=hashlib.sha256(output.encode("utf-8")).hexdigest(),
-                result_digest=llm_result_digest(
-                    result["cost_usd"], result["usage"]
-                ),
+            proposal_invocations[proposal_id] = _record_master_invocation_evidence(
+                result,
+                output=output,
                 role_result=proposal,
-                log_file=result["log_file"],
             )
             seen_proposal_ids.add(proposal_id)
             accepted_proposal_directions[proposal_id] = direction
@@ -1669,6 +1696,16 @@ async def _run_master_proposal_ensemble(
                 ),
             )
             invocation_id = strict_call["invocation_id"]
+            if strict_call.get("replay_provider"):
+                replay_role = str(strict_call.get("actual_role") or "")
+                base_role = f"MASTER PROPOSAL CRITIC {name}"
+                if replay_role == base_role + " SCHEMA RETRY":
+                    schema_retry = True
+                elif replay_role != base_role:
+                    raise RuntimeError(
+                        "strict_ballot_replay_role_invalid:"
+                        f"{name}:{replay_role}"
+                    )
         else:
             from system_strict_bootstrap import new_llm_invocation_id
 
@@ -1752,11 +1789,6 @@ async def _run_master_proposal_ensemble(
         output = result.get("output", "") if isinstance(result, dict) else ""
         critique_row = _validated_proposal_critique(output, proposal_ids)
         if critique_row is not None:
-            from system_strict_bootstrap import (
-                llm_result_digest,
-                record_llm_invocation_evidence,
-            )
-
             critique_row["critic_id"] = result["critic_id"]
             if strict_authority_enabled:
                 from strict_authority_workflow import accept_role_result
@@ -1771,25 +1803,14 @@ async def _run_master_proposal_ensemble(
                     parse_contract="master-proposal-ballot-v1",
                 )
             critique_row["invocation_evidence"] = (
-                record_llm_invocation_evidence(
-                    invocation_id=result["invocation_id"],
-                    purpose=result["purpose"],
-                    role=result["role"],
-                    prompt_digest=hashlib.sha256(
-                        result["prompt"].encode("utf-8")
-                    ).hexdigest(),
-                    raw_output_digest=hashlib.sha256(
-                        output.encode("utf-8")
-                    ).hexdigest(),
-                    result_digest=llm_result_digest(
-                        result["cost_usd"], result["usage"]
-                    ),
+                _record_master_invocation_evidence(
+                    result,
+                    output=output,
                     role_result={
                         key: value
                         for key, value in critique_row.items()
                         if key not in {"critic_id", "invocation_evidence"}
                     },
-                    log_file=result["log_file"],
                 )
             )
             critiques.append(critique_row)
@@ -1814,11 +1835,6 @@ async def _run_master_proposal_ensemble(
             output = result.get("output", "") if isinstance(result, dict) else ""
             critique_row = _validated_proposal_critique(output, proposal_ids)
             if critique_row is not None:
-                from system_strict_bootstrap import (
-                    llm_result_digest,
-                    record_llm_invocation_evidence,
-                )
-
                 critique_row["critic_id"] = result["critic_id"]
                 if strict_authority_enabled:
                     from strict_authority_workflow import accept_role_result
@@ -1833,25 +1849,14 @@ async def _run_master_proposal_ensemble(
                         parse_contract="master-proposal-ballot-v1",
                     )
                 critique_row["invocation_evidence"] = (
-                    record_llm_invocation_evidence(
-                        invocation_id=result["invocation_id"],
-                        purpose=result["purpose"],
-                        role=result["role"],
-                        prompt_digest=hashlib.sha256(
-                            result["prompt"].encode("utf-8")
-                        ).hexdigest(),
-                        raw_output_digest=hashlib.sha256(
-                            output.encode("utf-8")
-                        ).hexdigest(),
-                        result_digest=llm_result_digest(
-                            result["cost_usd"], result["usage"]
-                        ),
+                    _record_master_invocation_evidence(
+                        result,
+                        output=output,
                         role_result={
                             key: value
                             for key, value in critique_row.items()
                             if key not in {"critic_id", "invocation_evidence"}
                         },
-                        log_file=result["log_file"],
                     )
                 )
                 critiques.append(critique_row)
@@ -2367,6 +2372,14 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     except LLMAvailabilityBlocked:
         raise
     except Exception as exc:
+        # Strict journal/evidence failures are authority violations, not LLM
+        # transport outages.  Preserve their type so the planning tool can
+        # perform the canonical abandon transition instead of misclassifying
+        # them as retryable Master infrastructure failures.
+        from strict_authority_workflow import StrictAuthorityError
+
+        if isinstance(exc, StrictAuthorityError):
+            raise
         raise MasterInfrastructureError(
             source_v,
             next_v,
@@ -2431,6 +2444,13 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     architecture_policy if isinstance(architecture_policy, dict) else {},
                 ),
             )
+            if strict_final_call.get("replay_provider"):
+                replay_role = str(strict_final_call.get("actual_role") or "")
+                if not re.fullmatch(r"MASTER \(Try [1-3]\)", replay_role):
+                    raise RuntimeError(
+                        f"strict_final_master_replay_role_invalid:{replay_role}"
+                    )
+                final_role = replay_role
         try:
             from llm_query import render_llm_prompt
 
@@ -2467,6 +2487,10 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         except LLMAvailabilityBlocked:
             raise
         except Exception as exc:
+            from strict_authority_workflow import StrictAuthorityError
+
+            if isinstance(exc, StrictAuthorityError):
+                raise
             _final_mode = f"LLM_EXCEPTION:{type(exc).__name__}"
             try:
                 ui.log_history(

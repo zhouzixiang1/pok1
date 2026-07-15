@@ -146,11 +146,16 @@ def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():
 
 def test_pipeline_component_validates_identity_and_does_not_greenwash_repair_or_critic():
     source = (FRONTEND / "components" / "evolution" / "PipelineStatus.tsx").read_text(encoding="utf-8")
+    types = (FRONTEND / "api" / "types.ts").read_text(encoding="utf-8")
+    presentation = (FRONTEND / "lib" / "pipelinePresentation.ts").read_text(encoding="utf-8")
     labels = (FRONTEND / "constants" / "pipeline.ts").read_text(encoding="utf-8")
 
     assert "checkpoint.master_plan.tasks" in source
-    for field in ("evaluation_epoch", "next_v", "source_v", "stage", "workflow_run_id", "run_id"):
-        assert f"checkpoint.{field}" in source
+    for field in ("evaluation_epoch", "next_v", "source_v", "stage", "workflow_run_id", "run_id", "checkpoint_revision"):
+        assert f"checkpoint.{field}" in presentation
+    assert "checkpoint_revision: number" in types
+    assert "gate.advisory_approved === true" in presentation
+    assert "gate.approved === true ? \"建议支持\"" not in source
     assert 'stage === "repair_planned" || stage === "rework_running"' in source
     assert "此前 quality/review/Critic/precommit 结果只描述修复前字节" in source
     assert "仅供后续决策参考，不授予发布资格" in source

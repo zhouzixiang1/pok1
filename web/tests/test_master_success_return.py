@@ -691,3 +691,45 @@ async def test_master_transport_failure_is_not_an_invalid_plan(monkeypatch):
     assert caught.value.source_v == 143
     assert caught.value.next_v == 144
     assert len(caught.value.prompt_digest) == 64
+
+
+@pytest.mark.asyncio
+async def test_master_proposal_authority_failure_is_not_wrapped(monkeypatch):
+    import agent_master
+    from strict_authority_workflow import StrictAuthorityError
+
+    async def authority_failure(*_args, **_kwargs):
+        raise StrictAuthorityError("proposal authority drift")
+
+    monkeypatch.setattr(
+        agent_master,
+        "_run_master_proposal_ensemble",
+        authority_failure,
+    )
+
+    with pytest.raises(StrictAuthorityError, match="proposal authority drift"):
+        await agent_master._run_master_analysis(
+            source_v=143,
+            next_v=144,
+            stagnation_info="declining",
+            ui=_MockUI(),
+        )
+
+
+@pytest.mark.asyncio
+async def test_master_final_authority_failure_is_not_wrapped(monkeypatch):
+    import agent_master
+    from strict_authority_workflow import StrictAuthorityError
+
+    async def authority_failure(*_args, **_kwargs):
+        raise StrictAuthorityError("final authority drift")
+
+    monkeypatch.setattr(agent_master, "run_claude_query", authority_failure)
+
+    with pytest.raises(StrictAuthorityError, match="final authority drift"):
+        await agent_master._run_master_analysis(
+            source_v=143,
+            next_v=144,
+            stagnation_info="declining",
+            ui=_MockUI(),
+        )

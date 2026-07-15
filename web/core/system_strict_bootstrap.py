@@ -149,8 +149,17 @@ def record_llm_invocation_evidence(
     result_digest: str,
     role_result: Any,
     log_file: str | Path,
+    recover_or_record: bool = False,
 ) -> dict[str, Any]:
-    """Seal one completed LLM call to its prompt, result, and append-only log."""
+    """Seal one completed LLM call to its prompt, result, and append-only log.
+
+    A strict-authority restart can replay an already accepted provider result.
+    ``recover_or_record`` is the accept-to-evidence-binding crash recovery path.
+    A log with no evidence marker receives its first trailer; one exact marker
+    is reused read-only; multiple or mismatched markers fail closed. Once the
+    strict journal binding exists, callers return that original receipt instead
+    of reconstructing another identity here.
+    """
 
     invocation_id = str(invocation_id)
     purpose = str(purpose)
@@ -189,6 +198,37 @@ def record_llm_invocation_evidence(
             "system_bootstrap_llm_invocation_log_symlink_forbidden"
         ])
     path = raw_path.resolve()
+    if recover_or_record:
+        try:
+            marker_count = 0
+            if path.exists():
+                if path.is_symlink() or not path.is_file():
+                    raise OSError("LLM recovery evidence log is not a regular file")
+                log_text = path.read_text(encoding="utf-8")
+                marker_count = log_text.count(_LLM_INVOCATION_LOG_MARKER)
+                if marker_count > 1:
+                    raise ValueError("multiple LLM invocation evidence markers")
+                if marker_count == 1:
+                    trailer_text = log_text.rsplit(
+                        _LLM_INVOCATION_LOG_MARKER, 1
+                    )[1].strip()
+                    existing_trailer = json.loads(trailer_text)
+                    if existing_trailer != trailer:
+                        raise ValueError(
+                            "LLM recovery evidence trailer does not match"
+                        )
+                    log_digest = _sha256_file(path)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+            raise SystemStrictBootstrapError([
+                "system_bootstrap_llm_invocation_recovery_evidence_invalid:"
+                f"{type(exc).__name__}"
+            ]) from exc
+        if marker_count == 1:
+            return _receipt({
+                **trailer,
+                "io_log_path": str(path),
+                "io_log_digest": log_digest,
+            })
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
@@ -1523,6 +1563,13 @@ def _system_gate_subject(
         MASTER_SLOTS, authority_summary, expected_master_contexts, gate_call_context,
     )
     required_slots = MASTER_SLOTS + (("review",) if gate_name == "review" else ("review", "critic"))
+    expected_gate_evidence = {
+        gate_name: deepcopy(llm_gate.get("llm_execution_evidence")),
+    }
+    if gate_name == "critic":
+        expected_gate_evidence["review"] = deepcopy(
+            ((gates.get("review") or {}).get("llm_execution_evidence"))
+        )
     try:
         authority = authority_summary(
             checkpoint,
@@ -1532,6 +1579,7 @@ def _system_gate_subject(
                 **expected_master_contexts(checkpoint.get("master_plan") or {}),
                 gate_name: gate_call_context(checkpoint, gate_name=gate_name, candidate_dir=candidate),
             },
+            expected_invocation_evidence=expected_gate_evidence,
             require_no_other_accepted=require_exact_authority,
         )
     except Exception as exc:

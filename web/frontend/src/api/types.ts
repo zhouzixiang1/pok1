@@ -401,7 +401,12 @@ export interface MasterPlanProjection {
 export interface PipelineGateResult {
   passed?: boolean;
   all_passed?: boolean;
+  /** Critic `approved` records successful advisory-role execution, not advice. */
   approved?: boolean;
+  /** The actual non-authoritative Critic recommendation. */
+  advisory_approved?: boolean;
+  raw_approved?: boolean;
+  advisory_score?: number;
   schema_valid?: boolean;
   llm_invoked?: boolean;
   critic_llm_executed?: boolean;
@@ -416,13 +421,15 @@ export interface PipelineGateResult {
 }
 
 export interface PipelineCheckpoint {
-  checkpoint_schema_version?: number;
-  evaluation_epoch?: "national_tcp_policy_v1";
-  workflow_run_id?: string;
-  run_id?: string;
-  next_v?: number;
-  source_v?: number | null;
-  stage?: string;
+  checkpoint_schema_version: 2;
+  /** Monotonic CAS identity; required before an API checkpoint may be shown. */
+  checkpoint_revision: number;
+  evaluation_epoch: "national_tcp_policy_v1";
+  workflow_run_id: string;
+  run_id: string;
+  next_v: number;
+  source_v: number | null;
+  stage: string;
   master_plan?: MasterPlanProjection | null;
   reviewer_feedback?: string;
   generation_attempt?: number;

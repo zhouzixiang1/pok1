@@ -319,13 +319,18 @@ def _critic_code_evidence(
     source_v: int,
     *,
     protocol_bootstrap_prepared_only: bool,
+    target_dir: str | Path | None = None,
 ) -> dict[str, str]:
     """Build the exact, system-owned code envelope consumed by the Critic."""
 
     from bot_artifact import hash_path
     from bot_namespace import bot_name, bot_relpath
 
-    target_dir = get_bot_dir(int(next_v))
+    target_dir = (
+        Path(target_dir)
+        if target_dir is not None
+        else get_bot_dir(int(next_v))
+    )
     target_policy, target_policy_hash = _read_regular_policy(
         target_dir / "policy.py"
     )
@@ -355,6 +360,12 @@ def _critic_code_evidence(
                 "Do not open or compare any historical bot."
             ),
             "prompt_section": body,
+            # Structured identities let strict authority prove that the exact
+            # envelope rendered for the provider belongs to the same artifact
+            # it bound before dispatch.  The prompt text remains the human-
+            # readable copy of these values.
+            "target_artifact_hash": target_artifact_hash,
+            "target_policy_hash": target_policy_hash,
         }
 
     from national_runtime_authority import strict_published_bot_names
@@ -404,7 +415,47 @@ def _critic_code_evidence(
             "or construct another lineage comparison."
         ),
         "prompt_section": body,
+        "source_artifact_hash": source_artifact_hash,
+        "source_policy_hash": source_policy_hash,
+        "target_artifact_hash": target_artifact_hash,
+        "target_policy_hash": target_policy_hash,
+        "unified_diff_hash": diff_hash,
     }
+
+
+def _critic_h2h_snapshot_material(
+    next_v: int,
+    source_v: int,
+) -> tuple[str, Path | None]:
+    """Return the exact bounded H2H prompt contract and its read scope."""
+
+    allowed_evidence_snapshot_dir = None
+    try:
+        from evidence_snapshot import h2h_snapshot_contract_text
+
+        contract = h2h_snapshot_contract_text(
+            next_v,
+            source_v=source_v,
+            include_json=True,
+            # This is the pre-existing prompt boundary.  Strict authority may
+            # retain the resulting text, but it never reopens a larger live
+            # snapshot or an unbounded replay/history source.
+            max_chars=12000,
+        )
+        from evidence_snapshot import load_generation_snapshot_identity
+
+        snapshot_identity = load_generation_snapshot_identity(next_v)
+        if snapshot_identity.get("available"):
+            allowed_evidence_snapshot_dir = Path(
+                snapshot_identity["manifest_path"]
+            ).parent
+    except Exception as exc:
+        contract = (
+            "# Stable H2H Snapshot Contract\n"
+            "The generation snapshot is unavailable. Treat all matchup strength "
+            f"claims as unknown; do not read live H2H files. ({type(exc).__name__})\n"
+        )
+    return contract, allowed_evidence_snapshot_dir
 
 
 async def _run_critic(
@@ -436,70 +487,70 @@ async def _run_critic(
             "approved": None,
         }
 
-    try:
-        code_evidence = _critic_code_evidence(
-            int(next_v),
-            int(source_v),
-            protocol_bootstrap_prepared_only=strict_authority is not None,
+    code_evidence = None
+    h2h_snapshot_contract = None
+    if strict_authority is not None:
+        # Provider scope is part of the same descriptor as the exact H2H text;
+        # never reopen live snapshot identity after strict call creation.
+        from strict_authority_workflow import (
+            gate_provider_evidence_snapshot_dir,
         )
-    except Exception as exc:
-        ui.log_history(
-            "Critic exact code envelope unavailable; no advisory verdict was created: "
-            f"{type(exc).__name__}: {str(exc)[:180]}",
-            "error",
-        )
-        return {
-            "llm_failed": True,
-            "error": (
-                "critic_exact_code_evidence_unavailable:"
-                f"{type(exc).__name__}:{str(exc)[:300]}"
-            ),
-            "approved": None,
-        }
 
-    allowed_evidence_snapshot_dir = None
-    try:
-        from evidence_snapshot import h2h_snapshot_contract_text
-
-        h2h_snapshot_contract = h2h_snapshot_contract_text(
-            next_v,
-            source_v=source_v,
-            include_json=True,
-            max_chars=12000,
+        allowed_evidence_snapshot_dir = (
+            gate_provider_evidence_snapshot_dir(strict_authority)
         )
-        from evidence_snapshot import load_generation_snapshot_identity
-
-        snapshot_identity = load_generation_snapshot_identity(next_v)
-        if snapshot_identity.get("available"):
-            allowed_evidence_snapshot_dir = Path(
-                snapshot_identity["manifest_path"]
-            ).parent
-    except Exception as exc:
-        h2h_snapshot_contract = (
-            "# Stable H2H Snapshot Contract\n"
-            "The generation snapshot is unavailable. Treat all matchup strength "
-            f"claims as unknown; do not read live H2H files. ({type(exc).__name__})\n"
+    else:
+        h2h_snapshot_contract, allowed_evidence_snapshot_dir = (
+            _critic_h2h_snapshot_material(int(next_v), int(source_v))
         )
+        try:
+            code_evidence = _critic_code_evidence(
+                int(next_v),
+                int(source_v),
+                protocol_bootstrap_prepared_only=False,
+            )
+        except Exception as exc:
+            ui.log_history(
+                "Critic exact code envelope unavailable; no advisory verdict was created: "
+                f"{type(exc).__name__}: {str(exc)[:180]}",
+                "error",
+            )
+            return {
+                "llm_failed": True,
+                "error": (
+                    "critic_exact_code_evidence_unavailable:"
+                    f"{type(exc).__name__}:{str(exc)[:300]}"
+                ),
+                "approved": None,
+            }
 
     log_file = get_logs_dir(next_v) / "critic_io.txt"
     if strict_authority is not None:
         execution_invocation_id = strict_authority.get("invocation_id")
     try:
-        from llm_query import render_llm_prompt
+        if strict_authority is not None:
+            # The strict descriptor owns every semantic renderer input.  Do
+            # not reopen candidate/H2H/checkpoint data between descriptor
+            # creation and provider rendering.
+            from strict_authority_workflow import render_gate_provider_prompt
 
-        rendered_prompt = render_llm_prompt(
-            "STRATEGY CRITIC",
-            producer=_render_critic_provider_prompt,
-            renderer_inputs={
-                "source_v": int(source_v),
-                "next_v": int(next_v),
-                "master_plan": str(master_plan_str),
-                "code_evidence": code_evidence,
-                "h2h_snapshot_contract": h2h_snapshot_contract,
-                "previous_critic": prev_critic_result,
-                "invocation_id": str(execution_invocation_id or ""),
-            },
-        )
+            rendered_prompt = render_gate_provider_prompt(strict_authority)
+        else:
+            from llm_query import render_llm_prompt
+
+            rendered_prompt = render_llm_prompt(
+                "STRATEGY CRITIC",
+                producer=_render_critic_provider_prompt,
+                renderer_inputs={
+                    "source_v": int(source_v),
+                    "next_v": int(next_v),
+                    "master_plan": str(master_plan_str),
+                    "code_evidence": code_evidence,
+                    "h2h_snapshot_contract": h2h_snapshot_contract,
+                    "previous_critic": prev_critic_result,
+                    "invocation_id": str(execution_invocation_id or ""),
+                },
+            )
         output, cost_usd, usage = await run_claude_query(
             rendered_prompt, [], ui, "STRATEGY CRITIC", log_file,
             tools=["Read"],
@@ -548,6 +599,10 @@ async def _run_critic(
     except LLMAvailabilityBlocked:
         raise
     except Exception as e:
+        from strict_authority_workflow import StrictAuthorityError
+
+        if isinstance(e, StrictAuthorityError):
+            raise
         ui.log_history(f"Critic execution error (NOT a strategic rejection): {e}", "warn")
         return infra_payload(e, approved=None)
 

@@ -47,6 +47,7 @@ class TestEvolutionState:
         assert data["ratings"] == []
         assert data["active_bots"] == []
         assert data["pipeline_stage"] is None
+        assert data["pipeline_checkpoint_revision"] is None
         assert data["grand_cost_total"] == 0.0
         assert data["gen_cost_total"] == 0.0
 
@@ -80,6 +81,52 @@ class TestEvolutionState:
         assert len(data["stream_authority_digest"]) == 64
         assert data["current_v"] == 142
         assert data["next_v"] == 143
+        assert data["pipeline_checkpoint_revision"] is None
+
+    def test_initialized_state_carries_validated_checkpoint_revision(
+        self,
+        client,
+        monkeypatch,
+    ):
+        import epoch_authority
+        from server.routes import _helpers
+
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda: {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "fresh_bootstrap_ready",
+                "initialized": True,
+                "reset_receipt_valid": True,
+                "reset_receipt_digest": "a" * 64,
+                "version_authority_high_water": 142,
+                "current_v": 142,
+                "next_v": 143,
+                "active_bots": [],
+                "active_generation": {
+                    "next_v": 143,
+                    "source_v": 142,
+                    "stage": "reviewed",
+                    "run_id": "143#1",
+                    "workflow_run_id": "workflow-v1",
+                    "checkpoint_revision": 7,
+                },
+            },
+        )
+        monkeypatch.setattr(
+            _helpers,
+            "load_strict_pipeline_checkpoint",
+            lambda *_args, **_kwargs: {
+                "stage": "reviewed",
+                "checkpoint_revision": 7,
+            },
+        )
+
+        data = client.get("/api/evolution/state").json()
+
+        assert data["pipeline_stage"] == "reviewed"
+        assert data["pipeline_checkpoint_revision"] == 7
 
 
 class TestEvolutionStream:
