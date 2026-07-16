@@ -81,6 +81,14 @@ anchor and proposal quality as mechanism-scope evidence; neither is native
 strength proof. Runtime has not yet consumed this commit, so the first dynamic
 proof remains workflow-v28 after merge/synchronization.
 
+Codex-only helper commit
+`81b75070d550e9000aced1d79f909ccf843011e2` is intentionally outside this
+matrix's poker authority graph. Its source is confined to `worker-mcp/**`; a
+boundary test rejects any tracked active runtime import/start/call reference.
+It is not an evolution Worker, checkpoint/evidence producer, runtime dependency,
+restart cause, or evaluation-identity input. Source merge and later manual
+Codex MCP enablement are separate operations.
+
 ## Completion rule
 
 The current implementation through
@@ -89,6 +97,8 @@ The current implementation through
 TypeScript/Vite production build, every tracked active Python file compilation,
 `bash -n`, `git diff --check`, and official doctor with tracked execution
 profile v7. Source gates do not replace merged-commit or live runtime evidence.
+The separately verified Codex helper does not change any row's status or count
+as live national-protocol evidence.
 
 Before this matrix may be marked complete, each **repairing** or **planned** row
 must cite the exact test command/result and the merged commit containing its

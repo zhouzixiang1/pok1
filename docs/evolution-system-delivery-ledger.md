@@ -1469,3 +1469,59 @@ Worker utilization. Official EXE and Arena remain zero-strength throughout.
 The legacy `fc7d62d30783d2ae8710dc8f331d717f3d902e36` decision is unchanged:
 current producer/consumer contracts semantically supersede it; it remains
 history-only and was not cherry-picked.
+
+## 2026-07-16 — Codex-only Worker MCP source delivery
+
+The independent Worker MCP delivery is a Codex desktop/CLI control-plane helper,
+not a poker-evolution Worker. Baseline commit
+`38792977d28692cc8ea965f345df68969d48c120` was reviewed and cherry-picked as
+`4470f550`; real-link follow-up
+`46f79b8e9310f5050d53fcd71d1015782bea5a0b` was reviewed file-by-file and
+semantically incorporated, rather than blindly overlaid on the overlapping
+security repair. The frozen hardening commit is
+`81b75070d550e9000aced1d79f909ccf843011e2`.
+
+All source, tests, scripts, examples and documentation remain under
+`worker-mcp/**`. A repository-boundary regression scans tracked executable
+`web/`, `sever/`, `bots/` and `scripts/` code and rejects any import/start/call
+reference. Web launchers, Orchestrator, WorkerWorkflow, rating/evolution
+daemons, candidate generation and `.evolution_pok` neither import nor supervise
+the helper; it writes no evolution checkpoint, prompt, evidence or result.
+Merging this source does not install/register the MCP, restart evolution, or
+rotate evaluation identity. Manual Codex-side enablement is a separate operator
+action.
+
+The original delivery's 30-test green state was not accepted as sufficient.
+Independent review dynamically reproduced and the frozen commit closes:
+multi-server live-task replay, cancel/claim races, hierarchical write-lock gaps,
+context-free idempotency, incomplete cleanup identity, ignored residue,
+unbounded output, command-path spoofing, credential-bearing Bash/repository
+execution, recursive Glob/Grep sensitive descendants, false tool evidence,
+shallow-smoke false green, public deep-health approval, `.evolution_pok`
+configuration, runtime-pin bypass, configurable production Mock success,
+worktree-intention crash windows, unverifiable snapshot retries, non-UTF-8
+paths, custom-credential result/DB/audit leaks, alternate interpreter/venv
+identity drift, and leader-exit orphan process groups. Bash, Glob and Grep are
+intentionally unavailable; Codex performs search and final tests.
+
+Frozen verification is Worker MCP `102 passed`, compileall over its
+`src/tests/scripts`, entrypoint help checks, `git diff --check`, and two wheel
+builds from separate archives of the exact commit with the same
+`SOURCE_DATE_EPOCH`. Both wheels are byte-identical with SHA-256
+`aa2060e732d2d4fa99dd9e37760d9f1f9a946b0e58933b8d1868695a1d40a400`;
+temporary-venv install, `pip check`, console entrypoint, and isolated
+`python -I` package import passed. No test, docs, config or mock entrypoint is
+packaged in the wheel.
+
+Earlier real-link evidence on follow-up `46f79b8e` is retained as bounded
+historical integration evidence, not substituted for the final commit:
+task `31378718-5b19-4bd9-b247-186bc6d2bb2e` on base `c99762dc` traversed
+accepted→queued→preparing→running→verifying→succeeded in one attempt, four
+turns/34,212 ms, with zero changed files and zero diff. Final enablement remains
+blocked on host capability: `bwrap` exists but `socat` is not installed on the
+system PATH. The exact runtime gate therefore fails closed before a real Agent
+child. After the operator installs `socat`, a dedicated `WORKER_MCP_*`
+credential must be used to rerun deep diagnosis and a full STDIO
+submit/poll/result canary before registration. CC Switch `3.17.0` remains an
+external operational pin; its loopback `/health` proves availability, not the
+installed version.

@@ -121,6 +121,11 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
     屏障，宿主精确验证唯一 owner environment 后才释放；空值只允许在有界 setup
     窗口重试，任一非空不匹配/超时/读取或释放失败都必须 terminate/reap。owner
     marker 不得进入 sandbox；无 owner 启动不得改变 argv/FD/env。
+11. `worker-mcp/**` 只是供 Codex desktop/CLI 会话手工启用的外部 control-plane
+    helper，不是扑克进化 Worker。web/core、Orchestrator、WorkerWorkflow、web launcher、
+    rating/evolution daemon、候选流程和 `.evolution_pok` 永远不得 import/start/supervise/
+    call 或把它写入 checkpoint/prompt/evidence。合入源码不得触发进化重启或评估身份
+    旋转；安装依赖、专用凭据和 MCP 注册是独立的操作员动作。
 
 工作方式：
 - /home/zzx/project/pok 是 operator checkout；保留其 dirty 用户文件。
@@ -180,8 +185,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   The Scout-context/projection implementation is
   `007020a90f9829a9e0a5aa124ff65bb590009e44`. Singleton/precommit,
   proposal-packet-v4, executable proposal evidence and daemon-pair alignment are
-  `0b99c7e6d6e46783828d79b370a1d6715ebefe16`; this documentation closure follows
-  it. Query Git for the exact branch/main HEAD;
+  `0b99c7e6d6e46783828d79b370a1d6715ebefe16`. The separately scoped Codex-only
+  helper hardening is `81b75070d550e9000aced1d79f909ccf843011e2`;
+  it is not an evolution-runtime commit. This documentation closure follows.
+  Query Git for the exact branch/main HEAD;
 - delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
@@ -190,7 +197,11 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `0b99c7e6` is Web `2753 passed, 20 skipped`, sever `31 passed`, frontend
   `18/18`, with focused Master/snapshot/compiler/quality/singleton shards,
   ESLint, TypeScript/Vite build, every tracked active Python file compilation,
-  `bash -n`, diff check and official doctor `ok=true` also passing;
+  `bash -n`, diff check and official doctor `ok=true` also passing. The isolated
+  Codex helper adds `102 passed`, compileall, entrypoint checks, byte-identical
+  double wheel build/install and a tracked-code no-runtime-reference boundary
+  test; reproducible wheel SHA-256 is
+  `aa2060e732d2d4fa99dd9e37760d9f1f9a946b0e58933b8d1868695a1d40a400`;
 - `origin/main`: require the implementation plus following documentation
   closure to be the exact current remote HEAD, and require runtime HEAD to equal
   it before start;
@@ -262,6 +273,17 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   consecutive generation has run, so the live acceptance remains `0/10`;
 - legacy branch verdict: `fc7d62d30783d2ae8710dc8f331d717f3d902e36`
   is semantically superseded, history-only, and must not be cherry-picked;
+- Codex helper boundary: `worker-mcp/**` is source-only and inert. It must never
+  be imported, started, supervised, called, or recorded by web/core,
+  Orchestrator, WorkerWorkflow, daemons, candidate generation or
+  `.evolution_pok`; it is neither checkpoint/evidence authority nor an
+  evaluation-identity input. Baseline `38792977` was incorporated as
+  `4470f550`; overlapping real-link fix `46f79b8e` was semantically reviewed
+  into `81b75070`, not blindly replayed. Manual Codex MCP install/registration is
+  a separate operator action and currently remains blocked because host PATH
+  lacks `socat` (`bwrap` is present). After installation, rerun dedicated-token
+  deep diagnosis and full STDIO submit/poll/result. CC Switch 3.17.0 remains an
+  external pin; `/health` does not prove its version;
 - current evaluation identity was explicitly rotated after runtime sync. The
   previous manifest was archived under
   `archive/evaluation_identity/20260716_085940`; the empty rotated manifest was
@@ -273,9 +295,11 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
   only this empty instance may receive future native samples;
 - known next action: commit/push this documentation closure, fast-forward the
-  stopped runtime through the exact merged `origin/main`, rotate/reprove any
-  changed evaluation identity through the canonical path, and start fresh
-  workflow-v28. Dynamically require compact Scout prompts, zero documentation
+  stopped runtime through the exact merged `origin/main` for the active national
+  alignment, rotate/reprove only if an active evaluation input changed, and
+  start fresh workflow-v28. The inert `worker-mcp/**` source is not a restart or
+  identity-rotation reason and its missing `socat` does not block evolution.
+  Dynamically require compact Scout prompts, zero documentation
   bytes, decision-first current anchors, proposal-v4 symbol/snapshot bindings and
   honest mechanism-only quality evidence. Publish fixed v143 only after the exact
   checkpoint reaches `official_bootstrap_required` and the operator completes
