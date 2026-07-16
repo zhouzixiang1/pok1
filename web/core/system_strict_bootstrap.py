@@ -593,7 +593,6 @@ def build_fresh_bootstrap_receipt(
     """Bind the empty active pool and numeric namespace floor, never old bytes."""
 
     from bot_namespace import EVALUATION_EPOCH, FIRST_STRICT_POLICY_VERSION
-    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
 
     active = sorted(map(str, active_bots))
     if active:

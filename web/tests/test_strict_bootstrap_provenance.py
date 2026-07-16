@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -11,6 +13,31 @@ import system_strict_bootstrap as bootstrap
 EXPECTED_SHA256 = (
     "a7aef0b3b8b1a0096164631e87f9f1dd0c57b1a95c2738762c9f6301bc434dfb"
 )
+
+
+def test_fresh_receipt_builder_is_importable_from_core_only_cli_path(tmp_path):
+    core = Path(bootstrap.__file__).resolve().parent
+    script = (
+        "import sys; "
+        f"sys.path.insert(0, {str(core)!r}); "
+        "import system_strict_bootstrap as bootstrap; "
+        "receipt = bootstrap.build_fresh_bootstrap_receipt("
+        "epoch_reset_receipt_digest='0' * 64); "
+        "assert bootstrap.validate_fresh_bootstrap_receipt(receipt) == []; "
+        "print(receipt['receipt_digest'])"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", script],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert len(completed.stdout.strip()) == 64
 
 
 def test_blueprint_binds_semantics_without_inheriting_external_authority():

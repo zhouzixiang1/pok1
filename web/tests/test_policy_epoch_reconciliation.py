@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import hashlib
 import json
 from pathlib import Path
@@ -315,6 +316,14 @@ def test_reconcile_quarantines_legacy_rows_and_preserves_v18_attempt(
     reconcile.LIVE_CLAIM.write_bytes(
         (archive_root / "reconciliation_claim.json").read_bytes()
     )
+    real_import = builtins.__import__
+
+    def reject_native_runtime_import(name, *args, **kwargs):
+        if name == "national_native" or name.startswith("national_native."):
+            raise AssertionError("receipt validation must not import runtime code")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_native_runtime_import)
     replay = reconcile.run(
         execute=True,
         acknowledge_runtime_checkout=True,

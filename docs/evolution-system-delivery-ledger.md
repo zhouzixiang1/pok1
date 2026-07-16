@@ -2238,3 +2238,35 @@ stability credit, and its checkpoint is absent. Therefore evaluation-contract
 the correct next transition is a fresh governed v143 prepare. If a checkpoint
 appears before the stop boundary, this conclusion is revoked and recovery must
 be re-diagnosed before any sync or launch.
+
+## 2026-07-17 — post-sync reconciliation CLI import-boundary repair
+
+After `origin/main` and the stopped autonomous checkout fast-forwarded to
+`47fe89c8`, canonical checkpoint recovery, epoch projection, strict blueprint,
+first-control validation and host official doctor were green. The mandatory
+stopped-runtime reconciliation dry-run then exposed a new P1 before any launch:
+the completed schema-1 reconciliation receipt could not revalidate its exact
+13-row abandon ledger because fresh-bootstrap receipt validation raised
+`ModuleNotFoundError`.
+
+The root cause was an unused `national_native` import in
+`build_fresh_bootstrap_receipt`. Operator scripts deliberately add only
+`web/core` to `sys.path`; importing the full match runtime then transitively
+required repository-root `sever.*`, making durable receipt authenticity depend
+on an unrelated runtime import topology. No receipt, ledger or checkpoint byte
+was malformed, and no state was deleted or rewritten.
+
+The import is removed. Receipt build/validation remains a core-only identity
+operation and still validates every digest and subject field. Regressions now
+run the builder in an isolated `-I` interpreter with only `web/core` on the
+path, and replay a completed reconciliation while making any
+`national_native` import raise. The focused recovery/epoch/abandon/bootstrap
+aggregate is `128 passed`; the complete Web suite is `2902 passed, 20 skipped,
+1 warning` in 162.53 seconds. The fixed code independently validates the live
+ledger as 13 rows with head version 143 and head digest
+`21832c823789aca42ed684b1aac0a6d1017c90e7bf6ffa3e08fe4df829717dc1`,
+then validates the completed receipt digest
+`af23c438202943b8c95b1a405a9c1f7f8ddb4a56e3802d4399b2e8156f2fd2f3`.
+Publication and runtime restart remain withheld until this repair is merged,
+the autonomous checkout is fast-forwarded again, and the actual CLI dry-run
+passes from its native script entry point.

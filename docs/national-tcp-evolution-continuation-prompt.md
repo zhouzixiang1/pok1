@@ -721,3 +721,17 @@ official doctor is green on managed-executor profile v7. Do not stop PID 54540,
 sync, restart, or prepare v143 until the source is fast-forwarded through
 `origin/main`; if any checkpoint appears meanwhile, re-run recovery diagnostics
 and invalidate this clean-boundary assumption.
+
+Post-sync repair note: the first reconciliation dry-run on `47fe89c8` failed
+closed while revalidating the already-completed receipt because
+`build_fresh_bootstrap_receipt` imported the unused full `national_native`
+runtime. The operator CLI exposes only `web/core` on `sys.path`, so that import
+transitively failed at `sever.*`. The repair removes only that unused import;
+receipt fields/digests remain unchanged. Core-only isolated validation and a
+completed-receipt replay that forbids `national_native` imports are regression
+bound in a `128 passed` focused aggregate; the complete Web suite is `2902
+passed, 20 skipped, 1 warning` in 162.53 seconds. The fixed source validates
+the live 13-row ledger plus receipt digest
+`af23c438202943b8c95b1a405a9c1f7f8ddb4a56e3802d4399b2e8156f2fd2f3`.
+Keep all poker processes stopped until the repair reaches `origin/main`, the
+runtime fast-forwards again, and the real reconciliation CLI dry-run succeeds.
