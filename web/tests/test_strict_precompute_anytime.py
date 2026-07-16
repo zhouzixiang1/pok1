@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import random
 from pathlib import Path
@@ -20,6 +21,7 @@ from sever.engine.evaluator import evaluate_hand as sever_evaluate_hand
 
 ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "web/core/bootstrap_assets/strict_v1/policy.py"
+PREFLOP_BUILDER_PATH = ROOT / "scripts/build_national_preflop_equity_table.py"
 
 
 def _modules():
@@ -117,6 +119,80 @@ def test_precompute_has_complete_compact_tables_and_deck_tools(modules):
     draw_b = precompute.deterministic_draw(precompute.FULL_DECK, 7, 12345)
     assert draw_a == draw_b
     assert len(set(draw_a[0])) == 7
+
+
+def test_preflop_equity_generator_identity_and_selected_prefixes_reproduce(
+    modules,
+):
+    precompute, _policy, _native = modules
+    manifest = precompute.PRECOMPUTE_MANIFEST
+    generator_digest = hashlib.sha256(PREFLOP_BUILDER_PATH.read_bytes()).hexdigest()
+
+    assert manifest["schema_version"] == 4
+    assert manifest["generator_version"] == "national-precompute-v3"
+    assert manifest["preflop_equity_method"] == (
+        "fixed_seed_uniform_opponent_board_mc_v1"
+    )
+    assert manifest["preflop_equity_samples_per_class"] == 65_536
+    assert manifest["preflop_equity_base_seed"] == 0x4E4154494F4E414C
+    assert manifest["preflop_equity_class_seed_derivation"] == (
+        "base_seed_xor_uint64(class_index*0x9e3779b97f4a7c15)"
+    )
+    assert manifest["preflop_equity_draw_contract"] == (
+        "python_random_sample_without_replacement_7:opponent2_then_board5"
+    )
+    assert manifest["preflop_equity_build_runtime"] == "CPython-3.14.4"
+    assert manifest["preflop_equity_random_source_sha256"] == (
+        "62dca8cdae7482513b99bb093ff038afd5131954e7eb78166d673a772cee871c"
+    )
+    assert manifest["preflop_equity_evaluator_source"] == (
+        "sever/engine/evaluator.py"
+    )
+    assert manifest["preflop_equity_evaluator_sha256"] == (
+        "9992ee2608db9aef0320a586117f9ced8bdf33ad79581b9356686210cabd425f"
+    )
+    assert manifest["preflop_equity_card_source"] == "sever/engine/deck.py"
+    assert manifest["preflop_equity_card_source_sha256"] == (
+        "8afb902bc936bca5659997e9b36a923d69304946f5659b35c054cd8c702851d5"
+    )
+    assert manifest["preflop_equity_generator_sha256"] == generator_digest
+
+    spec = importlib.util.spec_from_file_location(
+        "strict_preflop_equity_builder_test",
+        PREFLOP_BUILDER_PATH,
+    )
+    assert spec is not None and spec.loader is not None
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    assert builder.METHOD == manifest["preflop_equity_method"]
+    assert builder.SAMPLES_PER_CLASS == manifest["preflop_equity_samples_per_class"]
+    assert builder.BASE_SEED == manifest["preflop_equity_base_seed"]
+    assert (
+        f"{builder.PYTHON_IMPLEMENTATION}-{builder.PYTHON_VERSION}"
+        == manifest["preflop_equity_build_runtime"]
+    )
+    assert builder.RANDOM_SOURCE_SHA256 == (
+        manifest["preflop_equity_random_source_sha256"]
+    )
+    assert builder.EVALUATOR_SOURCE == manifest["preflop_equity_evaluator_source"]
+    assert builder.EVALUATOR_SHA256 == manifest["preflop_equity_evaluator_sha256"]
+    assert builder.CARD_SOURCE == manifest["preflop_equity_card_source"]
+    assert builder.CARD_SOURCE_SHA256 == (
+        manifest["preflop_equity_card_source_sha256"]
+    )
+    builder.validate_build_environment()
+
+    # Replaying a fixed prefix is deliberately much cheaper than rebuilding
+    # all 169 x 65,536 samples in CI.  The exact script hash and seed/draw
+    # contract bind the full build; these independent estimates catch a
+    # generator/table/evaluator mapping drift with statistical headroom.
+    for class_index in (12, 4 * 13 + 5, 168):  # A2o, 76o, AA
+        _index, estimate = builder.estimate_class((class_index, 4_096))
+        assert _index == class_index
+        assert estimate == pytest.approx(
+            precompute.PREFLOP_CLASS_EQUITY[class_index],
+            abs=0.035,
+        )
 
 
 def _context(*, donk=False):
@@ -220,9 +296,13 @@ def test_fast_baseline_and_same_shape_table_values_reach_wire(modules):
     assert _wire(native, context, high).startswith("raise ")
 
 
-def test_absolute_deadline_bounds_work_and_budget_changes_final_wire(modules):
+def test_absolute_deadline_bounds_work_and_publishes_distinct_wire_candidate(modules):
     _precompute, policy, native = modules
     context = _context(donk=True)
+    # This stable identity selects one permitted low-frequency semi-bluff;
+    # the bounded refinement budget must gather enough evidence to withdraw
+    # the final wire action, rather than merely publishing an intermediate.
+    context["decision_id"] = 2
     baseline = policy.get_baseline_decision(context)
     started = time.monotonic()
     assert list(policy.iter_decisions(context, baseline, started - 1.0)) == []
@@ -230,7 +310,7 @@ def test_absolute_deadline_bounds_work_and_budget_changes_final_wire(modules):
 
     short_baseline, short_final, short_rows = _final(policy, context, 0.0)
     before = time.monotonic()
-    long_baseline, long_final, long_rows = _final(policy, context, 0.12)
+    long_baseline, long_final, long_rows = _final(policy, context, 0.10)
     elapsed = time.monotonic() - before
     assert short_baseline == long_baseline
     assert short_rows == []
@@ -239,6 +319,16 @@ def test_absolute_deadline_bounds_work_and_budget_changes_final_wire(modules):
     assert elapsed < 0.18
     assert long_final != short_final
     assert _wire(native, context, long_final) != _wire(native, context, short_final)
+    distinct = [
+        row.get("decision", row)
+        for row in long_rows
+        if row.get("decision", row) != short_final
+    ]
+    assert distinct
+    assert any(
+        _wire(native, context, decision) != _wire(native, context, short_final)
+        for decision in distinct
+    )
 
 
 def test_longer_budget_performs_more_deterministic_samples(modules):
@@ -268,7 +358,7 @@ def test_showdown_bucket_weights_require_exact_selection_guard(modules):
     assert unguarded_projection["bucket_multipliers"] == {}
 
 
-def test_terminal_river_overcall_changes_typed_and_wire_intent(modules):
+def test_terminal_river_overcall_never_revives_air_and_changes_value_wire(modules):
     _precompute, policy, native = modules
     low_overcall = _context()
     low_overcall["hand"]["street"] = "river"
@@ -290,13 +380,36 @@ def test_terminal_river_overcall_changes_typed_and_wire_intent(modules):
             },
         },
     }
-    bluff = policy._decision_from_equity(
+    low_air = policy._decision_from_equity(
         low_overcall, 0.25, 0.95, 10_000
     )
-    disciplined = policy._decision_from_equity(
+    high_air = policy._decision_from_equity(
         high_overcall, 0.25, 0.95, 10_000
     )
-    assert bluff["kind"] == "raise"
-    assert disciplined == {"kind": "fold"}
-    assert _wire(native, low_overcall, bluff).startswith("raise ")
-    assert _wire(native, high_overcall, disciplined) == "fold"
+    assert low_air == high_air == {"kind": "fold"}
+    assert _wire(native, low_overcall, low_air) == "fold"
+
+    for context in (low_overcall, high_overcall):
+        context["betting"].update({
+            "pot": 1000,
+            "hero_stack": 5000,
+            "opponent_stack": 5000,
+            "hero_street_bet": 100,
+            "opponent_street_bet": 600,
+            "to_call": 500,
+        })
+        context["legal"].update({
+            "min_raise_to": 1200,
+            "max_raise_to": 5099,
+        })
+    low_value = policy._decision_from_equity(
+        low_overcall, 0.58, 0.95, 10_000
+    )
+    high_value = policy._decision_from_equity(
+        high_overcall, 0.58, 0.95, 10_000
+    )
+    assert low_value["kind"] == high_value["kind"] == "raise"
+    assert low_value != high_value
+    assert _wire(native, low_overcall, low_value) != _wire(
+        native, high_overcall, high_value
+    )

@@ -48,11 +48,21 @@ class TestConfidence:
 # ── _helpers.py: build_ranked_ratings() ──
 
 class TestBuildRankedRatingsLogic:
-    def test_sorted_descending_by_h2h(self, sample_ratings, sample_h2h):
+    def test_legacy_h2h_without_raw_replay_has_zero_ranking_authority(
+        self, sample_ratings, sample_h2h
+    ):
         from server.routes._helpers import build_ranked_ratings
         result = build_ranked_ratings(sample_ratings, {}, sample_h2h)
-        wr_values = [r["h2h_avg_wr"] for r in result]
-        assert wr_values == sorted(wr_values, reverse=True)
+        assert result
+        assert all(row["h2h_avg_wr"] is None for row in result)
+        assert all(
+            row["h2h_source"] == "match_history_identity_invalid"
+            for row in result
+        )
+        assert all(
+            row["rank_basis"] == "conservative_glicko_fallback"
+            for row in result
+        )
 
     def test_ranks_sequential_from_1(self, sample_ratings, sample_h2h):
         from server.routes._helpers import build_ranked_ratings
@@ -60,18 +70,21 @@ class TestBuildRankedRatingsLogic:
         ranks = [r["rank"] for r in result]
         assert ranks == list(range(1, len(result) + 1))
 
-    def test_none_h2h_sorts_below_numeric(self):
+    def test_bare_h2h_row_cannot_create_numeric_strength(self):
         from server.routes._helpers import build_ranked_ratings
         ratings = {
             "bot_a": {"r": 1500, "rd": 50, "sigma": 0.06},
             "bot_b": {"r": 1500, "rd": 50, "sigma": 0.06},
         }
         h2h = {"bot_a vs bot_b": {"games": 10, "a_wins": 7, "b_wins": 3, "win_rate": 0.7}}
-        # bot_a has h2h=0.7, bot_b has h2h computed from b_wins side
         result = build_ranked_ratings(ratings, {}, h2h)
-        # bot_a should rank first (higher h2h)
-        assert result[0]["name"] == "bot_a"
-        assert result[0]["h2h_avg_wr"] is not None
+        assert {row["name"] for row in result} == {"bot_a", "bot_b"}
+        assert all(row["h2h_avg_wr"] is None for row in result)
+        assert all(row["h2h_games"] == 0 for row in result)
+        assert all(
+            row["h2h_source"] == "match_history_identity_invalid"
+            for row in result
+        )
 
     def test_single_bot(self):
         from server.routes._helpers import build_ranked_ratings

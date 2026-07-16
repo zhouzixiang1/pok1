@@ -19,19 +19,27 @@ rewrite both the runtime database and replay store.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 import json
+import math
 import os
 from pathlib import Path
 import stat
+import time
 import uuid
 from typing import Any
 
 from bot_artifact import canonical_digest
-from workflow_kernel import WorkflowStore, canonical_json
+from workflow_kernel import (
+    WorkflowDeadlineExceeded,
+    WorkflowStore,
+    canonical_json,
+)
 
 
-EXECUTION_DEFINITION_VERSION = 1
+EXECUTION_DEFINITION_VERSION = 3
 EXECUTION_EFFECT_KIND = "first_strict_native_70_hand_match"
 EXECUTION_EVENT_TYPE = "NativeMatchRecorded"
 RECEIPT_REF_SCHEMA_VERSION = 1
@@ -55,10 +63,110 @@ _SCOPE_FIELDS = (
     "control_receipt_digest",
     "precommit_plan_digest",
     "evaluation_contract_digest",
+    "native_match_timing_plan_digest",
     "precommit_attempt",
 )
+
+_PENDING_EXECUTION_FIELDS = {
+    "state",
+    "pending",
+    "recovered",
+    "authority_run_id",
+    "effect_id",
+    "match_run_id",
+    "input_payload",
+    "lease_epoch",
+    "lease_until",
+    "attempt",
+    "max_attempts",
+}
+
+
 class FirstStrictExecutionJournalError(RuntimeError):
     """Raised when a control match cannot enter the execution authority."""
+
+
+class FirstStrictExecutionPending(FirstStrictExecutionJournalError):
+    """A matching first-strict match is still owned by a live fenced lease.
+
+    Callers should preserve the existing checkpoint scope and gate evidence,
+    wait for the recorded lease boundary, then make the exact same request.
+    This is deliberately distinct from a candidate regression or a malformed
+    journal record: starting another subprocess pair while the lease is live
+    would create duplicate non-replayable physical evidence.
+    """
+
+    def __init__(self, pending: dict[str, Any]):
+        self.pending = normalize_pending_control_execution(pending)
+        super().__init__("first_strict_execution_lease_active")
+
+
+_ACTIVE_COMPLETION_DEADLINE_MONOTONIC: ContextVar[float | None] = ContextVar(
+    "first_strict_completion_deadline_monotonic",
+    default=None,
+)
+
+
+def _normalize_completion_deadline(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_invalid"
+        )
+    try:
+        deadline = float(value)
+    except (TypeError, ValueError) as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_invalid"
+        ) from exc
+    if not math.isfinite(deadline):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_invalid"
+        )
+    return deadline
+
+
+def _effective_completion_deadline(value: Any) -> float | None:
+    explicit = _normalize_completion_deadline(value)
+    active = _ACTIVE_COMPLETION_DEADLINE_MONOTONIC.get()
+    if explicit is None:
+        return active
+    if active is None:
+        return explicit
+    # Nested callers may tighten but can never widen the runner's original
+    # post-execution authority boundary.
+    return min(explicit, active)
+
+
+def _require_completion_deadline(
+    deadline_monotonic: float | None,
+    phase: str,
+) -> None:
+    if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+        raise FirstStrictExecutionJournalError(
+            f"first_strict_execution_completion_deadline_exceeded:{phase}"
+        )
+
+
+@contextmanager
+def control_execution_completion_deadline(deadline_monotonic: Any):
+    """Bind the runner's absolute deadline across compatible wrappers.
+
+    Some orchestrator tests and operator instrumentation wrap
+    :func:`complete_control_execution` using its historical two-argument
+    signature.  A context-local boundary lets those wrappers remain compatible
+    without losing the original monotonic cutoff.  Direct callers may still
+    pass ``deadline_monotonic=`` explicitly.
+    """
+
+    deadline = _effective_completion_deadline(deadline_monotonic)
+    _require_completion_deadline(deadline, "scope_entry")
+    token = _ACTIVE_COMPLETION_DEADLINE_MONOTONIC.set(deadline)
+    try:
+        yield deadline
+    finally:
+        _ACTIVE_COMPLETION_DEADLINE_MONOTONIC.reset(token)
 
 
 def _plain_int(value: Any) -> bool:
@@ -112,6 +220,7 @@ def normalize_execution_scope(scope: Any) -> dict[str, Any]:
         "control_receipt_digest",
         "precommit_plan_digest",
         "evaluation_contract_digest",
+        "native_match_timing_plan_digest",
     ):
         if not _valid_digest(normalized[field]):
             raise FirstStrictExecutionJournalError(
@@ -157,6 +266,8 @@ def _validated_execution_ticket(ticket: Any) -> dict[str, Any]:
         "deck_seed_base",
         "bot_seed_base",
         "hands",
+        "timing_plan",
+        "timing_plan_digest",
         "match_run_id",
     }:
         raise FirstStrictExecutionJournalError(
@@ -180,6 +291,28 @@ def _validated_execution_ticket(ticket: Any) -> dict[str, Any]:
         raise FirstStrictExecutionJournalError(
             "first_strict_execution_ticket_input_binding_invalid"
         )
+    try:
+        from national_native import (
+            LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            require_native_match_timing_plan,
+        )
+
+        timing_plan = require_native_match_timing_plan(
+            payload.get("timing_plan"),
+            hands=70,
+            requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_ticket_timing_plan_invalid"
+        ) from exc
+    if (
+        payload.get("timing_plan_digest") != timing_plan.digest()
+        or scope.get("native_match_timing_plan_digest") != timing_plan.digest()
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_ticket_timing_plan_binding_invalid"
+        )
     match_identity = {
         "scope": scope,
         "scope_digest": scope_digest,
@@ -187,6 +320,8 @@ def _validated_execution_ticket(ticket: Any) -> dict[str, Any]:
         "deck_seed_base": int(deck_seed_base),
         "bot_seed_base": int(bot_seed_base),
         "hands": 70,
+        "timing_plan": timing_plan.snapshot(),
+        "timing_plan_digest": timing_plan.digest(),
     }
     match_run_id = "first-strict-native:" + canonical_digest(match_identity)
     authority_run_id = f"first-strict-control:{scope_digest}"
@@ -205,8 +340,169 @@ def _validated_execution_ticket(ticket: Any) -> dict[str, Any]:
     return expected
 
 
-def _store() -> WorkflowStore:
-    return WorkflowStore(CONTROL_EXECUTION_ROOT / "events.sqlite3")
+def normalize_pending_control_execution(
+    pending: Any,
+    *,
+    expected_scope: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate the non-executable pending form returned for a live lease.
+
+    A pending result is intentionally *not* a runner ticket.  It carries the
+    canonical input and the observed live lease boundary so callers can retain
+    the exact scope/receipt/critic evidence without accidentally passing it to
+    the native subprocess launcher.  Treat malformed or mismatched values as
+    a journal error rather than an infrastructure wait signal.
+    """
+
+    if not isinstance(pending, dict) or set(pending) != _PENDING_EXECUTION_FIELDS:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_shape_invalid"
+        )
+    if (
+        pending.get("state") != "pending"
+        or pending.get("pending") is not True
+        or pending.get("recovered") is not False
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_state_invalid"
+        )
+    if not _plain_int(pending.get("lease_epoch")) or int(
+        pending["lease_epoch"]
+    ) < 1:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_lease_invalid"
+        )
+    for field in ("attempt", "max_attempts"):
+        if not _plain_int(pending.get(field)) or int(pending[field]) < 1:
+            raise FirstStrictExecutionJournalError(
+                f"first_strict_execution_pending_{field}_invalid"
+            )
+    if int(pending["attempt"]) > int(pending["max_attempts"]):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_attempt_invalid"
+        )
+    lease_until = pending.get("lease_until")
+    if (
+        isinstance(lease_until, bool)
+        or not isinstance(lease_until, (int, float))
+        or not math.isfinite(float(lease_until))
+        or float(lease_until) <= 0.0
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_lease_until_invalid"
+        )
+    canonical_ticket = _validated_execution_ticket({
+        "authority_run_id": pending.get("authority_run_id"),
+        "effect_id": pending.get("effect_id"),
+        "lease_epoch": int(pending["lease_epoch"]),
+        "match_run_id": pending.get("match_run_id"),
+        "input_payload": pending.get("input_payload"),
+    })
+    scope = canonical_ticket["input_payload"]["scope"]
+    if expected_scope is not None and scope != normalize_execution_scope(
+        expected_scope
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_scope_mismatch"
+        )
+    return {
+        "state": "pending",
+        "pending": True,
+        "recovered": False,
+        "authority_run_id": canonical_ticket["authority_run_id"],
+        "effect_id": canonical_ticket["effect_id"],
+        "match_run_id": canonical_ticket["match_run_id"],
+        "input_payload": canonical_ticket["input_payload"],
+        "lease_epoch": canonical_ticket["lease_epoch"],
+        "lease_until": float(lease_until),
+        "attempt": int(pending["attempt"]),
+        "max_attempts": int(pending["max_attempts"]),
+    }
+
+
+def is_pending_control_execution(
+    value: Any,
+    *,
+    expected_scope: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> bool:
+    """Return ``True`` only for a fully bound *currently live* lease form."""
+
+    try:
+        read_pending_control_execution(
+            value,
+            expected_scope=expected_scope,
+            now=now,
+        )
+    except FirstStrictExecutionJournalError:
+        return False
+    return True
+
+
+def read_pending_control_execution(
+    pending: Any,
+    *,
+    expected_scope: dict[str, Any] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Re-prove a pending payload against the durable active effect lease.
+
+    The payload alone is not authority to skip a gate failure.  It must still
+    name the exact running effect, epoch, input, attempt and unexpired lease in
+    the local journal.  This closes the otherwise dangerous path where a stale
+    or forged ``pending`` result could indefinitely suppress recovery.
+    """
+
+    normalized = normalize_pending_control_execution(
+        pending,
+        expected_scope=expected_scope,
+    )
+    try:
+        current_time = float(now if now is not None else time.time())
+    except (TypeError, ValueError) as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_check_time_invalid"
+        ) from exc
+    if not math.isfinite(current_time):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_check_time_invalid"
+        )
+    effect = _store().effect(normalized["effect_id"])
+    if not effect:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_effect_missing"
+        )
+    if (
+        effect.get("run_id") != normalized["authority_run_id"]
+        or effect.get("kind") != EXECUTION_EFFECT_KIND
+        or effect.get("input_payload") != normalized["input_payload"]
+        or effect.get("status") != "running"
+        or int(effect.get("lease_epoch") or 0) != normalized["lease_epoch"]
+        or int(effect.get("attempt") or 0) != normalized["attempt"]
+        or int(effect.get("max_attempts") or 0) != normalized["max_attempts"]
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_effect_binding_invalid"
+        )
+    lease_until = effect.get("lease_until")
+    if (
+        isinstance(lease_until, bool)
+        or not isinstance(lease_until, (int, float))
+        or not math.isfinite(float(lease_until))
+        or float(lease_until) != normalized["lease_until"]
+        or float(lease_until) <= current_time
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_pending_lease_not_live"
+        )
+    return normalized
+
+
+def _store(*, deadline_monotonic: float | None = None) -> WorkflowStore:
+    return WorkflowStore(
+        CONTROL_EXECUTION_ROOT / "events.sqlite3",
+        deadline_monotonic=deadline_monotonic,
+    )
 
 
 def _replay_root() -> Path:
@@ -218,6 +514,7 @@ def _terminal_execution_issues(
     *,
     deck_seed_base: int,
     bot_seed_base: int,
+    timing_plan: Any,
 ) -> tuple[list[str], dict[str, Any]]:
     """Validate and summarize a complete local 70-hand TCP replay."""
 
@@ -238,6 +535,18 @@ def _terminal_execution_issues(
         issues.append("first_strict_execution_compliance_invalid")
     if execution.get("issues") != []:
         issues.append("first_strict_execution_issues_not_empty")
+    try:
+        from national_native import validate_native_match_timing_evidence
+
+        timing_issues = validate_native_match_timing_evidence(
+            execution,
+            timing_plan=timing_plan,
+        )
+    except Exception:
+        timing_issues = ["native_match_timing_evidence_validator_failed"]
+    issues.extend(
+        "first_strict_execution_" + issue for issue in timing_issues
+    )
 
     settlements = execution.get("settlements")
     hand_records = execution.get("hand_records")
@@ -344,6 +653,11 @@ def _terminal_execution_issues(
         "last_hand": settlement_hands[-1] if settlement_hands else None,
         "net_chips_a": execution.get("net_chips_a"),
         "net_chips_b": execution.get("net_chips_b"),
+        "native_match_timing_plan_digest": execution.get(
+            "native_match_timing_plan_digest"
+        ),
+        "native_match_timeout_phase": execution.get("native_match_timeout_phase"),
+        "native_terminal_abort": execution.get("native_terminal_abort"),
         "replay_content_digest": canonical_digest(replay),
         "events_digest": canonical_digest({"events": events}),
         "hand_records_digest": canonical_digest({"hand_records": hand_records}),
@@ -420,10 +734,14 @@ def _completed_execution_reference(
     authority_run_id: str,
     effect_id: str,
     input_payload: dict[str, Any],
+    deadline_monotonic: float | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Reconstruct and fully replay-validate one terminal effect reference."""
 
-    effect = store.effect(effect_id)
+    effect = store.effect(
+        effect_id,
+        deadline_monotonic=deadline_monotonic,
+    )
     if (
         effect.get("status") != "completed"
         or effect.get("kind") != EXECUTION_EFFECT_KIND
@@ -440,7 +758,10 @@ def _completed_execution_reference(
         )
     recorded = [
         event
-        for event in store.events(authority_run_id)
+        for event in store.events(
+            authority_run_id,
+            deadline_monotonic=deadline_monotonic,
+        )
         if event.event_type == EXECUTION_EVENT_TYPE
         and event.payload.get("receipt_id") == result_payload.get("receipt_id")
     ]
@@ -466,6 +787,7 @@ def _completed_execution_reference(
     evidence, issues = read_control_execution_receipt(
         reference,
         expected_scope=input_payload.get("scope"),
+        deadline_monotonic=deadline_monotonic,
     )
     if issues or evidence is None:
         raise FirstStrictExecutionJournalError(
@@ -487,7 +809,7 @@ def begin_control_execution(
     repeat: int,
     deck_seed_base: int,
     bot_seed_base: int,
-    lease_seconds: float,
+    timing_plan: Any,
     claim_now: float | None = None,
 ) -> dict[str, Any]:
     """Fence one match effect before the parent runner launches subprocesses."""
@@ -505,6 +827,28 @@ def begin_control_execution(
         raise FirstStrictExecutionJournalError(
             "first_strict_execution_seed_relation_invalid"
         )
+    try:
+        from national_native import (
+            LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            require_native_match_timing_plan,
+        )
+
+        frozen_timing_plan = require_native_match_timing_plan(
+            timing_plan,
+            hands=70,
+            requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_timing_plan_invalid"
+        ) from exc
+    if (
+        normalized_scope.get("native_match_timing_plan_digest")
+        != frozen_timing_plan.digest()
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_scope_timing_plan_mismatch"
+        )
     store = _store()
     authority_run_id = _authority_run_id(normalized_scope)
     store.ensure_instance(
@@ -519,6 +863,8 @@ def begin_control_execution(
         "deck_seed_base": int(deck_seed_base),
         "bot_seed_base": int(bot_seed_base),
         "hands": 70,
+        "timing_plan": frozen_timing_plan.snapshot(),
+        "timing_plan_digest": frozen_timing_plan.digest(),
     }
     # A process may die after the match but before fenced completion.  The same
     # frozen sample must be reclaimable after lease expiry without changing the
@@ -526,6 +872,17 @@ def begin_control_execution(
     match_run_id = "first-strict-native:" + canonical_digest(match_identity)
     input_payload = {**match_identity, "match_run_id": match_run_id}
     completed_effect = False
+    pending_execution = None
+    try:
+        claim_time = float(claim_now if claim_now is not None else time.time())
+    except (TypeError, ValueError) as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_claim_time_invalid"
+        ) from exc
+    if not math.isfinite(claim_time):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_claim_time_invalid"
+        )
     with store.command_lock(authority_run_id, blocking=True):
         instance = store.instance(authority_run_id)
         effect = store.request_effect(
@@ -539,12 +896,40 @@ def begin_control_execution(
         )
         completed_effect = effect.get("status") == "completed"
         if not completed_effect:
-            lease = store.claim_effect(
-                effect_id,
-                owner=f"parent:{os.getpid()}:{uuid.uuid4().hex}",
-                lease_seconds=max(1.0, float(lease_seconds)),
-                now=claim_now,
-            )
+            lease_until = effect.get("lease_until")
+            if (
+                effect.get("status") == "running"
+                and isinstance(lease_until, (int, float))
+                and not isinstance(lease_until, bool)
+                and math.isfinite(float(lease_until))
+                and float(lease_until) > claim_time
+            ):
+                # The matching effect is still actively owned.  Do not turn a
+                # normal cancellation/retry into a failed gate or race another
+                # subprocess pair against the original physical match.
+                pending_execution = {
+                    "state": "pending",
+                    "pending": True,
+                    "recovered": False,
+                    "authority_run_id": authority_run_id,
+                    "effect_id": effect_id,
+                    "match_run_id": match_run_id,
+                    "input_payload": input_payload,
+                    "lease_epoch": int(effect.get("lease_epoch") or 0),
+                    "lease_until": float(lease_until),
+                    "attempt": int(effect.get("attempt") or 0),
+                    "max_attempts": int(effect.get("max_attempts") or 0),
+                }
+            else:
+                lease = store.claim_effect(
+                    effect_id,
+                    owner=f"parent:{os.getpid()}:{uuid.uuid4().hex}",
+                    lease_seconds=max(
+                        1.0,
+                        frozen_timing_plan.first_strict_lease_timeout_us / 1_000_000.0,
+                    ),
+                    now=claim_time,
+                )
     if completed_effect:
         reference, execution = _completed_execution_reference(
             store,
@@ -553,6 +938,8 @@ def begin_control_execution(
             input_payload=input_payload,
         )
         return {
+            "state": "recovered",
+            "pending": False,
             "authority_run_id": authority_run_id,
             "effect_id": effect_id,
             "match_run_id": match_run_id,
@@ -561,6 +948,11 @@ def begin_control_execution(
             "execution_receipt": reference,
             "execution": execution,
         }
+    if pending_execution is not None:
+        return normalize_pending_control_execution(
+            pending_execution,
+            expected_scope=normalized_scope,
+        )
     return {
         "authority_run_id": authority_run_id,
         "effect_id": effect_id,
@@ -574,12 +966,36 @@ def complete_control_execution(
     ticket: Any,
     *,
     execution: dict[str, Any],
+    deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
     """Store the replay and atomically complete the leased match effect."""
 
+    deadline = _effective_completion_deadline(deadline_monotonic)
+    _require_completion_deadline(deadline, "entry")
     ticket = _validated_execution_ticket(ticket)
     input_payload = ticket["input_payload"]
-    store = _store()
+    try:
+        from national_native import (
+            LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            require_native_match_timing_plan,
+        )
+
+        frozen_timing_plan = require_native_match_timing_plan(
+            input_payload.get("timing_plan"),
+            hands=70,
+            requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+        )
+    except Exception as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_timing_plan_invalid"
+        ) from exc
+    _require_completion_deadline(deadline, "timing_plan_validation")
+    try:
+        store = _store(deadline_monotonic=deadline)
+    except WorkflowDeadlineExceeded as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_exceeded:store_open"
+        ) from exc
     authority_run_id = str(ticket.get("authority_run_id") or "")
     effect_id = str(ticket.get("effect_id") or "")
 
@@ -587,7 +1003,16 @@ def complete_control_execution(
     # The outer precommit layer may therefore call this function once more to
     # obtain the compact reference.  That replay is safe only when the already
     # completed effect has exactly the same frozen input and execution bytes.
-    existing = store.effect(effect_id)
+    try:
+        existing = store.effect(
+            effect_id,
+            deadline_monotonic=deadline,
+        )
+    except WorkflowDeadlineExceeded as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_exceeded:effect_read"
+        ) from exc
+    _require_completion_deadline(deadline, "effect_read")
     if existing.get("status") == "completed":
         if (
             existing.get("run_id") != authority_run_id
@@ -603,6 +1028,7 @@ def complete_control_execution(
             authority_run_id=authority_run_id,
             effect_id=effect_id,
             input_payload=input_payload,
+            deadline_monotonic=deadline,
         )
         try:
             same_execution = canonical_json(execution) == canonical_json(
@@ -614,6 +1040,7 @@ def complete_control_execution(
             raise FirstStrictExecutionJournalError(
                 "first_strict_execution_completed_replay_binding_invalid"
             )
+        _require_completion_deadline(deadline, "completed_replay_validation")
         return reference
 
     try:
@@ -624,74 +1051,92 @@ def complete_control_execution(
         raise
     except Exception as exc:
         raise FirstStrictExecutionJournalError(str(exc)) from exc
+    _require_completion_deadline(deadline, "runner_seal_validation")
     issues, terminal_proof = _terminal_execution_issues(
         execution,
         deck_seed_base=input_payload.get("deck_seed_base"),
         bot_seed_base=input_payload.get("bot_seed_base"),
+        timing_plan=frozen_timing_plan,
     )
     if issues:
         raise FirstStrictExecutionJournalError(";".join(issues))
+    _require_completion_deadline(deadline, "terminal_validation")
     normalized_execution = json.loads(canonical_json(execution))
     replay_digest = canonical_digest(normalized_execution)
-    with store.command_lock(authority_run_id, blocking=True):
-        prior_receipts = [
-            event for event in store.events(authority_run_id)
-            if event.event_type == EXECUTION_EVENT_TYPE
-        ]
-        previous_receipt_digest = (
-            str(prior_receipts[-1].payload.get("receipt_chain_digest") or "")
-            if prior_receipts
-            else ""
-        )
-        receipt_id = canonical_digest({
-            "authority_run_id": authority_run_id,
-            "effect_id": ticket.get("effect_id"),
-            "lease_epoch": ticket.get("lease_epoch"),
-            "match_run_id": ticket.get("match_run_id"),
-            "input_payload": input_payload,
-            "replay_digest": replay_digest,
-            "terminal_proof": terminal_proof,
-        })
-        result_payload = {
-            "receipt_id": receipt_id,
-            "match_run_id": ticket.get("match_run_id"),
-            "scope_digest": input_payload.get("scope_digest"),
-            "repeat": input_payload.get("repeat"),
-            "deck_seed_base": input_payload.get("deck_seed_base"),
-            "bot_seed_base": input_payload.get("bot_seed_base"),
-            "replay_digest": replay_digest,
-            "terminal_proof": terminal_proof,
-            "previous_receipt_digest": previous_receipt_digest,
-            # This body is deliberately inside the atomic effect transaction.
-            # The external replay file is a recoverable projection, not the
-            # sole record of a successfully completed 70-hand match.
-            "execution": normalized_execution,
-        }
-        result_payload["receipt_chain_digest"] = canonical_digest(result_payload)
-        completion_id = f"control-match-completed:{receipt_id}"
-        recorded_causation = f"control-match-recorded:{receipt_id}"
-        completed = store.complete_effect(
-            str(ticket.get("effect_id") or ""),
-            lease_epoch=int(ticket.get("lease_epoch") or 0),
-            completion_id=completion_id,
-            result_payload=result_payload,
-            causation_id=f"effect-completed:{receipt_id}",
-            followup_events=[{
-                "event_type": EXECUTION_EVENT_TYPE,
-                "causation_id": recorded_causation,
-                "payload": result_payload,
-            }],
-            require_live_lease=True,
-        )
-        if completed.get("accepted") is not True:
-            raise FirstStrictExecutionJournalError(
-                "first_strict_execution_stale_completion"
+    _require_completion_deadline(deadline, "replay_normalization")
+    try:
+        with store.command_lock(
+            authority_run_id,
+            blocking=True,
+            deadline_monotonic=deadline,
+        ):
+            prior_receipts = [
+                event for event in store.events(
+                    authority_run_id,
+                    deadline_monotonic=deadline,
+                )
+                if event.event_type == EXECUTION_EVENT_TYPE
+            ]
+            previous_receipt_digest = (
+                str(prior_receipts[-1].payload.get("receipt_chain_digest") or "")
+                if prior_receipts
+                else ""
             )
-        recorded = [
-            event for event in store.events(authority_run_id)
-            if event.event_type == EXECUTION_EVENT_TYPE
-            and event.causation_id == recorded_causation
-        ]
+            receipt_id = canonical_digest({
+                "authority_run_id": authority_run_id,
+                "effect_id": ticket.get("effect_id"),
+                "lease_epoch": ticket.get("lease_epoch"),
+                "match_run_id": ticket.get("match_run_id"),
+                "input_payload": input_payload,
+                "replay_digest": replay_digest,
+                "terminal_proof": terminal_proof,
+            })
+            result_payload = {
+                "receipt_id": receipt_id,
+                "match_run_id": ticket.get("match_run_id"),
+                "scope_digest": input_payload.get("scope_digest"),
+                "repeat": input_payload.get("repeat"),
+                "deck_seed_base": input_payload.get("deck_seed_base"),
+                "bot_seed_base": input_payload.get("bot_seed_base"),
+                "replay_digest": replay_digest,
+                "terminal_proof": terminal_proof,
+                "previous_receipt_digest": previous_receipt_digest,
+                # This body is deliberately inside the atomic effect transaction.
+                # The external replay file is a recoverable projection, not the
+                # sole record of a successfully completed 70-hand match.
+                "execution": normalized_execution,
+            }
+            result_payload["receipt_chain_digest"] = canonical_digest(result_payload)
+            completion_id = f"control-match-completed:{receipt_id}"
+            recorded_causation = f"control-match-recorded:{receipt_id}"
+            _require_completion_deadline(deadline, "receipt_construction")
+            completed = store.complete_effect(
+                str(ticket.get("effect_id") or ""),
+                lease_epoch=int(ticket.get("lease_epoch") or 0),
+                completion_id=completion_id,
+                result_payload=result_payload,
+                causation_id=f"effect-completed:{receipt_id}",
+                followup_events=[{
+                    "event_type": EXECUTION_EVENT_TYPE,
+                    "causation_id": recorded_causation,
+                    "payload": result_payload,
+                }],
+                require_live_lease=True,
+                deadline_monotonic=deadline,
+            )
+            if completed.get("accepted") is not True:
+                raise FirstStrictExecutionJournalError(
+                    "first_strict_execution_stale_completion"
+                )
+            recorded = [
+                event for event in completed.get("followup_events", ())
+                if event.event_type == EXECUTION_EVENT_TYPE
+                and event.causation_id == recorded_causation
+            ]
+    except WorkflowDeadlineExceeded as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_exceeded:durable_commit"
+        ) from exc
 
     # Consume the one-shot in-memory authority only after SQLite has committed
     # the terminal effect and event.  A validation/write/lease failure before
@@ -735,6 +1180,7 @@ def read_control_execution_receipt(
     reference: Any,
     *,
     expected_scope: dict[str, Any] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Resolve a small result reference through the authority stream and replay."""
 
@@ -765,14 +1211,27 @@ def read_control_execution_receipt(
     if issues:
         return None, issues
 
+    deadline = _effective_completion_deadline(deadline_monotonic)
+    _require_completion_deadline(deadline, "receipt_read_entry")
     try:
-        store = _store()
-        events = store.events(str(reference["authority_run_id"]))
-        effect = store.effect(str(reference["effect_id"]))
+        store = _store(deadline_monotonic=deadline)
+        events = store.events(
+            str(reference["authority_run_id"]),
+            deadline_monotonic=deadline,
+        )
+        effect = store.effect(
+            str(reference["effect_id"]),
+            deadline_monotonic=deadline,
+        )
+    except WorkflowDeadlineExceeded as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_completion_deadline_exceeded:receipt_read"
+        ) from exc
     except Exception as exc:
         return None, [
             f"first_strict_execution_authority_read_error:{type(exc).__name__}"
         ]
+    _require_completion_deadline(deadline, "receipt_authority_read")
     if effect.get("status") != "completed" or effect.get("kind") != EXECUTION_EFFECT_KIND:
         issues.append("first_strict_execution_effect_not_completed")
     input_payload = effect.get("input_payload")
@@ -785,6 +1244,29 @@ def read_control_execution_receipt(
     except FirstStrictExecutionJournalError as exc:
         normalized_scope = {}
         issues.append(str(exc))
+    receipt_timing_plan = None
+    try:
+        from national_native import (
+            LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            require_native_match_timing_plan,
+        )
+
+        receipt_timing_plan = require_native_match_timing_plan(
+            input_payload.get("timing_plan"),
+            hands=70,
+            requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+        )
+        if (
+            input_payload.get("timing_plan_digest") != receipt_timing_plan.digest()
+            or (
+                normalized_scope
+                and normalized_scope.get("native_match_timing_plan_digest")
+                != receipt_timing_plan.digest()
+            )
+        ):
+            issues.append("first_strict_execution_receipt_timing_plan_mismatch")
+    except Exception:
+        issues.append("first_strict_execution_receipt_timing_plan_invalid")
     if normalized_scope and _authority_run_id(normalized_scope) != reference.get(
         "authority_run_id"
     ):
@@ -872,6 +1354,7 @@ def read_control_execution_receipt(
         # external read-only replay is only its content-addressed projection,
         # and may legitimately be absent after a crash between commit and
         # projection.  Re-materialize it from the exact committed bytes.
+        _require_completion_deadline(deadline, "receipt_projection_start")
         try:
             projected_digest, _projected_path = _write_replay(
                 embedded_execution
@@ -885,20 +1368,25 @@ def read_control_execution_receipt(
                 "first_strict_execution_replay_projection_error:"
                 f"{type(exc).__name__}"
             )
+        _require_completion_deadline(deadline, "receipt_projection_complete")
 
+    _require_completion_deadline(deadline, "receipt_replay_read_start")
     replay, replay_issues = _read_replay(reference.get("replay_digest"))
+    _require_completion_deadline(deadline, "receipt_replay_read_complete")
     issues.extend(replay_issues)
-    if replay is not None:
+    if replay is not None and receipt_timing_plan is not None:
         if isinstance(embedded_execution, dict) and replay != embedded_execution:
             issues.append("first_strict_execution_embedded_replay_mismatch")
         terminal_issues, proof = _terminal_execution_issues(
             replay,
             deck_seed_base=input_payload.get("deck_seed_base"),
             bot_seed_base=input_payload.get("bot_seed_base"),
+            timing_plan=receipt_timing_plan,
         )
         issues.extend(terminal_issues)
         if proof != result_payload.get("terminal_proof"):
             issues.append("first_strict_execution_terminal_proof_mismatch")
+    _require_completion_deadline(deadline, "receipt_validation_complete")
     payload = {
         "scope": normalized_scope,
         "input": deepcopy(input_payload),
@@ -913,6 +1401,7 @@ __all__ = [
     "FirstStrictExecutionJournalError",
     "begin_control_execution",
     "complete_control_execution",
+    "control_execution_completion_deadline",
     "execution_scope_digest",
     "normalize_execution_scope",
     "read_control_execution_receipt",

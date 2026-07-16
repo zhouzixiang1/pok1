@@ -50,6 +50,8 @@ def test_system_runtime_fixtures_cover_repaired_national_semantics():
         "runtime_terminal_fold_persists_cross_hand",
         "runtime_showdown_updates_range",
         "runtime_donk_and_delayed_probe_reachable",
+        "runtime_postflop_first_pass_maps_to_check",
+        "runtime_postflop_facing_check_pass_maps_to_call",
     }
 
 
@@ -85,7 +87,7 @@ def test_national_decision_result_counts_only_assertion_backed_fixtures(
 
     assert observed == [fixture.fixture_id for fixture in native_tests.POLICY_FIXTURES]
     assert result["protocol"] == "official_raw_tcp_transcript_v1"
-    assert result["passed"] == result["total"] == 5
+    assert result["passed"] == result["total"] == 1 + len(native_tests.POLICY_FIXTURES)
     assert result["pass_rate"] == 1.0
     assert result["coverage_only_count"] == 0
     assert result["external_scenario_sidecars_loaded"] is False
@@ -120,7 +122,6 @@ def test_national_decision_contract_failure_is_critical_and_does_not_run_policy(
         (native_tests.POLICY_FIXTURES[0], "call"),
         (native_tests.POLICY_FIXTURES[1], "check"),
         (native_tests.POLICY_FIXTURES[2], "call"),
-        (native_tests.POLICY_FIXTURES[3], "call"),
     ),
     ids=[fixture.fixture_id for fixture in native_tests.POLICY_FIXTURES],
 )
@@ -204,6 +205,40 @@ def test_current_runtime_contract_requires_both_policy_entrypoints(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "required_token",
+    (
+        "def _match_control_state",
+        '"match_control": self._match_control_state(remaining)',
+        '"call_closes_allin_runout": bool(',
+    ),
+)
+def test_current_runtime_contract_rejects_missing_v10_context_producer(
+    tmp_path,
+    required_token,
+):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    ensure_native_entry(bot_dir)
+    (bot_dir / "policy.py").write_text(
+        "def get_baseline_decision(context): return {'kind': 'pass'}\n"
+        "def iter_decisions(context, baseline, deadline): return iter(())\n",
+        encoding="utf-8",
+    )
+    entry = bot_dir / "national_bot.py"
+    entry.write_text(
+        entry.read_text(encoding="utf-8").replace(required_token, "removed", 1),
+        encoding="utf-8",
+    )
+
+    issues = native_tests.check_native_contract(
+        bot_dir,
+        require_current_decision_runtime=True,
+    )
+
+    assert any(required_token in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
     "raw_decision",
     (
         {"kind": "call"},
@@ -241,6 +276,29 @@ def test_invalid_candidate_policy_output_converges_at_real_socket_owner(
     assert result["passed"] is True, result
     # The SB is facing the blind difference, so the typed socket fallback is fold.
     assert result["action"] == "fold"
+
+
+def test_legal_candidate_raise_is_not_misclassified_as_a_protocol_fixture_failure(tmp_path):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    (bot_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return {'kind': 'raise', 'raise_to': 208}\n\n"
+        "def iter_decisions(context, baseline, deadline):\n"
+        "    if False:\n"
+        "        yield baseline\n",
+        encoding="utf-8",
+    )
+    ensure_native_entry(bot_dir)
+    _complete_strict_launch_fixture(bot_dir)
+
+    result = native_tests._run_policy_fixture(
+        bot_dir,
+        native_tests.POLICY_FIXTURES[0],
+    )
+
+    assert result["passed"] is True, result
+    assert result["action"] == "raise 208"
 
 
 def test_exact_official_two_x_raise_boundary_reaches_real_wire(tmp_path):

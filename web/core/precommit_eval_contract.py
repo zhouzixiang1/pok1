@@ -16,9 +16,10 @@ from bot_artifact import canonical_digest, hash_path, published_bot_identity
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PLAN_SCHEMA_VERSION = 5
-EVALUATION_CONTRACT_SCHEMA_VERSION = 4
+PLAN_SCHEMA_VERSION = 7
+EVALUATION_CONTRACT_SCHEMA_VERSION = 5
 DEFAULT_DECK_SEED_BASE = 91_000
+NATIVE_PRECOMMIT_BATCH_PLAN_SCHEMA_VERSION = 1
 
 SEMANTIC_PATHS = (
     "sever/engine/deck.py",
@@ -36,11 +37,18 @@ SEMANTIC_PATHS = (
     "web/core/national_bot_launcher.py",
     "web/core/national_game_runtime.py",
     "web/core/national_native.py",
+    "web/core/pipeline_state.py",
+    "web/core/orchestrator.py",
     "web/core/national_runtime_authority.py",
     "sever/server/transport.py",
     "web/core/precommit_eval_contract.py",
     "web/core/strength_order.py",
     "web/core/tool_eval.py",
+    "web/core/tool_gates.py",
+    "web/core/tool_commit.py",
+    "web/core/elo_daemon.py",
+    "web/core/rating_snapshot.py",
+    "web/core/replay_analysis.py",
 )
 
 _PUBLISHED_IDENTITY_FIELDS = (
@@ -112,6 +120,7 @@ def build_sample_plan(
     matches_per_opponent: int,
     *,
     deck_seed_base: int = DEFAULT_DECK_SEED_BASE,
+    native_match_timing_plan_digest: str | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for opponent_index, opponent in enumerate(opponents):
@@ -122,14 +131,121 @@ def build_sample_plan(
                 + opponent_index * 100_000
                 + repeat_index * 1_000
             )
-            rows.append({
+            row = {
                 "opponent": name,
                 "opponent_index": opponent_index,
                 "repeat": repeat_index + 1,
                 "deck_seed_base": deck_seed,
                 "bot_seed_base": deck_seed + 1_000_000_000,
-            })
+            }
+            if native_match_timing_plan_digest is not None:
+                row["native_match_timing_plan_digest"] = (
+                    str(native_match_timing_plan_digest)
+                )
+            rows.append(row)
     return rows
+
+
+def build_native_precommit_batch_plan(
+    sample_plan: list[dict[str, Any]],
+    *,
+    native_timing_plan: Any,
+    first_strict_control: bool,
+) -> dict[str, Any]:
+    """Freeze the bounded execution shape for one native precommit batch.
+
+    A native match plan explains one runner invocation; it cannot by itself
+    authorize a provider session to run an arbitrary number of matches.  This
+    companion plan binds the ordered seed schedule and the exact number of
+    fresh samples that one provider invocation may launch.  First-strict's
+    eight system-control samples deliberately advance one durable receipt at a
+    time, while ordinary precommit retains its existing bounded batch shape.
+    """
+
+    if not isinstance(sample_plan, list) or not sample_plan:
+        raise PrecommitEvalContractError(
+            "native precommit batch plan requires a non-empty sample plan"
+        )
+    if getattr(native_timing_plan, "hands", None) != 70:
+        raise PrecommitEvalContractError(
+            "native precommit batch plan requires a 70-hand timing plan"
+        )
+    timing_digest = str(native_timing_plan.digest() or "")
+    if len(timing_digest) != 64:
+        raise PrecommitEvalContractError(
+            "native precommit batch timing plan digest is invalid"
+        )
+    normalized_rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for index, row in enumerate(sample_plan):
+        if not isinstance(row, dict):
+            raise PrecommitEvalContractError(
+                f"native precommit batch sample {index} is not an object"
+            )
+        opponent = str(row.get("opponent") or "")
+        repeat = row.get("repeat")
+        opponent_index = row.get("opponent_index")
+        deck_seed = row.get("deck_seed_base")
+        bot_seed = row.get("bot_seed_base")
+        if (
+            not opponent
+            or type(repeat) is not int
+            or repeat < 1
+            or type(opponent_index) is not int
+            or opponent_index < 0
+            or type(deck_seed) is not int
+            or type(bot_seed) is not int
+            or bot_seed != deck_seed + 1_000_000_000
+            or row.get("native_match_timing_plan_digest") != timing_digest
+        ):
+            raise PrecommitEvalContractError(
+                f"native precommit batch sample {index} is invalid"
+            )
+        key = (opponent, repeat)
+        if key in seen:
+            raise PrecommitEvalContractError(
+                "native precommit batch sample key is duplicated"
+            )
+        seen.add(key)
+        normalized_rows.append({
+            "opponent": opponent,
+            "opponent_index": opponent_index,
+            "repeat": repeat,
+            "deck_seed_base": deck_seed,
+            "bot_seed_base": bot_seed,
+            "native_match_timing_plan_digest": timing_digest,
+        })
+    per_sample_execution_timeout_us = int(
+        getattr(native_timing_plan, "execution_timeout_us", 0) or 0
+    )
+    per_sample_lease_timeout_us = int(
+        getattr(native_timing_plan, "first_strict_lease_timeout_us", 0) or 0
+    )
+    if per_sample_execution_timeout_us <= 0 or per_sample_lease_timeout_us <= 0:
+        raise PrecommitEvalContractError(
+            "native precommit batch timing phases are invalid"
+        )
+    payload = {
+        "schema_version": NATIVE_PRECOMMIT_BATCH_PLAN_SCHEMA_VERSION,
+        "authority": "native_precommit_batch_v1",
+        "timing_plan_digest": timing_digest,
+        "sample_plan_digest": canonical_digest({"sample_plan": normalized_rows}),
+        "sample_count": len(normalized_rows),
+        # The first strict control has a journalled receipt boundary after each
+        # physical match.  It must never depend on a single SDK stream lasting
+        # eight full official-safe envelopes.
+        "max_new_samples_per_invocation": 1 if first_strict_control else len(normalized_rows),
+        "per_sample_execution_timeout_us": per_sample_execution_timeout_us,
+        "per_sample_first_strict_lease_timeout_us": per_sample_lease_timeout_us,
+        "batch_execution_timeout_us": (
+            len(normalized_rows) * per_sample_execution_timeout_us
+        ),
+        "batch_effect_lease_timeout_us": (
+            len(normalized_rows) * per_sample_lease_timeout_us
+        ),
+        "ordered_samples": normalized_rows,
+    }
+    return {**payload, "batch_plan_digest": canonical_digest(payload)}
 
 
 def _portable_published_identity(path: Path, *, require_published: bool) -> dict[str, Any]:
@@ -317,6 +433,36 @@ def create_precommit_plan(
         control_min_samples = None
         control_min_match_score = None
 
+    native_timing_plan = None
+    if str(execution_mode) == "native_tcp":
+        from national_native import (
+            LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            build_native_match_timing_plan,
+        )
+
+        native_timing_plan = build_native_match_timing_plan(
+            hands=int(hands_per_match),
+            requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+        )
+    sample_plan = build_sample_plan(
+        normalized,
+        effective_matches_per_opponent,
+        deck_seed_base=int(deck_seed_base),
+        native_match_timing_plan_digest=(
+            native_timing_plan.digest()
+            if native_timing_plan is not None
+            else None
+        ),
+    )
+    native_batch_plan = (
+        build_native_precommit_batch_plan(
+            sample_plan,
+            native_timing_plan=native_timing_plan,
+            first_strict_control=bool(system_control_count),
+        )
+        if native_timing_plan is not None
+        else None
+    )
     settings = {
         "sample_unit": "70_hand_match" if int(hands_per_match) == 70 else "national_match",
         "hands_per_match": int(hands_per_match),
@@ -341,6 +487,18 @@ def create_precommit_plan(
         "control_min_match_score": (
             control_min_match_score if system_control_count else None
         ),
+        "native_match_timing_plan": (
+            native_timing_plan.snapshot() if native_timing_plan is not None else None
+        ),
+        "native_match_timing_plan_digest": (
+            native_timing_plan.digest() if native_timing_plan is not None else None
+        ),
+        "native_precommit_batch_plan": native_batch_plan,
+        "native_precommit_batch_plan_digest": (
+            native_batch_plan.get("batch_plan_digest")
+            if native_batch_plan is not None
+            else None
+        ),
     }
     payload = {
         "schema_version": PLAN_SCHEMA_VERSION,
@@ -357,11 +515,7 @@ def create_precommit_plan(
         ),
         "opponents": normalized,
         "settings": settings,
-        "sample_plan": build_sample_plan(
-            normalized,
-            effective_matches_per_opponent,
-            deck_seed_base=int(deck_seed_base),
-        ),
+        "sample_plan": sample_plan,
     }
     return {**payload, "plan_digest": canonical_digest(payload)}
 
@@ -497,7 +651,26 @@ def validate_precommit_plan(
         issues.append("precommit_first_strict_control_shape_invalid")
 
     settings = plan.get("settings") if isinstance(plan.get("settings"), dict) else {}
+    native_timing_plan = None
     if str(execution_mode) == "native_tcp":
+        try:
+            from national_native import (
+                LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                require_native_match_timing_plan,
+            )
+
+            native_timing_plan = require_native_match_timing_plan(
+                settings.get("native_match_timing_plan"),
+                hands=70,
+                requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            )
+            if (
+                settings.get("native_match_timing_plan_digest")
+                != native_timing_plan.digest()
+            ):
+                issues.append("precommit_native_timing_plan_digest_mismatch")
+        except Exception:
+            issues.append("precommit_native_timing_plan_invalid")
         from strength_order import (
             PRECOMMIT_AGGREGATE_MIN_LOSS_MARGIN,
             PRECOMMIT_AGGREGATE_MIN_SAMPLES,
@@ -564,12 +737,34 @@ def validate_precommit_plan(
             opponents,
             int(settings.get("matches_per_opponent")),
             deck_seed_base=int(settings.get("deck_seed_base")),
+            native_match_timing_plan_digest=(
+                native_timing_plan.digest()
+                if native_timing_plan is not None
+                else None
+            ),
         )
     except Exception:
         expected_samples = []
         issues.append("precommit_sample_settings_invalid")
     if plan.get("sample_plan") != expected_samples:
         issues.append("precommit_sample_plan_mismatch")
+    if native_timing_plan is not None:
+        try:
+            expected_batch_plan = build_native_precommit_batch_plan(
+                expected_samples,
+                native_timing_plan=native_timing_plan,
+                first_strict_control=bool(system_control_count),
+            )
+        except Exception:
+            expected_batch_plan = None
+            issues.append("precommit_native_batch_plan_invalid")
+        if expected_batch_plan is not None:
+            if settings.get("native_precommit_batch_plan") != expected_batch_plan:
+                issues.append("precommit_native_batch_plan_mismatch")
+            if settings.get("native_precommit_batch_plan_digest") != (
+                expected_batch_plan.get("batch_plan_digest")
+            ):
+                issues.append("precommit_native_batch_plan_digest_mismatch")
     return list(dict.fromkeys(issues))
 
 

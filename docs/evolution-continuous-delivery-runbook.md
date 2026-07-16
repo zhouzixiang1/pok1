@@ -314,7 +314,7 @@ Do not prepare v144 until the v143 durable handoff reaches `completed` and its
 final operational/external reproof succeeds.
 
 The current checked-in first-strict control is not missing: artifact
-`2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
+  `b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`
 is valid, unused, and has consumption `0/1`, while official doctor is green.
 That proves the dependencies for five 70-hand self-play rounds plus three
 70-hand system-control rounds; it does not bypass the stage gate. Until the

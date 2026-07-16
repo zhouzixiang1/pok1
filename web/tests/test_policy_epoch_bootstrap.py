@@ -7,7 +7,10 @@ import sys
 import time
 import types
 
-from national_native import NATIVE_PRECOMPUTE_TEMPLATE
+from national_native import (
+    NATIONAL_DECISION_RUNTIME_VERSION,
+    NATIVE_PRECOMPUTE_TEMPLATE,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -26,25 +29,56 @@ def _policy():
 
 
 def _context(*, line: str) -> dict:
+    donk = line == "donk"
     return {
+        "schema_version": 1,
+        "runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+        "decision_id": 1,
         "cards": {
-            "hole": [{"suit": 0, "rank": 12}, {"suit": 1, "rank": 8}],
-            "board": [{"suit": 2, "rank": 10}, {"suit": 0, "rank": 5}, {"suit": 3, "rank": 2}],
+            "hole": (
+                [{"suit": 2, "rank": 7}, {"suit": 0, "rank": 10}]
+                if donk
+                else [{"suit": 0, "rank": 9}, {"suit": 0, "rank": 10}]
+            ),
+            "board": (
+                [
+                    {"suit": 0, "rank": 2},
+                    {"suit": 1, "rank": 12},
+                    {"suit": 2, "rank": 1},
+                ]
+                if donk
+                else [
+                    {"suit": 2, "rank": 8},
+                    {"suit": 3, "rank": 5},
+                    {"suit": 0, "rank": 2},
+                    {"suit": 1, "rank": 4},
+                ]
+            ),
         },
+        "hand": {"number": 1, "street": "flop" if donk else "turn"},
         "betting": {
             "pot": 600,
-            "hero_street_bet": 100,
-            "opponent_street_bet": 100,
+            "hero_stack": 19700,
+            "opponent_stack": 19700,
+            "hero_street_bet": 0,
+            "opponent_street_bet": 0,
             "to_call": 0,
+            "spr": 32.833333,
         },
         "legal": {
-            "policy_kinds": ["pass", "fold", "raise"],
-            "min_raise_to": 400,
-            "max_raise_to": 20000,
+            "policy_kinds": ["pass", "fold", "allin", "raise"],
+            "min_raise_to": 100,
+            "max_raise_to": 19699,
         },
         "line": {
-            "can_donk": line == "donk",
-            "can_delayed_probe": line == "delayed_probe",
+            "can_donk": donk,
+            "can_delayed_probe": not donk,
+            "line_tags": [
+                "donk_opportunity"
+            ] if donk else [
+                "delayed_probe_opportunity",
+                "previous_street_checked_through",
+            ],
         },
         # The nested terminal projection is authoritative; the contradictory
         # flat value exists only to catch accidental compatibility reads.
@@ -64,37 +98,54 @@ def test_donk_and_delayed_probe_are_reachable_typed_raise_intents():
     policy = _policy()
     for line in ("donk", "delayed_probe"):
         context = _context(line=line)
-        decision = policy.get_baseline_decision(context)
+        context["opponent"] = {}
+        _baseline, decision = _final_decision(policy, context)
         assert decision["kind"] == "raise"
         assert decision["raise_to"] >= context["legal"]["min_raise_to"]
-        # Correct field is hero_street_bet; the sizing must not be based on a
-        # retired my_stage_bet alias.
-        assert decision["raise_to"] >= 400
+        assert decision["raise_to"] <= context["legal"]["max_raise_to"]
+
+        control = deepcopy(context)
+        flag = "can_donk" if line == "donk" else "can_delayed_probe"
+        opportunity_tag = (
+            "donk_opportunity"
+            if line == "donk"
+            else "delayed_probe_opportunity"
+        )
+        control["line"][flag] = False
+        control["line"]["line_tags"] = [
+            tag
+            for tag in control["line"]["line_tags"]
+            if tag != opportunity_tag
+        ]
+        _control_baseline, control_decision = _final_decision(policy, control)
+        assert decision != control_decision
+
+
+def _final_decision(policy, context):
+    baseline = policy.get_baseline_decision(context)
+    refinements = list(
+        policy.iter_decisions(context, baseline, time.monotonic() + 0.10)
+    )
+    return baseline, (
+        refinements[-1].get("decision", refinements[-1])
+        if refinements
+        else baseline
+    )
 
 
 def test_refinement_prefers_nested_terminal_response_snapshot():
     policy = _policy()
     context = _context(line="donk")
-    baseline = policy.get_baseline_decision(context)
-    refinements = list(
-        policy.iter_decisions(context, baseline, time.monotonic() + 0.08)
-    )
-    assert refinements
-    decision = refinements[-1].get("decision", refinements[-1])
-    assert decision["kind"] == "raise"
-    assert decision["raise_to"] > baseline["raise_to"]
+    caller = deepcopy(context)
+    caller["opponent"]["terminal_response"]["fold_to_raise"] = 0.1
+    _folder_baseline, folder_decision = _final_decision(policy, context)
+    _caller_baseline, caller_decision = _final_decision(policy, caller)
+    assert folder_decision["kind"] == caller_decision["kind"] == "raise"
+    assert folder_decision["raise_to"] > caller_decision["raise_to"]
 
 
 def _final_raise(policy, context):
-    baseline = policy.get_baseline_decision(context)
-    refinements = list(
-        policy.iter_decisions(context, baseline, time.monotonic() + 0.08)
-    )
-    decision = (
-        refinements[-1].get("decision", refinements[-1])
-        if refinements
-        else baseline
-    )
+    _baseline, decision = _final_decision(policy, context)
     assert decision["kind"] == "raise"
     assert (
         context["legal"]["min_raise_to"]
@@ -106,11 +157,6 @@ def _final_raise(policy, context):
 
 def _sizing_context():
     context = _context(line="donk")
-    context["betting"].update({
-        "hero_street_bet": 0,
-        "opponent_street_bet": 0,
-    })
-    context["legal"]["min_raise_to"] = 100
     return context
 
 

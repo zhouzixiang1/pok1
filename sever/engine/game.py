@@ -34,6 +34,12 @@ except ImportError:  # Standalone ``cd sever && python main.py`` compatibility.
         parse_action,
     )
 
+
+# This is a protocol-engine safety cap, not a strategy heuristic. Native
+# full-match liveness accounting imports the same authority instead of
+# inventing a smaller per-street decision bound.
+MAX_ACTIONS_PER_BETTING_ROUND = 100
+
 logger = logging.getLogger(__name__)
 
 HANDS_PER_MATCH = 70
@@ -69,6 +75,15 @@ class HandResult:
         self.pot = pot
         self.is_showdown = is_showdown
         self.earnings = tuple(earnings)
+
+
+class BettingActionLimitExceeded(RuntimeError):
+    """The engine safety cap was reached before a betting street closed.
+
+    The cap exists to bound native evaluation.  Reclassifying an unfinished
+    street as a normal closure would fabricate a protocol result, so callers
+    must terminate the match and treat it as an infrastructure failure.
+    """
 
 
 class GameEngine:
@@ -263,11 +278,12 @@ class GameEngine:
         action_counts = {first_idx: 0, second_idx: 0}
         actions = []  # 当前阶段行动历史
         allin_occurred = False
+        street_closed = False
 
         current_idx = first_idx
         waiting_idx = second_idx
 
-        for _ in range(100):  # 安全上限
+        for _ in range(MAX_ACTIONS_PER_BETTING_ROUND):  # 安全上限
             current = self.players[current_idx]
             waiting = self.players[waiting_idx]
 
@@ -401,6 +417,7 @@ class GameEngine:
 
                 # call 结束阶段条件：对手已经有过自愿行动
                 if action_counts[waiting_idx] > 0:
+                    street_closed = True
                     break
                 # preflop SB call 后 BB 还需行动
                 current_idx, waiting_idx = waiting_idx, current_idx
@@ -433,6 +450,7 @@ class GameEngine:
 
                 # preflop BB check 且 SB 已 call → 阶段结束
                 if closes_street:
+                    street_closed = True
                     break
 
                 current_idx, waiting_idx = waiting_idx, current_idx
@@ -490,7 +508,21 @@ class GameEngine:
             return BettingResult(folded=True, winner_idx=waiting_idx,
                                   pot=pot, community=community)
 
-        return BettingResult(pot=pot, community=community)
+        if street_closed:
+            return BettingResult(pot=pot, community=community)
+
+        await self._emit("action_limit_reached", {
+            "hand": self.hand_num,
+            "stage": stage,
+            "limit": MAX_ACTIONS_PER_BETTING_ROUND,
+            "actions_observed": len(actions),
+            "player_bets": [bets[0], bets[1]],
+        })
+        raise BettingActionLimitExceeded(
+            "national_betting_round_action_cap_exceeded:"
+            f"hand={self.hand_num}:stage={stage}:"
+            f"limit={MAX_ACTIONS_PER_BETTING_ROUND}"
+        )
 
     async def _settle_fold(self, winner_idx, pot, community):
         """处理弃牌结算：发送 earnChips，返回 HandResult。"""

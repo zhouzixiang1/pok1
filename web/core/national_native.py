@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import ast
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import hashlib
@@ -24,6 +26,7 @@ import textwrap
 import threading
 import time
 from typing import Any
+import uuid
 
 from eval_stats import paired_bootstrap_ci
 from bot_namespace import (
@@ -41,10 +44,15 @@ from national_runtime_telemetry import (
 )
 from managed_bot_executor import BotTiming, EndpointLease, launch_managed_bot
 from national_bot_launcher import native_entry_supports_log_arg
-from national_game_runtime import NationalTCPGameEngine
+from national_game_runtime import (
+    NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND,
+    NationalHandActionLimitExceeded,
+    NationalTCPGameEngine,
+)
+from sever.engine.game import BettingActionLimitExceeded, MAX_ACTIONS_PER_BETTING_ROUND
 from sever.server.transport import NationalTCPClient
 from pipeline_schema import NationalAcceptanceResult
-from runtime_capacity import acquire_match_slots_async
+from runtime_capacity import DEFAULT_CAPACITY_WAIT_SECONDS, acquire_match_slots_async
 from strength_order import (
     is_precommit_gate_matchup,
     is_strength_matchup,
@@ -56,11 +64,46 @@ ROOT = Path(__file__).resolve().parents[2]
 NATIVE_ENTRY = "national_bot.py"
 PRECOMPUTE_ENTRY = "precompute.py"
 TRACE_PREFIX = "POK_TRACE_DECISION "
-NATIONAL_DECISION_RUNTIME_VERSION = 9
+NATIONAL_DECISION_RUNTIME_VERSION = 10
 LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC = 2.0
 LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC = 1.8
 LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC = 0.20
+# This is a caller-requested ceiling, not the effective full-match liveness
+# budget.  ``native_full_match_timeout_budget`` raises it when the configured
+# local decision envelope needs longer for a complete 70-hand sample.
 LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC = 420.0
+NATIVE_BETTING_ROUNDS_PER_HAND = 4
+# This active-native bound is stricter than the engine's generic 100-action
+# safety cap: it is the system-owned, fixed-20,000-chip national hand envelope.
+# The runtime enforces it and emits a typed fail-closed abort if it is reached.
+NATIVE_FULL_MATCH_MAX_DECISION_SLOTS_PER_HAND = (
+    NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND
+)
+NATIVE_FULL_MATCH_FIXED_LIVENESS_SLACK_SEC = 60.0
+NATIVE_FULL_MATCH_DECISION_OVERHEAD_SEC = 0.25
+NATIVE_MIN_MATCH_TIMEOUT_SEC = 90.0
+NATIVE_ARTIFACT_PREPARATION_PER_BOT_TIMEOUT_SEC = 30.0
+NATIVE_POST_EXECUTION_COMPLETION_TIMEOUT_SEC = 30.0
+NATIVE_LAUNCH_HEARTBEAT_INTERVAL_SEC = 30.0
+NATIVE_MATCH_TIMING_PLAN_SCHEMA_VERSION = 5
+NATIVE_MATCH_TIMING_PROFILE_ID = "national_local_strength_v1"
+NATIVE_MATCH_TIMING_PROFILE = {
+    "action_delay_us": 0,
+    "hard_deadline_us": 2_000_000,
+    "refinement_budget_us": 1_800_000,
+    "baseline_target_us": 200_000,
+}
+NATIVE_MATCH_TIMING_PROFILE_DEFINITION_DIGEST = hashlib.sha256(
+    json.dumps(
+        {
+            "schema_version": NATIVE_MATCH_TIMING_PLAN_SCHEMA_VERSION,
+            "profile_id": NATIVE_MATCH_TIMING_PROFILE_ID,
+            "timing": NATIVE_MATCH_TIMING_PROFILE,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+).hexdigest()
 FORMAL_NATIVE_ENV_OVERRIDE_KEYS = frozenset({
     "POK_NATIVE_LOCAL_ACTION_DELAY",
     "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
@@ -71,6 +114,642 @@ FORMAL_NATIVE_ENV_OVERRIDE_KEYS = frozenset({
 _FORMAL_NATIVE_TIMING_OVERRIDE_KEYS = FORMAL_NATIVE_ENV_OVERRIDE_KEYS - {
     "POK_TRACE_DECISIONS"
 }
+
+
+class NativeMatchStartupTimeout(TimeoutError):
+    """The single monotonic native client-startup watchdog expired."""
+
+
+def _canonical_timing_digest(value: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class NativeBotTimingPlan:
+    """Integer-only, system-owned child timing used for one match seat."""
+
+    action_delay_us: int
+    hard_deadline_us: int
+    refinement_budget_us: int
+    baseline_target_us: int
+
+    def snapshot(self) -> dict[str, int]:
+        return {
+            "action_delay_us": self.action_delay_us,
+            "hard_deadline_us": self.hard_deadline_us,
+            "refinement_budget_us": self.refinement_budget_us,
+            "baseline_target_us": self.baseline_target_us,
+        }
+
+    def to_bot_timing(self) -> BotTiming:
+        timing = BotTiming(
+            action_delay=self.action_delay_us / 1_000_000.0,
+            hard_deadline=self.hard_deadline_us / 1_000_000.0,
+            refinement_budget=self.refinement_budget_us / 1_000_000.0,
+            baseline_target=self.baseline_target_us / 1_000_000.0,
+        )
+        timing.environment()
+        return timing
+
+    @classmethod
+    def system_profile(cls) -> "NativeBotTimingPlan":
+        return cls(**NATIVE_MATCH_TIMING_PROFILE)
+
+
+@dataclass(frozen=True)
+class NativeMatchTimingPlan:
+    """Frozen timing contract shared by launch, lease, replay and admission."""
+
+    hands: int
+    requested_timeout_us: int
+    effective_timeout_us: int
+    liveness_floor_us: int
+    decision_slot_us: int
+    protocol_action_timeout_us: int
+    connect_timeout_us: int
+    name_timeout_us: int
+    process_drain_timeout_us: int
+    capacity_queue_timeout_us: int
+    artifact_preparation_per_bot_timeout_us: int
+    artifact_preparation_timeout_us: int
+    startup_timeout_us: int
+    cleanup_timeout_us: int
+    post_execution_completion_timeout_us: int
+    launch_timeout_us: int
+    finalization_timeout_us: int
+    execution_timeout_us: int
+    first_strict_lease_timeout_us: int
+    bot_a: NativeBotTimingPlan
+    bot_b: NativeBotTimingPlan
+
+    def _payload(self) -> dict[str, Any]:
+        return {
+            "schema_version": NATIVE_MATCH_TIMING_PLAN_SCHEMA_VERSION,
+            "profile_id": NATIVE_MATCH_TIMING_PROFILE_ID,
+            "profile_definition_digest": NATIVE_MATCH_TIMING_PROFILE_DEFINITION_DIGEST,
+            "hands": self.hands,
+            "requested_timeout_us": self.requested_timeout_us,
+            "effective_timeout_us": self.effective_timeout_us,
+            "liveness_floor_us": self.liveness_floor_us,
+            "decision_slot_us": self.decision_slot_us,
+            "protocol_action_timeout_us": self.protocol_action_timeout_us,
+            "connect_timeout_us": self.connect_timeout_us,
+            "name_timeout_us": self.name_timeout_us,
+            "process_drain_timeout_us": self.process_drain_timeout_us,
+            "capacity_queue_timeout_us": self.capacity_queue_timeout_us,
+            "artifact_preparation_per_bot_timeout_us": (
+                self.artifact_preparation_per_bot_timeout_us
+            ),
+            "artifact_preparation_timeout_us": (
+                self.artifact_preparation_timeout_us
+            ),
+            # These aggregate budgets are explicit, not an unaccounted-for
+            # grace period.  The native runner launches two clients, waits for
+            # server acceptance, performs two name reads, drains both clients,
+            # server and processes, then completes bounded sealing/projection.
+            "startup_timeout_us": self.startup_timeout_us,
+            "cleanup_timeout_us": self.cleanup_timeout_us,
+            "post_execution_completion_timeout_us": (
+                self.post_execution_completion_timeout_us
+            ),
+            "launch_timeout_us": self.launch_timeout_us,
+            "finalization_timeout_us": self.finalization_timeout_us,
+            "execution_timeout_us": self.execution_timeout_us,
+            "first_strict_lease_timeout_us": self.first_strict_lease_timeout_us,
+            "fixed_liveness_slack_us": int(
+                NATIVE_FULL_MATCH_FIXED_LIVENESS_SLACK_SEC * 1_000_000
+            ),
+            "betting_rounds_per_hand": NATIVE_BETTING_ROUNDS_PER_HAND,
+            "national_hand_action_request_cap": (
+                NATIVE_FULL_MATCH_MAX_DECISION_SLOTS_PER_HAND
+            ),
+            "engine_action_cap_per_betting_round": MAX_ACTIONS_PER_BETTING_ROUND,
+            "bot_a": self.bot_a.snapshot(),
+            "bot_b": self.bot_b.snapshot(),
+        }
+
+    def digest(self) -> str:
+        return _canonical_timing_digest(self._payload())
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            **self._payload(),
+            "timing_plan_digest": self.digest(),
+        }
+
+    def liveness_budget_snapshot(self) -> dict[str, Any]:
+        return {
+            "schema_version": NATIVE_MATCH_TIMING_PLAN_SCHEMA_VERSION,
+            "timing_plan_digest": self.digest(),
+            "requested_timeout_sec": self.requested_timeout_us / 1_000_000.0,
+            "effective_timeout_sec": self.effective_timeout_us / 1_000_000.0,
+            "liveness_floor_sec": self.liveness_floor_us / 1_000_000.0,
+            "hands": self.hands,
+            # Every normalized hand count uses this same strict runtime
+            # envelope.  A diagnostic one-hand match must not report a zero
+            # action bound while its timeout was actually derived from 34
+            # possible national action requests.
+            "decision_slots_per_hand": NATIVE_FULL_MATCH_MAX_DECISION_SLOTS_PER_HAND,
+            "decision_slot_sec": self.decision_slot_us / 1_000_000.0,
+            "fixed_slack_sec": NATIVE_FULL_MATCH_FIXED_LIVENESS_SLACK_SEC,
+            "betting_rounds_per_hand": NATIVE_BETTING_ROUNDS_PER_HAND,
+            "national_hand_action_request_cap": NATIVE_FULL_MATCH_MAX_DECISION_SLOTS_PER_HAND,
+            "engine_action_cap_per_betting_round": MAX_ACTIONS_PER_BETTING_ROUND,
+            # Capacity wait is outside the engine stopwatch, but an
+            # first-strict effect is claimed before the runner can acquire its
+            # shared slot.  It therefore belongs to the frozen effect lease,
+            # not to a caller-selectable retry timeout.
+            "capacity_queue_timeout_sec": (
+                self.capacity_queue_timeout_us / 1_000_000.0
+            ),
+            "artifact_preparation_per_bot_timeout_sec": (
+                self.artifact_preparation_per_bot_timeout_us / 1_000_000.0
+            ),
+            "artifact_preparation_timeout_sec": (
+                self.artifact_preparation_timeout_us / 1_000_000.0
+            ),
+            "startup_timeout_sec": self.startup_timeout_us / 1_000_000.0,
+            "cleanup_timeout_sec": self.cleanup_timeout_us / 1_000_000.0,
+            "post_execution_completion_timeout_sec": (
+                self.post_execution_completion_timeout_us / 1_000_000.0
+            ),
+            "launch_timeout_sec": self.launch_timeout_us / 1_000_000.0,
+            "finalization_timeout_sec": (
+                self.finalization_timeout_us / 1_000_000.0
+            ),
+            "execution_timeout_sec": self.execution_timeout_us / 1_000_000.0,
+            "first_strict_lease_timeout_sec": (
+                self.first_strict_lease_timeout_us / 1_000_000.0
+            ),
+        }
+
+
+def _plain_positive_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def build_native_match_timing_plan(
+    *,
+    hands: int,
+    requested_timeout_sec: float | None,
+) -> NativeMatchTimingPlan:
+    """Build the only local-strength timing contract accepted in production."""
+
+    normalized_hands = max(1, min(70, int(hands)))
+    if requested_timeout_sec is None:
+        requested_timeout_us = int(
+            max(NATIVE_MIN_MATCH_TIMEOUT_SEC, float(normalized_hands) * 4.0)
+            * 1_000_000
+        )
+    else:
+        try:
+            requested_value = float(requested_timeout_sec)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("native match requested timeout is invalid") from exc
+        if not math.isfinite(requested_value) or requested_value < 0.0:
+            raise ValueError("native match requested timeout is invalid")
+        requested_timeout_us = int(round(requested_value * 1_000_000))
+    bot_a = NativeBotTimingPlan.system_profile()
+    bot_b = NativeBotTimingPlan.system_profile()
+    decision_slot_us = max(
+        bot_a.hard_deadline_us + bot_a.action_delay_us,
+        bot_b.hard_deadline_us + bot_b.action_delay_us,
+    ) + int(NATIVE_FULL_MATCH_DECISION_OVERHEAD_SEC * 1_000_000)
+    # The local-strength profile is not an assertion that a broken bot may
+    # consume its official 60-second action allowance on every request.  It is
+    # the bounded system-owned worker envelope (2.0 s) plus scheduler/transport
+    # overhead that a healthy strict artifact may actually use.  Apply it to
+    # every requested hand count: a one-hand diagnostic must not silently use
+    # a weaker timeout identity than the exact same runtime launched for 70
+    # hands.
+    liveness_floor_us = max(
+        int(NATIVE_MIN_MATCH_TIMEOUT_SEC * 1_000_000),
+        int(NATIVE_FULL_MATCH_FIXED_LIVENESS_SLACK_SEC * 1_000_000)
+        + normalized_hands
+        * NATIVE_FULL_MATCH_MAX_DECISION_SLOTS_PER_HAND
+        * decision_slot_us,
+    )
+    effective_timeout_us = max(requested_timeout_us, liveness_floor_us)
+    capacity_queue_timeout_us = int(
+        round(float(DEFAULT_CAPACITY_WAIT_SECONDS) * 1_000_000)
+    )
+    if capacity_queue_timeout_us <= 0:
+        raise RuntimeError("native capacity queue timeout must be positive")
+    artifact_preparation_per_bot_timeout_us = int(
+        round(NATIVE_ARTIFACT_PREPARATION_PER_BOT_TIMEOUT_SEC * 1_000_000)
+    )
+    if artifact_preparation_per_bot_timeout_us <= 0:
+        raise RuntimeError("native artifact preparation timeout must be positive")
+    artifact_preparation_timeout_us = (
+        2 * artifact_preparation_per_bot_timeout_us
+    )
+    connect_timeout_us = max(
+        1_000_000,
+        min(20_000_000, effective_timeout_us // 3),
+    )
+    name_timeout_us = max(
+        1_000_000,
+        min(30_000_000, effective_timeout_us // 3),
+    )
+    process_drain_timeout_us = max(
+        1_000_000,
+        min(5_000_000, effective_timeout_us // 6),
+    )
+    # The runner launches two local child clients and waits for both TCP
+    # connections plus both name replies.  Cleanup can await two client
+    # closes, one server close, and up to two normal/kill process waits.  Bind
+    # all of those bounded phases explicitly so a provider heartbeat never
+    # depends on a hidden post-engine slack allowance.
+    # Two synchronous endpoint connections are followed by the asyncio
+    # server's acceptance of both sockets, then two sequential name reads.
+    # The acceptance wait consumes a third connect window; omitting it would
+    # let the real startup path outlive the immutable timing identity.
+    startup_timeout_us = 3 * connect_timeout_us + 2 * name_timeout_us
+    cleanup_timeout_us = 7 * process_drain_timeout_us
+    post_execution_completion_timeout_us = int(
+        round(NATIVE_POST_EXECUTION_COMPLETION_TIMEOUT_SEC * 1_000_000)
+    )
+    if post_execution_completion_timeout_us <= 0:
+        raise RuntimeError("native post-execution completion timeout must be positive")
+    launch_timeout_us = (
+        capacity_queue_timeout_us
+        + artifact_preparation_timeout_us
+        + startup_timeout_us
+    )
+    finalization_timeout_us = (
+        cleanup_timeout_us + post_execution_completion_timeout_us
+    )
+    execution_timeout_us = (
+        startup_timeout_us
+        + effective_timeout_us
+        + finalization_timeout_us
+    )
+    return NativeMatchTimingPlan(
+        hands=normalized_hands,
+        requested_timeout_us=requested_timeout_us,
+        effective_timeout_us=effective_timeout_us,
+        liveness_floor_us=liveness_floor_us,
+        decision_slot_us=decision_slot_us,
+        protocol_action_timeout_us=min(60_000_000, effective_timeout_us),
+        connect_timeout_us=connect_timeout_us,
+        name_timeout_us=name_timeout_us,
+        process_drain_timeout_us=process_drain_timeout_us,
+        capacity_queue_timeout_us=capacity_queue_timeout_us,
+        artifact_preparation_per_bot_timeout_us=(
+            artifact_preparation_per_bot_timeout_us
+        ),
+        artifact_preparation_timeout_us=artifact_preparation_timeout_us,
+        startup_timeout_us=startup_timeout_us,
+        cleanup_timeout_us=cleanup_timeout_us,
+        post_execution_completion_timeout_us=(
+            post_execution_completion_timeout_us
+        ),
+        launch_timeout_us=launch_timeout_us,
+        finalization_timeout_us=finalization_timeout_us,
+        execution_timeout_us=execution_timeout_us,
+        # The journal ticket is created before the per-match capacity lease is
+        # acquired.  It covers the explicit capacity, startup, engine and
+        # cleanup phases below; no caller-selected "extra minute" is hidden
+        # outside the immutable plan.
+        first_strict_lease_timeout_us=(
+            capacity_queue_timeout_us
+            + artifact_preparation_timeout_us
+            + execution_timeout_us
+        ),
+        bot_a=bot_a,
+        bot_b=bot_b,
+    )
+
+
+def require_native_match_timing_plan(
+    raw: Any,
+    *,
+    hands: int,
+    requested_timeout_sec: float | None,
+) -> NativeMatchTimingPlan:
+    """Rebuild and require the exact system plan; no caller bytes are trusted."""
+
+    expected = build_native_match_timing_plan(
+        hands=hands,
+        requested_timeout_sec=requested_timeout_sec,
+    )
+    if isinstance(raw, NativeMatchTimingPlan):
+        observed = raw.snapshot()
+    elif isinstance(raw, dict):
+        observed = dict(raw)
+    else:
+        raise ValueError("native match timing plan is missing")
+    if observed != expected.snapshot():
+        raise ValueError("native match timing plan does not bind system profile")
+    return expected
+
+
+def _resolve_native_match_timing_plan(
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None,
+    *,
+    hands: int,
+    requested_timeout_sec: float | None,
+) -> NativeMatchTimingPlan:
+    """Create or exactly validate the one plan allowed to launch a match."""
+
+    if timing_plan is None:
+        return build_native_match_timing_plan(
+            hands=hands,
+            requested_timeout_sec=requested_timeout_sec,
+        )
+    return require_native_match_timing_plan(
+        timing_plan,
+        hands=hands,
+        requested_timeout_sec=requested_timeout_sec,
+    )
+
+
+def _native_timing_environment(
+    env_overrides: dict[str, str | int | None] | None,
+    *,
+    sanitize_parent_environment: bool,
+) -> dict[str, str]:
+    """Return one system-owned native timing input projection.
+
+    Strength, quality, precommit, and rating evidence must never depend on a
+    mutable parent ``POK_NATIVE_*`` environment.  Callers may provide the
+    small allowlisted timing override map, which is recorded by the liveness
+    evidence; ambient inheritance is rejected rather than silently sampled.
+    """
+
+    if not sanitize_parent_environment:
+        raise ValueError("native strength timing must not inherit parent environment")
+    environment: dict[str, str] = {}
+    for key, value in (env_overrides or {}).items():
+        if value is None:
+            environment.pop(str(key), None)
+        else:
+            environment[str(key)] = str(value)
+    return environment
+
+
+def _native_bot_timing(
+    environment: dict[str, str],
+    *,
+    action_timeout: float,
+) -> BotTiming:
+    """Resolve one native bot's bounded timing exactly once for launch/budgeting."""
+
+    action_delay = environment.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
+    try:
+        # The system-owned native entry clamps this setting to two seconds;
+        # budget the actual child behavior rather than an unused parent value.
+        action_delay_value = max(0.0, min(2.0, float(action_delay)))
+    except (TypeError, ValueError):
+        action_delay_value = 0.0
+    default_local_hard_deadline = max(
+        0.05,
+        min(
+            LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
+            float(action_timeout) - 0.25,
+        ),
+    )
+    local_hard_deadline_raw = environment.get(
+        "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
+        str(default_local_hard_deadline),
+    )
+    try:
+        local_hard_deadline_value = max(
+            0.05,
+            min(55.0, float(local_hard_deadline_raw)),
+        )
+    except (TypeError, ValueError):
+        local_hard_deadline_value = default_local_hard_deadline
+    default_refinement_budget = max(
+        0.04,
+        min(
+            LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
+            local_hard_deadline_value - 0.10,
+        ),
+    )
+    refinement_budget_raw = environment.get(
+        "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
+        str(default_refinement_budget),
+    )
+    refinement_ceiling = max(
+        0.04,
+        local_hard_deadline_value
+        - min(0.10, local_hard_deadline_value * 0.10),
+    )
+    try:
+        refinement_budget = max(
+            0.04,
+            min(float(refinement_budget_raw), refinement_ceiling),
+        )
+    except (TypeError, ValueError):
+        refinement_budget = min(
+            default_refinement_budget,
+            refinement_ceiling,
+        )
+    default_baseline_target = min(
+        LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
+        max(0.01, local_hard_deadline_value * 0.25),
+    )
+    baseline_target_raw = environment.get(
+        "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
+        str(default_baseline_target),
+    )
+    baseline_ceiling = max(
+        0.01,
+        refinement_budget - min(0.05, refinement_budget * 0.10),
+    )
+    try:
+        baseline_target = max(
+            0.01,
+            min(float(baseline_target_raw), baseline_ceiling),
+        )
+    except (TypeError, ValueError):
+        baseline_target = min(default_baseline_target, baseline_ceiling)
+    timing = BotTiming(
+        action_delay=action_delay_value,
+        hard_deadline=local_hard_deadline_value,
+        refinement_budget=refinement_budget,
+        baseline_target=baseline_target,
+    )
+    # Reuse the managed-executor validation boundary rather than silently
+    # normalising a malformed caller timing environment in the timeout model.
+    timing.environment()
+    return timing
+
+
+def native_full_match_timeout_budget(
+    hands: int,
+    requested_timeout_sec: float | None,
+    *,
+    bot_a_env_overrides: dict[str, str | int | None] | None = None,
+    bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    sanitize_parent_environment: bool = True,
+) -> dict[str, Any]:
+    """Calculate the fail-closed liveness floor for one native TCP match.
+
+    A local strength run deliberately permits a 2 s decision envelope and a
+    1.8 s refinement window.  A fixed 280/420/600 s whole-match timeout can
+    therefore truncate a healthy 70-hand match before its final settlement.
+    For a complete 70-hand sample the upper bound comes from the authoritative
+    engine cap for every betting round, plus bounded startup and settlement
+    slack. A one-hand smoke keeps its short 90 s minimum. It does not turn a
+    timeout into a pass: a match that exceeds this effective budget remains
+    incomplete and fails closed.
+    """
+
+    if bot_a_env_overrides or bot_b_env_overrides or not sanitize_parent_environment:
+        raise ValueError(
+            "native full-match timing must use the fixed system local-strength profile"
+        )
+    return build_native_match_timing_plan(
+        hands=hands,
+        requested_timeout_sec=requested_timeout_sec,
+    ).liveness_budget_snapshot()
+
+
+def _annotate_native_full_match_liveness(
+    execution: dict[str, Any],
+    timing_plan: NativeMatchTimingPlan,
+) -> dict[str, Any]:
+    """Attach one frozen timing fact before any control-path sealing.
+
+    Only the whole-match watchdog gets the liveness label.  A name/connection
+    timeout is still fail-closed, but it is a startup/transport failure rather
+    than evidence that a healthy complete match exceeded its legal envelope.
+    """
+
+    if not isinstance(execution, dict):
+        raise RuntimeError("native TCP runner returned a non-dictionary result")
+    if int(execution.get("hands_requested") or timing_plan.hands) != timing_plan.hands:
+        raise RuntimeError("native TCP runner timing-plan hand count drift")
+    snapshot = timing_plan.snapshot()
+    liveness_budget = timing_plan.liveness_budget_snapshot()
+    existing_plan = execution.get("native_match_timing_plan")
+    if existing_plan is not None and existing_plan != snapshot:
+        raise RuntimeError("native TCP runner timing plan drift")
+    existing_digest = execution.get("native_match_timing_plan_digest")
+    if existing_digest is not None and existing_digest != timing_plan.digest():
+        raise RuntimeError("native TCP runner timing plan digest drift")
+    existing_budget = execution.get("native_full_match_liveness_budget")
+    if existing_budget is not None and existing_budget != liveness_budget:
+        raise RuntimeError("native TCP runner liveness budget drift")
+    result = dict(execution)
+    result["native_match_timing_plan"] = snapshot
+    result["native_match_timing_plan_digest"] = timing_plan.digest()
+    # Keep this small, human-readable projection for existing reports, but
+    # never treat it as authority.  Consumers validate the full immutable
+    # timing plan above.
+    result["native_full_match_liveness_budget"] = liveness_budget
+    if result.get("native_match_timeout_phase") == "whole_match_liveness":
+        marker = (
+            "native_full_match_liveness_budget_exceeded:"
+            f"effective_timeout_sec={liveness_budget['effective_timeout_sec']:g}"
+        )
+        issues = [str(item) for item in (result.get("issues") or [])]
+        if marker not in issues:
+            issues.append(marker)
+        result["issues"] = issues
+        result["passed_compliance"] = False
+    terminal_abort = result.get("native_terminal_abort")
+    if terminal_abort is not None:
+        code = str((terminal_abort or {}).get("code") or "unknown")
+        marker = f"native_terminal_abort:{code}"
+        issues = [str(item) for item in (result.get("issues") or [])]
+        if marker not in issues:
+            issues.append(marker)
+        result["issues"] = issues
+        result["passed_compliance"] = False
+    return result
+
+
+def validate_native_match_timing_evidence(
+    execution: Any,
+    *,
+    timing_plan: NativeMatchTimingPlan,
+) -> list[str]:
+    """Return fail-closed issues for timing/terminal evidence admission.
+
+    This intentionally validates the full plan snapshot, not merely an
+    effective timeout that an upstream caller could enlarge or forge.  Quality,
+    precommit, first-strict recovery, and rating admission share this function
+    so a malformed timing record cannot become historical strength evidence.
+    """
+
+    if not isinstance(execution, dict):
+        return ["native_timing_execution_not_object"]
+    issues: list[str] = []
+    expected_snapshot = timing_plan.snapshot()
+    expected_digest = timing_plan.digest()
+    if execution.get("native_match_timing_plan") != expected_snapshot:
+        issues.append("native_match_timing_plan_missing_or_drifted")
+    if execution.get("native_match_timing_plan_digest") != expected_digest:
+        issues.append("native_match_timing_plan_digest_missing_or_drifted")
+    if execution.get("native_full_match_liveness_budget") != timing_plan.liveness_budget_snapshot():
+        issues.append("native_match_liveness_projection_missing_or_drifted")
+    if execution.get("native_match_timeout_phase") is not None:
+        issues.append("native_match_timeout_phase_present")
+    if execution.get("native_terminal_abort") is not None:
+        issues.append("native_terminal_abort_present")
+    return issues
+
+
+_NATIVE_PROGRESS_EVENT_TYPES = frozenset({
+    "engine_started",
+    "hand_start",
+    "action_requested",
+    "action",
+    "settle",
+})
+
+
+def _native_match_progress_projection(
+    event: Any,
+    *,
+    timing_plan: NativeMatchTimingPlan,
+) -> dict[str, Any] | None:
+    """Project a system engine event without leaking cards or wire traffic.
+
+    The optional callback is solely an orchestrator liveness signal.  It never
+    becomes replay/evidence data and only receives event facts already emitted
+    by the trusted game engine.
+    """
+
+    if not isinstance(event, dict):
+        return None
+    event_type = str(event.get("type") or "")
+    if event_type not in _NATIVE_PROGRESS_EVENT_TYPES:
+        return None
+    try:
+        hand = int(event.get("hand") or 0)
+    except (TypeError, ValueError):
+        return None
+    if hand < 1 or hand > timing_plan.hands:
+        return None
+    return {
+        "schema_version": 1,
+        "event_type": event_type,
+        "hand": hand,
+        "hands": timing_plan.hands,
+        "timing_plan_digest": timing_plan.digest(),
+        **(
+            {
+                "phase_started_at_epoch": float(
+                    event["phase_started_at_epoch"]
+                )
+            }
+            if event_type == "engine_started"
+            and isinstance(event.get("phase_started_at_epoch"), (int, float))
+            and not isinstance(event.get("phase_started_at_epoch"), bool)
+            else {}
+        ),
+    }
 
 
 NATIVE_BOT_TEMPLATE = r'''#!/usr/bin/env python3
@@ -1515,6 +2194,38 @@ class NativeNationalBot:
             "previous_street": previous,
         }
 
+    def _match_control_state(self, remaining_including_current: int) -> dict:
+        """Publish the exact worst-case fold-to-finish match bound.
+
+        Each national hand resets to ``INITIAL_CHIPS`` and seat/blind roles
+        alternate.  Folding now loses only this hand's committed exposure;
+        folding every later hand loses that seat's forced blind.  Strictly
+        exceeding the sum guarantees a match win, while equality guarantees
+        only a draw and is deliberately not marked locked.
+        """
+
+        remaining = max(1, min(TOTAL_HANDS, int(remaining_including_current)))
+        future_hands = remaining - 1
+        complete_pairs, odd = divmod(future_hands, 2)
+        future_forced_blinds = complete_pairs * (SMALL_BLIND + BIG_BLIND)
+        if odd:
+            future_forced_blinds += BIG_BLIND if self._is_sb else SMALL_BLIND
+        current_exposure = max(0, INITIAL_CHIPS - int(self._my_chips))
+        forced_fold_loss_bound = current_exposure + future_forced_blinds
+        hero_net_earned = int(self._opponent_tracker.net_earned)
+        return {
+            "schema_version": 1,
+            "initial_chips": INITIAL_CHIPS,
+            "small_blind": SMALL_BLIND,
+            "big_blind": BIG_BLIND,
+            "current_position": "small_blind" if self._is_sb else "big_blind",
+            "current_exposure": current_exposure,
+            "future_forced_blinds": future_forced_blinds,
+            "forced_fold_loss_bound": forced_fold_loss_bound,
+            "hero_net_earned": hero_net_earned,
+            "fold_locks_win": hero_net_earned > forced_fold_loss_bound,
+        }
+
     def _semantic_hand_history(self) -> dict:
         actions = []
         last_by_round = {}
@@ -1601,6 +2312,7 @@ class NativeNationalBot:
         """Build the sole bounded, versioned candidate policy input."""
         to_call = max(0, self._opponent_stage_bet - self._my_stage_bet)
         effective_stack = min(self._my_chips, self._opponent_chips)
+        remaining = max(1, TOTAL_HANDS - max(0, self._hand_num - 1))
         return {
             "schema_version": DECISION_CONTEXT_SCHEMA_VERSION,
             "runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
@@ -1613,13 +2325,12 @@ class NativeNationalBot:
             "hand": {
                 "number": int(self._hand_num),
                 "total_hands": TOTAL_HANDS,
-                "remaining_including_current": max(
-                    1, TOTAL_HANDS - max(0, self._hand_num - 1)
-                ),
+                "remaining_including_current": remaining,
                 "street": self._stage,
                 "street_index": self._round_num(),
                 "position": "small_blind" if self._is_sb else "big_blind",
                 "acts_first_postflop": self._acts_first_postflop(),
+                "match_control": self._match_control_state(remaining),
             },
             "betting": {
                 "pot": int(self._pot),
@@ -1632,6 +2343,13 @@ class NativeNationalBot:
                 "spr": round(effective_stack / max(1.0, float(self._pot)), 6),
                 "pot_odds": round(
                     to_call / max(1.0, float(self._pot + to_call)), 6
+                ),
+                "call_closes_allin_runout": bool(
+                    to_call > 0
+                    and (
+                        self._opponent_chips == 0
+                        or self._my_chips <= to_call
+                    )
                 ),
             },
             "history": self._semantic_hand_history(),
@@ -2558,6 +3276,11 @@ NATIVE_BOT_TEMPLATE = NATIVE_BOT_TEMPLATE.replace(
     "__POK_DECISION_RUNTIME_VERSION__",
     str(NATIONAL_DECISION_RUNTIME_VERSION),
 )
+# Keep the system-owned runtime below the same fail-closed file-size ceiling
+# enforced for every published candidate.  The raw template uses triple
+# newlines for source readability; generated artifacts retain one blank line
+# between definitions without carrying the redundant separator line.
+NATIVE_BOT_TEMPLATE = NATIVE_BOT_TEMPLATE.replace("\n\n\n", "\n\n")
 
 
 NATIVE_PRECOMPUTE_TEMPLATE = r'''"""System-owned poker facts and evaluators loaded once per policy worker.
@@ -2575,9 +3298,33 @@ import itertools
 import json
 
 
-PRECOMPUTE_SCHEMA_VERSION = 3
+PRECOMPUTE_SCHEMA_VERSION = 4
 CARD_ENCODING = "national_tcp_card_id_v1:card_id=rank_index*4+suit"
-GENERATOR_VERSION = "national-precompute-v2"
+GENERATOR_VERSION = "national-precompute-v3"
+PREFLOP_EQUITY_METHOD = "fixed_seed_uniform_opponent_board_mc_v1"
+PREFLOP_EQUITY_SAMPLES_PER_CLASS = 65_536
+PREFLOP_EQUITY_BASE_SEED = 0x4E4154494F4E414C
+PREFLOP_EQUITY_CLASS_SEED_DERIVATION = (
+    "base_seed_xor_uint64(class_index*0x9e3779b97f4a7c15)"
+)
+PREFLOP_EQUITY_DRAW_CONTRACT = (
+    "python_random_sample_without_replacement_7:opponent2_then_board5"
+)
+PREFLOP_EQUITY_BUILD_RUNTIME = "CPython-3.14.4"
+PREFLOP_EQUITY_RANDOM_SOURCE_SHA256 = (
+    "62dca8cdae7482513b99bb093ff038afd5131954e7eb78166d673a772cee871c"
+)
+PREFLOP_EQUITY_EVALUATOR_SOURCE = "sever/engine/evaluator.py"
+PREFLOP_EQUITY_EVALUATOR_SHA256 = (
+    "9992ee2608db9aef0320a586117f9ced8bdf33ad79581b9356686210cabd425f"
+)
+PREFLOP_EQUITY_CARD_SOURCE = "sever/engine/deck.py"
+PREFLOP_EQUITY_CARD_SOURCE_SHA256 = (
+    "8afb902bc936bca5659997e9b36a923d69304946f5659b35c054cd8c702851d5"
+)
+PREFLOP_EQUITY_GENERATOR_SHA256 = (
+    "5aa6808974f9af67ac7bb5189c431791d9aed9e791869f9428b1ab8e04cf62d3"
+)
 FULL_DECK = tuple(range(52))
 FIVE_OF_SEVEN_INDICES = tuple(itertools.combinations(range(7), 5))
 RANK_SYMBOLS = "23456789TJQKA"
@@ -2636,31 +3383,6 @@ def _preflop_bucket(card_a: int, card_b: int) -> str:
     return "offsuit_other"
 
 
-def _class_equity(row: int, column: int) -> float:
-    """Compact heads-up preflop prior, calibrated for ordering not certification.
-
-    The 169 values are materialized once below.  They are a deterministic
-    baseline prior; live postflop equity comes from the exact evaluator and
-    bounded sampling.  No strength claim relies on this table alone.
-    """
-
-    if row == column:
-        return round(0.503 + 0.029 * row, 6)
-    high, low = max(row, column), min(row, column)
-    suited = row > column
-    gap = high - low
-    value = (
-        0.315
-        + 0.018 * high
-        + 0.010 * low
-        - 0.012 * max(0, gap - 1)
-        + (0.030 if suited else 0.0)
-        + (0.018 if gap <= 2 else 0.0)
-        + (0.010 if high == 12 else 0.0)
-    )
-    return round(max(0.30, min(0.74, value)), 6)
-
-
 def _straight_high(rank_mask: int) -> int:
     mask = int(rank_mask) & 0x1FFF
     for high_index in range(12, 3, -1):
@@ -2686,10 +3408,26 @@ STRAIGHT_HIGH_BY_MASK = {
     rank_mask: _straight_high(rank_mask)
     for rank_mask in range(1 << 13)
 }
-PREFLOP_CLASS_EQUITY = tuple(
-    _class_equity(row, column)
-    for row in range(13)
-    for column in range(13)
+# Compact system-owned facts generated offline with the evaluator below.  For
+# each canonical 169 class, a fixed per-class seed samples 65,536 uniformly
+# random opponent-hole/board completions.  Runtime performs no simulation or
+# file I/O; the literal is content-bound by PRECOMPUTE_MANIFEST.  Rows/columns
+# retain `_hole_class_index`: diagonal=pair, lower triangle=suited, upper
+# triangle=offsuit.
+PREFLOP_CLASS_EQUITY = (
+    0.505562, 0.322670, 0.331421, 0.345146, 0.342972, 0.341774, 0.368095, 0.387222, 0.416359, 0.442924, 0.474236, 0.501106, 0.551247,
+    0.357185, 0.538025, 0.349358, 0.362289, 0.359276, 0.367126, 0.373817, 0.400490, 0.424042, 0.453644, 0.481262, 0.517700, 0.557213,
+    0.372108, 0.386574, 0.569916, 0.382294, 0.378036, 0.381859, 0.395424, 0.407585, 0.436333, 0.460594, 0.491196, 0.519691, 0.565475,
+    0.381386, 0.397804, 0.415733, 0.604012, 0.400528, 0.405571, 0.414703, 0.423820, 0.441399, 0.472992, 0.503845, 0.533699, 0.579208,
+    0.379669, 0.395454, 0.412865, 0.428802, 0.632370, 0.423744, 0.432610, 0.443848, 0.462898, 0.480812, 0.508186, 0.545547, 0.576149,
+    0.385216, 0.398239, 0.418434, 0.435295, 0.454697, 0.663002, 0.451591, 0.460457, 0.479599, 0.494904, 0.518990, 0.549400, 0.584755,
+    0.406075, 0.405975, 0.426208, 0.443024, 0.466362, 0.483116, 0.690964, 0.483467, 0.498352, 0.517311, 0.535866, 0.561302, 0.599449,
+    0.420876, 0.432449, 0.436714, 0.457077, 0.476410, 0.493073, 0.507797, 0.721916, 0.515305, 0.533386, 0.554527, 0.579147, 0.604622,
+    0.449333, 0.457863, 0.466248, 0.473595, 0.489662, 0.509956, 0.522110, 0.540840, 0.749001, 0.552902, 0.572510, 0.598198, 0.627930,
+    0.476631, 0.482178, 0.490730, 0.500206, 0.505775, 0.519569, 0.537994, 0.554581, 0.574120, 0.775276, 0.581406, 0.603699, 0.635590,
+    0.502884, 0.512283, 0.521706, 0.530334, 0.535919, 0.542717, 0.563805, 0.575523, 0.594666, 0.602203, 0.797539, 0.612953, 0.642410,
+    0.532730, 0.541290, 0.545059, 0.558815, 0.565666, 0.573570, 0.579514, 0.599289, 0.617752, 0.626503, 0.634270, 0.821808, 0.652756,
+    0.572975, 0.580811, 0.588860, 0.601120, 0.597969, 0.609055, 0.619118, 0.624474, 0.645691, 0.655029, 0.662453, 0.668808, 0.853325,
 )
 
 
@@ -2822,6 +3560,22 @@ PRECOMPUTE_MANIFEST = {
     "hole_combo_entries": len(HOLE_COMBO_FACTS),
     "hole_class_entries": len(PREFLOP_CLASS_EQUITY),
     "hole_bucket_entries": len(HOLE_BUCKET_BY_COMBO),
+    "preflop_equity_method": PREFLOP_EQUITY_METHOD,
+    "preflop_equity_samples_per_class": PREFLOP_EQUITY_SAMPLES_PER_CLASS,
+    "preflop_equity_base_seed": PREFLOP_EQUITY_BASE_SEED,
+    "preflop_equity_class_seed_derivation": (
+        PREFLOP_EQUITY_CLASS_SEED_DERIVATION
+    ),
+    "preflop_equity_draw_contract": PREFLOP_EQUITY_DRAW_CONTRACT,
+    "preflop_equity_build_runtime": PREFLOP_EQUITY_BUILD_RUNTIME,
+    "preflop_equity_random_source_sha256": (
+        PREFLOP_EQUITY_RANDOM_SOURCE_SHA256
+    ),
+    "preflop_equity_evaluator_source": PREFLOP_EQUITY_EVALUATOR_SOURCE,
+    "preflop_equity_evaluator_sha256": PREFLOP_EQUITY_EVALUATOR_SHA256,
+    "preflop_equity_card_source": PREFLOP_EQUITY_CARD_SOURCE,
+    "preflop_equity_card_source_sha256": PREFLOP_EQUITY_CARD_SOURCE_SHA256,
+    "preflop_equity_generator_sha256": PREFLOP_EQUITY_GENERATOR_SHA256,
     "straight_mask_entries": len(STRAIGHT_HIGH_BY_MASK),
     "five_of_seven_entries": len(FIVE_OF_SEVEN_INDICES),
     # These are system-provided domain facts.  They may accelerate a live
@@ -3265,6 +4019,9 @@ def check_native_contract(
             "def _legalize_policy_decision",
             "def _decision_to_tcp",
             "def _build_decision_context",
+            "def _match_control_state",
+            '"match_control": self._match_control_state(remaining)',
+            '"call_closes_allin_runout": bool(',
             '"policy_kinds": policy_kinds',
             '"raise_boundary": "inclusive_exact_2x_raise_to"',
             "def _infer_suppressed_terminal_opponent_action",
@@ -3476,6 +4233,44 @@ def _prepare_native_spec(
     return spec
 
 
+async def _prepare_native_spec_bounded(
+    label: str,
+    bot_dir: Path,
+    *,
+    timing_plan: NativeMatchTimingPlan,
+    system_control: bool = False,
+    expected_artifact_hash: str = "",
+) -> NativeBotSpec:
+    """Bind one read-only artifact within the immutable preparation budget.
+
+    Artifact validation performs bounded-size local reads and hashes only,
+    before any Bot process or socket exists.  Keep it on the owning event-loop
+    thread: the host default executor may be starved by unrelated match loads,
+    while this five-file ABI check is deliberately small and deterministic.
+    Wall time is measured against the frozen plan; an over-budget result is
+    rejected and never receives process, socket, journal-completion, or
+    callback authority.
+    """
+
+    timeout_sec = (
+        timing_plan.artifact_preparation_per_bot_timeout_us / 1_000_000.0
+    )
+    if timeout_sec <= 0.0:
+        raise RuntimeError("native artifact preparation timeout is invalid")
+    started = time.monotonic()
+    result = _prepare_native_spec(
+        label,
+        bot_dir,
+        system_control=system_control,
+        expected_artifact_hash=expected_artifact_hash,
+    )
+    if time.monotonic() - started > timeout_sec:
+        raise RuntimeError(
+            f"native_artifact_preparation_timeout:{label}"
+        )
+    return result
+
+
 def _native_bot_seed(bot_seed_base: int | None, player_idx: int) -> int | None:
     if bot_seed_base is None:
         return None
@@ -3506,23 +4301,27 @@ def _validate_formal_native_env_overrides(
         )
     for raw_key, value in normalized.items():
         key = str(raw_key)
-        if key in _FORMAL_NATIVE_TIMING_OVERRIDE_KEYS and value is not None:
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(
-                    f"invalid formal native timing override ({side}):{key}"
-                ) from exc
-            if not math.isfinite(numeric):
-                raise ValueError(
-                    f"invalid formal native timing override ({side}):{key}"
-                )
+        if key in _FORMAL_NATIVE_TIMING_OVERRIDE_KEYS:
+            raise ValueError(
+                "formal native timing is fixed by NativeMatchTimingPlan:"
+                f"{side}:{key}"
+            )
         if key == "POK_TRACE_DECISIONS" and value is not None:
             if str(value) not in {"0", "1"}:
                 raise ValueError(
                     f"invalid formal native trace override ({side}):{key}"
                 )
     return normalized
+
+
+def _trace_decisions_from_overrides(
+    side: str,
+    overrides: dict[str, str | int | None] | None,
+) -> bool:
+    """Accept only an explicit non-timing trace switch for a child process."""
+
+    normalized = _validate_formal_native_env_overrides(side, overrides)
+    return str(normalized.get("POK_TRACE_DECISIONS") or "0") == "1"
 
 
 def _parse_decision_trace(stderr_text: str) -> list[dict[str, Any]]:
@@ -3647,15 +4446,23 @@ async def _execute_tcp_server_with_processes(
     bot_a: NativeBotSpec,
     bot_b: NativeBotSpec,
     *,
-    hands: int,
-    timeout_sec: float,
+    timing_plan: NativeMatchTimingPlan,
     deck_seed_base: int | None,
     bot_seed_base: int | None = None,
-    bot_a_env_overrides: dict[str, str | int | None] | None = None,
-    bot_b_env_overrides: dict[str, str | int | None] | None = None,
     capture_events: bool = False,
-    sanitize_parent_environment: bool = False,
+    trace_decisions: bool = False,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
+    """Run one immutable timing plan through the native TCP server.
+
+    Timing is intentionally not read from the parent environment here.  The
+    caller has already frozen and validated ``timing_plan``; the same plan
+    controls child launch, handshake, engine action timeout, whole-match
+    watchdog, process drain, and downstream evidence.
+    """
+
+    hands = timing_plan.hands
+    timeout_sec = timing_plan.effective_timeout_us / 1_000_000.0
     clients: list[NationalTCPClient] = []
     connected = asyncio.Event()
     events: list[dict[str, Any]] = []
@@ -3669,8 +4476,12 @@ async def _execute_tcp_server_with_processes(
         if len(clients) == 2:
             connected.set()
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
-    host, port = server.sockets[0].getsockname()[:2]
+    # Server creation belongs to the same absolute startup watchdog as both
+    # managed-client launches and the name handshake.  Keep the handle
+    # nullable so a bind that fails or is cancelled by the watchdog can still
+    # take the ordinary result/cleanup path without dereferencing a server
+    # that never came into existence.
+    server: asyncio.AbstractServer | None = None
     run_labels = [bot_a.label, bot_b.label]
     if run_labels[0] == run_labels[1]:
         run_labels = [f"{run_labels[0]}_A", f"{run_labels[1]}_B"]
@@ -3682,149 +4493,180 @@ async def _execute_tcp_server_with_processes(
     bot_log_paths: dict[str, Path] = {}
     engine = None
     run_error = ""
-    connect_timeout = max(1.0, min(20.0, float(timeout_sec) / 3.0))
-    name_timeout = max(1.0, min(30.0, float(timeout_sec) / 3.0))
-    action_timeout = max(1.0, min(60.0, float(timeout_sec)))
-    process_drain_timeout = max(1.0, min(5.0, float(timeout_sec) / 6.0))
+    match_timeout_phase: str | None = None
+    terminal_abort: dict[str, Any] | None = None
+    connect_timeout = timing_plan.connect_timeout_us / 1_000_000.0
+    name_timeout = timing_plan.name_timeout_us / 1_000_000.0
+    action_timeout = timing_plan.protocol_action_timeout_us / 1_000_000.0
+    process_drain_timeout = timing_plan.process_drain_timeout_us / 1_000_000.0
     bot_seeds: dict[str, int | None] = {}
-    try:
-        env_overrides = (bot_a_env_overrides or {}, bot_b_env_overrides or {})
-        for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
-            inherited_keys = {
-                "POK_NATIVE_LOCAL_ACTION_DELAY",
-                "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
-                "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
-                "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
-                "POK_TRACE_DECISIONS",
-            }
-            base_environment = {
-                key: str(os.environ[key])
-                for key in inherited_keys
-                if not sanitize_parent_environment and key in os.environ
-            }
-            for key, value in env_overrides[idx].items():
-                if value is None:
-                    base_environment.pop(str(key), None)
-                else:
-                    base_environment[str(key)] = str(value)
-            action_delay = base_environment.get("POK_NATIVE_LOCAL_ACTION_DELAY", "0")
-            default_local_hard_deadline = max(
-                0.05,
-                min(
-                    LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
-                    action_timeout - 0.25,
-                ),
-            )
-            local_hard_deadline_raw = base_environment.get(
-                "POK_NATIVE_DECISION_HARD_DEADLINE_SEC",
-                str(default_local_hard_deadline),
-            )
+    finalization_started_monotonic: float | None = None
+    startup_complete = False
+
+    async def report_finalizing_progress() -> None:
+        """Transfer hand-70 liveness to the fixed cleanup/seal phase."""
+
+        nonlocal finalization_started_monotonic
+        if finalization_started_monotonic is not None:
+            return
+        finalization_started_monotonic = time.monotonic()
+        if progress_callback is None:
+            return
+        try:
+            callback_result = progress_callback({
+                "event_type": "finalizing",
+                "hand": hands,
+                "phase_started_at_epoch": time.time(),
+            })
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
+        except Exception:
+            # Liveness telemetry is never execution authority.
+            return
+
+    async def report_engine_progress(event: dict[str, Any]) -> None:
+        projection = _native_match_progress_projection(
+            event,
+            timing_plan=timing_plan,
+        )
+        if projection is None:
+            return
+        if progress_callback is not None:
             try:
-                local_hard_deadline_value = max(
-                    0.05,
-                    min(55.0, float(local_hard_deadline_raw)),
-                )
-            except (TypeError, ValueError):
-                local_hard_deadline_value = default_local_hard_deadline
-            default_refinement_budget = max(
-                0.04,
-                min(
-                    LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
-                    local_hard_deadline_value - 0.10,
-                ),
-            )
-            refinement_budget_raw = base_environment.get(
-                "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC",
-                str(default_refinement_budget),
-            )
-            refinement_ceiling = max(
-                0.04,
-                local_hard_deadline_value
-                - min(0.10, local_hard_deadline_value * 0.10),
-            )
-            try:
-                refinement_budget = max(
-                    0.04,
-                    min(float(refinement_budget_raw), refinement_ceiling),
-                )
-            except (TypeError, ValueError):
-                refinement_budget = min(
-                    default_refinement_budget,
-                    refinement_ceiling,
-                )
-            default_baseline_target = min(
-                LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
-                max(0.01, local_hard_deadline_value * 0.25),
-            )
-            baseline_target_raw = base_environment.get(
-                "POK_NATIVE_DECISION_BASELINE_TARGET_SEC",
-                str(default_baseline_target),
-            )
-            baseline_ceiling = max(
-                0.01,
-                refinement_budget - min(0.05, refinement_budget * 0.10),
-            )
-            try:
-                baseline_target = max(
-                    0.01,
-                    min(float(baseline_target_raw), baseline_ceiling),
-                )
-            except (TypeError, ValueError):
-                baseline_target = min(default_baseline_target, baseline_ceiling)
-            seed = _native_bot_seed(bot_seed_base, idx)
-            bot_seeds[label] = seed
-            log_path = None
-            if native_entry_supports_log_arg(spec.entry):
-                log_path = log_temp_root / f"{idx}_{_safe_label_fragment(label)}.log"
-                bot_log_paths[label] = log_path
-            stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-            stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
-            try:
-                child_environment = {
-                    key: value
-                    for key, value in base_environment.items()
-                    if key == "POK_TRACE_DECISIONS"
-                }
-                with EndpointLease.connect(
-                    str(host),
-                    int(port),
-                    timeout=connect_timeout,
-                ) as endpoint:
-                    managed = launch_managed_bot(
-                        spec.path,
-                        endpoint,
-                        entry_relative=spec.entry.relative_to(spec.path),
-                        name=label,
-                        decision_log=log_path,
-                        seed=seed,
-                        timing=BotTiming(
-                            action_delay=float(action_delay),
-                            hard_deadline=local_hard_deadline_value,
-                            refinement_budget=refinement_budget,
-                            baseline_target=baseline_target,
-                        ),
-                        environment=child_environment,
-                        stdin=subprocess.DEVNULL,
-                        stdout=stdout_file,
-                        stderr=stderr_file,
-                        expected_artifact_hash=spec.artifact_hash,
-                        required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
-                    )
-                proc = managed.process
-                process_isolation[label] = asdict(managed.isolation)
+                callback_result = progress_callback(projection)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
             except Exception:
-                stdout_file.close()
-                stderr_file.close()
-                raise
-            proc_streams.append((stdout_file, stderr_file))
-            procs.append(proc)
-        await asyncio.wait_for(connected.wait(), timeout=connect_timeout)
-        await clients[0].send_message("name")
-        await clients[1].send_message("name")
-        name0 = await clients[0].recv_name(timeout=name_timeout)
-        name1 = await clients[1].recv_name(timeout=name_timeout)
+                # A sidecar heartbeat must never fabricate a successful match
+                # or make the TCP engine less fail-closed.
+                pass
+        # A complete hand-70 settlement ends engine authority but not the
+        # physical operation: child drain, replay normalization, spec re-hash
+        # and (for bootstrap) durable journal completion remain.
+        if (
+            projection.get("event_type") == "settle"
+            and int(projection.get("hand") or 0) == hands
+        ):
+            await report_finalizing_progress()
+
+    try:
+        loop = asyncio.get_running_loop()
+        startup_deadline = (
+            loop.time() + timing_plan.startup_timeout_us / 1_000_000.0
+        )
+
+        def startup_remaining(step_cap: float, phase: str) -> float:
+            remaining = min(float(step_cap), startup_deadline - loop.time())
+            if remaining <= 0.0:
+                raise NativeMatchStartupTimeout(
+                    f"native TCP startup watchdog expired during {phase}"
+                )
+            return remaining
+
+        async with asyncio.timeout_at(startup_deadline):
+            server = await asyncio.start_server(handle, "127.0.0.1", 0)
+            # A coroutine that suppresses cancellation must not escape the
+            # absolute deadline merely by returning after it.  This explicit
+            # monotonic check also bounds the following synchronous socket
+            # validation within the same immutable startup identity.
+            startup_remaining(connect_timeout, "server_bind")
+            sockets = tuple(server.sockets or ())
+            if not sockets:
+                raise RuntimeError("native TCP server exposed no listening socket")
+            socket_name = sockets[0].getsockname()
+            if (
+                not isinstance(socket_name, tuple)
+                or len(socket_name) < 2
+                or not isinstance(socket_name[0], str)
+                or not socket_name[0]
+                or isinstance(socket_name[1], bool)
+                or not isinstance(socket_name[1], int)
+                or not 1 <= socket_name[1] <= 65_535
+            ):
+                raise RuntimeError("native TCP server listening socket is invalid")
+            host, port = socket_name[:2]
+            startup_remaining(connect_timeout, "server_socket_validation")
+            for idx, (spec, label) in enumerate(zip((bot_a, bot_b), run_labels)):
+                timing = (timing_plan.bot_a, timing_plan.bot_b)[idx].to_bot_timing()
+                seed = _native_bot_seed(bot_seed_base, idx)
+                bot_seeds[label] = seed
+                log_path = None
+                if native_entry_supports_log_arg(spec.entry):
+                    log_path = log_temp_root / f"{idx}_{_safe_label_fragment(label)}.log"
+                    bot_log_paths[label] = log_path
+                stdout_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+                stderr_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+                try:
+                    child_environment = (
+                        {"POK_TRACE_DECISIONS": "1"} if trace_decisions else {}
+                    )
+                    try:
+                        with EndpointLease.connect(
+                            str(host),
+                            int(port),
+                            timeout=startup_remaining(
+                                connect_timeout,
+                                f"endpoint_connect_{idx}",
+                            ),
+                        ) as endpoint:
+                            managed = launch_managed_bot(
+                                spec.path,
+                                endpoint,
+                                entry_relative=spec.entry.relative_to(spec.path),
+                                name=label,
+                                decision_log=log_path,
+                                seed=seed,
+                                timing=timing,
+                                environment=child_environment,
+                                stdin=subprocess.DEVNULL,
+                                stdout=stdout_file,
+                                stderr=stderr_file,
+                                expected_artifact_hash=spec.artifact_hash,
+                                required_artifact_files=tuple(sorted(STRICT_ARTIFACT_FILES)),
+                            )
+                    except TimeoutError as exc:
+                        raise NativeMatchStartupTimeout(
+                            f"native TCP endpoint connect timed out for seat {idx}"
+                        ) from exc
+                    proc = managed.process
+                    process_isolation[label] = asdict(managed.isolation)
+                except Exception:
+                    stdout_file.close()
+                    stderr_file.close()
+                    raise
+                # Transfer process/stream ownership before yielding or checking
+                # the absolute deadline, so a slow synchronous launch is still
+                # cleaned up fail-closed.
+                proc_streams.append((stdout_file, stderr_file))
+                procs.append(proc)
+                startup_remaining(connect_timeout, f"managed_launch_{idx}")
+                await asyncio.sleep(0)
+                startup_remaining(connect_timeout, f"managed_launch_{idx}")
+            await asyncio.wait_for(
+                connected.wait(),
+                timeout=startup_remaining(connect_timeout, "socket_accept"),
+            )
+            for idx, client in enumerate(clients[:2]):
+                await asyncio.wait_for(
+                    client.send_message("name"),
+                    timeout=startup_remaining(connect_timeout, f"name_request_{idx}"),
+                )
+
+            async def receive_name(client: NationalTCPClient, idx: int) -> str | None:
+                step_timeout = startup_remaining(name_timeout, f"name_reply_{idx}")
+                step_deadline = loop.time() + step_timeout
+                value = await client.recv_name(timeout=step_timeout)
+                if value is None and loop.time() >= step_deadline:
+                    raise NativeMatchStartupTimeout(
+                        f"native TCP name reply timed out for seat {idx}"
+                    )
+                return value
+
+            name0 = await receive_name(clients[0], 0)
+            name1 = await receive_name(clients[1], 1)
         if not name0 or not name1:
             raise RuntimeError("native TCP bot name handshake failed")
+        startup_complete = True
         clients[0].name = name0
         clients[1].name = name1
         ordered_clients = clients
@@ -3842,19 +4684,110 @@ async def _execute_tcp_server_with_processes(
             events,
             deck_seed_base=deck_seed_base,
             action_timeout_sec=action_timeout,
+            event_sink=report_engine_progress,
         )
-        await asyncio.wait_for(engine.run_limited_match(name0, name1, hands), timeout=timeout_sec)
+        # The engine liveness stopwatch starts only after both local clients
+        # completed their bounded TCP/name startup phase.  Earlier launch time
+        # is represented separately by the explicit execution phase budget.
+        await report_engine_progress({
+            "type": "engine_started",
+            "hand": 1,
+            "phase_started_at_epoch": time.time(),
+        })
+        match_task = asyncio.create_task(
+            engine.run_limited_match(name0, name1, hands),
+            name="native-tcp-limited-match",
+        )
+        try:
+            done, _pending = await asyncio.wait(
+                {match_task},
+                timeout=timeout_sec,
+            )
+            if match_task not in done:
+                # Only a task that is still pending at this exact outer
+                # deadline exhausted the whole-match liveness envelope.  If
+                # the engine itself raised TimeoutError, awaiting its completed
+                # task below preserves that distinct transport/engine fact.
+                match_timeout_phase = "whole_match_liveness"
+                match_task.cancel()
+                try:
+                    await match_task
+                except asyncio.CancelledError:
+                    pass
+                raise asyncio.TimeoutError(
+                    "native TCP match exhausted whole-match liveness budget"
+                )
+            await match_task
+        finally:
+            if not match_task.done():
+                match_task.cancel()
+                try:
+                    await match_task
+                except asyncio.CancelledError:
+                    pass
+    except NativeMatchStartupTimeout as exc:
+        match_timeout_phase = "startup_watchdog"
+        run_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+    except asyncio.TimeoutError as exc:
+        if not startup_complete:
+            match_timeout_phase = "startup_watchdog"
+            typed = NativeMatchStartupTimeout(
+                "native TCP startup watchdog expired"
+            )
+            run_error = f"{type(typed).__name__}: {str(typed)[:500]}"
+        else:
+            run_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+    except NationalHandActionLimitExceeded as exc:
+        limit_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("type") == "hand_action_limit_reached"
+            ),
+            {},
+        )
+        terminal_abort = {
+            "code": "national_20000_chip_hand_action_limit_exceeded",
+            "message": str(exc)[:500],
+            "hand": limit_event.get("hand"),
+            "limit": limit_event.get("limit"),
+            "actions_observed": limit_event.get("actions_observed"),
+        }
+        run_error = f"{type(exc).__name__}: {str(exc)[:500]}"
+    except BettingActionLimitExceeded as exc:
+        limit_event = next(
+            (
+                event
+                for event in reversed(events)
+                if event.get("type") == "action_limit_reached"
+            ),
+            {},
+        )
+        terminal_abort = {
+            "code": "engine_betting_round_action_limit_exceeded",
+            "message": str(exc)[:500],
+            "hand": limit_event.get("hand"),
+            "stage": limit_event.get("stage"),
+            "limit": limit_event.get("limit"),
+            "actions_observed": limit_event.get("actions_observed"),
+        }
+        run_error = f"{type(exc).__name__}: {str(exc)[:500]}"
     except Exception as exc:
         run_error = f"{type(exc).__name__}: {str(exc)[:500]}"
     finally:
         try:
-            server.close()
+            if server is not None:
+                server.close()
             for client in clients:
                 await client.close(timeout=process_drain_timeout)
-            try:
-                await asyncio.wait_for(server.wait_closed(), timeout=process_drain_timeout)
-            except asyncio.TimeoutError:
-                pass
+            if server is not None:
+                try:
+                    await asyncio.wait_for(
+                        server.wait_closed(),
+                        timeout=process_drain_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    pass
             for label, proc, streams in zip(run_labels, procs, proc_streams):
                 stdout_file, stderr_file = streams
                 stderr_note = ""
@@ -3979,6 +4912,14 @@ async def _execute_tcp_server_with_processes(
             issues.append(issue)
             per_player[run_label]["compliance_issues"].append(issue)
             per_player[run_label]["passed_compliance"] = False
+    if finalization_started_monotonic is not None and (
+        time.monotonic() - finalization_started_monotonic
+        > timing_plan.cleanup_timeout_us / 1_000_000.0
+    ):
+        match_timeout_phase = "finalizing_cleanup"
+        issue = "native_tcp_finalizing_cleanup_timeout"
+        if issue not in issues:
+            issues.append(issue)
     return {
         "bot_a": run_labels[0],
         "bot_b": run_labels[1],
@@ -4004,8 +4945,76 @@ async def _execute_tcp_server_with_processes(
         "passed_compliance": not issues,
         "issues": issues,
         "events_tail": events[-20:],
+        "native_match_timeout_phase": match_timeout_phase,
+        "native_terminal_abort": terminal_abort,
         **({"events": list(events)} if capture_events else {}),
     }
+
+
+async def _await_first_strict_control_completion(
+    ticket: dict[str, Any],
+    execution: dict[str, Any],
+    *,
+    deadline_monotonic: float,
+) -> dict[str, Any]:
+    """Await the bounded journal writer without blocking the asyncio loop.
+
+    The synchronous writer owns the absolute deadline for flock and SQLite
+    waits.  This coroutine intentionally has no cancelling outer timeout: it
+    awaits the thread to natural completion, so returning from here proves no
+    journal writer was detached.  An arbitrary kernel/fsync stall is not
+    asynchronously interruptible; a successful COMMIT remains authoritative.
+    """
+
+    from first_strict_execution_journal import (
+        complete_control_execution,
+        control_execution_completion_deadline,
+    )
+
+    with control_execution_completion_deadline(deadline_monotonic):
+        context = copy_context()
+        executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="first-strict-journal",
+        )
+        cancellation: asyncio.CancelledError | None = None
+        try:
+            writer = executor.submit(
+                context.run,
+                complete_control_execution,
+                ticket,
+                execution=execution,
+            )
+            while not writer.done():
+                try:
+                    # Poll the concurrent Future with a loop-owned timer.  Do
+                    # not wrap it in an asyncio Future: on this deployment a
+                    # cross-thread completion wake can be lost, and use of the
+                    # default executor can then hang asyncio.run() shutdown.
+                    await asyncio.sleep(0.05)
+                except asyncio.CancelledError as exc:
+                    # The synchronous authority writer is not cancelled.
+                    # Drain it even after repeated caller cancellation, then
+                    # preserve the first cancellation below.
+                    if cancellation is None:
+                        cancellation = exc
+            try:
+                result = writer.result()
+            except BaseException as exc:
+                if cancellation is not None:
+                    raise cancellation from exc
+                raise
+            if cancellation is not None:
+                raise cancellation
+            return result
+        finally:
+            # writer.done() is required before this point except if submit
+            # itself failed.  The join is therefore local and cannot leave a
+            # journal mutation detached from the caller.
+            executor.shutdown(
+                wait=True,
+                cancel_futures=False,
+            )
 
 
 def _build_first_strict_runner_authority(execute_native_match):
@@ -4016,7 +5025,9 @@ def _build_first_strict_runner_authority(execute_native_match):
     into existence only after the captured 70-hand TCP implementation above
     returns a terminal result for the exact content-bound candidate/control
     pair.  The opaque object is retained in process memory and is consumed once
-    by the journal.  Nothing is added to the replay/result dictionary.
+    by the journal.  The only system-owned augmentation before sealing is the
+    frozen full-match liveness budget, so lease, timer, replay, and receipt
+    retain exactly the same timing identity.
 
     This protects the checkpoint/LLM/shell/public-API boundary.  As elsewhere
     in this repository, arbitrary same-UID Python memory inspection or runtime
@@ -4097,6 +5108,8 @@ def _build_first_strict_runner_authority(execute_native_match):
             "deck_seed_base",
             "bot_seed_base",
             "hands",
+            "timing_plan",
+            "timing_plan_digest",
             "match_run_id",
         }:
             raise RuntimeError("first_strict_execution_runner_input_invalid")
@@ -4117,6 +5130,20 @@ def _build_first_strict_runner_authority(execute_native_match):
             raise RuntimeError("first_strict_execution_runner_seed_relation_invalid")
         if input_payload.get("hands") != 70:
             raise RuntimeError("first_strict_execution_runner_hands_invalid")
+        try:
+            timing_plan = require_native_match_timing_plan(
+                input_payload.get("timing_plan"),
+                hands=70,
+                requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "first_strict_execution_runner_timing_plan_invalid"
+            ) from exc
+        if input_payload.get("timing_plan_digest") != timing_plan.digest():
+            raise RuntimeError(
+                "first_strict_execution_runner_timing_plan_digest_mismatch"
+            )
         match_identity = {
             "scope": scope,
             "scope_digest": scope_digest,
@@ -4124,6 +5151,8 @@ def _build_first_strict_runner_authority(execute_native_match):
             "deck_seed_base": deck_seed_base,
             "bot_seed_base": bot_seed_base,
             "hands": 70,
+            "timing_plan": timing_plan.snapshot(),
+            "timing_plan_digest": timing_plan.digest(),
         }
         match_run_id = "first-strict-native:" + canonical_digest(match_identity)
         authority_run_id = f"first-strict-control:{scope_digest}"
@@ -4150,6 +5179,7 @@ def _build_first_strict_runner_authority(execute_native_match):
             "deck_seed_base": deck_seed_base,
             "bot_seed_base": bot_seed_base,
             "scope": scope,
+            "timing_plan": timing_plan,
         }
 
     def bot_spec_identity(
@@ -4200,6 +5230,15 @@ def _build_first_strict_runner_authority(execute_native_match):
             "settlements": execution.get("settlements"),
             "hand_records": execution.get("hand_records"),
             "events": execution.get("events"),
+            "native_match_timing_plan": execution.get("native_match_timing_plan"),
+            "native_match_timing_plan_digest": execution.get(
+                "native_match_timing_plan_digest"
+            ),
+            "native_full_match_liveness_budget": execution.get(
+                "native_full_match_liveness_budget"
+            ),
+            "native_match_timeout_phase": execution.get("native_match_timeout_phase"),
+            "native_terminal_abort": execution.get("native_terminal_abort"),
         }
 
     def validate_terminal_result(
@@ -4216,6 +5255,7 @@ def _build_first_strict_runner_authority(execute_native_match):
             execution,
             deck_seed_base=binding["deck_seed_base"],
             bot_seed_base=binding["bot_seed_base"],
+            timing_plan=binding["timing_plan"],
         )
         if issues:
             raise RuntimeError(
@@ -4255,13 +5295,12 @@ def _build_first_strict_runner_authority(execute_native_match):
         bot_b: NativeBotSpec,
         *,
         hands: int,
-        timeout_sec: float,
+        timing_plan: NativeMatchTimingPlan,
         deck_seed_base: int | None,
         bot_seed_base: int | None = None,
-        bot_a_env_overrides: dict[str, str | int | None] | None = None,
-        bot_b_env_overrides: dict[str, str | int | None] | None = None,
         capture_events: bool = False,
-        sanitize_parent_environment: bool = False,
+        trace_decisions: bool = False,
+        progress_callback: Any = None,
         control_execution_ticket: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         binding = None
@@ -4277,6 +5316,7 @@ def _build_first_strict_runner_authority(execute_native_match):
                 or bot_seed_base != binding["bot_seed_base"]
                 or capture_events is not True
                 or bot_a.label == bot_b.label
+                or timing_plan != binding["timing_plan"]
             ):
                 raise RuntimeError("first_strict_execution_runner_arguments_mismatch")
             before_specs = [
@@ -4297,15 +5337,29 @@ def _build_first_strict_runner_authority(execute_native_match):
         execution = await execute_native_match(
             bot_a,
             bot_b,
-            hands=hands,
-            timeout_sec=timeout_sec,
+            timing_plan=timing_plan,
             deck_seed_base=deck_seed_base,
             bot_seed_base=bot_seed_base,
-            bot_a_env_overrides=bot_a_env_overrides,
-            bot_b_env_overrides=bot_b_env_overrides,
             capture_events=capture_events,
-            sanitize_parent_environment=sanitize_parent_environment,
+            trace_decisions=trace_decisions,
+            progress_callback=progress_callback,
         )
+        completion_deadline_monotonic = (
+            time.monotonic()
+            + timing_plan.post_execution_completion_timeout_us / 1_000_000.0
+        )
+
+        def require_completion_deadline(phase: str) -> None:
+            if time.monotonic() > completion_deadline_monotonic:
+                raise RuntimeError(
+                    f"native_post_execution_completion_timeout:{phase}"
+                )
+
+        # This must happen before terminal validation, the in-memory seal, and
+        # the journal write.  A post-return append would make the outer
+        # idempotent completion observe different evidence bytes.
+        execution = _annotate_native_full_match_liveness(execution, timing_plan)
+        require_completion_deadline("timing_annotation")
         if binding is not None:
             from bot_artifact import canonical_digest
 
@@ -4324,12 +5378,14 @@ def _build_first_strict_runner_authority(execute_native_match):
             ]
             if after_specs != before_specs:
                 raise RuntimeError("first_strict_execution_runner_bot_spec_changed")
+            require_completion_deadline("artifact_rehash")
             execution_digest, projection_digest = validate_terminal_result(
                 execution,
                 bot_a=bot_a,
                 bot_b=bot_b,
                 binding=binding,
             )
+            require_completion_deadline("terminal_validation")
             spec_digest = canonical_digest({"bot_specs": after_specs})
             seal = RunnerSeal(
                 ticket_digest=binding["ticket_digest"],
@@ -4351,11 +5407,14 @@ def _build_first_strict_runner_authority(execute_native_match):
             # only after that commit, and can reconstruct its file projection
             # after a process death.  The outer caller's second completion call
             # is an exact, idempotent reference lookup.
-            from first_strict_execution_journal import complete_control_execution
-
-            complete_control_execution(
+            # The same absolute monotonic boundary must govern validation,
+            # command-lock acquisition, SQLite busy waits, and the atomic
+            # effect/event commit.  The helper fully awaits its internally
+            # bounded writer, preserving finalizing/reproof without detaching.
+            await _await_first_strict_control_completion(
                 control_execution_ticket,
-                execution=execution,
+                execution,
+                deadline_monotonic=completion_deadline_monotonic,
             )
         return execution
 
@@ -4425,7 +5484,6 @@ def _build_first_strict_runner_authority(execute_native_match):
     _validate_first_strict_runner_execution_seal,
     _consume_first_strict_runner_execution_seal,
 ) = _build_first_strict_runner_authority(_execute_tcp_server_with_processes)
-del _build_first_strict_runner_authority
 del _execute_tcp_server_with_processes
 
 
@@ -4437,10 +5495,13 @@ async def run_native_tcp_pair(
     deck_seed_base: int | None = None,
     bot_seed_base: int | None = None,
     timeout_sec: float | None = None,
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    native_full_match_liveness_budget: dict[str, float | int] | None = None,
     capture_events: bool = False,
-    sanitize_parent_environment: bool = False,
+    sanitize_parent_environment: bool = True,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Execute both strict policy artifacts directly over national raw TCP."""
 
@@ -4451,10 +5512,13 @@ async def run_native_tcp_pair(
         deck_seed_base=deck_seed_base,
         bot_seed_base=bot_seed_base,
         timeout_sec=timeout_sec,
+        timing_plan=timing_plan,
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
+        native_full_match_liveness_budget=native_full_match_liveness_budget,
         capture_events=capture_events,
         sanitize_parent_environment=sanitize_parent_environment,
+        progress_callback=progress_callback,
     )
 
 
@@ -4466,10 +5530,14 @@ async def run_native_strength_pair(
     deck_seed_base: int | None = None,
     bot_seed_base: int | None = None,
     timeout_sec: float | None = None,
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    native_full_match_liveness_budget: dict[str, float | int] | None = None,
     capture_events: bool = False,
+    sanitize_parent_environment: bool = True,
     control_execution_ticket: dict[str, Any] | None = None,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Execute one local-strength sample from the exact submitted artifacts."""
 
@@ -4480,10 +5548,14 @@ async def run_native_strength_pair(
         deck_seed_base=deck_seed_base,
         bot_seed_base=bot_seed_base,
         timeout_sec=timeout_sec,
+        timing_plan=timing_plan,
         bot_a_env_overrides=bot_a_env_overrides,
         bot_b_env_overrides=bot_b_env_overrides,
+        native_full_match_liveness_budget=native_full_match_liveness_budget,
         capture_events=capture_events,
+        sanitize_parent_environment=sanitize_parent_environment,
         control_execution_ticket=control_execution_ticket,
+        progress_callback=progress_callback,
     )
 
 
@@ -4495,17 +5567,25 @@ async def _run_direct_artifact_tcp_pair(
     deck_seed_base: int | None,
     bot_seed_base: int | None,
     timeout_sec: float | None,
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
     bot_a_env_overrides: dict[str, str | int | None] | None = None,
     bot_b_env_overrides: dict[str, str | int | None] | None = None,
+    native_full_match_liveness_budget: dict[str, float | int] | None = None,
     capture_events: bool = False,
-    sanitize_parent_environment: bool = False,
+    sanitize_parent_environment: bool = True,
     control_execution_ticket: dict[str, Any] | None = None,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
-    bot_a_env_overrides = _validate_formal_native_env_overrides(
-        "bot_a", bot_a_env_overrides
-    )
-    bot_b_env_overrides = _validate_formal_native_env_overrides(
-        "bot_b", bot_b_env_overrides
+    if not sanitize_parent_environment:
+        raise ValueError("native strength timing must not inherit parent environment")
+    if native_full_match_liveness_budget is not None:
+        raise ValueError(
+            "raw native full-match liveness budgets are not execution authority; "
+            "pass the immutable timing_plan instead"
+        )
+    trace_decisions = (
+        _trace_decisions_from_overrides("bot_a", bot_a_env_overrides)
+        or _trace_decisions_from_overrides("bot_b", bot_b_env_overrides)
     )
     if control_execution_ticket is not None and (
         capture_events is not True
@@ -4530,48 +5610,358 @@ async def _run_direct_artifact_tcp_pair(
     else:
         ticket_scope = {}
         label_b, dir_b = resolve_bot(bot_b_token)
+    hands = max(1, min(70, int(hands)))
+    frozen_timing_plan = _resolve_native_match_timing_plan(
+        timing_plan,
+        hands=hands,
+        requested_timeout_sec=timeout_sec,
+    )
     capacity_owner = (
         f"native_tcp:{label_a}:{label_b}:{os.getpid()}:{time.monotonic_ns()}"
     )
-    capacity_lease = await acquire_match_slots_async(capacity_owner, count=1)
+    capacity_lease = None
+    bound_progress_callback = None
+    # This digest is a runtime-only prelaunch identity, not replay or strength
+    # evidence.  It is fixed before capacity wait and artifact preparation so
+    # the exact provider dispatch can prove liveness across the whole bounded
+    # operation.  Artifact bytes are independently bound by NativeBotSpec
+    # before either process or socket is launched.
+    match_run_nonce = uuid.uuid4().hex
+    match_identity_digest = _canonical_timing_digest({
+        "schema_version": 3,
+        "identity_kind": "runtime_only_native_prelaunch",
+        "bot_a_label": label_a,
+        "bot_a_path": str(dir_a.absolute()),
+        "bot_b_label": label_b,
+        "bot_b_path": str(dir_b.absolute()),
+        "system_control_b": system_control_b,
+        "hands": hands,
+        "deck_seed_base": deck_seed_base,
+        "bot_seed_base": bot_seed_base,
+        "timing_plan_digest": frozen_timing_plan.digest(),
+        "control_match_run_id": str(
+            (control_execution_ticket or {}).get("match_run_id") or ""
+        ),
+        "match_run_nonce": match_run_nonce,
+    })
+    operation_started_at_epoch: float | None = None
+    engine_phase_started_at: float | None = None
+    finalizing_phase_started_at: float | None = None
+    terminal_progress_reported = False
+    terminal_outcome = "runner_raised"
+    launch_heartbeat_stop = asyncio.Event()
+    launch_heartbeat_task: asyncio.Task | None = None
+
+    async def bound_progress_callback(projection: dict[str, Any]) -> bool:
+        nonlocal operation_started_at_epoch
+        nonlocal engine_phase_started_at, finalizing_phase_started_at
+        nonlocal terminal_progress_reported
+        if progress_callback is None:
+            return False
+        if not isinstance(projection, dict):
+            return False
+        event_type = str(projection.get("event_type") or "")
+        terminal_event = (
+            projection.get("terminal") is True or event_type == "terminal"
+        )
+        if terminal_event:
+            if terminal_progress_reported:
+                return True
+            outcome = str(projection.get("terminal_outcome") or "")
+            if outcome not in {
+                "runner_returned",
+                "runner_raised",
+                "runner_cancelled",
+            }:
+                return False
+            # This event is consumed by the identity-aware reporter; it never
+            # becomes a persistent liveness projection.
+            enriched = {
+                "event_type": "terminal",
+                "terminal": True,
+                "terminal_outcome": outcome,
+                "match_identity_digest": match_identity_digest,
+                "timing_plan_digest": frozen_timing_plan.digest(),
+            }
+        elif event_type == "launching":
+            try:
+                phase_started_at = float(
+                    projection.get("phase_started_at_epoch")
+                )
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(phase_started_at) or phase_started_at <= 0.0:
+                return False
+            if operation_started_at_epoch is None:
+                operation_started_at_epoch = phase_started_at
+            elif phase_started_at != operation_started_at_epoch:
+                return False
+            if engine_phase_started_at is not None:
+                return False
+            phase_budget_us = frozen_timing_plan.launch_timeout_us
+            enriched = {
+                **dict(projection),
+                "hand": None,
+                "liveness_phase": "launching",
+                "phase_started_at_epoch": phase_started_at,
+                "phase_budget_us": phase_budget_us,
+                "match_identity_digest": match_identity_digest,
+                "timing_plan_digest": frozen_timing_plan.digest(),
+                "hands": frozen_timing_plan.hands,
+                "effective_timeout_us": frozen_timing_plan.effective_timeout_us,
+                "operation_started_at_epoch": operation_started_at_epoch,
+                "operation_deadline_epoch": (
+                    operation_started_at_epoch
+                    + frozen_timing_plan.first_strict_lease_timeout_us
+                    / 1_000_000.0
+                ),
+                "operation_budget_us": (
+                    frozen_timing_plan.first_strict_lease_timeout_us
+                ),
+                "phase_deadline_epoch": (
+                    phase_started_at + phase_budget_us / 1_000_000.0
+                ),
+            }
+        elif event_type == "finalizing":
+            if engine_phase_started_at is None or operation_started_at_epoch is None:
+                return False
+            if projection.get("hand") != frozen_timing_plan.hands:
+                return False
+            try:
+                phase_started_at = float(
+                    projection.get("phase_started_at_epoch")
+                )
+            except (TypeError, ValueError):
+                return False
+            if not math.isfinite(phase_started_at) or phase_started_at <= 0.0:
+                return False
+            if finalizing_phase_started_at is None:
+                finalizing_phase_started_at = phase_started_at
+            elif phase_started_at != finalizing_phase_started_at:
+                return False
+            phase_budget_us = frozen_timing_plan.finalization_timeout_us
+            enriched = {
+                **dict(projection),
+                "liveness_phase": "finalizing",
+                "phase_started_at_epoch": finalizing_phase_started_at,
+                "phase_budget_us": phase_budget_us,
+                "match_identity_digest": match_identity_digest,
+                "timing_plan_digest": frozen_timing_plan.digest(),
+                "hands": frozen_timing_plan.hands,
+                "effective_timeout_us": frozen_timing_plan.effective_timeout_us,
+                "operation_started_at_epoch": operation_started_at_epoch,
+                "operation_deadline_epoch": (
+                    operation_started_at_epoch
+                    + frozen_timing_plan.first_strict_lease_timeout_us
+                    / 1_000_000.0
+                ),
+                "operation_budget_us": (
+                    frozen_timing_plan.first_strict_lease_timeout_us
+                ),
+                "phase_deadline_epoch": (
+                    finalizing_phase_started_at
+                    + phase_budget_us / 1_000_000.0
+                ),
+            }
+        else:
+            if event_type == "engine_started":
+                try:
+                    engine_phase_started_at = float(
+                        projection.get("phase_started_at_epoch")
+                    )
+                except (TypeError, ValueError):
+                    return False
+                if (
+                    not math.isfinite(engine_phase_started_at)
+                    or engine_phase_started_at <= 0.0
+                ):
+                    return False
+                launch_heartbeat_stop.set()
+            if engine_phase_started_at is None or operation_started_at_epoch is None:
+                # Only the trusted runner can declare the actual engine
+                # boundary.  Do not derive it from an arbitrary first
+                # action/settlement callback.
+                return False
+            phase_budget_us = frozen_timing_plan.effective_timeout_us
+            enriched = {
+                **dict(projection),
+                "liveness_phase": "engine_running",
+                "phase_started_at_epoch": engine_phase_started_at,
+                "phase_budget_us": phase_budget_us,
+                "match_identity_digest": match_identity_digest,
+                "timing_plan_digest": frozen_timing_plan.digest(),
+                "hands": frozen_timing_plan.hands,
+                "effective_timeout_us": frozen_timing_plan.effective_timeout_us,
+                "operation_started_at_epoch": operation_started_at_epoch,
+                "operation_deadline_epoch": (
+                    operation_started_at_epoch
+                    + frozen_timing_plan.first_strict_lease_timeout_us
+                    / 1_000_000.0
+                ),
+                "operation_budget_us": (
+                    frozen_timing_plan.first_strict_lease_timeout_us
+                ),
+                "phase_deadline_epoch": (
+                    engine_phase_started_at + phase_budget_us / 1_000_000.0
+                ),
+            }
+        try:
+            callback_result = progress_callback(enriched)
+            if asyncio.iscoroutine(callback_result):
+                callback_result = await callback_result
+            # A reporter may explicitly reject an identity-mismatched or
+            # failed unlink.  Only an acknowledged terminal clear suppresses
+            # the outer finally retry; generic callbacks returning None retain
+            # backward-compatible success semantics.
+            if terminal_event and callback_result is not False:
+                terminal_progress_reported = True
+            return callback_result is not False
+        except Exception:
+            # The native engine remains authoritative.  A failed
+            # orchestrator sidecar write must not change the match result.
+            return False
+
+    async def refresh_launch_progress(phase_started_at_epoch: float) -> None:
+        """Refresh freshness only; the launch phase deadline stays immutable."""
+
+        while not launch_heartbeat_stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    launch_heartbeat_stop.wait(),
+                    timeout=NATIVE_LAUNCH_HEARTBEAT_INTERVAL_SEC,
+                )
+                return
+            except asyncio.TimeoutError:
+                accepted = await bound_progress_callback({
+                    "event_type": "launching",
+                    "phase_started_at_epoch": phase_started_at_epoch,
+                })
+                if not accepted:
+                    return
+
     try:
-        spec_a = _prepare_native_spec(
+        # Launch liveness begins before the bounded capacity and preparation
+        # phases.  A provider reaching this tool near its original deadline
+        # can therefore receive exactly one plan-bound extension instead of
+        # timing out while a valid first-strict lease still owns the effect.
+        if progress_callback is not None:
+            launch_started_at_epoch = time.time()
+            launch_accepted = await bound_progress_callback({
+                "event_type": "launching",
+                "phase_started_at_epoch": launch_started_at_epoch,
+            })
+            if launch_accepted:
+                launch_heartbeat_task = asyncio.create_task(
+                    refresh_launch_progress(launch_started_at_epoch),
+                    name="native-tcp-launch-heartbeat",
+                )
+        # Queue duration is part of the immutable timing plan.  In particular
+        # the first-strict journal ticket is claimed before this wait, so the
+        # ticket's system-owned lease covers this bounded interval.
+        capacity_lease = await acquire_match_slots_async(
+            capacity_owner,
+            count=1,
+            timeout=frozen_timing_plan.capacity_queue_timeout_us / 1_000_000.0,
+        )
+        if progress_callback is not None and operation_started_at_epoch is not None:
+            await bound_progress_callback({
+                "event_type": "launching",
+                "phase_started_at_epoch": operation_started_at_epoch,
+            })
+        spec_a = await _prepare_native_spec_bounded(
             label_a,
             dir_a,
+            timing_plan=frozen_timing_plan,
             expected_artifact_hash=str(
                 ticket_scope.get("candidate_artifact_hash") or ""
             ),
         )
-        spec_b = _prepare_native_spec(
+        if progress_callback is not None and operation_started_at_epoch is not None:
+            await bound_progress_callback({
+                "event_type": "launching",
+                "phase_started_at_epoch": operation_started_at_epoch,
+            })
+        spec_b = await _prepare_native_spec_bounded(
             label_b,
             dir_b,
+            timing_plan=frozen_timing_plan,
             system_control=system_control_b,
             expected_artifact_hash=str(
                 ticket_scope.get("control_artifact_hash") or ""
             ),
         )
-        hands = max(1, min(70, int(hands)))
-        if timeout_sec is None:
-            timeout_sec = max(90.0, hands * 4.0)
+        if progress_callback is not None and operation_started_at_epoch is not None:
+            await bound_progress_callback({
+                "event_type": "launching",
+                "phase_started_at_epoch": operation_started_at_epoch,
+            })
         runner_kwargs = {
             "hands": hands,
-            "timeout_sec": float(timeout_sec),
+            "timing_plan": frozen_timing_plan,
             "deck_seed_base": deck_seed_base,
             "bot_seed_base": bot_seed_base,
-            "bot_a_env_overrides": bot_a_env_overrides,
-            "bot_b_env_overrides": bot_b_env_overrides,
             "capture_events": capture_events,
-            "sanitize_parent_environment": sanitize_parent_environment,
+            "trace_decisions": trace_decisions,
+            "progress_callback": (
+                bound_progress_callback if progress_callback is not None else None
+            ),
         }
         if control_execution_ticket is not None:
             runner_kwargs["control_execution_ticket"] = control_execution_ticket
-        return await _run_tcp_server_with_processes(
+        result = await _run_tcp_server_with_processes(
             spec_a,
             spec_b,
             **runner_kwargs,
         )
+        if control_execution_ticket is not None:
+            # The control runner seals and journals this exact object.  Do not
+            # copy or mutate it after return, or the outer idempotent journal
+            # completion would correctly reject the changed replay bytes.
+            if not isinstance(result, dict) or validate_native_match_timing_evidence(
+                result,
+                timing_plan=frozen_timing_plan,
+            ):
+                raise RuntimeError(
+                    "first strict control runner timing evidence missing or drifted"
+                )
+        else:
+            # The production runner already annotates before returning.  Keep
+            # this idempotent adapter for isolated direct-runner test doubles.
+            result = _annotate_native_full_match_liveness(result, frozen_timing_plan)
+        terminal_outcome = "runner_returned"
+        return result
     finally:
-        capacity_lease.release()
+        # A completed/failed match must not leave its last `settle` sidecar
+        # eligible to extend a later non-engine provider stall.  The reporter
+        # recognizes this terminal projection and clears only its own
+        # checkpoint-bound heartbeat; ordinary callbacks may ignore it.
+        launch_heartbeat_stop.set()
+        if launch_heartbeat_task is not None:
+            if not launch_heartbeat_task.done():
+                launch_heartbeat_task.cancel()
+            try:
+                await launch_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
+        if capacity_lease is not None:
+            capacity_lease.release()
+        if progress_callback is not None and not terminal_progress_reported:
+            try:
+                task = asyncio.current_task()
+                final_outcome = (
+                    "runner_cancelled"
+                    if task is not None and task.cancelling()
+                    else terminal_outcome
+                )
+                await bound_progress_callback({
+                    "event_type": "terminal",
+                    "terminal": True,
+                    "terminal_outcome": final_outcome,
+                })
+            except Exception:
+                pass
 
 
 def _acceptance_opponent_runtime_mode(label: str, path: Path) -> str:
@@ -4591,6 +5981,8 @@ async def run_native_tcp_smoke(
     self_play: bool = False,
     hands: int = 1,
     timeout_sec: float | None = 90.0,
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Run a minimal direct-TCP national smoke match for a candidate bot."""
     hands = max(1, min(70, int(hands)))
@@ -4656,6 +6048,8 @@ async def run_native_tcp_smoke(
             opponent_dir,
             hands,
             timeout_sec=timeout_sec,
+            timing_plan=timing_plan,
+            progress_callback=progress_callback,
         )
     except Exception as exc:
         return {
@@ -4705,6 +6099,15 @@ async def run_native_tcp_smoke(
         "passed": passed,
         "execution_mode": "native_tcp",
         "artifact_execution": result.get("artifact_execution") or {},
+        "native_full_match_liveness_budget": result.get(
+            "native_full_match_liveness_budget"
+        ),
+        "native_match_timing_plan": result.get("native_match_timing_plan"),
+        "native_match_timing_plan_digest": result.get(
+            "native_match_timing_plan_digest"
+        ),
+        "native_match_timeout_phase": result.get("native_match_timeout_phase"),
+        "native_terminal_abort": result.get("native_terminal_abort"),
         "hands": hands,
         "issues": issues,
         "outcome": outcome,
@@ -4761,6 +6164,8 @@ async def run_native_acceptance_for_candidate(
     hands: int = 70,
     max_opponents: int = 2,
     timeout_sec: float | None = None,
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
+    progress_callback: Any = None,
 ) -> NationalAcceptanceResult:
     candidate = resolve_bot(candidate_token)
     if opponent_tokens:
@@ -4799,6 +6204,8 @@ async def run_native_acceptance_for_candidate(
                 deck_seed_base=pair_seed,
                 bot_seed_base=bot_seed,
                 timeout_sec=timeout_sec,
+                timing_plan=timing_plan,
+                progress_callback=progress_callback,
             )
             results.append(result)
     except TimeoutError:
@@ -4837,6 +6244,15 @@ async def run_native_acceptance_for_candidate(
             "per_hand": result["net_chips_a_per_hand"],
             "passed_compliance": result["passed_compliance"],
             "artifact_execution": result.get("artifact_execution") or {},
+            "native_full_match_liveness_budget": result.get(
+                "native_full_match_liveness_budget"
+            ),
+            "native_match_timing_plan": result.get("native_match_timing_plan"),
+            "native_match_timing_plan_digest": result.get(
+                "native_match_timing_plan_digest"
+            ),
+            "native_match_timeout_phase": result.get("native_match_timeout_phase"),
+            "native_terminal_abort": result.get("native_terminal_abort"),
             "issues": result["issues"],
         }
         matrix[b][a] = {
@@ -4844,6 +6260,15 @@ async def run_native_acceptance_for_candidate(
             "per_hand": round(result["net_chips_b"] / max(1, result["hands_played"]), 3),
             "passed_compliance": result["passed_compliance"],
             "artifact_execution": result.get("artifact_execution") or {},
+            "native_full_match_liveness_budget": result.get(
+                "native_full_match_liveness_budget"
+            ),
+            "native_match_timing_plan": result.get("native_match_timing_plan"),
+            "native_match_timing_plan_digest": result.get(
+                "native_match_timing_plan_digest"
+            ),
+            "native_match_timeout_phase": result.get("native_match_timeout_phase"),
+            "native_terminal_abort": result.get("native_terminal_abort"),
             "issues": result["issues"],
         }
     report = {
@@ -4856,6 +6281,16 @@ async def run_native_acceptance_for_candidate(
         "pair_count": len(pair_indices),
         "bots": [{"label": label, "path": str(path)} for label, path in bots],
         "results": results,
+        "full_match_liveness_budgets": [
+            result.get("native_full_match_liveness_budget")
+            for result in results
+        ],
+        "native_match_timing_plans": [
+            result.get("native_match_timing_plan") for result in results
+        ],
+        "native_match_timing_plan_digests": [
+            result.get("native_match_timing_plan_digest") for result in results
+        ],
         "opponent_runtime_modes": opponent_runtime_modes,
         "summary": summary,
         "matrix": matrix,
@@ -4912,6 +6347,166 @@ def _ci(values: list[int]) -> tuple[float | None, float | None]:
     return paired_bootstrap_ci(values)
 
 
+def _first_strict_batch_progress(
+    *,
+    batch_plan: dict[str, Any],
+    control_execution_scope: dict[str, Any],
+    timing_plan: NativeMatchTimingPlan,
+    completed_receipts: list[dict[str, Any]],
+    state: str,
+    next_repeat: int | None,
+) -> dict[str, Any]:
+    """Build a replay-validated durable projection for a partial v143 batch.
+
+    The journal remains the sole execution authority.  This projection is the
+    checkpoint-visible index that proves which ordered physical samples are
+    already complete and which exact sample may be requested next.  It does
+    not contain raw replay bytes and it never authorizes an unverified receipt.
+    """
+
+    from bot_artifact import canonical_digest
+    from first_strict_execution_journal import (
+        execution_scope_digest,
+        normalize_execution_scope,
+        read_control_execution_receipt,
+    )
+
+    if state not in {"pending_next_sample", "waiting_live_lease", "completed"}:
+        raise RuntimeError("first_strict_batch_progress_state_invalid")
+    scope = normalize_execution_scope(control_execution_scope)
+    expected_digest = str(batch_plan.get("batch_plan_digest") or "")
+    if (
+        batch_plan.get("schema_version") != 1
+        or batch_plan.get("authority") != "native_precommit_batch_v1"
+        or len(expected_digest) != 64
+        or batch_plan.get("timing_plan_digest") != timing_plan.digest()
+        or batch_plan.get("max_new_samples_per_invocation") != 1
+    ):
+        raise RuntimeError("first_strict_batch_plan_invalid")
+    raw_rows = batch_plan.get("ordered_samples")
+    if not isinstance(raw_rows, list) or len(raw_rows) != 8:
+        raise RuntimeError("first_strict_batch_plan_rows_invalid")
+    scope_digest = execution_scope_digest(scope)
+    planned_rows: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_rows, start=1):
+        if not isinstance(raw, dict):
+            raise RuntimeError("first_strict_batch_plan_row_invalid")
+        repeat = raw.get("repeat")
+        deck_seed = raw.get("deck_seed_base")
+        bot_seed = raw.get("bot_seed_base")
+        if (
+            raw.get("opponent") != "first_strict_control_v1"
+            or raw.get("opponent_index") != 0
+            or repeat != index
+            or type(deck_seed) is not int
+            or type(bot_seed) is not int
+            or bot_seed != deck_seed + 1_000_000_000
+            or raw.get("native_match_timing_plan_digest") != timing_plan.digest()
+        ):
+            raise RuntimeError("first_strict_batch_plan_row_binding_invalid")
+        match_identity = {
+            "scope": scope,
+            "scope_digest": scope_digest,
+            "repeat": repeat,
+            "deck_seed_base": deck_seed,
+            "bot_seed_base": bot_seed,
+            "hands": 70,
+            "timing_plan": timing_plan.snapshot(),
+            "timing_plan_digest": timing_plan.digest(),
+        }
+        planned_rows.append({
+            "repeat": repeat,
+            "deck_seed_base": deck_seed,
+            "bot_seed_base": bot_seed,
+            "match_run_id": "first-strict-native:" + canonical_digest(
+                match_identity
+            ),
+        })
+    if batch_plan.get("sample_plan_digest") != canonical_digest({
+        "sample_plan": [
+            {
+                "opponent": "first_strict_control_v1",
+                "opponent_index": 0,
+                "repeat": row["repeat"],
+                "deck_seed_base": row["deck_seed_base"],
+                "bot_seed_base": row["bot_seed_base"],
+                "native_match_timing_plan_digest": timing_plan.digest(),
+            }
+            for row in planned_rows
+        ]
+    }):
+        raise RuntimeError("first_strict_batch_sample_digest_invalid")
+    if batch_plan.get("batch_plan_digest") != canonical_digest({
+        key: value
+        for key, value in batch_plan.items()
+        if key != "batch_plan_digest"
+    }):
+        raise RuntimeError("first_strict_batch_digest_invalid")
+
+    completed_by_repeat: dict[int, dict[str, Any]] = {}
+    for entry in completed_receipts:
+        if not isinstance(entry, dict) or type(entry.get("repeat")) is not int:
+            raise RuntimeError("first_strict_batch_completed_entry_invalid")
+        repeat = int(entry["repeat"])
+        if repeat in completed_by_repeat or not 1 <= repeat <= len(planned_rows):
+            raise RuntimeError("first_strict_batch_completed_repeat_invalid")
+        receipt = entry.get("execution_receipt")
+        evidence, issues = read_control_execution_receipt(
+            receipt,
+            expected_scope=scope,
+        )
+        if issues or not isinstance(evidence, dict):
+            raise RuntimeError(
+                "first_strict_batch_completed_receipt_invalid:"
+                + ";".join(str(issue) for issue in issues[:8])
+            )
+        expected = planned_rows[repeat - 1]
+        input_payload = evidence.get("input") or {}
+        result_payload = evidence.get("result") or {}
+        if (
+            input_payload.get("repeat") != repeat
+            or input_payload.get("deck_seed_base") != expected["deck_seed_base"]
+            or input_payload.get("bot_seed_base") != expected["bot_seed_base"]
+            or input_payload.get("match_run_id") != expected["match_run_id"]
+            or result_payload.get("match_run_id") != expected["match_run_id"]
+            or receipt.get("match_run_id") != expected["match_run_id"]
+        ):
+            raise RuntimeError("first_strict_batch_completed_binding_invalid")
+        completed_by_repeat[repeat] = {
+            **expected,
+            "execution_receipt": dict(receipt),
+        }
+    completed_repeats = sorted(completed_by_repeat)
+    if completed_repeats != list(range(1, len(completed_repeats) + 1)):
+        raise RuntimeError("first_strict_batch_completed_order_invalid")
+    if next_repeat is not None and (
+        type(next_repeat) is not int
+        or not 1 <= next_repeat <= len(planned_rows)
+        or next_repeat != len(completed_repeats) + 1
+    ):
+        raise RuntimeError("first_strict_batch_next_repeat_invalid")
+    if state == "completed" and (
+        next_repeat is not None or len(completed_repeats) != len(planned_rows)
+    ):
+        raise RuntimeError("first_strict_batch_completion_invalid")
+    return {
+        "schema_version": 1,
+        "kind": "first-strict-native-precommit-batch-progress",
+        "state": state,
+        "batch_plan_digest": expected_digest,
+        "sample_plan_digest": batch_plan.get("sample_plan_digest"),
+        "scope_digest": scope_digest,
+        "candidate_artifact_hash": scope["candidate_artifact_hash"],
+        "control_artifact_hash": scope["control_artifact_hash"],
+        "timing_plan_digest": timing_plan.digest(),
+        "sample_count": len(planned_rows),
+        "max_new_samples_per_invocation": 1,
+        "planned_samples": planned_rows,
+        "completed_samples": [completed_by_repeat[key] for key in completed_repeats],
+        "next_repeat": next_repeat,
+    }
+
+
 async def run_native_precommit(
     candidate_token: str | Path,
     opponents: list[dict[str, Any]],
@@ -4921,8 +6516,11 @@ async def run_native_precommit(
     parent_label: str = "",
     deck_seed_base: int | None = 91_000,
     sample_plan: list[dict[str, Any]] | None = None,
+    batch_plan: dict[str, Any] | None = None,
     control_execution_scope: dict[str, Any] | None = None,
     cancel_token: threading.Event | None = None,
+    timing_plan: NativeMatchTimingPlan | dict[str, Any] | None = None,
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     from bot_artifact import hash_path
 
@@ -4932,6 +6530,11 @@ async def run_native_precommit(
         raise ValueError(
             f"native precommit strength samples must contain exactly 70 hands; got {hands}"
         )
+    precommit_timing_plan = _resolve_native_match_timing_plan(
+        timing_plan,
+        hands=hands,
+        requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
     matches_per_opponent = max(1, int(matches_per_opponent))
     matchups: list[dict[str, Any]] = []
     blockers: list[dict[str, Any]] = []
@@ -4953,6 +6556,32 @@ async def run_native_precommit(
                 f"native precommit sample plan has {len(frozen_samples)} rows; "
                 f"expected {expected_rows}"
             )
+    system_control_items = [
+        item
+        for item in opponents
+        if str(item.get("authority") or "") == "system_first_strict_control"
+    ]
+    first_strict_batch_plan: dict[str, Any] | None = None
+    if system_control_items:
+        if len(system_control_items) != 1 or len(opponents) != 1:
+            raise ValueError("first strict control batch shape is invalid")
+        if sample_plan is None or not isinstance(batch_plan, dict):
+            raise ValueError("first strict control batch plan is missing")
+        try:
+            from precommit_eval_contract import build_native_precommit_batch_plan
+
+            expected_batch_plan = build_native_precommit_batch_plan(
+                list(sample_plan),
+                native_timing_plan=precommit_timing_plan,
+                first_strict_control=True,
+            )
+        except Exception as exc:
+            raise ValueError("first strict control batch plan is invalid") from exc
+        if batch_plan != expected_batch_plan:
+            raise ValueError("first strict control batch plan drifted")
+        first_strict_batch_plan = expected_batch_plan
+    elif batch_plan is not None:
+        raise ValueError("ordinary native precommit must not carry a batch plan")
     if not opponents:
         blockers.append({"reason": "native_no_opponents", "details": "Native precommit requires at least one opponent."})
     def raise_if_cancelled() -> None:
@@ -4961,6 +6590,8 @@ async def run_native_precommit(
                 "native precommit attempt cancelled before the next full match"
             )
 
+    completed_batch_receipts: list[dict[str, Any]] = []
+    new_batch_samples = 0
     for opp_index, item in enumerate(opponents):
         raise_if_cancelled()
         reason = str(item.get("reason") or "precommit")
@@ -5047,6 +6678,7 @@ async def run_native_precommit(
                 "control_receipt_digest": str(
                     control_receipt.get("receipt_digest") or ""
                 ),
+                "native_match_timing_plan_digest": precommit_timing_plan.digest(),
             }
             mismatched_execution_bindings = [
                 field
@@ -5094,6 +6726,41 @@ async def run_native_precommit(
         opponent_issues: list[str] = []
         hands_played_total = 0
         for repeat in range(matches_per_opponent):
+            # A first-strict provider invocation may create at most one new
+            # physical sample.  Recovered receipts are cheap reads and may be
+            # traversed first, but once a fresh runner has completed its
+            # journalled receipt, return a durable continuation boundary rather
+            # than relying on the same SDK stream for the remaining 7 matches.
+            if (
+                system_control
+                and first_strict_batch_plan is not None
+                and new_batch_samples >= int(
+                    first_strict_batch_plan[
+                        "max_new_samples_per_invocation"
+                    ]
+                )
+            ):
+                return {
+                    "evaluation_protocol": "national_native_tcp",
+                    "candidate": candidate[0],
+                    "candidate_path": str(candidate[1]),
+                    "opponents": resolved_opponents,
+                    "matchups": [],
+                    "sample_plan": list(sample_plan or []),
+                    "native_match_timing_plan": precommit_timing_plan.snapshot(),
+                    "native_match_timing_plan_digest": precommit_timing_plan.digest(),
+                    "control_execution_scope": normalized_control_execution_scope,
+                    "first_strict_batch_pending": _first_strict_batch_progress(
+                        batch_plan=first_strict_batch_plan,
+                        control_execution_scope=normalized_control_execution_scope,
+                        timing_plan=precommit_timing_plan,
+                        completed_receipts=completed_batch_receipts,
+                        state="pending_next_sample",
+                        next_repeat=repeat + 1,
+                    ),
+                    "blockers": [],
+                    "passed": False,
+                }
             raise_if_cancelled()
             if system_control:
                 from first_strict_control import validate_control_receipt
@@ -5120,6 +6787,13 @@ async def run_native_precommit(
                 raise ValueError(
                     f"native precommit sample plan is missing {sample_key[0]} repeat {sample_key[1]}"
                 )
+            if frozen is not None and frozen.get(
+                "native_match_timing_plan_digest"
+            ) != precommit_timing_plan.digest():
+                raise ValueError(
+                    "native precommit sample plan timing plan digest mismatch:"
+                    f"{sample_key[0]}:{sample_key[1]}"
+                )
             seed = (
                 frozen.get("deck_seed_base")
                 if frozen is not None
@@ -5134,11 +6808,6 @@ async def run_native_precommit(
                 if frozen is not None
                 else (None if seed is None else int(seed) + 1_000_000_000)
             )
-            timing_overrides = {
-                "POK_NATIVE_DECISION_HARD_DEADLINE_SEC": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
-                "POK_NATIVE_DECISION_REFINEMENT_BUDGET_SEC": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
-                "POK_NATIVE_DECISION_BASELINE_TARGET_SEC": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
-            }
             execution_ticket = None
             if system_control:
                 from first_strict_execution_journal import begin_control_execution
@@ -5148,8 +6817,33 @@ async def run_native_precommit(
                     repeat=repeat + 1,
                     deck_seed_base=int(seed),
                     bot_seed_base=int(bot_seed),
-                    lease_seconds=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC + 60.0,
+                    timing_plan=precommit_timing_plan,
                 )
+                if execution_ticket.get("pending") is True:
+                    if first_strict_batch_plan is None:
+                        raise RuntimeError("first_strict_live_lease_without_batch_plan")
+                    return {
+                        "evaluation_protocol": "national_native_tcp",
+                        "candidate": candidate[0],
+                        "candidate_path": str(candidate[1]),
+                        "opponents": resolved_opponents,
+                        "matchups": [],
+                        "sample_plan": list(sample_plan or []),
+                        "native_match_timing_plan": precommit_timing_plan.snapshot(),
+                        "native_match_timing_plan_digest": precommit_timing_plan.digest(),
+                        "control_execution_scope": normalized_control_execution_scope,
+                        "control_execution_pending": execution_ticket,
+                        "first_strict_batch_pending": _first_strict_batch_progress(
+                            batch_plan=first_strict_batch_plan,
+                            control_execution_scope=normalized_control_execution_scope,
+                            timing_plan=precommit_timing_plan,
+                            completed_receipts=completed_batch_receipts,
+                            state="waiting_live_lease",
+                            next_repeat=repeat + 1,
+                        ),
+                        "blockers": [],
+                        "passed": False,
+                    }
             recovered_execution = bool(
                 system_control and execution_ticket.get("recovered") is True
             )
@@ -5164,9 +6858,9 @@ async def run_native_precommit(
                     deck_seed_base=seed,
                     bot_seed_base=bot_seed,
                     timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
-                    bot_a_env_overrides=timing_overrides,
-                    bot_b_env_overrides=timing_overrides,
+                    timing_plan=precommit_timing_plan,
                     capture_events=system_control,
+                    progress_callback=progress_callback,
                     **(
                         {"control_execution_ticket": execution_ticket}
                         if system_control
@@ -5174,13 +6868,38 @@ async def run_native_precommit(
                     ),
                 )
                 execution_receipt = None
-            if system_control and not recovered_execution:
-                from first_strict_execution_journal import complete_control_execution
-
-                execution_receipt = complete_control_execution(
-                    execution_ticket,
-                    execution=result,
+            timing_issues = validate_native_match_timing_evidence(
+                result,
+                timing_plan=precommit_timing_plan,
+            )
+            if system_control and timing_issues:
+                raise RuntimeError(
+                    "first_strict_control_execution_timing_evidence_drift:"
+                    + ";".join(timing_issues)
                 )
+            if system_control and not recovered_execution:
+                # The runner has already made the atomic durable transition.
+                # This idempotent reference read is still bounded so a later
+                # operator SQLite lock cannot hang the precommit coroutine.
+                reference_deadline = (
+                    time.monotonic()
+                    + precommit_timing_plan.post_execution_completion_timeout_us
+                    / 1_000_000.0
+                )
+                execution_receipt = await _await_first_strict_control_completion(
+                    execution_ticket,
+                    result,
+                    deadline_monotonic=reference_deadline,
+                )
+            if system_control:
+                if not isinstance(execution_receipt, dict):
+                    raise RuntimeError("first_strict_batch_execution_receipt_missing")
+                completed_batch_receipts.append({
+                    "repeat": repeat + 1,
+                    "execution_receipt": execution_receipt,
+                })
+                if not recovered_execution:
+                    new_batch_samples += 1
             # A complete match/journal receipt is the smallest interruptible
             # evidence unit.  Never admit it or launch the next sample after the
             # owning cycle has timed out.
@@ -5244,6 +6963,7 @@ async def run_native_precommit(
             )
             if not artifact_execution_valid:
                 c_issues.append("native_artifact_execution_identity_invalid")
+            c_issues.extend(timing_issues)
             sample_valid = (
                 complete
                 and compliance_passed
@@ -5290,10 +7010,25 @@ async def run_native_precommit(
                 "artifact_execution": artifact_execution,
                 "artifact_execution_valid": artifact_execution_valid,
                 "local_runtime_budget": {
-                    "hard_deadline_sec": LOCAL_NATIVE_STRENGTH_HARD_DEADLINE_SEC,
-                    "refinement_budget_sec": LOCAL_NATIVE_STRENGTH_REFINEMENT_BUDGET_SEC,
-                    "baseline_target_sec": LOCAL_NATIVE_STRENGTH_BASELINE_TARGET_SEC,
-                    "match_timeout_sec": LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                    "profile_id": NATIVE_MATCH_TIMING_PROFILE_ID,
+                    "timing_plan": precommit_timing_plan.snapshot(),
+                    "timing_plan_digest": precommit_timing_plan.digest(),
+                    "hard_deadline_sec": (
+                        precommit_timing_plan.bot_a.hard_deadline_us / 1_000_000.0
+                    ),
+                    "refinement_budget_sec": (
+                        precommit_timing_plan.bot_a.refinement_budget_us / 1_000_000.0
+                    ),
+                    "baseline_target_sec": (
+                        precommit_timing_plan.bot_a.baseline_target_us / 1_000_000.0
+                    ),
+                    "match_timeout_request_sec": LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                    "match_timeout_effective_sec": (
+                        precommit_timing_plan.effective_timeout_us / 1_000_000.0
+                    ),
+                    "full_match_liveness_budget": (
+                        precommit_timing_plan.liveness_budget_snapshot()
+                    ),
                     "scope": (
                         "first_strict_bootstrap_regression_only"
                         if system_control
@@ -5445,6 +7180,21 @@ async def run_native_precommit(
         "total_draws": total_draws,
         "aggregate_net_chips": aggregate_net_chips,
         "sample_plan": list(sample_plan or []),
+        "native_match_timing_plan": precommit_timing_plan.snapshot(),
+        "native_match_timing_plan_digest": precommit_timing_plan.digest(),
+        "native_precommit_batch_plan": first_strict_batch_plan,
+        "first_strict_batch": (
+            _first_strict_batch_progress(
+                batch_plan=first_strict_batch_plan,
+                control_execution_scope=normalized_control_execution_scope,
+                timing_plan=precommit_timing_plan,
+                completed_receipts=completed_batch_receipts,
+                state="completed",
+                next_repeat=None,
+            )
+            if first_strict_batch_plan is not None
+            else None
+        ),
         "control_execution_scope": (
             normalized_control_execution_scope
             if any(

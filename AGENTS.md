@@ -153,6 +153,14 @@ tracker snapshot, and time budget. It returns a typed intent only:
 - `allin`
 - `raise` with integer `raise_to`
 
+Runtime v10 additionally publishes a system-derived
+`hand.match_control` proof and
+`betting.call_closes_allin_runout`. Policy may lock a match by folding only
+when every match-control field is internally consistent and
+`fold_locks_win` is strictly true; equality is not a win. The all-in closure
+boolean is authoritative over action-text heuristics. Missing, malformed, or
+contradictory values are neutral/fail-closed.
+
 The system runtime maps `pass` to legal wire `call` or `check`, validates
 `raise_to`, applies fallback, throttles, and owns the single socket send path.
 Candidate code must not:
@@ -204,7 +212,10 @@ ownership it cannot prove.
 ## Space-for-time assets
 
 Compact system-owned import-time facts are allowed and measured: 1,326 hole
-combinations, 8,192 rank masks, and 21 five-of-seven selections. System
+combinations, a calibrated 169-class heads-up preflop equity table, 8,192 rank
+masks, and 21 five-of-seven selections. The table's fixed-seed producer binds
+the official evaluator/Card sources and the exact CPython RNG build identity;
+the producer is an evaluation-contract-critical path. System
 precompute must have a bounded size, content-bound manifest, live decision
 consumer, and legal empty-table fallback.
 
@@ -500,7 +511,7 @@ against an eligible strict-policy opponent. The v143-only system-control
 bootstrap and finalize steps are operator-only, zero-strength, and never an
 automatic fallback. The LLM/HTTP control plane can perform neither step.
 The checked-in `first_strict_control_v1` artifact hash is
-`2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`.
+`b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`.
 Its valid, unused `0/1` consumption state and a green official doctor prove the
 5+3 dependency exists; they do not unlock the command. Bootstrap becomes
 available only after the exact v143 checkpoint parks at

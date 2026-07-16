@@ -14,7 +14,7 @@
     "source_artifact_inherited": false,
     "strength_admitted": false
   },
-  "expected_artifact_hash": "2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33",
+  "expected_artifact_hash": "b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2",
   "files": {
     "policy.py": "d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4"
   },
@@ -28,9 +28,9 @@
   "gate_profile_id": "first_strict_bootstrap_regression_v1",
   "policy": "deterministic_passive_typed_pass_v1",
   "runtime": {
-    "decision_runtime_version": 9,
-    "national_bot_sha256": "6f62dca3f1d9daae03a647a7f10be55eea76b188c0ea8408a10a0037d5d67e02",
-    "precompute_sha256": "5cc33ee3e79bc90a59ecb387442d838fa8eb919620f7302328bc43dfe9c526b5",
+    "decision_runtime_version": 10,
+    "national_bot_sha256": "0115c5844961011d920d012edbba30eb23171de0f5649f5b46e75a0e6bd94bef",
+    "precompute_sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
     "stream_decoder_version": 2
   },
   "schema_version": 1

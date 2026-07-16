@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -55,6 +56,12 @@ def _action(player: int, stage: str, action: str, amount=None, pot=150) -> dict:
 
 
 def make_strict_replay(match_id: str = "strict.json") -> dict:
+    from national_native import build_native_match_timing_plan
+
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=None,
+    )
     labels = ("national_v143", "national_v144")
     records = []
     settlements = []
@@ -125,6 +132,11 @@ def make_strict_replay(match_id: str = "strict.json") -> dict:
         "hand_records": records,
         "passed_compliance": True,
         "issues": [],
+        "native_match_timing_plan": timing_plan.snapshot(),
+        "native_match_timing_plan_digest": timing_plan.digest(),
+        "native_full_match_liveness_budget": timing_plan.liveness_budget_snapshot(),
+        "native_match_timeout_phase": None,
+        "native_terminal_abort": None,
     }
     return {
         "replay_schema_version": 1,
@@ -145,6 +157,8 @@ def make_strict_replay(match_id: str = "strict.json") -> dict:
         "strength_compliance_passed": True,
         "strength_sample_count": 1,
         "net_chips_bot0": [75],
+        "native_match_timing_plan": timing_plan.snapshot(),
+        "native_match_timing_plan_digest": timing_plan.digest(),
         "games": [game],
     }
 
@@ -166,6 +180,82 @@ def test_complete_native_replay_is_accepted():
         "national_v143": "b" * 64,
         "national_v144": "c" * 64,
     }
+
+
+def test_history_strength_requires_exact_raw_replay_bytes_and_header(tmp_path, monkeypatch):
+    """A JSONL summary cannot influence strength without its raw replay."""
+
+    import rating_snapshot
+
+    _admitted_70_hand_history_sample = rating_snapshot._admitted_70_hand_history_sample
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_current_artifact_hashes_for_replay",
+        lambda _raw: {"national_v143": "b" * 64, "national_v144": "c" * 64},
+    )
+
+    replay = make_strict_replay("strict-history.json")
+    replay_dir = tmp_path / "match_replay"
+    replay_dir.mkdir()
+    path = replay_dir / replay["id"]
+    raw_bytes = json.dumps(replay, sort_keys=True).encode("utf-8")
+    path.write_bytes(raw_bytes)
+    history = {
+        key: replay.get(key)
+        for key in (
+            "id", "timestamp", "execution_mode", "evaluation_epoch",
+            "bot0", "bot1", "bot0_wins", "bot1_wins", "draws",
+            "evaluation_identity_digest", "strength_sample_unit",
+            "hands_per_strength_sample", "strength_admitted",
+            "strength_complete", "strength_compliance_passed",
+            "strength_sample_count", "net_chips_bot0", "strength_order",
+            "native_match_timing_plan", "native_match_timing_plan_digest",
+        )
+    }
+    history["replay_sha256"] = hashlib.sha256(raw_bytes).hexdigest()
+
+    assert _admitted_70_hand_history_sample(
+        history,
+        expected_evaluation_identity_digest=IDENTITY,
+        replay_dir=replay_dir,
+    ) == [75]
+
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_current_artifact_hashes_for_replay",
+        lambda _raw: {"national_v143": "f" * 64, "national_v144": "c" * 64},
+    )
+    assert _admitted_70_hand_history_sample(
+        history,
+        expected_evaluation_identity_digest=IDENTITY,
+        replay_dir=replay_dir,
+    ) is None
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_current_artifact_hashes_for_replay",
+        lambda _raw: {"national_v143": "b" * 64, "national_v144": "c" * 64},
+    )
+
+    forged_hash = {**history, "replay_sha256": "f" * 64}
+    assert _admitted_70_hand_history_sample(
+        forged_hash,
+        expected_evaluation_identity_digest=IDENTITY,
+        replay_dir=replay_dir,
+    ) is None
+
+    forged_header = {**history, "timestamp": "tampered-but-well-formed"}
+    assert _admitted_70_hand_history_sample(
+        forged_header,
+        expected_evaluation_identity_digest=IDENTITY,
+        replay_dir=replay_dir,
+    ) is None
+
+    path.unlink()
+    assert _admitted_70_hand_history_sample(
+        history,
+        expected_evaluation_identity_digest=IDENTITY,
+        replay_dir=replay_dir,
+    ) is None
 
 
 def test_retired_log_replay_is_rejected_and_renders_nothing():
@@ -287,6 +377,7 @@ def test_rating_daemon_publishes_strict_replay_envelope(tmp_path, monkeypatch):
         net_chips_samples=[75],
         strength_sample_unit="70_hand_match",
         expected_evaluation_identity_digest=IDENTITY,
+        expected_native_match_timing_plan=replay["native_match_timing_plan"],
         stage_only=True,
     )
 
@@ -297,6 +388,10 @@ def test_rating_daemon_publishes_strict_replay_envelope(tmp_path, monkeypatch):
     assert published["evaluation_identity_digest"] == IDENTITY
     assert admission["summary"]["execution_mode"] == "native_tcp"
     assert admission["summary"]["evaluation_epoch"] == "national_tcp_policy_v1"
+    assert admission["summary"]["replay_sha256"] == admission["replay_sha256"]
+    assert admission["summary"]["replay_sha256"] == hashlib.sha256(
+        Path(admission["pending_path"]).read_bytes()
+    ).hexdigest()
     assert validate_native_replay(
         published,
         expected_evaluation_identity_digest=IDENTITY,

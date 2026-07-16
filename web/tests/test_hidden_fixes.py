@@ -202,6 +202,7 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
     import first_strict_control
     import first_strict_execution_journal
     import national_native
+    import precommit_eval_contract
     import tool_eval
     from bot_artifact import hash_path
 
@@ -215,6 +216,26 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
     candidate_hash = hash_path(candidate)
     control_hash = "c" * 64
     receipt_digest = "d" * 64
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    sample_plan = [
+        {
+            "opponent": control.name,
+            "opponent_index": 0,
+            "repeat": repeat,
+            "deck_seed_base": 91_000 + (repeat - 1) * 1_000,
+            "bot_seed_base": 1_000_091_000 + (repeat - 1) * 1_000,
+            "native_match_timing_plan_digest": timing_plan.digest(),
+        }
+        for repeat in range(1, 9)
+    ]
+    batch_plan = precommit_eval_contract.build_native_precommit_batch_plan(
+        sample_plan,
+        native_timing_plan=timing_plan,
+        first_strict_control=True,
+    )
     execution_scope = {
         "workflow_run_id": "generation:9:control-retry",
         "checkpoint_revision": 7,
@@ -226,6 +247,7 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
         "control_receipt_digest": receipt_digest,
         "precommit_plan_digest": "e" * 64,
         "evaluation_contract_digest": "f" * 64,
+        "native_match_timing_plan_digest": timing_plan.digest(),
         "precommit_attempt": 1,
     }
     control_receipt = {
@@ -256,6 +278,7 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
     tool_eval.reset_precommit_shutdown()
     first_token = tool_eval.begin_precommit_shutdown_attempt()
     match_calls = []
+    match_budgets = []
     begin_calls = []
     complete_calls = []
     journal = {}
@@ -308,7 +331,7 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
     )
 
     def begin_control_execution(*, scope, repeat, **kwargs):
-        begin_calls.append((dict(scope), repeat))
+        begin_calls.append((dict(scope), repeat, dict(kwargs)))
         return real_begin_control_execution(
             scope=scope,
             repeat=repeat,
@@ -339,9 +362,11 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
         *_args,
         deck_seed_base,
         bot_seed_base,
+        timing_plan,
         **_kwargs,
     ):
         match_calls.append(True)
+        match_budgets.append(timing_plan)
         settlements = []
         hand_records = []
         events = []
@@ -371,6 +396,11 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
             "hand_records": hand_records,
             "events": events,
             "artifact_execution": {},
+            "native_match_timing_plan": timing_plan.snapshot(),
+            "native_match_timing_plan_digest": timing_plan.digest(),
+            "native_full_match_liveness_budget": timing_plan.liveness_budget_snapshot(),
+            "native_match_timeout_phase": None,
+            "native_terminal_abort": None,
         }
 
     monkeypatch.setattr(national_native, "run_native_strength_pair", run_match)
@@ -380,9 +410,12 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
             candidate,
             [opponent],
             hands=70,
-            matches_per_opponent=1,
+            matches_per_opponent=8,
+            sample_plan=sample_plan,
+            batch_plan=batch_plan,
             control_execution_scope=execution_scope,
             cancel_token=first_token,
+            timing_plan=timing_plan,
         )
 
     retry_token = tool_eval.begin_precommit_shutdown_attempt()
@@ -390,21 +423,36 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
         candidate,
         [opponent],
         hands=70,
-        matches_per_opponent=1,
+        matches_per_opponent=8,
+        sample_plan=sample_plan,
+        batch_plan=batch_plan,
         control_execution_scope=execution_scope,
         cancel_token=retry_token,
+        timing_plan=timing_plan,
     )
 
     assert retry_token is not first_token
     assert retry_token.is_set() is False
     assert first_token.is_set() is True
-    assert match_calls == [True]
-    assert len(begin_calls) == 2
-    assert begin_calls[0] == begin_calls[1] == (execution_scope, 1)
-    assert len(complete_calls) == 1
+    assert match_calls == [True, True]
+    assert len(begin_calls) == 3
+    assert [call[:2] for call in begin_calls] == [
+        (execution_scope, 1),
+        (execution_scope, 1),
+        (execution_scope, 2),
+    ]
+    assert begin_calls[0][2]["timing_plan"] == timing_plan
+    assert match_budgets == [timing_plan, timing_plan]
+    assert len(complete_calls) == 2
     assert complete_calls[0]["input_payload"]["scope"] == execution_scope
-    repeat = recovered["matchups"][0]["repeats"][0]
-    assert repeat["execution_receipt"] == journal["execution_receipt"]
+    assert recovered["passed"] is False
+    progress = recovered["first_strict_batch_pending"]
+    assert progress["state"] == "pending_next_sample"
+    assert progress["next_repeat"] == 3
+    assert [row["repeat"] for row in progress["completed_samples"]] == [1, 2]
+    assert journal["execution_receipt"] in [
+        row["execution_receipt"] for row in progress["completed_samples"]
+    ]
 
 
 # ──────────────────────────────────────────────

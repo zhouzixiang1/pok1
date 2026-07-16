@@ -36,7 +36,7 @@ from bot_namespace import STRICT_ARTIFACT_FILES
 from national_native import NATIVE_BOT_TEMPLATE, NATIVE_ENTRY, check_native_contract
 
 
-FIXTURE_SCHEMA_VERSION = 1
+FIXTURE_SCHEMA_VERSION = 2
 FIXTURE_PROTOCOL = "official_raw_tcp_transcript_v1"
 _ACTION_KEYWORDS = ("fold", "call", "check", "allin")
 
@@ -47,7 +47,6 @@ class NationalDecisionFixture:
     seat: str
     chunks: tuple[str, ...]
     game_state: dict[str, Any]
-    warmup_exchanges: tuple[tuple[tuple[str, ...], str], ...] = ()
     critical: bool = True
 
 
@@ -100,26 +99,6 @@ POLICY_FIXTURES: tuple[NationalDecisionFixture, ...] = (
             "player_action_count": 0,
         },
     ),
-    NationalDecisionFixture(
-        fixture_id="native_postflop_facing_check_passes_with_call",
-        seat="auto",
-        chunks=("checkflop|<2,0><0,9><3,7>check",),
-        warmup_exchanges=((
-            ("preflop|SMALLBLIND|<0,12><1,11>",),
-            "call",
-        ),),
-        game_state={
-            "stage": "flop",
-            "actions": [("check", None)],
-            "player_chips": 19_900,
-            "player_bet": 0,
-            "opponent_bet": 0,
-            "is_small_blind": True,
-            "is_big_blind": False,
-            "allin_occurred": False,
-            "player_action_count": 0,
-        },
-    ),
 )
 
 
@@ -152,6 +131,8 @@ def _load_system_runtime() -> dict[str, Any]:
 
 def _system_runtime_fixture_results() -> list[dict[str, Any]]:
     """Run assertion-backed reducer fixtures without candidate-owned imports."""
+
+    from sever.engine.validator import validate_action
 
     runtime = _load_system_runtime()
     Bot = runtime["NativeNationalBot"]
@@ -229,6 +210,7 @@ def _system_runtime_fixture_results() -> list[dict[str, Any]]:
             "to_call": 0,
             "spr": round(19_718 / 564.0, 6),
             "pot_odds": 0.0,
+            "call_closes_allin_runout": False,
         }
         inferred = [
             row for row in context["history"]["actions"]
@@ -366,11 +348,66 @@ def _system_runtime_fixture_results() -> list[dict[str, Any]]:
             "turn_tags": turn_line["line_tags"],
         }
 
+    def postflop_first_pass_maps_to_check_case() -> dict[str, Any]:
+        bot = Bot("Fixture", "bb")
+        bot._official_action_delay_sec = 0.0
+        bot._policy_decision = lambda: {"kind": "pass"}
+        sock = _CaptureSocket()
+        bot.handle("preflop|BIGBLIND|<0,9><1,8>", sock)
+        bot.handle("call", sock)
+        sock.sent.clear()
+        bot.handle("flop|<2,7><3,5><0,2>", sock)
+        action = sock.sent[-1].decode("utf-8")
+        state = {
+            "stage": "flop",
+            "actions": [],
+            "player_chips": 19_900,
+            "player_bet": 0,
+            "opponent_bet": 0,
+            "is_small_blind": False,
+            "is_big_blind": True,
+            "allin_occurred": False,
+            "player_action_count": 0,
+        }
+        assert action == "check"
+        assert validate_action("check", None, dict(state))[0] is True
+        assert validate_action("call", None, dict(state))[0] is False
+        return {"wire_action": action, "opposite_wire_action_legal": False}
+
+    def postflop_facing_check_pass_maps_to_call_case() -> dict[str, Any]:
+        bot = Bot("Fixture", "sb")
+        bot._official_action_delay_sec = 0.0
+        bot._policy_decision = lambda: {"kind": "pass"}
+        sock = _CaptureSocket()
+        bot.handle("preflop|SMALLBLIND|<0,12><1,11>", sock)
+        bot.handle("check", sock)
+        bot.handle("flop|<2,0><0,9><3,7>", sock)
+        sock.sent.clear()
+        bot.handle("check", sock)
+        action = sock.sent[-1].decode("utf-8")
+        state = {
+            "stage": "flop",
+            "actions": [("check", None)],
+            "player_chips": 19_900,
+            "player_bet": 0,
+            "opponent_bet": 0,
+            "is_small_blind": True,
+            "is_big_blind": False,
+            "allin_occurred": False,
+            "player_action_count": 0,
+        }
+        assert action == "call"
+        assert validate_action("call", None, dict(state))[0] is True
+        assert validate_action("check", None, dict(state))[0] is False
+        return {"wire_action": action, "opposite_wire_action_legal": False}
+
     record("runtime_sticky_split_no_newline", decoder_case)
     record("runtime_omitted_street_call_repairs_pot", omitted_raise_call_case)
     record("runtime_terminal_fold_persists_cross_hand", terminal_fold_case)
     record("runtime_showdown_updates_range", showdown_learning_case)
     record("runtime_donk_and_delayed_probe_reachable", donk_delayed_probe_case)
+    record("runtime_postflop_first_pass_maps_to_check", postflop_first_pass_maps_to_check_case)
+    record("runtime_postflop_facing_check_pass_maps_to_call", postflop_facing_check_pass_maps_to_call_case)
     return results
 
 
@@ -458,16 +495,6 @@ def _run_policy_fixture(
         observed_name = _recv_until_idle(server_sock, timeout=3.0)
         if observed_name != "NationalFixture":
             raise RuntimeError(f"name handshake mismatch: {observed_name!r}")
-        for warmup_chunks, expected_action in fixture.warmup_exchanges:
-            for index, chunk in enumerate(warmup_chunks):
-                server_sock.sendall(chunk.encode("utf-8"))
-                if index + 1 < len(warmup_chunks):
-                    time.sleep(0.02)
-            warmup_action = _recv_until_idle(server_sock, timeout=3.0)
-            if warmup_action != expected_action:
-                raise AssertionError(
-                    f"warmup action mismatch: {warmup_action!r} != {expected_action!r}"
-                )
         for index, chunk in enumerate(fixture.chunks):
             server_sock.sendall(chunk.encode("utf-8"))
             if index + 1 < len(fixture.chunks):

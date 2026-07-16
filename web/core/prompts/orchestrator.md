@@ -175,12 +175,24 @@ the Master audit checks them before Workers run. No mutable cross-generation
 summary is a validation input.
 `worker_prompt` hard-size violations are BLOCKING validation errors and must
 not reach `execute_workers`.
+The strict-v1 strategy contract is also blocking: quality must exercise the
+system-owned calibrated 169-class preflop table, spot-specific raise-to-total
+sizing with exact-stack `allin`, complete `hand.match_control` lock-win proof,
+nonclosing-only position realization, current-board opponent range weighting,
+and authoritative `betting.call_closes_allin_runout`. Missing/malformed
+controls must be neutral, and every mechanism needs positive/negative
+production-runtime regression plus a socket-visible typed-intent effect.
 code_changed=false, declared-scope
 violation, runtime import contract failure, py_compile failure, protected-contract
 regression, smoke failure, national protocol/acceptance regression, decision test
 < 70%, critical decision failures, file size violation, missing mandatory fixes,
 fix verification failure, telemetry-fidelity failure, reachability failure, and
-precommit statistical regression BLOCK the pipeline.
+precommit statistical regression BLOCK the pipeline. A line-reachability result
+also fails when matched no-hole-draw identities show a fixed aggressive pattern;
+the quality result must bind a same-line raise/passive-`check` pair under equal
+stable non-card context (after only the two absolute deadline clocks are
+normalized) and the exact single-predicate ablation before the provider may
+continue. `allin` never counts as the passive member.
 
 Master plan audit rejection is BLOCKING. Critic score is advisory: a successful
 `run_critic` call always advances to native-TCP precommit, which is the final
@@ -249,6 +261,13 @@ published strict-policy opponent.
 - Quality gates fail → retry workers with the exact failure message; do NOT call `run_master` from `quality_failed` unless the tool explicitly says to abandon and start fresh.
 - Reviewer rejects → inject feedback, retry workers (counts toward attempts)
 - Critic score is advisory. After a successful `run_critic`, always call `run_precommit_eval`; do not create worker rework solely from an LLM score. In `national_native`, measured direct-TCP national matches remain the final strategy gate.
+- `NativeMatchTimingPlan`, the active-validator 34-request hand bound, typed
+  native cap/timeout aborts, and engine-only progress heartbeats are system
+  reliability contracts, not model choices. Never ask a Worker to bypass or
+  tune them. The runtime may grant at most one absolute, checkpoint-bound
+  native-match extension; no prompt, tool retry, or repeated heartbeat may
+  renew it. A timing-contract drift requires the tool-directed controlled
+  abandon/re-prepare path, never manual checkpoint/state cleanup.
 - Precommit regression fails → inject exact blocker and call `execute_workers`.
   Do NOT retry `run_precommit_eval` on unchanged code, and do NOT abandon before
   the precommit hard limit. Precommit infra-only timeout is different: follow

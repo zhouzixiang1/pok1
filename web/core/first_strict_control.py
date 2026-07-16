@@ -800,6 +800,34 @@ def validate_control_result(
 
     exact_samples = int(control_gate_contract()["exact_samples"])
     issues: list[str] = []
+    expected_timing_plan = None
+    if expected_execution_scope is not None:
+        try:
+            from first_strict_execution_journal import normalize_execution_scope
+            from national_native import (
+                LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+                build_native_match_timing_plan,
+            )
+
+            normalized_expected_scope = normalize_execution_scope(
+                expected_execution_scope
+            )
+            expected_timing_plan = build_native_match_timing_plan(
+                hands=70,
+                requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            )
+            if (
+                normalized_expected_scope.get("native_match_timing_plan_digest")
+                != expected_timing_plan.digest()
+            ):
+                issues.append(
+                    "first_strict_control_scope_timing_plan_digest_mismatch"
+                )
+        except Exception as exc:
+            issues.append(
+                "first_strict_control_expected_timing_plan_invalid:"
+                f"{type(exc).__name__}"
+            )
     outer: dict[str, Any] | None = None
     envelope: dict[str, Any] | None = None
     if isinstance(result_or_matchups, dict):
@@ -936,7 +964,23 @@ def validate_control_result(
             "repeat": repeat.get("repeat"),
             "deck_seed_base": deck_seed,
             "bot_seed_base": bot_seed,
+            "native_match_timing_plan_digest": (
+                ((repeat.get("local_runtime_budget") or {}).get(
+                    "timing_plan_digest"
+                ))
+            ),
         })
+
+        if expected_timing_plan is not None:
+            local_budget = repeat.get("local_runtime_budget") or {}
+            if (
+                not isinstance(local_budget, dict)
+                or local_budget.get("timing_plan")
+                != expected_timing_plan.snapshot()
+                or local_budget.get("timing_plan_digest")
+                != expected_timing_plan.digest()
+            ):
+                issues.append(f"{prefix}_timing_plan_mismatch")
 
         artifact_execution = repeat.get("artifact_execution")
         expected_artifacts = {
@@ -1006,12 +1050,32 @@ def validate_control_result(
             for field, expected in expected_execution_input.items():
                 if execution_input.get(field) != expected:
                     issues.append(f"{prefix}_execution_{field}_mismatch")
+            if expected_timing_plan is not None and (
+                execution_input.get("timing_plan")
+                != expected_timing_plan.snapshot()
+                or execution_input.get("timing_plan_digest")
+                != expected_timing_plan.digest()
+            ):
+                issues.append(f"{prefix}_execution_timing_plan_mismatch")
             if execution.get("hands_played") != 70:
                 issues.append(f"{prefix}_execution_hands_played_mismatch")
             if execution.get("net_chips_a") != net:
                 issues.append(f"{prefix}_execution_net_chips_mismatch")
             if execution.get("passed_compliance") is not True:
                 issues.append(f"{prefix}_execution_compliance_mismatch")
+            if expected_timing_plan is not None:
+                try:
+                    from national_native import validate_native_match_timing_evidence
+
+                    timing_issues = validate_native_match_timing_evidence(
+                        execution,
+                        timing_plan=expected_timing_plan,
+                    )
+                except Exception:
+                    timing_issues = ["native_match_timing_evidence_validator_failed"]
+                issues.extend(
+                    f"{prefix}_execution_{item}" for item in timing_issues
+                )
 
     if repeat_net_chips != net_chips:
         issues.append("first_strict_control_repeat_net_chips_mismatch")
@@ -1057,6 +1121,12 @@ def validate_control_result(
             expected_sample_plan
         )
         issues.extend(plan_issues)
+        if expected_timing_plan is not None and any(
+            item.get("native_match_timing_plan_digest")
+            != expected_timing_plan.digest()
+            for item in normalized_expected
+        ):
+            issues.append("first_strict_control_sample_plan_timing_plan_mismatch")
         if observed_sample_plan != normalized_expected:
             issues.append("first_strict_control_observed_sample_plan_mismatch")
 
@@ -1101,6 +1171,13 @@ def validate_control_result(
                 issues.append(f"first_strict_control_result_total_{field}_mismatch")
         if envelope.get("aggregate_net_chips") != net_chips:
             issues.append("first_strict_control_result_aggregate_net_chips_mismatch")
+        if expected_timing_plan is not None and (
+            envelope.get("native_match_timing_plan")
+            != expected_timing_plan.snapshot()
+            or envelope.get("native_match_timing_plan_digest")
+            != expected_timing_plan.digest()
+        ):
+            issues.append("first_strict_control_result_timing_plan_mismatch")
         observed_execution_scope = (
             observed_execution_scopes[0]
             if len(observed_execution_scopes) == len(repeats)

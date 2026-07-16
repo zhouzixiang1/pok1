@@ -225,7 +225,12 @@ def _valid_hand_record(record: Any, expected_hand: int) -> bool:
     return True
 
 
-def _valid_game(game: Any, labels: tuple[str, str]) -> tuple[bool, str, dict[str, str]]:
+def _valid_game(
+    game: Any,
+    labels: tuple[str, str],
+    *,
+    timing_plan: Any,
+) -> tuple[bool, str, dict[str, str]]:
     if not isinstance(game, dict):
         return False, "game_not_object", {}
     if game.get("execution_mode") != EXECUTION_MODE:
@@ -234,6 +239,17 @@ def _valid_game(game: Any, labels: tuple[str, str]) -> tuple[bool, str, dict[str
         return False, "game_not_complete_70_hands", {}
     if game.get("passed_compliance") is not True or game.get("issues") not in ([], None):
         return False, "game_compliance_failed", {}
+    try:
+        from national_native import validate_native_match_timing_evidence
+
+        timing_issues = validate_native_match_timing_evidence(
+            game,
+            timing_plan=timing_plan,
+        )
+    except Exception:
+        timing_issues = ["validator_failed"]
+    if timing_issues:
+        return False, "game_timing_evidence_invalid", {}
     if game.get("bot_a") != labels[0] or game.get("bot_b") != labels[1]:
         return False, "game_player_order_mismatch", {}
     net_a, net_b = _as_int(game.get("net_chips_a")), _as_int(game.get("net_chips_b"))
@@ -295,6 +311,18 @@ def validate_native_replay(
         return ReplayValidation(False, "evaluation_identity_mismatch", digest)
     if expected_replay_id is not None and replay_data.get("id") != expected_replay_id:
         return ReplayValidation(False, "replay_id_mismatch", digest)
+    try:
+        from national_native import require_native_match_timing_plan
+
+        timing_plan = require_native_match_timing_plan(
+            replay_data.get("native_match_timing_plan"),
+            hands=70,
+            requested_timeout_sec=None,
+        )
+        if replay_data.get("native_match_timing_plan_digest") != timing_plan.digest():
+            return ReplayValidation(False, "replay_timing_plan_digest_mismatch", digest)
+    except Exception:
+        return ReplayValidation(False, "replay_timing_plan_invalid", digest)
 
     bot0, bot1 = replay_data.get("bot0"), replay_data.get("bot1")
     if not _strict_bot_label(bot0) or not _strict_bot_label(bot1) or bot0 == bot1:
@@ -321,7 +349,11 @@ def validate_native_replay(
     artifact_hashes: dict[str, str] | None = None
     nets: list[int] = []
     for index, game in enumerate(games, start=1):
-        accepted, reason, hashes = _valid_game(game, labels)
+        accepted, reason, hashes = _valid_game(
+            game,
+            labels,
+            timing_plan=timing_plan,
+        )
         if not accepted:
             return ReplayValidation(False, f"game_{index}:{reason}", digest)
         if artifact_hashes is None:

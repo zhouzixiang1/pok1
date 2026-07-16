@@ -1,5 +1,6 @@
 import asyncio
 import json
+import shutil
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
@@ -167,7 +168,18 @@ def _patch_h2h_paths(
 ):
     import evaluation_data_identity
     import evolution_infra
+    import rating_snapshot
     from evaluation_bundle import publish_evaluation_cycle_manifest
+
+    # This helper builds synthetic H2H/evaluation files for snapshot behavior
+    # tests.  Raw replay-byte admission itself is exercised by the strict
+    # replay integration tests, so keep this fixture focused on snapshot
+    # ordering/cutoffs rather than duplicating a 70-hand raw envelope.
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_load_verified_history_replay",
+        lambda entry, **_kwargs: dict(entry),
+    )
 
     results = tmp_path / "web" / "core" / "results"
     results.mkdir(parents=True)
@@ -257,6 +269,48 @@ def _patch_h2h_paths(
         enriched.setdefault("execution_mode", "native_tcp")
         enriched.setdefault("evaluation_identity_digest", identity_digest)
         enriched_match_rows.append(enriched)
+    # Snapshot/prompt tests exercise frozen-view mechanics rather than the
+    # raw-replay parser (which has dedicated integration coverage).  Still
+    # construct a full *history admission projection* for every stored H2H
+    # row, so the cycle now proves exact raw-history W/L/D instead of relying
+    # on a cache-only fixture.
+    if not enriched_match_rows:
+        from national_native import build_native_match_timing_plan
+
+        timing_plan = build_native_match_timing_plan(
+            hands=70,
+            requested_timeout_sec=None,
+        )
+        for index, (key, h2h_row) in enumerate(sorted(payload.items()), start=1):
+            parts = [part.strip() for part in str(key).split(" vs ")]
+            if len(parts) != 2 or not isinstance(h2h_row, dict):
+                continue
+            a_wins = int(h2h_row.get("a_wins", 0) or 0)
+            b_wins = int(h2h_row.get("b_wins", 0) or 0)
+            draws = int(h2h_row.get("draws", 0) or 0)
+            if min(a_wins, b_wins, draws) < 0:
+                continue
+            samples = [1] * a_wins + [-1] * b_wins + [0] * draws
+            enriched_match_rows.append({
+                "id": f"synthetic-{index:04d}.json",
+                "bot0": parts[0],
+                "bot1": parts[1],
+                "bot0_wins": a_wins,
+                "bot1_wins": b_wins,
+                "draws": draws,
+                "strength_sample_unit": "70_hand_match",
+                "hands_per_strength_sample": 70,
+                "strength_admitted": True,
+                "strength_complete": True,
+                "strength_compliance_passed": True,
+                "strength_sample_count": len(samples),
+                "net_chips_bot0": samples,
+                "native_match_timing_plan": timing_plan.snapshot(),
+                "native_match_timing_plan_digest": timing_plan.digest(),
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "execution_mode": "native_tcp",
+                "evaluation_identity_digest": identity_digest,
+            })
     (results / "match_history.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in enriched_match_rows),
         encoding="utf-8",
@@ -667,6 +721,12 @@ def test_one_complete_70_hand_match_remains_valid_sparse_h2h_evidence(
     monkeypatch, tmp_path
 ):
     import evidence_snapshot
+    from national_native import build_native_match_timing_plan
+
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=None,
+    )
 
     history_row = {
         "id": "replay-low-sample",
@@ -682,6 +742,10 @@ def test_one_complete_70_hand_match_remains_valid_sparse_h2h_evidence(
         "bot0_wins": 1,
         "bot1_wins": 0,
         "draws": 0,
+        # A historical strength row is only admissible if its full-match
+        # timing contract is immutable and independently digest-bound.
+        "native_match_timing_plan": timing_plan.snapshot(),
+        "native_match_timing_plan_digest": timing_plan.digest(),
     }
     _patch_h2h_paths(
         monkeypatch,
@@ -710,6 +774,89 @@ def test_one_complete_70_hand_match_remains_valid_sparse_h2h_evidence(
     ]
     assert "national_v123 vs national_v74: games=1, a_wins=1, b_wins=0" in summary
     assert "class=sparse" in summary
+
+
+def test_cleanup_retains_replay_referenced_only_by_verified_evidence_snapshot(
+    monkeypatch, tmp_path
+):
+    """Cycle retention must not orphan a still-valid generation snapshot."""
+
+    import elo_daemon
+    import evidence_snapshot
+
+    live = _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v143 vs national_v144": {
+            "games": 1,
+            "a_wins": 1,
+            "b_wins": 0,
+            "draws": 0,
+        }
+    })
+    results = live.parent
+    replay_dir = results / "match_replay"
+    replay_dir.mkdir(exist_ok=True)
+    referenced = replay_dir / "synthetic-0001.json"
+    disposable = replay_dir / "newer-unreferenced.json"
+    referenced.write_text("{}", encoding="utf-8")
+    disposable.write_text("{}", encoding="utf-8")
+    created = evidence_snapshot.ensure_generation_h2h_snapshot(145)
+    assert created["available"] is True
+
+    # Remove live/cycle references to isolate the durable generation snapshot
+    # as the only owner of this raw replay name.
+    (results / "match_history.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(results / "evaluation_cycles")
+    monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results)
+    monkeypatch.setattr(elo_daemon, "REPLAY_DIR", replay_dir)
+    monkeypatch.setattr(elo_daemon, "MATCH_HISTORY_FILE", results / "match_history.jsonl")
+    monkeypatch.setattr(elo_daemon, "MAX_REPLAY_FILES", 1)
+
+    elo_daemon.cleanup_old_replays()
+
+    assert referenced.exists()
+    assert not disposable.exists()
+
+
+def test_cleanup_does_not_trust_tampered_evidence_snapshot_references(
+    monkeypatch, tmp_path
+):
+    """A detached JSON claim cannot pin a replay after its manifest drifts."""
+
+    import elo_daemon
+    import evidence_snapshot
+
+    live = _patch_h2h_paths(monkeypatch, tmp_path, {
+        "national_v143 vs national_v144": {
+            "games": 1,
+            "a_wins": 1,
+            "b_wins": 0,
+            "draws": 0,
+        }
+    })
+    results = live.parent
+    replay_dir = results / "match_replay"
+    replay_dir.mkdir(exist_ok=True)
+    referenced = replay_dir / "synthetic-0001.json"
+    newer = replay_dir / "zz-unreferenced.json"
+    referenced.write_text("{}", encoding="utf-8")
+    newer.write_text("{}", encoding="utf-8")
+    created = evidence_snapshot.ensure_generation_h2h_snapshot(145)
+    manifest_path = Path(created["manifest_path"])
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["manifest_digest"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    (results / "match_history.jsonl").write_text("", encoding="utf-8")
+    shutil.rmtree(results / "evaluation_cycles")
+    monkeypatch.setattr(elo_daemon, "RESULTS_DIR", results)
+    monkeypatch.setattr(elo_daemon, "REPLAY_DIR", replay_dir)
+    monkeypatch.setattr(elo_daemon, "MATCH_HISTORY_FILE", results / "match_history.jsonl")
+    monkeypatch.setattr(elo_daemon, "MAX_REPLAY_FILES", 1)
+
+    elo_daemon.cleanup_old_replays()
+
+    assert not referenced.exists()
+    assert newer.exists()
 
 
 def test_h2h_prompt_summary_keeps_all_source_rows_before_other_rows(monkeypatch, tmp_path):

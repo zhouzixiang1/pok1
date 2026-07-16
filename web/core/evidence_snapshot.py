@@ -36,7 +36,7 @@ ACTION_STATS_SOURCE_FILENAME = "bot_action_stats_source.json"
 MATCH_HISTORY_INDEX_FILENAME = "match_history_index.json"
 REPLAY_SPOTLIGHT_FILENAME = "replay_spotlight.json"
 MANIFEST_FILENAME = "manifest.json"
-SNAPSHOT_SCHEMA_VERSION = 8
+SNAPSHOT_SCHEMA_VERSION = 9
 SNAPSHOT_FILES = {
     "h2h": H2H_SNAPSHOT_FILENAME,
     "bot_stats": BOT_STATS_SNAPSHOT_FILENAME,
@@ -351,6 +351,7 @@ def ensure_generation_h2h_snapshot(
             if _admitted_70_hand_history_sample(
                 row,
                 expected_evaluation_identity_digest=cycle_identity,
+                replay_dir=infra.RESULTS_DIR / "match_replay",
             ) is None:
                 continue
             history_entries.append(row)

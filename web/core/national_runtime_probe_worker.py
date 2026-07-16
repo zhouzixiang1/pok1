@@ -35,7 +35,7 @@ from national_runtime_probe_scenarios import (
 )
 
 
-PROBE_WORKER_VERSION = 15
+PROBE_WORKER_VERSION = 16
 PHASE_PATH = Path("/output/phase.txt")
 MAX_CAPTURE_CHARS = 64 * 1024
 EXPECTED_CONTEXT_FIELDS = frozenset({
@@ -53,6 +53,10 @@ EXPECTED_CONTEXT_FIELDS = frozenset({
 })
 INTENT_KINDS = frozenset({"pass", "fold", "allin", "raise"})
 CANONICAL_ACTION_RE = re.compile(r"(?:fold|call|check|allin|raise [0-9]+)\Z")
+STABLE_CONTEXT_NORMALIZATION_PATHS = (
+    "deadline.hard_monotonic",
+    "deadline.refinement_monotonic",
+)
 
 
 def _phase(name: str) -> None:
@@ -176,8 +180,8 @@ def _stable_context(context: dict[str, Any]) -> dict[str, Any]:
     stable = copy.deepcopy(context)
     deadline = stable.get("deadline")
     if isinstance(deadline, dict):
-        deadline.pop("hard_monotonic", None)
-        deadline.pop("refinement_monotonic", None)
+        for path in STABLE_CONTEXT_NORMALIZATION_PATHS:
+            deadline.pop(path.split(".", 1)[1], None)
     return stable
 
 
@@ -219,9 +223,16 @@ def _validate_context(
         "acts_first_postflop": hand.get("acts_first_postflop"),
         "to_call": betting.get("to_call"),
         "preflop_aggressor": line.get("preflop_aggressor"),
+        "street_open": line.get("street_open"),
         "responding_to_check": line.get("responding_to_check"),
         "can_donk": line.get("can_donk"),
         "can_delayed_probe": line.get("can_delayed_probe"),
+        "previous_street_checked_through": (
+            (line.get("previous_street") or {}).get("checked_through")
+        ),
+        "previous_street_opponent_checked_back": (
+            (line.get("previous_street") or {}).get("opponent_checked_back")
+        ),
         "pass_wire_kind": legal.get("pass_wire_kind"),
     }
     for field, expected_value in expected.items():
@@ -263,6 +274,61 @@ def _validate_context(
         issues.append(f"{scenario_id}:acts_first_postflop_position_disagree")
     if line.get("hero_in_position_postflop") is not (position == "small_blind"):
         issues.append(f"{scenario_id}:postflop_in_position_flag_disagree")
+    match_control = hand.get("match_control")
+    match_control_fields = {
+        "schema_version",
+        "initial_chips",
+        "small_blind",
+        "big_blind",
+        "current_position",
+        "current_exposure",
+        "future_forced_blinds",
+        "forced_fold_loss_bound",
+        "hero_net_earned",
+        "fold_locks_win",
+    }
+    if type(match_control) is not dict or set(match_control) != match_control_fields:
+        issues.append(f"{scenario_id}:match_control_shape_mismatch")
+    elif chip_fields_valid:
+        remaining = hand.get("remaining_including_current")
+        opponent = context.get("opponent") or {}
+        match_result = opponent.get("match_result") or {}
+        if type(remaining) is not int or not 1 <= remaining <= 70:
+            issues.append(f"{scenario_id}:match_control_remaining_invalid")
+        else:
+            future_hands = remaining - 1
+            pairs, odd = divmod(future_hands, 2)
+            future_blinds = pairs * 150
+            if odd:
+                future_blinds += 100 if position == "small_blind" else 50
+            exposure = 20_000 - hero_stack
+            hero_net = match_result.get("hero_net_earned")
+            expected_control = {
+                "schema_version": 1,
+                "initial_chips": 20_000,
+                "small_blind": 50,
+                "big_blind": 100,
+                "current_position": position,
+                "current_exposure": exposure,
+                "future_forced_blinds": future_blinds,
+                "forced_fold_loss_bound": exposure + future_blinds,
+                "hero_net_earned": hero_net,
+                "fold_locks_win": (
+                    type(hero_net) is int
+                    and hero_net > exposure + future_blinds
+                ),
+            }
+            if match_control != expected_control:
+                issues.append(f"{scenario_id}:match_control_derivation_mismatch")
+    closing = betting.get("call_closes_allin_runout")
+    expected_closing = bool(
+        type(to_call) is int
+        and to_call > 0
+        and chip_fields_valid
+        and (opponent_stack == 0 or hero_stack <= to_call)
+    )
+    if type(closing) is not bool or closing is not expected_closing:
+        issues.append(f"{scenario_id}:allin_call_closure_derivation_mismatch")
     history = context.get("history")
     if type(history) is not dict:
         issues.append(f"{scenario_id}:semantic_history_not_mapping")
@@ -454,47 +520,211 @@ def _drive_scenario(
         bot.close()
 
 
-def _line_reachability(rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _line_reachability(
+    rows: list[dict[str, Any]],
+    imports: CandidateImports,
+    *,
+    expected_runtime_version: int,
+) -> dict[str, Any]:
     by_id = {str(row.get("id")): row for row in rows}
+    scenarios = {str(item["id"]): item for item in DECISION_SCENARIOS}
     dimensions: dict[str, Any] = {}
-    issues: list[str] = []
+    system_issues: list[str] = []
+    candidate_issues: list[str] = []
+    opportunity_tags = {
+        "donk": "donk_opportunity",
+        "delayed_probe": "delayed_probe_opportunity",
+    }
     for pair in LINE_SCENARIO_PAIRS:
         dimension = str(pair["dimension"])
         flag = str(pair["flag"])
         positive = by_id.get(str(pair["positive"])) or {}
         negative = by_id.get(str(pair["negative"])) or {}
+        mixed = by_id.get(str(pair["mixed_identity"])) or {}
         positive_value = bool(
             ((positive.get("context") or {}).get("line") or {}).get(flag)
         )
         negative_value = bool(
             ((negative.get("context") or {}).get("line") or {}).get(flag)
         )
-        ok = positive_value and not negative_value
-        if not ok:
-            issues.append(
+        mixed_value = bool(
+            ((mixed.get("context") or {}).get("line") or {}).get(flag)
+        )
+        producer_reachable = positive_value and not negative_value and mixed_value
+        if not producer_reachable:
+            system_issues.append(
                 f"{dimension}_line_not_reachable_from_official_transcripts:"
-                f"positive={positive_value}:negative={negative_value}"
+                f"positive={positive_value}:negative={negative_value}:"
+                f"mixed={mixed_value}"
             )
+        positive_scenario = scenarios[str(pair["positive"])]
+        mixed_scenario = scenarios[str(pair["mixed_identity"])]
+        mixing_class = positive_scenario.get("mixing_class")
+        if (
+            mixing_class != "structural_air_no_hole_draw"
+            or mixed_scenario.get("mixing_class") != mixing_class
+        ):
+            system_issues.append(f"{dimension}:mixing_class_not_pinned")
+        opportunity_tag = opportunity_tags[dimension]
+        ablation_scenario = copy.deepcopy(scenarios[str(pair["positive"])])
+        ablation_scenario["id"] = (
+            f"{ablation_scenario['id']}:matched_{flag}_disabled"
+        )
+        ablation_scenario.setdefault("expected", {})[flag] = False
+
+        def disable_one_line_predicate(context):
+            candidate = copy.deepcopy(context)
+            line = candidate.setdefault("line", {})
+            line[flag] = False
+            tags = line.get("line_tags") or []
+            if isinstance(tags, (list, tuple)):
+                line["line_tags"] = [
+                    item for item in tags if item != opportunity_tag
+                ]
+            return candidate
+
+        matched = _drive_scenario(
+            imports,
+            ablation_scenario,
+            expected_runtime_version=expected_runtime_version,
+            context_transform=disable_one_line_predicate,
+        )
+        system_issues.extend(
+            f"{dimension}:matched_control:{item}"
+            for item in matched.get("system_issues") or []
+        )
+        candidate_issues.extend(
+            f"{dimension}:matched_control:{item}"
+            for item in matched.get("candidate_issues") or []
+        )
+
+        def without_ablation_fields(context):
+            candidate = copy.deepcopy(context or {})
+            line = candidate.get("line") or {}
+            line.pop(flag, None)
+            tags = line.get("line_tags") or []
+            if isinstance(tags, (list, tuple)):
+                line["line_tags"] = [
+                    item for item in tags if item != opportunity_tag
+                ]
+            return candidate
+
+        positive_without_ablation = without_ablation_fields(
+            positive.get("context")
+        )
+        matched_without_ablation = without_ablation_fields(
+            matched.get("context")
+        )
+        positive_without_ablation_digest = _canonical_digest(
+            positive_without_ablation
+        )
+        matched_without_ablation_digest = _canonical_digest(
+            matched_without_ablation
+        )
+        context_ablation_exact = (
+            positive_without_ablation == matched_without_ablation
+            and positive_without_ablation_digest
+            == matched_without_ablation_digest
+        )
+        if not context_ablation_exact:
+            system_issues.append(f"{dimension}:matched_line_ablation_not_exact")
+
+        def without_cards(context):
+            candidate = copy.deepcopy(context or {})
+            candidate.pop("cards", None)
+            return candidate
+
+        positive_without_cards_digest = _canonical_digest(
+            without_cards(positive.get("context"))
+        )
+        mixed_without_cards_digest = _canonical_digest(
+            without_cards(mixed.get("context"))
+        )
+        mixing_context_exact = bool(
+            without_cards(positive.get("context"))
+            == without_cards(mixed.get("context"))
+            and positive_without_cards_digest == mixed_without_cards_digest
+        )
+        if not mixing_context_exact:
+            system_issues.append(f"{dimension}:mixing_identity_context_not_exact")
+        positive_wire = positive.get("wire")
+        mixed_wire = mixed.get("wire")
+        bounded_mixing = bool(
+            positive_wire
+            and mixed_wire
+            and str(positive_wire).startswith("raise ")
+            and mixed_wire == "check"
+        )
+        socket_validated = bool(
+            positive_wire
+            and negative.get("wire")
+            and mixed_wire
+            and matched.get("wire")
+        )
+        consumer_wire_effect = bool(
+            positive_wire
+            and matched.get("wire")
+            and positive_wire != matched.get("wire")
+        )
+        causal_passed = bool(
+            producer_reachable
+            and context_ablation_exact
+            and mixing_context_exact
+            and bounded_mixing
+            and consumer_wire_effect
+            and socket_validated
+        )
         dimensions[dimension] = {
-            "ok": ok,
+            "ok": producer_reachable,
             "flag": flag,
             "positive_scenario": pair["positive"],
             "negative_scenario": pair["negative"],
+            "mixed_identity_scenario": pair["mixed_identity"],
+            "mixing_class": mixing_class,
             "positive": positive_value,
             "negative": negative_value,
+            "mixed_identity": mixed_value,
+            "producer_reachable": producer_reachable,
             "positive_decision": positive.get("decision"),
             "negative_decision": negative.get("decision"),
-            "positive_wire": positive.get("wire"),
+            "positive_wire": positive_wire,
             "negative_wire": negative.get("wire"),
-            "policy_changed": (
-                positive.get("decision") != negative.get("decision")
-                or positive.get("wire") != negative.get("wire")
+            "mixed_identity_decision": mixed.get("decision"),
+            "mixed_identity_wire": mixed_wire,
+            "mixed_identity_context_digest": mixed.get("context_digest"),
+            "positive_without_cards_digest": positive_without_cards_digest,
+            "mixed_without_cards_digest": mixed_without_cards_digest,
+            "mixing_context_exact": mixing_context_exact,
+            "bounded_mixing": bounded_mixing,
+            "stable_context_normalization_paths": list(
+                STABLE_CONTEXT_NORMALIZATION_PATHS
             ),
-            "socket_validated": bool(
-                positive.get("wire") and negative.get("wire")
+            "mixing_comparison_ignored_paths": ["cards"],
+            "matched_control_decision": matched.get("decision"),
+            "matched_control_wire": matched.get("wire"),
+            "matched_control_context_digest": matched.get("context_digest"),
+            "positive_without_ablation_digest": (
+                positive_without_ablation_digest
             ),
+            "matched_without_ablation_digest": matched_without_ablation_digest,
+            "ablation_paths": [
+                f"line.{flag}",
+                f"line.line_tags:{opportunity_tag}",
+            ],
+            "context_ablation_exact": context_ablation_exact,
+            "consumer_wire_effect": consumer_wire_effect,
+            "policy_changed": consumer_wire_effect,
+            "causal_passed": causal_passed,
+            "socket_validated": socket_validated,
         }
-    return {"ok": not issues, "issues": issues, "dimensions": dimensions}
+    issues = [*system_issues, *candidate_issues]
+    return {
+        "ok": not issues,
+        "issues": issues,
+        "system_issues": system_issues,
+        "candidate_issues": candidate_issues,
+        "dimensions": dimensions,
+    }
 
 
 def _probe_persistent_memory(
@@ -643,8 +873,15 @@ def _profile_context(
         opponent["adaptation_weight"] = 0.0
         terminal["confidence"] = 0.0
         terminal["adaptation_weight"] = 0.0
-        showdown["confidence"] = 0.0
-        showdown["adaptation_weight"] = 0.0
+        if profile in {"tight_showdown", "loose_showdown"}:
+            # Preserve a nonzero observed posterior while removing the exact
+            # system selection-bias authority.  Stable wire then proves the
+            # guard itself, not merely a zero-weight compatibility path.
+            showdown["selection_scope"] = "unconditional"
+            showdown["selection_bias_guard"] = "missing"
+        else:
+            showdown["confidence"] = 0.0
+            showdown["adaptation_weight"] = 0.0
     return candidate
 
 
@@ -778,6 +1015,117 @@ def _probe_policy_entrypoints(
     return {"ok": not issues, "issues": issues, "rows": observations}
 
 
+def _probe_match_control_consumer(
+    imports: CandidateImports,
+    *,
+    expected_runtime_version: int,
+) -> dict[str, Any]:
+    """Require the candidate to consume the exact system lock-win proof."""
+
+    base = next(
+        copy.deepcopy(item)
+        for item in DECISION_SCENARIOS
+        if item["id"] == "preflop_sb_premium"
+    )
+    controls = (
+        ("strict_win", 51, False, "fold"),
+        ("equality_boundary", 50, False, "not_fold"),
+        ("malformed_proof", 51, True, "not_fold"),
+    )
+    rows: dict[str, dict[str, Any]] = {}
+    system_issues: list[str] = []
+    candidate_issues: list[str] = []
+    for control_id, lead, malformed, expectation in controls:
+        scenario = copy.deepcopy(base)
+        scenario["id"] = f"match_control_{control_id}"
+
+        def transform(context, *, selected_lead=lead, is_malformed=malformed):
+            candidate = copy.deepcopy(context)
+            hand = candidate["hand"]
+            betting = candidate["betting"]
+            opponent = candidate["opponent"]
+            hand["number"] = 70
+            hand["total_hands"] = 70
+            hand["remaining_including_current"] = 1
+            exposure = 20_000 - int(betting["hero_stack"])
+            opponent["match_result"]["hero_net_earned"] = selected_lead
+            control = {
+                "schema_version": 1,
+                "initial_chips": 20_000,
+                "small_blind": 50,
+                "big_blind": 100,
+                "current_position": hand["position"],
+                "current_exposure": exposure,
+                "future_forced_blinds": 0,
+                "forced_fold_loss_bound": exposure,
+                "hero_net_earned": selected_lead,
+                "fold_locks_win": selected_lead > exposure,
+            }
+            if is_malformed:
+                control.pop("future_forced_blinds")
+            hand["match_control"] = control
+            return candidate
+
+        row = _drive_scenario(
+            imports,
+            scenario,
+            expected_runtime_version=expected_runtime_version,
+            context_transform=transform,
+        )
+        expected_system = (
+            {f"{scenario['id']}:match_control_shape_mismatch"}
+            if malformed
+            else set()
+        )
+        observed_system = set(row.get("system_issues") or [])
+        for issue in sorted(observed_system - expected_system):
+            system_issues.append(f"{control_id}:{issue}")
+        if observed_system != expected_system:
+            missing = sorted(expected_system - observed_system)
+            if missing:
+                system_issues.append(
+                    f"{control_id}:expected_system_issue_missing:{missing}"
+                )
+        candidate_issues.extend(
+            f"{control_id}:{item}"
+            for item in row.get("candidate_issues") or []
+        )
+        wire = row.get("wire")
+        expectation_met = (
+            wire == "fold" if expectation == "fold" else wire != "fold"
+        )
+        if not wire or not expectation_met:
+            candidate_issues.append(
+                f"match_control_consumer_{control_id}_wire_mismatch:"
+                f"expected={expectation}:actual={wire!r}"
+            )
+        rows[control_id] = {
+            "expectation": expectation,
+            "decision": row.get("decision"),
+            "wire": wire,
+            "context_digest": row.get("context_digest"),
+            "expected_system_issues": sorted(expected_system),
+            "observed_system_issues": sorted(observed_system),
+            "expectation_met": bool(wire and expectation_met),
+        }
+    socket_validated = all(row.get("wire") for row in rows.values())
+    causal_passed = bool(
+        socket_validated
+        and rows["strict_win"]["wire"] == "fold"
+        and rows["equality_boundary"]["wire"] != "fold"
+        and rows["malformed_proof"]["wire"] != "fold"
+    )
+    return {
+        "ok": not system_issues and not candidate_issues and causal_passed,
+        "system_issues": system_issues,
+        "candidate_issues": candidate_issues,
+        "rows": rows,
+        "socket_validated": socket_validated,
+        "causal_passed": causal_passed,
+        "strict_comparison": "hero_net_earned > forced_fold_loss_bound",
+    }
+
+
 def _probe_policy_counterfactuals(
     imports: CandidateImports,
     *,
@@ -880,6 +1228,11 @@ def _probe_policy_counterfactuals(
             "changed": positive_changed,
             "positive_wire_effect": positive_wire_effect,
             "negative_control_stable": negative_wire_stable,
+            "negative_control_kind": (
+                "selection_bias_guard_removed"
+                if dimension == "showdown_range"
+                else "authority_weight_removed"
+            ),
             "causal_passed": bool(
                 positive_wire_effect
                 and negative_wire_stable
@@ -1030,8 +1383,12 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
     sys.dont_write_bytecode = True
     random.seed(20260710)
     os.environ["POK_OFFICIAL_ACTION_DELAY"] = "0"
-    os.environ["POK_DECISION_HARD_DEADLINE_SEC"] = "0.70"
-    os.environ["POK_DECISION_REFINEMENT_BUDGET_SEC"] = "0.55"
+    # Ordinary transcript/causal probes need the strict <250 ms baseline plus
+    # enough refinement to expose a typed wire effect; the dedicated 2s/8s
+    # multifidelity phase below owns long-work evidence.  Keeping these paths
+    # short prevents duplicated profiles from consuming the probe watchdog.
+    os.environ["POK_DECISION_HARD_DEADLINE_SEC"] = "0.45"
+    os.environ["POK_DECISION_REFINEMENT_BUDGET_SEC"] = "0.30"
     os.environ["POK_DECISION_BASELINE_TARGET_SEC"] = "0.20"
     os.environ["POK_NATIVE_BOT_SEED"] = "20260710"
     sys.path.insert(0, str(root))
@@ -1048,7 +1405,11 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         for scenario in DECISION_SCENARIOS
     ]
     _phase("line_reachability")
-    line_reachability = _line_reachability(rows)
+    line_reachability = _line_reachability(
+        rows,
+        imports,
+        expected_runtime_version=expected_runtime_version,
+    )
     _phase("persistent_memory")
     persistent_memory = _probe_persistent_memory(
         imports,
@@ -1078,6 +1439,22 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
             "issues": ["candidate_policy_counterfactuals_not_run"],
             "dimensions": {},
         }
+    _phase("match_control_consumer")
+    try:
+        match_control_consumer = _probe_match_control_consumer(
+            imports,
+            expected_runtime_version=expected_runtime_version,
+        )
+    except BaseException as exc:
+        match_control_consumer = {
+            "ok": False,
+            "system_issues": [],
+            "candidate_issues": [
+                "match_control_consumer_exception:"
+                f"{type(exc).__name__}:{str(exc)[:180]}"
+            ],
+            "rows": {},
+        }
     _phase("budget_scaled_refinement")
     budget_scaled_refinement = _probe_budget_scaled_refinement(
         imports,
@@ -1087,15 +1464,18 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
 
     system_issues = [
         *(issue for row in rows for issue in row.get("system_issues") or []),
-        *(line_reachability.get("issues") or []),
+        *(line_reachability.get("system_issues") or []),
         *(persistent_memory.get("issues") or []),
         *(budget_scaled_refinement.get("system_issues") or []),
         *(counterfactuals.get("system_issues") or []),
+        *(match_control_consumer.get("system_issues") or []),
     ]
     candidate_issues = [
         *(issue for row in rows for issue in row.get("candidate_issues") or []),
+        *(line_reachability.get("candidate_issues") or []),
         *(policy_entrypoints.get("issues") or []),
         *(counterfactuals.get("candidate_issues") or []),
+        *(match_control_consumer.get("candidate_issues") or []),
     ]
     for module_name, diagnostic in imports.diagnostics.items():
         if diagnostic.get("stdout"):
@@ -1139,6 +1519,7 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "persistent_memory": persistent_memory,
         "policy_entrypoints": policy_entrypoints,
         "policy_counterfactuals": counterfactuals,
+        "match_control_consumer": match_control_consumer,
         "budget_scaled_refinement": budget_scaled_refinement,
         "module_diagnostics": imports.diagnostics,
     }

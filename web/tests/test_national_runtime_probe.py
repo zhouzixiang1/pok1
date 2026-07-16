@@ -29,6 +29,61 @@ BOOTSTRAP_POLICY_PATH = (
 
 
 TYPED_POLICY = '''\
+def _fold_locks_match_win(context):
+    hand = context.get("hand", {})
+    betting = context.get("betting", {})
+    line = context.get("line", {})
+    opponent = context.get("opponent", {})
+    control = hand.get("match_control", {})
+    fields = {
+        "schema_version", "initial_chips", "small_blind", "big_blind",
+        "current_position", "current_exposure", "future_forced_blinds",
+        "forced_fold_loss_bound", "hero_net_earned", "fold_locks_win",
+    }
+    if not isinstance(control, dict) or set(control) != fields:
+        return False
+    integers = (
+        "schema_version", "initial_chips", "small_blind", "big_blind",
+        "current_exposure", "future_forced_blinds",
+        "forced_fold_loss_bound", "hero_net_earned",
+    )
+    if any(type(control.get(field)) is not int for field in integers):
+        return False
+    if type(control.get("fold_locks_win")) is not bool:
+        return False
+    if control["schema_version"] != 1 or control["initial_chips"] != 20000:
+        return False
+    if control["small_blind"] != 50 or control["big_blind"] != 100:
+        return False
+    position = hand.get("position")
+    if position not in {"small_blind", "big_blind"}:
+        return False
+    if control["current_position"] != position or line.get("position") != position:
+        return False
+    remaining = hand.get("remaining_including_current")
+    if type(remaining) is not int or not 1 <= remaining <= 70:
+        return False
+    pairs, odd = divmod(remaining - 1, 2)
+    future = pairs * 150
+    if odd:
+        future += 100 if position == "small_blind" else 50
+    stack = betting.get("hero_stack")
+    if type(stack) is not int:
+        return False
+    exposure = 20000 - stack
+    hero_net = opponent.get("match_result", {}).get("hero_net_earned")
+    expected = exposure + future
+    return bool(
+        type(hero_net) is int
+        and control["current_exposure"] == exposure
+        and control["future_forced_blinds"] == future
+        and control["forced_fold_loss_bound"] == expected
+        and control["hero_net_earned"] == hero_net
+        and control["fold_locks_win"] is (hero_net > expected)
+        and control["fold_locks_win"]
+    )
+
+
 def get_baseline_decision(context):
     legal = context["legal"]
     betting = context["betting"]
@@ -36,6 +91,8 @@ def get_baseline_decision(context):
     opponent = context["opponent"]
     hand = context["hand"]
     kinds = set(legal["policy_kinds"])
+    if "fold" in kinds and _fold_locks_match_win(context):
+        return {"kind": "fold"}
     if (line["can_donk"] or line["can_delayed_probe"]) and "raise" in kinds:
         return {"kind": "raise", "raise_to": legal["min_raise_to"]}
     if opponent.get("confidence", 0.0) > 2.0 and "allin" in kinds:
@@ -162,6 +219,22 @@ def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
     assert result["line_reachability"]["dimensions"]["donk"][
         "socket_validated"
     ] is True
+    for line in ("donk", "delayed_probe"):
+        evidence = result["line_reachability"]["dimensions"][line]
+        assert evidence["producer_reachable"] is True
+        assert evidence["context_ablation_exact"] is True
+        assert evidence["positive_without_ablation_digest"] == (
+            evidence["matched_without_ablation_digest"]
+        )
+        assert evidence["consumer_wire_effect"] is True
+        # This generic fixture raises on every enabled line.  Reachability is
+        # real, but it must not receive bounded-mixing capability credit.
+        assert evidence["bounded_mixing"] is False
+        assert evidence["causal_passed"] is False
+        assert evidence["positive_wire"] != evidence["matched_control_wire"]
+    generic_states = runtime_architecture_policy._dynamic_probe_states(result)
+    assert generic_states["donk_line_reachability"] is False
+    assert generic_states["delayed_probe_line_reachability"] is False
     delayed_row = next(
         row
         for row in rows
@@ -177,6 +250,30 @@ def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
     assert memory["terminal_response"]["call"] == 1
     assert memory["showdown_range"]["samples"] == 1
     assert memory["showdown_range"]["selection_scope"] == "reached_showdown_only"
+    match_control = result["match_control_consumer"]
+    assert match_control["ok"] is True
+    assert match_control["causal_passed"] is True
+    assert match_control["rows"]["strict_win"]["wire"] == "fold"
+    assert match_control["rows"]["equality_boundary"]["wire"] != "fold"
+    assert match_control["rows"]["malformed_proof"]["wire"] != "fold"
+
+
+def test_worker_rejects_policy_that_drops_match_control_consumer(tmp_path):
+    policy = TYPED_POLICY.replace(
+        '    if "fold" in kinds and _fold_locks_match_win(context):\n'
+        '        return {"kind": "fold"}\n',
+        "",
+        1,
+    )
+    bot = _write_typed_bot(tmp_path / "bot", policy)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["ok"] is False
+    assert result["failure_class"] == "candidate_contract"
+    assert any(
+        "match_control_consumer_strict_win_wire_mismatch" in issue
+        for issue in result["candidate_issues"]
+    )
 
 
 def test_worker_rejects_non_typed_policy_output(tmp_path):
@@ -289,6 +386,33 @@ def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
         assert dimension["left_wire"].startswith("raise ")
         assert dimension["right_wire"].startswith("raise ")
         assert dimension["left_wire"] != dimension["right_wire"]
+
+    assert dimensions["showdown_range"]["negative_control_kind"] == (
+        "selection_bias_guard_removed"
+    )
+
+    for line in ("donk", "delayed_probe"):
+        evidence = result["line_reachability"]["dimensions"][line]
+        assert evidence["mixing_class"] == "structural_air_no_hole_draw"
+        assert evidence["mixing_context_exact"] is True
+        assert evidence["stable_context_normalization_paths"] == [
+            "deadline.hard_monotonic",
+            "deadline.refinement_monotonic",
+        ]
+        assert evidence["mixing_comparison_ignored_paths"] == ["cards"]
+        assert evidence["positive_without_cards_digest"] == (
+            evidence["mixed_without_cards_digest"]
+        )
+        assert evidence["bounded_mixing"] is True
+        assert evidence["positive_wire"] != evidence["mixed_identity_wire"]
+        assert evidence["causal_passed"] is True
+
+    match_control = result["match_control_consumer"]
+    assert match_control["ok"] is True
+    assert match_control["causal_passed"] is True
+    assert match_control["strict_comparison"] == (
+        "hero_net_earned > forced_fold_loss_bound"
+    )
 
     states = runtime_architecture_policy._dynamic_probe_states(result)
     assert states["incremental_opponent_model"] is True
@@ -459,6 +583,7 @@ def _passing_gate_probe() -> dict:
                     "causal_passed": True,
                     "positive_wire_effect": True,
                     "negative_control_stable": True,
+                    "negative_control_kind": "authority_weight_removed",
                     "socket_validated": True,
                     "left_wire": "raise 300",
                     "right_wire": "raise 400",
@@ -469,6 +594,7 @@ def _passing_gate_probe() -> dict:
                     "causal_passed": True,
                     "positive_wire_effect": True,
                     "negative_control_stable": True,
+                    "negative_control_kind": "authority_weight_removed",
                     "socket_validated": True,
                     "left_wire": "raise 310",
                     "right_wire": "raise 410",
@@ -479,6 +605,7 @@ def _passing_gate_probe() -> dict:
                     "causal_passed": True,
                     "positive_wire_effect": True,
                     "negative_control_stable": True,
+                    "negative_control_kind": "selection_bias_guard_removed",
                     "socket_validated": True,
                     "left_wire": "raise 320",
                     "right_wire": "raise 420",
@@ -561,6 +688,111 @@ def test_dynamic_state_recomputes_wire_causality_instead_of_trusting_flag():
 
     assert action["causal_passed"] is True
     assert states["incremental_opponent_model"] is False
+
+    for field, malformed in (
+        ("left_wire", "raise nonsense"),
+        ("right_wire", "raise 22\n"),
+        ("negative_left_wire", "garbage"),
+        ("negative_right_wire", "raise -1"),
+    ):
+        candidate = _passing_gate_probe()
+        candidate["policy_counterfactuals"]["dimensions"]["action_profile"][
+            field
+        ] = malformed
+        assert runtime_architecture_policy._dynamic_probe_states(candidate)[
+            "incremental_opponent_model"
+        ] is False
+
+
+def test_dynamic_line_state_recomputes_matched_ablation_wire_causality():
+    probe = _passing_gate_probe()
+    line = {
+        "ok": True,
+        "flag": "can_donk",
+        "positive": True,
+        "negative": False,
+        "mixed_identity": True,
+        "producer_reachable": True,
+        "context_ablation_exact": True,
+        "positive_without_ablation_digest": "a" * 64,
+        "matched_without_ablation_digest": "a" * 64,
+        "positive_without_cards_digest": "b" * 64,
+        "mixed_without_cards_digest": "b" * 64,
+        "mixing_class": "structural_air_no_hole_draw",
+        "mixing_context_exact": True,
+        "bounded_mixing": True,
+        "stable_context_normalization_paths": [
+            "deadline.hard_monotonic",
+            "deadline.refinement_monotonic",
+        ],
+        "mixing_comparison_ignored_paths": ["cards"],
+        "ablation_paths": [
+            "line.can_donk",
+            "line.line_tags:donk_opportunity",
+        ],
+        "consumer_wire_effect": True,
+        "causal_passed": True,
+        "socket_validated": True,
+        "positive_wire": "raise 223",
+        "negative_wire": "check",
+        "matched_control_wire": "check",
+        "mixed_identity_wire": "check",
+    }
+    probe["line_reachability"]["dimensions"]["donk"] = line
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "donk_line_reachability"
+    ] is True
+
+    for field, malformed in (
+        ("positive_wire", "raise nonsense"),
+        ("negative_wire", "garbage"),
+        ("matched_control_wire", "raise 2\r\n"),
+        ("mixed_identity_wire", "check "),
+    ):
+        original = line[field]
+        line[field] = malformed
+        assert runtime_architecture_policy._dynamic_probe_states(probe)[
+            "donk_line_reachability"
+        ] is False
+        line[field] = original
+
+    line["matched_control_wire"] = line["positive_wire"]
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "donk_line_reachability"
+    ] is False
+
+    line["matched_without_ablation_digest"] = "a" * 64
+    line["mixed_identity_wire"] = "allin"
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "donk_line_reachability"
+    ] is False
+
+    line["mixed_identity_wire"] = "check"
+    line["matched_control_wire"] = "check"
+    line["positive"] = False
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "donk_line_reachability"
+    ] is False
+
+    line["positive"] = True
+    line["matched_without_ablation_digest"] = "b" * 64
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "donk_line_reachability"
+    ] is False
+
+
+def test_dynamic_showdown_state_binds_selection_guard_negative_control():
+    probe = _passing_gate_probe()
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "showdown_range_adaptation"
+    ] is True
+
+    probe["policy_counterfactuals"]["dimensions"]["showdown_range"][
+        "negative_control_kind"
+    ] = "authority_weight_removed"
+    assert runtime_architecture_policy._dynamic_probe_states(probe)[
+        "showdown_range_adaptation"
+    ] is False
 
 
 def test_opponent_causal_floor_is_hard_and_selected_profile_adds_primary_gate(

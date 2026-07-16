@@ -3,12 +3,18 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from sever.engine.deck import Deck
-from sever.engine.game import GameEngine
+from sever.engine.game import (
+    BettingActionLimitExceeded,
+    GameEngine,
+    MAX_ACTIONS_PER_BETTING_ROUND,
+)
 from sever.engine.thp_recorder import THPRecorder
 from sever.engine.validator import validate_action
 from sever.server.protocol import (
@@ -390,6 +396,103 @@ def test_game_engine_matches_official_omitted_street_closers():
     ))
     assert postflop_sent == [(0, "check")]
     assert [event["wire_relayed"] for event in postflop_events if event["type"] == "action"] == [True, False]
+
+
+def test_game_engine_allows_more_than_eight_legal_decisions_before_street_close():
+    async def run_round():
+        events = []
+
+        async def send(_player_idx, _message):
+            return None
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.hand_num = 1
+        engine.players[0].blind_type = "SMALLBLIND"
+        engine.players[1].blind_type = "BIGBLIND"
+        actions = {
+            1: ["check", "raise 200", "raise 800", "raise 3200", "raise 12800"],
+            0: ["raise 100", "raise 400", "raise 1600", "raise 6400", "call"],
+        }
+
+        async def recv_action(player_idx):
+            return actions[player_idx].pop(0)
+
+        engine._recv_action = recv_action
+        result = await engine._betting_round(
+            stage="flop",
+            first_idx=1,
+            second_idx=0,
+            first_bet=0,
+            second_bet=0,
+            pot=0,
+            community=[],
+            deck=Deck(seed=17),
+        )
+        return result, events
+
+    result, events = asyncio.run(run_round())
+    assert result.folded is False
+    assert len([event for event in events if event["type"] == "action_requested"]) == 10
+    assert not [event for event in events if event["type"] == "action_limit_reached"]
+
+
+def test_game_engine_action_cap_is_explicit_fail_closed_not_normal_settlement():
+    async def run_round():
+        events = []
+
+        async def send(_player_idx, _message):
+            return None
+
+        async def broadcast(event):
+            events.append(event)
+
+        engine = GameEngine(send_func=send, broadcast_func=broadcast)
+        engine.hand_num = 1
+        engine.players[0].blind_type = "SMALLBLIND"
+        engine.players[1].blind_type = "BIGBLIND"
+        # The active 20k-stack game cannot naturally reach this defense cap,
+        # so use a deliberately huge in-memory test stack.  The validator still
+        # sees an entirely legal exact-2x raise chain.
+        for player in engine.players:
+            player.chips = 100 * (2 ** (MAX_ACTIONS_PER_BETTING_ROUND + 2))
+        actions = {0: [], 1: []}
+        for action_index in range(1, MAX_ACTIONS_PER_BETTING_ROUND + 1):
+            player_idx = 1 if action_index % 2 else 0
+            if action_index == 1:
+                token = "check"
+            else:
+                token = f"raise {100 * (2 ** (action_index - 2))}"
+            actions[player_idx].append(token)
+
+        async def recv_action(player_idx):
+            return actions[player_idx].pop(0)
+
+        engine._recv_action = recv_action
+        with pytest.raises(BettingActionLimitExceeded):
+            await engine._betting_round(
+                stage="flop",
+                first_idx=1,
+                second_idx=0,
+                first_bet=0,
+                second_bet=0,
+                pot=0,
+                community=[],
+                deck=Deck(seed=23),
+            )
+        return events
+
+    events = asyncio.run(run_round())
+    requests = [event for event in events if event["type"] == "action_requested"]
+    assert len(requests) == MAX_ACTIONS_PER_BETTING_ROUND
+    limit_events = [event for event in events if event["type"] == "action_limit_reached"]
+    assert len(limit_events) == 1
+    assert limit_events[0]["hand"] == 1
+    assert limit_events[0]["stage"] == "flop"
+    assert limit_events[0]["limit"] == MAX_ACTIONS_PER_BETTING_ROUND
+    assert limit_events[0]["actions_observed"] == MAX_ACTIONS_PER_BETTING_ROUND
 
 
 def test_game_engine_matches_official_hand_70_wire_settlement_boundary():

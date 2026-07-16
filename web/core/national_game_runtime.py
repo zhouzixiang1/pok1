@@ -8,9 +8,14 @@ from typing import Any
 
 from sever.engine.deck import Deck
 from sever.engine.game import GameEngine
+from sever.engine.validator import NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND
 from sever.engine.thp_recorder import THPRecorder
 
 from sever.server.transport import NationalTCPClient
+
+
+class NationalHandActionLimitExceeded(RuntimeError):
+    """The fixed 20k national hand exceeded its proven decision envelope."""
 
 
 class NationalTCPGameEngine(GameEngine):
@@ -26,6 +31,7 @@ class NationalTCPGameEngine(GameEngine):
         self.events = events
         self.event_sink = event_sink
         self.action_timeout_sec = float(action_timeout_sec)
+        self._hand_action_requests = 0
         deck_factory = None
         if deck_seed_base is not None:
             deck_factory = lambda hand_num: Deck(seed=deck_seed_base + hand_num)
@@ -44,6 +50,27 @@ class NationalTCPGameEngine(GameEngine):
 
     async def _record_event(self, event: dict[str, Any]) -> None:
         snapshot = dict(event)
+        if snapshot.get("type") == "hand_start":
+            self._hand_action_requests = 0
+        elif snapshot.get("type") == "action_requested":
+            self._hand_action_requests += 1
+            if self._hand_action_requests > NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND:
+                limit_event = {
+                    "type": "hand_action_limit_reached",
+                    "hand": int(snapshot.get("hand") or self.hand_num),
+                    "limit": NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND,
+                    "actions_observed": self._hand_action_requests,
+                }
+                self.events.append(limit_event)
+                if self.event_sink is not None:
+                    result = self.event_sink(dict(limit_event))
+                    if asyncio.iscoroutine(result):
+                        await result
+                raise NationalHandActionLimitExceeded(
+                    "national_20000_chip_hand_action_limit_exceeded:"
+                    f"hand={limit_event['hand']}:"
+                    f"limit={NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND}"
+                )
         self.events.append(snapshot)
         if self.event_sink is not None:
             result = self.event_sink(snapshot)

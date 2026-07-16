@@ -60,7 +60,7 @@ on every action is a throughput defect.
 
 ## Decision Context And Anytime Contract
 
-Generated runtime v9 publishes one schema-versioned authoritative
+Generated runtime v10 publishes one schema-versioned authoritative
 `decision_context`:
 
 - `decision_context.hand`, `.betting`, `.history`, and `.line` are built by the
@@ -69,6 +69,11 @@ Generated runtime v9 publishes one schema-versioned authoritative
   preflop aggressor and spot, semantic checked-through street summaries,
   `can_donk`, `can_delayed_probe`, SPR, pot odds, and legal intent bounds.
   Candidate modules do not reconstruct these facts from another request model.
+  `hand.match_control` publishes the exact current exposure plus future
+  alternating blind-loss bound and marks `fold_locks_win` only for a strict
+  match lead. `betting.call_closes_allin_runout` is the authoritative closure
+  signal used to suppress inapplicable future-street realization discounts.
+  Both consumers fail neutral on absent, malformed, or contradictory fields.
 - `decision_context.opponent` is connection-level bounded memory. It records relayed and
   boundary-inferred terminal responses, per-street raise/all-in responses,
   real river overcall samples, and a prior-smoothed `showdown_range`. The latter

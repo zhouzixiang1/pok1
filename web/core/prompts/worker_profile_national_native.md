@@ -90,9 +90,10 @@ socket reducer. Consume its declared sections and names directly:
 
 - `cards.encoding`, `cards.hole`, and `cards.board`;
 - `hand.number`, `total_hands`, `remaining_including_current`, `street`,
-  `street_index`, `position`, and `acts_first_postflop`;
+  `street_index`, `position`, `acts_first_postflop`, and the system-derived
+  `match_control` proof;
 - `betting.pot`, both stacks and street bets, `effective_stack`, `to_call`,
-  `spr`, and `pot_odds`;
+  `spr`, `pot_odds`, and `call_closes_allin_runout`;
 - bounded semantic `history.actions` and `history.truncated_count`;
 - `line.preflop_aggressor`, `preflop_spot`, `street_open`,
   `responding_to_check`, `can_donk`, `can_delayed_probe`, and current/previous
@@ -105,6 +106,17 @@ socket reducer. Consume its declared sections and names directly:
 
 Do not reconstruct these values from raw TCP text, rescan full-match history,
 or infer omitted actions in policy code.
+
+Preserve the checked-in strict baseline unless the compiled Worker contract
+explicitly selects one mechanism and supplies a causal replacement: calibrated
+system 169-class preflop equity; `preflop_spot`-specific raise-to-total sizing;
+exact-stack `allin`; strict lock-win folding only from a complete consistent
+`hand.match_control`; flop/turn position realization only for nonclosing calls;
+and opponent current-action range tilt computed on the current board rather
+than a sampled runout. The boolean
+`betting.call_closes_allin_runout` overrides action-text guesses. Missing,
+malformed, or contradictory control fields must produce the neutral behavior,
+not a reconstructed compatibility path.
 </policy_abi>
 
 <runtime_architecture>
@@ -115,7 +127,15 @@ or infer omitted actions in policy code.
 - The socket owner has an immediately available typed fallback: fold while
   facing a positive amount, otherwise pass. Formal timing uses a 55 s hard
   deadline and 54 s refinement budget; local native strength uses a 2.0 s
-  action / 1.8 s refinement envelope and 420 s match timeout.
+  action / 1.8 s refinement envelope. The system derives each complete
+  70-hand native match liveness identity from that envelope and the active
+  validator's tight 20,000-chip 34-request hand bound. The generic 100-request
+  street guard is a separate system safety backstop. `NativeMatchTimingPlan`,
+  its digest, the engine-only progress heartbeat, and the one bounded
+  orchestrator extension are system infrastructure, never strategy knobs. A
+  cap hit or whole-match timeout is fail-closed evidence, never a normal street
+  closure or a candidate-controlled retry. Candidate policy must not assume,
+  reduce, bypass, or claim authority over a fixed match timer.
 - Candidate imports and decisions may not perform network access, external
   process execution, candidate-owned file I/O, unbounded allocation, or
   unbounded simulation. Expensive loops need a hard cap and a deadline check.
@@ -138,6 +158,13 @@ or infer omitted actions in policy code.
   `decision_context.line.previous_street.checked_through`,
   `opponent_checked_back`, and `decision_context.line.can_delayed_probe`;
   never look for an official-invalid postflop `check/check`.
+- Structural-air line bluffs must remain bounded and non-fixed. Prove two
+  pinned no-hole-draw identities on the same real line and identical stable
+  non-card context after removing only the two absolute monotonic deadline
+  fields: one socket-valid raise, one passive `check`, and a matched ablation
+  of only the enabling line predicate/opportunity tag. `allin` remains
+  aggressive and cannot serve as the passive identity. A 100%
+  raise-on-line branch fails quality even if its first example is reachable.
 - A staged-compute primary must show at least eight trusted refinement steps,
   at least 5 ms measured long-tier work, and a predeclared socket-validated intent
   difference or true equal finite exhaustion. Candidate-reported confidence or

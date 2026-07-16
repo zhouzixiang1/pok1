@@ -67,6 +67,23 @@ POLICY_VERSION_AUTHORITY = {
     "first_strict_version": 143,
 }
 
+# Pinned metadata only: production never resolves, imports, executes, or reads
+# this external path.  The inspected file informed a clean-room strategy delta
+# while all bytes, runtime, history and strength authority remain in this epoch.
+_BLUEPRINT_PROVENANCE = {
+    "schema_version": 1,
+    "kind": "clean-room-lll-informed-strict-v143-bootstrap",
+    "source_label": "lll/lll/bot/国赛平台代码.py",
+    "source_sha256": (
+        "a7aef0b3b8b1a0096164631e87f9f1dd0c57b1a95c2738762c9f6301bc434dfb"
+    ),
+    "semantic_reference_only": True,
+    "source_bytes_inherited": False,
+    "strength_evidence_inherited": False,
+    "runtime_imported": False,
+    "history_injected": False,
+}
+
 
 class SystemStrictBootstrapError(RuntimeError):
     """A checked-in bootstrap byte or live authority failed closed."""
@@ -576,6 +593,7 @@ def build_fresh_bootstrap_receipt(
     """Bind the empty active pool and numeric namespace floor, never old bytes."""
 
     from bot_namespace import EVALUATION_EPOCH, FIRST_STRICT_POLICY_VERSION
+    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
 
     active = sorted(map(str, active_bots))
     if active:
@@ -772,10 +790,11 @@ def validate_blueprint_package(
         return list(exc.errors)
     errors: list[str] = []
     from bot_namespace import EVALUATION_EPOCH, FIRST_STRICT_POLICY_VERSION
+    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
     from runtime_architecture_policy import OFFICIAL_FULL_POLICY_ID, OFFICIAL_ORACLE_DOC_DIGESTS
 
     expected_scalars = {
-        "schema_version": 2,
+        "schema_version": 3,
         "bundle_id": "national-tcp-policy-bootstrap-v1",
         "mode": "fresh_national_policy_bootstrap",
         "executor": EXECUTOR_ID,
@@ -792,6 +811,8 @@ def validate_blueprint_package(
         errors.append("system_bootstrap_official_oracle_set_mismatch")
     if set(manifest.get("allowed_falsifiers") or []) != _ALLOWED_FALSIFIERS:
         errors.append("system_bootstrap_allowed_falsifiers_mismatch")
+    if manifest.get("provenance") != _BLUEPRINT_PROVENANCE:
+        errors.append("system_bootstrap_provenance_contract_mismatch")
 
     actual_nodes = {
         path.relative_to(BLUEPRINT_DIR).as_posix(): path
@@ -826,7 +847,7 @@ def validate_blueprint_package(
     expected_runtime = {
         "national_bot_sha256": _sha256_bytes(prepared["national_bot.py"]),
         "precompute_sha256": _sha256_bytes(prepared["precompute.py"]),
-        "decision_runtime_version": 9,
+        "decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
         "stream_decoder_version": 2,
     }
     if manifest.get("system_runtime") != expected_runtime:

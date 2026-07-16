@@ -12,6 +12,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any
 
 from national_capability_contract import (
@@ -427,7 +428,23 @@ def _runtime_probe_check(
     }
 
 
-def _causal_wire_counterfactual_passed(value: Any) -> bool:
+def _canonical_official_wire(value: Any) -> bool:
+    """Accept only delimiter-free canonical actions emitted by the runtime."""
+
+    return bool(
+        isinstance(value, str)
+        and (
+            value in {"fold", "call", "check", "allin"}
+            or re.fullmatch(r"raise [0-9]+", value) is not None
+        )
+    )
+
+
+def _causal_wire_counterfactual_passed(
+    value: Any,
+    *,
+    expected_negative_control_kind: str,
+) -> bool:
     if not isinstance(value, dict):
         return False
     left_wire = value.get("left_wire")
@@ -435,22 +452,117 @@ def _causal_wire_counterfactual_passed(value: Any) -> bool:
     negative_left_wire = value.get("negative_left_wire")
     negative_right_wire = value.get("negative_right_wire")
     positive_wire_effect = bool(
-        left_wire
-        and right_wire
+        _canonical_official_wire(left_wire)
+        and _canonical_official_wire(right_wire)
         and left_wire != right_wire
     )
     negative_control_stable = bool(
-        negative_left_wire
-        and negative_right_wire
+        _canonical_official_wire(negative_left_wire)
+        and _canonical_official_wire(negative_right_wire)
         and negative_left_wire == negative_right_wire
     )
     return bool(
         value.get("causal_passed") is True
         and value.get("positive_wire_effect") is True
         and value.get("negative_control_stable") is True
+        and value.get("negative_control_kind")
+        == expected_negative_control_kind
         and value.get("socket_validated") is True
         and positive_wire_effect
         and negative_control_stable
+    )
+
+
+def _causal_line_counterfactual_passed(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    positive_wire = value.get("positive_wire")
+    negative_wire = value.get("negative_wire")
+    matched_wire = value.get("matched_control_wire")
+    mixed_wire = value.get("mixed_identity_wire")
+    positive_digest = value.get("positive_without_ablation_digest")
+    matched_digest = value.get("matched_without_ablation_digest")
+    digests_exact = bool(
+        isinstance(positive_digest, str)
+        and isinstance(matched_digest, str)
+        and len(positive_digest) == len(matched_digest) == 64
+        and all(character in "0123456789abcdef" for character in positive_digest)
+        and all(character in "0123456789abcdef" for character in matched_digest)
+        and positive_digest == matched_digest
+    )
+    producer_reachable = bool(
+        value.get("positive") is True
+        and value.get("negative") is False
+        and value.get("mixed_identity") is True
+    )
+    positive_cards_digest = value.get("positive_without_cards_digest")
+    mixed_cards_digest = value.get("mixed_without_cards_digest")
+    mixing_context_exact = bool(
+        isinstance(positive_cards_digest, str)
+        and isinstance(mixed_cards_digest, str)
+        and len(positive_cards_digest) == len(mixed_cards_digest) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in positive_cards_digest
+        )
+        and all(
+            character in "0123456789abcdef"
+            for character in mixed_cards_digest
+        )
+        and positive_cards_digest == mixed_cards_digest
+    )
+    bounded_mixing = bool(
+        isinstance(positive_wire, str)
+        and re.fullmatch(r"raise [0-9]+", positive_wire) is not None
+        and mixed_wire == "check"
+    )
+    flag = value.get("flag")
+    opportunity_tag = {
+        "can_donk": "donk_opportunity",
+        "can_delayed_probe": "delayed_probe_opportunity",
+    }.get(flag)
+    ablation_paths_exact = bool(
+        opportunity_tag
+        and value.get("ablation_paths")
+        == [f"line.{flag}", f"line.line_tags:{opportunity_tag}"]
+    )
+    normalization_paths_exact = bool(
+        value.get("stable_context_normalization_paths")
+        == [
+            "deadline.hard_monotonic",
+            "deadline.refinement_monotonic",
+        ]
+        and value.get("mixing_comparison_ignored_paths") == ["cards"]
+    )
+    observed_effect = bool(
+        positive_wire and matched_wire and positive_wire != matched_wire
+    )
+    return bool(
+        value.get("ok") is True
+        and producer_reachable
+        and digests_exact
+        and mixing_context_exact
+        and bounded_mixing
+        and ablation_paths_exact
+        and normalization_paths_exact
+        and value.get("mixing_class") == "structural_air_no_hole_draw"
+        and value.get("producer_reachable") is True
+        and value.get("context_ablation_exact") is True
+        and value.get("mixing_context_exact") is True
+        and value.get("bounded_mixing") is True
+        and value.get("consumer_wire_effect") is True
+        and value.get("causal_passed") is True
+        and value.get("socket_validated") is True
+        and all(
+            _canonical_official_wire(wire)
+            for wire in (
+                positive_wire,
+                negative_wire,
+                matched_wire,
+                mixed_wire,
+            )
+        )
+        and observed_effect
     )
 
 
@@ -481,23 +593,22 @@ def _dynamic_probe_states(probe: dict[str, Any]) -> dict[str, bool]:
         # precompute variant, so this claim stays fail-closed when selected.
         "precompute_runtime_influence": False,
         "incremental_opponent_model": _causal_wire_counterfactual_passed(
-            counterfactuals.get("action_profile")
+            counterfactuals.get("action_profile"),
+            expected_negative_control_kind="authority_weight_removed",
         ),
         "terminal_response_adaptation": _causal_wire_counterfactual_passed(
-            counterfactuals.get("terminal_response")
+            counterfactuals.get("terminal_response"),
+            expected_negative_control_kind="authority_weight_removed",
         ),
         "showdown_range_adaptation": _causal_wire_counterfactual_passed(
-            counterfactuals.get("showdown_range")
+            counterfactuals.get("showdown_range"),
+            expected_negative_control_kind="selection_bias_guard_removed",
         ),
-        "donk_line_reachability": bool(
-            (lines.get("donk") or {}).get("ok")
-            and (lines.get("donk") or {}).get("policy_changed")
-            and (lines.get("donk") or {}).get("socket_validated")
+        "donk_line_reachability": _causal_line_counterfactual_passed(
+            lines.get("donk")
         ),
-        "delayed_probe_line_reachability": bool(
-            (lines.get("delayed_probe") or {}).get("ok")
-            and (lines.get("delayed_probe") or {}).get("policy_changed")
-            and (lines.get("delayed_probe") or {}).get("socket_validated")
+        "delayed_probe_line_reachability": _causal_line_counterfactual_passed(
+            lines.get("delayed_probe")
         ),
     }
 

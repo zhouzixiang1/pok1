@@ -27,7 +27,7 @@ import time
 from typing import Any, Iterator
 
 
-BUNDLE_SCHEMA_VERSION = 2
+BUNDLE_SCHEMA_VERSION = 3
 MANIFEST_FILENAME = "evaluation_cycle_manifest.json"
 SELECTION_FILENAME = "selection_snapshot.json"
 CYCLES_DIRNAME = "evaluation_cycles"
@@ -358,6 +358,7 @@ def _append_log_semantic_issues(
     raw_append_logs: dict[str, bytes],
     *,
     evaluation_identity_digest: str,
+    replay_dir: Path,
 ) -> list[str]:
     """Reject cross-epoch history before an immutable cycle can bind it."""
 
@@ -393,6 +394,7 @@ def _append_log_semantic_issues(
                     expected_evaluation_identity_digest=(
                         evaluation_identity_digest
                     ),
+                    replay_dir=replay_dir,
                 ) is None
             ):
                 issues.append(
@@ -523,11 +525,39 @@ def publish_evaluation_cycle_manifest(
     append_semantic_issues = _append_log_semantic_issues(
         raw_append_logs,
         evaluation_identity_digest=identity,
+        replay_dir=root / "match_replay",
     )
     if append_semantic_issues:
         raise ValueError(
             "evaluation append-log semantic mismatch: "
             + ", ".join(append_semantic_issues)
+        )
+    # `head_to_head.json` is a cache, never independent strength authority.
+    # Exact active-pool W/L/D must rederive from the SHA-bound raw replay rows
+    # that this same cycle is about to freeze; equal coverage alone is not
+    # enough to detect a tampered stored matrix.
+    from rating_snapshot import choose_h2h_source
+
+    h2h_selection = choose_h2h_source(
+        normalized_active,
+        parsed_files["h2h"],
+        root / APPEND_LOGS["match_history"],
+        expected_evaluation_identity_digest=identity,
+    )
+    if h2h_selection.get("integrity_ok") is not True:
+        raise ValueError(
+            "evaluation H2H/raw replay mismatch: "
+            + ", ".join(
+                str(issue)
+                for issue in (h2h_selection.get("integrity_issues") or [])[:8]
+            )
+        )
+    if h2h_selection.get("stored_h2h") != h2h_selection.get("h2h"):
+        # Empty/missing cache is repairable *before* publication, but a cycle
+        # must never freeze an empty or stale H2H alias while its own verified
+        # raw history already proves a different active-pool projection.
+        raise ValueError(
+            "evaluation H2H cache was not rebuilt from verified raw match history"
         )
     descriptor = {
         "schema_version": BUNDLE_SCHEMA_VERSION,
@@ -805,6 +835,40 @@ def _load_published_evaluation_bundle_locked(
                 active_bots=normalized_active,
             )
         )
+    # A valid immutable file digest proves only that the cycle copied its own
+    # bytes consistently.  Its active H2H remains strength authority only
+    # while the copied history still resolves to the exact SHA-bound raw
+    # replays retained under the live results root.
+    if (
+        current_identity is not None
+        and cycle_directory is not None
+        and len(parsed_files) == len(BUNDLE_FILES)
+        and "match_history" in raw_append_logs
+    ):
+        append_issues = _append_log_semantic_issues(
+            raw_append_logs,
+            evaluation_identity_digest=current_identity,
+            replay_dir=root / "match_replay",
+        )
+        issues.extend(
+            f"cycle_{issue}" for issue in append_issues
+        )
+        try:
+            from rating_snapshot import choose_h2h_source
+
+            h2h_selection = choose_h2h_source(
+                normalized_active,
+                parsed_files["h2h"],
+                cycle_directory / APPEND_LOGS["match_history"],
+                expected_evaluation_identity_digest=current_identity,
+                replay_dir=root / "match_replay",
+            )
+            if h2h_selection.get("integrity_ok") is not True:
+                issues.append("cycle_h2h_raw_history_integrity_failure")
+            elif h2h_selection.get("stored_h2h") != h2h_selection.get("h2h"):
+                issues.append("cycle_h2h_cache_not_exact_raw_history_projection")
+        except Exception:
+            issues.append("cycle_h2h_raw_history_validation_failed")
 
     if issues:
         return {

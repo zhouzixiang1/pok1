@@ -1,4 +1,5 @@
 import asyncio
+import json
 import time
 
 import pytest
@@ -359,6 +360,59 @@ async def test_cycle_timeout_cancels_owner_and_confirms_exact_process(
     assert query.running is False
     assert query.closed is True
     llm_query._assert_no_unresolved_provider_attempts()
+
+
+@pytest.mark.asyncio
+async def test_stream_cancellation_revokes_native_dispatch_before_task_exit(
+    isolated_cycle,
+    monkeypatch,
+):
+    """A detached native callback cannot retain a cancelled stream's nonce."""
+
+    import orchestrator
+    import pipeline_state
+
+    nonce = "c" * 32
+    monkeypatch.setenv("POK_ORCH_CYCLE_CANCEL_GRACE", "0.01")
+    heartbeat = isolated_cycle / "cancel-native-heartbeat.json"
+    heartbeat.write_text(
+        json.dumps({
+            "native_match_progress": {
+                "provider_dispatch_nonce": nonce,
+            },
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        pipeline_state,
+        "PIPELINE_RUNTIME_HEARTBEAT_FILE",
+        heartbeat,
+    )
+    token = pipeline_state.activate_native_match_dispatch_nonce(nonce)
+    pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce] = {"sentinel": True}
+    parked = asyncio.Event()
+
+    async def owner():
+        await parked.wait()
+
+    task = asyncio.create_task(owner())
+    try:
+        await asyncio.sleep(0)
+        assert pipeline_state.native_match_dispatch_nonce_is_active(nonce)
+        assert await orchestrator._cancel_orchestrator_stream_task_bounded(
+            task,
+            attempt_ref=[{"attempt_id": nonce}],
+            gen_ref=[None],
+            reason="test_native_dispatch_revocation",
+            log_file_path=isolated_cycle / "native-dispatch-revocation.log",
+        ) is None
+        assert task.done()
+        assert not pipeline_state.native_match_dispatch_nonce_is_active(nonce)
+        assert nonce not in pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS
+        assert not heartbeat.exists()
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
 
 
 @pytest.mark.asyncio

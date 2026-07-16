@@ -10,10 +10,12 @@ Usage:
 
 import os
 import sys
+import hashlib
 import json
 import math
 import random
 import signal
+import stat
 import argparse
 import asyncio
 import time
@@ -496,46 +498,73 @@ def save_ratings(
         d = p.to_dict()
         d["last_period"] = datetime.now().isoformat(timespec="seconds")
         data[name] = d
-    write_locked_json(RATINGS_FILE, data)
 
+    h2h_for_history = None
+    bot_stats_for_history = None
+    strength_rows_for_history = None
     if save_num is not None:
-        history_file = RESULTS_DIR / "rating_history.jsonl"
-        # Compute H2H avg win rates for history snapshot
-        h2h = dict(h2h_snapshot) if h2h_snapshot is not None else load_h2h()
-        try:
-            from rating_snapshot import choose_h2h_source
-            h2h = choose_h2h_source(
-                list(ratings.keys()),
-                h2h,
-                MATCH_HISTORY_FILE,
-                expected_evaluation_identity_digest=evaluation_identity_digest,
-            )["h2h"]
-        except Exception:
-            pass
-        bot_stats = (
+        # Validate the raw-history projection before writing either ratings or
+        # rating-history.  A same-coverage but altered cached H2H matrix must
+        # halt the period, not leak into a partially updated strength view.
+        from rating_snapshot import choose_h2h_source
+
+        h2h_input = (
+            dict(h2h_snapshot)
+            if h2h_snapshot is not None
+            else load_h2h()
+        )
+        h2h_selection = choose_h2h_source(
+            list(ratings.keys()),
+            h2h_input,
+            MATCH_HISTORY_FILE,
+            expected_evaluation_identity_digest=evaluation_identity_digest,
+            replay_dir=REPLAY_DIR,
+        )
+        if h2h_selection.get("integrity_ok") is not True:
+            raise RuntimeError(
+                "rating history H2H integrity invalid:"
+                + ";".join(
+                    str(issue)
+                    for issue in (h2h_selection.get("integrity_issues") or [])[:8]
+                )
+            )
+        h2h_for_history = h2h_selection["h2h"]
+        bot_stats_for_history = (
             dict(bot_stats_snapshot)
             if bot_stats_snapshot is not None
             else load_bot_stats()
         )
-        from tool_helpers import compute_h2h_avg_winrate
         try:
             from rating_snapshot import build_strength_rows
-            strength_rows = {
+
+            strength_rows_for_history = {
                 row["name"]: row
                 for row in build_strength_rows(
                     ratings,
-                    bot_stats,
-                    h2h,
+                    bot_stats_for_history,
+                    h2h_for_history,
                     active_bots=list(ratings.keys()),
                     match_history_path=MATCH_HISTORY_FILE,
-                    h2h_is_authoritative=True,
+                    h2h_is_authoritative=False,
                     expected_evaluation_identity_digest=(
                         evaluation_identity_digest
                     ),
+                    replay_dir=REPLAY_DIR,
                 )
             }
-        except Exception:
-            strength_rows = {}
+        except Exception as exc:
+            raise RuntimeError(
+                "rating history strength projection failed closed"
+            ) from exc
+
+    write_locked_json(RATINGS_FILE, data)
+
+    if save_num is not None:
+        history_file = RESULTS_DIR / "rating_history.jsonl"
+        h2h = h2h_for_history or {}
+        bot_stats = bot_stats_for_history or {}
+        from tool_helpers import compute_h2h_avg_winrate
+        strength_rows = strength_rows_for_history or {}
         win_rates = {}
         for name in ratings:
             wr = compute_h2h_avg_winrate(name, h2h)
@@ -806,6 +835,7 @@ def save_match_replay(
     net_chips_samples=None,
     strength_sample_unit=None,
     expected_evaluation_identity_digest=None,
+    expected_native_match_timing_plan=None,
     stage_only=False,
 ):
     """Atomically admit replay/history against an evaluator identity epoch."""
@@ -822,8 +852,25 @@ def save_match_replay(
             net_chips_samples,
             strength_sample_unit,
             expected_evaluation_identity_digest,
+            expected_native_match_timing_plan,
             stage_only,
         )
+
+
+def _ensure_safe_replay_directory(path: Path) -> Path:
+    """Create one replay directory without accepting a symlink boundary."""
+
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        info = path.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"replay directory is unavailable: {path}") from exc
+    if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"replay directory is unsafe: {path}")
+    try:
+        return path.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(f"replay directory cannot be resolved: {path}") from exc
 
 
 def _save_match_replay_under_cycle_lock(
@@ -836,10 +883,30 @@ def _save_match_replay_under_cycle_lock(
     net_chips_samples=None,
     strength_sample_unit=None,
     expected_evaluation_identity_digest=None,
+    expected_native_match_timing_plan=None,
     stage_only=False,
 ):
     from bot_namespace import EVALUATION_EPOCH
     from evaluation_data_identity import current_evaluation_digest
+
+    # This API is the only producer for rating/H2H history.  Keeping a
+    # diagnostic or partial receipt in the same append-only namespace would
+    # invite a later caller to mistake it for strength evidence, so reject it
+    # before creating either a pending file or a history row.
+    if strength_sample_unit != "70_hand_match":
+        raise ValueError(
+            "rating replay admission requires an exact 70_hand_match strength sample"
+        )
+    if (
+        not isinstance(a, str)
+        or not isinstance(b, str)
+        or a == b
+        or any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in (wins_a, wins_b, draws)
+        )
+    ):
+        raise ValueError("rating replay strength header is invalid")
 
     evaluation_identity_digest = current_evaluation_digest(RESULTS_DIR)
     if (
@@ -849,45 +916,71 @@ def _save_match_replay_under_cycle_lock(
         raise RuntimeError(
             "evaluation identity changed while match was in flight; result is not admitted"
         )
-    os.makedirs(REPLAY_DIR, exist_ok=True)
+    replay_root = _ensure_safe_replay_directory(REPLAY_DIR)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     fname = f"{timestamp}_{a}_vs_{b}.json"
-    net_chips_values = [int(value) for value in (net_chips_samples or [])]
-    strength_summary = None
-    if strength_sample_unit == "70_hand_match":
-        from strength_order import summarize_70_hand_net_chips
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (net_chips_samples or [])
+    ):
+        raise ValueError("70-hand strength replay net-chip samples must be integers")
+    net_chips_values = list(net_chips_samples or [])
+    from strength_order import summarize_70_hand_net_chips
+    from national_native import (
+        _artifact_execution_is_valid,
+        require_native_match_timing_plan,
+        validate_native_match_timing_evidence,
+    )
+    from bot_artifact import hash_path
 
-        if not net_chips_values:
-            raise ValueError("70-hand strength replay must contain at least one sample")
-        if len(replay_data or []) != len(net_chips_values):
-            raise ValueError("70-hand strength replay rows disagree with sample count")
-        for index, replay in enumerate(replay_data or []):
-            if not isinstance(replay, dict):
-                raise ValueError(f"70-hand strength replay {index} is not an object")
-            if int(replay.get("hands_played", 0) or 0) != 70:
-                raise ValueError(f"70-hand strength replay {index} is incomplete")
-            if replay.get("passed_compliance") is not True:
-                raise ValueError(f"70-hand strength replay {index} failed compliance")
-            from bot_artifact import hash_path
-            from national_native import _artifact_execution_is_valid
+    if expected_native_match_timing_plan is None:
+        raise ValueError("70-hand strength replay timing plan is missing")
+    native_timing_plan = require_native_match_timing_plan(
+        expected_native_match_timing_plan,
+        hands=70,
+        requested_timeout_sec=None,
+    )
+    expected_artifacts = None
 
-            if not _artifact_execution_is_valid(
-                replay.get("artifact_execution"),
-                {
-                    a: hash_path(BOTS_DIR / a),
-                    b: hash_path(BOTS_DIR / b),
-                },
-            ):
-                raise ValueError(
-                    f"70-hand strength replay {index} has invalid artifact execution identity"
-                )
-        strength_summary = summarize_70_hand_net_chips(net_chips_values)
-        if (
-            strength_summary["positive_matches"] != int(wins_a)
-            or strength_summary["negative_matches"] != int(wins_b)
-            or strength_summary["zero_matches"] != int(draws)
+    if not net_chips_values:
+        raise ValueError("70-hand strength replay must contain at least one sample")
+    if not isinstance(replay_data, list) or len(replay_data) != len(net_chips_values):
+        raise ValueError("70-hand strength replay rows disagree with sample count")
+    for index, replay in enumerate(replay_data):
+        if not isinstance(replay, dict):
+            raise ValueError(f"70-hand strength replay {index} is not an object")
+        if int(replay.get("hands_played", 0) or 0) != 70:
+            raise ValueError(f"70-hand strength replay {index} is incomplete")
+        if replay.get("passed_compliance") is not True:
+            raise ValueError(f"70-hand strength replay {index} failed compliance")
+        timing_issues = validate_native_match_timing_evidence(
+            replay,
+            timing_plan=native_timing_plan,
+        )
+        if timing_issues:
+            raise ValueError(
+                f"70-hand strength replay {index} timing evidence invalid:"
+                + ";".join(timing_issues)
+            )
+        if expected_artifacts is None:
+            expected_artifacts = {
+                a: hash_path(BOTS_DIR / a),
+                b: hash_path(BOTS_DIR / b),
+            }
+        if not _artifact_execution_is_valid(
+            replay.get("artifact_execution"),
+            expected_artifacts,
         ):
-            raise ValueError("70-hand net-chip samples disagree with recorded match outcomes")
+            raise ValueError(
+                f"70-hand strength replay {index} has invalid artifact execution identity"
+            )
+    strength_summary = summarize_70_hand_net_chips(net_chips_values)
+    if (
+        strength_summary["positive_matches"] != int(wins_a)
+        or strength_summary["negative_matches"] != int(wins_b)
+        or strength_summary["zero_matches"] != int(draws)
+    ):
+        raise ValueError("70-hand net-chip samples disagree with recorded match outcomes")
     match_data = {
         "replay_schema_version": 1,
         "id": fname,
@@ -908,20 +1001,52 @@ def _save_match_replay_under_cycle_lock(
         "strength_sample_count": strength_summary.get("samples", 0) if strength_summary else 0,
         "net_chips_bot0": net_chips_values,
         "strength_order": strength_summary,
+        "native_match_timing_plan": (
+            native_timing_plan.snapshot() if native_timing_plan is not None else None
+        ),
+        "native_match_timing_plan_digest": (
+            native_timing_plan.digest() if native_timing_plan is not None else None
+        ),
         "games": replay_data,
     }
 
-    replay_parent = REPLAY_DIR / ".pending" if stage_only else REPLAY_DIR
-    replay_parent.mkdir(parents=True, exist_ok=True)
+    # Stage one is a complete raw-envelope validation, not merely a claim that
+    # a worker returned 70.  This checks all 70 settlement/hand records,
+    # current identity, exact timing plan, sample outcomes, and the strict
+    # execution identity grammar before bytes can enter `.pending`.
+    from replay_analysis import validate_native_replay
+
+    staged_validation = validate_native_replay(
+        match_data,
+        expected_evaluation_identity_digest=evaluation_identity_digest,
+        expected_replay_id=fname,
+    )
+    if not staged_validation.accepted:
+        raise ValueError(
+            "70-hand strength replay strict validation failed:"
+            + str(staged_validation.reason)
+        )
+    if dict(staged_validation.artifact_hashes) != expected_artifacts:
+        raise ValueError(
+            "70-hand strength replay artifact identity does not match current bot bytes"
+        )
+
+    replay_parent = replay_root / ".pending" if stage_only else replay_root
+    replay_parent = _ensure_safe_replay_directory(replay_parent)
+    if replay_parent != replay_root and replay_parent.parent != replay_root:
+        raise RuntimeError("staged replay directory escapes replay root")
     replay_path = replay_parent / fname
     try:
         replay_bytes = json.dumps(match_data, ensure_ascii=False).encode("utf-8")
-        with open(replay_path, "wb") as f:
+        # Timestamp collisions are not a reason to overwrite an existing
+        # evidence file (which could be a hostile symlink or stale receipt).
+        with open(replay_path, "xb") as f:
             f.write(replay_bytes)
             f.flush()
             os.fsync(f.fileno())
     except OSError:
         raise
+    replay_sha256 = hashlib.sha256(replay_bytes).hexdigest()
 
     summary = {
         "id": fname,
@@ -942,16 +1067,24 @@ def _save_match_replay_under_cycle_lock(
         "strength_sample_count": strength_summary.get("samples", 0) if strength_summary else 0,
         "net_chips_bot0": net_chips_values,
         "strength_order": strength_summary,
+        "native_match_timing_plan": (
+            native_timing_plan.snapshot() if native_timing_plan is not None else None
+        ),
+        "native_match_timing_plan_digest": (
+            native_timing_plan.digest() if native_timing_plan is not None else None
+        ),
+        # The append-only history is only a projection.  It is never enough on
+        # its own to influence strength: consumers must reopen these exact raw
+        # bytes and validate the hash plus native replay contract.
+        "replay_sha256": replay_sha256,
     }
     if stage_only:
-        import hashlib
-
         return {
             "pending_path": str(replay_path),
             "filename": fname,
             "summary": summary,
             "evaluation_identity_digest": evaluation_identity_digest,
-            "replay_sha256": hashlib.sha256(replay_bytes).hexdigest(),
+            "replay_sha256": replay_sha256,
             "replay_bytes": len(replay_bytes),
         }
 
@@ -970,12 +1103,258 @@ def _save_match_replay_under_cycle_lock(
 
 
 def cleanup_old_replays():
-    if not REPLAY_DIR.exists():
+    """Prune only replays that no retained strength/evidence row can cite.
+
+    A count cap is an operational preference, never permission to delete raw
+    bytes behind an admitted match-history row or a retained immutable cycle.
+    When all old files remain evidence-referenced we keep them and let normal
+    cycle/history retention decide when they become removable.
+    """
+
+    try:
+        replay_root = _ensure_safe_replay_directory(REPLAY_DIR)
+    except RuntimeError:
         return
+    referenced: set[str] = set()
+
+    def safe_replay_id(value: object) -> str | None:
+        if (
+            not isinstance(value, str)
+            or not value.endswith(".json")
+            or not value
+            or "/" in value
+            or "\\" in value
+            or Path(value).name != value
+            or value.startswith(".")
+        ):
+            return None
+        return value
+
+    def collect_references(path: Path):
+        try:
+            info = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(info.st_mode):
+                return
+            from evolution_infra import locked_file
+
+            with locked_file(path, "r", encoding="utf-8") as reader:
+                lines = list(reader)
+        except (FileNotFoundError, OSError, UnicodeDecodeError):
+            return
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except (TypeError, ValueError):
+                continue
+            replay_id = safe_replay_id(row.get("id") if isinstance(row, dict) else None)
+            if replay_id is not None:
+                referenced.add(replay_id)
+
+    def regular_bytes(path: Path) -> bytes | None:
+        """Read a stable regular file without following a snapshot symlink."""
+
+        try:
+            before = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(before.st_mode):
+                return None
+            payload = path.read_bytes()
+            after = path.lstat()
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+                before.st_mtime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                return None
+            return payload
+        except OSError:
+            return None
+
+    def collect_verified_snapshot_references() -> None:
+        """Keep only references bound by a complete snapshot manifest.
+
+        Generation snapshots are immutable prompt evidence.  They are not
+        allowed to keep arbitrary names alive merely because a loose JSON file
+        says so; both the manifest and the two replay-reference payloads must
+        pass their own digest/size contracts first.
+        """
+
+        snapshots_root = Path(RESULTS_DIR)
+        try:
+            generations = list(snapshots_root.iterdir())
+        except OSError:
+            return
+        for generation in generations:
+            if (
+                generation.is_symlink()
+                or not generation.is_dir()
+                or not generation.name.startswith("v")
+                or not generation.name[1:].isdigit()
+            ):
+                continue
+            snapshot_dir = generation / "evidence_snapshot"
+            try:
+                snapshot_info = snapshot_dir.lstat()
+            except OSError:
+                continue
+            if snapshot_dir.is_symlink() or not stat.S_ISDIR(snapshot_info.st_mode):
+                continue
+            manifest_bytes = regular_bytes(snapshot_dir / "manifest.json")
+            if manifest_bytes is None:
+                continue
+            try:
+                manifest = json.loads(manifest_bytes.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(manifest, dict):
+                continue
+            claimed_digest = manifest.get("manifest_digest")
+            unsigned = {
+                key: value for key, value in manifest.items()
+                if key != "manifest_digest"
+            }
+            expected_digest = hashlib.sha256(
+                json.dumps(
+                    unsigned,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if claimed_digest != expected_digest:
+                continue
+            identity = manifest.get("evaluation_identity_digest")
+            if (
+                not isinstance(identity, str)
+                or len(identity) != 64
+                or any(ch not in "0123456789abcdef" for ch in identity)
+            ):
+                continue
+            contracts = manifest.get("files")
+            cycle = manifest.get("cycle")
+            if not isinstance(contracts, dict) or not isinstance(cycle, dict):
+                continue
+
+            try:
+                from evidence_snapshot import (
+                    SNAPSHOT_FILES,
+                    SNAPSHOT_SCHEMA_VERSION,
+                )
+            except Exception:
+                continue
+            if manifest.get("schema_version") != SNAPSHOT_SCHEMA_VERSION:
+                continue
+
+            parsed_payloads: dict[str, dict] = {}
+            valid = True
+            for role, filename in SNAPSHOT_FILES.items():
+                contract = contracts.get(role)
+                if not isinstance(contract, dict) or contract.get("filename") != filename:
+                    valid = False
+                    break
+                payload = regular_bytes(snapshot_dir / filename)
+                if payload is None:
+                    valid = False
+                    break
+                if (
+                    contract.get("sha256") != hashlib.sha256(payload).hexdigest()
+                    or contract.get("bytes") != len(payload)
+                ):
+                    valid = False
+                    break
+                try:
+                    parsed = json.loads(payload.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    valid = False
+                    break
+                if not isinstance(parsed, dict):
+                    valid = False
+                    break
+                parsed_payloads[role] = parsed
+            if not valid:
+                continue
+
+            history_index = parsed_payloads["match_history_index"]
+            spotlight = parsed_payloads["replay_spotlight"]
+            if (
+                history_index.get("evaluation_identity_digest") != identity
+                or spotlight.get("evaluation_identity_digest") != identity
+                or history_index.get("cycle_manifest_digest")
+                != cycle.get("manifest_digest")
+            ):
+                continue
+            replay_ids = history_index.get("replay_ids")
+            entries = history_index.get("entries")
+            source_replays = spotlight.get("source_replays")
+            citations = spotlight.get("citations")
+            if (
+                not isinstance(replay_ids, list)
+                or not isinstance(entries, list)
+                or not isinstance(source_replays, dict)
+                or not isinstance(citations, list)
+            ):
+                continue
+            if (
+                contracts["match_history_index"].get("entries") != len(entries)
+                or contracts["replay_spotlight"].get("entries") != len(citations)
+            ):
+                continue
+            safe_ids = [safe_replay_id(value) for value in replay_ids]
+            if any(value is None for value in safe_ids) or len(set(safe_ids)) != len(safe_ids):
+                continue
+            entry_ids = {
+                safe_replay_id(entry.get("id"))
+                for entry in entries
+                if isinstance(entry, dict)
+            }
+            if None in entry_ids or entry_ids != set(safe_ids):
+                continue
+            source_ids: set[str] = set()
+            for replay_id, source in source_replays.items():
+                safe_id = safe_replay_id(replay_id)
+                source_digest = source.get("sha256") if isinstance(source, dict) else None
+                if (
+                    safe_id is None
+                    or safe_id not in set(safe_ids)
+                    or not isinstance(source_digest, str)
+                    or len(source_digest) != 64
+                    or any(ch not in "0123456789abcdef" for ch in source_digest)
+                ):
+                    valid = False
+                    break
+                source_ids.add(safe_id)
+            if not valid:
+                continue
+            for citation in citations:
+                citation_id = safe_replay_id(
+                    citation.get("replay_file") if isinstance(citation, dict) else None
+                )
+                if citation_id is None or citation_id not in source_ids:
+                    valid = False
+                    break
+            if valid:
+                referenced.update(safe_ids)
+
+    collect_references(Path(MATCH_HISTORY_FILE))
+    try:
+        from evaluation_bundle import CYCLES_DIRNAME
+
+        cycles_root = Path(RESULTS_DIR) / CYCLES_DIRNAME
+        if cycles_root.is_dir() and not cycles_root.is_symlink():
+            for cycle in cycles_root.iterdir():
+                if cycle.is_dir() and not cycle.is_symlink():
+                    collect_references(cycle / "match_history.jsonl")
+    except OSError:
+        pass
+    collect_verified_snapshot_references()
     files = sorted(
         (
             path
-            for path in REPLAY_DIR.iterdir()
+            for path in replay_root.iterdir()
             if (
                 path.is_file()
                 and not path.is_symlink()
@@ -986,7 +1365,8 @@ def cleanup_old_replays():
         key=lambda f: f.name,
     )
     if len(files) > MAX_REPLAY_FILES:
-        for old_file in files[: len(files) - MAX_REPLAY_FILES]:
+        removable = [path for path in files if path.name not in referenced]
+        for old_file in removable[: max(0, len(files) - MAX_REPLAY_FILES)]:
             old_file.unlink()
 
 
@@ -1009,6 +1389,12 @@ def _rating_protocol_config(n_pairs=None):
         national_matches = max(national_matches, int(n_pairs))
     national_hands = max(1, min(70, national_hands))
     national_matches = max(1, min(MAX_NATIONAL_RATING_MATCHES, national_matches))
+    from national_native import build_native_match_timing_plan
+
+    native_match_timing_plan = build_native_match_timing_plan(
+        hands=national_hands,
+        requested_timeout_sec=None,
+    )
     config = {
         "profile_id": getattr(profile, "profile_id", "default"),
         "protocol": "national",
@@ -1016,6 +1402,8 @@ def _rating_protocol_config(n_pairs=None):
         "national_hands": national_hands,
         "national_matches": national_matches,
         "artifact_execution_mode": "direct_content_bound_policy_artifact",
+        "native_match_timing_plan": native_match_timing_plan.snapshot(),
+        "native_match_timing_plan_digest": native_match_timing_plan.digest(),
     }
     return config
 
@@ -1065,7 +1453,9 @@ def _run_national_rating_match(
     from bot_artifact import hash_path
     from national_native import (
         _artifact_execution_is_valid,
+        require_native_match_timing_plan,
         run_native_strength_pair,
+        validate_native_match_timing_evidence,
     )
     expected_artifacts = {
         bot_a_name: hash_path(Path(bot_a_path).parent),
@@ -1075,16 +1465,28 @@ def _run_national_rating_match(
     net_chips_list: list[int] = []
     replays: list[dict] = []
     issues: list[str] = []
+    rating_timing_plan = require_native_match_timing_plan(
+        config.get("native_match_timing_plan"),
+        hands=hands,
+        requested_timeout_sec=None,
+    )
+    if config.get("native_match_timing_plan_digest") != rating_timing_plan.digest():
+        raise ValueError("native rating timing plan digest mismatch")
 
     for repeat in range(matches):
         result = asyncio.run(run_native_strength_pair(
             bot_a_path,
             bot_b_path,
             hands,
+            timeout_sec=None,
+            timing_plan=rating_timing_plan,
         ))
         replay = dict(result)
         replay["rating_protocol"] = "national_native_tcp"
         replay["repeat"] = repeat + 1
+        replay["rating_liveness_budget"] = rating_timing_plan.liveness_budget_snapshot()
+        replay["rating_match_timing_plan"] = rating_timing_plan.snapshot()
+        replay["rating_match_timing_plan_digest"] = rating_timing_plan.digest()
         replays.append(replay)
         hands_played = int(result.get("hands_played", 0) or 0)
         if hands_played != hands:
@@ -1092,6 +1494,14 @@ def _run_national_rating_match(
         if result.get("passed_compliance") is not True:
             reported = [str(item) for item in (result.get("issues") or [])]
             issues.extend(reported or [f"repeat={repeat + 1}: compliance_failed"])
+        timing_issues = validate_native_match_timing_evidence(
+            result,
+            timing_plan=rating_timing_plan,
+        )
+        if timing_issues:
+            issues.extend(
+                f"repeat={repeat + 1}: {item}" for item in timing_issues
+            )
         if not _artifact_execution_is_valid(
             result.get("artifact_execution"), expected_artifacts
         ):
@@ -1137,6 +1547,7 @@ def _run_national_rating_match(
                 net_chips_list,
                 f"{hands}_hand_match",
                 expected_evaluation_identity_digest=expected_identity,
+                expected_native_match_timing_plan=rating_timing_plan.snapshot(),
                 stage_only=True,
             )
         except Exception as e:
@@ -1262,7 +1673,10 @@ def _discard_staged_match(result):
     try:
         admission = result[8] if len(result) > 8 else None
         path = Path((admission or {}).get("pending_path", ""))
-        pending_root = (REPLAY_DIR / ".pending").resolve()
+        replay_root = _ensure_safe_replay_directory(REPLAY_DIR)
+        pending_root = _ensure_safe_replay_directory(replay_root / ".pending")
+        if pending_root.parent != replay_root:
+            return
         if path.is_file() and not path.is_symlink() and path.resolve().parent == pending_root:
             path.unlink(missing_ok=True)
     except Exception:
@@ -1294,8 +1708,11 @@ def admit_internal_match_result(result, ratings, h2h, bot_stats, *, verbose=Fals
             raise RuntimeError(
                 "staged match identity no longer matches the daemon evaluation epoch"
             )
+        replay_root = _ensure_safe_replay_directory(REPLAY_DIR)
+        pending_root = _ensure_safe_replay_directory(replay_root / ".pending")
+        if pending_root.parent != replay_root:
+            raise RuntimeError("staged replay directory escapes replay root")
         pending = Path(str(admission.get("pending_path") or ""))
-        pending_root = (REPLAY_DIR / ".pending").resolve()
         if (
             pending.is_symlink()
             or not pending.is_file()
@@ -1317,6 +1734,79 @@ def admit_internal_match_result(result, ratings, h2h, bot_stats, *, verbose=Fals
             raise RuntimeError("staged replay evaluation epoch mismatch")
         if parsed.get("execution_mode") != "native_tcp":
             raise RuntimeError("staged replay execution mode mismatch")
+        # This is the sole mutation boundary for native rating/H2H.  A
+        # successful worker result is insufficient: only a complete strict
+        # 70-hand envelope with raw replay, artifact and timing proof may be
+        # admitted.  Diagnostic/non-strength staged receipts stay outside this
+        # API rather than becoming a back door into Glicko.
+        if (
+            parsed.get("strength_sample_unit") != "70_hand_match"
+            or int(parsed.get("hands_per_strength_sample", 0) or 0) != 70
+            or parsed.get("strength_admitted") is not True
+            or parsed.get("strength_complete") is not True
+            or parsed.get("strength_compliance_passed") is not True
+        ):
+            raise RuntimeError("staged match is not an admitted 70-hand strength sample")
+        try:
+            from bot_artifact import hash_path
+            from national_native import (
+                _artifact_execution_is_valid,
+                require_native_match_timing_plan,
+                validate_native_match_timing_evidence,
+            )
+            from replay_analysis import validate_native_replay
+
+            replay_validation = validate_native_replay(
+                parsed,
+                expected_evaluation_identity_digest=expected_identity,
+                expected_replay_id=str(admission.get("filename") or ""),
+            )
+            if not replay_validation.accepted:
+                raise RuntimeError(
+                    "staged replay strict validation failed:"
+                    + str(replay_validation.reason)
+                )
+            staged_timing_plan = require_native_match_timing_plan(
+                parsed.get("native_match_timing_plan"),
+                hands=70,
+                requested_timeout_sec=None,
+            )
+            if parsed.get("native_match_timing_plan_digest") != (
+                staged_timing_plan.digest()
+            ):
+                raise RuntimeError("staged replay timing plan digest mismatch")
+            expected_artifacts = {
+                str(parsed["bot0"]): hash_path(BOTS_DIR / str(parsed["bot0"])),
+                str(parsed["bot1"]): hash_path(BOTS_DIR / str(parsed["bot1"])),
+            }
+            if dict(replay_validation.artifact_hashes) != expected_artifacts:
+                raise RuntimeError(
+                    "staged replay artifact identity does not match current bot bytes"
+                )
+            for index, replay in enumerate(parsed.get("games") or []):
+                timing_issues = validate_native_match_timing_evidence(
+                    replay,
+                    timing_plan=staged_timing_plan,
+                )
+                if timing_issues:
+                    raise RuntimeError(
+                        f"staged replay {index} timing evidence invalid:"
+                        + ";".join(timing_issues)
+                    )
+                if not _artifact_execution_is_valid(
+                    replay.get("artifact_execution"),
+                    expected_artifacts,
+                ):
+                    raise RuntimeError(
+                        f"staged replay {index} artifact identity invalid"
+                    )
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                "staged replay strength evidence invalid:"
+                f"{type(exc).__name__}"
+            ) from exc
         summary_fields = (
             "id", "timestamp", "execution_mode", "evaluation_epoch", "bot0",
             "bot1", "bot0_wins", "bot1_wins", "draws",
@@ -1324,8 +1814,10 @@ def admit_internal_match_result(result, ratings, h2h, bot_stats, *, verbose=Fals
             "hands_per_strength_sample", "strength_admitted", "strength_complete",
             "strength_compliance_passed", "strength_sample_count",
             "net_chips_bot0", "strength_order",
+            "native_match_timing_plan", "native_match_timing_plan_digest",
         )
         derived_summary = {field: parsed.get(field) for field in summary_fields}
+        derived_summary["replay_sha256"] = hashlib.sha256(payload).hexdigest()
         if summary != derived_summary:
             raise RuntimeError("staged match summary is not canonical replay projection")
         if (
@@ -1351,8 +1843,12 @@ def admit_internal_match_result(result, ratings, h2h, bot_stats, *, verbose=Fals
         if admitted <= 0:
             raise RuntimeError("successful staged match produced no rating admission")
         append_locked_jsonl(MATCH_HISTORY_FILE, summary)
-        final_path = REPLAY_DIR / str(admission.get("filename") or "")
-        if final_path.parent != REPLAY_DIR or final_path.exists():
+        final_path = replay_root / str(admission.get("filename") or "")
+        if (
+            final_path.parent != replay_root
+            or final_path.exists()
+            or final_path.is_symlink()
+        ):
             raise RuntimeError("staged match final replay path collision")
         os.replace(pending, final_path)
         return admitted
@@ -1586,7 +2082,7 @@ def _save_authoritative_evaluation_cycle(
         publish_evaluation_cycle_manifest,
     )
     from evaluation_data_identity import current_evaluation_digest
-    from rating_snapshot import build_strength_rows
+    from rating_snapshot import build_strength_rows, choose_h2h_source
 
     with evaluation_cycle_lock(RESULTS_DIR, exclusive=True):
         current_identity = current_evaluation_digest(RESULTS_DIR)
@@ -1598,8 +2094,42 @@ def _save_authoritative_evaluation_cycle(
                 "evaluation identity changed while daemon was running; "
                 "stale in-memory state cannot cross the migration fence"
             )
+        # Check the caller's in-memory/cache projection against all currently
+        # retained raw evidence *before* any alias/log write.  This is also the
+        # direct-call fence for code paths that bypass ``save_cycle``.
+        pre_rotation_h2h = choose_h2h_source(
+            list(active_bots),
+            _persistable_h2h(h2h_out),
+            MATCH_HISTORY_FILE,
+            expected_evaluation_identity_digest=current_identity,
+            replay_dir=REPLAY_DIR,
+        )
+        if pre_rotation_h2h.get("integrity_ok") is not True:
+            raise RuntimeError(
+                "cannot publish evaluation cycle with H2H/raw replay mismatch:"
+                + ";".join(
+                    str(issue)
+                    for issue in (pre_rotation_h2h.get("integrity_issues") or [])[:8]
+                )
+            )
+
+        # History retention changes the evidence cutoff.  Rebuild the stored
+        # cache from the retained raw suffix rather than publishing a matrix
+        # that contains W/L/D whose replay bytes were just pruned.
         _rotate_jsonl(MATCH_HISTORY_FILE, MAX_MATCH_HISTORY_LINES)
-        canonical_h2h = _persistable_h2h(h2h_out)
+        retained_h2h = choose_h2h_source(
+            list(active_bots),
+            {},
+            MATCH_HISTORY_FILE,
+            expected_evaluation_identity_digest=current_identity,
+            replay_dir=REPLAY_DIR,
+        )
+        if retained_h2h.get("integrity_ok") is not True:
+            raise RuntimeError("retained match-history H2H projection is invalid")
+        canonical_h2h = _persistable_h2h(retained_h2h["h2h"])
+        if isinstance(h2h_out, dict):
+            h2h_out.clear()
+            h2h_out.update(canonical_h2h)
         cycle_stats = dict(stats or {})
         cycle_stats["total_games"] = sum(
             int((value or {}).get("games", 0) or 0)
@@ -1631,8 +2161,9 @@ def _save_authoritative_evaluation_cycle(
             canonical_h2h,
             active_bots=list(active_bots),
             match_history_path=MATCH_HISTORY_FILE,
-            h2h_is_authoritative=True,
+            h2h_is_authoritative=False,
             expected_evaluation_identity_digest=current_identity,
+            replay_dir=REPLAY_DIR,
         )
         write_locked_json(
             SELECTION_SNAPSHOT_FILE,
@@ -1702,10 +2233,8 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
                 # already pushes RD well past DEFAULT_RD, so this only bounds abuse.
                 elapsed = max(1, min(elapsed, 50))
                 ratings[b] = decay_rd(p, elapsed)
-    # Recompute win rates for H2H. Prefer a match_history rebuild when the
-    # append-only history covers more active-pool pairs than the in-memory/file
-    # matrix. This prevents sparse H2H snapshots from driving the leaderboard
-    # and evolution choices after daemon restarts or partial saves.
+    # Recompute active-pool H2H from verified raw history.  The persisted
+    # matrix is a cache only; exact W/L/D disagreement halts publication.
     h2h_out = _h2h_with_win_rates(h2h)
     try:
         from rating_snapshot import choose_h2h_source
@@ -1716,15 +2245,24 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
             expected_evaluation_identity_digest=(
                 daemon_evaluation_identity_digest or ""
             ),
+            replay_dir=REPLAY_DIR,
         )
+        if h2h_selection.get("integrity_ok") is not True:
+            raise RuntimeError(
+                "stored H2H does not exactly match verified raw match history:"
+                + ";".join(
+                    str(issue)
+                    for issue in (h2h_selection.get("integrity_issues") or [])[:8]
+                )
+            )
         selected_h2h = _h2h_with_win_rates(h2h_selection["h2h"])
-        if h2h_selection["source"] == "match_history_rebuilt":
+        if h2h_selection.get("stored_h2h") != h2h_selection["h2h"]:
             stored_cov = h2h_selection["stored_coverage"]
             rebuilt_cov = h2h_selection["rebuilt_coverage"]
             log_system_event(
                 "rating.h2h_rebuilt_from_history",
                 "warn",
-                "Rebuilt active H2H matrix from match_history because stored coverage was lower",
+                "Rebuilt active H2H matrix from verified raw match history",
                 {
                     "save_num": save_num,
                     "stored_pairs": stored_cov.get("covered_pairs"),
@@ -1734,9 +2272,9 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
                     "rebuilt_coverage": round(rebuilt_cov.get("coverage", 0.0), 4),
                 },
             )
-        # Whether stored or rebuilt won, keep only rows whose two endpoints are
-        # in the frozen active pool. Historical inactive matchups remain in the
-        # append-only match history, but must not influence current selection.
+        # Keep only raw-rebuilt rows whose two endpoints are in the frozen
+        # active pool. Historical inactive matchups remain append-only context,
+        # never current selection authority.
         h2h_out = _persistable_h2h(selected_h2h)
         h2h.clear()
         h2h.update(h2h_out)
@@ -1752,6 +2290,12 @@ def save_cycle(ratings, h2h, bot_stats, stats, save_num, active_bots,
         save_num,
         active_bots,
     )
+    # `_save_authoritative_evaluation_cycle` rebuilds H2H again after bounded
+    # history retention.  Keep the long-lived scheduler state on that exact
+    # retained projection; otherwise the next period would reintroduce W/L/D
+    # whose raw replay rows were intentionally rotated away.
+    h2h.clear()
+    h2h.update(h2h_out)
     log_system_event(
         "rating.evaluation_cycle_published",
         "info",

@@ -58,6 +58,9 @@ log = get_logger("tool_eval")
 _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY = (
     "first_strict_control_execution_scope"
 )
+_FIRST_STRICT_CONTROL_BATCH_PROGRESS_KEY = (
+    "first_strict_control_batch_progress"
+)
 
 
 # H1 (2026-06-29): per-attempt shutdown token for precommit cancellation.
@@ -341,6 +344,11 @@ def _observed_native_sample_plan(result: dict) -> list[dict]:
                 "repeat": int(repeat.get("repeat") or 0),
                 "deck_seed_base": repeat.get("deck_seed_base"),
                 "bot_seed_base": repeat.get("bot_seed_base"),
+                "native_match_timing_plan_digest": (
+                    ((repeat.get("local_runtime_budget") or {}).get(
+                        "timing_plan_digest"
+                    ))
+                ),
             })
     return rows
 
@@ -389,6 +397,12 @@ def _build_first_strict_control_execution_scope(
         "evaluation_contract_digest": str(
             evaluation_contract.get("contract_digest") or ""
         ),
+        "native_match_timing_plan_digest": str(
+            ((precommit_plan.get("settings") or {}).get(
+                "native_match_timing_plan_digest"
+            ))
+            or ""
+        ),
         "precommit_attempt": int(precommit_attempt),
     }
 
@@ -433,6 +447,373 @@ def _validate_first_strict_control_execution_scope(
             "workflow, artifact, plan, control, and logical attempt."
         )
     return normalized, None
+
+
+def _first_strict_live_lease_pending_result(
+    *,
+    v: int,
+    source_v: int,
+    candidate_name: str,
+    precommit_attempt: int,
+    control_execution_scope: dict,
+    pending_execution: object,
+    batch_progress: dict | None = None,
+    batch_checkpoint_recorded: bool = False,
+) -> dict:
+    """Return a non-terminal recovery response for one active journal lease.
+
+    A first-strict control match is physical evidence, not a pure function that
+    may be retried in parallel.  The durable journal has already bound this
+    scope to the quality/reviewer/critic chain.  While its matching effect is
+    live, retain that chain and ask the operator/orchestrator to retry the
+    exact precommit call only after the recorded lease ends or the original
+    owner has written its completion receipt.
+    """
+
+    from first_strict_execution_journal import (
+        FirstStrictExecutionJournalError,
+        normalize_pending_control_execution,
+        read_pending_control_execution,
+    )
+
+    normalized_scope = control_execution_scope
+    try:
+        pending = read_pending_control_execution(
+            pending_execution,
+            expected_scope=normalized_scope,
+        )
+        retryable_now = False
+        pending_validation = "live_lease"
+    except FirstStrictExecutionJournalError as exc:
+        # A lease which expires between the native layer's observation and this
+        # projection is safe to reclaim on the next exact invocation.  It is
+        # still not a candidate/gate failure and must never enter abandon.
+        if str(exc) != "first_strict_execution_pending_lease_not_live":
+            raise RuntimeError(
+                "first_strict_control_pending_journal_invalid:"
+                f"{type(exc).__name__}:{str(exc)}"
+            ) from exc
+        pending = normalize_pending_control_execution(
+            pending_execution,
+            expected_scope=normalized_scope,
+        )
+        retryable_now = True
+        pending_validation = "lease_expired_before_projection"
+
+    checkpoint = _matching_checkpoint(v, source_v) or {}
+    return _json_tool_result({
+        "version": int(v),
+        "source_v": int(source_v),
+        "candidate": str(candidate_name),
+        "passed": False,
+        "pending": True,
+        "failure_class": "infrastructure_pending",
+        "checkpoint_recorded": False,
+        "checkpoint_stage": checkpoint.get("stage"),
+        "precommit_attempt": int(precommit_attempt),
+        # The complete scope includes the control receipt digest and the
+        # checkpoint revision which fenced the critic-approved artifact.
+        "control_execution_scope": normalized_scope,
+        "control_receipt_digest": normalized_scope.get(
+            "control_receipt_digest"
+        ),
+        "preserved_gate_evidence": ["quality", "review", "critic"],
+        "control_execution_pending": pending,
+        "retry_not_before_epoch_s": (
+            None if retryable_now else pending["lease_until"]
+        ),
+        "retryable_now": retryable_now,
+        "directive": (
+            "First-strict native precommit is already owned by a matching "
+            "live journal lease. Preserve the frozen scope, control receipt, "
+            "and quality/reviewer/critic evidence; do not abandon, rework, or "
+            "launch a parallel match. Retry the exact precommit only after "
+            "the lease expires or the durable receipt is recovered."
+        ),
+        "intent": make_intent(
+            "wait",
+            next_tool="run_precommit_eval",
+            failure_class="infrastructure_pending",
+            authority="tool:precommit_eval",
+            safe_to_auto_execute=False,
+            reason=(
+                "first_strict_execution_lease_expired_retry"
+                if retryable_now
+                else "first_strict_execution_lease_active"
+            ),
+        ),
+        "pending_validation": pending_validation,
+        "first_strict_batch_pending": batch_progress,
+        "batch_checkpoint_recorded": bool(batch_checkpoint_recorded),
+    })
+
+
+def _control_execution_pending_from_native_result(
+    national_result: object,
+    *,
+    control_execution_scope: dict | None,
+) -> dict | None:
+    """Return only the explicit live-lease signal; generic pending is unsafe.
+
+    Batch continuation and other infrastructure paths may expose their own
+    pending state.  This narrow adapter intentionally recognizes neither a
+    generic ``pending`` flag nor arbitrary blocker text, because treating
+    either as a live first-strict lease could suppress a genuine gate failure.
+    """
+
+    if not isinstance(national_result, dict):
+        return None
+    pending = national_result.get("control_execution_pending")
+    if pending is None:
+        return None
+    if control_execution_scope is None:
+        raise RuntimeError(
+            "first_strict_control_pending_without_execution_scope"
+        )
+    from first_strict_execution_journal import normalize_pending_control_execution
+
+    return normalize_pending_control_execution(
+        pending,
+        expected_scope=control_execution_scope,
+    )
+
+
+def _validate_first_strict_batch_progress(
+    progress: object,
+    *,
+    precommit_plan: dict,
+    control_execution_scope: dict,
+) -> list[str]:
+    """Verify the checkpoint projection against plan and journal authority.
+
+    ``national_native`` produces this projection, but a control-plane checkpoint
+    must not trust a returned dictionary merely because it came from an in
+    process call.  Each completed reference is re-read from the fenced journal
+    before it becomes durable checkpoint state.
+    """
+
+    if not isinstance(progress, dict):
+        return ["first_strict_batch_progress_missing"]
+    settings = precommit_plan.get("settings") or {}
+    expected_batch = settings.get("native_precommit_batch_plan")
+    if not isinstance(expected_batch, dict):
+        return ["first_strict_batch_plan_missing"]
+    from first_strict_execution_journal import (
+        execution_scope_digest,
+        normalize_execution_scope,
+        read_control_execution_receipt,
+    )
+
+    issues: list[str] = []
+    try:
+        scope = normalize_execution_scope(control_execution_scope)
+    except Exception:
+        return ["first_strict_batch_scope_invalid"]
+    expected_rows = expected_batch.get("ordered_samples")
+    if not isinstance(expected_rows, list) or len(expected_rows) != 8:
+        return ["first_strict_batch_plan_rows_invalid"]
+    expected_digest = expected_batch.get("batch_plan_digest")
+    if (
+        progress.get("schema_version") != 1
+        or progress.get("kind") != "first-strict-native-precommit-batch-progress"
+        or progress.get("state") not in {
+            "pending_next_sample",
+            "waiting_live_lease",
+        }
+        or progress.get("batch_plan_digest") != expected_digest
+        or progress.get("sample_plan_digest")
+        != expected_batch.get("sample_plan_digest")
+        or progress.get("scope_digest") != execution_scope_digest(scope)
+        or progress.get("candidate_artifact_hash")
+        != scope.get("candidate_artifact_hash")
+        or progress.get("control_artifact_hash")
+        != scope.get("control_artifact_hash")
+        or progress.get("timing_plan_digest")
+        != scope.get("native_match_timing_plan_digest")
+        or progress.get("sample_count") != 8
+        or progress.get("max_new_samples_per_invocation") != 1
+    ):
+        issues.append("first_strict_batch_progress_binding_invalid")
+    planned = progress.get("planned_samples")
+    if not isinstance(planned, list) or len(planned) != len(expected_rows):
+        issues.append("first_strict_batch_progress_planned_shape_invalid")
+        planned = []
+    for index, (expected, observed) in enumerate(
+        zip(expected_rows, planned), start=1
+    ):
+        if not isinstance(expected, dict) or not isinstance(observed, dict):
+            issues.append(f"first_strict_batch_progress_planned_{index}_invalid")
+            continue
+        if (
+            observed.get("repeat") != expected.get("repeat")
+            or observed.get("deck_seed_base") != expected.get("deck_seed_base")
+            or observed.get("bot_seed_base") != expected.get("bot_seed_base")
+            or not isinstance(observed.get("match_run_id"), str)
+            or not observed.get("match_run_id")
+        ):
+            issues.append(f"first_strict_batch_progress_planned_{index}_mismatch")
+
+    completed = progress.get("completed_samples")
+    if not isinstance(completed, list):
+        issues.append("first_strict_batch_progress_completed_shape_invalid")
+        completed = []
+    completed_repeats: list[int] = []
+    for entry in completed:
+        if not isinstance(entry, dict) or type(entry.get("repeat")) is not int:
+            issues.append("first_strict_batch_progress_completed_entry_invalid")
+            continue
+        repeat = int(entry["repeat"])
+        if not 1 <= repeat <= len(expected_rows):
+            issues.append("first_strict_batch_progress_completed_repeat_invalid")
+            continue
+        completed_repeats.append(repeat)
+        expected = expected_rows[repeat - 1]
+        planned_row = planned[repeat - 1] if len(planned) >= repeat else {}
+        evidence, receipt_issues = read_control_execution_receipt(
+            entry.get("execution_receipt"),
+            expected_scope=scope,
+        )
+        if receipt_issues or not isinstance(evidence, dict):
+            issues.append("first_strict_batch_progress_receipt_invalid")
+            continue
+        input_payload = evidence.get("input") or {}
+        result_payload = evidence.get("result") or {}
+        receipt = entry.get("execution_receipt") or {}
+        if (
+            entry.get("deck_seed_base") != expected.get("deck_seed_base")
+            or entry.get("bot_seed_base") != expected.get("bot_seed_base")
+            or input_payload.get("repeat") != repeat
+            or input_payload.get("deck_seed_base") != expected.get("deck_seed_base")
+            or input_payload.get("bot_seed_base") != expected.get("bot_seed_base")
+            or entry.get("match_run_id") != planned_row.get("match_run_id")
+            or input_payload.get("match_run_id") != entry.get("match_run_id")
+            or result_payload.get("match_run_id") != entry.get("match_run_id")
+            or receipt.get("match_run_id") != entry.get("match_run_id")
+        ):
+            issues.append("first_strict_batch_progress_receipt_binding_invalid")
+    if completed_repeats != list(range(1, len(completed_repeats) + 1)):
+        issues.append("first_strict_batch_progress_completed_order_invalid")
+    next_repeat = progress.get("next_repeat")
+    if type(next_repeat) is not int or next_repeat != len(completed_repeats) + 1:
+        issues.append("first_strict_batch_progress_next_repeat_invalid")
+    if progress.get("state") == "pending_next_sample" and not completed_repeats:
+        issues.append("first_strict_batch_progress_empty_boundary_invalid")
+    return list(dict.fromkeys(issues))
+
+
+def _persist_first_strict_batch_progress(
+    *,
+    v: int,
+    source_v: int,
+    precommit_plan: dict,
+    control_execution_scope: dict,
+    batch_progress: object,
+) -> tuple[bool, dict | None]:
+    """CAS-persist a verified batch boundary without recording a gate result."""
+
+    issues = _validate_first_strict_batch_progress(
+        batch_progress,
+        precommit_plan=precommit_plan,
+        control_execution_scope=control_execution_scope,
+    )
+    checkpoint = _matching_checkpoint(v, source_v)
+    if issues:
+        return False, _state_blocked(
+            "First-strict batch progress cannot be re-proven: "
+            + ";".join(issues[:8]),
+            v,
+            source_v,
+            checkpoint,
+        )
+    if (
+        not isinstance(checkpoint, dict)
+        or checkpoint.get("stage") != "critic_checked"
+        or (checkpoint.get("audit_context") or {}).get(
+            _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY
+        ) != control_execution_scope
+    ):
+        return False, _state_blocked(
+            "First-strict batch continuation lost its critic-approved "
+            "checkpoint scope.",
+            v,
+            source_v,
+            checkpoint,
+        )
+    written = write_pipeline_checkpoint(
+        v,
+        source_v,
+        "critic_checked",
+        audit_context={
+            _FIRST_STRICT_CONTROL_BATCH_PROGRESS_KEY: batch_progress,
+        },
+        expected_checkpoint_revision=checkpoint.get("checkpoint_revision"),
+        expected_checkpoint_stage="critic_checked",
+        expected_workflow_run_id=checkpoint.get("workflow_run_id"),
+    )
+    after = _matching_checkpoint(v, source_v)
+    if not written or not isinstance(after, dict) or (
+        after.get("stage") != "critic_checked"
+        or (after.get("audit_context") or {}).get(
+            _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY
+        ) != control_execution_scope
+        or (after.get("audit_context") or {}).get(
+            _FIRST_STRICT_CONTROL_BATCH_PROGRESS_KEY
+        ) != batch_progress
+    ):
+        return False, _state_blocked(
+            "First-strict batch continuation checkpoint CAS could not be "
+            "re-proven.",
+            v,
+            source_v,
+            after,
+        )
+    return True, None
+
+
+def _first_strict_batch_pending_result(
+    *,
+    v: int,
+    source_v: int,
+    candidate_name: str,
+    precommit_attempt: int,
+    control_execution_scope: dict,
+    batch_progress: dict,
+) -> dict:
+    """Return a fresh-provider boundary after exactly one durable sample."""
+
+    checkpoint = _matching_checkpoint(v, source_v) or {}
+    return _json_tool_result({
+        "version": int(v),
+        "source_v": int(source_v),
+        "candidate": str(candidate_name),
+        "passed": False,
+        "pending": True,
+        "failure_class": "infrastructure_pending",
+        "checkpoint_recorded": False,
+        "batch_checkpoint_recorded": True,
+        "checkpoint_stage": checkpoint.get("stage"),
+        "precommit_attempt": int(precommit_attempt),
+        "control_execution_scope": control_execution_scope,
+        "control_receipt_digest": control_execution_scope.get(
+            "control_receipt_digest"
+        ),
+        "preserved_gate_evidence": ["quality", "review", "critic"],
+        "first_strict_batch_pending": batch_progress,
+        "directive": (
+            "One frozen first-strict native control sample is durably journaled "
+            "and indexed. End this provider cycle; a fresh provider cycle must "
+            "re-prove the same scope and call run_precommit_eval to request only "
+            "the next ordered sample. Do not abandon, rework, or skip ahead."
+        ),
+        "intent": make_intent(
+            "continue",
+            next_tool="run_precommit_eval",
+            failure_class="infrastructure_pending",
+            authority="tool:precommit_eval",
+            safe_to_auto_execute=False,
+            reason="first_strict_batch_next_sample",
+        ),
+    })
 
 
 async def _run_national_precommit_backend(
@@ -483,6 +864,26 @@ async def _run_national_precommit_backend(
     settings = precommit_plan.get("settings") or {}
     national_hands = int(settings.get("hands_per_match") or 0)
     national_matches = int(settings.get("matches_per_opponent") or 0)
+    try:
+        from national_native import (
+            LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+            require_native_match_timing_plan,
+        )
+
+        native_match_timing_plan = require_native_match_timing_plan(
+            settings.get("native_match_timing_plan"),
+            hands=national_hands,
+            requested_timeout_sec=LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+        )
+        if settings.get("native_match_timing_plan_digest") != (
+            native_match_timing_plan.digest()
+        ):
+            raise RuntimeError("precommit native timing plan digest mismatch")
+    except Exception as exc:
+        raise RuntimeError(
+            "precommit native timing plan unavailable:"
+            f"{type(exc).__name__}: {str(exc)[:240]}"
+        ) from exc
 
     if getattr(workflow_profile, "national_execution_mode", None) != "native_tcp":
         raise RuntimeError("precommit supports only national native_tcp evaluation")
@@ -491,6 +892,30 @@ async def _run_national_precommit_backend(
         str(item.get("authority") or "") == "system_first_strict_control"
         for item in opponents
     )
+    native_precommit_batch_plan = None
+    if system_control_plan:
+        try:
+            from precommit_eval_contract import build_native_precommit_batch_plan
+
+            native_precommit_batch_plan = (
+                build_native_precommit_batch_plan(
+                    list(precommit_plan.get("sample_plan") or []),
+                    native_timing_plan=native_match_timing_plan,
+                    first_strict_control=True,
+                )
+            )
+            if (
+                settings.get("native_precommit_batch_plan")
+                != native_precommit_batch_plan
+                or settings.get("native_precommit_batch_plan_digest")
+                != native_precommit_batch_plan.get("batch_plan_digest")
+            ):
+                raise RuntimeError("first strict batch plan digest mismatch")
+        except Exception as exc:
+            raise RuntimeError(
+                "first strict native batch plan unavailable:"
+                f"{type(exc).__name__}: {str(exc)[:240]}"
+            ) from exc
     opponents_with_paths = []
     for item in opponents:
         copied = dict(item)
@@ -504,6 +929,24 @@ async def _run_national_precommit_backend(
         opponents_with_paths.append(copied)
 
     blockers = list(initial_blockers or [])
+    native_precommit_progress_callback = None
+    try:
+        from pipeline_state import make_native_match_heartbeat_reporter
+
+        progress_checkpoint = _matching_checkpoint(v, source_v)
+        if (
+            isinstance(progress_checkpoint, dict)
+            and str(progress_checkpoint.get("workflow_run_id") or "")
+            == str(workflow_run_id or progress_checkpoint.get("workflow_run_id") or "")
+        ):
+            native_precommit_progress_callback = (
+                make_native_match_heartbeat_reporter(
+                    progress_checkpoint,
+                    owner_tool="run_precommit_eval",
+                )
+            )
+    except Exception:
+        native_precommit_progress_callback = None
     execution_protocol = "national_native_tcp" if native_tcp_mode else "national"
     if system_control_plan:
         if control_execution_scope is None:
@@ -551,9 +994,59 @@ async def _run_national_precommit_backend(
                 matches_per_opponent=national_matches,
                 parent_label=parent_name,
                 sample_plan=list(precommit_plan.get("sample_plan") or []),
+                batch_plan=native_precommit_batch_plan,
                 control_execution_scope=control_execution_scope,
                 cancel_token=shutdown_token,
+                timing_plan=native_match_timing_plan,
+                progress_callback=native_precommit_progress_callback,
             )
+            live_pending = _control_execution_pending_from_native_result(
+                national_result,
+                control_execution_scope=control_execution_scope,
+            )
+            batch_pending = (
+                national_result.get("first_strict_batch_pending")
+                if isinstance(national_result, dict)
+                else None
+            )
+            if live_pending is not None or batch_pending is not None:
+                if (
+                    not system_control_plan
+                    or control_execution_scope is None
+                    or not isinstance(batch_pending, dict)
+                ):
+                    raise RuntimeError(
+                        "first_strict_batch_pending_outside_bound_control_plan"
+                    )
+                persisted, blocked_result = _persist_first_strict_batch_progress(
+                    v=v,
+                    source_v=source_v,
+                    precommit_plan=precommit_plan,
+                    control_execution_scope=control_execution_scope,
+                    batch_progress=batch_pending,
+                )
+                if not persisted:
+                    return blocked_result
+            if live_pending is not None:
+                return _first_strict_live_lease_pending_result(
+                    v=v,
+                    source_v=source_v,
+                    candidate_name=candidate_name,
+                    precommit_attempt=precommit_attempt,
+                    control_execution_scope=control_execution_scope,
+                    pending_execution=live_pending,
+                    batch_progress=batch_pending,
+                    batch_checkpoint_recorded=True,
+                )
+            if batch_pending is not None:
+                return _first_strict_batch_pending_result(
+                    v=v,
+                    source_v=source_v,
+                    candidate_name=candidate_name,
+                    precommit_attempt=precommit_attempt,
+                    control_execution_scope=control_execution_scope,
+                    batch_progress=batch_pending,
+                )
             blockers.extend(national_result.get("blockers") or [])
             if system_control_plan:
                 from first_strict_control import validate_control_receipt
@@ -577,6 +1070,32 @@ async def _run_national_precommit_backend(
                     "details": "Native precommit did not execute the frozen deck/bot seed schedule.",
                 })
         except Exception as exc:
+            # The journal may be used directly by a native runner which
+            # propagates this typed state rather than returning the structured
+            # ``control_execution_pending`` result above.  It has the same
+            # scope/lease proof and is never a strategy or control regression.
+            try:
+                from first_strict_execution_journal import FirstStrictExecutionPending
+
+                live_pending_exception = isinstance(
+                    exc,
+                    FirstStrictExecutionPending,
+                )
+            except Exception:
+                live_pending_exception = False
+            if live_pending_exception:
+                if not system_control_plan or control_execution_scope is None:
+                    raise RuntimeError(
+                        "control_execution_pending_outside_first_strict_plan"
+                    ) from exc
+                return _first_strict_live_lease_pending_result(
+                    v=v,
+                    source_v=source_v,
+                    candidate_name=candidate_name,
+                    precommit_attempt=precommit_attempt,
+                    control_execution_scope=control_execution_scope,
+                    pending_execution=exc.pending,
+                )
             national_result = {
                 "evaluation_protocol": execution_protocol,
                 "candidate": candidate_name,

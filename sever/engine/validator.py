@@ -21,6 +21,14 @@ BIG_BLIND = 100
 MIN_RAISE_PREFLOP = 200
 MIN_RAISE_POSTFLOP = 100
 RAISE_MULTIPLIER = 2
+# Tight action-request bound for the active 20,000-chip national contract.
+# It is derived from the constants and legality rules in this module together
+# with GameEngine's four betting streets: the maximal legal nonterminal hand
+# has preflop/flop/turn/river request counts 7 + 8 + 9 + 10.  See the native
+# runtime regression for the executable witness and enumeration.  This is an
+# implementation-bound protocol fact, not a free-standing strategy limit; any
+# change to blinds, stack, raise semantics, or street flow must re-derive it.
+NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND = 34
 
 
 def validate_action(action_type: str, action_amount: int | None,

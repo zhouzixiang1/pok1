@@ -344,3 +344,366 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   confidence eligibility, generation-vs-daemon stagnation, independent holdout
   seeds, crossover behavioral diversity, sequential reaping, direction/literature
   outcome feedback and useful two-Bot Worker utilization.
+
+## 2026-07-16 superseding runtime handoff — v143 quality liveness repair
+
+The preceding “known next action” has been executed and superseded. Runtime
+started fresh `generation:143:workflow-v30` on `3bef73c1`, completed the
+three-Scout/two-critic/zero-tool-final-Master/Worker sequence, then stopped at
+`workers_done` after quality surfaced a deterministic contract error. The first
+native self-play quality sample was cut off at 46/70 hands by the 600 s global
+timer despite zero illegal actions, zero per-action timeouts and zero process
+failures. Do not call this a candidate, model, official-protocol or network
+failure; it is a full-match liveness-budget defect.
+
+The repair in the alignment worktree centralizes an effective full-70-hand
+budget in `web/core/national_native.py`, derived from the exact managed local
+timing envelope and the active engine's four betting streets × 100-action
+safety cap. It must be the single authority for quality smoke/acceptance,
+precommit (including the first-strict journal lease) and immutable rating.
+Never “fix” this by shortening the 2.0 s hard / 1.8 s refinement strength path,
+by accepting an incomplete match, or by merely changing one profile constant.
+Result receipts must show requested/effective/floor budget; a timeout or 69/70
+result remains failed and inconclusive.
+
+The engine cap itself is fail-closed: reaching it before a street closes emits
+an explicit action-limit failure and cannot silently advance the game. The same
+budget snapshot must enter a first-strict execution before terminal validation,
+runner sealing and SQLite journal completion; the outer idempotent completion
+must receive identical bytes. Only the outer whole-match watchdog adds
+`native_full_match_liveness_budget_exceeded`; connection/name handshake
+timeouts remain separately fail-closed.
+
+Also preserve the fixture correction: `raise 208` is a legal preflop candidate
+choice, so a candidate test cannot force an unrelated warmup `call`. System-
+owned reducer fixtures alone own the exact postflop `pass→check` and
+`pass→call` assertions and must prove the inverse action invalid with the
+authoritative validator. Candidate fixtures must continue to use real isolated
+raw TCP, parser, canonical wire tokens and validator legality, without imposing
+a strategy choice.
+
+Current runtime is stopped through `/api/control/stop`; Web PID may remain as a
+control surface, but the evolution task and rating daemon are stopped. The
+durable checkpoint is still `generation:143:workflow-v30` / `workers_done` with
+its inconclusive quality infrastructure receipt. Stability is reset to `0/10`
+with `orchestrator_stopped`. Do not delete `.evolution_pok/bots/national_v143`,
+checkpoint, evidence or journal files. After the repair's full source and real
+70-hand replay evidence passes, commit/push/merge it, synchronize the stopped
+runtime only via `origin/main`, run checkpoint recovery diagnostics, and use
+the canonical contract-changing abandon/re-prepare path before another v143
+attempt. The first strict official bootstrap/finalize remains operator-only and
+must stay locked until the re-prepared checkpoint reaches its exact stage.
+
+## 2026-07-16 superseding source handoff — immutable timing-plan and bounded-progress repair
+
+The preceding 400-request-envelope proposal is **not** an accepted repair. An
+independent active-rule review proved that the generic `100` request/street
+engine guard would create about a 17.5-hour envelope and conflict with the
+orchestrator's 90-minute provider bound. The accepted source direction is a
+system-owned `NativeMatchTimingPlan`: fixed local-strength timing (`0` send
+delay, `2.0 s` hard decision, `1.8 s` refinement, `0.2 s` baseline), integer
+snapshot/digest, and a tight **34 request/hand** upper bound derived from the
+active 20,000-chip validator (50/100 blinds, raise-to/doubling, four streets).
+The generic 100-request street guard remains a separate typed fail-closed
+engine safety abort.
+
+The plan is the sole timing authority for child launch, connect/name/action
+timeouts, whole-match watchdog, first-strict ticket/match identity/lease,
+runner seal, quality acceptance, frozen precommit plan/sample rows, rating
+replay admission, immutable replay analysis, evidence snapshot/history
+injection, and final commit reproof. Ambient `POK_NATIVE_*` timing inheritance,
+per-seat timing overrides and raw liveness-budget dictionaries are rejected.
+Every complete result carries the full plan + digest + human-readable projection
+and only admits if `native_match_timeout_phase is None` and
+`native_terminal_abort is None`.
+
+An engine event may publish a sanitized runtime-only heartbeat for the exact
+checkpoint/PID/start-token/route and plan/match digest. It contains no cards,
+wire actions, model text, checkpoint mutation, evidence or rating data. At the
+ordinary provider-cycle boundary the orchestrator may grant at most **one**
+extension, capped by the frozen match deadline plus cleanup and a hard absolute
+cap. Missing, stale, wrong-route, old-stream, malformed or repeatedly rewritten
+heartbeats never extend the cycle. This is not a blanket `CYCLE_TIMEOUT`
+increase and cannot be initiated by any LLM role.
+
+Current code remains unmerged until focused/full Web, `sever`, frontend and a
+fresh real 70-hand v143 acceptance replay pass. Before any runtime recovery,
+read the stopped checkout's current checkpoint and heartbeat afresh; do not
+trust this historical handoff to claim `workers_done`, and never delete/reset a
+checkpoint manually. If the frozen evaluation contract or timing digest differs
+after merge, use canonical controlled abandon/re-prepare, reset stability to
+`0/10`, and begin observation from the first recovered generation.
+
+## 2026-07-17 current source handoff — schema-5 timing, bounded completion and replay causality
+
+This section supersedes the still-historical wording above wherever it implies
+that the initial frozen plan alone was sufficient. A second source audit found
+three further causal gaps and repaired them in the same unmerged alignment
+worktree:
+
+1. A first-strict journal ticket is claimed before its shared native capacity
+   slot is acquired. `NativeMatchTimingPlan` schema 5 therefore binds one exact
+   5,960-second operation and lease: 300-second capacity queue, two enforced
+   30-second read-only artifact preparations, 120-second startup, 5,415-second
+   engine envelope, 35-second cleanup and 30-second post-execution durable
+   completion. Fixed phase ceilings are `launching=480`,
+   `engine_running=5,415` and `finalizing=65` seconds. Launch progress begins
+   before the queue, uses a runtime-only nonce-bound identity that never enters
+   replay/evidence, and emits every 30 seconds without rolling the original
+   start/deadline. An over-ceiling queue, preparation, startup or completion
+   fails closed and never gains an arbitrary lease extension.
+2. A runtime heartbeat is no longer trusted merely because its plan field is
+   hex-shaped. Quality first persists its exact strict acceptance plan in the
+   active `workers_done` checkpoint; precommit reads its already-frozen plan
+   from the `critic_checked` checkpoint. Runtime-heartbeat schema 4 and nested
+   native-progress schema 4 rederive and compare that plan, effective timeout,
+   route, PID/start token, provider nonce and runtime-only prelaunch identity.
+   Only launching may carry `hand=null`; all engine progress requires hand
+   1..70, while hand 70 transitions through `finalizing`. Authority reproof is
+   repeated every 5 seconds against the same checkpoint/plan/match/route/PID/
+   provider identity. Only the `runner_returned` handoff may authorize
+   completion, after applicable result annotation, exact-byte rehash, terminal
+   validation and durable journal seal. `runner_raised`/`runner_cancelled` also
+   publish from outer `finally` after resource release for cleanup, but the
+   consumer rejects them. A rejected clear immediately revokes its provider
+   nonce and is retried. A
+   settled match therefore
+   cannot lend its last heartbeat to a later non-engine stall. The outer stream
+   still grants at most one exact 5,960-second-cap extension.
+3. An admitted history row is now only a projection of exact raw replay bytes.
+   The Elo producer writes `replay_sha256`; every H2H/chip/history/snapshot
+   consumer safely reopens the named non-symlink replay, compares SHA-256,
+   runs `validate_native_replay`, and requires header/outcome/plan equality.
+   Missing, replaced or header-drifted raw bytes have zero strength authority.
+   Replay cleanup keeps all rows cited by live history or retained immutable
+   cycles, even if that exceeds the operational file-count preference.
+
+The one-hand liveness projection now reports the same real 34-action/4-street
+derivation used to calculate its timeout; it no longer reports a contradictory
+zero action cap. `evaluation_bundle` schema 3, evidence-snapshot schema 9,
+first-strict execution definition 3, timing-plan schema 5, runtime-heartbeat
+schema 4 and native-progress schema 4 deliberately make old byte formats
+ineligible. This is a contract change: it must be handled by
+the canonical controlled abandon/re-prepare path after merge, never by manual
+state deletion.
+
+The two timing P1s found by that audit are now repaired and verified in focused
+source tests. `asyncio.start_server()` bind/create is inside the same absolute
+120-second startup watchdog, with typed timeout and safe cleanup before any
+client launch (`17 passed` in the focused native suite). The first-strict
+flock/SQLite completion path consumes only the remaining absolute 30-second
+budget and leaves no detached writer: timeout preserves the running effect,
+creates no inbox/event or false completed seal, and the same ticket recovers.
+Its workflow/native/hidden recovery aggregate is `60 passed`. These repairs are
+still unmerged. Later runtime/precompute/evaluation-contract edits invalidated
+the earlier complete-suite result, but the replacement final Web run is green
+at `2901 passed, 20 skipped, 1 warning` in 156.14 seconds. They create no
+runtime, v143, certificate, rating or N/10 evidence.
+
+The superseding completion bridge is a schema-1 process-local one-shot terminal
+handoff, not a final-live-only reproof. Lock order is dispatch then heartbeat;
+the receipt binds exact checkpoint, owner, nonce, match, timing, operation,
+event and terminal outcome. Live converts to a receipt and then unlinks; unlink
+failure rolls the receipt back, the next live match clears old receipt state,
+consumption revokes the nonce, and expiry is fixed at no more than 30 seconds
+without rolling. The runner publishes from its outer return/raise/cancel
+boundary only after resource release. Only `runner_returned` may authorize a
+provider result, and that outcome follows the applicable annotation, rehash,
+terminal validation and durable seal. `runner_raised` and `runner_cancelled`
+also publish from outer `finally` for cleanup, but the consumer rejects them.
+Orchestrator periodic and done paths try current live authority first and
+otherwise the receipt; current checkpoint proof allows only the same workflow/
+version, non-regressing revision and explicit owner stage. Focused results are
+terminal handoff `11 passed`, timeout file `76 passed`, native `17 passed`,
+nonworker `13 passed`, cleanup `9 passed`, recovery `7 passed`, and services
+`32 passed`.
+
+The first-strict control journal also no longer relies solely on a
+cross-thread executor callback. `_await_first_strict_control_completion`
+creates the `asyncio.to_thread(complete_control_execution)` task and polls it
+every 50 ms with `asyncio.wait`, covering the observed remote app-server case
+where the concurrent future completed but its wakeup was lost. Cancellation
+drains the durable writer before re-raising; it never detaches or cancels that
+writer, and only a successful durable `COMMIT` authorizes completion.
+
+The historical complete Web result was `2853 passed, 20 skipped, 1 warning` in
+145.30 seconds, covering the terminal-handoff conversion at that source state.
+It is now superseded and does not close the current full-suite gate. Current
+independent non-Web evidence is:
+
+```text
+python -m pytest sever/tests -q
+# 33 passed
+cd web/frontend && npm test && npm run lint
+# 18 tests passed; lint passed
+cd web/frontend && npm run build
+# TypeScript/Vite production build passed (165 modules)
+python -m py_compile <all touched active Python modules>
+git diff --check
+# passed
+```
+
+These source results do **not** certify v143 or resume the runtime. Required
+next actions remain: review/commit/push/merge the exact worktree; stop-state
+sync `.evolution_pok` only through `origin/main`; run checkpoint recovery;
+because evaluation/timing/evidence contracts changed, canonically
+abandon/re-prepare; then obtain a fresh 70/70 v143 quality/precommit/official
+bootstrap trail before any v144, rating-cycle or N/10 claim.
+
+## 2026-07-17 definitive Bot numbering and LLL clean-room authority
+
+There is no pending physical-v1 or new-namespace migration. Do not create one,
+wait for one, archive current strict identities for one, or treat it as a
+runtime blocker. The user definitively narrowed `Bot 1..N` to a Web presentation
+sequence. Preserve
+all real identities: `national_tcp_policy_v1`, `national_v143+`, paired
+annotated completion/high-water tags, manifests, receipts, certificates,
+rating keys, evidence digests and checkpoint versions.
+
+On the strict published-Bot page, assign display ordinals from the exact
+current published pool in ascending physical version order and show the real
+annotated completion tag next to every ordinal. The ordinal must remain stable
+when the user changes strength/H2H/version sorting, and must never enter API or
+SSE DTOs, rating/evidence/selection rows, checkpoints, prompts, certificates or
+publication logic. A candidate or untracked directory has neither a published
+Bot ordinal nor a completion tag.
+
+The permitted clean-room strategy reference is exactly
+`/home/zzx/project/pok/lll/lll/bot/国赛平台代码.py`, SHA-256
+`a7aef0b3b8b1a0096164631e87f9f1dd0c57b1a95c2738762c9f6301bc434dfb`.
+It is not a strict candidate or production dependency. Manifest schema 3 binds
+it as semantic-reference-only with zero source bytes, strength, history and
+runtime import. The current source under review is runtime 10, evaluation
+contract 32, precompute schema 4 / generator `national-precompute-v3`, and
+runtime-probe schema/orchestrator/worker/scenario `15/15/16/7`. TCP parsing,
+legality, fallback, tracker, socket send, timing and evidence remain system
+owned. LLL code, local harness, logs, ratings, H2H, THP, prompts and history
+must never be copied, imported or injected.
+
+The latest strength audit found and repaired five P1s:
+
+1. The prior 169 preflop values were a deterministic hand-written class-order
+   heuristic, not calibrated heads-up equity. Schema 4 now carries a generated
+   169-float table. Generator `national-precompute-v3` uses the official
+   evaluator and a fixed seed for 65,536 uniformly sampled opponent-and-board
+   completions per canonical class; generator/environment/evaluator/deck/random
+   hashes are pinned. Regression anchors include `A2o > K2o > 76o`, suited over
+   offsuit and ordered pairs. Generator script SHA-256 is
+   `5aa6808974f9af67ac7bb5189c431791d9aed9e791869f9428b1ab8e04cf62d3`.
+2. Preflop decisions now distinguish the four real actionable spots:
+   `sb_open`, `bb_vs_limp`, `bb_vs_raise` and `sb_vs_reraise`. Tested
+   raise-to-total bands are `225–300`, `325–450`, `650–900` and `900–1200`.
+   A strong shallow-stack hand emits typed `allin` when the desired target is
+   exactly the hero total even if `legal.max_raise_to` is one chip lower. The
+   final policy also covers ultrashort **allin-only** contexts where `allin` is
+   legal but `raise` is absent and both raise bounds are null: AA jams in all
+   four spots while the weak control never leaks a jam. Postflop is neutral to
+   these spot controls.
+3. Runtime 10 produces schema-1 `hand.match_control`, binding initial chips,
+   blinds, current position/exposure, future forced blinds, forced-fold loss
+   bound and hero net. The policy folds even AA and skips refinement only when
+   the strict proof `hero_net_earned > forced_fold_loss_bound` holds. Equality,
+   missing or malformed evidence is neutral.
+4. Runtime produces consistent `hero_in_position_postflop` and
+   `acts_first_postflop`. Position/EQR changes only marginal flop/turn calls
+   that leave future-street equity realization. It is neutral on river and when
+   `betting.call_closes_allin_runout=true`; action text such as `allin` is not
+   authority, and missing/inconsistent facts are neutral.
+5. Postflop opponent pressure previously reused preflop class ordering and
+   could perversely improve hero equity after a raise. The policy now weights
+   opponent holdings on the current public board. A raise-conditioned range
+   cannot improve hero equity, and flop/turn weighting never observes sampled
+   future runout cards. Malformed board evidence is neutral; preflop still uses
+   the calibrated 169-class table.
+
+The system precompute generator/content/environment/hash contract, runtime-10
+exact source bytes/manifest/control identity, the five positive/negative
+strength-control families, runtime-probe consumer reachability and five-role
+prompt contract are dynamic gates. Master, Worker, Reviewer, Critic and
+Orchestrator all explicitly require calibrated 169-class equity, spot-specific
+raise-to-total/exact typed all-in, the mathematical match lock, position only
+for nonclosing future-street calls and current-board opponent weighting.
+Keyword search or a stored `passed` flag is insufficient.
+
+The earlier causal-wire safeguards remain part of that gate: normalized
+positive/matched and positive/mixed hashes, raw `positive/negative/mixed`
+values, exact delimiter-free wire, bounded same-line `raise N`/`check` mixing
+and profile-specific negative-control kinds are recomputed. `allin` cannot
+stand in for the aggressive mixing control, and a fixed-100% policy receives no
+dynamic line credit. `MAX_EQUITY_SAMPLES=32768` remains a finite postflop
+rollout cap; bounded-weight worst-case effective sample size is about 16,614
+and standard error is below 0.4 percentage point, while cap exhaustion does not
+assert convergence. The candidate runtime probe now enforces the match-control
+consumer on actual final wire: a strict proved lead must fold, while equality
+and malformed proof must not fold. The current whole runtime-probe shard is
+`18 passed`; the baseline no longer carries the prior consumer
+`candidate_contract` failure.
+
+The final full run also caught the generated system runtime at 2519 lines,
+above the unchanged 2500-line publication hard cap. The template now collapses
+only redundant triple source separators, materializing to 2493 lines. An
+independent AST comparison is identical, the crossover regression passes, and
+the hard cap remains fail closed.
+
+Current unmerged source identities are:
+
+- policy `f7c6a14a0b6fdceb6f47016ba9f8048d3ce82d4baa9dfa1b88c3a74e2b24f956`;
+- prepared artifact `0ad1dd758ebc0b62f86f19bdc645abaeb5b7d48fee7513aa8a5c0c65a2721a17`;
+- output artifact `db439a8b92e737663951814d918ab16dfabef454c5559f87fee60ca76061d327`;
+- first-control artifact `b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`;
+- system national bot `0115c5844961011d920d012edbba30eb23171de0f5649f5b46e75a0e6bd94bef`;
+- system precompute `8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627`.
+
+These are review inputs, not a published Bot, certificate or strength sample.
+Focused positive/negative regressions exist for all five repairs and the final
+focused shard is `148 passed`. The prior `2853 passed` result is historical;
+the current source identities passed the complete Web suite at `2901 passed,
+20 skipped, 1 warning` in 156.14 seconds. Merge remains unclaimed.
+
+## Codex-only Worker MCP boundary and three-commit pending series
+
+`worker-mcp/**` is an inert external control-plane helper for Codex desktop/CLI
+sessions. It is not an evolution Worker or poker component: `web/core`, the
+Orchestrator, WorkerWorkflow, launchers, daemons, `.evolution_pok`, candidate
+generation, checkpoints, evidence and ratings must never import, start,
+supervise or call it. Source merge and operator installation/restart remain
+separate actions and supply zero poker acceptance credit.
+
+The still-unmerged candidate series must be reviewed and included in this exact
+order:
+
+1. `4a458dc8fdf65a6105cb3d06f435a76a05576a1e` — fixes the root cause that
+   per-session STDIO processes contend for the singleton TaskService state lock
+   by providing one shared authenticated loopback Streamable HTTP daemon for
+   multi-Codex sessions;
+2. `7bd7c78ce72924c4899fd5403c188c14ea98deec` — credential separation and
+   validate/pre-bind hardening, but with the escaped-secret gap fixed by its
+   child;
+3. `c7a254ce14863926c5da31a9387288170d7fb05d` (parent exactly
+   `7bd7c78ce72924c4899fd5403c188c14ea98deec`) — recursively scans raw strings
+   before task/audit serialization and covers escaped/nested credentials.
+
+Independent review found that `7bd7c78c` compared the raw access secret with
+`model_dump_json()` output, allowing JSON escaping to hide the same secret.
+Child `c7a254ce` closes that P1 and the complete Worker MCP suite reports
+`118 passed`. Do not cherry-pick a subset: the accepted candidate order is
+`4a458dc8` → `7bd7c78c` → `c7a254ce`. Installed MCP health remains separate
+from source review and supplies no poker acceptance evidence.
+
+Next work, in order:
+
+1. Review the complete dirty alignment tree and close every remaining
+   `repairing` matrix row with focused and full source tests.
+2. Commit, push and merge the frozen tree to `origin/main`.
+3. Stop-state synchronize `.evolution_pok`, run recovery diagnostics, and use
+   controlled abandon/re-prepare if the evaluation contract changed.
+4. Re-prove the provenance-bound clean-room strict-v1 blueprint and use it to
+   prepare strict v143; do not import LLL source/history or change the pinned
+   source/policy/artifact identities without a new reviewed provenance record.
+5. Complete Master → Worker → quality → review → advisory Critic → native TCP
+   precommit → operator first-strict bootstrap → commit → `.completed` → signed
+   certificate → paired annotated tags. It then appears as Web `Bot 1` with
+   real tag `national-bot-v143`.
+6. Publish v144 through normal 5+3×70 official-full-v5, establish the immutable
+   two-Bot native rating cycle, and only then begin the resettable 10-generation
+   stability observation from `0/10`.

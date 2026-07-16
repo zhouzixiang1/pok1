@@ -10,6 +10,7 @@ import pytest
 
 
 SYSTEM_BOOTSTRAP_FILES = {
+    "scripts/build_national_preflop_equity_table.py",
     "scripts/reset_national_tcp_policy_epoch.py",
     "web/core/system_strict_bootstrap.py",
     "web/core/strict_authority_workflow.py",
@@ -70,7 +71,7 @@ def test_system_control_plane_is_exact_and_restart_critical_at_every_stage():
         | ORCHESTRATOR_ROOT_GUARD_FILES
         | FORMAL_BOOTSTRAP_FILES
     )
-    assert evaluation_contract.CONTRACT_VERSION == 31
+    assert evaluation_contract.CONTRACT_VERSION == 32
     assert SYSTEM_BOOTSTRAP_FILES == set(
         evolution_scope.CRITICAL_SYSTEM_BOOTSTRAP_EXACT
     )
@@ -89,6 +90,10 @@ def test_system_control_plane_is_exact_and_restart_critical_at_every_stage():
         evolution_scope.CRITICAL_EVALUATION_GATE_EXACT
     )
     assert expected <= evolution_scope.CRITICAL_GENERATION_EXACT
+    assert evolution_scope.classify_path(
+        "scripts/build_national_preflop_equity_table.py",
+        candidate_v=143,
+    ) == "critical"
 
     for stage in (
         "prepared",

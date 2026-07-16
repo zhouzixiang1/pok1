@@ -31,9 +31,9 @@ from national_runtime_probe_scenarios import (
 )
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 14
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 14
-RUNTIME_PROBE_WORKER_VERSION = 15
+RUNTIME_PROBE_SCHEMA_VERSION = 15
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 15
+RUNTIME_PROBE_WORKER_VERSION = 16
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
@@ -458,6 +458,7 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         "persistent_memory": result.get("persistent_memory") or {},
         "policy_entrypoints": result.get("policy_entrypoints") or {},
         "policy_counterfactuals": result.get("policy_counterfactuals") or {},
+        "match_control_consumer": result.get("match_control_consumer") or {},
         "budget_scaled_refinement": scaling_view,
         "managed_isolation": result.get("managed_isolation") or {},
     }

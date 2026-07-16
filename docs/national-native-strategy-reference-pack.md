@@ -114,8 +114,10 @@ helper, and deterministic draw-without-replacement. These objects are created
 once when the persistent policy worker imports `precompute.py`; policy decisions
 perform no file I/O and do not rebuild them.
 
-The 169 values are a compact ordering/calibration prior, not an exact solution
-or a claim of heads-up strength. Postflop comparisons use the complete evaluator;
+The 169 values are fixed-seed 65,536-sample-per-class heads-up preflop equity
+estimates, not an exact solution or a claim of match strength. Their producer
+binds the official evaluator/Card source hashes, CPython 3.14.4 RNG source,
+class seed derivation, and opponent/board draw order. Postflop comparisons use the complete evaluator;
 uncertain future cards use bounded deterministic samples. Foundation facts do
 not become an innovation until a same-shape/value or coherent-state control
 changes a live legal intent at the socket validator.

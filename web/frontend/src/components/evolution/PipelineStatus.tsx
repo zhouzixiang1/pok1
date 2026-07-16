@@ -317,6 +317,12 @@ export function PipelineStatus({
                       );
                     }
                     const passed = gate.passed ?? gate.all_passed ?? gate.approved;
+                    const acceptance = gate.national_acceptance;
+                    const acceptanceTiming = (
+                      acceptance && typeof acceptance === "object"
+                      ? acceptance
+                      : null
+                    );
                     return (
                       <div key={key} className="flex items-start gap-1.5 text-[10px] pl-2 border-l-2 border-brand-300">
                         <span className="shrink-0 mt-px">{passed ? <CheckIcon className="text-success-600" /> : <CrossIcon className="text-error-500" />}</span>
@@ -325,6 +331,20 @@ export function PipelineStatus({
                           {gate.quality_score != null && <span className="ml-1 text-gray-400">分数 {String(gate.quality_score)}</span>}
                           {gate.score != null && <span className="ml-1 text-gray-400">分数 {String(gate.score)}</span>}
                           {gate.decision_pass_rate != null && <span className="ml-1 text-gray-400">决策 {String(Math.round(gate.decision_pass_rate * 100))}%</span>}
+                          {acceptanceTiming && (
+                            <p className={acceptanceTiming.timing_ok === true ? "text-gray-400" : "text-error-500"}>
+                              原生 70 手计时证据：{acceptanceTiming.timing_ok === true ? "已绑定" : "缺失/漂移"}
+                              {typeof acceptanceTiming.native_match_timing_plan_digest === "string" && (
+                                <span className="ml-1 font-mono">{acceptanceTiming.native_match_timing_plan_digest.slice(0, 12)}</span>
+                              )}
+                              {acceptanceTiming.native_match_timeout_phase != null && (
+                                <span className="ml-1">timeout={String(acceptanceTiming.native_match_timeout_phase)}</span>
+                              )}
+                              {acceptanceTiming.native_terminal_abort && (
+                                <span className="ml-1">abort={String(acceptanceTiming.native_terminal_abort.code || "unknown")}</span>
+                              )}
+                            </p>
+                          )}
                         </div>
                       </div>
                     );

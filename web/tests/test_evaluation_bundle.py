@@ -21,6 +21,7 @@ def _write_jsonl(path, rows):
 def _patch_results(monkeypatch, tmp_path):
     import evaluation_data_identity
     import evolution_infra
+    import rating_snapshot
 
     results = tmp_path / "results"
     results.mkdir()
@@ -33,6 +34,14 @@ def _patch_results(monkeypatch, tmp_path):
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results / "rating_history.jsonl")
     identity_manifest = evaluation_data_identity.ensure_evaluation_data_identity(results)
     assert identity_manifest["schema_version"] == 4
+    # Bundle tests isolate immutable publication mechanics.  Exact raw-byte
+    # replay parsing is exercised in the admission/replay tests; this stub
+    # still leaves the history-row 70-hand/timing checks in place.
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_load_verified_history_replay",
+        lambda entry, **_kwargs: dict(entry),
+    )
     return results, identity_manifest
 
 
@@ -101,9 +110,50 @@ def _write_cycle_files(
             "pairs": {},
         },
     )
+    enriched_match_rows = [identity_bound(row) for row in match_history_rows]
+    # A nonempty H2H cache must have an exact current-history projection.  The
+    # synthetic summaries below keep generic bundle tests focused on manifest
+    # behavior while preserving that causal relationship.
+    if h2h:
+        from national_native import build_native_match_timing_plan
+
+        timing_plan = build_native_match_timing_plan(
+            hands=70,
+            requested_timeout_sec=None,
+        )
+        for index, (key, row) in enumerate(sorted(h2h.items()), start=1):
+            parts = [part.strip() for part in str(key).split(" vs ")]
+            if len(parts) != 2 or not isinstance(row, dict):
+                continue
+            try:
+                a_wins = int(row.get("a_wins", 0) or 0)
+                b_wins = int(row.get("b_wins", 0) or 0)
+                draws = int(row.get("draws", 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if min(a_wins, b_wins, draws) < 0:
+                continue
+            samples = [1] * a_wins + [-1] * b_wins + [0] * draws
+            enriched_match_rows.append(identity_bound({
+                "id": f"synthetic-{index:04d}.json",
+                "bot0": parts[0],
+                "bot1": parts[1],
+                "bot0_wins": a_wins,
+                "bot1_wins": b_wins,
+                "draws": draws,
+                "strength_sample_unit": "70_hand_match",
+                "hands_per_strength_sample": 70,
+                "strength_admitted": True,
+                "strength_complete": True,
+                "strength_compliance_passed": True,
+                "strength_sample_count": len(samples),
+                "net_chips_bot0": samples,
+                "native_match_timing_plan": timing_plan.snapshot(),
+                "native_match_timing_plan_digest": timing_plan.digest(),
+            }))
     _write_jsonl(
         results / "match_history.jsonl",
-        [identity_bound(row) for row in match_history_rows],
+        enriched_match_rows,
     )
     _write_jsonl(
         results / "rating_history.jsonl",
@@ -455,6 +505,72 @@ def test_publication_rejects_cross_file_semantic_mismatch(monkeypatch, tmp_path)
         _publish(results, active)
 
 
+def test_publication_rejects_same_coverage_h2h_with_forged_wld(
+    monkeypatch, tmp_path
+):
+    """A cache cannot pass publication merely by covering the same pair."""
+
+    results, _identity = _patch_results(monkeypatch, tmp_path)
+    active = ["national_v1", "national_v2"]
+    _write_cycle_files(
+        results,
+        active,
+        h2h={
+            "national_v1 vs national_v2": {
+                "games": 10,
+                "a_wins": 2,
+                "b_wins": 8,
+                "draws": 0,
+            }
+        },
+    )
+    history_path = results / "match_history.jsonl"
+    history = [json.loads(line) for line in history_path.read_text().splitlines()]
+    strength = next(row for row in history if row.get("strength_admitted") is True)
+    strength.update({
+        "bot0_wins": 8,
+        "bot1_wins": 2,
+        "draws": 0,
+        "strength_sample_count": 10,
+        "net_chips_bot0": [1] * 8 + [-1] * 2,
+    })
+    history_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in history),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="stored_h2h_raw_history_mismatch"):
+        _publish(results, active)
+
+
+def test_publication_rejects_cache_that_was_not_rebuilt_from_raw_history(
+    monkeypatch, tmp_path
+):
+    results, _identity = _patch_results(monkeypatch, tmp_path)
+    active = ["national_v1", "national_v2"]
+    _write_cycle_files(
+        results,
+        active,
+        h2h={
+            "national_v1 vs national_v2": {
+                "games": 2,
+                "a_wins": 1,
+                "b_wins": 1,
+                "draws": 0,
+            }
+        },
+    )
+    _write_json(results / "head_to_head.json", {})
+    selection_path = results / "selection_snapshot.json"
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    for row in selection["rows"]:
+        row["h2h_games"] = 0
+    _write_json(selection_path, selection)
+
+    with pytest.raises(ValueError, match="cache was not rebuilt"):
+        _publish(results, active)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "issue"),
     [
@@ -509,6 +625,7 @@ def test_daemon_authoritative_save_publishes_one_complete_cycle(monkeypatch, tmp
     import elo_daemon
     import evaluation_data_identity
     import evolution_infra
+    import rating_snapshot
     from evaluation_bundle import load_published_evaluation_bundle
     from glicko2 import Glicko2Player
 
@@ -526,6 +643,12 @@ def test_daemon_authoritative_save_publishes_one_complete_cycle(monkeypatch, tmp
     }
     for name, value in paths.items():
         monkeypatch.setattr(elo_daemon, name, value)
+    monkeypatch.setattr(elo_daemon, "REPLAY_DIR", results / "match_replay")
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_load_verified_history_replay",
+        lambda entry, **_kwargs: dict(entry),
+    )
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
     monkeypatch.setattr(evolution_infra, "MATCH_HISTORY_FILE", paths["MATCH_HISTORY_FILE"])
     monkeypatch.setattr(elo_daemon, "daemon_run_id", "daemon-test")
@@ -537,7 +660,35 @@ def test_daemon_authoritative_save_publishes_one_complete_cycle(monkeypatch, tmp
     monkeypatch.setattr(elo_daemon, "daemon_last_cycle_manifest_digest", None)
     monkeypatch.setattr(elo_daemon, "daemon_last_cycle_save_num", None)
     monkeypatch.setattr(elo_daemon, "_daemon_writer_lease_fd", None)
-    paths["MATCH_HISTORY_FILE"].write_text("", encoding="utf-8")
+    from national_native import build_native_match_timing_plan
+
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=None,
+    )
+    paths["MATCH_HISTORY_FILE"].write_text(
+        json.dumps({
+            "id": "synthetic-daemon-cycle.json",
+            "bot0": "national_v1",
+            "bot1": "national_v2",
+            "bot0_wins": 9,
+            "bot1_wins": 11,
+            "draws": 0,
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "execution_mode": "native_tcp",
+            "evaluation_identity_digest": identity_manifest["manifest_digest"],
+            "strength_sample_unit": "70_hand_match",
+            "hands_per_strength_sample": 70,
+            "strength_admitted": True,
+            "strength_complete": True,
+            "strength_compliance_passed": True,
+            "strength_sample_count": 20,
+            "net_chips_bot0": [1] * 9 + [-1] * 11,
+            "native_match_timing_plan": timing_plan.snapshot(),
+            "native_match_timing_plan_digest": timing_plan.digest(),
+        }) + "\n",
+        encoding="utf-8",
+    )
     active = ["national_v1", "national_v2"]
     ratings = {
         name: Glicko2Player(r=1500, rd=90, sigma=0.06) for name in active
@@ -575,3 +726,64 @@ def test_daemon_authoritative_save_publishes_one_complete_cycle(monkeypatch, tmp
     assert len(bundle["selection"]["rows"]) == 2
     assert bundle["selection"]["rating_history_tail"][-1]["period"] == 7
     assert json.loads(bundle["raw_append_logs"]["rating_history"])["period"] == 7
+
+
+def test_save_cycle_keeps_scheduler_h2h_at_retained_raw_projection(monkeypatch):
+    """The next rating period must not reintroduce rotated-out cache rows."""
+
+    import elo_daemon
+    import rating_snapshot
+
+    retained = {
+        "national_v143 vs national_v144": {
+            "games": 1,
+            "a_wins": 1,
+            "b_wins": 0,
+            "draws": 0,
+            "win_rate": 1.0,
+        }
+    }
+    monkeypatch.setattr(
+        rating_snapshot,
+        "choose_h2h_source",
+        lambda *_args, **_kwargs: {
+            "h2h": retained,
+            "stored_h2h": retained,
+            "integrity_ok": True,
+            "integrity_issues": [],
+            "stored_coverage": {"covered_pairs": 1, "total_pairs": 1, "coverage": 1.0},
+            "rebuilt_coverage": {"covered_pairs": 1, "total_pairs": 1, "coverage": 1.0},
+        },
+    )
+
+    def fake_publish(_ratings, h2h_out, *_args, **_kwargs):
+        h2h_out.clear()
+        h2h_out.update(retained)
+        return {"manifest_digest": "f" * 64}
+
+    monkeypatch.setattr(elo_daemon, "_save_authoritative_evaluation_cycle", fake_publish)
+    monkeypatch.setattr(elo_daemon, "log_system_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(elo_daemon, "load_stats", lambda: {})
+    monkeypatch.setattr(elo_daemon, "cleanup_old_replays", lambda: None)
+    monkeypatch.setattr(elo_daemon, "_refresh_action_stats_async", lambda *_args: None)
+    h2h = {
+        "national_v143 vs national_v144": {
+            "games": 99,
+            "a_wins": 99,
+            "b_wins": 0,
+            "draws": 0,
+            "win_rate": 1.0,
+        }
+    }
+    stats = {}
+
+    elo_daemon.save_cycle(
+        {},
+        h2h,
+        {},
+        stats,
+        1,
+        ["national_v143", "national_v144"],
+    )
+
+    assert h2h == retained

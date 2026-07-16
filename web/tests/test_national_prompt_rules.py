@@ -543,3 +543,40 @@ def test_active_prompts_use_call_to_pass_after_postflop_check():
     assert "second postflop pass after a check is wire `call`" in master
     assert "after the first postflop action a pass is `call`" in worker_normalized
     assert "after a postflop check the second pass is call, not check" in crossover
+
+
+def test_all_roles_treat_native_timing_and_liveness_as_system_not_strategy():
+    prompts = {
+        "master": _prompt("master_prompt.md"),
+        "worker": _prompt("worker_profile_national_native.md"),
+        "reviewer": _prompt("reviewer_prompt.md"),
+        "critic": _prompt("critic_prompt.md"),
+        "orchestrator": _prompt("orchestrator.md"),
+    }
+    for role, prompt in prompts.items():
+        assert "34-request" in prompt, role
+        assert "NativeMatchTimingPlan" in prompt, role
+    assert "not strategic evidence" in prompts["critic"]
+    assert "at most one absolute" in prompts["orchestrator"]
+
+
+def test_all_roles_bind_the_v10_strong_baseline_controls():
+    prompts = {
+        "master": _prompt("master_prompt.md"),
+        "worker": _prompt("worker_profile_national_native.md"),
+        "reviewer": _prompt("reviewer_prompt.md"),
+        "critic": _prompt("critic_prompt.md"),
+        "orchestrator": _prompt("orchestrator.md"),
+    }
+    for role, prompt in prompts.items():
+        for token in (
+            "169-class",
+            "match_control",
+            "call_closes_allin_runout",
+            "allin",
+            "position",
+            "current",
+            "board",
+        ):
+            assert token in prompt, (role, token)
+        assert "neutral" in prompt or "fail-closed" in prompt, role

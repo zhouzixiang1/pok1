@@ -995,6 +995,12 @@ def validate_commit_gate_ledger(
                                 )
                                 or ""
                             ),
+                            "native_match_timing_plan_digest": str(
+                                (((precommit_plan or {}).get("settings") or {}).get(
+                                    "native_match_timing_plan_digest"
+                                ))
+                                or ""
+                            ),
                             "precommit_attempt": int(
                                 ckpt.get("precommit_attempt") or 0
                             ),

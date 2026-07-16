@@ -200,6 +200,26 @@ def test_official_ui_distinguishes_first_strict_control_from_normal_full_profile
     assert "不猜测为普通 5+3" in bots
 
 
+def test_bot_page_sequence_is_presentation_only_and_keeps_real_tag_visible():
+    bots = (FRONTEND / "pages" / "BotManager.tsx").read_text(encoding="utf-8")
+
+    assert "displayOrdinalByName" in bots
+    assert ".sort((a, b) => a.version - b.version)" in bots
+    assert ".map((bot, index) => [bot.name, index + 1] as const)" in bots
+    assert "Bot {displayOrdinal}" in bots
+    assert "tag: {completionTag}" in bots
+    assert "`national-bot-v${bot.version}`" in bots
+    assert "bot.active === true" in bots
+    assert "bot.tagged === true" in bots
+    assert "真实身份以旁列 annotated completion tag 为准" in bots
+    # Display order must not reuse strength rank or mutate any frozen DTO.
+    ordinal_block = bots[bots.index("const displayOrdinalByName"):bots.index("const bots = useMemo", bots.index("const displayOrdinalByName"))]
+    assert ".rank" not in ordinal_block
+    assert "selection_score" not in ordinal_block
+    assert "leaderboard_score" not in ordinal_block
+    assert "updateData" not in ordinal_block
+
+
 def test_official_ui_preserves_jobless_digest_bound_bootstrap_failure_and_normal_stage_jobs():
     source = (FRONTEND / "components" / "evolution" / "OfficialCertificationProgress.tsx").read_text(encoding="utf-8")
 

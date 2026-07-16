@@ -8,6 +8,19 @@ import pytest
 IDENTITY = "a" * 64
 
 
+@pytest.fixture(autouse=True)
+def _unit_history_rows_have_a_verified_raw_replay(monkeypatch):
+    """Isolate H2H math; raw-byte binding has dedicated integration tests."""
+
+    import rating_snapshot
+
+    monkeypatch.setattr(
+        rating_snapshot,
+        "_load_verified_history_replay",
+        lambda entry, **_kwargs: dict(entry),
+    )
+
+
 def _write_jsonl(path, rows):
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
@@ -23,7 +36,13 @@ def _history_row(
     epoch="national_tcp_policy_v1",
     execution_mode="native_tcp",
 ):
+    from national_native import build_native_match_timing_plan
+
     samples = [100] * bot0_wins + [-100] * bot1_wins + [0] * draws
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=None,
+    )
     return {
         "bot0": bot0,
         "bot1": bot1,
@@ -40,6 +59,8 @@ def _history_row(
         "strength_compliance_passed": True,
         "strength_sample_count": len(samples),
         "net_chips_bot0": samples,
+        "native_match_timing_plan": timing_plan.snapshot(),
+        "native_match_timing_plan_digest": timing_plan.digest(),
     }
 
 
@@ -47,9 +68,9 @@ def test_rebuilds_active_h2h_from_match_history(tmp_path):
     from rating_snapshot import choose_h2h_source
 
     active = ["national_v143", "national_v144", "national_v145"]
-    stored = {
-        "national_v143 vs national_v144": {"games": 50, "a_wins": 50, "b_wins": 0, "draws": 0},
-    }
+    # An empty cache is recoverable: the verified raw-history projection is
+    # the only source of current H2H authority.
+    stored = {}
     history = tmp_path / "match_history.jsonl"
     _write_jsonl(history, [
         _history_row("national_v143", "national_v144", 10, 40),
@@ -65,8 +86,9 @@ def test_rebuilds_active_h2h_from_match_history(tmp_path):
     )
 
     assert selected["source"] == "match_history_rebuilt"
+    assert selected["integrity_ok"] is True
     assert selected["coverage"]["covered_pairs"] == 3
-    assert selected["stored_coverage"]["covered_pairs"] == 1
+    assert selected["stored_coverage"]["covered_pairs"] == 0
     assert selected["h2h"]["national_v143 vs national_v144"]["a_wins"] == 10
 
 
@@ -78,9 +100,7 @@ def test_strength_rows_sort_by_rebuilt_active_pool_not_sparse_stored_h2h(tmp_pat
         "national_v144": {"r": 1500, "rd": 80, "sigma": 0.06},
         "national_v145": {"r": 1500, "rd": 80, "sigma": 0.06},
     }
-    stored = {
-        "national_v143 vs national_v144": {"games": 10, "a_wins": 10, "b_wins": 0, "draws": 0},
-    }
+    stored = {}
     stats = {name: {"games": 100, "win_rate": 0.5} for name in ratings}
     history = tmp_path / "match_history.jsonl"
     _write_jsonl(history, [
@@ -103,6 +123,49 @@ def test_strength_rows_sort_by_rebuilt_active_pool_not_sparse_stored_h2h(tmp_pat
     assert rows[0]["h2h_coverage"] == 1.0
     assert rows[0]["h2h_avg_wr"] == 0.8
     assert rows[0]["rank_basis"] == "active_h2h_plus_conservative"
+
+
+def test_same_coverage_forged_stored_h2h_fails_closed_for_selection(tmp_path):
+    """Equal pair coverage is not proof that W/L/D is the same evidence."""
+
+    from rating_snapshot import build_strength_rows, choose_h2h_source
+
+    active = ["national_v143", "national_v144"]
+    history = tmp_path / "match_history.jsonl"
+    _write_jsonl(history, [_history_row(active[0], active[1], 7, 3)])
+    forged_same_coverage = {
+        "national_v143 vs national_v144": {
+            "games": 10,
+            "a_wins": 3,
+            "b_wins": 7,
+            "draws": 0,
+            "win_rate": 0.3,
+        },
+    }
+
+    selected = choose_h2h_source(
+        active,
+        forged_same_coverage,
+        history,
+        expected_evaluation_identity_digest=IDENTITY,
+    )
+    assert selected["stored_coverage"] == selected["rebuilt_coverage"]
+    assert selected["integrity_ok"] is False
+    assert "stored_h2h_raw_history_mismatch" in selected["integrity_issues"]
+    # The returned projection remains raw-history data for diagnostics, but no
+    # selection row may use it while the persisted cache is contradictory.
+    assert selected["h2h"]["national_v143 vs national_v144"]["a_wins"] == 7
+
+    rows = build_strength_rows(
+        {name: {"r": 1500, "rd": 80, "sigma": 0.06} for name in active},
+        {},
+        forged_same_coverage,
+        active_bots=active,
+        match_history_path=history,
+        expected_evaluation_identity_digest=IDENTITY,
+    )
+    assert all(row["h2h_source"] == "match_history_integrity_failed" for row in rows)
+    assert all(row["h2h_games"] == 0 for row in rows)
 
 
 def test_inactive_h2h_rows_cannot_change_active_selection_scores(tmp_path):
@@ -131,18 +194,28 @@ def test_inactive_h2h_rows_cannot_change_active_selection_scores(tmp_path):
         },
     }
     history = tmp_path / "match_history.jsonl"
-    history.write_text("", encoding="utf-8")
+    _write_jsonl(history, [_history_row("national_v143", "national_v144", 50, 50)])
 
     clean_rows = {
         row["name"]: row
         for row in build_strength_rows(
-            ratings, stats, active_h2h, active_bots=active, match_history_path=history
+            ratings,
+            stats,
+            active_h2h,
+            active_bots=active,
+            match_history_path=history,
+            expected_evaluation_identity_digest=IDENTITY,
         )
     }
     polluted_rows = {
         row["name"]: row
         for row in build_strength_rows(
-            ratings, stats, polluted, active_bots=active, match_history_path=history
+            ratings,
+            stats,
+            polluted,
+            active_bots=active,
+            match_history_path=history,
+            expected_evaluation_identity_digest=IDENTITY,
         )
     }
     selected = choose_h2h_source(
@@ -168,7 +241,7 @@ def test_h2h_winrate_counts_draws_as_half():
     assert h2h_winrate_for_bot("national_v144", h2h) == 0.45
 
 
-def test_low_confidence_rows_get_selection_penalty():
+def test_low_confidence_rows_get_selection_penalty(tmp_path):
     from rating_snapshot import build_strength_rows
 
     ratings = {
@@ -179,7 +252,20 @@ def test_low_confidence_rows_get_selection_penalty():
         "national_v143 vs national_v144": {"games": 100, "a_wins": 50, "b_wins": 50, "draws": 0},
     }
 
-    rows = {row["name"]: row for row in build_strength_rows(ratings, {}, h2h)}
+    # A cache alone is never selection authority; this unit test is about the
+    # confidence penalty, so provide a matching verified-history projection.
+    history = tmp_path / "match_history.jsonl"
+    _write_jsonl(history, [_history_row("national_v143", "national_v144", 50, 50)])
+    rows = {
+        row["name"]: row
+        for row in build_strength_rows(
+            ratings,
+            {},
+            h2h,
+            match_history_path=history,
+            expected_evaluation_identity_digest=IDENTITY,
+        )
+    }
 
     assert rows["national_v143"]["strength_confidence"] == "low"
     assert rows["national_v143"]["selection_penalty"] == 0.03
@@ -275,14 +361,22 @@ def test_missing_expected_identity_disables_all_history_influence(tmp_path):
     rows = build_strength_rows(
         ratings,
         {},
-        {},
+        {
+            "national_v143 vs national_v144": {
+                "games": 20,
+                "a_wins": 20,
+                "b_wins": 0,
+                "draws": 0,
+            }
+        },
         active_bots=active,
         match_history_path=history,
+        h2h_is_authoritative=True,
     )
 
     assert all(row["h2h_games"] == 0 for row in rows)
     assert all(row["strength_sample_count"] == 0 for row in rows)
     assert all(
-        row["h2h_source"] == "head_to_head_history_identity_unavailable"
+        row["h2h_source"] == "match_history_identity_invalid"
         for row in rows
     )

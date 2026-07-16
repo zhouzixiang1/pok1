@@ -68,7 +68,7 @@ export interface HistoryEntry {
   period: number;
   timestamp: string;
   ratings: Record<string, { r: number; rd: number }>;
-  win_rates?: Record<string, { h2h_avg_wr?: number; games: number }>;
+  win_rates?: Record<string, { h2h_avg_wr?: number | null; games: number }>;
 }
 
 export interface GenerationLog {
@@ -417,6 +417,21 @@ export interface PipelineGateResult {
   feedback?: string;
   strategic_assessment?: string;
   decision_pass_rate?: number;
+  /** Typed native acceptance projection; UI must display, never recompute it. */
+  national_acceptance?: NativeAcceptanceTimingProjection;
+  [key: string]: unknown;
+}
+
+export interface NativeAcceptanceTimingProjection {
+  timing_ok?: boolean;
+  coverage_ok?: boolean;
+  conclusive?: boolean;
+  expected_hands?: number;
+  observed_hands?: number[];
+  native_match_timing_plan_digest?: string;
+  native_match_timeout_phase?: string | null;
+  native_terminal_abort?: { code?: string } | null;
+  issues?: string[];
   [key: string]: unknown;
 }
 

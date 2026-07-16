@@ -69,6 +69,12 @@ Every formal native bot must preserve these boundaries:
 9. Active code and prompts never import, execute, retrieve, or summarize files
    below `archive/`. Historical artifacts cannot be promoted by adding current
    field names to an old record.
+10. Runtime v10 publishes `hand.match_control` and
+   `betting.call_closes_allin_runout`. The former is an exact system proof of
+   current exposure plus all future alternating forced blinds and permits a
+   lock-win fold only for a strict lead. The latter is the sole authority for
+   whether a call ends all future action. Candidate consumers fail neutral on
+   missing or inconsistent fields and never reconstruct either value.
 
 ## Local References And Space-Time Tradeoff
 
@@ -88,9 +94,12 @@ uncurated strategy encyclopedia would recreate the same weak-model ambiguity
 under a larger token budget.
 
 Every fresh policy candidate also receives compact import-time poker facts from
-`NATIVE_PRECOMPUTE_TEMPLATE`: all 1,326 hole-card combinations, all 8,192
-13-rank straight masks, and the 21 five-of-seven index combinations. This is a
-useful space-for-time foundation, but not an innovation by itself; a selected
+`NATIVE_PRECOMPUTE_TEMPLATE`: all 1,326 hole-card combinations, a calibrated
+169-class heads-up preflop equity table, all 8,192 13-rank straight masks, and
+the 21 five-of-seven index combinations. The table is generated offline by a
+fixed-seed critical producer that binds the official evaluator/Card sources
+and exact CPython RNG identity. This is a useful space-for-time foundation,
+but not an innovation by itself; a selected
 precompute primary must prove a state-varying lookup changes a final validated
 typed decision and that its empty-table fallback remains legal.
 

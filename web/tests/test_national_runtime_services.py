@@ -1,4 +1,5 @@
 import asyncio
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
@@ -11,6 +12,11 @@ from national_arena.manager import ArenaConflict, NationalArenaManager, _ArenaRu
 from national_arena.models import ArenaSession
 from national_arena.storage import ArenaStore
 from national_bot_launcher import native_entry_supports_log_arg
+from national_game_runtime import (
+    NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND,
+    NationalHandActionLimitExceeded,
+    NationalTCPGameEngine,
+)
 from runtime_capacity import (
     CAPACITY_FIRST_SLOT_ENV,
     CAPACITY_TOTAL_SLOTS_ENV,
@@ -38,6 +44,97 @@ def test_native_entry_log_capability_is_static_only(tmp_path):
 def test_native_launcher_module_has_no_subprocess_plan_api():
     assert not hasattr(national_bot_launcher, "build_native_bot_launch")
     assert not hasattr(national_bot_launcher, "NativeBotLaunchPlan")
+
+
+def test_active_national_validator_allows_the_tight_34_request_hand():
+    """Prove the system-owned 20k action bound with a real legal witness.
+
+    The sequence is 7 preflop + 8 flop + 9 turn + 10 river requests under
+    active 50/100, raise-to, and doubling-minimum validator semantics.  It
+    must settle normally; the native liveness guard may not reject a legal
+    maximum-shaped hand.
+    """
+
+    class Client:
+        def __init__(self, name, actions):
+            self.name = name
+            self._actions = deque(actions)
+            self.sent = []
+
+        async def send_message(self, message):
+            self.sent.append(message)
+
+        async def recv_action(self, timeout):
+            assert timeout == 60.0
+            return self._actions.popleft()
+
+    player0 = Client("A", [
+        "call", "raise 400", "raise 1600", "call",
+        "raise 100", "raise 400", "raise 1600", "call",
+        "raise 100", "raise 400", "raise 1600", "raise 6400",
+        "raise 100", "raise 400", "raise 1600", "raise 6400", "call",
+    ])
+    player1 = Client("B", [
+        "raise 200", "raise 800", "raise 3200",
+        "check", "raise 200", "raise 800", "raise 3200",
+        "check", "raise 200", "raise 800", "raise 3200", "call",
+        "check", "raise 200", "raise 800", "raise 3200", "allin",
+    ])
+    events = []
+
+    asyncio.run(
+        NationalTCPGameEngine([player0, player1], events).run_limited_match(
+            "A", "B", 1
+        )
+    )
+
+    assert len([e for e in events if e.get("type") == "action_requested"]) == (
+        NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND
+    )
+    assert len([e for e in events if e.get("type") == "settle"]) == 1
+    assert not [e for e in events if e.get("type") == "hand_action_limit_reached"]
+    assert not player0._actions and not player1._actions
+
+
+def test_native_hand_guard_rejects_a_35th_request_without_fabricating_closure():
+    class Client:
+        name = "A"
+
+        async def send_message(self, _message):
+            return None
+
+        async def recv_action(self, _timeout):
+            return "fold"
+
+    async def scenario():
+        events = []
+        sink_events = []
+
+        async def sink(event):
+            sink_events.append(event)
+
+        engine = NationalTCPGameEngine(
+            [Client(), Client()],
+            events,
+            event_sink=sink,
+        )
+        await engine._record_event({"type": "hand_start", "hand": 1})
+        for _ in range(NATIONAL_20000_CHIP_MAX_ACTION_REQUESTS_PER_HAND):
+            await engine._record_event({"type": "action_requested", "hand": 1})
+        with pytest.raises(NationalHandActionLimitExceeded):
+            await engine._record_event({"type": "action_requested", "hand": 1})
+        return events, sink_events
+
+    events, sink_events = asyncio.run(scenario())
+    assert len([e for e in events if e.get("type") == "action_requested"]) == 34
+    expected = {
+        "type": "hand_action_limit_reached",
+        "hand": 1,
+        "limit": 34,
+        "actions_observed": 35,
+    }
+    assert [e for e in events if e.get("type") == "hand_action_limit_reached"] == [expected]
+    assert expected in sink_events
 
 
 def test_runtime_capacity_lease_reserves_slots_across_callers(tmp_path):

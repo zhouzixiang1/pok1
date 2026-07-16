@@ -41,6 +41,7 @@ CRITICAL_NATIONAL_PLATFORM_EXACT = frozenset({
 # restart an in-flight generation, while omitting one file would let the first
 # strict candidate change without evaluation-contract drift.
 CRITICAL_SYSTEM_BOOTSTRAP_EXACT = frozenset({
+    "scripts/build_national_preflop_equity_table.py",
     "scripts/reset_national_tcp_policy_epoch.py",
     "web/core/system_strict_bootstrap.py",
     "web/core/strict_authority_workflow.py",

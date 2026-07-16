@@ -263,6 +263,7 @@ def _national_acceptance_executed(
     report: dict,
     *,
     expected_hands: int | None = None,
+    expected_timing_plan=None,
 ) -> tuple[bool, list[str], dict]:
     """Normalize native acceptance evidence without upgrading infra to pass."""
 
@@ -270,6 +271,10 @@ def _national_acceptance_executed(
     outcome = str(payload.get("outcome") or "")
     issues = [str(item) for item in (payload.get("issues") or [])]
     coverage_ok = True
+    timing_ok = True
+    timing_plan_digests: list[str] = []
+    timeout_phases: list[str] = []
+    terminal_aborts: list[dict] = []
     observed_hands: list[int] = []
     if expected_hands is not None:
         expected_hands = int(expected_hands)
@@ -299,6 +304,46 @@ def _national_acceptance_executed(
                 "national_acceptance_incomplete_hand_coverage:"
                 f"expected={expected_hands}:observed={observed_hands}"
             )
+    if expected_timing_plan is not None:
+        try:
+            from national_native import validate_native_match_timing_evidence
+
+            if payload.get("acceptance_kind") == "first_strict_self_play_compliance":
+                timing_results = [payload.get("result") or {}]
+            else:
+                timing_results = list(
+                    ((payload.get("report") or {}).get("results") or [])
+                )
+            if not timing_results:
+                timing_ok = False
+                issues.append("national_acceptance_timing_evidence_missing")
+            for index, result in enumerate(timing_results, start=1):
+                if isinstance(result, dict):
+                    digest = result.get("native_match_timing_plan_digest")
+                    if isinstance(digest, str):
+                        timing_plan_digests.append(digest)
+                    phase = result.get("native_match_timeout_phase")
+                    if phase is not None:
+                        timeout_phases.append(str(phase))
+                    abort = result.get("native_terminal_abort")
+                    if isinstance(abort, dict):
+                        terminal_aborts.append(dict(abort))
+                timing_issues = validate_native_match_timing_evidence(
+                    result,
+                    timing_plan=expected_timing_plan,
+                )
+                if timing_issues:
+                    timing_ok = False
+                    issues.extend(
+                        f"national_acceptance_timing_{index}:{item}"
+                        for item in timing_issues
+                    )
+        except Exception as exc:
+            timing_ok = False
+            issues.append(
+                "national_acceptance_timing_validation_error:"
+                f"{type(exc).__name__}"
+            )
     reported_passed = payload.get("passed") is True
     report_consistent = bool(
         outcome == "passed" and reported_passed and not issues
@@ -315,6 +360,7 @@ def _national_acceptance_executed(
         reported_passed
         and outcome == "passed"
         and coverage_ok
+        and timing_ok
         and report_consistent
     )
     payload.update({
@@ -323,16 +369,87 @@ def _national_acceptance_executed(
         "passed": passed,
         "conclusive": (
             coverage_ok
+            and timing_ok
             and report_consistent
             and outcome in {"passed", "candidate_failure"}
         ),
         "expected_hands": expected_hands,
         "observed_hands": observed_hands,
         "coverage_ok": coverage_ok,
+        "timing_ok": timing_ok,
+        "native_match_timing_plan_digest": (
+            timing_plan_digests[0]
+            if len(set(timing_plan_digests)) == 1
+            else None
+        ),
+        "native_match_timeout_phase": (
+            timeout_phases[0] if len(set(timeout_phases)) == 1 else None
+        ),
+        "native_terminal_abort": (
+            terminal_aborts[0] if len(terminal_aborts) == 1 else None
+        ),
         "report_consistent": report_consistent,
         "issues": issues,
     })
     return passed, issues, payload
+
+
+def _bind_quality_native_timing_plan(
+    checkpoint: dict | None,
+    timing_plan,
+) -> dict | None:
+    """Persist the quality match plan before it can emit a liveness sidecar.
+
+    A runtime heartbeat may only prolong the provider cycle when its digest is
+    already part of the active checkpoint.  This intentionally does not
+    rewrite a prior binding: a config/code drift becomes a hard quality error
+    instead of quietly changing an in-flight 70-hand evaluation.
+    """
+
+    if not isinstance(checkpoint, dict):
+        return None
+    existing = (checkpoint.get("audit_context") or {})
+    snapshot = timing_plan.snapshot()
+    digest = timing_plan.digest()
+    recorded = existing.get("quality_native_match_timing_plan")
+    recorded_digest = existing.get("quality_native_match_timing_plan_digest")
+    if recorded is not None or recorded_digest is not None:
+        if recorded != snapshot or recorded_digest != digest:
+            raise RuntimeError("quality_native_match_timing_plan_drift")
+        return checkpoint
+    if str(checkpoint.get("stage") or "") != "workers_done":
+        # No active gate-stage checkpoint means the runner may still execute
+        # its own bounded match, but it receives no orchestrator extension.
+        return checkpoint
+    from evolution_infra import write_pipeline_checkpoint
+
+    if not write_pipeline_checkpoint(
+        int(checkpoint["next_v"]),
+        int(checkpoint["source_v"]),
+        "workers_done",
+        audit_context={
+            "quality_native_match_timing_plan": snapshot,
+            "quality_native_match_timing_plan_digest": digest,
+        },
+        expected_checkpoint_revision=int(checkpoint.get("checkpoint_revision") or 0),
+        expected_checkpoint_stage="workers_done",
+        expected_workflow_run_id=str(checkpoint.get("workflow_run_id") or ""),
+    ):
+        raise RuntimeError("quality_native_match_timing_plan_bind_failed")
+    refreshed = _matching_checkpoint(
+        int(checkpoint["next_v"]),
+        int(checkpoint["source_v"]),
+    )
+    if not isinstance(refreshed, dict):
+        raise RuntimeError("quality_native_match_timing_plan_checkpoint_missing")
+    refreshed_context = refreshed.get("audit_context") or {}
+    if (
+        refreshed_context.get("quality_native_match_timing_plan") != snapshot
+        or refreshed_context.get("quality_native_match_timing_plan_digest")
+        != digest
+    ):
+        raise RuntimeError("quality_native_match_timing_plan_checkpoint_drift")
+    return refreshed
 
 
 def _official_gate_enabled(name: str, *, include_required: bool = True) -> bool:
@@ -1967,54 +2084,57 @@ async def run_quality_gates(args):
         "1",
     )
     national_acceptance_contract_error = ""
-    try:
-        national_acceptance_hands = int(
-            os.environ.get(
-                "POK_NATIONAL_ACCEPTANCE_HANDS",
-                str(workflow_profile.national_acceptance_hands),
-            )
-        )
-    except (TypeError, ValueError):
-        national_acceptance_hands = 0
-        national_acceptance_contract_error = (
-            "national_acceptance_hands_not_integer"
-        )
-    try:
-        national_acceptance_timeout_sec = float(
-            os.environ.get(
-                "POK_NATIONAL_ACCEPTANCE_TIMEOUT_SEC",
-                str(workflow_profile.national_acceptance_timeout_sec),
-            )
-        )
-    except (TypeError, ValueError):
-        national_acceptance_timeout_sec = 0.0
-        national_acceptance_contract_error = (
-            national_acceptance_contract_error
-            or "national_acceptance_timeout_not_numeric"
-        )
-    expected_acceptance_hands = int(
-        workflow_profile.national_acceptance_hands
+    # Strict 70-hand acceptance is a fixed system contract.  Environment
+    # overrides would create an unrecorded timeout identity between quality,
+    # heartbeat, replay and precommit, so they are intentionally ignored.
+    strict_native_profile = get_workflow_profile("national_native")
+    national_acceptance_hands = int(strict_native_profile.national_acceptance_hands)
+    national_acceptance_timeout_sec = float(
+        strict_native_profile.national_acceptance_timeout_sec
     )
-    if (
-        not national_acceptance_contract_error
-        and national_acceptance_timeout_sec <= 0.0
-    ):
-        national_acceptance_contract_error = (
-            "national_acceptance_timeout_not_positive"
-        )
+    expected_acceptance_hands = national_acceptance_hands
+    if national_acceptance_timeout_sec <= 0.0:
+        national_acceptance_contract_error = "national_acceptance_timeout_not_positive"
+    national_acceptance_timing_plan = None
+    national_acceptance_progress_callback = None
+    if not national_acceptance_contract_error:
+        try:
+            from national_native import build_native_match_timing_plan
+
+            national_acceptance_timing_plan = build_native_match_timing_plan(
+                hands=national_acceptance_hands,
+                requested_timeout_sec=national_acceptance_timeout_sec,
+            )
+            active_ckpt = _bind_quality_native_timing_plan(
+                active_ckpt,
+                national_acceptance_timing_plan,
+            )
+            from pipeline_state import make_native_match_heartbeat_reporter
+
+            national_acceptance_progress_callback = (
+                make_native_match_heartbeat_reporter(
+                    active_ckpt,
+                    owner_tool="run_quality_gates",
+                )
+            )
+        except Exception as exc:
+            national_acceptance_contract_error = (
+                "national_acceptance_timing_plan_invalid:"
+                f"{type(exc).__name__}"
+            )
     if (
         not national_acceptance_contract_error
         and (
             expected_acceptance_hands != 70
             or national_acceptance_hands != expected_acceptance_hands
-            or workflow_profile.national_acceptance_hard is not True
+            or strict_native_profile.national_acceptance_hard is not True
         )
     ):
         national_acceptance_contract_error = (
             "national_acceptance_strict_contract_mismatch:"
             f"hands={national_acceptance_hands}:"
             f"expected={expected_acceptance_hands}:"
-            f"hard={workflow_profile.national_acceptance_hard}"
+            f"hard={strict_native_profile.national_acceptance_hard}"
         )
     if not national_acceptance_enabled:
         (
@@ -2068,6 +2188,8 @@ async def run_quality_gates(args):
                         self_play=True,
                         hands=national_acceptance_hands,
                         timeout_sec=national_acceptance_timeout_sec,
+                        timing_plan=national_acceptance_timing_plan,
+                        progress_callback=national_acceptance_progress_callback,
                     )
                     _acceptance_report = {
                         **_acceptance_report,
@@ -2090,6 +2212,8 @@ async def run_quality_gates(args):
                         hands=national_acceptance_hands,
                         max_opponents=2,
                         timeout_sec=national_acceptance_timeout_sec,
+                        timing_plan=national_acceptance_timing_plan,
+                        progress_callback=national_acceptance_progress_callback,
                     )
                     _acceptance_report = _acceptance.model_dump()
                 (
@@ -2099,6 +2223,7 @@ async def run_quality_gates(args):
                 ) = _national_acceptance_executed(
                     _acceptance_report,
                     expected_hands=national_acceptance_hands,
+                    expected_timing_plan=national_acceptance_timing_plan,
                 )
                 if not national_acceptance_payload.get("conclusive"):
                     mark_quality_infrastructure(
@@ -2328,6 +2453,23 @@ async def run_quality_gates(args):
     decision_skill_layers = decision_detail.get("skill_layers", {})
     critical_failures = decision_detail.get("critical_failures", [])
     critical_ok = len(critical_failures) == 0
+    required_host_fixture_ids = {
+        "runtime_postflop_first_pass_maps_to_check",
+        "runtime_postflop_facing_check_pass_maps_to_call",
+    }
+    observed_host_fixture_ids = {
+        str(item.get("id") or "")
+        for item in (decision_detail.get("scenarios") or [])
+        if isinstance(item, dict)
+    }
+    decision_fixture_contract_ok = bool(
+        native_tcp_mode
+        and decision_detail.get("schema_version") == 2
+        and decision_detail.get("protocol") == "official_raw_tcp_transcript_v1"
+        and required_host_fixture_ids.issubset(observed_host_fixture_ids)
+    )
+    if not decision_fixture_contract_ok:
+        critical_ok = False
     try:
         total_lines, oversized = check_code_size(bot_dir, source_dir=source_dir)
     except Exception as exc:
@@ -2337,7 +2479,12 @@ async def run_quality_gates(args):
             "code_size",
             f"{type(exc).__name__}: {str(exc)[:300]}",
         )
-    decision_ok = decision_rate >= 0.7 and critical_ok and decision_total > 0
+    decision_ok = (
+        decision_rate >= 0.7
+        and critical_ok
+        and decision_total > 0
+        and decision_fixture_contract_ok
+    )
 
     candidate_gate_checks_passed = (
         len(compile_errors) == 0
@@ -2514,6 +2661,7 @@ async def run_quality_gates(args):
         "official_smoke_classification": official_smoke_classification,
         "decision_pass_rate": round(decision_rate, 2),
         "decision_ok": decision_ok,
+        "decision_fixture_contract_ok": decision_fixture_contract_ok,
         "critical_scenarios_passed": critical_ok,
         "critical_passed": decision_detail.get("critical_passed", 0),
         "critical_total": decision_detail.get("critical_total", 0),

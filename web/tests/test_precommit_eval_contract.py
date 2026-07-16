@@ -6,6 +6,7 @@ import pytest
 
 import precommit_eval_contract as contract
 import tool_eval
+import national_native
 
 
 def _tool_payload(result):
@@ -118,6 +119,9 @@ def test_plan_freezes_order_identity_and_all_sample_seeds(tmp_path, monkeypatch)
         "repeat": 1,
         "deck_seed_base": 91_000,
         "bot_seed_base": 1_000_091_000,
+        "native_match_timing_plan_digest": plan["settings"][
+            "native_match_timing_plan_digest"
+        ],
     }
     assert plan["sample_plan"][-1]["deck_seed_base"] == 193_000
     assert contract.validate_precommit_plan(
@@ -128,6 +132,80 @@ def test_plan_freezes_order_identity_and_all_sample_seeds(tmp_path, monkeypatch)
         execution_mode="native_tcp",
         evaluation_protocol="national",
     ) == []
+
+
+def test_native_batch_plan_binds_ordered_samples_and_execution_phases(
+    tmp_path,
+    monkeypatch,
+):
+    plan, _ = _make_plan(tmp_path, monkeypatch, matches=3)
+    timing = national_native.require_native_match_timing_plan(
+        plan["settings"]["native_match_timing_plan"],
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    batch = plan["settings"]["native_precommit_batch_plan"]
+
+    assert batch["schema_version"] == 1
+    assert batch["ordered_samples"] == plan["sample_plan"]
+    assert batch["sample_count"] == 6
+    assert batch["max_new_samples_per_invocation"] == 6
+    assert batch["timing_plan_digest"] == timing.digest()
+    assert batch["per_sample_execution_timeout_us"] == (
+        timing.execution_timeout_us
+    )
+    assert batch["batch_execution_timeout_us"] == (
+        6 * timing.execution_timeout_us
+    )
+    assert batch["batch_plan_digest"] == plan["settings"][
+        "native_precommit_batch_plan_digest"
+    ]
+
+    plan["settings"]["native_precommit_batch_plan"][
+        "max_new_samples_per_invocation"
+    ] = 1
+    issues = contract.validate_precommit_plan(
+        plan,
+        candidate_version=9,
+        source_version=8,
+        profile_id="national_native",
+        execution_mode="native_tcp",
+        evaluation_protocol="national",
+    )
+    assert "precommit_plan_digest_mismatch" in issues
+    assert "precommit_native_batch_plan_mismatch" in issues
+
+
+def test_first_strict_batch_advances_one_new_sample_per_provider_invocation():
+    timing = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    rows = [
+        {
+            "opponent": "first_strict_control_v1",
+            "opponent_index": 0,
+            "repeat": repeat,
+            "deck_seed_base": 91_000 + (repeat - 1) * 1_000,
+            "bot_seed_base": 1_000_091_000 + (repeat - 1) * 1_000,
+            "native_match_timing_plan_digest": timing.digest(),
+        }
+        for repeat in range(1, 9)
+    ]
+    batch = contract.build_native_precommit_batch_plan(
+        rows,
+        native_timing_plan=timing,
+        first_strict_control=True,
+    )
+
+    assert batch["sample_count"] == 8
+    assert batch["max_new_samples_per_invocation"] == 1
+    assert batch["batch_execution_timeout_us"] == (
+        8 * timing.execution_timeout_us
+    )
+    assert batch["batch_effect_lease_timeout_us"] == (
+        8 * timing.first_strict_lease_timeout_us
+    )
 
 
 def test_native_plan_rejects_shortened_strength_matches(tmp_path, monkeypatch):
@@ -545,10 +623,19 @@ async def test_control_attempt_freezes_or_reuses_journal_identity(
         "official_opponent_eligible": False,
         "control_receipt": receipt,
     }
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
     plan = {
         "plan_digest": "e" * 64,
         "opponents": [dict(opponent)],
-        "settings": {"hands_per_match": 70, "matches_per_opponent": 1},
+        "settings": {
+            "hands_per_match": 70,
+            "matches_per_opponent": 1,
+            "native_match_timing_plan": timing_plan.snapshot(),
+            "native_match_timing_plan_digest": timing_plan.digest(),
+        },
         "sample_plan": [],
     }
     evaluation_contract = contract.build_evaluation_contract(
@@ -739,6 +826,22 @@ async def test_national_precommit_backend_passes_exact_attempt_cancel_token(
                 "settings": {
                     "hands_per_match": 70,
                     "matches_per_opponent": 2,
+                    "native_match_timing_plan": (
+                        national_native.build_native_match_timing_plan(
+                            hands=70,
+                            requested_timeout_sec=(
+                                national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC
+                            ),
+                        ).snapshot()
+                    ),
+                    "native_match_timing_plan_digest": (
+                        national_native.build_native_match_timing_plan(
+                            hands=70,
+                            requested_timeout_sec=(
+                                national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC
+                            ),
+                        ).digest()
+                    ),
                 },
                 "sample_plan": [],
             },

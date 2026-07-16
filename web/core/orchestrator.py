@@ -436,6 +436,24 @@ ORCH_ACTIONABLE_STAGE_TIMEOUT = float(os.environ.get("POK_ORCH_ACTIONABLE_STAGE_
 # CYCLE_TIMEOUT bound the wait).
 ORCH_STREAM_STALL_TIMEOUT = float(os.environ.get("POK_ORCH_STREAM_STALL_TIMEOUT", "300"))
 ORCH_EXTERNAL_PROGRESS_TAIL_BYTES = int(os.environ.get("POK_ORCH_EXTERNAL_PROGRESS_TAIL_BYTES", "524288"))
+# One native 70-hand operation can legitimately consume the frozen
+# local-strength envelope: 300 s capacity wait + 60 s bounded read-only
+# artifact preparation + 120 s startup + 5,415 s engine + 35 s cleanup +
+# 30 s durable completion/replay projection = 5,960 s.  This is a single,
+# absolute extension ceiling for a
+# checkpoint-bound match, never a rolling heartbeat lease or a blanket
+# increase to CYCLE_TIMEOUT.  The frozen sidecar phase deadline remains the
+# authoritative lower cap.
+ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC = 5_960.0
+ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC = max(
+    0.0,
+    min(
+        ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC,
+        float(os.environ.get("POK_ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC", "5960")),
+    ),
+)
+ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC = 90.0
+ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC = 5.0
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
 
@@ -489,6 +507,7 @@ _ORCH_EXTERNAL_PROGRESS_EVENT_TYPES = frozenset({
     "pipeline.llm_role_first_activity_delayed",
     "pipeline.llm_role_progress",
     "pipeline.master_checkpoint_heartbeat",
+    "pipeline.orchestrator_native_match_extension_granted",
 })
 
 from orchestrator_context import _build_context, _make_precompact_hook, _make_bot_dir_guard_hook, set_cycle_start_time  # noqa: E402
@@ -1596,6 +1615,18 @@ async def _cancel_orchestrator_stream_task_bounded(
 ):
     """Cancel one cycle task and close only its proven provider transport."""
 
+    attempt = attempt_ref[0] if attempt_ref else None
+    # Revoke native-match liveness before task cancellation/transport cleanup.
+    # A detached tool coroutine can retain its ContextVar, so merely cancelling
+    # the provider task is not enough to stop an old match from extending a
+    # later SDK dispatch.
+    if isinstance(attempt, dict):
+        try:
+            from pipeline_state import revoke_native_match_dispatch_nonce
+
+            revoke_native_match_dispatch_nonce(str(attempt.get("attempt_id") or ""))
+        except Exception:
+            pass
     if stream_task.done():
         error = _orchestrator_task_error(stream_task)
         return error if isinstance(error, LLMProviderCleanupError) else None
@@ -1608,7 +1639,6 @@ async def _cancel_orchestrator_stream_task_bounded(
         error = _orchestrator_task_error(stream_task)
         return error if isinstance(error, LLMProviderCleanupError) else None
 
-    attempt = attempt_ref[0] if attempt_ref else None
     query_gen = gen_ref[0] if gen_ref else None
     cleanup_error = None
     if isinstance(attempt, dict):
@@ -1679,6 +1709,268 @@ async def _cancel_orchestrator_stream_task_bounded(
     return cleanup_error
 
 
+def _bounded_native_match_extension(
+    *,
+    stream_started_epoch: float,
+    original_deadline_epoch: float,
+    provider_dispatch_nonce: str | None,
+) -> dict | None:
+    """Return one eligible engine-match extension, or ``None`` fail-closed."""
+
+    try:
+        from pipeline_state import (
+            native_match_dispatch_nonce_is_active,
+            read_pipeline_native_match_progress,
+            validate_native_match_progress,
+        )
+
+        if not native_match_dispatch_nonce_is_active(provider_dispatch_nonce):
+            return None
+        checkpoint = _read_active_pipeline_checkpoint()
+        if not isinstance(checkpoint, dict):
+            return None
+        progress = read_pipeline_native_match_progress(
+            checkpoint,
+            now=time.time(),
+            max_age=ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC,
+            provider_dispatch_nonce=provider_dispatch_nonce,
+        )
+        # Revalidate here as well as at sidecar read time.  The bounded
+        # extension is a privileged liveness exception and must stay closed
+        # even if a caller/test substitutes the read helper's output.
+        progress = validate_native_match_progress(
+            checkpoint,
+            progress,
+            now=time.time(),
+            provider_dispatch_nonce=provider_dispatch_nonce,
+        )
+    except Exception:
+        return None
+    if not isinstance(progress, dict):
+        return None
+    # The sidecar validator already binds owner->stage, PID/revision, frozen
+    # phase budget and this exact provider dispatch nonce.  Timestamp proximity
+    # is intentionally not an identity fence: an old tool can begin within a
+    # few seconds of a new stream, while an exact owned SDK nonce cannot cross
+    # that boundary.
+    phase_deadline = float(progress.get("phase_deadline_epoch") or 0.0)
+    operation_deadline = float(progress.get("operation_deadline_epoch") or 0.0)
+    now = time.time()
+    if (
+        phase_deadline <= now
+        or operation_deadline <= now
+        or progress.get("terminal") is not False
+        or progress.get("provider_dispatch_nonce") != provider_dispatch_nonce
+    ):
+        return None
+    absolute_cap = float(original_deadline_epoch) + ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC
+    deadline = min(
+        phase_deadline,
+        operation_deadline,
+        absolute_cap,
+    )
+    if deadline <= now:
+        return None
+    return {
+        "deadline_epoch": deadline,
+        "cap_epoch": absolute_cap,
+        "checkpoint": checkpoint,
+        "checkpoint_identity": _checkpoint_actionable_identity(checkpoint),
+        "progress": progress,
+    }
+
+
+def _native_match_extension_reproof(previous: dict, fresh: dict | None) -> bool:
+    """Prove that a granted extension still belongs to one immutable match."""
+
+    if not isinstance(previous, dict) or not isinstance(fresh, dict):
+        return False
+    if previous.get("checkpoint_identity") != fresh.get("checkpoint_identity"):
+        return False
+    if previous.get("cap_epoch") != fresh.get("cap_epoch"):
+        return False
+    old = previous.get("progress") or {}
+    new = fresh.get("progress") or {}
+    immutable_fields = (
+        "owner_tool",
+        "provider_dispatch_nonce",
+        "match_identity_digest",
+        "timing_plan_digest",
+        "hands",
+        "effective_timeout_us",
+        "operation_started_at_epoch",
+        "operation_deadline_epoch",
+        "operation_budget_us",
+    )
+    if any(old.get(field) != new.get(field) for field in immutable_fields):
+        return False
+    try:
+        if int(new.get("event_seq")) < int(old.get("event_seq")):
+            return False
+    except (TypeError, ValueError):
+        return False
+    phase_order = {"launching": 0, "engine_running": 1, "finalizing": 2}
+    old_phase = str(old.get("liveness_phase") or "")
+    new_phase = str(new.get("liveness_phase") or "")
+    if old_phase not in phase_order or new_phase not in phase_order:
+        return False
+    if phase_order[new_phase] < phase_order[old_phase]:
+        return False
+    old_hand = old.get("hand")
+    new_hand = new.get("hand")
+    old_hand_order = 0 if old_hand is None else int(old_hand)
+    new_hand_order = 0 if new_hand is None else int(new_hand)
+    if new_hand_order < old_hand_order:
+        return False
+    if new_phase == old_phase:
+        for field in (
+            "phase_started_at_epoch",
+            "phase_deadline_epoch",
+            "phase_budget_us",
+        ):
+            if old.get(field) != new.get(field):
+                return False
+    return True
+
+
+def _native_match_terminal_handoff_checkpoint_valid(
+    extension: dict,
+    receipt: dict,
+) -> bool:
+    """Require the current checkpoint to be the same owner flow or its result."""
+
+    old_checkpoint = extension.get("checkpoint") or {}
+    current = _read_active_pipeline_checkpoint()
+    if not isinstance(old_checkpoint, dict) or not isinstance(current, dict):
+        return False
+    old_workflow = str(
+        old_checkpoint.get("workflow_run_id")
+        or old_checkpoint.get("run_id")
+        or ""
+    )
+    current_workflow = str(
+        current.get("workflow_run_id") or current.get("run_id") or ""
+    )
+    owner = str(receipt.get("owner_tool") or "")
+    allowed_stages = {
+        "run_quality_gates": {
+            "workers_done",
+            "quality_failed",
+            "quality_passed",
+        },
+        "run_precommit_eval": {
+            "critic_checked",
+            "precommit_failed",
+            "verified",
+            "infra_timed_out",
+        },
+    }.get(owner, set())
+    try:
+        old_revision = int(old_checkpoint.get("checkpoint_revision") or 0)
+        current_revision = int(current.get("checkpoint_revision") or 0)
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        old_workflow
+        and current_workflow == old_workflow
+        and current.get("next_v") == old_checkpoint.get("next_v")
+        and current.get("source_v") == old_checkpoint.get("source_v")
+        and current_revision >= old_revision
+        and str(current.get("stage") or "") in allowed_stages
+    )
+
+
+def _consume_native_match_terminal_handoff(
+    extension: dict,
+    *,
+    observed_at_epoch: float,
+) -> dict | None:
+    """Consume a runner-return receipt for one immutable granted extension."""
+
+    if not isinstance(extension, dict):
+        return None
+    checkpoint = extension.get("checkpoint")
+    progress = extension.get("progress")
+    if not isinstance(checkpoint, dict) or not isinstance(progress, dict):
+        return None
+    try:
+        from pipeline_state import consume_native_match_terminal_handoff
+
+        receipt = consume_native_match_terminal_handoff(
+            checkpoint,
+            progress,
+            now=observed_at_epoch,
+        )
+    except Exception:
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    try:
+        created_at = float(receipt.get("created_at_epoch"))
+        receipt_expiry = float(receipt.get("expires_at_epoch"))
+        cap_epoch = float(extension.get("cap_epoch"))
+        extension_deadline = float(extension.get("deadline_epoch"))
+        operation_deadline = float(progress.get("operation_deadline_epoch"))
+        handoff_deadline = min(
+            receipt_expiry,
+            cap_epoch,
+            extension_deadline,
+            operation_deadline,
+        )
+        previous_seq = int(progress.get("event_seq"))
+        last_live_seq = int(receipt.get("last_live_event_seq"))
+        terminal_seq = int(receipt.get("terminal_event_seq"))
+    except (TypeError, ValueError):
+        return None
+    if (
+        receipt.get("terminal_outcome") != "runner_returned"
+        or last_live_seq < previous_seq
+        or terminal_seq != last_live_seq + 1
+        or created_at > observed_at_epoch + 1.0
+        or observed_at_epoch > handoff_deadline
+        or not _native_match_terminal_handoff_checkpoint_valid(
+            extension,
+            receipt,
+        )
+    ):
+        return None
+    return {
+        "receipt": receipt,
+        "deadline_epoch": handoff_deadline,
+        "checkpoint_identity": extension.get("checkpoint_identity"),
+    }
+
+
+def _native_match_terminal_handoff_reproof(
+    state: dict | None,
+    *,
+    observed_at_epoch: float,
+) -> bool:
+    """Validate a consumed handoff without extending its fixed expiry."""
+
+    if not isinstance(state, dict):
+        return False
+    receipt = state.get("receipt") or {}
+    try:
+        deadline = float(state.get("deadline_epoch"))
+    except (TypeError, ValueError):
+        return False
+    extension = {
+        "checkpoint": {
+            "workflow_run_id": receipt.get("workflow_run_id"),
+            "checkpoint_revision": receipt.get("checkpoint_revision"),
+            "stage": receipt.get("stage"),
+            "next_v": receipt.get("next_v"),
+            "source_v": receipt.get("source_v"),
+        },
+    }
+    return bool(
+        receipt.get("terminal_outcome") == "runner_returned"
+        and observed_at_epoch <= deadline
+        and _native_match_terminal_handoff_checkpoint_valid(extension, receipt)
+    )
+
+
 async def _await_orchestrator_stream_response_bounded(
     stream_coro,
     *,
@@ -1687,36 +1979,245 @@ async def _await_orchestrator_stream_response_bounded(
     gen_ref,
     log_file_path,
 ):
-    """Apply a real wall-clock bound to one complete orchestrator SDK stream."""
+    """Bound one provider stream, with at most one frozen native-match grace."""
 
     stream_task = asyncio.create_task(stream_coro)
+    stream_started_epoch = time.time()
+    original_deadline_epoch = stream_started_epoch + float(timeout)
+    wait_deadline_monotonic = time.monotonic() + float(timeout)
+    native_extension_granted = False
+    native_extension_state = None
+    terminal_handoff_state = None
+    provider_dispatch_nonce = None
+    dispatch_revoked = False
+
+    def revoke_dispatch():
+        nonlocal dispatch_revoked
+        if dispatch_revoked:
+            return
+        attempt = attempt_ref[0] if attempt_ref else None
+        nonce = provider_dispatch_nonce
+        if not nonce and isinstance(attempt, dict):
+            nonce = str(attempt.get("attempt_id") or "")
+        if not nonce:
+            return
+        try:
+            from pipeline_state import revoke_native_match_dispatch_nonce
+
+            revoke_native_match_dispatch_nonce(nonce)
+            dispatch_revoked = True
+        except Exception:
+            pass
+
     try:
-        done, _pending = await asyncio.wait({stream_task}, timeout=timeout)
-    except BaseException:
-        await _cancel_orchestrator_stream_task_bounded(
+        try:
+            while True:
+                remaining = max(0.0, wait_deadline_monotonic - time.monotonic())
+                poll_timeout = remaining
+                if native_extension_granted and terminal_handoff_state is None:
+                    poll_timeout = min(
+                        remaining,
+                        max(0.01, ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC),
+                    )
+                done, _pending = await asyncio.wait(
+                    {stream_task},
+                    timeout=poll_timeout,
+                )
+                observed_at = time.time()
+                if stream_task in done:
+                    if not native_extension_granted:
+                        return stream_task.result()
+                    if terminal_handoff_state is not None:
+                        if _native_match_terminal_handoff_reproof(
+                            terminal_handoff_state,
+                            observed_at_epoch=observed_at,
+                        ):
+                            return stream_task.result()
+                    else:
+                        # Completion is accepted only with the exact last live
+                        # proof or the runner's one-shot terminal replacement.
+                        fresh = _bounded_native_match_extension(
+                            stream_started_epoch=stream_started_epoch,
+                            original_deadline_epoch=original_deadline_epoch,
+                            provider_dispatch_nonce=provider_dispatch_nonce,
+                        )
+                        if _native_match_extension_reproof(
+                            native_extension_state,
+                            fresh,
+                        ):
+                            return stream_task.result()
+                        terminal_handoff_state = (
+                            _consume_native_match_terminal_handoff(
+                                native_extension_state,
+                                observed_at_epoch=observed_at,
+                            )
+                        )
+                        if terminal_handoff_state is not None:
+                            # No later match under this dispatch may borrow the
+                            # consumed receipt.  The outer in-memory state now
+                            # owns only its fixed, non-renewable handoff window.
+                            revoke_dispatch()
+                            if _native_match_terminal_handoff_reproof(
+                                terminal_handoff_state,
+                                observed_at_epoch=observed_at,
+                            ):
+                                return stream_task.result()
+                    revoke_dispatch()
+                    log_system_event(
+                        "pipeline.orchestrator_native_match_extension_revoked",
+                        "error",
+                        "A completed provider stream lost its final exact native-match proof.",
+                        {
+                            "provider_dispatch_nonce": provider_dispatch_nonce,
+                            "match_identity_digest": (
+                                (native_extension_state or {}).get("progress") or {}
+                            ).get("match_identity_digest"),
+                        },
+                    )
+                    break
+                if not native_extension_granted:
+                    attempt = attempt_ref[0] if attempt_ref else None
+                    provider_dispatch_nonce = (
+                        str(attempt.get("attempt_id") or "")
+                        if isinstance(attempt, dict)
+                        else None
+                    )
+                    extension = _bounded_native_match_extension(
+                        stream_started_epoch=stream_started_epoch,
+                        original_deadline_epoch=original_deadline_epoch,
+                        provider_dispatch_nonce=provider_dispatch_nonce,
+                    )
+                    if extension is not None:
+                        native_extension_granted = True
+                        native_extension_state = extension
+                        extended_deadline = float(extension["deadline_epoch"])
+                        wait_deadline_monotonic = (
+                            time.monotonic()
+                            + max(0.0, extended_deadline - time.time())
+                        )
+                        progress = extension["progress"]
+                        log_system_event(
+                            "pipeline.orchestrator_native_match_extension_granted",
+                            "warn",
+                            "Granted one bounded provider-cycle extension for a live "
+                            "checkpoint-bound native TCP match.",
+                            {
+                                "owner_tool": progress.get("owner_tool"),
+                                "stage": (extension["checkpoint"] or {}).get("stage"),
+                                "match_identity_digest": progress.get(
+                                    "match_identity_digest"
+                                ),
+                                "timing_plan_digest": progress.get(
+                                    "timing_plan_digest"
+                                ),
+                                "event_seq": progress.get("event_seq"),
+                                "phase_deadline_epoch": progress.get(
+                                    "phase_deadline_epoch"
+                                ),
+                                "operation_deadline_epoch": progress.get(
+                                    "operation_deadline_epoch"
+                                ),
+                                "extension_deadline_epoch": extended_deadline,
+                                "absolute_cap_epoch": extension.get("cap_epoch"),
+                            },
+                        )
+                        continue
+                elif terminal_handoff_state is None:
+                    fresh = _bounded_native_match_extension(
+                        stream_started_epoch=stream_started_epoch,
+                        original_deadline_epoch=original_deadline_epoch,
+                        provider_dispatch_nonce=provider_dispatch_nonce,
+                    )
+                    if _native_match_extension_reproof(
+                        native_extension_state,
+                        fresh,
+                    ):
+                        native_extension_state = fresh
+                        extended_deadline = float(fresh["deadline_epoch"])
+                        wait_deadline_monotonic = (
+                            time.monotonic()
+                            + max(0.0, extended_deadline - time.time())
+                        )
+                        continue
+                    terminal_handoff_state = _consume_native_match_terminal_handoff(
+                        native_extension_state,
+                        observed_at_epoch=observed_at,
+                    )
+                    if terminal_handoff_state is not None:
+                        revoke_dispatch()
+                        handoff_deadline = float(
+                            terminal_handoff_state["deadline_epoch"]
+                        )
+                        wait_deadline_monotonic = (
+                            time.monotonic()
+                            + max(0.0, handoff_deadline - time.time())
+                        )
+                        log_system_event(
+                            "pipeline.orchestrator_native_match_terminal_handoff",
+                            "info",
+                            "Consumed one exact runner terminal receipt; awaiting only "
+                            "the fixed provider-result handoff window.",
+                            {
+                                "provider_dispatch_nonce": provider_dispatch_nonce,
+                                "match_identity_digest": (
+                                    terminal_handoff_state["receipt"].get(
+                                        "match_identity_digest"
+                                    )
+                                ),
+                                "terminal_event_seq": (
+                                    terminal_handoff_state["receipt"].get(
+                                        "terminal_event_seq"
+                                    )
+                                ),
+                                "handoff_deadline_epoch": handoff_deadline,
+                            },
+                        )
+                        continue
+                    revoke_dispatch()
+                    log_system_event(
+                        "pipeline.orchestrator_native_match_extension_revoked",
+                        "error",
+                        "A granted native-match extension lost its exact live proof.",
+                        {
+                            "provider_dispatch_nonce": provider_dispatch_nonce,
+                            "match_identity_digest": (
+                                (native_extension_state or {}).get("progress") or {}
+                            ).get("match_identity_digest"),
+                        },
+                    )
+                    break
+                if native_extension_granted:
+                    log_system_event(
+                        "pipeline.orchestrator_native_match_extension_exhausted",
+                        "error",
+                        "The one bounded native-match provider extension expired.",
+                        {"timeout_sec": float(timeout)},
+                    )
+                break
+        except BaseException:
+            await _cancel_orchestrator_stream_task_bounded(
+                stream_task,
+                attempt_ref=attempt_ref,
+                gen_ref=gen_ref,
+                reason="orchestrator_cycle_parent_cancellation_unconfirmed",
+                log_file_path=log_file_path,
+            )
+            raise
+        cleanup_error = await _cancel_orchestrator_stream_task_bounded(
             stream_task,
             attempt_ref=attempt_ref,
             gen_ref=gen_ref,
-            reason="orchestrator_cycle_parent_cancellation_unconfirmed",
+            reason="orchestrator_cycle_timeout_cancellation_unconfirmed",
             log_file_path=log_file_path,
         )
-        raise
-    if stream_task in done:
-        return stream_task.result()
-
-    cleanup_error = await _cancel_orchestrator_stream_task_bounded(
-        stream_task,
-        attempt_ref=attempt_ref,
-        gen_ref=gen_ref,
-        reason="orchestrator_cycle_timeout_cancellation_unconfirmed",
-        log_file_path=log_file_path,
-    )
-    timeout_error = asyncio.TimeoutError(
-        f"orchestrator SDK stream exceeded cycle timeout {float(timeout):.1f}s"
-    )
-    if cleanup_error is not None:
-        raise timeout_error from cleanup_error
-    raise timeout_error
+        timeout_error = asyncio.TimeoutError(
+            f"orchestrator SDK stream exceeded cycle timeout {float(timeout):.1f}s"
+        )
+        if cleanup_error is not None:
+            raise timeout_error from cleanup_error
+        raise timeout_error
+    finally:
+        revoke_dispatch()
 
 
 async def _run_one_cycle(
@@ -1969,8 +2470,22 @@ async def _run_one_cycle(
             provider_attempt = create_owned_provider_attempt(prompt, opts)
             _attempt_ref[0] = provider_attempt
             provider_token = activate_owned_provider_attempt(provider_attempt)
+            native_match_dispatch_token = None
             _orchestrator_provider_stream_active = True
             try:
+                # Bind native liveness to this exact SDK transport before any
+                # MCP tool handler is allowed to inherit the task context.
+                # This task resets only its ContextVar.  The outer bounded
+                # stream owner retains registry authority through final
+                # live/terminal proof, then revokes it on every return/error/
+                # cancellation path.
+                from pipeline_state import activate_native_match_dispatch_nonce
+
+                native_match_dispatch_token = (
+                    activate_native_match_dispatch_nonce(
+                        str(provider_attempt.get("attempt_id") or "")
+                    )
+                )
                 gen = claude_query(
                     prompt=prompt,
                     options=opts,
@@ -2412,6 +2927,15 @@ async def _run_one_cycle(
                         )
                 finally:
                     _orchestrator_provider_stream_active = False
+                    if native_match_dispatch_token is not None:
+                        try:
+                            from pipeline_state import reset_native_match_dispatch_nonce
+
+                            reset_native_match_dispatch_nonce(
+                                native_match_dispatch_token
+                            )
+                        except Exception:
+                            pass
                     reset_owned_provider_attempt(provider_token)
             if _tool_call_counts:
                 log.info("Tool call summary: %s", dict(sorted(_tool_call_counts.items())))

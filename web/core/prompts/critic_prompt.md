@@ -31,6 +31,13 @@ only tool is Read for cited target functions; Bash, Git, Python subprocesses,
 webReader, and web search are unavailable. Do not attempt to reconstruct Git
 history or another lineage comparison. The supplied frozen evidence envelope
 and exact code section are the complete evidence boundary.
+
+`NativeMatchTimingPlan`, its 34-request active-validator liveness bound, typed
+cap/timeout aborts, and any engine-only bounded orchestrator extension are
+system reliability facts, not strategic evidence. Do not score them, request a
+retry, authorize a Worker change, or turn a heartbeat/timer observation into a
+strength claim. A schema-valid Critic result remains advisory and the native
+precommit gate alone decides measured strategy admission.
 </instructions>
 
 <context>
@@ -99,6 +106,17 @@ Then score against the criteria below. Ground your score in cited evidence:
 <poker_quality_checklist>
 Before scoring, verify the change against this checklist. Flag any item that fails.
 
+First audit the strict baseline controls as a connected system contract. The
+system-owned calibrated 169-class preflop table must influence real decisions;
+spot-specific preflop sizes are raise-to totals and exact-stack targets use
+`allin`; lock-win folds require a complete consistent
+`hand.match_control.fold_locks_win` proof; position EQR adjustments apply only
+on flop/turn nonclosing calls; and opponent action tilt is current-board
+relative. `betting.call_closes_allin_runout` is the closure authority. Missing
+or malformed fields must stay neutral. Penalize any change that silently
+removes a producer, consumer, positive/negative regression, or socket-visible
+effect even if its isolated equity helper looks plausible.
+
 **Strategic Soundness Checklist**
 - **P1 — Pot-odds discipline**: Does the bot compare call cost to pot odds (or at least approximate them) rather than calling arbitrarily?
 - **P2 — EQR grounding**: Is Equity Realization (EQR)—the share of raw equity
@@ -109,7 +127,7 @@ Before scoring, verify the change against this checklist. Flag any item that fai
 - **P5 — MDF compliance**: When facing bets, does the bot defend at least at minimum-defense-frequency (or explicitly exploit over-folding) with a clear reason?
 - **P6 — Draw equity math**: Are draws evaluated by outs × 2 (or better) vs pot odds, not by static hand categories?
 - **P7 — Commitment awareness**: Does the bot recognize when it is pot-committed (or should commit) vs when it should fold?
-- **P8 — No unconditional actions**: Are there no unconditional folds/calls/raises (e.g., "always fold underpair on river") without situational modifiers?
+- **P8 — No unconditional actions**: Are there no unconditional folds/calls/raises (e.g., "always fold underpair on river") without situational modifiers? For structural-air donk/delayed-probe bluffs, require the frozen quality evidence to contain a same-line raise and passive `check` identity under equal stable non-card context; `allin` is aggressive and one firing example cannot justify a fixed 100% bluff.
 
 **Common Bot Weaknesses to Flag**
 1. Over-folding to river aggression without range consideration

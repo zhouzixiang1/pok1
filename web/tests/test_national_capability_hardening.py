@@ -369,3 +369,38 @@ def test_national_acceptance_projection_never_upgrades_skip_or_infra_to_pass():
     assert incomplete["coverage_ok"] is False
     assert incomplete["conclusive"] is False
     assert "expected=70:observed=[69]" in issues[0]
+
+
+def test_national_acceptance_rejects_typed_terminal_abort_even_if_marked_passed():
+    from national_native import build_native_match_timing_plan
+
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=420.0,
+    )
+    forged_success = {
+        "hands_played": 70,
+        "native_match_timing_plan": timing_plan.snapshot(),
+        "native_match_timing_plan_digest": timing_plan.digest(),
+        "native_full_match_liveness_budget": timing_plan.liveness_budget_snapshot(),
+        "native_match_timeout_phase": None,
+        "native_terminal_abort": {
+            "code": "national_20000_chip_hand_action_limit_exceeded"
+        },
+    }
+    passed, issues, payload = _national_acceptance_executed(
+        {
+            "passed": True,
+            "outcome": "passed",
+            "hands_per_pair": 70,
+            "opponents": ["national_v143"],
+            "issues": [],
+            "report": {"results": [forged_success]},
+        },
+        expected_hands=70,
+        expected_timing_plan=timing_plan,
+    )
+
+    assert passed is False
+    assert payload["timing_ok"] is False
+    assert any("native_terminal_abort_present" in issue for issue in issues)

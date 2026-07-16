@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -33,6 +34,10 @@ class WorkflowConflict(WorkflowError):
 
 class WorkflowBusy(WorkflowError):
     """Another process owns the generation command lock."""
+
+
+class WorkflowDeadlineExceeded(WorkflowBusy):
+    """A bounded workflow operation could not finish before its deadline."""
 
 
 class InvalidCompletion(WorkflowError):
@@ -108,29 +113,194 @@ def reduce_events(
 class WorkflowStore:
     """SQLite-WAL event/effect store for one local checkout."""
 
-    def __init__(self, path: str | Path):
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        deadline_monotonic: float | None = None,
+    ):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock_dir = self.path.parent / "workflow_locks"
         self.lock_dir.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self._initialize(deadline_monotonic=deadline_monotonic)
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            self.path,
-            timeout=30.0,
-            isolation_level=None,
-            factory=_ClosingConnection,
+    @staticmethod
+    def _remaining_deadline_seconds(
+        deadline_monotonic: float | None,
+        *,
+        operation: str,
+    ) -> float | None:
+        if deadline_monotonic is None:
+            return None
+        if isinstance(deadline_monotonic, bool):
+            raise WorkflowDeadlineExceeded(
+                f"workflow deadline invalid: {operation}"
+            )
+        try:
+            deadline = float(deadline_monotonic)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowDeadlineExceeded(
+                f"workflow deadline invalid: {operation}"
+            ) from exc
+        if not math.isfinite(deadline):
+            raise WorkflowDeadlineExceeded(
+                f"workflow deadline invalid: {operation}"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise WorkflowDeadlineExceeded(
+                f"workflow deadline exceeded: {operation}"
+            )
+        return remaining
+
+    @staticmethod
+    def _sqlite_busy_error(exc: BaseException) -> bool:
+        message = str(exc).lower()
+        return "locked" in message or "busy" in message
+
+    def _set_connection_busy_timeout(
+        self,
+        connection: sqlite3.Connection,
+        deadline_monotonic: float | None,
+        *,
+        operation: str,
+    ) -> None:
+        remaining = self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation=operation,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA synchronous=FULL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA busy_timeout=30000")
-        return connection
+        timeout_ms = (
+            30_000
+            if remaining is None
+            else max(1, min(30_000, int(math.ceil(remaining * 1000.0))))
+        )
+        connection.execute(f"PRAGMA busy_timeout={timeout_ms}")
 
-    def _initialize(self) -> None:
-        with self._connect() as connection:
+    def _raise_deadline_sqlite_busy(
+        self,
+        exc: sqlite3.OperationalError,
+        deadline_monotonic: float | None,
+        *,
+        operation: str,
+    ) -> None:
+        if deadline_monotonic is not None and self._sqlite_busy_error(exc):
+            raise WorkflowDeadlineExceeded(
+                f"workflow deadline exceeded waiting for SQLite: {operation}"
+            ) from exc
+        raise exc
+
+    def _begin_immediate(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        deadline_monotonic: float | None,
+        operation: str,
+    ) -> None:
+        self._set_connection_busy_timeout(
+            connection,
+            deadline_monotonic,
+            operation=operation,
+        )
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+        except sqlite3.OperationalError as exc:
+            self._raise_deadline_sqlite_busy(
+                exc,
+                deadline_monotonic,
+                operation=operation,
+            )
+        self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation=operation,
+        )
+
+    def _commit(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        deadline_monotonic: float | None,
+        operation: str,
+    ) -> None:
+        self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation=operation,
+        )
+        self._set_connection_busy_timeout(
+            connection,
+            deadline_monotonic,
+            operation=operation,
+        )
+        try:
+            connection.commit()
+        except sqlite3.OperationalError as exc:
+            self._raise_deadline_sqlite_busy(
+                exc,
+                deadline_monotonic,
+                operation=operation,
+            )
+        # Once COMMIT returns successfully, those bytes are the durable
+        # authority.  Re-checking the clock here could report a timeout after
+        # the transition was already visible, creating an avoidable ambiguous
+        # outcome.  The deadline is checked immediately before COMMIT and all
+        # lock/busy waits inside it use the remaining SQLite busy timeout.
+
+    def _connect(
+        self,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> sqlite3.Connection:
+        remaining = self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation="sqlite_connect",
+        )
+        connection: sqlite3.Connection | None = None
+        try:
+            connection = sqlite3.connect(
+                self.path,
+                timeout=30.0 if remaining is None else max(0.001, remaining),
+                isolation_level=None,
+                factory=_ClosingConnection,
+            )
+            connection.row_factory = sqlite3.Row
+            self._set_connection_busy_timeout(
+                connection,
+                deadline_monotonic,
+                operation="sqlite_configure",
+            )
+            connection.execute("PRAGMA journal_mode=WAL")
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="sqlite_journal_mode",
+            )
+            connection.execute("PRAGMA synchronous=FULL")
+            connection.execute("PRAGMA foreign_keys=ON")
+            self._set_connection_busy_timeout(
+                connection,
+                deadline_monotonic,
+                operation="sqlite_ready",
+            )
+            return connection
+        except sqlite3.OperationalError as exc:
+            if connection is not None:
+                connection.close()
+            self._raise_deadline_sqlite_busy(
+                exc,
+                deadline_monotonic,
+                operation="sqlite_connect",
+            )
+            raise AssertionError("unreachable")
+        except Exception:
+            if connection is not None:
+                connection.close()
+            raise
+
+    def _initialize(self, *, deadline_monotonic: float | None = None) -> None:
+        with self._connect(deadline_monotonic=deadline_monotonic) as connection:
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="sqlite_initialize",
+            )
             existing_user_version = int(
                 connection.execute("PRAGMA user_version").fetchone()[0]
             )
@@ -139,8 +309,9 @@ class WorkflowStore:
                     "unsupported workflow database schema: "
                     f"{existing_user_version} != {KERNEL_SCHEMA_VERSION}"
                 )
-            connection.executescript(
-                """
+            try:
+                connection.executescript(
+                    """
                 CREATE TABLE IF NOT EXISTS workflow_instances (
                     run_id TEXT PRIMARY KEY,
                     definition_version INTEGER NOT NULL,
@@ -208,7 +379,17 @@ class WorkflowStore:
                     ON effects(run_id, status);
                 CREATE INDEX IF NOT EXISTS idx_outbox_available
                     ON outbox(dispatched_at, available_at);
-                """
+                    """
+                )
+            except sqlite3.OperationalError as exc:
+                self._raise_deadline_sqlite_busy(
+                    exc,
+                    deadline_monotonic,
+                    operation="sqlite_initialize_schema",
+                )
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="sqlite_initialize_schema",
             )
             user_version = int(
                 connection.execute("PRAGMA user_version").fetchone()[0]
@@ -224,23 +405,48 @@ class WorkflowStore:
                 )
 
     @contextmanager
-    def command_lock(self, run_id: str, *, blocking: bool = False):
+    def command_lock(
+        self,
+        run_id: str,
+        *,
+        blocking: bool = False,
+        deadline_monotonic: float | None = None,
+    ):
         """Serialize commands for a generation across local processes."""
         safe = hashlib.sha256(str(run_id).encode("utf-8")).hexdigest()
         lock_path = self.lock_dir / f"{safe}.lock"
         descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        acquired = False
         try:
-            try:
-                flags = fcntl.LOCK_EX
-                if not blocking:
-                    flags |= fcntl.LOCK_NB
-                fcntl.flock(descriptor, flags)
-            except BlockingIOError as exc:
-                raise WorkflowBusy(f"workflow command already active: {run_id}") from exc
+            if blocking and deadline_monotonic is None:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                acquired = True
+            else:
+                while True:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except BlockingIOError as exc:
+                        if not blocking:
+                            raise WorkflowBusy(
+                                f"workflow command already active: {run_id}"
+                            ) from exc
+                        remaining = self._remaining_deadline_seconds(
+                            deadline_monotonic,
+                            operation=f"command_lock:{run_id}",
+                        )
+                        assert remaining is not None
+                        time.sleep(min(0.01, remaining))
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation=f"command_lock:{run_id}",
+            )
             yield
         finally:
             try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                if acquired:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
             finally:
                 os.close(descriptor)
 
@@ -521,8 +727,18 @@ class WorkflowStore:
             connection.commit()
         return event
 
-    def events(self, run_id: str) -> list[WorkflowEvent]:
-        with self._connect() as connection:
+    def events(
+        self,
+        run_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> list[WorkflowEvent]:
+        with self._connect(deadline_monotonic=deadline_monotonic) as connection:
+            self._set_connection_busy_timeout(
+                connection,
+                deadline_monotonic,
+                operation="events_begin",
+            )
             connection.execute("BEGIN")
             try:
                 rows = connection.execute(
@@ -534,7 +750,15 @@ class WorkflowStore:
                     (run_id,),
                 ).fetchone()
             finally:
-                connection.commit()
+                self._commit(
+                    connection,
+                    deadline_monotonic=deadline_monotonic,
+                    operation="events_commit",
+                )
+        self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation="events_read",
+        )
         events = []
         for expected_seq, row in enumerate(rows, start=1):
             event = self._event_from_row(row)
@@ -646,12 +870,8 @@ class WorkflowStore:
             connection.commit()
         return self.effect(effect_id)
 
-    def effect(self, effect_id: str) -> dict[str, Any]:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM effects WHERE effect_id = ?",
-                (effect_id,),
-            ).fetchone()
+    @staticmethod
+    def _effect_from_row(row: sqlite3.Row | None) -> dict[str, Any]:
         if row is None:
             return {}
         result = dict(row)
@@ -659,6 +879,23 @@ class WorkflowStore:
         if result.get("result_payload"):
             result["result_payload"] = json.loads(result["result_payload"])
         return result
+
+    def effect(
+        self,
+        effect_id: str,
+        *,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        with self._connect(deadline_monotonic=deadline_monotonic) as connection:
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+        self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation="effect_read",
+        )
+        return self._effect_from_row(row)
 
     def pending_outbox(self, *, now: float | None = None) -> list[dict[str, Any]]:
         cutoff = float(now if now is not None else time.time())
@@ -1000,6 +1237,7 @@ class WorkflowStore:
         followup_events: Iterable[dict[str, Any]] | None = None,
         require_live_lease: bool = False,
         now: float | None = None,
+        deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         """Accept a fenced completion and its domain events atomically.
 
@@ -1011,29 +1249,61 @@ class WorkflowStore:
         """
         encoded = canonical_json(result_payload)
         digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        completion_time = float(now if now is not None else time.time())
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        self._remaining_deadline_seconds(
+            deadline_monotonic,
+            operation="complete_effect_encode",
+        )
+        with self._connect(deadline_monotonic=deadline_monotonic) as connection:
+            self._begin_immediate(
+                connection,
+                deadline_monotonic=deadline_monotonic,
+                operation="complete_effect_begin",
+            )
             duplicate = connection.execute(
                 "SELECT * FROM inbox WHERE completion_id = ?",
                 (completion_id,),
             ).fetchone()
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="complete_effect_duplicate_check",
+            )
             if duplicate is not None:
                 if duplicate["effect_id"] != effect_id or duplicate["payload_digest"] != digest:
                     connection.rollback()
                     raise WorkflowConflict(
                         f"completion id reused with different result: {completion_id}"
                     )
-                connection.commit()
+                duplicate_effect_row = connection.execute(
+                    "SELECT * FROM effects WHERE effect_id = ?",
+                    (effect_id,),
+                ).fetchone()
+                self._remaining_deadline_seconds(
+                    deadline_monotonic,
+                    operation="complete_effect_duplicate_read",
+                )
+                duplicate_effect = self._effect_from_row(duplicate_effect_row)
+                self._commit(
+                    connection,
+                    deadline_monotonic=deadline_monotonic,
+                    operation="complete_effect_duplicate_commit",
+                )
                 return {
                     "accepted": bool(duplicate["accepted"]),
                     "duplicate": True,
-                    "effect": self.effect(effect_id),
+                    "effect": duplicate_effect,
                 }
             row = connection.execute(
                 "SELECT * FROM effects WHERE effect_id = ?",
                 (effect_id,),
             ).fetchone()
+            # Lease liveness is evaluated only after this transaction owns the
+            # SQLite writer lock.  A bounded busy wait must never admit a lease
+            # that expired while BEGIN IMMEDIATE was waiting.
+            completion_time = float(now if now is not None else time.time())
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="complete_effect_lease_read",
+            )
             if row is None:
                 connection.rollback()
                 raise WorkflowConflict(f"unknown effect: {effect_id}")
@@ -1065,8 +1335,17 @@ class WorkflowStore:
                     completion_time,
                 ),
             )
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="complete_effect_inbox_insert",
+            )
             if not accepted:
-                connection.commit()
+                rejected_effect = self._effect_from_row(row)
+                self._commit(
+                    connection,
+                    deadline_monotonic=deadline_monotonic,
+                    operation="complete_effect_rejection_commit",
+                )
                 return {
                     "accepted": False,
                     "duplicate": False,
@@ -1075,8 +1354,9 @@ class WorkflowStore:
                         if current_lease and require_live_lease and not live_lease
                         else "stale_lease_epoch"
                     ),
-                    "effect": self.effect(effect_id),
+                    "effect": rejected_effect,
                 }
+            recorded_followups: list[WorkflowEvent] = []
             try:
                 self._append_event_locked(
                     connection,
@@ -1091,6 +1371,10 @@ class WorkflowStore:
                     causation_id=causation_id,
                     expected_version=None,
                     schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                self._remaining_deadline_seconds(
+                    deadline_monotonic,
+                    operation="complete_effect_event_append",
                 )
                 for followup in followup_events or ():
                     event_type = str(followup.get("event_type") or "").strip()
@@ -1107,7 +1391,7 @@ class WorkflowStore:
                             "effect follow-up event requires event_type, "
                             "causation_id, and object payload"
                         )
-                    self._append_event_locked(
+                    recorded_followups.append(self._append_event_locked(
                         connection,
                         run_id=str(row["run_id"]),
                         event_type=event_type,
@@ -1118,6 +1402,10 @@ class WorkflowStore:
                             followup.get("schema_version")
                             or KERNEL_SCHEMA_VERSION
                         ),
+                    ))
+                    self._remaining_deadline_seconds(
+                        deadline_monotonic,
+                        operation="complete_effect_followup_append",
                     )
                 connection.execute(
                     """
@@ -1129,15 +1417,33 @@ class WorkflowStore:
                     """,
                     (encoded, digest, completion_time, effect_id),
                 )
+                self._remaining_deadline_seconds(
+                    deadline_monotonic,
+                    operation="complete_effect_update",
+                )
+                completed_effect_row = connection.execute(
+                    "SELECT * FROM effects WHERE effect_id = ?",
+                    (effect_id,),
+                ).fetchone()
+                completed_effect = self._effect_from_row(completed_effect_row)
+                self._remaining_deadline_seconds(
+                    deadline_monotonic,
+                    operation="complete_effect_snapshot",
+                )
             except Exception:
                 connection.rollback()
                 raise
-            connection.commit()
-        return {
-            "accepted": True,
-            "duplicate": False,
-            "effect": self.effect(effect_id),
-        }
+            self._commit(
+                connection,
+                deadline_monotonic=deadline_monotonic,
+                operation="complete_effect_commit",
+            )
+            return {
+                "accepted": True,
+                "duplicate": False,
+                "effect": completed_effect,
+                "followup_events": tuple(recorded_followups),
+            }
 
     def set_instance_status(self, run_id: str, status: str) -> None:
         with self._connect() as connection:

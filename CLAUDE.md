@@ -70,6 +70,6 @@ python scripts/official_certify.py doctor
 Do not treat the Arena or official EXE chip result as strength evidence. Local
 Glicko/H2H strength uses complete 70-hand raw native TCP matches only.
 For v143, a green doctor and valid unused `first_strict_control_v1` at artifact
-hash `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
+hash `b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2`
 prove the official 5+3 dependency is present. Only the checkpoint stage
 `official_bootstrap_required` unlocks the operator action.

@@ -952,3 +952,314 @@ def test_runtime_heartbeat_is_identity_bound_and_restart_stale(tmp_path, monkeyp
     monkeypatch.setattr(pipeline_state, "_process_start_token", lambda _pid: "new-process")
     assert pipeline_state.read_pipeline_runtime_heartbeat(checkpoint) is None
     assert pipeline_state.pipeline_runtime_activity_ts(checkpoint) == 0.0
+
+
+def test_native_match_heartbeat_is_checkpoint_bound_and_schema_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    import pipeline_state
+
+    heartbeat_file = tmp_path / "pipeline_runtime_heartbeat.json"
+    checkpoint = _checkpoint(52, 51, "workers_done")
+    from national_native import build_native_match_timing_plan
+
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=600.0,
+    )
+    checkpoint["audit_context"] = {
+        "quality_native_match_timing_plan": timing_plan.snapshot(),
+        "quality_native_match_timing_plan_digest": timing_plan.digest(),
+    }
+    monkeypatch.setattr(
+        pipeline_state,
+        "PIPELINE_RUNTIME_HEARTBEAT_FILE",
+        heartbeat_file,
+    )
+    nonce = "d" * 32
+    token = pipeline_state.activate_native_match_dispatch_nonce(nonce)
+    try:
+        reporter = pipeline_state.make_native_match_heartbeat_reporter(
+            checkpoint,
+            owner_tool="run_quality_gates",
+        )
+        assert reporter is not None
+        now = __import__("time").time()
+        operation_started = now - 100.0
+        phase_budget_us = timing_plan.effective_timeout_us
+        progress = {
+            "schema_version": 1,
+            "event_type": "hand_start",
+            "hand": 1,
+            "hands": 70,
+            "timing_plan_digest": timing_plan.digest(),
+            "match_identity_digest": "b" * 64,
+            "liveness_phase": "engine_running",
+            "phase_budget_us": phase_budget_us,
+            "operation_started_at_epoch": operation_started,
+            "operation_deadline_epoch": (
+                operation_started
+                + timing_plan.first_strict_lease_timeout_us / 1_000_000.0
+            ),
+            "operation_budget_us": timing_plan.first_strict_lease_timeout_us,
+            "phase_started_at_epoch": now,
+            "phase_deadline_epoch": now + phase_budget_us / 1_000_000.0,
+            "effective_timeout_us": timing_plan.effective_timeout_us,
+        }
+
+        assert asyncio.run(reporter(progress)) is True
+        observed = pipeline_state.read_pipeline_native_match_progress(
+            checkpoint,
+            max_age=30,
+            provider_dispatch_nonce=nonce,
+        )
+        assert observed is not None
+        assert observed["owner_tool"] == "run_quality_gates"
+        assert observed["provider_dispatch_nonce"] == nonce
+        assert observed["event_seq"] == 1
+        assert observed["event_type"] == "hand_start"
+
+        finalizing_started = now + 1.0
+        finalizing = {
+            **progress,
+            "event_type": "finalizing",
+            "hand": 70,
+            "liveness_phase": "finalizing",
+            "phase_budget_us": timing_plan.finalization_timeout_us,
+            "phase_started_at_epoch": finalizing_started,
+            "phase_deadline_epoch": (
+                finalizing_started
+                + timing_plan.finalization_timeout_us / 1_000_000.0
+            ),
+        }
+        assert asyncio.run(reporter(finalizing)) is True
+        finalizing_live = pipeline_state.read_pipeline_native_match_progress(
+            checkpoint,
+            max_age=30,
+            provider_dispatch_nonce=nonce,
+        )
+        assert finalizing_live["event_type"] == "finalizing"
+        assert finalizing_live["hand"] == 70
+        assert finalizing_live["phase_budget_us"] == (
+            timing_plan.finalization_timeout_us
+        )
+        assert asyncio.run(reporter({**finalizing, "hand": 69})) is False
+        assert asyncio.run(reporter({
+            **finalizing,
+            "phase_budget_us": timing_plan.cleanup_timeout_us,
+            "phase_deadline_epoch": (
+                finalizing_started
+                + timing_plan.cleanup_timeout_us / 1_000_000.0
+            ),
+        })) is False
+        assert pipeline_state.validate_native_match_progress(
+            checkpoint,
+            {**finalizing_live, "schema_version": 3},
+            provider_dispatch_nonce=nonce,
+        ) is None
+
+        # A merely well-formed digest cannot borrow the frozen checkpoint's
+        # extension authority.
+        forged = dict(progress, timing_plan_digest="c" * 64)
+        assert asyncio.run(reporter(forged)) is False
+
+        # The direct runner's terminal callback removes only its own exact
+        # dispatch/match sidecar instead of lending a later stall an extension.
+        assert asyncio.run(reporter({
+            "event_type": "terminal",
+            "terminal": True,
+            "terminal_outcome": "runner_returned",
+            "match_identity_digest": "b" * 64,
+            "timing_plan_digest": timing_plan.digest(),
+        }))
+        assert pipeline_state.read_pipeline_native_match_progress(
+            checkpoint,
+            max_age=30,
+            provider_dispatch_nonce=nonce,
+        ) is None
+        receipt = pipeline_state.consume_native_match_terminal_handoff(
+            checkpoint,
+            finalizing_live,
+        )
+        assert receipt is not None
+        assert receipt["terminal_outcome"] == "runner_returned"
+        assert receipt["last_live_event_seq"] == finalizing_live["event_seq"]
+        assert receipt["terminal_event_seq"] == finalizing_live["event_seq"] + 1
+        # The handoff is process-local and one-shot; it is never another live
+        # progress record and cannot be replayed by the same dispatch.
+        assert pipeline_state.consume_native_match_terminal_handoff(
+            checkpoint,
+            finalizing_live,
+        ) is None
+
+        malformed = dict(progress, phase_deadline_epoch=now + 99_999.0)
+        assert pipeline_state.write_pipeline_runtime_heartbeat(
+            checkpoint,
+            phase="native_match_progress",
+            native_match_progress=malformed,
+        ) is False
+        assert pipeline_state.make_native_match_heartbeat_reporter(
+            checkpoint,
+            owner_tool="run_precommit_eval",
+        ) is None
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+def test_native_match_terminal_and_revocation_cannot_delete_new_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    """An old tool completion must not clear a newer provider's heartbeat."""
+
+    import pipeline_state
+    from national_native import build_native_match_timing_plan
+
+    heartbeat_file = tmp_path / "pipeline_runtime_heartbeat.json"
+    checkpoint = _checkpoint(62, 61, "workers_done")
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=600.0,
+    )
+    checkpoint["audit_context"] = {
+        "quality_native_match_timing_plan": timing_plan.snapshot(),
+        "quality_native_match_timing_plan_digest": timing_plan.digest(),
+    }
+    monkeypatch.setattr(
+        pipeline_state,
+        "PIPELINE_RUNTIME_HEARTBEAT_FILE",
+        heartbeat_file,
+    )
+    # There is deliberately no ambient test/manual heartbeat authority.
+    assert pipeline_state.make_native_match_heartbeat_reporter(
+        checkpoint,
+        owner_tool="run_quality_gates",
+    ) is None
+
+    nonce_a = "a" * 32
+    nonce_b = "b" * 32
+    token_a = pipeline_state.activate_native_match_dispatch_nonce(nonce_a)
+    try:
+        reporter_a = pipeline_state.make_native_match_heartbeat_reporter(
+            checkpoint,
+            owner_tool="run_quality_gates",
+        )
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token_a)
+    token_b = pipeline_state.activate_native_match_dispatch_nonce(nonce_b)
+    try:
+        reporter_b = pipeline_state.make_native_match_heartbeat_reporter(
+            checkpoint,
+            owner_tool="run_quality_gates",
+        )
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token_b)
+    assert reporter_a is not None and reporter_b is not None
+
+    now = __import__("time").time()
+    phase_budget_us = timing_plan.launch_timeout_us
+
+    def launching(identity):
+        return {
+            "event_type": "launching",
+            "hand": None,
+            "hands": 70,
+            "timing_plan_digest": timing_plan.digest(),
+            "match_identity_digest": identity,
+            "liveness_phase": "launching",
+            "phase_budget_us": phase_budget_us,
+            "operation_started_at_epoch": now,
+            "operation_deadline_epoch": (
+                now + timing_plan.first_strict_lease_timeout_us / 1_000_000.0
+            ),
+            "operation_budget_us": timing_plan.first_strict_lease_timeout_us,
+            "phase_started_at_epoch": now,
+            "phase_deadline_epoch": now + phase_budget_us / 1_000_000.0,
+            "effective_timeout_us": timing_plan.effective_timeout_us,
+        }
+
+    try:
+        assert asyncio.run(reporter_a(launching("c" * 64))) is True
+        assert asyncio.run(reporter_b(launching("d" * 64))) is True
+
+        # A terminal callback from the first match has a valid checkpoint but
+        # not the currently persisted dispatch/match identity, so it fails
+        # closed instead of unlinking the second sidecar.
+        assert asyncio.run(reporter_a({
+            "event_type": "terminal",
+            "terminal": True,
+            "terminal_outcome": "runner_returned",
+            "match_identity_digest": "c" * 64,
+            "timing_plan_digest": timing_plan.digest(),
+        })) is False
+        assert not pipeline_state.native_match_dispatch_nonce_is_active(nonce_a)
+        assert pipeline_state.native_match_dispatch_nonce_is_active(nonce_b)
+        live = pipeline_state.read_pipeline_native_match_progress(
+            checkpoint,
+            max_age=30,
+            provider_dispatch_nonce=nonce_b,
+        )
+        assert live is not None
+        assert live["match_identity_digest"] == "d" * 64
+        assert live["hand"] is None
+
+        import orchestrator
+
+        monkeypatch.setattr(
+            orchestrator,
+            "_read_active_pipeline_checkpoint",
+            lambda: checkpoint,
+        )
+        monkeypatch.setattr(
+            orchestrator,
+            "ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC",
+            timing_plan.first_strict_lease_timeout_us / 1_000_000.0,
+        )
+        extension = orchestrator._bounded_native_match_extension(
+            stream_started_epoch=now - 10.0,
+            original_deadline_epoch=now + 0.1,
+            provider_dispatch_nonce=nonce_b,
+        )
+        assert extension is not None
+        assert extension["progress"]["event_type"] == "launching"
+        assert extension["deadline_epoch"] == pytest.approx(
+            live["phase_deadline_epoch"]
+        )
+
+        # Launching is the sole phase without a real hand.  Old schema-3
+        # launch payloads, a fabricated hand, and handless engine progress all
+        # fail closed rather than borrowing the launch budget.
+        assert pipeline_state.validate_native_match_progress(
+            checkpoint,
+            {**live, "schema_version": 3},
+            provider_dispatch_nonce=nonce_b,
+        ) is None
+        assert pipeline_state.validate_native_match_progress(
+            checkpoint,
+            {**live, "hand": 1},
+            provider_dispatch_nonce=nonce_b,
+        ) is None
+        assert pipeline_state.validate_native_match_progress(
+            checkpoint,
+            {
+                **live,
+                "event_type": "engine_started",
+                "liveness_phase": "engine_running",
+                "phase_budget_us": timing_plan.effective_timeout_us,
+            },
+            provider_dispatch_nonce=nonce_b,
+        ) is None
+
+        # Cancellation/revocation of the old SDK dispatch similarly cannot
+        # remove the newer dispatch's sidecar.
+        assert pipeline_state.revoke_native_match_dispatch_nonce(nonce_a) is False
+        assert pipeline_state.read_pipeline_native_match_progress(
+            checkpoint,
+            max_age=30,
+            provider_dispatch_nonce=nonce_b,
+        ) is not None
+    finally:
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce_a)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce_b)

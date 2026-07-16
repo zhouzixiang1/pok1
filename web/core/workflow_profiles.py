@@ -21,6 +21,8 @@ _PROFILES = {
         national_execution_mode="native_tcp",
         national_acceptance_hands=70,
         national_acceptance_hard=True,
+        # This is a requested timeout. The direct native runner raises it to
+        # the timing-derived full-70-hand liveness floor when necessary.
         national_acceptance_timeout_sec=600,
         national_precommit_hands=70,
         national_precommit_matches=1,
@@ -88,7 +90,8 @@ def profile_summary(profile: WorkflowProfile | None = None) -> str:
         f"- max_workers={p.max_workers}\n"
         f"- national_acceptance_hands={p.national_acceptance_hands}, "
         f"hard={p.national_acceptance_hard}, "
-        f"timeout={p.national_acceptance_timeout_sec}s\n"
+        f"timeout_request={p.national_acceptance_timeout_sec}s "
+        "(direct runner records the timing-derived effective full-match budget)\n"
         f"- national_precommit_hands={p.national_precommit_hands}, "
         f"matches={p.national_precommit_matches}\n"
         f"- national_rating_hands={p.national_rating_hands}, "

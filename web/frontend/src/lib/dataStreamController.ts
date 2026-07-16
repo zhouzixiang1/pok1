@@ -254,7 +254,7 @@ const isHistoryEntry = (value: unknown): value is HistoryEntry => (
     && Object.values(winRates).every((row) => (
       isObject(row)
       && isInteger(row.games)
-      && isOptional(row.h2h_avg_wr, isNumber)
+      && isOptional(row.h2h_avg_wr, isNullableNumber)
     ))
   ))
 );

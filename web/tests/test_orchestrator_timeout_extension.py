@@ -18,6 +18,7 @@ checkpoint so the read/rewrite logic runs against tmp_path.
 """
 
 import asyncio
+import copy
 import json
 import sys
 import time
@@ -3486,6 +3487,883 @@ def test_actionable_stall_carries_identities_from_one_checkpoint_snapshot(
             resolved_route=resolved_route,
         )
     )
+
+
+@pytest.mark.asyncio
+async def test_live_native_match_gets_one_bounded_stream_extension(monkeypatch, tmp_path):
+    import orchestrator
+
+    calls = []
+    now = time.time()
+
+    def native_extension(**_kwargs):
+        calls.append(True)
+        seq = len(calls)
+        return {
+            "deadline_epoch": now + 0.15,
+            "cap_epoch": now + 0.15,
+            "checkpoint": {"stage": "workers_done"},
+            "checkpoint_identity": ("run", 1, "workers_done", 143, 142),
+            "progress": {
+                "owner_tool": "run_quality_gates",
+                "provider_dispatch_nonce": None,
+                "match_identity_digest": "a" * 64,
+                "timing_plan_digest": "b" * 64,
+                "hands": 70,
+                "effective_timeout_us": 100,
+                "operation_started_at_epoch": now - 1.0,
+                "operation_deadline_epoch": now + 0.15,
+                "operation_budget_us": 1_150_000,
+                "phase_started_at_epoch": now - 0.5,
+                "phase_deadline_epoch": now + 0.15,
+                "phase_budget_us": 650_000,
+                "liveness_phase": "engine_running",
+                "event_seq": seq,
+                "hand": 1,
+            },
+        }
+
+    async def stream():
+        await asyncio.sleep(0.04)
+        return "completed-after-native-progress"
+
+    monkeypatch.setattr(orchestrator, "_bounded_native_match_extension", native_extension)
+    result = await orchestrator._await_orchestrator_stream_response_bounded(
+        stream(),
+        timeout=0.01,
+        attempt_ref=[None],
+        gen_ref=[None],
+        log_file_path=tmp_path / "orchestrator.log",
+    )
+
+    assert result == "completed-after-native-progress"
+    assert calls == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_live_native_match_extension_receives_exact_owned_attempt_nonce(
+    monkeypatch,
+    tmp_path,
+):
+    """The bounded wait passes dispatch identity, never a time-window proxy."""
+
+    import orchestrator
+
+    observed = []
+    now = time.time()
+
+    def native_extension(**kwargs):
+        observed.append(kwargs.get("provider_dispatch_nonce"))
+        seq = len(observed)
+        return {
+            "deadline_epoch": now + 0.15,
+            "cap_epoch": now + 0.15,
+            "checkpoint": {"stage": "workers_done"},
+            "checkpoint_identity": ("run", 1, "workers_done", 143, 142),
+            "progress": {
+                "owner_tool": "run_quality_gates",
+                "provider_dispatch_nonce": nonce,
+                "match_identity_digest": "a" * 64,
+                "timing_plan_digest": "b" * 64,
+                "hands": 70,
+                "effective_timeout_us": 100,
+                "operation_started_at_epoch": now - 1.0,
+                "operation_deadline_epoch": now + 0.15,
+                "operation_budget_us": 1_150_000,
+                "phase_started_at_epoch": now - 0.5,
+                "phase_deadline_epoch": now + 0.15,
+                "phase_budget_us": 650_000,
+                "liveness_phase": "engine_running",
+                "event_seq": seq,
+                "hand": 1,
+            },
+        }
+
+    async def stream():
+        await asyncio.sleep(0.04)
+        return "completed-after-bound-dispatch"
+
+    monkeypatch.setattr(orchestrator, "_bounded_native_match_extension", native_extension)
+    nonce = "a" * 32
+    result = await orchestrator._await_orchestrator_stream_response_bounded(
+        stream(),
+        timeout=0.01,
+        attempt_ref=[{"attempt_id": nonce}],
+        gen_ref=[None],
+        log_file_path=tmp_path / "orchestrator-nonce.log",
+    )
+
+    assert result == "completed-after-bound-dispatch"
+    assert observed == [nonce, nonce]
+
+
+async def _prepare_real_native_terminal_handoff(
+    monkeypatch,
+    tmp_path,
+    *,
+    nonce,
+):
+    import orchestrator
+    import pipeline_state
+    from national_native import build_native_match_timing_plan
+
+    plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=600.0,
+    )
+    checkpoint = {
+        "workflow_run_id": "generation:143:terminal-handoff",
+        "checkpoint_revision": 8,
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "workers_done",
+        "audit_context": {
+            "quality_native_match_timing_plan": plan.snapshot(),
+            "quality_native_match_timing_plan_digest": plan.digest(),
+        },
+    }
+    heartbeat_file = tmp_path / f"native-terminal-{nonce[:4]}.json"
+    monkeypatch.setattr(
+        pipeline_state,
+        "PIPELINE_RUNTIME_HEARTBEAT_FILE",
+        heartbeat_file,
+    )
+    token = pipeline_state.activate_native_match_dispatch_nonce(nonce)
+    reporter = pipeline_state.make_native_match_heartbeat_reporter(
+        checkpoint,
+        owner_tool="run_quality_gates",
+    )
+    assert reporter is not None
+    now = time.time()
+    operation_started = now - 0.1
+    progress = {
+        "event_type": "hand_start",
+        "hand": 70,
+        "hands": 70,
+        "timing_plan_digest": plan.digest(),
+        "match_identity_digest": "e" * 64,
+        "liveness_phase": "engine_running",
+        "phase_budget_us": plan.effective_timeout_us,
+        "operation_started_at_epoch": operation_started,
+        "operation_deadline_epoch": (
+            operation_started
+            + plan.first_strict_lease_timeout_us / 1_000_000.0
+        ),
+        "operation_budget_us": plan.first_strict_lease_timeout_us,
+        "phase_started_at_epoch": now,
+        "phase_deadline_epoch": now + plan.effective_timeout_us / 1_000_000.0,
+        "effective_timeout_us": plan.effective_timeout_us,
+    }
+    assert await reporter(progress) is True
+    live = pipeline_state.read_pipeline_native_match_progress(
+        checkpoint,
+        provider_dispatch_nonce=nonce,
+    )
+    assert live is not None
+    current_checkpoint = [checkpoint]
+    monkeypatch.setattr(
+        orchestrator,
+        "_read_active_pipeline_checkpoint",
+        lambda: current_checkpoint[0],
+    )
+    return pipeline_state, checkpoint, current_checkpoint, reporter, live, token
+
+
+@pytest.mark.asyncio
+async def test_native_terminal_receipt_bridges_periodic_reproof_to_stream_result(
+    monkeypatch,
+    tmp_path,
+):
+    import orchestrator
+
+    nonce = "1" * 32
+    (
+        pipeline_state,
+        checkpoint,
+        current_checkpoint,
+        reporter,
+        live,
+        token,
+    ) = await _prepare_real_native_terminal_handoff(
+        monkeypatch,
+        tmp_path,
+        nonce=nonce,
+    )
+    monkeypatch.setattr(orchestrator, "ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC", 0.01)
+
+    async def stream():
+        await asyncio.sleep(0.018)
+        assert await reporter({
+            "event_type": "terminal",
+            "terminal": True,
+            "terminal_outcome": "runner_returned",
+            "match_identity_digest": live["match_identity_digest"],
+            "timing_plan_digest": live["timing_plan_digest"],
+        }) is True
+        current_checkpoint[0] = {
+            **checkpoint,
+            "checkpoint_revision": 9,
+            "stage": "quality_passed",
+        }
+        await asyncio.sleep(0.03)
+        return "terminal-periodic-handoff"
+
+    try:
+        result = await orchestrator._await_orchestrator_stream_response_bounded(
+            stream(),
+            timeout=0.005,
+            attempt_ref=[{"attempt_id": nonce}],
+            gen_ref=[None],
+            log_file_path=tmp_path / "terminal-periodic.log",
+        )
+        assert result == "terminal-periodic-handoff"
+        assert not pipeline_state.native_match_dispatch_nonce_is_active(nonce)
+        assert pipeline_state.consume_native_match_terminal_handoff(
+            checkpoint,
+            live,
+        ) is None
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+@pytest.mark.asyncio
+async def test_native_terminal_receipt_can_be_consumed_on_immediate_done(
+    monkeypatch,
+    tmp_path,
+):
+    import orchestrator
+
+    nonce = "2" * 32
+    (
+        pipeline_state,
+        checkpoint,
+        current_checkpoint,
+        reporter,
+        live,
+        token,
+    ) = await _prepare_real_native_terminal_handoff(
+        monkeypatch,
+        tmp_path,
+        nonce=nonce,
+    )
+    monkeypatch.setattr(orchestrator, "ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC", 0.1)
+
+    async def stream():
+        await asyncio.sleep(0.018)
+        assert await reporter({
+            "event_type": "terminal",
+            "terminal": True,
+            "terminal_outcome": "runner_returned",
+            "match_identity_digest": live["match_identity_digest"],
+            "timing_plan_digest": live["timing_plan_digest"],
+        }) is True
+        current_checkpoint[0] = {
+            **checkpoint,
+            "checkpoint_revision": 9,
+            "stage": "quality_failed",
+        }
+        return "terminal-immediate-handoff"
+
+    try:
+        result = await orchestrator._await_orchestrator_stream_response_bounded(
+            stream(),
+            timeout=0.005,
+            attempt_ref=[{"attempt_id": nonce}],
+            gen_ref=[None],
+            log_file_path=tmp_path / "terminal-immediate.log",
+        )
+        assert result == "terminal-immediate-handoff"
+        assert not pipeline_state.native_match_dispatch_nonce_is_active(nonce)
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+@pytest.mark.asyncio
+async def test_native_terminal_receipt_is_one_shot_exact_and_never_live(
+    monkeypatch,
+    tmp_path,
+):
+    import orchestrator
+
+    nonce = "3" * 32
+    (
+        pipeline_state,
+        checkpoint,
+        current_checkpoint,
+        reporter,
+        live,
+        token,
+    ) = await _prepare_real_native_terminal_handoff(
+        monkeypatch,
+        tmp_path,
+        nonce=nonce,
+    )
+    extension = orchestrator._bounded_native_match_extension(
+        stream_started_epoch=time.time() - 1.0,
+        original_deadline_epoch=time.time() + 1.0,
+        provider_dispatch_nonce=nonce,
+    )
+    assert extension is not None
+    try:
+        assert await reporter({
+            "event_type": "terminal",
+            "terminal": True,
+            "terminal_outcome": "runner_returned",
+            "match_identity_digest": live["match_identity_digest"],
+            "timing_plan_digest": live["timing_plan_digest"],
+        }) is True
+        # A receipt is not a heartbeat and can never grant the initial/live
+        # extension path after the exact sidecar has been removed.
+        assert orchestrator._bounded_native_match_extension(
+            stream_started_epoch=time.time() - 1.0,
+            original_deadline_epoch=time.time() + 1.0,
+            provider_dispatch_nonce=nonce,
+        ) is None
+        original = copy.deepcopy(
+            pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce]
+        )
+
+        mutations = [
+            ("match_identity_digest", "f" * 64),
+            ("timing_plan_digest", "a" * 64),
+            ("checkpoint_identity", "b" * 64),
+            ("workflow_run_id", "generation:other"),
+            ("checkpoint_revision", 7),
+            ("stage", "critic_checked"),
+            ("next_v", 144),
+            ("source_v", 141),
+            ("hands", 69),
+            ("terminal_event_seq", original["last_live_event_seq"] + 2),
+            ("operation_budget_us", original["operation_budget_us"] + 1),
+            ("effective_timeout_us", original["effective_timeout_us"] + 1),
+        ]
+        for field, value in mutations:
+            tampered = copy.deepcopy(original)
+            tampered[field] = value
+            pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce] = tampered
+            assert pipeline_state.consume_native_match_terminal_handoff(
+                checkpoint,
+                live,
+            ) is None, field
+
+        pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce] = copy.deepcopy(
+            original
+        )
+        assert pipeline_state.consume_native_match_terminal_handoff(
+            checkpoint,
+            live,
+            now=original["expires_at_epoch"] + 0.001,
+        ) is None
+
+        # Non-return terminal outcomes may clean state but never authorize the
+        # provider result handoff.
+        raised = copy.deepcopy(original)
+        raised["terminal_outcome"] = "runner_raised"
+        pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce] = raised
+        assert orchestrator._consume_native_match_terminal_handoff(
+            extension,
+            observed_at_epoch=time.time(),
+        ) is None
+
+        invalid_currents = [
+            {**checkpoint, "workflow_run_id": "generation:other"},
+            {**checkpoint, "checkpoint_revision": 7},
+            {**checkpoint, "next_v": 144},
+            {**checkpoint, "stage": "reviewed"},
+            {**checkpoint, "stage": "unknown-future-stage"},
+        ]
+        for invalid in invalid_currents:
+            current_checkpoint[0] = invalid
+            pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce] = copy.deepcopy(
+                original
+            )
+            assert orchestrator._consume_native_match_terminal_handoff(
+                extension,
+                observed_at_epoch=time.time(),
+            ) is None
+
+        current_checkpoint[0] = {
+            **checkpoint,
+            "checkpoint_revision": 10,
+            "stage": "quality_passed",
+        }
+        pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS[nonce] = copy.deepcopy(
+            original
+        )
+        handoff = orchestrator._consume_native_match_terminal_handoff(
+            extension,
+            observed_at_epoch=time.time(),
+        )
+        assert handoff is not None
+        assert orchestrator._native_match_terminal_handoff_reproof(
+            handoff,
+            observed_at_epoch=time.time(),
+        )
+        assert pipeline_state.consume_native_match_terminal_handoff(
+            checkpoint,
+            live,
+        ) is None
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+@pytest.mark.asyncio
+async def test_next_live_match_clears_receipt_and_unlink_failure_rolls_back(
+    monkeypatch,
+    tmp_path,
+):
+    import orchestrator
+    from pathlib import Path
+
+    nonce = "4" * 32
+    (
+        pipeline_state,
+        checkpoint,
+        _current_checkpoint,
+        reporter,
+        live,
+        token,
+    ) = await _prepare_real_native_terminal_handoff(
+        monkeypatch,
+        tmp_path,
+        nonce=nonce,
+    )
+    try:
+        assert await reporter({
+            "event_type": "terminal",
+            "terminal": True,
+            "terminal_outcome": "runner_returned",
+            "match_identity_digest": live["match_identity_digest"],
+            "timing_plan_digest": live["timing_plan_digest"],
+        }) is True
+        assert nonce in pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS
+
+        new_progress = {
+            "event_type": "hand_start",
+            "hand": 1,
+            "hands": live["hands"],
+            "timing_plan_digest": live["timing_plan_digest"],
+            "match_identity_digest": "9" * 64,
+            "liveness_phase": live["liveness_phase"],
+            "phase_budget_us": live["phase_budget_us"],
+            "operation_started_at_epoch": live["operation_started_at_epoch"],
+            "operation_deadline_epoch": live["operation_deadline_epoch"],
+            "operation_budget_us": live["operation_budget_us"],
+            "phase_started_at_epoch": live["phase_started_at_epoch"],
+            "phase_deadline_epoch": live["phase_deadline_epoch"],
+            "effective_timeout_us": live["effective_timeout_us"],
+        }
+        assert await reporter(new_progress) is True
+        assert nonce not in pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS
+        new_live = pipeline_state.read_pipeline_native_match_progress(
+            checkpoint,
+            provider_dispatch_nonce=nonce,
+        )
+        assert new_live["match_identity_digest"] == "9" * 64
+        assert orchestrator._bounded_native_match_extension(
+            stream_started_epoch=time.time() - 1.0,
+            original_deadline_epoch=time.time() + 1.0,
+            provider_dispatch_nonce=nonce,
+        ) is not None
+
+        real_unlink = Path.unlink
+        heartbeat_path = pipeline_state.PIPELINE_RUNTIME_HEARTBEAT_FILE
+
+        def fail_exact_unlink(path, *args, **kwargs):
+            if path == heartbeat_path:
+                raise OSError("sentinel unlink failure")
+            return real_unlink(path, *args, **kwargs)
+
+        with monkeypatch.context() as scoped:
+            scoped.setattr(Path, "unlink", fail_exact_unlink)
+            assert await reporter({
+                "event_type": "terminal",
+                "terminal": True,
+                "terminal_outcome": "runner_returned",
+                "match_identity_digest": "9" * 64,
+                "timing_plan_digest": live["timing_plan_digest"],
+            }) is False
+        assert nonce not in pipeline_state._NATIVE_MATCH_TERMINAL_HANDOFFS
+        assert not pipeline_state.native_match_dispatch_nonce_is_active(nonce)
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+def test_native_match_extension_has_absolute_cap_and_requires_exact_dispatch(monkeypatch):
+    import orchestrator
+    import pipeline_state
+    from national_native import build_native_match_timing_plan
+
+    now = time.time()
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=600.0,
+    )
+    checkpoint = {
+        "workflow_run_id": "generation:143:test",
+        "checkpoint_revision": 3,
+        "stage": "workers_done",
+        "audit_context": {
+            "quality_native_match_timing_plan": timing_plan.snapshot(),
+            "quality_native_match_timing_plan_digest": timing_plan.digest(),
+        },
+    }
+    monkeypatch.setattr(orchestrator, "_read_active_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(orchestrator, "ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC", 10.0)
+    nonce = "e" * 32
+    token = pipeline_state.activate_native_match_dispatch_nonce(nonce)
+    operation_started = now - 100.0
+    phase_budget_us = timing_plan.effective_timeout_us
+    valid_progress = {
+        "schema_version": 4,
+        "owner_tool": "run_quality_gates",
+        "provider_dispatch_nonce": nonce,
+        "match_identity_digest": "a" * 64,
+        "timing_plan_digest": timing_plan.digest(),
+        "hands": 70,
+        "event_seq": 9,
+        "event_type": "hand_start",
+        "hand": 1,
+        "liveness_phase": "engine_running",
+        "operation_started_at_epoch": operation_started,
+        "operation_deadline_epoch": (
+            operation_started
+            + timing_plan.first_strict_lease_timeout_us / 1_000_000.0
+        ),
+        "operation_budget_us": timing_plan.first_strict_lease_timeout_us,
+        "phase_started_at_epoch": now,
+        "phase_deadline_epoch": now + phase_budget_us / 1_000_000.0,
+        "phase_budget_us": phase_budget_us,
+        "effective_timeout_us": timing_plan.effective_timeout_us,
+        "terminal": False,
+    }
+    try:
+        monkeypatch.setattr(
+            pipeline_state,
+            "read_pipeline_native_match_progress",
+            lambda *_args, **_kwargs: dict(valid_progress),
+        )
+        extension = orchestrator._bounded_native_match_extension(
+            stream_started_epoch=now - 1,
+            original_deadline_epoch=now + 1,
+            provider_dispatch_nonce=nonce,
+        )
+        assert extension is not None
+        assert extension["deadline_epoch"] == pytest.approx(
+            now + 1 + 10.0
+        )
+
+        # Progress schema 3 cannot be reinterpreted under schema 4's explicit
+        # operation and phase deadline contract.
+        monkeypatch.setattr(
+            pipeline_state,
+            "read_pipeline_native_match_progress",
+            lambda *_args, **_kwargs: {**valid_progress, "schema_version": 3},
+        )
+        assert orchestrator._bounded_native_match_extension(
+            stream_started_epoch=now,
+            original_deadline_epoch=now + 1,
+            provider_dispatch_nonce=nonce,
+        ) is None
+
+        # A physically fresh sidecar from another SDK attempt is not enough:
+        # dispatch identity, not a +/- timestamp window, fences the extension.
+        monkeypatch.setattr(
+            pipeline_state,
+            "read_pipeline_native_match_progress",
+            lambda *_args, **_kwargs: {
+                **valid_progress,
+                "provider_dispatch_nonce": "f" * 32,
+                "event_seq": 10,
+            },
+        )
+        assert orchestrator._bounded_native_match_extension(
+            stream_started_epoch=now,
+            original_deadline_epoch=now + 1,
+            provider_dispatch_nonce=nonce,
+        ) is None
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+def test_native_launch_extension_covers_exact_full_operation_budget(monkeypatch):
+    import orchestrator
+    import pipeline_state
+    from national_native import build_native_match_timing_plan
+
+    timing_plan = build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=600.0,
+    )
+    full_operation_sec = (
+        timing_plan.first_strict_lease_timeout_us / 1_000_000.0
+    )
+    assert orchestrator.ORCH_NATIVE_MATCH_MAX_EXTENSION_HARD_CAP_SEC == pytest.approx(
+        full_operation_sec
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "ORCH_NATIVE_MATCH_MAX_EXTENSION_SEC",
+        full_operation_sec,
+    )
+    checkpoint = {
+        "workflow_run_id": "generation:143:late-launch",
+        "checkpoint_revision": 4,
+        "stage": "workers_done",
+        "audit_context": {
+            "quality_native_match_timing_plan": timing_plan.snapshot(),
+            "quality_native_match_timing_plan_digest": timing_plan.digest(),
+        },
+    }
+    monkeypatch.setattr(
+        orchestrator,
+        "_read_active_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+    nonce = "9" * 32
+    token = pipeline_state.activate_native_match_dispatch_nonce(nonce)
+    launch_started = time.time() - 0.05
+    operation_deadline = launch_started + full_operation_sec
+    launch_deadline = (
+        launch_started + timing_plan.launch_timeout_us / 1_000_000.0
+    )
+    progress = {
+        "schema_version": 4,
+        "owner_tool": "run_quality_gates",
+        "provider_dispatch_nonce": nonce,
+        "match_identity_digest": "8" * 64,
+        "timing_plan_digest": timing_plan.digest(),
+        "hands": 70,
+        "event_seq": 1,
+        "event_type": "launching",
+        "hand": None,
+        "liveness_phase": "launching",
+        "operation_started_at_epoch": launch_started,
+        "operation_deadline_epoch": operation_deadline,
+        "operation_budget_us": timing_plan.first_strict_lease_timeout_us,
+        "phase_started_at_epoch": launch_started,
+        "phase_deadline_epoch": launch_deadline,
+        "phase_budget_us": timing_plan.launch_timeout_us,
+        "effective_timeout_us": timing_plan.effective_timeout_us,
+        "terminal": False,
+    }
+    monkeypatch.setattr(
+        pipeline_state,
+        "read_pipeline_native_match_progress",
+        lambda *_args, **_kwargs: dict(progress),
+    )
+    try:
+        extension = orchestrator._bounded_native_match_extension(
+            stream_started_epoch=launch_started - 100.0,
+            original_deadline_epoch=launch_started + 0.1,
+            provider_dispatch_nonce=nonce,
+        )
+        assert extension is not None
+        assert extension["deadline_epoch"] == pytest.approx(launch_deadline)
+        assert extension["progress"]["operation_deadline_epoch"] == pytest.approx(
+            operation_deadline
+        )
+    finally:
+        pipeline_state.reset_native_match_dispatch_nonce(token)
+        pipeline_state.revoke_native_match_dispatch_nonce(nonce)
+
+
+@pytest.mark.asyncio
+async def test_granted_native_extension_is_periodically_reproved(
+    monkeypatch, tmp_path
+):
+    import orchestrator
+
+    monkeypatch.setattr(orchestrator, "ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC", 0.01)
+    now = time.time()
+    nonce = "7" * 32
+    calls = []
+
+    def extension(**kwargs):
+        calls.append(dict(kwargs))
+        seq = len(calls)
+        return {
+            "deadline_epoch": now + 1.0,
+            "cap_epoch": now + 2.0,
+            "checkpoint": {"stage": "workers_done"},
+            "checkpoint_identity": ("run", 1, "workers_done", 143, 142),
+            "progress": {
+                "owner_tool": "run_quality_gates",
+                "provider_dispatch_nonce": nonce,
+                "match_identity_digest": "a" * 64,
+                "timing_plan_digest": "b" * 64,
+                "hands": 70,
+                "effective_timeout_us": 100,
+                "operation_started_at_epoch": now - 1.0,
+                "operation_deadline_epoch": now + 2.0,
+                "operation_budget_us": 3_000_000,
+                "phase_started_at_epoch": now - 0.5,
+                "phase_deadline_epoch": now + 1.0,
+                "phase_budget_us": 1_500_000,
+                "liveness_phase": "engine_running",
+                "event_seq": seq,
+                "hand": 1,
+            },
+        }
+
+    async def stream():
+        await asyncio.sleep(0.045)
+        return "periodically-proved"
+
+    monkeypatch.setattr(orchestrator, "_bounded_native_match_extension", extension)
+    result = await orchestrator._await_orchestrator_stream_response_bounded(
+        stream(),
+        timeout=0.005,
+        attempt_ref=[{"attempt_id": nonce}],
+        gen_ref=[None],
+        log_file_path=tmp_path / "reproof.log",
+    )
+
+    assert result == "periodically-proved"
+    # Scheduler stalls can coalesce intermediate polls, but completion must
+    # always force a second exact proof before the extended result is accepted.
+    assert len(calls) >= 2
+    assert {call["provider_dispatch_nonce"] for call in calls} == {nonce}
+    assert len({call["original_deadline_epoch"] for call in calls}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("drift", ["missing", "identity", "rolling_deadline"])
+async def test_native_extension_reproof_revokes_lost_exact_match(
+    monkeypatch, tmp_path, drift
+):
+    import orchestrator
+    import pipeline_state
+
+    monkeypatch.setattr(orchestrator, "ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC", 0.01)
+    now = time.time()
+    nonce = "6" * 32
+    calls = 0
+    cancelled = []
+    revoked = []
+    base_progress = {
+        "owner_tool": "run_quality_gates",
+        "provider_dispatch_nonce": nonce,
+        "match_identity_digest": "c" * 64,
+        "timing_plan_digest": "d" * 64,
+        "hands": 70,
+        "effective_timeout_us": 100,
+        "operation_started_at_epoch": now - 1.0,
+        "operation_deadline_epoch": now + 2.0,
+        "operation_budget_us": 3_000_000,
+        "phase_started_at_epoch": now - 0.5,
+        "phase_deadline_epoch": now + 1.0,
+        "phase_budget_us": 1_500_000,
+        "liveness_phase": "engine_running",
+        "event_seq": 1,
+        "hand": 1,
+    }
+
+    def extension(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls > 1 and drift == "missing":
+            return None
+        progress = dict(base_progress, event_seq=calls)
+        if calls > 1 and drift == "identity":
+            progress["match_identity_digest"] = "e" * 64
+        if calls > 1 and drift == "rolling_deadline":
+            progress["phase_started_at_epoch"] += 0.1
+            progress["phase_deadline_epoch"] += 0.1
+        return {
+            "deadline_epoch": now + 1.0,
+            "cap_epoch": now + 2.0,
+            "checkpoint": {"stage": "workers_done"},
+            "checkpoint_identity": ("run", 1, "workers_done", 143, 142),
+            "progress": progress,
+        }
+
+    async def cancel(stream_task, **_kwargs):
+        cancelled.append(True)
+        stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            pass
+        return None
+
+    async def stream():
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(orchestrator, "_bounded_native_match_extension", extension)
+    monkeypatch.setattr(
+        orchestrator,
+        "_cancel_orchestrator_stream_task_bounded",
+        cancel,
+    )
+    monkeypatch.setattr(
+        pipeline_state,
+        "revoke_native_match_dispatch_nonce",
+        lambda value: revoked.append(value) or True,
+    )
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        await orchestrator._await_orchestrator_stream_response_bounded(
+            stream(),
+            timeout=0.005,
+            attempt_ref=[{"attempt_id": nonce}],
+            gen_ref=[None],
+            log_file_path=tmp_path / f"revoke-{drift}.log",
+        )
+    assert time.monotonic() - started < 0.25
+    assert calls == 2
+    assert revoked == [nonce]
+    assert cancelled == [True]
+
+
+def test_native_extension_reproof_accepts_only_monotonic_finalizing_transition():
+    import orchestrator
+
+    base = {
+        "deadline_epoch": 200.0,
+        "cap_epoch": 300.0,
+        "checkpoint_identity": ("run", 1, "workers_done", 143, 142),
+        "progress": {
+            "owner_tool": "run_quality_gates",
+            "provider_dispatch_nonce": "5" * 32,
+            "match_identity_digest": "a" * 64,
+            "timing_plan_digest": "b" * 64,
+            "hands": 70,
+            "effective_timeout_us": 100,
+            "operation_started_at_epoch": 10.0,
+            "operation_deadline_epoch": 300.0,
+            "operation_budget_us": 290_000_000,
+            "phase_started_at_epoch": 20.0,
+            "phase_deadline_epoch": 200.0,
+            "phase_budget_us": 180_000_000,
+            "liveness_phase": "engine_running",
+            "event_seq": 9,
+            "hand": 70,
+        },
+    }
+    finalizing = copy.deepcopy(base)
+    finalizing["deadline_epoch"] = 250.0
+    finalizing["progress"].update({
+        "liveness_phase": "finalizing",
+        "event_seq": 10,
+        "hand": 70,
+        "phase_started_at_epoch": 185.0,
+        "phase_deadline_epoch": 250.0,
+        "phase_budget_us": 65_000_000,
+    })
+    assert orchestrator._native_match_extension_reproof(base, finalizing)
+    assert not orchestrator._native_match_extension_reproof(finalizing, base)
+    rolling = copy.deepcopy(finalizing)
+    rolling["progress"]["event_seq"] = 11
+    rolling["progress"]["phase_started_at_epoch"] += 1.0
+    rolling["progress"]["phase_deadline_epoch"] += 1.0
+    assert not orchestrator._native_match_extension_reproof(finalizing, rolling)
 
 
 def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, monkeypatch):

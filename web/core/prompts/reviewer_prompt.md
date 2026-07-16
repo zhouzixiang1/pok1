@@ -63,6 +63,17 @@ Full national legality checklist from `sever/国赛平台/非法行为说明.doc
 - Postflop first action cannot be call; postflop after any first action, check is illegal.
 - Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
 - After one all-in, the opponent may only call or fold; consecutive all-ins are illegal.
+- Verify the strict baseline's system-to-policy controls: the calibrated
+  169-class preflop table remains system-owned and content-bound; each
+  `line.preflop_spot` uses a raise-to-total sizing band and an exact stack
+  target becomes typed `allin`; a match-protection fold requires a complete,
+  internally consistent `hand.match_control` with strict `fold_locks_win`;
+  flop/turn position realization is applied only on nonclosing calls; and
+  current-action range weighting scores holdings on the current public board,
+  not a future rollout board. Treat
+  `betting.call_closes_allin_runout` as authoritative. Require positive and
+  malformed/negative regressions; missing or contradictory fields must be
+  neutral/fail-closed.
 </action_semantics>
 
 <your_scope>
@@ -129,6 +140,13 @@ You check ONLY these five areas:
    with `decision_context.line.previous_street.checked_through`,
    `opponent_checked_back`, and `can_delayed_probe`; a literal
    check/check or hero-in-position requirement makes the module unreachable.
+   A bluffing line also requires a bounded-mixing pair: two pinned real-line,
+   no-hole-draw identities with stable non-card context equal after removing
+   only `deadline.hard_monotonic`/`refinement_monotonic`, one legal raise, one
+   passive `check`, and the matched one-predicate ablation. Treat `allin` as
+   aggressive, never as the passive member. Reject
+   100% raise-on-line policies; one selected identity proves reachability, not
+   mixing.
 
    **Refinement evidence check** — Measure a socket-validated typed baseline strictly under 250 ms,
    then compare fixed-seed bounded budget tiers. Candidate `sample_count`,
@@ -139,8 +157,14 @@ You check ONLY these five areas:
    never produces its hypothesized improved action in a predeclared scenario. When staged computation is
    the typed primary, require at least eight trusted steps and 5 ms measured
    long-tier work, followed by larger-budget scaling or equal proven finite
-   exhaustion. Local strength uses 2.0 s/1.8 s within a 420 s match; formal
-   runtime retains the 55-second hard return and latest-safe fallback.
+   exhaustion. Local strength uses a 2.0 s/1.8 s envelope with a system-derived
+   complete-70-hand `NativeMatchTimingPlan` bound to the active validator's
+   tight 20,000-chip 34-request hand limit; the generic 100-request street cap
+   remains a distinct engine safety backstop. Formal runtime retains the
+   55-second hard return and latest-safe fallback. Reject any candidate claim
+   that it can shorten, bypass, alter the plan digest/engine progress heartbeat,
+   turn a cap hit into a normal street closure, or convert that budget into a
+   quality pass.
 
    **Attribution check** — Exactly one strategy primary may be newly blocking:
    one work primitive, one opponent-profile dimension, or one line control.

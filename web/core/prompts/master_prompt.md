@@ -110,6 +110,20 @@ stacks, street contributions, to-call, SPR, pot odds, legal intent kinds,
 min/max raise-to, bounded opponent evidence, and trusted deadlines. Policy must
 not parse TCP or reconstruct any of these values.
 
+The current strict-v1 baseline also binds five causal strategy controls. Treat
+them as an explicit preserve-or-falsify contract, not as optional prose:
+`precompute.PREFLOP_CLASS_EQUITY` is the system-owned calibrated 169-class
+heads-up table; preflop raises use `line.preflop_spot` and raise-to-total
+bands, with an exact stack target emitted as `allin`; only an internally
+consistent `hand.match_control.fold_locks_win=true` proof authorizes the
+lock-win fold; flop/turn position realization uses the authoritative position
+flags only when a call does not close an all-in runout; and opponent action
+tilt is evaluated against the current public board, never a sampled future
+runout. `betting.call_closes_allin_runout` is the sole closure authority.
+Missing or malformed controls are neutral/fail-closed. Any plan that changes
+one of these paths must name its positive and negative real-runtime regression
+and a socket-visible typed-intent effect.
+
 `get_baseline_decision(decision_context)` must finish strictly under 250 ms.
 Optional `iter_decisions(decision_context, baseline, deadline)` performs
 bounded new work and checks `time.monotonic()` before every expensive unit.
@@ -353,6 +367,15 @@ first on the turn. Require
 an official-invalid postflop `check/check`, and do not require hero to be in
 position.
 
+For any structural-air donk or delayed-probe bluff, the same real line must
+also include a pinned no-hole-draw identity that checks. Require one
+socket-validated raise and one passive socket-validated `check` with the stable
+non-card context held equal after removing only the two absolute monotonic
+deadline fields, plus the one-predicate line ablation. `allin` is aggressive,
+not a passive control. A policy
+that raises every enabled identity is an exploitable fixed pattern and fails
+the line capability even when a single reachability example passes.
+
 For staged computation, the control pair also varies the allowed refinement
 budget under a fixed-seed input. The legal baseline completes strictly under
 250 ms. Larger tiers must perform additional bounded work. The runtime—not the
@@ -361,9 +384,16 @@ and the socket-validated intent trajectory. Candidate-reported `sample_count`,
 confidence, and `complete` remain telemetry only. An iterator is an unreachable refinement facade
 when it merely yields its input baseline, emits empty candidates, repeats cached
 work, or exposes no budget-dependent improved action in a predeclared scenario. Local strength
-precommit uses a 2.0 s action / 1.8 s refinement envelope inside a 420 s match;
-the formal entry retains the official-safe 55 s/54 s ceiling, so plans must be
-selective rather than spending the maximum on every decision.
+precommit uses a fixed system-owned `NativeMatchTimingPlan` (2.0 s action /
+1.8 s refinement). Its complete-70-hand liveness identity uses the active
+validator's tight 20,000-chip 34-request hand bound; the separate generic
+100-request street guard remains a fail-closed engine safety backstop, not a
+strategy budget. The formal entry retains the official-safe 55 s/54 s ceiling,
+so plans must be selective rather than spending the maximum on every decision.
+Neither a proposal nor a Worker may alter, bypass, retry, or claim strength
+authority over the timing-plan digest, cap, native progress heartbeat, or its
+single bounded orchestrator extension. A cap hit or whole-match timeout remains
+fail-closed and candidate code never treats that system contract as approval.
 </innovation_and_dynamic_reachability>
 
 <worker_prompt_quality>

@@ -164,10 +164,12 @@ function RatingLine({ bot }: { bot: BotSummary }) {
 }
 function BotCard({
   bot,
+  displayOrdinal,
   h2hData,
   onMessage,
 }: {
   bot: BotSummary;
+  displayOrdinal: number | null;
   h2hData: Record<string, H2HEntry>;
   onMessage: (message: string) => void;
 }) {
@@ -207,6 +209,16 @@ function BotCard({
   }, [bot.version, expanded, selectedFile]);
 
   const certification = detail?.official_certification ?? bot.official_certification;
+  // This is presentation metadata only.  The backend has already admitted
+  // this row through the strict published inventory; the real completion tag
+  // remains the durable identity and the display ordinal never enters rating,
+  // evidence, checkpoint, or publication state.
+  const completionTag = bot.active === true
+    && bot.tagged === true
+    && Number.isSafeInteger(bot.version)
+    && bot.version > 0
+    ? `national-bot-v${bot.version}`
+    : null;
   const certView = certificationView(certification);
   const formalSummary = certification?.formal_summary;
   const ledgerEntry = certification?.official_verdict_ledger_entry;
@@ -256,7 +268,24 @@ function BotCard({
       >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold text-gray-900 dark:text-white">{compactBotName(bot.name)}</span>
+            {displayOrdinal != null ? (
+              <span className="font-semibold text-gray-900 dark:text-white">Bot {displayOrdinal}</span>
+            ) : (
+              <span className="font-semibold text-red-700 dark:text-red-300">Bot 序号不可用</span>
+            )}
+            {completionTag ? (
+              <span
+                className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                title={`真实发布目录：${bot.name}`}
+              >
+                tag: {completionTag}
+              </span>
+            ) : (
+              <span className="rounded border border-red-200 bg-red-50 px-1.5 py-0.5 text-[10px] text-red-700 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300">
+                tag 身份不可用
+              </span>
+            )}
+            <span className="font-mono text-[10px] text-gray-400">{compactBotName(bot.name)}</span>
             <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"><CheckIcon /> 严格发布</span>
             <span className={`rounded border px-1.5 py-0.5 text-[10px] ${certView.tone}`}>{certView.label}</span>
           </div>
@@ -380,16 +409,25 @@ export default function BotManager() {
     void refresh();
   }, [refresh]);
 
-  const bots = useMemo(() => {
+  const publishedBots = useMemo(() => {
     if (!status?.epoch_initialized) return [];
     const allowed = new Set(status.active_bots);
-    const rows = streamedBots.filter((bot) => allowed.has(bot.name));
-    return [...rows].sort((a, b) => {
+    return streamedBots.filter((bot) => allowed.has(bot.name));
+  }, [status, streamedBots]);
+
+  const displayOrdinalByName = useMemo(() => new Map(
+    [...publishedBots]
+      .sort((a, b) => a.version - b.version)
+      .map((bot, index) => [bot.name, index + 1] as const),
+  ), [publishedBots]);
+
+  const bots = useMemo(() => {
+    return [...publishedBots].sort((a, b) => {
       if (sortMode === "version") return b.version - a.version;
       if (sortMode === "h2h") return (b.h2h_avg_wr ?? -1) - (a.h2h_avg_wr ?? -1);
       return (b.selection_score ?? b.leaderboard_score ?? -1) - (a.selection_score ?? a.leaderboard_score ?? -1);
     });
-  }, [sortMode, status, streamedBots]);
+  }, [publishedBots, sortMode]);
 
   return (
     <>
@@ -398,7 +436,7 @@ export default function BotManager() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 dark:text-white">严格发布 Bot</h1>
-          <p className="mt-1 text-xs text-gray-500">只读页面：仅展示当前 epoch 发布池、正式证书、代码与下载包。</p>
+          <p className="mt-1 text-xs text-gray-500">只读页面：Bot 序号仅表示当前发布池的版本顺序，真实身份以旁列 annotated completion tag 为准。</p>
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <span>排序</span>
@@ -436,7 +474,15 @@ export default function BotManager() {
         </div>
       ) : (
         <div className="space-y-2">
-          {bots.map((bot) => <BotCard key={bot.name} bot={bot} h2hData={h2hData} onMessage={setMessage} />)}
+          {bots.map((bot) => (
+            <BotCard
+              key={bot.name}
+              bot={bot}
+              displayOrdinal={displayOrdinalByName.get(bot.name) ?? null}
+              h2hData={h2hData}
+              onMessage={setMessage}
+            />
+          ))}
         </div>
       )}
     </>
