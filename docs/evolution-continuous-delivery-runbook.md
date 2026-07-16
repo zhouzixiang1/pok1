@@ -379,6 +379,15 @@ checkpoint cleanup. If the strict child does not exist, abandonment creates a
 terminal tombstone; if it exists, all unfinished effects are cancelled. Both a
 new provider dispatch and an accepted-effect replay recheck that the child is
 running, preventing a stale pre-dispatch descriptor from resurrecting work.
+An exhausted strict Master slot is already a terminal control-plane result, not
+another provider retry opportunity. Its exact
+`system_strict_authority_invalid:` reason is disposable only at
+`direction_audited`; the tool layer must complete the canonical abandon
+transaction and return `abandoned=true`. The same reason remains forbidden at
+Review, Critic, precommit, certification, and publication stages. If an older
+runtime instead emits `pipeline.abandon_refused_state_guard`, stop it before it
+can loop over the exhausted journal, canonically abandon the unchanged Master
+checkpoint, deliver the control-plane repair, and prepare a new workflow.
 
 The first-strict Reviewer and Critic never rebuild their prompts from live
 checkpoint or evidence state after call creation. Their descriptor freezes the

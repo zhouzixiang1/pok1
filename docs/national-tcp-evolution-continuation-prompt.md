@@ -153,19 +153,22 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
   stable delivered base is
-  `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; the alignment repair is a frozen
-  staged-delivery batch. Its exact delivered identity is the branch/main HEAD
-  after the recorded commit and push; query Git rather than copying a stale SHA;
-- current frozen-tree verification: Web `2717 passed, 20 skipped`, sever
+  `24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`; a follow-up dynamic-audit repair
+  for terminal strict-authority abandonment is under test. Query Git rather
+  than copying a stale SHA after that repair is committed and pushed;
+- delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
   every tracked active Python file compilation, diff check, and official doctor
-  `ok=true` all passed;
+  `ok=true` all passed for the delivered base. The follow-up frozen tree is Web
+  `2719 passed, 20 skipped`, sever `31 passed`, focused abandon/Master/docs
+  `136 passed`, frontend `18/18`, with lint/build, active Python compilation,
+  diff check and official doctor `ok=true` also passing;
 - `origin/main`: currently
-  `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; do not resume runtime until the
-  tested repair is committed, merged and pushed;
+  `24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`; do not resume runtime until the
+  follow-up repair is committed, pushed and synchronized;
 - runtime HEAD: stopped and clean at
-  `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; no evolution process is live;
+  `24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`; no evolution process is live;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
   drift. Workflow-v20 was canonically abandoned with receipt
@@ -184,10 +187,21 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `fd99b1ad95aa3b11eae7b1235600a40dcaab1cc1a6d39d83c8c0992d2179f489`
   and finalize receipt
   `3161b9ae6efb9f553a2579c2d4c747d4188e27c3c2f918494a64941dcecf14da`.
-  There is now no active checkpoint or candidate: current_v=142, next_v=143,
-  active_bots=0, and the sole legal route is `prepare_generation` for a fresh
-  workflow-v23 after repair delivery, runtime sync and evaluation-identity
-  rotation;
+  Workflow-v23 was prepared dynamically on delivered `main`, reached
+  `direction_audited` revision 5/audit attempt 1, and retained accepted
+  mechanism and compute-memory proposals. Its counterfactual schema-repair
+  budget exhausted before ballots, plan, Worker, or gates. The tool correctly
+  classified the strict journal as terminal but the central abandon allowlist
+  refused the exact `system_strict_authority_invalid:` reason, causing a
+  no-progress `run_master` loop. The service was stopped, then workflow-v23 was
+  canonically fenced and abandoned on its original HEAD with ledger head
+  `04a5cdd934d275d738e13cdc276f8ea1119e828a6d4f855f7ad935052085959c`,
+  transaction
+  `a26048886df4fe3410a633c4c7c6eb05a3d2c5b29a3431b090898345688372db`
+  and finalize receipt
+  `06a95624eb1589e52f3c291ef0918a9b04a19ccb7d26d76cb67ecfa04718a812`.
+  There is no active checkpoint/candidate; after delivery the next allocation
+  must be a fresh workflow-v24;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published. The stopped runtime validates `first_strict_control_v1`
   artifact `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`;
@@ -201,13 +215,13 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   is semantically superseded, history-only, and must not be cherry-picked;
 - current evaluation identity was explicitly rotated after runtime sync. The
   previous manifest was archived under
-  `archive/evaluation_identity/20260716_042700`; the new manifest is
-  `2c8dbcb64ec2d8dfa4f293d2423868472e38761c33aacdfdee4e1972d58d09a5`
-  / identity `ca708c5c01fff7310c89f6903de66b4289b24f2349a998f958d884b1f9546855`;
+  `archive/evaluation_identity/20260716_085940`; the new manifest is
+  `1624e2b2791b4bb943ea402884a7bd36a2be6da0251c804737ad5a463fadad9b`
+  / identity `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
   only the empty new instance may receive future native samples;
-- known next action: finish the staged-delivery frozen-tree gates, commit and
-  merge the repair, fast-forward the stopped runtime, rotate evaluation
-  identity if the contract digest changed, rerun recovery diagnostics and start
-  workflow-v23. Dynamically audit checkpoint/daemon/API/UI/log behavior while
-  it runs. The first-strict operator command becomes available only after the
-  exact v143 checkpoint reaches `official_bootstrap_required`.
+- known next action: commit/push the tested repair, fast-forward the stopped
+  runtime, verify identities, and start workflow-v24.
+  Dynamically audit that any later terminal strict slot completes one abandon
+  transaction instead of looping. The first-strict operator command becomes
+  available only after the exact v143 checkpoint reaches
+  `official_bootstrap_required`.

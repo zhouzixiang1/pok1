@@ -1271,3 +1271,59 @@ semantically superseded, history-only, and not cherry-picked. Delivery is now
 staged: finish frozen-tree gates, fast-forward `origin/main`, synchronize the
 stopped runtime, then use live checkpoint/daemon/API/UI/log evidence for the
 next audit. No runtime state is copied or manually cleared.
+
+## 2026-07-16 — workflow-v23 dynamic strict-authority closure
+
+The frozen alignment batch was committed as
+`24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`, pushed to the alignment branch
+and fast-forwarded to `origin/main`. The stopped runtime fast-forwarded to that
+exact commit. Evaluation identity was explicitly rotated without migrating
+strength data: archive `20260716_085940`, manifest
+`1624e2b2791b4bb943ea402884a7bd36a2be6da0251c804737ad5a463fadad9b`,
+base identity
+`5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`.
+Official doctor remained `ok=true` and the one-time first-strict control
+remained valid and unused.
+
+The repository restart helper launched Web PID `2054560` with a live owned
+rating daemon, 12 workers and five complete 70-hand matches per scheduled
+pairing. Health became `healthy`; backend status, checkpoint projection and
+frontend contract all exposed fresh `generation:143:workflow-v23`. Preparation
+and the no-strength direction audit completed deterministically. The daemon
+correctly parked at `waiting_for_first_published_bot` because the strict pool
+was empty.
+
+Master accepted mechanism and compute-memory proposals. Counterfactual first
+recovered from a provider signature parse error, then failed its schema; its
+first repair stalled and was cancelled with confirmed child exit, while the
+second produced progress beyond the normal stall point and completed. That
+output still failed the strict schema, so the durable slot correctly reached
+`strict_authority_schema_retry_exhausted:proposal:counterfactual`. The planning
+tool correctly classified this as a terminal control-plane result. Dynamic
+evidence then exposed the defect: its intended canonical reason began with
+`system_strict_authority_invalid:`, but the central forced-abandon allowlist did
+not admit that prefix at `direction_audited`. The candidate/checkpoint were
+preserved, yet continuous recovery repeatedly replayed the two accepted slots
+and re-entered the same terminal result. The service was stopped before more
+provider work; no ballot, plan, Worker, gate, native match, certification,
+publication, rating sample, or stability row was admitted.
+
+The follow-up repair adds only that exact prefix to the disposable Master stage.
+It remains forbidden at Review and every later gate. Regression coverage proves
+both the stage boundary and the complete journal-fence/candidate-quarantine/
+checkpoint-clear transaction; the focused abandon/Master shard is `39 passed`.
+Because `pipeline_state.py` is contract-critical, the unchanged workflow-v23
+must be canonically abandoned on its original runtime HEAD before the repair is
+synchronized. Frozen-tree verification is Web `2719 passed, 20 skipped`, sever
+`31 passed`, focused abandon/Master/docs `136 passed`, frontend `18/18`, plus
+successful ESLint, TypeScript/Vite build, active Python compilation,
+`git diff --check`, and official doctor `ok=true` on execution profile v7.
+That exact pre-sync transaction completed with journal fence, candidate
+quarantine and checkpoint CAS: ledger head
+`04a5cdd934d275d738e13cdc276f8ea1119e828a6d4f855f7ad935052085959c`,
+transaction
+`a26048886df4fe3410a633c4c7c6eb05a3d2c5b29a3431b090898345688372db`,
+finalize receipt
+`06a95624eb1589e52f3c291ef0918a9b04a19ccb7d26d76cb67ecfa04718a812`.
+No active v143 candidate/checkpoint remains. Repair commit/push, runtime sync
+and workflow-v24 dynamic observation remain pending.

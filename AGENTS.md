@@ -288,7 +288,11 @@ scope. Because the v143 pool is empty, that scope is empty and its prompt carrie
 an explicit no-strength contract; it must not open rating, H2H, replay, Arena,
 official, retired-bot, or historical-experience material. Any strict journal,
 prompt, context, or invocation-evidence violation canonically abandons the
-generation with zero provider-infrastructure retry debt.
+generation with zero provider-infrastructure retry debt. A terminal strict
+Master slot, including exhausted schema repair, is disposable only while the
+checkpoint is `direction_audited`; its exact control-plane reason must fence
+both journals and complete canonical abandon instead of re-entering
+`run_master`. It cannot authorize abandon at any later gate.
 
 Publishing does not authorize the next generation by itself. Before the
 publishing checkpoint is cleared, the publication lock creates and fsyncs an

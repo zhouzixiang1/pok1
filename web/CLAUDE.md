@@ -30,6 +30,9 @@ active `national_tcp_policy_v1` architecture.
 - Canonical abandon fences the outer Worker journal and creates or terminally
   transitions the strict child. Real and replay dispatch require `running` and
   cannot resurrect a stale pre-dispatch descriptor.
+- An exhausted strict Master slot canonically abandons only at
+  `direction_audited`; never re-enter `run_master` or extend that reason across
+  Review, Critic, precommit, certification, or publication.
 - A disappeared checkpoint is a completed abandon only when one unique
   canonical result from the current authorized owner tool includes
   `workflow_run_id` and exactly re-proves the current transaction,

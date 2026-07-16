@@ -25,6 +25,9 @@ provider log; historic flat logs and their evidence trailers have zero recovery
 or prompt authority. Generation abandonment fences both the Worker and strict
 child journals, including an abandoned tombstone before first dispatch. The log
 API/frontend use a validated opaque id and never infer authority from a path.
+A terminal strict Master slot canonically abandons only at
+`direction_audited`; it must not loop through `run_master` or bypass a later
+gate.
 Checkpoint disappearance is terminal only with one unique canonical result
 from the current authorized owner tool, including `workflow_run_id`, and a
 current-head reproof of both complete journals, the transaction, ledger and

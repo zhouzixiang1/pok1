@@ -1000,6 +1000,80 @@ class TestDoAbandonGeneration:
         assert cleared == []
         assert next_dir.exists()
 
+    def test_strict_authority_terminal_failure_is_disposable_only_during_master(self):
+        reason = (
+            "system_strict_authority_invalid:"
+            "strict_authority_schema_retry_exhausted:proposal:counterfactual"
+        )
+
+        master_checkpoint = _strict_checkpoint(144, 143, "direction_audited")
+        assert tbm._generic_abandon_stage_block(master_checkpoint, reason) is None
+
+        reviewed_checkpoint = _strict_checkpoint(144, 143, "reviewed")
+        blocked = tbm._generic_abandon_stage_block(reviewed_checkpoint, reason)
+        assert blocked["blocked"] is True
+        assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
+        assert blocked["stage"] == "reviewed"
+
+    def test_strict_authority_terminal_failure_canonically_abandons_master(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import evolution_core
+        import evolution_infra
+
+        results_dir = tmp_path / "results"
+        results_dir.mkdir()
+        monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+        monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
+        checkpoint = _strict_checkpoint(
+            144,
+            143,
+            "direction_audited",
+            run_id="144#0",
+            workflow_run_id="generation:144:strict-terminal",
+            checkpoint_revision=5,
+            audit_attempt=1,
+        )
+        state_file = tmp_path / "pipeline_state.json"
+        state_file.write_text("{}", encoding="utf-8")
+        monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+        monkeypatch.setattr(
+            evolution_core,
+            "read_pipeline_checkpoint",
+            lambda: checkpoint,
+        )
+        monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
+
+        candidate = _strict_artifact(tmp_path / "national_v144", 144)
+        monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
+        monkeypatch.setattr(tbm, "git_dir_is_committed", lambda _version: False)
+        monkeypatch.setattr(tbm, "log_system_event", lambda *_args, **_kwargs: None)
+        cleared = []
+        monkeypatch.setattr(
+            tbm,
+            "clear_pipeline_checkpoint",
+            lambda **_kwargs: cleared.append(True) or True,
+        )
+        reason = (
+            "system_strict_authority_invalid:"
+            "strict_authority_schema_retry_exhausted:proposal:counterfactual"
+        )
+
+        result = _run(tbm._do_abandon_generation(
+            reason=reason,
+            _bypass_rate_limit=True,
+            **tbm.expected_abandon_identity(checkpoint),
+        ))
+
+        assert result["abandoned"] is True, result
+        assert result["workflow_fenced"] is True
+        assert result["workflow_run_id"] == checkpoint["workflow_run_id"]
+        assert result["cleared_checkpoint"] is True
+        assert cleared == [True]
+        assert not candidate.exists()
+
 
 def _schema2_claim_fixture(tmp_path, monkeypatch, *, checkpoint=None):
     import evolution_core
