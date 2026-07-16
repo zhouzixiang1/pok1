@@ -91,6 +91,17 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    generation abandon 必须同时终止 Worker journal，并为不存在的 strict child 建立
    abandoned tombstone；真实/replay dispatch 都必须复核 running。任一权限/上下文/
    prompt/log 漂移走 canonical control-plane abandon，不能消耗 LLM infrastructure retry。
+   proposal packet v4 必须从两份完整 ballots 重算 unanimous-veto 集合，正常代只能引用
+   validator 认可的 strength-bearing snapshot node，并向 Critic 暴露 digest-bound bounded
+   projection；metadata、active_bots、manifest 或 candidate 自身都不是测量对手。measurement
+   必须是六个精确字段：冻结发布对手、complete_70_hand_wld、0<数值 delta<=1、至少 30
+   场完整比赛、W/L/D interval 方法、net_chip_ci 次指标。singleton v144 只能以已发布 v143
+   为 target，fresh v143 只能使用 fixed blueprint/official 5+3/no-strength 形式。packet 还要
+   冻结 named source symbol 的 prepared-baseline AST digest；策略质量必须重证完整 selected
+   binding、选中 reachable chain 上的真实 AST delta 和候选 typed check。该结果只证明有界
+   mechanism/capability，不得声称自由文本 counterfactual 已执行或 Bot 已变强；强度只能由
+   后续完整 native 70 手 W/L/D 样本证明。Master binding/schema 错误必须进入下一轮实际
+   rendered prompt，不能写入未消费的局部字符串。
 9. UI 必须把 Critic 的 `approved` 解释为 advisory 调用完成，只用
    `advisory_approved` 显示建议方向；独立 checkpoint 只有在 schema-2、正整数 revision
    及 epoch/version/stage/run/workflow 全部与 active generation 相同时才可显示。
@@ -103,7 +114,9 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    clean scheduler 三者之一。owner reservation 前后双采样同一 fence；未获 owner 的
    lifespan 不得改 live running/UI/ShutdownManager，全局 LLM manager 也必须 exact-owner CAS。
    `--no-daemon` 且 PID 不存在是健康的 `not_applicable`，但 enabled-missing 或
-   disabled-live daemon 仍必须 degraded。
+   disabled-live daemon 仍必须 degraded。`daemon_pairs` 在持久配置、API、stability
+   identity、进程 argv/owner、elo CLI、前端和 restart script 中必须统一为 1..8；一对是
+   一场完整 70 手样本预算，只影响采样量/吞吐，绝不是强度 verdict。
 10. 需要 host process owner 的 Bubblewrap 启动必须先停在一次性 `--block-fd`
     屏障，宿主精确验证唯一 owner environment 后才释放；空值只允许在有界 setup
     窗口重试，任一非空不匹配/超时/读取或释放失败都必须 terminate/reap。owner
@@ -164,19 +177,23 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   the terminal strict-authority abandonment repair is
   `f7670341155de91f6f376f057a6d9ce11305254d`, followed by documentation-only
   bound-manifest correction `f7b19071c66b34a84eca0bd94592209da090c4e5`.
-  The Scout-context/projection repair is staged but not yet committed; query Git
-  for the exact branch/main HEAD;
+  The Scout-context/projection implementation is
+  `007020a90f9829a9e0a5aa124ff65bb590009e44`. Singleton/precommit,
+  proposal-packet-v4, executable proposal evidence and daemon-pair alignment are
+  `0b99c7e6d6e46783828d79b370a1d6715ebefe16`; this documentation closure follows
+  it. Query Git for the exact branch/main HEAD;
 - delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
   every tracked active Python file compilation, diff check, and official doctor
-  `ok=true` all passed for the delivered base. The follow-up frozen tree is Web
-  `2719 passed, 20 skipped`, sever `31 passed`, focused abandon/Master/docs
-  `136 passed`, frontend `18/18`, with lint/build, active Python compilation,
-  diff check and official doctor `ok=true` also passing. These are the last
-  delivered-tree gates; rerun focused and full gates for the staged Scout repair;
-- `origin/main`: `f7b19071c66b34a84eca0bd94592209da090c4e5`; require runtime HEAD to equal the
-  exact current remote HEAD before start;
+  `ok=true` all passed for the delivered base. The current frozen tree through
+  `0b99c7e6` is Web `2753 passed, 20 skipped`, sever `31 passed`, frontend
+  `18/18`, with focused Master/snapshot/compiler/quality/singleton shards,
+  ESLint, TypeScript/Vite build, every tracked active Python file compilation,
+  `bash -n`, diff check and official doctor `ok=true` also passing;
+- `origin/main`: require the implementation plus following documentation
+  closure to be the exact current remote HEAD, and require runtime HEAD to equal
+  it before start;
 - runtime HEAD: tracked `f7b19071c66b34a84eca0bd94592209da090c4e5`, stopped with no evolution process,
   active checkpoint, or candidate after workflow-v27 canonical abandon;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
@@ -255,10 +272,16 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   while base identity remained
   `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
   only this empty instance may receive future native samples;
-- known next action: commit/push the fully gated Scout repair, fast-forward the
-  stopped runtime through `origin/main`, verify identities, and start fresh
-  workflow-v28. Dynamically require materially
-  smaller Scout prompts, zero documentation-read attempts, preferred current
-  chains, and durable granular errors on any first rejection. The first-strict
-  operator command becomes available only after the exact v143 checkpoint
-  reaches `official_bootstrap_required`.
+- known next action: commit/push this documentation closure, fast-forward the
+  stopped runtime through the exact merged `origin/main`, rotate/reprove any
+  changed evaluation identity through the canonical path, and start fresh
+  workflow-v28. Dynamically require compact Scout prompts, zero documentation
+  bytes, decision-first current anchors, proposal-v4 symbol/snapshot bindings and
+  honest mechanism-only quality evidence. Publish fixed v143 only after the exact
+  checkpoint reaches `official_bootstrap_required` and the operator completes
+  both official bootstrap and finalize. Then prove singleton v144, normal 5+3,
+  the first two-Bot immutable native cycle and continued strong-Bot selection.
+  Track but do not fake completion of source-specific post-selection evidence,
+  confidence eligibility, generation-vs-daemon stagnation, independent holdout
+  seeds, crossover behavioral diversity, sequential reaping, direction/literature
+  outcome feedback and useful two-Bot Worker utilization.

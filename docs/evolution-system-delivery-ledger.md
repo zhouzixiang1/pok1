@@ -88,7 +88,7 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented at `baadaa821d979b4b651260852ebcc48ae0a6aba8`; per-invocation evidence/log/UI contract green | 19-role semantic-producer, provenance, poison/render/root/path/symlink/fd-walk/TOCTOU/hook/budget and accepted-effect/log tests |
 | P3 | Master stream/effect recovery and bounded retries | implemented; frozen phase, durable binding recovery, child tombstone and real/replay dispatch fence green | timeout/lease/replay/provider-termination/partial-packet/final-projection/abandon tests |
 | P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | source implementation and frontend/backend/actual-log parity green; live publication observation pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | delivered through `f7b19071c66b34a84eca0bd94592209da090c4e5`; Scout-context/projection repair is in the current worktree with gates, commit, merge and runtime sync pending | full suites, Git and remote identities |
+| P5 | full verification and merge to `origin/main` | Scout reachability is frozen at `007020a90f9829a9e0a5aa124ff65bb590009e44`; singleton/precommit, proposal-packet-v4, executable-quality evidence and daemon-pair alignment are frozen at `0b99c7e6d6e46783828d79b370a1d6715ebefe16`; documentation/merge/runtime evidence follows | full suites, Git and remote identities |
 | P6 | runtime recovery, v143/v144 publication and ten generations | workflows v24-v27 each proved one terminal canonical abandon; runtime is stopped with no active checkpoint/candidate, pending Scout-contract sync and fresh workflow-v28 | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
@@ -1388,6 +1388,14 @@ Both journals were fenced, the exact candidate was quarantined, and the
 checkpoint was cleared. No active v143 candidate/checkpoint remains before
 Scout-contract synchronization; the next allocation is fresh workflow-v28.
 
+The first Scout implementation tree passed Web `2733 passed, 20 skipped`, sever
+`31 passed`, focused Scout/strict/bootstrap `213 passed`, documentation/prompt
+`56 passed`, frontend `18/18`, ESLint, TypeScript/Vite build, active Python
+compilation, `git diff --check`, and official doctor `ok=true`. Its exact commit
+is `007020a90f9829a9e0a5aa124ff65bb590009e44`. A following strength-production
+review found additional singleton, proposal evidence, quality-cache and
+front/back daemon-budget gaps; those were fixed rather than recorded as green.
+
 The publication blocker is therefore stage progress, not a missing official
 dependency. Official doctor is green. `first_strict_control_v1` artifact
 `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
@@ -1395,3 +1403,69 @@ remains valid and unused with consumption `0/1`. It supplies the three
 system-control rounds alongside five self-play rounds, all 70 hands, but remains
 operator-locked until the exact v143 checkpoint reaches
 `official_bootstrap_required`.
+
+## 2026-07-16 — singleton strength-production and proposal-v4 closure
+
+Implementation commit `0b99c7e6d6e46783828d79b370a1d6715ebefe16`
+closes the pre-publication transition that the first Scout repair did not yet
+cover:
+
+- v143 remains a fixed system blueprint and protocol/correctness anchor. Its
+  proposal is only a capability-audit lens; neither the prompt, Worker block nor
+  quality result may claim that proposal prose caused those bytes or proved
+  poker strength. The installed `first_strict_control_v1` still provides the
+  operator-only three control rounds beside five self-play rounds, all 70 hands.
+- Real strategy evolution begins at singleton v144. Because a one-Bot pool has
+  no peer strength snapshot, Master now admits only the checkpoint-bound,
+  published v143 parent, source/target code and exact official compliance fact.
+  The precommit resolver uses that same signed parent as an ordinary regression
+  opponent; it never falls back to the v143 system control. Receipt, live parent,
+  active-pool or epoch drift fails before evaluation.
+- Proposal packet v4 recomputes the two-ballot unanimous-veto set, binds only
+  concrete strength-bearing snapshot nodes, rejects metadata/pool-membership
+  pointers, exposes bounded resolved projections to critics, and freezes each
+  named source symbol's prepared-baseline AST digest. Measurements are exactly
+  six fields: a frozen published opponent, complete-70-hand W/L/D primary,
+  positive numeric expected delta, at least 30 complete matches, an explicit
+  interval method, and net-chip CI as secondary only. Fresh v143 uses the exact
+  no-strength official-control form instead.
+- The selected proposal contract, counterfactual, measurement, falsifier,
+  snapshot projection and packet digest survive Worker-context externalization.
+  Quality revalidates the full binding, requires a real AST delta on the selected
+  reachable chain for strategy modes, and binds a passing candidate typed probe.
+  Cached quality must carry the same contract/check/delta evidence. This is
+  explicitly mechanism-scope capability evidence, not proof that free-form
+  counterfactual prose ran or that strength improved; only subsequent complete
+  native 70-hand samples establish that.
+- Master binding/schema retry diagnostics now enter the next rendered provider
+  prompt instead of mutating a discarded local string. Preferred entry anchors
+  rank decision mechanisms above utility helpers, and two anonymous critics can
+  veto a proposal only by both rejecting it; three double-rejections fail closed.
+- `daemon_pairs` is now one cross-layer `1..8` complete-70-hand sample budget in
+  persistence, API validation, stability identity, daemon ownership/CLI,
+  frontend input/copy and restart tooling. It changes sampling throughput, not
+  the definition or proof of Bot strength.
+
+Frozen verification on that code commit is Web `2753 passed, 20 skipped`, sever
+`31 passed`, frontend `18/18`, ESLint, TypeScript/Vite production build, every
+tracked active Python file compilation, `bash -n`, `git diff --check`, and
+official doctor `ok=true` with execution profile v7. Focused Master/snapshot/
+compiler/quality/singleton shards also passed after every audit fix. Runtime is
+still intentionally stopped at `f7b19071c66b34a84eca0bd94592209da090c4e5`
+with no active checkpoint or candidate; source verification is not live proof.
+
+The next dynamic target is therefore fresh workflow-v28 after the merged commit
+is synchronized through `origin/main`. It must first publish v143 through the
+parked operator boundary, then exercise the v144 singleton path, normal official
+5+3 compliance, first two-Bot immutable native cycle and ongoing proposal-v4
+quality evidence. Remaining strength-system improvements are tracked as
+post-bootstrap work, not silently treated as delivered: source-specific evidence
+after parent selection, confidence-based eligibility, generation-level
+stagnation distinct from daemon convergence, independent development/holdout
+seeds, crossover behavioral/H2H diversity, sequential pool reaping instead of a
+fixed 600-match wait, direction/literature outcome feedback, and useful two-Bot
+Worker utilization. Official EXE and Arena remain zero-strength throughout.
+
+The legacy `fc7d62d30783d2ae8710dc8f331d717f3d902e36` decision is unchanged:
+current producer/consumer contracts semantically supersede it; it remains
+history-only and was not cherry-picked.
