@@ -1285,6 +1285,12 @@ base identity
 Official doctor remained `ok=true` and the one-time first-strict control
 remained valid and unused.
 
+The first daemon start content-bound its canonical national-native 70-hand,
+five-match, direct-artifact runtime profile into that same empty identity
+instance. The resulting current manifest is
+`e5465500ee534815e58a3df4950d99d6e61a1df80ce65c4ff6f8beb5214228b9`;
+the base identity and instance id did not rotate.
+
 The repository restart helper launched Web PID `2054560` with a live owned
 rating daemon, 12 workers and five complete 70-hand matches per scheduled
 pairing. Health became `healthy`; backend status, checkpoint projection and

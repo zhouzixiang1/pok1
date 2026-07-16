@@ -152,10 +152,9 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 每次交付收口时更新以下字段；它们只帮助操作员定位，不替代实时权威查询。
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
-  stable delivered base is
-  `24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`; a follow-up dynamic-audit repair
-  for terminal strict-authority abandonment is under test. Query Git rather
-  than copying a stale SHA after that repair is committed and pushed;
+  the terminal strict-authority abandonment repair is
+  `f7670341155de91f6f376f057a6d9ce11305254d`; a documentation-only bound-
+  manifest correction follows it. Query Git for the exact branch/main HEAD;
 - delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
@@ -164,11 +163,11 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `2719 passed, 20 skipped`, sever `31 passed`, focused abandon/Master/docs
   `136 passed`, frontend `18/18`, with lint/build, active Python compilation,
   diff check and official doctor `ok=true` also passing;
-- `origin/main`: currently
-  `24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`; do not resume runtime until the
-  follow-up repair is committed, pushed and synchronized;
-- runtime HEAD: stopped and clean at
-  `24c7c2cb065bf5b86e29fa0ae01fd7cdc88250c8`; no evolution process is live;
+- `origin/main`: contains control-plane repair
+  `f7670341155de91f6f376f057a6d9ce11305254d`; require runtime HEAD to equal the
+  exact current remote HEAD before start;
+- runtime HEAD: stopped and clean with the control-plane repair; no evolution
+  process is live and no checkpoint/candidate exists;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
   drift. Workflow-v20 was canonically abandoned with receipt
@@ -215,12 +214,17 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   is semantically superseded, history-only, and must not be cherry-picked;
 - current evaluation identity was explicitly rotated after runtime sync. The
   previous manifest was archived under
-  `archive/evaluation_identity/20260716_085940`; the new manifest is
-  `1624e2b2791b4bb943ea402884a7bd36a2be6da0251c804737ad5a463fadad9b`
-  / identity `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
-  only the empty new instance may receive future native samples;
-- known next action: commit/push the tested repair, fast-forward the stopped
-  runtime, verify identities, and start workflow-v24.
+  `archive/evaluation_identity/20260716_085940`; the empty rotated manifest was
+  initially `1624e2b2791b4bb943ea402884a7bd36a2be6da0251c804737ad5a463fadad9b`.
+  The first daemon start then bound the canonical `national_native`, 70-hand,
+  five-match, direct-artifact runtime profile, yielding current manifest
+  `e5465500ee534815e58a3df4950d99d6e61a1df80ce65c4ff6f8beb5214228b9`
+  while base identity remained
+  `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
+  only this empty instance may receive future native samples;
+- known next action: finish the documentation-only manifest correction,
+  fast-forward the stopped runtime to exact `origin/main`, verify identities,
+  and start workflow-v24.
   Dynamically audit that any later terminal strict slot completes one abandon
   transaction instead of looping. The first-strict operator command becomes
   available only after the exact v143 checkpoint reaches
