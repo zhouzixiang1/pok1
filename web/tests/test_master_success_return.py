@@ -23,7 +23,11 @@ BOUND_PROPOSAL = {
     "targeted_failure": BOUND_TARGETED_FAILURE,
     "structural_change": "Replace one reachable parent branch with a bounded mechanism.",
     "counterfactual": "Hold cards, seed, state, and legality fixed while toggling only the mechanism.",
-    "measurement": "Run paired positive and control decisions before the native regression gate.",
+    "measurement": (
+        "target=national_v143; primary=complete_70_hand_wld; "
+        "expected_delta=0.03; samples=>=30_complete_matches; "
+        "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
+    ),
     "why_not_threshold_tuning": "The change replaces state flow and its consumer rather than one numeric cutoff.",
     "expected_diff": "The existing get_baseline_decision to _choose_intent path consumes the new mechanism.",
     "target_files": ["policy.py"],
@@ -50,7 +54,14 @@ BOUND_PROPOSAL = {
 PROPOSAL_ID = "set-by-stable-generation-evidence-fixture"
 
 
-def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
+def _valid_proposal_packet(
+    agent_master,
+    selected_proposal,
+    log_dir,
+    *,
+    evidence_mode="frozen_strength_snapshot",
+    source_dir=None,
+):
     import hashlib
 
     from system_strict_bootstrap import record_llm_invocation_evidence
@@ -61,11 +72,48 @@ def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
         "Add a bounded state accumulator before the same reachable decision consumer.",
         "Add a deterministic paired-feature path into the same reachable decision consumer.",
     )
+    snapshot_projection = json.dumps(
+        {"games": 36, "wins": 14, "losses": 20, "draws": 2},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    snapshot_binding = {
+        "reference": (
+            "snapshot:head_to_head.json#/national_v143 vs national_v144"
+        ),
+        "node_sha256": hashlib.sha256(
+            snapshot_projection.encode("utf-8")
+        ).hexdigest(),
+        "resolved_projection": snapshot_projection,
+        "projection_sha256": hashlib.sha256(
+            snapshot_projection.encode("utf-8")
+        ).hexdigest(),
+        "projection_truncated": False,
+    }
     proposals = []
     for index, (direction, structural_change) in enumerate(
         zip(directions, structural_changes), start=1
     ):
         proposal = json.loads(json.dumps(selected_proposal))
+        proposal["execution_mode"] = (
+            "fixed_blueprint_capability_audit"
+            if evidence_mode == "fresh_strict_control_no_strength"
+            else "strategy_implementation"
+        )
+        if evidence_mode == "frozen_strength_snapshot":
+            proposal["snapshot_evidence"] = [snapshot_binding]
+            proposal.setdefault("evidence_refs", []).append(
+                snapshot_binding["reference"]
+            )
+        else:
+            proposal["snapshot_evidence"] = []
+        if evidence_mode == "fresh_strict_control_no_strength":
+            proposal["measurement"] = (
+                "target=fixed_blueprint_control; "
+                "primary=typed_falsifier_and_official_5_plus_3; "
+                "expected_delta=not_applicable; samples=official_5_plus_3; "
+                "uncertainty=no_strength_claim; secondary=none"
+            )
         proposal["direction"] = direction
         proposal["structural_change"] = structural_change
         if index > 1:
@@ -133,17 +181,34 @@ def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
             role_result={key: value for key, value in review.items() if key != "critic_id"},
         )
         reviews.append(review)
+    try:
+        source_symbol_digests = agent_master._proposal_source_symbol_digests(
+            proposals,
+            source_dir if source_dir is not None else agent_master.get_bot_dir(143),
+        )
+    except (OSError, ValueError, KeyError):
+        source_symbol_digests = {
+            proposal["proposal_id"]: {
+                symbol: hashlib.sha256(
+                    f"test-baseline:{symbol}".encode("utf-8")
+                ).hexdigest()
+                for symbol in proposal["source_symbols"]
+            }
+            for proposal in proposals
+        }
     return {
-        "schema_version": "master-proposal-packet-v2",
+        "schema_version": "master-proposal-packet-v4",
         "valid": True,
-        "authority": "advisory_only",
+        "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
         "source_code_digest": "d" * 64,
+        "evidence_mode": evidence_mode,
         "proposal_count": 3,
         "valid_critic_count": 2,
         "critic_criteria": agent_master._PROPOSAL_CRITIC_CRITERIA,
         "allowed_proposal_ids": proposal_ids,
         "ordered_proposals": proposals,
+        "proposal_source_symbol_digests": source_symbol_digests,
         "proposal_invocations": proposal_invocations,
         "critic_reviews": reviews,
     }
@@ -159,6 +224,7 @@ def _strict_prompt_plan() -> dict:
 
 
 VALID_PLAN = _strict_prompt_plan()
+VALID_PLAN["measurement_plan"] = BOUND_PROPOSAL["measurement"]
 
 
 def _mock_llm_output():
@@ -187,6 +253,29 @@ class _MockUI:
 def _stable_generation_evidence(monkeypatch, tmp_path):
     import agent_master
     import evidence_snapshot
+
+    fixture_bots = tmp_path / "_fixture_bots"
+    baseline_policy = (
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def iter_decisions(context, baseline=None, budget_ms=0):\n"
+        "    return baseline\n"
+    )
+    def fixture_bot_dir(version):
+        root = fixture_bots / f"national_v{int(version)}"
+        root.mkdir(parents=True, exist_ok=True)
+        policy_path = root / "policy.py"
+        if not policy_path.exists():
+            policy_path.write_text(baseline_policy, encoding="utf-8")
+        return root
+
+    monkeypatch.setattr(
+        agent_master,
+        "get_bot_dir",
+        fixture_bot_dir,
+    )
 
     snapshot_dir = tmp_path / "evidence_snapshot"
     snapshot_dir.mkdir()
@@ -218,13 +307,15 @@ def _stable_generation_evidence(monkeypatch, tmp_path):
     PROPOSAL_ID = BOUND_PROPOSAL["proposal_id"]
     VALID_PLAN["selected_proposal_id"] = PROPOSAL_ID
 
-    frozen_packet = json.dumps(
-        _valid_proposal_packet(
-            agent_master,
-            BOUND_PROPOSAL,
-            tmp_path / "proposal_invocations",
-        )
+    frozen_packet_payload = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "proposal_invocations",
+        source_dir=fixture_bot_dir(143),
     )
+    PROPOSAL_ID = frozen_packet_payload["ordered_proposals"][0]["proposal_id"]
+    VALID_PLAN["selected_proposal_id"] = PROPOSAL_ID
+    frozen_packet = json.dumps(frozen_packet_payload)
 
     async def no_ensemble(*_args, **_kwargs):
         return frozen_packet
@@ -277,6 +368,52 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
         agent_master.get_bot_dir(143),
         agent_master.get_bot_dir(144),
     ]
+
+
+@pytest.mark.asyncio
+async def test_master_binding_retry_receives_deterministic_failure_feedback(
+    monkeypatch,
+):
+    import agent_master
+
+    invalid = json.loads(json.dumps(VALID_PLAN))
+    invalid["measurement_plan"] = (
+        "target=national_v143; primary=complete_70_hand_wld; "
+        "expected_delta=0.99; samples=>=30_complete_matches; "
+        "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
+    )
+    prompts = []
+
+    async def fake_run_claude_query(
+        prompt,
+        _ctx,
+        _ui,
+        _role_name,
+        _log_file,
+        **_kwargs,
+    ):
+        prompts.append(str(prompt))
+        plan = invalid if len(prompts) == 1 else VALID_PLAN
+        return "```json\n" + json.dumps(plan) + "\n```", 0.0, {}
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    result = await agent_master._run_master_analysis(
+        source_v=143,
+        next_v=144,
+        stagnation_info="declining",
+        ui=_MockUI(),
+    )
+
+    assert result is not None
+    assert len(prompts) == 2
+    assert "Previous proposal binding failed" not in prompts[0]
+    assert "Previous proposal binding failed" in prompts[1]
+    assert "measurement_plan_must_exactly_copy_selected_proposal" in prompts[1]
 
 
 @pytest.mark.asyncio
@@ -338,11 +475,23 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     captured = []
     captured_kwargs = []
     captured_strict_logs = []
+    fresh_packet_payload = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "fresh_proposal_invocations",
+        evidence_mode="fresh_strict_control_no_strength",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    fresh_selected = fresh_packet_payload["ordered_proposals"][0]
+    fresh_plan = json.loads(json.dumps(VALID_PLAN))
+    fresh_plan["selected_proposal_id"] = fresh_selected["proposal_id"]
+    fresh_plan["targeted_failure"] = fresh_selected["targeted_failure"]
+    fresh_plan["measurement_plan"] = fresh_selected["measurement"]
 
     async def fake_run_claude_query(prompt, *_args, **_kwargs):
         captured.append(prompt)
         captured_kwargs.append(dict(_kwargs))
-        output = _mock_llm_output()
+        output = "```json\n" + json.dumps(fresh_plan) + "\n```\n"
         strict_call = _kwargs.get("strict_authority")
         if strict_call is not None:
             captured_strict_logs.append((
@@ -389,6 +538,14 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         raise AssertionError("protocol bootstrap strength loader was called")
 
     monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    async def fresh_ensemble(*_args, **_kwargs):
+        return json.dumps(fresh_packet_payload)
+
+    monkeypatch.setattr(
+        agent_master,
+        "_run_master_proposal_ensemble",
+        fresh_ensemble,
+    )
     store = WorkflowStore(tmp_path / "strict-authority.sqlite3")
     monkeypatch.setattr(strict_authority_workflow, "_store", lambda: store)
     bootstrap_receipt = build_fresh_bootstrap_receipt(
@@ -577,6 +734,118 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
 
 
 @pytest.mark.asyncio
+async def test_singleton_v144_master_uses_published_parent_without_strict_journal(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import checkpoint_schema
+    import evidence_snapshot
+    import evolution_infra
+    from tests.test_logic_mcp import TestSelectPrecommitOpponents
+
+    checkpoint = TestSelectPrecommitOpponents._singleton_checkpoint()
+    checkpoint["stage"] = "direction_audited"
+    receipt = checkpoint["audit_context"]["protocol_bootstrap"]
+    source = tmp_path / "national_v143"
+    target = tmp_path / "national_v144"
+    policy = (
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def iter_decisions(context, baseline, budget_ms):\n"
+        "    if False:\n"
+        "        yield baseline\n"
+    )
+    for root in (source, target):
+        root.mkdir()
+        (root / "policy.py").write_text(policy, encoding="utf-8")
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "singleton_proposal_invocations",
+        evidence_mode="singleton_parent_no_strength",
+        source_dir=target,
+    )
+    selected = packet["ordered_proposals"][0]
+    plan = json.loads(json.dumps(VALID_PLAN))
+    plan["selected_proposal_id"] = selected["proposal_id"]
+    plan["targeted_failure"] = selected["targeted_failure"]
+    plan["measurement_plan"] = selected["measurement"]
+    ensemble_kwargs = {}
+    final_kwargs = []
+
+    async def singleton_ensemble(*_args, **kwargs):
+        ensemble_kwargs.update(kwargs)
+        return json.dumps(packet)
+
+    async def final_query(_prompt, *_args, **kwargs):
+        final_kwargs.append(kwargs)
+        return "```json\n" + json.dumps(plan) + "\n```", 0.0, {}
+
+    def bot_dir(version):
+        return source if int(version) == 143 else target
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: tmp_path)
+    monkeypatch.setattr(
+        agent_master,
+        "_run_master_proposal_ensemble",
+        singleton_ensemble,
+    )
+    monkeypatch.setattr(agent_master, "run_claude_query", final_query)
+    monkeypatch.setattr(
+        agent_master,
+        "_exact_official_compliance_feedback",
+        lambda _v: "Published v143 official compliance receipt is valid.",
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "get_active_bots",
+        lambda: ["national_v143"],
+    )
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "live_checkpoint_parent_authority_errors",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        evidence_snapshot,
+        "load_generation_snapshot_identity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("singleton Master must not load a strength snapshot")
+        ),
+    )
+
+    result = await agent_master._run_master_analysis(
+        source_v=143,
+        next_v=144,
+        stagnation_info="caller strength text must be quarantined",
+        ui=_MockUI(),
+        protocol_bootstrap=receipt,
+    )
+
+    assert result is not None
+    assert ensemble_kwargs["protocol_bootstrap_prepared_only"] is False
+    assert ensemble_kwargs["singleton_no_strength"] is True
+    assert final_kwargs and final_kwargs[0]["strict_authority"] is None
+    assert final_kwargs[0]["allowed_read_dirs"] == [source, target]
+    assert result["proposal_ensemble"]["evidence_mode"] == (
+        "singleton_parent_no_strength"
+    )
+    assert result["proposal_binding"]["execution_mode"] == (
+        "strategy_implementation"
+    )
+
+
+@pytest.mark.asyncio
 async def test_master_fails_closed_without_generation_evidence(monkeypatch):
     import agent_master
     import evidence_snapshot
@@ -622,6 +891,7 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
     structured_plan = json.loads(prompt[start:end])
     structured_plan["targeted_failure"] = BOUND_TARGETED_FAILURE
     structured_plan["selected_proposal_id"] = PROPOSAL_ID
+    structured_plan["measurement_plan"] = BOUND_PROPOSAL["measurement"]
     structured_plan["tasks"][0]["worker_prompt"] = (
         "Implement the selected valid structured runtime mechanism in policy.py "
         "and run only the declared checks."

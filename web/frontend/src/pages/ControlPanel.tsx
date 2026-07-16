@@ -376,6 +376,9 @@ export default function ControlPanel() {
           {" · "}心跳：{health?.daemon.heartbeat_status ?? "不可用"}
           {health?.daemon.health_error ? ` · health_error=${health.daemon.health_error}` : ""}
         </p>
+        <p className="mb-3 text-xs text-gray-500">
+          每次配对数是写入 evaluation identity 的完整 70 手样本预算（1–8），只影响评分周期的采样量与吞吐；它本身不是 Bot 强度证明。
+        </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div className="flex items-center gap-3">
             <label className="text-sm text-gray-600 dark:text-gray-300">评分引擎</label>
@@ -395,7 +398,7 @@ export default function ControlPanel() {
           </div>
           <div className="flex items-center gap-2">
             <label className="text-sm text-gray-600 dark:text-gray-300 whitespace-nowrap">每次配对数</label>
-            <input type="number" min={1} max={20} value={editPairs} onChange={(e) => setEditPairs(Math.max(1, Math.min(20, Number(e.target.value) || 1)))} disabled={!config || !editDaemon || !status?.epoch_initialized || runtimeMutationLocked} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
+            <input type="number" min={1} max={8} value={editPairs} onChange={(e) => setEditPairs(Math.max(1, Math.min(8, Number(e.target.value) || 1)))} disabled={!config || !editDaemon || !status?.epoch_initialized || runtimeMutationLocked} className="w-20 px-2 py-1 text-sm rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white disabled:opacity-40" />
           </div>
         </div>
         <div className="mt-3 flex justify-end">

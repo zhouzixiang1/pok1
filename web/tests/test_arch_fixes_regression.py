@@ -142,6 +142,7 @@ def _plan(tasks):
     return {
         "analysis": "Stagnation requires one policy-level value correction.",
         "targeted_failure": "river overfold against passive opponents",
+        "measurement_plan": "Compare complete native outcomes and the declared typed runtime checks.",
         "tasks": tasks,
     }
 

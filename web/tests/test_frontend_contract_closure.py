@@ -116,6 +116,10 @@ def test_control_observation_pairs_status_health_without_overlapping_polls():
     assert "clearOrchestratorSession" not in client
     assert "重置会话" not in panel
     assert "opaque session ID 不构成恢复权威" in panel
+    assert "max={8}" in panel
+    assert "Math.min(8," in panel
+    assert "写入 evaluation identity 的完整 70 手样本预算（1–8）" in panel
+    assert "它本身不是 Bot 强度证明" in panel
 
 
 def test_frontend_liveness_fails_closed_on_sse_and_daemon_health():

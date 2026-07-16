@@ -844,14 +844,120 @@ def load_h2h_avg_winrates_with_coverage():
     return result
 
 
-def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
+def _singleton_bootstrap_precommit_opponent(version, source_v, checkpoint):
+    """Resolve the sole published v143 parent for v144 precommit.
+
+    The singleton bootstrap deliberately has no rating/generation snapshot:
+    with only one published policy bot there is no peer-strength cycle to
+    freeze.  That absence must not remove the parent regression gate.  This
+    narrow resolver admits the source only after the current checkpoint,
+    singleton receipt, epoch binding, live publication/certificate authority,
+    and active pool all prove the same unique v143 parent.
+
+    The returned row is an ordinary published strength opponent.  It is not
+    the first-strict system control and receives no bootstrap-control flags.
+    """
+
+    from bot_namespace import FIRST_STRICT_POLICY_VERSION
+
+    target = FIRST_STRICT_POLICY_VERSION + 1
+    if version != target or source_v != FIRST_STRICT_POLICY_VERSION:
+        return None, []
+
+    issues = []
+    parent = active_bot_name(source_v)
+    if not isinstance(checkpoint, dict):
+        return None, ["singleton_precommit_checkpoint_missing"]
+    if checkpoint.get("next_v") != version:
+        issues.append("singleton_precommit_checkpoint_target_mismatch")
+    if checkpoint.get("source_v") != source_v:
+        issues.append("singleton_precommit_checkpoint_source_mismatch")
+    if checkpoint.get("parent2_v") is not None:
+        issues.append("singleton_precommit_checkpoint_parent2_forbidden")
+
+    audit = checkpoint.get("audit_context")
+    receipt = audit.get("protocol_bootstrap") if isinstance(audit, dict) else None
+    if not isinstance(receipt, dict):
+        issues.append("singleton_precommit_receipt_missing")
+    elif receipt.get("mode") != "singleton_strict_bootstrap":
+        issues.append("singleton_precommit_receipt_mode_mismatch")
+
+    try:
+        from checkpoint_schema import (
+            checkpoint_epoch_errors,
+            live_checkpoint_parent_authority_errors,
+        )
+
+        issues.extend(checkpoint_epoch_errors(checkpoint))
+        issues.extend(
+            live_checkpoint_parent_authority_errors(
+                checkpoint,
+                repo_root=PROJECT_ROOT,
+            )
+        )
+    except Exception as exc:
+        issues.append(
+            "singleton_precommit_parent_authority_validation_error:"
+            f"{type(exc).__name__}"
+        )
+
+    # Reuse the public content-chain validator that binds the singleton receipt
+    # to the exact parent runtime manifest, epoch receipt, signed certificate,
+    # annotated publication refs, and checkpoint-owned selection projection.
+    try:
+        from generation_evidence import (
+            build_protocol_bootstrap_evidence_identity,
+        )
+
+        identity = build_protocol_bootstrap_evidence_identity(
+            checkpoint,
+            version=version,
+            source_v=source_v,
+        )
+        if identity.get("mode") != "singleton_strict_v144_bootstrap":
+            issues.append("singleton_precommit_identity_mode_mismatch")
+    except Exception as exc:
+        issues.append(
+            "singleton_precommit_identity_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
+
+    try:
+        active = list(get_active_bots())
+    except Exception as exc:
+        active = []
+        issues.append(
+            "singleton_precommit_active_pool_unavailable:"
+            f"{type(exc).__name__}"
+        )
+    if active != [parent]:
+        issues.append("singleton_precommit_active_pool_not_exact_parent")
+    if not _bot_entry(parent).exists():
+        issues.append("singleton_precommit_parent_entry_missing")
+
+    if issues:
+        return None, list(dict.fromkeys(issues))
+    return {
+        "name": parent,
+        "reason": "singleton_strict_bootstrap_parent",
+    }, []
+
+
+def _select_precommit_opponents(
+    version,
+    source_v,
+    max_top=2,
+    max_weak=1,
+    *,
+    checkpoint=None,
+):
     """Select 1 parent + up to 2 leaders + 1 weakness from one frozen cutoff.
 
     Generation preparation owns the evaluation cutoff.  Precommit may run much
     later, so this function must not reopen live ratings, H2H, match history, or
     rolling advisory archives.  Missing or invalid generation evidence fails
-    closed by returning no opponents; ``run_precommit_eval`` then records the
-    explicit ``no_opponents`` blocker.
+    closed, except for the checkpoint-proven v144 singleton bootstrap whose
+    sole published parent is the only possible ordinary strength opponent.
     """
     candidate = active_bot_name(version)
     parent = active_bot_name(source_v)
@@ -864,7 +970,72 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
             "available": False,
             "reason": f"snapshot_load_failed:{type(exc).__name__}",
         }
+    if not isinstance(snapshot, dict):
+        snapshot = {
+            "available": False,
+            "reason": "snapshot_load_invalid:not_object",
+        }
     if not snapshot.get("available"):
+        singleton_checkpoint = (
+            checkpoint
+            if checkpoint is not None
+            else _matching_checkpoint(version, source_v)
+        )
+        singleton, singleton_issues = _singleton_bootstrap_precommit_opponent(
+            version,
+            source_v,
+            singleton_checkpoint,
+        )
+        if singleton is not None:
+            try:
+                from system_log import log_system_event
+
+                binding = (
+                    singleton_checkpoint.get("epoch_binding")
+                    if isinstance(singleton_checkpoint, dict)
+                    else {}
+                )
+                receipt = (
+                    (singleton_checkpoint.get("audit_context") or {}).get(
+                        "protocol_bootstrap"
+                    )
+                    if isinstance(singleton_checkpoint, dict)
+                    else {}
+                )
+                parent_identity = (
+                    (binding.get("published_parent_identities") or [{}])[0]
+                    if isinstance(binding, dict)
+                    else {}
+                )
+                log_system_event(
+                    "pipeline.precommit_singleton_parent_selected",
+                    "info",
+                    f"Selected published singleton parent for {candidate}",
+                    {
+                        "candidate": candidate,
+                        "parent": parent,
+                        "reason": singleton["reason"],
+                        "evidence_authority": "checkpoint_singleton_bootstrap",
+                        "protocol_bootstrap_receipt_digest": (
+                            receipt.get("receipt_digest")
+                            if isinstance(receipt, dict)
+                            else None
+                        ),
+                        "epoch_binding_digest": (
+                            binding.get("binding_digest")
+                            if isinstance(binding, dict)
+                            else None
+                        ),
+                        "parent_certificate_digest": (
+                            parent_identity.get("certificate_digest")
+                            if isinstance(parent_identity, dict)
+                            else None
+                        ),
+                    },
+                )
+            except Exception:
+                pass
+            return [singleton]
         try:
             from system_log import log_system_event
 
@@ -876,7 +1047,12 @@ def _select_precommit_opponents(version, source_v, max_top=2, max_weak=1):
                     "candidate": candidate,
                     "parent": parent,
                     "reason": snapshot.get("reason"),
-                    "issues": list(snapshot.get("issues") or [])[:10],
+                    "issues": list(
+                        dict.fromkeys(
+                            list(snapshot.get("issues") or [])
+                            + list(singleton_issues)
+                        )
+                    )[:10],
                 },
             )
         except Exception:

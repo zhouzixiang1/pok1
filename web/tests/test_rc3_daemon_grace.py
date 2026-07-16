@@ -138,6 +138,15 @@ def test_daemon_owner_contract_requires_token_exact_argv_and_group_leader(
 
     assert daemon_management._daemon_owner_contract_identity(pid, record) == "match"
 
+    argv[5] = "8"
+    assert daemon_management._daemon_owner_contract_identity(pid, record) == "match"
+    argv[5] = "9"
+    assert (
+        daemon_management._daemon_owner_contract_identity(pid, record)
+        == "command_mismatch"
+    )
+    argv[5] = "5"
+
     argv.append("--unexpected")
     assert (
         daemon_management._daemon_owner_contract_identity(pid, record)

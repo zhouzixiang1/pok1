@@ -839,6 +839,170 @@ def _llm_gate_infrastructure_identity(
 # Quality Gates
 # ──────────────────────────────────────────────
 
+
+def _selected_proposal_quality_evidence(
+    master_plan,
+    architecture_transition,
+    *,
+    candidate_dir=None,
+):
+    """Bind a proposal to a changed live chain and one executed typed check.
+
+    This is mechanism-scope acceptance evidence, not a claim that the prose
+    counterfactual was fully executed or that 70-hand strength improved.
+    """
+
+    selected_checks = list(
+        (architecture_transition or {}).get("selected_dynamic_checks") or []
+    )
+    # Proposal-bearing generations must always prove their selected falsifier.
+    # Deriving ``required`` from the transition output would let a missing or
+    # malformed runtime-contract ledger silently turn this acceptance gate off.
+    required = bool(
+        isinstance(master_plan, dict)
+        and isinstance(master_plan.get("proposal_binding"), dict)
+    )
+    result = {
+        "required": required,
+        "ok": not required,
+        "check_id": "",
+        "check_evidence_digest": "",
+        "proposal_contract_digest": "",
+        "evidence_scope": (
+            "reachable_symbol_delta_plus_typed_capability_only;"
+            "not_full_counterfactual_or_strength_proof"
+        ),
+        "reachable_symbol_diff_required": False,
+        "reachable_symbol_diff_ok": True,
+        "changed_reachable_symbols": [],
+        "reachable_symbol_diff_digest": "",
+        "errors": [],
+    }
+    if not required:
+        return result
+    if not isinstance(master_plan, dict):
+        result["errors"] = ["proposal_quality_master_plan_missing"]
+        return result
+    try:
+        from agent_master import (
+            _parse_valid_proposal_packet,
+            _selected_proposal_binding,
+            _source_symbol_ast_digest,
+        )
+
+        packet, packet_errors = _parse_valid_proposal_packet(json.dumps(
+            master_plan.get("proposal_ensemble"),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ))
+    except Exception as exc:
+        result["errors"] = [
+            f"proposal_quality_packet_validation_error:{type(exc).__name__}:"
+            f"{str(exc)[:180]}"
+        ]
+        return result
+    if packet_errors or packet is None:
+        result["errors"] = [
+            "proposal_quality_packet:" + str(item)
+            for item in packet_errors[:20]
+        ]
+        return result
+    selected_id = str(master_plan.get("selected_proposal_id") or "")
+    selected = next(
+        (
+            item
+            for item in packet.get("ordered_proposals") or []
+            if isinstance(item, dict) and item.get("proposal_id") == selected_id
+        ),
+        None,
+    )
+    binding = master_plan.get("proposal_binding")
+    if not isinstance(selected, dict) or not isinstance(binding, dict):
+        result["errors"] = ["proposal_quality_selected_binding_missing"]
+        return result
+    expected_binding = _selected_proposal_binding(selected, packet)
+    result["proposal_contract_digest"] = expected_binding["contract_digest"]
+    errors = []
+    if binding.get("selected_proposal_id") != selected_id:
+        errors.append("proposal_quality_selected_id_mismatch")
+    if binding.get("contract_digest") != expected_binding["contract_digest"]:
+        errors.append("proposal_quality_contract_digest_mismatch")
+    if binding != expected_binding:
+        errors.append("proposal_quality_binding_projection_mismatch")
+    strategy_implementation = (
+        expected_binding.get("execution_mode") == "strategy_implementation"
+    )
+    result["reachable_symbol_diff_required"] = strategy_implementation
+    if strategy_implementation:
+        result["reachable_symbol_diff_ok"] = False
+        baseline_rows = (
+            (packet.get("proposal_source_symbol_digests") or {}).get(selected_id)
+            or {}
+        )
+        diff_rows = []
+        if candidate_dir is None:
+            errors.append("proposal_quality_candidate_dir_missing")
+        else:
+            for symbol in selected.get("reachable_chain") or []:
+                baseline_digest = str(baseline_rows.get(symbol) or "")
+                candidate_digest = _source_symbol_ast_digest(
+                    Path(candidate_dir),
+                    str(symbol),
+                )
+                if (
+                    re.fullmatch(r"[0-9a-f]{64}", baseline_digest) is None
+                    or candidate_digest is None
+                ):
+                    errors.append(
+                        f"proposal_quality_reachable_symbol_missing:{symbol}"
+                    )
+                    continue
+                row = {
+                    "symbol": str(symbol),
+                    "baseline_ast_sha256": baseline_digest,
+                    "candidate_ast_sha256": candidate_digest,
+                    "changed": candidate_digest != baseline_digest,
+                }
+                diff_rows.append(row)
+            changed_symbols = [
+                row["symbol"] for row in diff_rows if row["changed"]
+            ]
+            result["changed_reachable_symbols"] = changed_symbols
+            if changed_symbols and len(diff_rows) == len(
+                selected.get("reachable_chain") or []
+            ):
+                from bot_artifact import canonical_digest
+
+                result["reachable_symbol_diff_ok"] = True
+                result["reachable_symbol_diff_digest"] = canonical_digest(
+                    diff_rows
+                )
+            else:
+                errors.append("proposal_quality_reachable_chain_unchanged")
+    check_id = str((selected.get("falsifier") or {}).get("test_name") or "")
+    result["check_id"] = check_id
+    if check_id not in selected_checks:
+        errors.append("proposal_quality_selected_check_not_executed")
+    if check_id in set(
+        (architecture_transition or {}).get("selected_dynamic_failures") or []
+    ):
+        errors.append("proposal_quality_selected_check_failed")
+    check_row = (
+        (((architecture_transition or {}).get("candidate_capabilities") or {})
+        .get("checks_by_id") or {})
+        .get(check_id)
+    )
+    if not isinstance(check_row, dict) or check_row.get("passed") is not True:
+        errors.append("proposal_quality_selected_check_evidence_missing")
+    else:
+        from bot_artifact import canonical_digest
+
+        result["check_evidence_digest"] = canonical_digest(check_row)
+    result["errors"] = list(dict.fromkeys(errors))
+    result["ok"] = not result["errors"]
+    return result
+
 async def _finalize_strict_blueprint_quality_rejection(
     *,
     required: bool,
@@ -1219,6 +1383,52 @@ async def run_quality_gates(args):
                 return False
         except Exception:
             return False
+        current_proposal_binding = (
+            _master_plan_for_scope.get("proposal_binding")
+            if isinstance(_master_plan_for_scope, dict)
+            else None
+        )
+        if isinstance(current_proposal_binding, dict):
+            cached_proposal = gate.get("selected_proposal_quality_evidence") or {}
+            expected_check_id = str(
+                (current_proposal_binding.get("falsifier") or {}).get(
+                    "test_name"
+                )
+                or ""
+            )
+            if (
+                cached_proposal.get("required") is not True
+                or cached_proposal.get("ok") is not True
+                or cached_proposal.get("proposal_contract_digest")
+                != current_proposal_binding.get("contract_digest")
+                or cached_proposal.get("check_id") != expected_check_id
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(cached_proposal.get("check_evidence_digest") or ""),
+                )
+                is None
+                or (
+                    current_proposal_binding.get("execution_mode")
+                    == "strategy_implementation"
+                    and (
+                        cached_proposal.get("reachable_symbol_diff_required")
+                        is not True
+                        or cached_proposal.get("reachable_symbol_diff_ok")
+                        is not True
+                        or re.fullmatch(
+                            r"[0-9a-f]{64}",
+                            str(
+                                cached_proposal.get(
+                                    "reachable_symbol_diff_digest"
+                                )
+                                or ""
+                            ),
+                        )
+                        is None
+                    )
+                )
+            ):
+                return False
         cached_profile_id = str(gate.get("workflow_profile_id") or gate.get("profile_id") or "")
         cached_execution_mode = str(gate.get("national_execution_mode") or "")
         expected_execution_mode = "native_tcp"
@@ -1541,6 +1751,14 @@ async def run_quality_gates(args):
                 "unresolved_focus_checks": [],
                 "policy_identity_errors": [],
             }
+    selected_proposal_quality_evidence = _selected_proposal_quality_evidence(
+        _master_plan_for_scope,
+        national_architecture_transition,
+        candidate_dir=bot_dir,
+    )
+    selected_proposal_quality_ok = bool(
+        selected_proposal_quality_evidence.get("ok")
+    )
     national_capability_blockers = list(
         national_capability_contract.get("required_failures") or []
     )
@@ -2140,6 +2358,7 @@ async def run_quality_gates(args):
         and position_semantics_ok
         and national_capability_ok
         and runtime_contract_identity_ok
+        and selected_proposal_quality_ok
     )
     official_local_status = None
     if candidate_gate_checks_passed and native_tcp_mode and not quality_infra_issues:
@@ -2247,6 +2466,8 @@ async def run_quality_gates(args):
         "runtime_contract_identity_ok": runtime_contract_identity_ok,
         "runtime_contract_identity_errors": runtime_contract_identity_errors[:10],
         "runtime_contract_ledger_digest": runtime_contract_ledger_digest,
+        "selected_proposal_quality_evidence": selected_proposal_quality_evidence,
+        "selected_proposal_quality_ok": selected_proposal_quality_ok,
         "quality_infrastructure": quality_infrastructure,
         "runtime_probe_schema_version": (
             national_capability_contract.get("dynamic_runtime_probe") or {}
@@ -2361,6 +2582,14 @@ async def run_quality_gates(args):
     if not runtime_contract_identity_ok:
         failed_gates_detail.append(
             "runtime_contract_identity(" + "; ".join(runtime_contract_identity_errors[:3]) + ")"
+        )
+    if not selected_proposal_quality_ok:
+        failed_gates_detail.append(
+            "selected_proposal_quality("
+            + "; ".join(
+                selected_proposal_quality_evidence.get("errors") or []
+            )[:500]
+            + ")"
         )
     if embedded_selftest_errors:
         failed_gates_detail.append(

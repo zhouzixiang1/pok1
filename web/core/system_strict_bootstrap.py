@@ -1103,12 +1103,17 @@ def validate_selected_proposal_for_blueprint(
         str(item.get("proposal_id") or "") for item in (proposals or [])
         if isinstance(item, dict)
     ]
+    allowed_ids = [str(item) for item in (ensemble.get("allowed_proposal_ids") or [])]
     if (
         ensemble.get("valid") is not True
         or ensemble.get("proposal_count") != 3
         or len(proposal_ids) != 3
         or len(set(proposal_ids)) != 3
         or selected_id not in proposal_ids
+        or not allowed_ids
+        or len(set(allowed_ids)) != len(allowed_ids)
+        or not set(allowed_ids).issubset(set(proposal_ids))
+        or selected_id not in allowed_ids
     ):
         errors.append("system_bootstrap_three_proposal_ensemble_invalid")
     reviews = ensemble.get("critic_reviews")
@@ -1139,14 +1144,45 @@ def validate_selected_proposal_for_blueprint(
     contract = {
         "schema_version": 1,
         "proposal_id": selected_id,
+        "targeted_failure": str(binding.get("targeted_failure") or ""),
         "structural_change": str(binding.get("structural_change") or ""),
+        "counterfactual": str(binding.get("counterfactual") or ""),
+        "measurement": str(binding.get("measurement") or ""),
         "expected_diff": str(binding.get("expected_diff") or ""),
+        "target_files": list(binding.get("target_files") or []),
+        "source_symbols": list(binding.get("source_symbols") or []),
         "reachable_chain": list(binding.get("reachable_chain") or []),
         "falsifier": dict(falsifier),
+        "evidence_refs": list(binding.get("evidence_refs") or []),
+        "snapshot_evidence": list(binding.get("snapshot_evidence") or []),
+        "execution_mode": str(binding.get("execution_mode") or ""),
         "why_not_threshold_tuning": str(binding.get("why_not_threshold_tuning") or ""),
+        "risks": str(binding.get("risks") or ""),
     }
+    selected_contract = {
+        "schema_version": 1,
+        "proposal_id": selected_id,
+        "targeted_failure": str((selected or {}).get("targeted_failure") or ""),
+        "structural_change": str((selected or {}).get("structural_change") or ""),
+        "counterfactual": str((selected or {}).get("counterfactual") or ""),
+        "measurement": str((selected or {}).get("measurement") or ""),
+        "expected_diff": str((selected or {}).get("expected_diff") or ""),
+        "target_files": list((selected or {}).get("target_files") or []),
+        "source_symbols": list((selected or {}).get("source_symbols") or []),
+        "reachable_chain": list((selected or {}).get("reachable_chain") or []),
+        "falsifier": dict((selected or {}).get("falsifier") or {}),
+        "evidence_refs": list((selected or {}).get("evidence_refs") or []),
+        "snapshot_evidence": list((selected or {}).get("snapshot_evidence") or []),
+        "execution_mode": str((selected or {}).get("execution_mode") or ""),
+        "why_not_threshold_tuning": str(
+            (selected or {}).get("why_not_threshold_tuning") or ""
+        ),
+        "risks": str((selected or {}).get("risks") or ""),
+    }
+    if contract != selected_contract:
+        errors.append("system_bootstrap_proposal_contract_packet_mismatch")
     expected_contract = _sha256_bytes(json.dumps(
-        contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        selected_contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode())
     if binding.get("contract_digest") != expected_contract:
         errors.append("system_bootstrap_proposal_contract_digest_mismatch")

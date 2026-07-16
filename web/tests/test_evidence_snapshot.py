@@ -21,7 +21,13 @@ class _UI:
         pass
 
 
-def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
+def _valid_proposal_packet(
+    agent_master,
+    selected_proposal,
+    log_dir,
+    *,
+    source_dir=None,
+):
     import hashlib
 
     from system_strict_bootstrap import record_llm_invocation_evidence
@@ -32,11 +38,28 @@ def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
         "Add a bounded state accumulator before the same reachable decision consumer.",
         "Add a deterministic paired-feature path into the same reachable decision consumer.",
     )
+    snapshot_projection = json.dumps(
+        {"games": 36, "wins": 14, "losses": 20, "draws": 2},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    snapshot_binding = {
+        "reference": "snapshot:head_to_head.json#/national_v1 vs national_v2",
+        "node_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
+        "resolved_projection": snapshot_projection,
+        "projection_sha256": hashlib.sha256(snapshot_projection.encode()).hexdigest(),
+        "projection_truncated": False,
+    }
     proposals = []
     for index, (direction, structural_change) in enumerate(
         zip(directions, structural_changes), start=1
     ):
         proposal = json.loads(json.dumps(selected_proposal))
+        proposal["execution_mode"] = "strategy_implementation"
+        proposal["snapshot_evidence"] = [snapshot_binding]
+        proposal.setdefault("evidence_refs", []).append(
+            snapshot_binding["reference"]
+        )
         proposal["direction"] = direction
         proposal["structural_change"] = structural_change
         if index > 1:
@@ -44,7 +67,9 @@ def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
                 f"Independent alternative {index} reaches the existing decision consumer."
             )
             proposal["falsifier"]["test_name"] = (
-                f"test_alternative_{index}_mechanism"
+                "incremental_opponent_model"
+                if index == 2
+                else "showdown_range_adaptation"
             )
         proposal["proposal_id"] = agent_master._proposal_identity(proposal)
         proposals.append(proposal)
@@ -101,21 +126,32 @@ def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
             role_result={key: value for key, value in review.items() if key != "critic_id"},
         )
         reviews.append(review)
+    source_symbol_digests = (
+        agent_master._proposal_source_symbol_digests(proposals, source_dir)
+        if source_dir is not None
+        else {
+            proposal["proposal_id"]: {
+                symbol: hashlib.sha256(
+                    f"test-baseline:{symbol}".encode("utf-8")
+                ).hexdigest()
+                for symbol in proposal["source_symbols"]
+            }
+            for proposal in proposals
+        }
+    )
     return {
-        "schema_version": "master-proposal-packet-v2",
+        "schema_version": "master-proposal-packet-v4",
         "valid": True,
-        "authority": (
-            "advisory_only; final Master must obey frozen lineage/evidence and "
-            "canonical runtime/schema/gate contracts"
-        ),
-        "authority": "advisory_only",
+        "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
         "source_code_digest": "d" * 64,
+        "evidence_mode": "frozen_strength_snapshot",
         "proposal_count": 3,
         "valid_critic_count": 2,
         "critic_criteria": agent_master._PROPOSAL_CRITIC_CRITERIA,
         "allowed_proposal_ids": proposal_ids,
         "ordered_proposals": proposals,
+        "proposal_source_symbol_digests": source_symbol_digests,
         "proposal_invocations": proposal_invocations,
         "critic_reviews": reviews,
     }
@@ -775,6 +811,22 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     _patch_h2h_paths(monkeypatch, tmp_path, {
         "national_v1 vs national_v2": {"games": 2, "a_wins": 1, "b_wins": 1, "draws": 0}
     })
+    baseline = tmp_path / "national_v20"
+    target = tmp_path / "national_v24"
+    for root in (baseline, target):
+        root.mkdir()
+        (root / "policy.py").write_text(
+            "def get_baseline_decision(context):\n"
+            "    return iter_decisions(context)\n\n"
+            "def iter_decisions(context):\n"
+            "    return context\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(
+        agent_master,
+        "get_bot_dir",
+        lambda version: baseline if int(version) == 20 else target,
+    )
     assert evidence_snapshot.ensure_generation_h2h_snapshot(24)["available"] is True
     captured = {}
     targeted_failure = "The selected frozen-evidence mechanism fixes one reachable leak."
@@ -783,7 +835,11 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         "targeted_failure": targeted_failure,
         "structural_change": "Replace one reachable frozen-evidence branch with a bounded mechanism.",
         "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
-        "measurement": "Run paired positive and control decisions before native regression.",
+        "measurement": (
+            "target=national_v2; primary=complete_70_hand_wld; "
+            "expected_delta=0.03; samples=>=30_complete_matches; "
+            "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
+        ),
         "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
         "expected_diff": "The strategy decision path consumes the selected structural mechanism.",
         "target_files": ["policy.py"],
@@ -796,7 +852,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
             "policy.py:iter_decisions",
         ],
         "falsifier": {
-            "test_name": "test_frozen_evidence_mechanism",
+            "test_name": "fast_policy_baseline",
             "control": "The frozen parent preserves the original paired decision.",
             "intervention": "Only the selected frozen-evidence mechanism is enabled.",
             "expected_observation": "The intervention changes the target action while control does not.",
@@ -809,20 +865,20 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     }
     proposal_id = agent_master._proposal_identity(proposal)
     proposal["proposal_id"] = proposal_id
+    from tests.test_master_success_return import _strict_prompt_plan
+
+    worker_task = _strict_prompt_plan()["tasks"][0]
+    worker_task["worker_prompt"] = (
+        "Change policy.py in the target bot while preserving the typed runtime "
+        "contract and executing all declared checks."
+    )
     valid_plan = {
         "analysis": "use stable snapshot",
         "targeted_failure": targeted_failure,
         "expected_behavior_change": "one changed decision",
         "do_not_touch": ["national_bot.py"],
-        "measurement_plan": "compare to parent",
-        "tasks": [{
-            "worker_id": 1,
-            "role": "Algorithmic Logic Architect",
-            "target_files": ["policy.py"],
-            "difficulty": "medium",
-            "skill_layer": "spr",
-            "worker_prompt": "Change policy.py in the target bot.",
-        }],
+        "measurement_plan": proposal["measurement"],
+        "tasks": [worker_task],
         "selected_proposal_id": proposal_id,
     }
 
@@ -837,6 +893,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
             agent_master,
             proposal,
             tmp_path / "master_proposal_invocations",
+            source_dir=baseline,
         )
         valid_plan["selected_proposal_id"] = packet["ordered_proposals"][0][
             "proposal_id"

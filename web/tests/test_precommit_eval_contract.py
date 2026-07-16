@@ -902,7 +902,11 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
     monkeypatch.setattr(tool_eval, "_matching_checkpoint", lambda *_: checkpoint)
     monkeypatch.setattr(tool_eval, "_prepare_official_profile_refresh", lambda *_: {"ok": True})
     monkeypatch.setattr("tool_helpers._active_workflow_profile_info", lambda: ("national_native", "native_tcp"))
-    monkeypatch.setattr(tool_eval, "_select_precommit_opponents", lambda *_: list(selected))
+    def select_opponents(*_args, **kwargs):
+        assert kwargs["checkpoint"] is checkpoint
+        return list(selected)
+
+    monkeypatch.setattr(tool_eval, "_select_precommit_opponents", select_opponents)
     monkeypatch.setattr(tool_eval, "append_candidate_event", None)
     monkeypatch.setattr("tool_gates._bot_code_fingerprint", lambda _path: "candidate-code")
     monkeypatch.setattr(
@@ -931,6 +935,17 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
         "national_v8",
         "national_v5",
     ]
+    frozen_plan = backend_calls[0]["precommit_plan"]
+    assert frozen_plan["require_published_opponents"] is True
+    assert all(
+        row["authority"] == "published_bot"
+        and row["strength_admitted"] is True
+        and row["formal_bootstrap_opponent_admitted"] is False
+        and row["identity"]["published"] is True
+        and row["identity"]["artifact_hash"]
+        and row["identity"]["tag"]
+        for row in frozen_plan["opponents"]
+    )
 
     selected[:] = [{"name": "national_v4", "reason": "new_live_leader"}]
     await tool_eval.run_precommit_eval.handler({"version": 9, "source_v": 8, "n_games": 16})

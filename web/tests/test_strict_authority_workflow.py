@@ -487,6 +487,8 @@ def test_proposal_projection_error_is_durable_and_repairs_once(
         "strict_authority_role_projection_rejected:proposal:mechanism",
         "strict_authority_proposal_projection:"
         "proposal_required_text_invalid:measurement",
+        "strict_authority_proposal_projection:"
+        "proposal_measurement_contract_invalid",
     ]
     rejections = [
         event

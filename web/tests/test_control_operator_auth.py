@@ -66,7 +66,7 @@ def test_remote_same_origin_forgery_cannot_reach_any_control_mutation(
             "control_stop_evolution",
         )
         _forbidden(
-            remote.put("/api/control/config", json={"daemon_pairs": 9}),
+            remote.put("/api/control/config", json={"daemon_pairs": 8}),
             "control_config_update",
         )
         _forbidden(

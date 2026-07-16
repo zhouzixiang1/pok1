@@ -52,6 +52,7 @@ except Exception:
 _MAX_RESET_HISTORY = 20
 STABILITY_VERIFICATION_TTL_SEC = 30.0
 STABILITY_VERIFICATION_RETRY_SEC = 5.0
+MAX_DAEMON_PAIRS = 8
 
 _RUNTIME_CONFIG_LOCK = threading.RLock()
 _BOUND_RUNTIME_CONFIG: dict[str, Any] | None = None
@@ -106,7 +107,7 @@ def _validate_runtime_configuration(config: dict[str, Any]) -> dict[str, Any]:
     if (
         not isinstance(pairs, int)
         or isinstance(pairs, bool)
-        or not 1 <= pairs <= 20
+        or not 1 <= pairs <= MAX_DAEMON_PAIRS
     ):
         raise StabilityObservationError("runtime_config_daemon_pairs_invalid")
     return {

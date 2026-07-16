@@ -20,7 +20,7 @@ RESULTS_DIR = WEB_DIR / "core" / "results"
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
 
-from server.state import app_state, run_evolution_task
+from server.state import MAX_DAEMON_PAIRS, app_state, run_evolution_task
 from server.operator_control import CONTROL_TOKEN_HEADER, require_operator_mutation
 from blocking_runtime import run_blocking_isolated
 
@@ -832,7 +832,7 @@ class ConfigRequest(BaseModel):
     model_config = {"strict": True}
     daemon_enabled: bool | None = None
     daemon_workers: int | None = Field(default=None, ge=1, le=12)
-    daemon_pairs: int | None = Field(default=None, ge=1, le=20)
+    daemon_pairs: int | None = Field(default=None, ge=1, le=MAX_DAEMON_PAIRS)
 
     @property
     def safe_updates(self) -> dict:

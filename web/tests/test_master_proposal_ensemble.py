@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -24,13 +25,42 @@ def _write_source(root):
     )
 
 
-def _proposal(direction: str, *, shared_claims: bool = False) -> str:
+def _write_strength_snapshot(root):
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "head_to_head.json").write_text(json.dumps({
+        "national_v143 vs national_v144": {
+            "games": 36,
+            "a_wins": 14,
+            "b_wins": 20,
+            "draws": 2,
+            "win_rate": 0.4167,
+        },
+    }), encoding="utf-8")
+
+
+def _proposal(
+    direction: str,
+    *,
+    shared_claims: bool = False,
+    snapshot: bool = False,
+    fresh: bool = False,
+) -> str:
     label = "shared" if shared_claims else direction
     payload = {
         "targeted_failure": f"{label} identifies one repeated reachable decision failure.",
         "structural_change": f"{label} replaces the parent decision mechanism with one bounded path.",
         "counterfactual": f"{label} changes one input while holding cards, seed, and legality fixed.",
-        "measurement": f"{label} requires a positive/control decision test and paired native result.",
+        "measurement": (
+            "target=fixed_blueprint_control; "
+            "primary=typed_falsifier_and_official_5_plus_3; "
+            "expected_delta=not_applicable; samples=official_5_plus_3; "
+            "uncertainty=no_strength_claim; secondary=none"
+            if fresh else
+            "target=national_v143; primary=complete_70_hand_wld; "
+            "expected_delta=0.03; "
+            "samples=>=30_complete_matches; uncertainty=wilson_wld_interval; "
+            "secondary=net_chip_ci"
+        ),
         "why_not_threshold_tuning": f"{label} changes state flow and a reachable consumer, not one number.",
         "expected_diff": f"{label} changes get_baseline_decision through the existing _choose_intent call edge.",
         "target_files": ["policy.py"],
@@ -54,13 +84,24 @@ def _proposal(direction: str, *, shared_claims: bool = False) -> str:
         ],
         "risks": "The mechanism may overfit sparse evidence and must remain bounded.",
     }
+    if snapshot:
+        payload["evidence_refs"].append(
+            "snapshot:head_to_head.json#/national_v143 vs national_v144"
+        )
     return "```json\n" + json.dumps(payload) + "\n```"
 
 
-def _critic_output(agent_master, proposal_ids, *, reverse=False):
+def _critic_output(
+    agent_master,
+    proposal_ids,
+    *,
+    reverse=False,
+    reject_ids=(),
+):
     ids = list(proposal_ids)
     if reverse:
         ids.reverse()
+    rejected = set(reject_ids)
     ballots = []
     for index, proposal_id in enumerate(ids):
         ballots.append({
@@ -69,7 +110,7 @@ def _critic_output(agent_master, proposal_ids, *, reverse=False):
                 criterion: 5 - min(index, 3)
                 for criterion in agent_master._PROPOSAL_CRITIC_CRITERIA
             },
-            "reject": False,
+            "reject": proposal_id in rejected,
             "reason": "All source evidence and the direct runtime call chain are explicit.",
         })
     return json.dumps({"ballots": ballots})
@@ -84,7 +125,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     source_dir = tmp_path / "national_v143"
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
-    snapshot_dir.mkdir()
+    _write_strength_snapshot(snapshot_dir)
     calls = []
 
     async def fake_query(
@@ -105,7 +146,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
                 {},
             )
         direction = role_name.rsplit(" ", 1)[-1]
-        return _proposal(direction), 0.0, {}
+        return _proposal(direction, snapshot=True), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
@@ -120,7 +161,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     packet = json.loads(packet_text)
 
     assert packet["valid"] is True
-    assert packet["schema_version"] == "master-proposal-packet-v2"
+    assert packet["schema_version"] == "master-proposal-packet-v4"
     assert packet["proposal_count"] == 3
     assert packet["valid_critic_count"] == 2
     assert len(packet["allowed_proposal_ids"]) == 3
@@ -153,7 +194,9 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     assert all('"direction":' not in call[1] for call in critic_calls)
     assert all("evidence_traceability" in call[1] for call in critic_calls)
     assert all("Planning context digest:" in call[1] for call in critic_calls)
-    assert packet["authority"].startswith("advisory_only")
+    assert packet["authority"].startswith(
+        "ballots_rank_and_unanimous_reject_vetoes"
+    )
 
 
 @pytest.mark.asyncio
@@ -215,7 +258,7 @@ def test_source_symbol_prompt_index_is_deterministic_and_line_bounded(tmp_path):
         '- ["policy.py:get_baseline_decision","policy.py:_choose_intent"]'
         in first
     )
-    assert "SYSTEM-VERIFIED PREFERRED CURRENT CHAINS" in first
+    assert "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS" in first
     assert "policy.py:get_baseline_decision -> policy.py:_choose_intent" in first
     assert all(len(line) <= 130 for line in bounded.splitlines())
     assert len(bounded) <= 130
@@ -233,12 +276,42 @@ def test_preferred_current_chains_exclude_unreachable_policy_helpers():
     }
     prompt = agent_master._source_symbol_prompt_index(graph)
     preferred = prompt.split(
-        "SYSTEM-VERIFIED PREFERRED CURRENT CHAINS", 1
+        "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS", 1
     )[1].split("FULL VALIDATED EDGE INDEX", 1)[0]
 
     assert "policy.py:get_baseline_decision" in preferred
     assert "policy.py:_live" in preferred
     assert "policy.py:_dead_sorted_first" not in preferred
+
+
+def test_preferred_anchors_prioritize_decision_mechanism_over_many_utilities():
+    import agent_master
+
+    utility_leaves = {f"_clamp_{index}" for index in range(10)}
+    graph = {
+        "policy.py:get_baseline_decision": utility_leaves | {"_route"},
+        "policy.py:iter_decisions": set(),
+        "policy.py:_route": {"_decision_from_equity"},
+        "policy.py:_decision_from_equity": set(),
+        **{
+            f"policy.py:{leaf}": set()
+            for leaf in utility_leaves
+        },
+    }
+
+    prompt = agent_master._source_symbol_prompt_index(graph)
+    preferred = prompt.split(
+        "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS", 1
+    )[1].split("FULL VALIDATED EDGE INDEX", 1)[0]
+    anchors = [line for line in preferred.splitlines() if line.startswith("- [")]
+
+    assert len(anchors) == 8
+    assert "policy.py:_decision_from_equity" in anchors[0]
+    assert any("policy.py:_route" in line for line in anchors[:2])
+    assert not all(
+        any(f"policy.py:{leaf}" in line for line in anchors)
+        for leaf in utility_leaves
+    )
 
 
 def test_source_graph_does_not_invent_edges_from_nested_or_class_scopes(tmp_path):
@@ -308,6 +381,152 @@ def test_unreachable_dead_helper_chain_is_rejected_by_validator_and_hints(tmp_pa
     )
 
 
+def test_normal_proposal_requires_strength_snapshot_reference(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    raw = _proposal("mechanism")
+
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path / "snapshot",
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+    ) is None
+    assert "proposal_snapshot_evidence_required" in (
+        agent_master._master_proposal_projection_hints(
+            raw,
+            source_graph=graph,
+            snapshot_dir=tmp_path / "snapshot",
+            national_policy_only=True,
+            require_snapshot_evidence=True,
+            evidence_mode="frozen_strength_snapshot",
+        )
+    )
+
+
+def test_metadata_only_snapshot_pointer_is_rejected(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    snapshot_path = snapshot_dir / "head_to_head.json"
+    snapshot_payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    snapshot_payload["schema_version"] = (
+        "metadata-only-value-that-is-long-enough-to-look-substantive"
+    )
+    snapshot_path.write_text(json.dumps(snapshot_payload), encoding="utf-8")
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    metadata_ref = "snapshot:head_to_head.json#/schema_version"
+    payload["evidence_refs"].append(metadata_ref)
+
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+    ) is None
+    assert metadata_ref not in agent_master._snapshot_reference_prompt_index(
+        snapshot_dir
+    )
+
+
+def test_strength_snapshot_node_is_digest_bound_with_resolved_projection(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+
+    proposal = agent_master._validated_master_proposal(
+        _proposal("mechanism", snapshot=True),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+    )
+
+    assert proposal is not None
+    assert len(proposal["snapshot_evidence"]) == 1
+    binding = proposal["snapshot_evidence"][0]
+    node = json.loads(
+        (snapshot_dir / "head_to_head.json").read_text(encoding="utf-8")
+    )["national_v143 vs national_v144"]
+    canonical = json.dumps(
+        node,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    projection = binding["resolved_projection"]
+    assert binding["reference"] in proposal["evidence_refs"]
+    assert binding["node_sha256"] == hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+    assert binding["projection_sha256"] == hashlib.sha256(
+        projection.encode("utf-8")
+    ).hexdigest()
+    assert '"games":36' in projection
+    assert binding["projection_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_no_strength_mode_rejects_fake_snapshot_reference(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    roles = []
+
+    async def fake_query(_prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        roles.append(role_name)
+        direction = next(
+            name
+            for name in ("mechanism", "counterfactual", "compute_memory")
+            if name in role_name
+        )
+        return _proposal(direction, snapshot=True), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "singleton parent without published strength snapshot",
+        source_v=143,
+        next_v=144,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+        singleton_no_strength=True,
+    ))
+
+    assert packet["valid"] is False
+    assert packet["reason"].endswith("got_0")
+    assert len(roles) == 6
+    assert not any("CRITIC" in role for role in roles)
+
+
 def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     import agent_master
 
@@ -322,6 +541,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "source_v": 142,
         "next_v": 143,
         "protocol_bootstrap_prepared_only": True,
+        "singleton_no_strength": False,
         "source_symbol_index": (
             "SYSTEM-VERIFIED PREFERRED CURRENT CHAINS\n"
             '- ["policy.py:get_baseline_decision","policy.py:_hole_ids"]'
@@ -339,7 +559,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "Use Read only inside the prepared target bots/national_v143/" in scope
     assert "Never use a future edge" in scope
     assert "A blocked Read grants no evidence" in scope
-    assert "Copy one two-symbol SYSTEM-VERIFIED PREFERRED CURRENT CHAIN" in prompt
+    assert "Copy one two-symbol SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHOR" in prompt
     assert "every chain symbol must also be present in source_symbols" in prompt
     assert "Every adjacent reachable_chain edge must exist in the current" in prompt
     assert "proposal_reachable_chain_edge_not_current" in prompt
@@ -351,6 +571,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "source_v": 143,
         "next_v": 144,
         "protocol_bootstrap_prepared_only": False,
+        "singleton_no_strength": False,
         "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
         "repair_kind": "",
         "projection_hints": [],
@@ -368,6 +589,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "source_v": 143,
         "next_v": 144,
         "protocol_bootstrap_prepared_only": False,
+        "singleton_no_strength": False,
         "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
         "repair_kind": "schema",
         "projection_hints": [
@@ -545,7 +767,7 @@ async def test_critic_proposal_order_is_context_digest_deterministic(monkeypatch
     source_dir = tmp_path / "source"
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
-    snapshot_dir.mkdir()
+    _write_strength_snapshot(snapshot_dir)
     observed = []
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
@@ -555,7 +777,9 @@ async def test_critic_proposal_order_is_context_digest_deterministic(monkeypatch
             )))
             observed.append((role_name, ids))
             return _critic_output(agent_master, ids), 0.0, {}
-        return _proposal(role_name.rsplit(" ", 1)[-1]), 0.0, {}
+        return _proposal(
+            role_name.rsplit(" ", 1)[-1], snapshot=True
+        ), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
@@ -578,6 +802,105 @@ async def test_critic_proposal_order_is_context_digest_deterministic(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_two_critic_rejects_veto_one_proposal_and_parser_recomputes_ids(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    vetoed = {"proposal_id": None}
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = set(re.findall(r'"proposal_id":"([0-9a-f]{16})"', prompt))
+            if vetoed["proposal_id"] is None:
+                vetoed["proposal_id"] = min(ids)
+            return (
+                _critic_output(
+                    agent_master,
+                    sorted(ids),
+                    reject_ids={vetoed["proposal_id"]},
+                ),
+                0.0,
+                {},
+            )
+        return _proposal(
+            role_name.rsplit(" ", 1)[-1],
+            snapshot=True,
+        ), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    packet_text = await agent_master._run_master_proposal_ensemble(
+        "frozen planning context",
+        source_v=143,
+        next_v=149,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+    )
+    packet = json.loads(packet_text)
+
+    assert packet["valid"] is True
+    assert len(packet["allowed_proposal_ids"]) == 2
+    assert vetoed["proposal_id"] not in packet["allowed_proposal_ids"]
+    assert packet["ordered_proposals"][-1]["proposal_id"] == vetoed["proposal_id"]
+    parsed, errors = agent_master._parse_valid_proposal_packet(packet_text)
+    assert parsed == packet
+    assert errors == []
+
+    tampered = json.loads(packet_text)
+    tampered["allowed_proposal_ids"].append(vetoed["proposal_id"])
+    parsed, errors = agent_master._parse_valid_proposal_packet(
+        json.dumps(tampered)
+    )
+    assert parsed is None
+    assert "proposal_packet_allowed_ids_veto_mismatch" in errors
+
+
+@pytest.mark.asyncio
+async def test_two_critic_rejects_of_all_three_fail_closed(monkeypatch, tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = set(re.findall(r'"proposal_id":"([0-9a-f]{16})"', prompt))
+            return (
+                _critic_output(agent_master, sorted(ids), reject_ids=ids),
+                0.0,
+                {},
+            )
+        return _proposal(
+            role_name.rsplit(" ", 1)[-1],
+            snapshot=True,
+        ), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "frozen planning context",
+        source_v=143,
+        next_v=149,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+    ))
+
+    assert packet["valid"] is False
+    assert packet["reason"] == "all_three_proposals_unanimously_rejected"
+    assert packet["allowed_proposal_ids"] == []
+
+
+@pytest.mark.asyncio
 async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
     monkeypatch, tmp_path
 ):
@@ -586,7 +909,7 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
     source_dir = tmp_path / "source"
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
-    snapshot_dir.mkdir()
+    _write_strength_snapshot(snapshot_dir)
     calls = []
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
@@ -603,7 +926,7 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
             return _critic_output(agent_master, ids), 0.0, {}
         if "mechanism" in role_name and "SCHEMA RETRY" not in role_name:
             payload = json.loads(
-                _proposal("mechanism").split("```json\n", 1)[1].rsplit(
+                _proposal("mechanism", snapshot=True).split("```json\n", 1)[1].rsplit(
                     "\n```", 1
                 )[0]
             )
@@ -614,7 +937,7 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
             for name in ("mechanism", "counterfactual", "compute_memory")
             if name in role_name
         )
-        return _proposal(direction), 0.0, {}
+        return _proposal(direction, snapshot=True), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
@@ -652,7 +975,7 @@ async def test_duplicate_proposal_gets_one_causally_distinct_repair(
     source_dir = tmp_path / "source"
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
-    snapshot_dir.mkdir()
+    _write_strength_snapshot(snapshot_dir)
     calls = []
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
@@ -664,11 +987,11 @@ async def test_duplicate_proposal_gets_one_causally_distinct_repair(
             return _critic_output(agent_master, ids), 0.0, {}
         if "counterfactual" in role_name:
             if "DISTINCTNESS RETRY" in role_name:
-                return _proposal("counterfactual"), 0.0, {}
-            return _proposal("mechanism", shared_claims=True), 0.0, {}
+                return _proposal("counterfactual", snapshot=True), 0.0, {}
+            return _proposal("mechanism", shared_claims=True, snapshot=True), 0.0, {}
         if "mechanism" in role_name:
-            return _proposal("mechanism", shared_claims=True), 0.0, {}
-        return _proposal("compute_memory"), 0.0, {}
+            return _proposal("mechanism", shared_claims=True, snapshot=True), 0.0, {}
+        return _proposal("compute_memory", snapshot=True), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
@@ -707,14 +1030,14 @@ async def test_second_duplicate_fails_closed_without_critics_or_another_repair(
     source_dir = tmp_path / "source"
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
-    snapshot_dir.mkdir()
+    _write_strength_snapshot(snapshot_dir)
     roles = []
 
     async def fake_query(_prompt, _ctx, _ui, role_name, *_args, **_kwargs):
         roles.append(role_name)
         if "mechanism" in role_name or "counterfactual" in role_name:
-            return _proposal("mechanism", shared_claims=True), 0.0, {}
-        return _proposal("compute_memory"), 0.0, {}
+            return _proposal("mechanism", shared_claims=True, snapshot=True), 0.0, {}
+        return _proposal("compute_memory", snapshot=True), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
@@ -813,11 +1136,11 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
         if slot == "proposal:counterfactual":
             if strict_call.get("schema_retry_required"):
                 assert "DISTINCTNESS RETRY" in role_name
-                return _proposal("counterfactual"), 0.0, {}
-            return _proposal("mechanism", shared_claims=True), 0.0, {}
+                return _proposal("counterfactual", fresh=True), 0.0, {}
+            return _proposal("mechanism", shared_claims=True, fresh=True), 0.0, {}
         if slot == "proposal:mechanism":
-            return _proposal("mechanism", shared_claims=True), 0.0, {}
-        return _proposal("compute_memory"), 0.0, {}
+            return _proposal("mechanism", shared_claims=True, fresh=True), 0.0, {}
+        return _proposal("compute_memory", fresh=True), 0.0, {}
 
     monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
     monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
@@ -966,10 +1289,10 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
             output = (
                 "not a schema-valid proposal"
                 if compute_calls["count"] == 2
-                else _proposal("compute_memory")
+                else _proposal("compute_memory", fresh=True)
             )
         elif slot.startswith("proposal:"):
-            output = _proposal(slot.split(":", 1)[1])
+            output = _proposal(slot.split(":", 1)[1], fresh=True)
         else:
             proposal_ids = list(dict.fromkeys(re.findall(
                 r'"proposal_id":"([0-9a-f]{16})"',
@@ -1025,6 +1348,7 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         "allowed_evidence_snapshot_dir": str(snapshot_dir),
         "baseline_v": 143,
         "protocol_bootstrap_prepared_only": True,
+        "singleton_no_strength": False,
     }
 
     first = json.loads(await agent_master._run_master_proposal_ensemble(
@@ -1097,10 +1421,15 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         "epoch": "national_tcp_policy_v1",
         "policy_abi": native_policy_runtime_contract()["policy_abi"],
     }
-    selected = second["ordered_proposals"][0]
+    selected = next(
+        item
+        for item in second["ordered_proposals"]
+        if item["falsifier"]["test_name"] == "fast_policy_baseline"
+    )
     final_plan = _strict_prompt_plan()
     final_plan["selected_proposal_id"] = selected["proposal_id"]
     final_plan["targeted_failure"] = selected["targeted_failure"]
+    final_plan["measurement_plan"] = selected["measurement"]
     final_output = "```json\n" + json.dumps(final_plan) + "\n```\n"
     final_call = authority.new_call(
         advanced_checkpoint,
@@ -1342,10 +1671,23 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
     proposal = {
         "proposal_id": "a" * 16,
         "targeted_failure": "One exact evidence-bound reachable failure.",
+        "measurement": (
+            "target=national_v143; primary=complete_70_hand_wld; "
+            "expected_delta=0.03; samples=>=30_complete_matches; "
+            "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
+        ),
         "target_files": ["policy.py"],
         "structural_change": "Replace one reachable branch with a bounded state mechanism.",
+        "counterfactual": (
+            "Hold the state, cards, legality, and seed fixed while toggling only "
+            "the selected mechanism."
+        ),
         "expected_diff": "Wire that mechanism through the existing sanitized action path.",
         "reachable_chain": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
+        "source_symbols": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
         ],
@@ -1358,15 +1700,24 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
         "why_not_threshold_tuning": (
             "The change replaces state flow and its consumer instead of changing one number."
         ),
+        "evidence_refs": [
+            "source:policy.py:get_baseline_decision",
+            "source:policy.py:_choose_intent",
+        ],
+        "risks": "The bounded mechanism may overfit and must preserve the legal fallback.",
     }
-    packet = {"ordered_proposals": [proposal]}
+    packet = {
+        "ordered_proposals": [proposal],
+        "allowed_proposal_ids": [proposal["proposal_id"]],
+    }
     assert agent_master._validate_final_proposal_binding(
         {"tasks": []}, packet
     ) == ["selected_proposal_id_must_be_one_string"]
 
     errors = agent_master._validate_final_proposal_binding({
-        "selected_proposal_id": "a" * 16,
-        "targeted_failure": proposal["targeted_failure"],
+            "selected_proposal_id": "a" * 16,
+            "targeted_failure": proposal["targeted_failure"],
+            "measurement_plan": proposal["measurement"],
         "tasks": [{"target_files": ["opponent.py"]}],
     }, packet)
     assert errors == ["selected_proposal_target_files_not_writable:['policy.py']"]
@@ -1403,7 +1754,70 @@ def test_selected_proposal_is_compiled_into_worker_prompt(tmp_path):
     assert f"contract_digest={contract['contract_digest']}" in prompt
     assert proposal["structural_change"] in prompt
     assert proposal["falsifier"]["expected_observation"] in prompt
-    assert "Do not substitute a threshold-only edit" in prompt
+    assert "Do not substitute an unmeasured threshold-only edit" in prompt
+    assert "generation hypothesis" in prompt
+
+
+def test_selected_proposal_contract_digest_binds_counterfactual_and_measurement(
+    tmp_path,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    proposal = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+    )
+    assert proposal is not None
+    baseline_digest = agent_master._selected_proposal_contract(
+        proposal
+    )["contract_digest"]
+
+    changed_counterfactual = json.loads(json.dumps(proposal))
+    changed_counterfactual["counterfactual"] += " Change only opponent posterior."
+    changed_measurement = json.loads(json.dumps(proposal))
+    changed_measurement["measurement"] = (
+        "target=national_v143; primary=complete_70_hand_wld; "
+        "expected_delta=0.05; samples=>=30_complete_matches; "
+        "uncertainty=bootstrap_wld_interval; secondary=net_chip_ci"
+    )
+
+    assert agent_master._selected_proposal_contract(
+        changed_counterfactual
+    )["contract_digest"] != baseline_digest
+    assert agent_master._selected_proposal_contract(
+        changed_measurement
+    )["contract_digest"] != baseline_digest
+
+
+def test_fresh_worker_block_declares_fixed_blueprint_without_causal_claim(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    proposal = agent_master._validated_master_proposal(
+        _proposal("mechanism", fresh=True),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=None,
+        national_policy_only=True,
+        execution_mode="fixed_blueprint_capability_audit",
+        evidence_mode="fresh_strict_control_no_strength",
+    )
+    assert proposal is not None
+
+    block = agent_master._selected_proposal_worker_block(proposal)
+
+    assert "execution_mode=fixed_blueprint_capability_audit" in block
+    assert "fixed blueprint owns the v143 output bytes" in block
+    assert "do not claim that its prose caused the implementation" in block
+    assert "or proves poker strength" in block
+    assert "Implement this one mechanism" not in block
 
 
 def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
@@ -1423,7 +1837,7 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
     ]
     assert all(proposal is not None for proposal in proposals)
     packet = {
-        "schema_version": "master-proposal-packet-v2",
+        "schema_version": "master-proposal-packet-v4",
         "valid": True,
         "context_digest": "c" * 64,
         "source_code_digest": source_digest,
@@ -1431,8 +1845,22 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
         "valid_critic_count": 2,
         "allowed_proposal_ids": [proposal["proposal_id"] for proposal in proposals],
         "ordered_proposals": proposals,
+        "proposal_source_symbol_digests": {
+            proposal["proposal_id"]: {
+                symbol: "e" * 64 for symbol in proposal["source_symbols"]
+            }
+            for proposal in proposals
+        },
         "critic_reviews": [],
     }
+    malformed_falsifier = json.loads(json.dumps(packet))
+    malformed_falsifier["ordered_proposals"][0]["falsifier"] = "not-an-object"
+    parsed, errors = agent_master._parse_valid_proposal_packet(
+        json.dumps(malformed_falsifier)
+    )
+    assert parsed is None
+    assert any(error.startswith("proposal_falsifier_not_object:") for error in errors)
+
     packet["ordered_proposals"][0]["structural_change"] += " tampered"
 
     parsed, errors = agent_master._parse_valid_proposal_packet(json.dumps(packet))

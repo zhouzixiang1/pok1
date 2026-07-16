@@ -259,7 +259,7 @@ class TestStrictConfigBounds:
 
     def test_daemon_pairs_rejects_high(self, client):
         before = client.get("/api/control/config").json()
-        resp = client.put("/api/control/config", json={"daemon_pairs": 50})
+        resp = client.put("/api/control/config", json={"daemon_pairs": 9})
         assert resp.status_code == 422
         assert client.get("/api/control/config").json() == before
 

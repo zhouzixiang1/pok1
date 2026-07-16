@@ -86,6 +86,7 @@ def _rendered(role, text):
                 "source_v": 143,
                 "next_v": 149,
                 "protocol_bootstrap_prepared_only": False,
+                "singleton_no_strength": False,
                 "source_symbol_index": "policy.py:decide",
                 "repair_kind": "",
                 "projection_hints": [],

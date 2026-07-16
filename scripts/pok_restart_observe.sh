@@ -31,7 +31,8 @@ Options:
   --no-build                      skip frontend build on startup (default)
   --daemon-workers N              persisted atomically; integer 1..12 (default: 12)
   --daemon-pairs N                complete 70-hand matches per scheduled pairing;
-                                  integer 1..20 (default: 5)
+                                  evaluation sample budget 1..8 (default: 5),
+                                  not a Bot strength verdict
   --observe-generations N         terminal generation events to observe after restart (default: 3)
   --observe-timeout SEC           max observation seconds (default: 21600)
   --observe-only                  do not restart or mutate config; only observe existing service
@@ -70,7 +71,7 @@ validate_integer_range() {
 }
 
 validate_integer_range "--daemon-workers" "$DAEMON_WORKERS" 1 12
-validate_integer_range "--daemon-pairs" "$DAEMON_PAIRS" 1 20
+validate_integer_range "--daemon-pairs" "$DAEMON_PAIRS" 1 8
 
 : "${POK_EVOLUTION_RUNTIME:=1}"
 : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"

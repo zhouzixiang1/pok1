@@ -61,14 +61,22 @@ def _safe_worker_id(value: Any, fallback: int) -> str:
 def _trim_context(text: str, max_chars: int = TASK_CONTEXT_CHARS) -> tuple[str, bool]:
     if len(text) <= max_chars:
         return text, False
-    head = max_chars // 2
-    tail = max_chars - head - 80
-    return (
-        text[:head]
-        + "\n\n...[TASK CONTEXT TRIMMED BY PLAN COMPILER]...\n\n"
-        + text[-tail:],
-        True,
-    )
+    proposal_blocks = _SELECTED_PROPOSAL_RE.findall(text)
+    preserved = proposal_blocks[0] if len(proposal_blocks) == 1 else ""
+    remaining = _SELECTED_PROPOSAL_RE.sub("", text) if preserved else text
+    separator = "\n\n...[TASK CONTEXT TRIMMED BY PLAN COMPILER]...\n\n"
+    reserve = len(preserved) + (2 if preserved else 0)
+    available = max_chars - reserve
+    if available <= len(separator) + 2:
+        # The caller's schema/size gate will reject an overlarge selected
+        # contract. Never silently cut its digest-bound counterfactual evidence.
+        return preserved or text, True
+    head = available // 2
+    tail = available - head - len(separator)
+    trimmed = remaining[:head] + separator + remaining[-tail:]
+    if preserved:
+        trimmed = trimmed.rstrip() + "\n\n" + preserved
+    return trimmed, True
 
 
 def _relative_to_project(path: Path, project_root: Path | None) -> str:
@@ -106,6 +114,22 @@ def _compiled_prompt_validation_terms(
         focus.get("focus_id") or ""
     ):
         terms.extend(str(term) for term in focus.get("required_terms") or [] if str(term))
+    proposal_binding = plan.get("proposal_binding")
+    if isinstance(proposal_binding, dict):
+        task_files = {
+            Path(str(value)).name
+            for key in ("target_files", "files_allowed")
+            for value in (task.get(key) or [])
+        }
+        proposal_files = {
+            Path(str(value)).name
+            for value in (proposal_binding.get("target_files") or [])
+        }
+        if task_files.intersection(proposal_files):
+            terms.extend((
+                str(proposal_binding.get("contract_digest") or ""),
+                str((proposal_binding.get("falsifier") or {}).get("test_name") or ""),
+            ))
     return tuple(dict.fromkeys(terms))
 
 
@@ -286,6 +310,7 @@ def compile_master_plan(
         "context_chars": context_chars,
         "contract_binding": contract_binding,
         "policy_abi_binding": policy_abi_binding,
+        "preserved_inline_tasks": [],
     }
     context_dir = Path(target_dir) / ".task_context"
     has_precompiled_task = bool(
@@ -311,9 +336,23 @@ def compile_master_plan(
             continue
 
         worker_id = _safe_worker_id(task.get("worker_id"), idx + 1)
-        context_dir.mkdir(parents=True, exist_ok=True)
         context_path = context_dir / f"w{worker_id}.md"
         context_text, trimmed = _trim_context(prompt, context_chars)
+        selected_blocks = _SELECTED_PROPOSAL_RE.findall(prompt)
+        if (
+            len(context_text) > context_chars
+            or any(block not in context_text for block in selected_blocks)
+        ):
+            # Externalization is an optimization, not authority to truncate a
+            # selected proposal. Keep the schema-valid inline prompt intact.
+            meta["preserved_inline_tasks"].append({
+                "worker_id": task.get("worker_id", idx + 1),
+                "reason": "selected_proposal_contract_exceeds_context_budget",
+                "original_chars": len(prompt),
+                "selected_contract_chars": sum(map(len, selected_blocks)),
+            })
+            continue
+        context_dir.mkdir(parents=True, exist_ok=True)
         context_path.write_text(
             "# Compiled Worker Task Context\n\n"
             f"- next_v: {next_v}\n"

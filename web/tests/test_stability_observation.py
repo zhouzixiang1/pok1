@@ -667,6 +667,21 @@ def test_runtime_configuration_binding_hashes_exact_effective_values():
     assert first["digest"] != second["digest"]
 
 
+def test_runtime_configuration_rejects_daemon_pairs_above_evaluation_cap():
+    import stability_observation as observation
+
+    observation.clear_runtime_configuration_binding()
+    with pytest.raises(
+        observation.StabilityObservationError,
+        match="runtime_config_daemon_pairs_invalid",
+    ):
+        observation.bind_runtime_configuration({
+            "daemon_enabled": True,
+            "daemon_workers": 4,
+            "daemon_pairs": 9,
+        })
+
+
 def test_ten_consecutive_publications_complete_and_duplicate_is_idempotent(monkeypatch):
     import stability_observation as observation
 

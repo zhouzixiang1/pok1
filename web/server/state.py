@@ -17,6 +17,9 @@ if TYPE_CHECKING:
 # prevents OOM-kills: each mirror battle forks two bot subprocesses, so peak
 # memory scales ~3x per worker (2026-06-16 rc=-9 storm at 28 workers).
 _MAX_SAFE_DAEMON_WORKERS = 12
+# Mirrors the national rating-match cap enforced by elo_daemon and the active
+# workflow profile.  This is an evaluation-sample budget, not strength proof.
+MAX_DAEMON_PAIRS = 8
 
 
 def _default_daemon_workers() -> int:
@@ -130,9 +133,11 @@ class AppState:
         if (
             not isinstance(pairs, int)
             or isinstance(pairs, bool)
-            or not 1 <= pairs <= 20
+            or not 1 <= pairs <= MAX_DAEMON_PAIRS
         ):
-            raise ValueError("daemon_pairs must be an integer in [1, 20]")
+            raise ValueError(
+                f"daemon_pairs must be an integer in [1, {MAX_DAEMON_PAIRS}]"
+            )
         return {
             "daemon_enabled": enabled,
             "daemon_workers": workers,

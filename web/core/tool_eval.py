@@ -1622,7 +1622,11 @@ async def run_precommit_eval(args):
                 ),
             }, reason="first_strict_control_opponent_invalid")
     else:
-        opponents = _select_precommit_opponents(v, source_v)
+        opponents = _select_precommit_opponents(
+            v,
+            source_v,
+            checkpoint=ckpt,
+        )
     # Add crossover parent_b if applicable
     if (
         stored_plan is None

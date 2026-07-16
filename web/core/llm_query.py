@@ -193,7 +193,7 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         evidence_kind="frozen_proposal_packet",
         required_evidence_fields=(
             "proposal_packet_digest", "proposal_name", "criteria_digest",
-            "planning_context_digest", "lens_digest", "schema_retry",
+            "planning_context_digest", "lens_digest", "evidence_mode", "schema_retry",
             "invocation_id",
         ),
         evidence_policy="frozen_proposal_packet_in_prompt",
@@ -210,7 +210,8 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         required_evidence_fields=(
             "planning_context_digest", "direction", "source_v", "next_v",
             "source_symbol_index_digest", "directive_digest",
-            "protocol_bootstrap_prepared_only", "repair_kind",
+            "protocol_bootstrap_prepared_only", "singleton_no_strength",
+            "evidence_mode", "repair_kind",
             "projection_hints", "invocation_id",
         ),
         scope_policy="canonical_candidates",

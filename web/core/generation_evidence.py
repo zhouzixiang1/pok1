@@ -388,6 +388,65 @@ def _frozen_native_identity(checkpoint: dict, version: int, source_v: int) -> di
     }
 
 
+def build_protocol_bootstrap_evidence_identity(
+    checkpoint: Any,
+    *,
+    version: int,
+    source_v: int,
+) -> dict[str, Any]:
+    """Validate the content identity of a zero-strength bootstrap checkpoint.
+
+    Unlike :func:`build_generation_evidence_identity`, this producer is usable
+    before publication.  Master and precommit need to distinguish the fresh
+    v143 control from the inherited singleton-v144 generation while the
+    checkpoint is still active.  It deliberately does not weaken epoch or
+    parent bindings; callers that execute against live parent bytes must also
+    run the live parent-authority validator at their own stage boundary.
+    """
+
+    version = int(version)
+    source_v = int(source_v)
+    if not isinstance(checkpoint, dict):
+        raise GenerationEvidenceError("generation_evidence_checkpoint_missing")
+    errors: list[str] = []
+    try:
+        from checkpoint_schema import checkpoint_epoch_errors
+
+        errors.extend(
+            f"generation_evidence_checkpoint:{item}"
+            for item in checkpoint_epoch_errors(checkpoint)
+        )
+    except Exception as exc:
+        errors.append(
+            "generation_evidence_checkpoint_validation_error:"
+            f"{type(exc).__name__}"
+        )
+    if checkpoint.get("evaluation_epoch") != EVALUATION_EPOCH:
+        errors.append("generation_evidence_epoch_mismatch")
+    if checkpoint.get("next_v") != version:
+        errors.append("generation_evidence_target_mismatch")
+    if checkpoint.get("source_v") != source_v:
+        errors.append("generation_evidence_source_mismatch")
+    if not str(checkpoint.get("workflow_run_id") or ""):
+        errors.append("generation_evidence_workflow_missing")
+    try:
+        if int(checkpoint.get("checkpoint_revision")) <= 0:
+            errors.append("generation_evidence_revision_invalid")
+    except (TypeError, ValueError):
+        errors.append("generation_evidence_revision_invalid")
+    if errors:
+        raise GenerationEvidenceError(";".join(dict.fromkeys(errors)))
+
+    audit = checkpoint.get("audit_context") or {}
+    receipt = audit.get("protocol_bootstrap") if isinstance(audit, dict) else None
+    mode = receipt.get("mode") if isinstance(receipt, dict) else None
+    if mode == "fresh_national_policy_bootstrap":
+        return _fresh_v143_identity(checkpoint, version, source_v)
+    if mode == "singleton_strict_bootstrap":
+        return _singleton_v144_identity(checkpoint, version, source_v)
+    raise GenerationEvidenceError("generation_bootstrap_mode_invalid")
+
+
 def build_generation_evidence_identity(
     checkpoint: Any,
     *,
@@ -408,10 +467,15 @@ def build_generation_evidence_identity(
     audit = checkpoint.get("audit_context") or {}
     receipt = audit.get("protocol_bootstrap") if isinstance(audit, dict) else None
     mode = receipt.get("mode") if isinstance(receipt, dict) else None
-    if mode == "fresh_national_policy_bootstrap":
-        return _fresh_v143_identity(checkpoint, version, source_v)
-    if mode == "singleton_strict_bootstrap":
-        return _singleton_v144_identity(checkpoint, version, source_v)
+    if mode in {
+        "fresh_national_policy_bootstrap",
+        "singleton_strict_bootstrap",
+    }:
+        return build_protocol_bootstrap_evidence_identity(
+            checkpoint,
+            version=version,
+            source_v=source_v,
+        )
     if receipt is not None:
         raise GenerationEvidenceError("generation_bootstrap_mode_invalid")
     return _frozen_native_identity(checkpoint, version, source_v)
@@ -440,5 +504,6 @@ def generation_evidence_identity_errors(
 __all__ = [
     "GenerationEvidenceError",
     "build_generation_evidence_identity",
+    "build_protocol_bootstrap_evidence_identity",
     "generation_evidence_identity_errors",
 ]

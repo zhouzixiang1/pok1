@@ -97,6 +97,108 @@ class TestSelectPrecommitOpponents:
             "manifest": {"manifest_digest": "frozen-manifest"},
         }
 
+    @staticmethod
+    def _singleton_checkpoint():
+        from bot_artifact import canonical_digest
+
+        stable_publication = {
+            "schema_version": 1,
+            "published": True,
+            "version": 143,
+            "tag": "national-bot-v143",
+            "tag_type": "tag",
+            "tag_object": "1" * 40,
+            "commit_oid": "2" * 40,
+            "completion_tree_oid": "3" * 40,
+            "tag_artifact_hash": "4" * 64,
+        }
+        parent_identity = {
+            "version": 143,
+            "bot": "national_v143",
+            "role": "parent_source",
+            "epoch": "national_tcp_policy_v1",
+            "runtime_manifest_digest": "5" * 64,
+            "epoch_receipt_digest": "6" * 64,
+            "publication_identity_digest": canonical_digest(
+                stable_publication
+            ),
+            "certificate_digest": "7" * 64,
+            "completion_tag": "national-bot-v143",
+            "completion_tag_object_oid": "1" * 40,
+            "high_water_tag": "national-high-water-v143",
+            "high_water_tag_object_oid": "8" * 40,
+            "publication_commit_oid": "2" * 40,
+            "completion_tree_oid": "3" * 40,
+            "tag_artifact_hash": "4" * 64,
+        }
+        receipt_subject = {
+            "schema_version": 1,
+            "kind": "national-tcp-policy-singleton-bootstrap-v1",
+            "mode": "singleton_strict_bootstrap",
+            "epoch": "national_tcp_policy_v1",
+            "source_v": 143,
+            "next_v": 144,
+            "source_artifact_inherited": True,
+            "active_bots": ["national_v143"],
+            "source_runtime_manifest_digest": "5" * 64,
+            "source_epoch_receipt_digest": "6" * 64,
+            "source_publication_identity": dict(stable_publication),
+            "source_certificate_digest": "7" * 64,
+        }
+        receipt = {
+            **receipt_subject,
+            "receipt_digest": canonical_digest(receipt_subject),
+        }
+        binding_subject = {
+            "schema_version": 2,
+            "epoch": "national_tcp_policy_v1",
+            "mode": "published_strict_parent",
+            "next_v": 144,
+            "source_v": 143,
+            "parent2_v": None,
+            "parent_versions": [143],
+            "source_artifact_inherited": True,
+            "parent_authority": "strict_published_parent_resolution",
+            "published_parent_identities": [parent_identity],
+            "protocol_bootstrap_receipt_digest": receipt["receipt_digest"],
+            "policy_epoch_reset_receipt_digest": None,
+            "published_high_water": 143,
+            "abandoned_receipt_floor": 0,
+            "abandoned_receipt_head_digest": None,
+            "allocation_floor": 143,
+        }
+        return {
+            "checkpoint_schema_version": 2,
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "next_v": 144,
+            "source_v": 143,
+            "parent2_v": None,
+            "stage": "critic_checked",
+            "workflow_run_id": "generation:144:singleton-test",
+            "checkpoint_revision": 9,
+            "epoch_binding": {
+                **binding_subject,
+                "binding_digest": canonical_digest(binding_subject),
+            },
+            "audit_context": {
+                "protocol_bootstrap": receipt,
+                "selection": {
+                    "strategy": "singleton_strict_bootstrap",
+                    "parent_a": 143,
+                    "parent_b": None,
+                    "bootstrap_without_strength_evidence": True,
+                    "protocol_bootstrap_receipt_digest": receipt[
+                        "receipt_digest"
+                    ],
+                    "evaluation_evidence": {
+                        "games": 0,
+                        "cutoffs": {},
+                        "readiness_reason": "singleton_strict_bootstrap",
+                    },
+                },
+            },
+        }
+
     def test_missing_frozen_snapshot_fails_closed(self, monkeypatch):
         import evidence_snapshot
         import tool_helpers
@@ -175,6 +277,146 @@ class TestSelectPrecommitOpponents:
         )
 
         assert tool_helpers._select_precommit_opponents(147, 143) == []
+
+    def test_v144_singleton_freezes_exact_published_parent_without_snapshot(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import checkpoint_schema
+        import evidence_snapshot
+        import tool_helpers
+
+        checkpoint = self._singleton_checkpoint()
+        parent_entry = tmp_path / "national_v143" / "national_bot.py"
+        parent_entry.parent.mkdir()
+        parent_entry.write_text("# strict published parent\n", encoding="utf-8")
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: {"available": False, "reason": "not_created"},
+        )
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_checkpoint_parent_authority_errors",
+            lambda *_args, **_kwargs: [],
+        )
+        monkeypatch.setattr(
+            tool_helpers,
+            "get_active_bots",
+            lambda: ["national_v143"],
+        )
+        monkeypatch.setattr(tool_helpers, "_bot_entry", lambda _name: parent_entry)
+
+        assert tool_helpers._select_precommit_opponents(
+            144,
+            143,
+            checkpoint=checkpoint,
+        ) == [{
+            "name": "national_v143",
+            "reason": "singleton_strict_bootstrap_parent",
+        }]
+
+    def test_v144_singleton_fails_closed_on_receipt_binding_drift(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from bot_artifact import canonical_digest
+        import checkpoint_schema
+        import evidence_snapshot
+        import tool_helpers
+
+        checkpoint = self._singleton_checkpoint()
+        receipt = checkpoint["audit_context"]["protocol_bootstrap"]
+        receipt["source_certificate_digest"] = "9" * 64
+        receipt["receipt_digest"] = canonical_digest({
+            key: value
+            for key, value in receipt.items()
+            if key != "receipt_digest"
+        })
+        checkpoint["audit_context"]["selection"][
+            "protocol_bootstrap_receipt_digest"
+        ] = receipt["receipt_digest"]
+        binding = checkpoint["epoch_binding"]
+        binding["protocol_bootstrap_receipt_digest"] = receipt[
+            "receipt_digest"
+        ]
+        binding["binding_digest"] = canonical_digest({
+            key: value
+            for key, value in binding.items()
+            if key != "binding_digest"
+        })
+        parent_entry = tmp_path / "national_v143" / "national_bot.py"
+        parent_entry.parent.mkdir()
+        parent_entry.write_text("# strict published parent\n", encoding="utf-8")
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: {"available": False, "reason": "not_created"},
+        )
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_checkpoint_parent_authority_errors",
+            lambda *_args, **_kwargs: [],
+        )
+        monkeypatch.setattr(
+            tool_helpers,
+            "get_active_bots",
+            lambda: ["national_v143"],
+        )
+        monkeypatch.setattr(tool_helpers, "_bot_entry", lambda _name: parent_entry)
+
+        assert tool_helpers._select_precommit_opponents(
+            144,
+            143,
+            checkpoint=checkpoint,
+        ) == []
+
+    def test_singleton_exception_never_applies_to_fresh_v143_or_two_bot_pool(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        import checkpoint_schema
+        import evidence_snapshot
+        import tool_helpers
+
+        checkpoint = self._singleton_checkpoint()
+        parent_entry = tmp_path / "national_v143" / "national_bot.py"
+        parent_entry.parent.mkdir()
+        parent_entry.write_text("# strict published parent\n", encoding="utf-8")
+        monkeypatch.setattr(
+            evidence_snapshot,
+            "load_generation_evaluation_snapshot",
+            lambda _version: {"available": False, "reason": "not_created"},
+        )
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_checkpoint_parent_authority_errors",
+            lambda *_args, **_kwargs: [],
+        )
+        monkeypatch.setattr(tool_helpers, "_bot_entry", lambda _name: parent_entry)
+        monkeypatch.setattr(
+            tool_helpers,
+            "get_active_bots",
+            lambda: ["national_v143", "national_v145"],
+        )
+
+        assert tool_helpers._select_precommit_opponents(
+            144,
+            143,
+            checkpoint=checkpoint,
+        ) == []
+        assert tool_helpers._select_precommit_opponents(
+            143,
+            142,
+            checkpoint={
+                **checkpoint,
+                "next_v": 143,
+                "source_v": 142,
+            },
+        ) == []
 
 
 # ── evolution_infra.py: parse_json_output() ──

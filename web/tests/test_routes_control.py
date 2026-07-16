@@ -167,6 +167,23 @@ class TestConfig:
 
         assert state._default_daemon_workers() == 1
 
+    def test_daemon_pairs_cap_matches_effective_rating_protocol(self, monkeypatch):
+        import daemon_management
+        import elo_daemon
+        import stability_observation
+        from server.state import MAX_DAEMON_PAIRS
+
+        monkeypatch.setenv("POK_RATING_PROTOCOL", "national")
+        monkeypatch.delenv("POK_NATIONAL_RATING_MATCHES", raising=False)
+
+        assert MAX_DAEMON_PAIRS == 8
+        assert daemon_management.MAX_DAEMON_PAIRS == MAX_DAEMON_PAIRS
+        assert stability_observation.MAX_DAEMON_PAIRS == MAX_DAEMON_PAIRS
+        assert elo_daemon.MAX_NATIONAL_RATING_MATCHES == MAX_DAEMON_PAIRS
+        assert elo_daemon._rating_protocol_config(n_pairs=99)[
+            "national_matches"
+        ] == MAX_DAEMON_PAIRS
+
     def test_get(self, client):
         resp = client.get("/api/control/config")
         assert resp.status_code == 200
@@ -186,6 +203,18 @@ class TestConfig:
         # Restore
         client.put("/api/control/config", json={"daemon_pairs": orig["daemon_pairs"]})
 
+    def test_set_daemon_pairs_accepts_exact_evaluation_cap(self, client):
+        orig = client.get("/api/control/config").json()
+        try:
+            resp = client.put("/api/control/config", json={"daemon_pairs": 8})
+            assert resp.status_code == 200
+            assert resp.json()["daemon_pairs"] == 8
+        finally:
+            client.put(
+                "/api/control/config",
+                json={"daemon_pairs": orig["daemon_pairs"]},
+            )
+
     def test_set_invalid_type(self, client):
         resp = client.put("/api/control/config", json={"daemon_workers": "not_a_number"})
         assert resp.status_code == 422
@@ -196,7 +225,7 @@ class TestConfig:
             {"daemon_workers": 0},
             {"daemon_workers": 13},
             {"daemon_pairs": 0},
-            {"daemon_pairs": 21},
+            {"daemon_pairs": 9},
         ),
     )
     def test_set_rejects_out_of_range_values_instead_of_clamping(
@@ -451,11 +480,11 @@ class TestConfig:
         state = AppState(config_file=path)
         state.update_config(daemon_enabled=True, daemon_workers=2, daemon_pairs=4)
 
-        runtime = state.override_runtime_config(daemon_enabled=False, daemon_workers=3, daemon_pairs=9)
+        runtime = state.override_runtime_config(daemon_enabled=False, daemon_workers=3, daemon_pairs=8)
 
         assert runtime["daemon_enabled"] is False
         assert runtime["daemon_workers"] == 3
-        assert runtime["daemon_pairs"] == 9
+        assert runtime["daemon_pairs"] == 8
         saved = json.loads(path.read_text())
         assert saved["daemon_enabled"] is True
         assert saved["daemon_workers"] == 2

@@ -631,6 +631,7 @@ def test_architecture_focus_contract_requirements_are_not_deferred():
     plan = {
         "analysis": "Remove external I/O from the live decision path without strategy changes.",
         "targeted_failure": "Decision-path purity probe finds telemetry I/O.",
+        "measurement_plan": "Verify the typed decision-path purity check and native regression evidence.",
         "tasks": [task],
     }
 
@@ -681,6 +682,7 @@ def test_compiler_preserves_runtime_terms_across_ten_to_twelve_k_boundary(tmp_pa
     plan = {
         "analysis": "Compile a long but valid deadline-aware implementation brief.",
         "targeted_failure": "Long runtime prompts lost executable contract terms.",
+        "measurement_plan": "Verify compiled prompt terms and the typed runtime decision checks.",
         "tasks": [{
             "worker_id": 1,
             "role": "Algorithmic Logic Architect",
@@ -721,6 +723,7 @@ def test_compiler_preserves_dynamic_focus_terms(tmp_path):
     plan = {
         "analysis": "Externalize a long decision-path purity task without losing focus terms.",
         "targeted_failure": "Compiled prompts lost dynamic architecture focus terms.",
+        "measurement_plan": "Verify dynamic focus terms and typed runtime counterfactual checks.",
         "architecture_policy": {
             "plan_required_floor_checks": [],
             "selected_focus": {
@@ -770,3 +773,316 @@ def test_compiler_preserves_dynamic_focus_terms(tmp_path):
     compiled_contract.pop("architecture_policy")
     semantic_errors, _warnings = _validate_master_plan(compiled_contract)
     assert semantic_errors == []
+
+
+def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
+    proposal = {
+        "schema_version": "master-proposal-v2",
+        "direction": "mechanism",
+        "targeted_failure": (
+            "A reachable parent decision branch ignores the selected bounded state."
+        ),
+        "structural_change": (
+            "Route one bounded state feature through the existing decision consumer."
+        ),
+        "counterfactual": (
+            "Hold cards, legality, state, and seed fixed while toggling only that feature."
+        ),
+        "measurement": (
+            "target=national_v143; primary=complete_70_hand_wld; "
+            "expected_delta=0.03; samples=>=30_complete_matches; "
+            "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
+        ),
+        "why_not_threshold_tuning": (
+            "The change adds state flow into a reachable consumer instead of tuning one cutoff."
+        ),
+        "expected_diff": (
+            "The paired intervention changes the selected intent through _choose_intent."
+        ),
+        "target_files": ["policy.py"],
+        "source_symbols": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
+        "reachable_chain": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
+        "falsifier": {
+            "test_name": "fast_policy_baseline",
+            "control": "Run the frozen parent on the same canonical decision state.",
+            "intervention": "Enable only the selected bounded state mechanism.",
+            "expected_observation": (
+                "The intervention changes the intended action while the control stays fixed."
+            ),
+        },
+        "evidence_refs": [
+            "source:policy.py:get_baseline_decision",
+            "source:policy.py:_choose_intent",
+        ],
+        "snapshot_evidence": [],
+        "execution_mode": "strategy_implementation",
+        "risks": "Sparse paired states can overfit, so the legal fallback remains unchanged.",
+    }
+    proposal["proposal_id"] = agent_master._proposal_identity(proposal)
+    contract = agent_master._selected_proposal_contract(proposal)
+    block = agent_master._selected_proposal_worker_block(proposal)
+    return proposal, contract, block
+
+
+def test_compiler_externalizes_long_prompt_without_losing_selected_contract(tmp_path):
+    import agent_master
+    import plan_compiler
+
+    proposal, contract, selected_block = _proposal_contract_fixture(agent_master)
+    falsifier = proposal["falsifier"]["test_name"]
+    plan = {
+        "proposal_binding": {
+            "contract_digest": contract["contract_digest"],
+            "target_files": ["policy.py"],
+            "falsifier": deepcopy(proposal["falsifier"]),
+        },
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["policy.py"],
+            "files_allowed": ["policy.py"],
+            "worker_prompt": (
+                ("bounded implementation context before contract. " * 140)
+                + "\n\n"
+                + selected_block
+                + "\n\n"
+                + ("bounded implementation context after contract. " * 140)
+            ),
+        }],
+    }
+    original_prompt = plan["tasks"][0]["worker_prompt"]
+    assert len(original_prompt) > plan_compiler.HARD_WORKER_PROMPT_CHARS
+
+    compiled, meta = plan_compiler.compile_master_plan(
+        plan,
+        next_v=144,
+        target_dir=tmp_path / "national_v144",
+        project_root=tmp_path,
+        context_chars=len(selected_block) + 2_000,
+    )
+
+    assert meta["compiled"] is True
+    assert meta["preserved_inline_tasks"] == []
+    task = compiled["tasks"][0]
+    brief = (tmp_path / task["task_brief_file"]).read_text(encoding="utf-8")
+    assert brief.count(selected_block) == 1
+    assert f"contract_digest={contract['contract_digest']}" in brief
+    assert f'"test_name":"{falsifier}"' in brief
+    assert contract["contract_digest"] in task["worker_prompt"]
+    assert falsifier in task["worker_prompt"]
+
+
+def test_compiler_keeps_long_prompt_inline_when_selected_contract_cannot_fit(tmp_path):
+    import agent_master
+    import plan_compiler
+
+    _proposal, _contract, selected_block = _proposal_contract_fixture(agent_master)
+    plan = {
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["policy.py"],
+            "files_allowed": ["policy.py"],
+            "worker_prompt": (
+                ("long context before immutable contract. " * 170)
+                + "\n\n"
+                + selected_block
+                + "\n\n"
+                + ("long context after immutable contract. " * 170)
+            ),
+        }],
+    }
+    original_prompt = plan["tasks"][0]["worker_prompt"]
+
+    compiled, meta = plan_compiler.compile_master_plan(
+        plan,
+        next_v=144,
+        target_dir=tmp_path / "national_v144",
+        project_root=tmp_path,
+        context_chars=len(selected_block) - 1,
+    )
+
+    assert meta["compiled"] is False
+    assert meta["preserved_inline_tasks"] == [{
+        "worker_id": 1,
+        "reason": "selected_proposal_contract_exceeds_context_budget",
+        "original_chars": len(original_prompt),
+        "selected_contract_chars": len(selected_block),
+    }]
+    assert compiled["tasks"][0]["worker_prompt"] == original_prompt
+    assert selected_block in compiled["tasks"][0]["worker_prompt"]
+    assert not (tmp_path / "national_v144" / ".task_context").exists()
+
+
+def test_selected_proposal_quality_requires_executed_typed_check(tmp_path):
+    import agent_master
+    from bot_artifact import canonical_digest
+    from tests.test_master_success_return import (
+        BOUND_PROPOSAL,
+        _valid_proposal_packet,
+    )
+    import tool_gates
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        deepcopy(BOUND_PROPOSAL),
+        tmp_path / "proposal_invocations",
+    )
+    selected = packet["ordered_proposals"][0]
+    contract = agent_master._selected_proposal_contract(selected)
+    binding = agent_master._selected_proposal_binding(selected, packet)
+    check_id = selected["falsifier"]["test_name"]
+    master_plan = {
+        "targeted_failure": selected["targeted_failure"],
+        "measurement_plan": selected["measurement"],
+        "selected_proposal_id": selected["proposal_id"],
+        "proposal_ensemble": packet,
+        "proposal_binding": binding,
+    }
+    passed_row = {
+        "check_id": check_id,
+        "passed": True,
+        "control_action": "pass",
+        "intervention_action": "raise",
+        "paired_state_digest": "a" * 64,
+    }
+    transition = {
+        "selected_dynamic_checks": [check_id],
+        "selected_dynamic_failures": [],
+        "candidate_capabilities": {"checks_by_id": {check_id: passed_row}},
+    }
+    candidate_dir = tmp_path / "candidate"
+    candidate_dir.mkdir()
+    (candidate_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'raise', 'raise_to': 400}\n",
+        encoding="utf-8",
+    )
+    baseline_digests = packet["proposal_source_symbol_digests"][
+        selected["proposal_id"]
+    ]
+    diff_rows = [{
+        "symbol": symbol,
+        "baseline_ast_sha256": baseline_digests[symbol],
+        "candidate_ast_sha256": agent_master._source_symbol_ast_digest(
+            candidate_dir,
+            symbol,
+        ),
+        "changed": True,
+    } for symbol in selected["reachable_chain"]]
+
+    passed = tool_gates._selected_proposal_quality_evidence(
+        master_plan,
+        transition,
+        candidate_dir=candidate_dir,
+    )
+    assert passed == {
+        "required": True,
+        "ok": True,
+        "check_id": check_id,
+        "check_evidence_digest": canonical_digest(passed_row),
+        "proposal_contract_digest": contract["contract_digest"],
+        "evidence_scope": (
+            "reachable_symbol_delta_plus_typed_capability_only;"
+            "not_full_counterfactual_or_strength_proof"
+        ),
+        "reachable_symbol_diff_required": True,
+        "reachable_symbol_diff_ok": True,
+        "changed_reachable_symbols": selected["reachable_chain"],
+        "reachable_symbol_diff_digest": canonical_digest(diff_rows),
+        "errors": [],
+    }
+
+    drifted_plan = deepcopy(master_plan)
+    drifted_plan["proposal_binding"]["measurement"] += "; forged=true"
+    drifted = tool_gates._selected_proposal_quality_evidence(
+        drifted_plan,
+        transition,
+        candidate_dir=candidate_dir,
+    )
+    assert drifted["ok"] is False
+    assert "proposal_quality_binding_projection_mismatch" in drifted["errors"]
+
+    unchanged_packet = deepcopy(packet)
+    for symbol in selected["reachable_chain"]:
+        unchanged_packet["proposal_source_symbol_digests"][
+            selected["proposal_id"]
+        ][symbol] = agent_master._source_symbol_ast_digest(
+            candidate_dir,
+            symbol,
+        )
+    unchanged_plan = deepcopy(master_plan)
+    unchanged_plan["proposal_ensemble"] = unchanged_packet
+    unchanged_plan["proposal_binding"] = agent_master._selected_proposal_binding(
+        selected,
+        unchanged_packet,
+    )
+    unchanged = tool_gates._selected_proposal_quality_evidence(
+        unchanged_plan,
+        transition,
+        candidate_dir=candidate_dir,
+    )
+    assert unchanged["ok"] is False
+    assert unchanged["changed_reachable_symbols"] == []
+    assert "proposal_quality_reachable_chain_unchanged" in unchanged["errors"]
+
+    # The proposal prose and measurement remain a hypothesis: without a typed
+    # check row they are not executable quality evidence.
+    missing = tool_gates._selected_proposal_quality_evidence(
+        master_plan,
+        {
+            "selected_dynamic_checks": [check_id],
+            "selected_dynamic_failures": [],
+            "candidate_capabilities": {"checks_by_id": {}},
+        },
+        candidate_dir=candidate_dir,
+    )
+    assert missing["ok"] is False
+    assert missing["check_evidence_digest"] == ""
+    assert missing["errors"] == [
+        "proposal_quality_selected_check_evidence_missing"
+    ]
+
+    missing_ledger = tool_gates._selected_proposal_quality_evidence(
+        master_plan,
+        {
+            "selected_dynamic_checks": [],
+            "selected_dynamic_failures": [],
+            "candidate_capabilities": {"checks_by_id": {}},
+        },
+        candidate_dir=candidate_dir,
+    )
+    assert missing_ledger["required"] is True
+    assert missing_ledger["ok"] is False
+    assert missing_ledger["errors"] == [
+        "proposal_quality_selected_check_not_executed",
+        "proposal_quality_selected_check_evidence_missing",
+    ]
+
+    failed = tool_gates._selected_proposal_quality_evidence(
+        master_plan,
+        {
+            "selected_dynamic_checks": [check_id],
+            "selected_dynamic_failures": [check_id],
+            "candidate_capabilities": {
+                "checks_by_id": {
+                    check_id: {**passed_row, "passed": False},
+                }
+            },
+        },
+        candidate_dir=candidate_dir,
+    )
+    assert failed["ok"] is False
+    assert failed["check_evidence_digest"] == ""
+    assert failed["errors"] == [
+        "proposal_quality_selected_check_failed",
+        "proposal_quality_selected_check_evidence_missing",
+    ]

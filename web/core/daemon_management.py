@@ -82,6 +82,10 @@ def _drain_stdout(proc):
 # TCP match with two managed bot subprocesses, so peak RSS scales with worker
 # count. Twelve workers use the machine without recreating the old OOM storm.
 MAX_SAFE_DAEMON_WORKERS = 12
+# One daemon pair is one complete 70-hand native match.  The evaluation
+# protocol caps this per-pairing sample budget at eight; it is not a strength
+# verdict and must not be silently represented as a larger effective value.
+MAX_DAEMON_PAIRS = 8
 
 
 def default_daemon_workers() -> int:
@@ -173,7 +177,7 @@ def _daemon_owner_contract_identity(pid: int, record: dict) -> str:
             try:
                 command_matches = (
                     1 <= int(argv[3]) <= MAX_SAFE_DAEMON_WORKERS
-                    and 1 <= int(argv[5]) <= 20
+                    and 1 <= int(argv[5]) <= MAX_DAEMON_PAIRS
                 )
             except (TypeError, ValueError, OverflowError):
                 command_matches = False
@@ -362,6 +366,14 @@ def start_daemon(workers=None, pairs=5):
     require_policy_epoch_initialized("daemon_management.start_daemon")
     if workers is None:
         workers = default_daemon_workers()
+    if (
+        not isinstance(pairs, int)
+        or isinstance(pairs, bool)
+        or not 1 <= pairs <= MAX_DAEMON_PAIRS
+    ):
+        raise ValueError(
+            f"daemon pairs must be an integer in [1, {MAX_DAEMON_PAIRS}]"
+        )
 
     from evolution_infra import CORE_DIR, RESULTS_DIR
 

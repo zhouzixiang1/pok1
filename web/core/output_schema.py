@@ -775,7 +775,7 @@ class MasterPlan(BaseModel):
     targeted_failure: str = Field(min_length=5)
     expected_behavior_change: str = ""
     do_not_touch: list[str] = Field(default_factory=list)
-    measurement_plan: str = ""
+    measurement_plan: str = Field(min_length=20)
     tasks: list[WorkerTask] = Field(
         min_length=MASTER_PLAN_MIN_TASKS,
         max_length=MASTER_PLAN_MAX_TASKS,

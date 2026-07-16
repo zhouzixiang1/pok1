@@ -91,7 +91,7 @@ def test_restart_dry_run_stops_before_atomic_config_and_starts(tmp_path):
             "--daemon-workers",
             "4",
             "--daemon-pairs",
-            "7",
+            "8",
             "--observe-generations",
             "0",
         ],
@@ -114,9 +114,9 @@ def test_restart_rejects_out_of_range_daemon_config(tmp_path):
     for option, value, expected in (
         ("--daemon-workers", "0", "integer in [1, 12]"),
         ("--daemon-workers", "13", "integer in [1, 12]"),
-        ("--daemon-pairs", "0", "integer in [1, 20]"),
-        ("--daemon-pairs", "21", "integer in [1, 20]"),
-        ("--daemon-pairs", "not-an-int", "integer in [1, 20]"),
+        ("--daemon-pairs", "0", "integer in [1, 8]"),
+        ("--daemon-pairs", "9", "integer in [1, 8]"),
+        ("--daemon-pairs", "not-an-int", "integer in [1, 8]"),
     ):
         proc = subprocess.run(
             ["bash", "scripts/pok_restart_observe.sh", option, value],
@@ -139,3 +139,5 @@ def test_restart_uses_shared_durable_config_writer():
     assert "path.write_text" not in source
     assert "./pokctl.sh stop" in source
     assert "./pokctl.sh start" in source
+    assert "evaluation sample budget 1..8" in source
+    assert "not a Bot strength verdict" in source

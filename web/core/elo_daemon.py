@@ -80,6 +80,10 @@ REPLAY_DIR = RESULTS_DIR / "match_replay"
 # _PersistentBot previously discarded; grep these files to verify detector firing.
 MATCH_HISTORY_FILE = RESULTS_DIR / "match_history.jsonl"
 MAX_REPLAY_FILES = 2000
+# Maximum complete 70-hand samples scheduled for one bot pairing in a rating
+# period.  More samples can accumulate across immutable cycles; this per-cycle
+# budget is not itself a strength verdict.
+MAX_NATIONAL_RATING_MATCHES = 8
 
 # JSONL rotation limits (lines kept after rotation)
 MAX_RATING_HISTORY_LINES = 3000
@@ -1004,7 +1008,7 @@ def _rating_protocol_config(n_pairs=None):
     if n_pairs is not None and not matches_override:
         national_matches = max(national_matches, int(n_pairs))
     national_hands = max(1, min(70, national_hands))
-    national_matches = max(1, min(8, national_matches))
+    national_matches = max(1, min(MAX_NATIONAL_RATING_MATCHES, national_matches))
     config = {
         "profile_id": getattr(profile, "profile_id", "default"),
         "protocol": "national",
@@ -1915,12 +1919,20 @@ def main():
         "--pairs",
         type=int,
         default=5,
-        help="Complete 70-hand native matches per scheduled bot pairing (1..8)",
+        help=(
+            "Complete 70-hand native matches per scheduled bot pairing "
+            f"(1..{MAX_NATIONAL_RATING_MATCHES})"
+        ),
     )
     parser.add_argument("--workers", type=int, default=max(1, min(12, int(multiprocessing.cpu_count() * 28 / 32))), help="Parallel workers (capped at 12 to avoid OOM; see MAX_SAFE_DAEMON_WORKERS)")
     parser.add_argument("--verbose", "-v", action="store_true", help="Print match results")
     parser.add_argument("--once", action="store_true", help="Run ~14 matches then exit")
     args = parser.parse_args()
+    if not 1 <= args.pairs <= MAX_NATIONAL_RATING_MATCHES:
+        parser.error(
+            "--pairs must be an integer in "
+            f"[1, {MAX_NATIONAL_RATING_MATCHES}]"
+        )
 
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)

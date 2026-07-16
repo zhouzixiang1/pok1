@@ -358,7 +358,16 @@ def expected_master_contexts(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
         raise StrictAuthorityError("strict_authority_proposal_packet_missing")
     context_digest = str(packet.get("context_digest") or "")
     source_code_digest = str(packet.get("source_code_digest") or "")
-    proposal_ids = packet.get("allowed_proposal_ids") or []
+    proposals = packet.get("ordered_proposals") or []
+    proposal_ids = [
+        str(item.get("proposal_id") or "")
+        for item in proposals
+        if isinstance(item, dict)
+    ]
+    if len(proposal_ids) != 3 or len(set(proposal_ids)) != 3:
+        raise StrictAuthorityError(
+            "strict_authority_proposal_packet_id_set_invalid"
+        )
     criteria = packet.get("critic_criteria") or {}
     result = {
         f"proposal:{direction}": proposal_call_context(
@@ -1839,6 +1848,8 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                 candidate_dir / ".protocol_bootstrap_no_strength_evidence"
             ),
             national_policy_only=True,
+            execution_mode="fixed_blueprint_capability_audit",
+            evidence_mode="fresh_strict_control_no_strength",
         )
         if not isinstance(projected, dict):
             hints = _master_proposal_projection_hints(
@@ -1848,6 +1859,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                     candidate_dir / ".protocol_bootstrap_no_strength_evidence"
                 ),
                 national_policy_only=True,
+                evidence_mode="fresh_strict_control_no_strength",
             ) or ["proposal_contract_invalid"]
             projection_detail_errors = [
                 "strict_authority_proposal_projection:" + hint
