@@ -12,7 +12,7 @@ mandatory_forbidden_paths:
   - docs/archive
   - .evolution_pok
   - .codex_worktrees
-  - .claude/worktrees
+  - .claude
   - .git
   - .env
 
@@ -42,6 +42,11 @@ limits:
   max_task_timeout_sec: 3600
   max_turns: 40
   read_retry_count: 1
+  max_changed_files: 256
+  max_changed_file_bytes: 16777216
+  max_diff_bytes: 2097152
+  max_child_stdout_bytes: 4194304
+  max_child_stderr_bytes: 262144
 
 logging:
   max_bytes: 10485760

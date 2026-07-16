@@ -8,27 +8,19 @@ import json
 from .schemas import TaskEnvelope
 
 
-EXECUTION_PROFILE_VERSION = "worker-mcp-execution-v1"
-
-
-def _normalize_text(value: str) -> str:
-    return " ".join(value.split())
+EXECUTION_PROFILE_VERSION = "worker-mcp-execution-v2"
 
 
 def request_fingerprint(request: TaskEnvelope) -> str:
-    payload = {
-        "repo": str(request.repo),
-        "base_commit": request.base_commit.strip(),
-        "goal": _normalize_text(request.goal),
-        "allowed_paths": sorted(request.allowed_paths),
-        "forbidden_paths": sorted(request.forbidden_paths),
-        "constraints": sorted(_normalize_text(item) for item in request.constraints),
-        "acceptance_criteria": sorted(
-            _normalize_text(item) for item in request.acceptance_criteria
-        ),
-        "task_type": request.task_type.value,
-        "execution": request.execution.model_dump(mode="json"),
-        "execution_profile_version": EXECUTION_PROFILE_VERSION,
-    }
+    # Bind the exact execution-relevant envelope.  Whitespace and list order can
+    # change a model prompt, so treating those variants as equivalent would be
+    # an unsafe idempotent replay.  The key itself identifies the replay slot,
+    # while trace_id is observability metadata and may legitimately differ on a
+    # transport retry.
+    payload = request.model_dump(
+        mode="json",
+        exclude={"idempotency_key", "trace_id"},
+    )
+    payload["execution_profile_version"] = EXECUTION_PROFILE_VERSION
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

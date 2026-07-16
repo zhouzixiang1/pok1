@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 import subprocess
 
-from .agent_executor import BaseAgentExecutor
 from .compatibility import check_gateway, require_worker_credential, runtime_inventory
 from .config import WorkerConfig
 from .schemas import (
@@ -70,7 +69,11 @@ class HealthChecker:
             components["worktree_root"] = self._component(False, "worktree root unavailable")
 
         for name, (ok, detail) in runtime_inventory(self.config).items():
-            components[name] = self._component(ok, detail)
+            components[name] = (
+                ComponentHealth(status="skipped", detail=detail)
+                if ok is None
+                else self._component(ok, detail)
+            )
 
         try:
             await check_gateway(self.config)
@@ -100,7 +103,7 @@ class HealthChecker:
         else:
             for name in ("text_canary", "tool_canary", "structured_output_canary"):
                 components[name] = ComponentHealth(
-                    status="skipped", detail="run healthcheck with deep=true"
+                    status="skipped", detail="run scripts/diagnose.py --deep explicitly"
                 )
 
         statuses = {component.status for component in components.values()}
@@ -132,7 +135,12 @@ class HealthChecker:
             forbidden_paths=[],
             constraints=["Use the Read tool exactly once"],
             acceptance_criteria=["Return valid structured output"],
-            execution=ExecutionProfile(read_only=True, use_worktree=True, max_turns=4, timeout_sec=120),
+            execution=ExecutionProfile(
+                read_only=True,
+                use_worktree=True,
+                max_turns=min(8, self.config.limits.max_turns),
+                timeout_sec=120,
+            ),
             idempotency_key="health-canary-0001",
             task_type=TaskType.ANALYZE,
         )

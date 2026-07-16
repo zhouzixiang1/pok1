@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 
@@ -73,6 +74,12 @@ async def test_read_task_async_success_and_strict_idempotency(worker_config, git
             await service.submit(
                 request(git_repo).model_copy(update={"goal": "different request"})
             )
+        with pytest.raises(IdempotencyConflict):
+            await service.submit(
+                request(git_repo).model_copy(
+                    update={"context": "different execution evidence"}
+                )
+            )
     finally:
         await service.stop()
 
@@ -133,7 +140,11 @@ async def test_read_task_retries_once_after_executor_failure(worker_config, git_
             raise AgentExecutionError("simulated SDK crash")
         return AgentExecution(
             reported=WorkerReportedResult(summary="recovered", acceptance_result="ok"),
-            audit={"files_read": [], "commands": [], "denied": []},
+            audit={
+                "files_read": [str(worktree / "src" / "module.py")],
+                "commands": [],
+                "denied": [],
+            },
             session_id="retry",
             turns=1,
             duration_ms=1,
@@ -149,6 +160,106 @@ async def test_read_task_retries_once_after_executor_failure(worker_config, git_
         status = await wait_terminal(service, submitted.task_id)
         assert status.status is TaskStatus.SUCCEEDED
         assert status.attempt == 2 and executor.calls == 2
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_read_task_without_successful_read_evidence_fails(
+    worker_config, git_repo
+):
+    async def unsupported_claim(request, worktree, calls, cancel_event):
+        return AgentExecution(
+            reported=WorkerReportedResult(
+                summary="claimed without evidence", acceptance_result="claimed"
+            ),
+            audit={"files_read": [], "commands": [], "denied": []},
+            session_id="no-evidence",
+            turns=1,
+            duration_ms=1,
+        )
+
+    service = TaskService(
+        worker_config, executor=MockAgentExecutor(unsupported_claim)
+    )
+    await service.start()
+    try:
+        submitted = await service.submit(
+            request(git_repo, key="service-no-read-evidence-0001")
+        )
+        status = await wait_terminal(service, submitted.task_id)
+        assert status.status is TaskStatus.FAILED
+        assert "no successful file-read evidence" in service.result(
+            submitted.task_id
+        ).summary
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_runtime_failure_with_unverifiable_worktree_needs_review(
+    worker_config, git_repo, monkeypatch
+):
+    async def failed_executor(request, worktree, calls, cancel_event):
+        raise AgentExecutionError("retry would be unsafe without snapshot evidence")
+
+    service = TaskService(worker_config, executor=MockAgentExecutor(failed_executor))
+
+    def snapshot_failure(_path):
+        raise RuntimeError("snapshot evidence unavailable")
+
+    monkeypatch.setattr(service.worktrees, "snapshot", snapshot_failure)
+    await service.start()
+    try:
+        submitted = await service.submit(
+            request(git_repo, key="service-unverifiable-worktree-0001")
+        )
+        status = await wait_terminal(service, submitted.task_id)
+        assert status.status is TaskStatus.NEEDS_REVIEW
+        assert service.executor.calls == 1
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_non_utf8_worktree_path_fails_closed_without_stuck_lease(
+    worker_config, git_repo
+):
+    async def write_non_utf8_path(request, worktree, calls, cancel_event):
+        filename = os.fsencode(worktree / "src") + b"/bad-\xff.py"
+        descriptor = os.open(filename, os.O_CREAT | os.O_WRONLY, 0o600)
+        try:
+            os.write(descriptor, b"VALUE = 1\n")
+        finally:
+            os.close(descriptor)
+        return AgentExecution(
+            reported=WorkerReportedResult(
+                summary="created an invalid path", acceptance_result="claimed"
+            ),
+            audit={"files_read": [], "commands": [], "denied": []},
+            session_id="non-utf8-path",
+            turns=1,
+            duration_ms=1,
+        )
+
+    service = TaskService(
+        worker_config, executor=MockAgentExecutor(write_non_utf8_path)
+    )
+    await service.start()
+    try:
+        submitted = await service.submit(
+            request(
+                git_repo,
+                key="service-non-utf8-path-0001",
+                read_only=False,
+                task_type=TaskType.PATCH,
+            )
+        )
+        status = await wait_terminal(service, submitted.task_id)
+        assert status.status is TaskStatus.NEEDS_REVIEW
+        row = service.persistence.get_task(submitted.task_id)
+        assert row["lease_owner"] is None
+        assert service.result(submitted.task_id).status.value == "partial"
     finally:
         await service.stop()
 
@@ -184,6 +295,48 @@ async def test_cancelled_dirty_write_enters_needs_review(worker_config, git_repo
 
 
 @pytest.mark.asyncio
+async def test_cancel_flag_wins_even_if_executor_returns_normally(
+    worker_config, git_repo
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def ignores_cancel(request, worktree, calls, cancel_event):
+        started.set()
+        await release.wait()
+        return AgentExecution(
+            reported=WorkerReportedResult(
+                summary="late success must not win", acceptance_result="claimed"
+            ),
+            audit={
+                "files_read": [str(worktree / "src" / "module.py")],
+                "commands": [],
+                "denied": [],
+            },
+            session_id="late-success",
+            turns=1,
+            duration_ms=1,
+        )
+
+    service = TaskService(worker_config, executor=MockAgentExecutor(ignores_cancel))
+    await service.start()
+    try:
+        submitted = await service.submit(
+            request(git_repo, key="service-cancel-return-race-0001")
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        cancelling = asyncio.create_task(service.cancel(submitted.task_id))
+        await asyncio.sleep(0.05)
+        release.set()
+        cancelled = await asyncio.wait_for(cancelling, timeout=5)
+        assert cancelled.status is TaskStatus.CANCELLED
+        assert service.status(submitted.task_id).status is TaskStatus.CANCELLED
+    finally:
+        release.set()
+        await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_timeout_without_diff_is_timed_out(worker_config, git_repo):
     async def timed(request, worktree, calls, cancel_event):
         raise AgentTimedOut("simulated timeout")
@@ -196,5 +349,109 @@ async def test_timeout_without_diff_is_timed_out(worker_config, git_repo):
         )
         status = await wait_terminal(service, submitted.task_id)
         assert status.status is TaskStatus.TIMED_OUT
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_custom_named_credential_is_redacted_from_failure_state_and_audit(
+    worker_config, git_repo, monkeypatch
+):
+    secret = "custom-credential-value-987654"
+    monkeypatch.setenv("WORKER_MCP_CRED", secret)
+    config = worker_config.model_copy(
+        update={
+            "gateway": worker_config.gateway.model_copy(
+                update={"auth_token_env": "WORKER_MCP_CRED"}
+            )
+        }
+    )
+
+    async def leaking_failure(request, worktree, calls, cancel_event):
+        (worktree / "src" / "leak.py").write_text(
+            f"TOKEN = {secret!r}\n", encoding="utf-8"
+        )
+        raise RuntimeError(f"executor exposed {secret}")
+
+    service = TaskService(config, executor=MockAgentExecutor(leaking_failure))
+    await service.start()
+    try:
+        with pytest.raises(ValueError, match="contains the dedicated Worker credential"):
+            await service.submit(
+                request(
+                    git_repo,
+                    key="service-credential-in-envelope-0001",
+                ).model_copy(update={"context": f"do not store {secret}"})
+            )
+        submitted = await service.submit(
+            request(
+                git_repo,
+                key="service-custom-credential-redaction-0001",
+                read_only=False,
+                task_type=TaskType.PATCH,
+            )
+        )
+        status = await wait_terminal(service, submitted.task_id)
+        assert status.status is TaskStatus.NEEDS_REVIEW
+        result_json = service.result(submitted.task_id).model_dump_json()
+        row = service.persistence.get_task(submitted.task_id)
+        assert secret not in result_json
+        assert secret not in (row["error_message"] or "")
+    finally:
+        await service.stop()
+    audit_text = (config.state_dir / "logs" / "worker-mcp.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert secret not in audit_text
+
+
+@pytest.mark.asyncio
+async def test_custom_credential_is_redacted_during_read_retry(
+    worker_config, git_repo, monkeypatch
+):
+    secret = "retry-custom-credential-246810"
+    monkeypatch.setenv("WORKER_MCP_CRED", secret)
+    config = worker_config.model_copy(
+        update={
+            "gateway": worker_config.gateway.model_copy(
+                update={"auth_token_env": "WORKER_MCP_CRED"}
+            )
+        }
+    )
+    recorded_retry_errors = []
+
+    async def retry_then_wait(request, worktree, calls, cancel_event):
+        if calls == 1:
+            raise AgentExecutionError(f"transient failure exposed {secret}")
+        return AgentExecution(
+            reported=WorkerReportedResult(summary="recovered", acceptance_result="ok"),
+            audit={
+                "files_read": [str(worktree / "src" / "module.py")],
+                "commands": [],
+                "denied": [],
+            },
+            session_id="retry-redaction",
+            turns=1,
+            duration_ms=1,
+        )
+
+    service = TaskService(config, executor=MockAgentExecutor(retry_then_wait))
+    original_transition = service.persistence.transition
+
+    def recording_transition(task_id, target, **kwargs):
+        if target is TaskStatus.QUEUED and kwargs.get("error_message"):
+            recorded_retry_errors.append(kwargs["error_message"])
+        return original_transition(task_id, target, **kwargs)
+
+    monkeypatch.setattr(service.persistence, "transition", recording_transition)
+    await service.start()
+    try:
+        submitted = await service.submit(
+            request(git_repo, key="service-retry-credential-redaction-0001")
+        )
+        assert (await wait_terminal(service, submitted.task_id)).status is TaskStatus.SUCCEEDED
+        assert len(recorded_retry_errors) == 1
+        assert secret not in recorded_retry_errors[0]
+        assert "[REDACTED]" in recorded_retry_errors[0]
     finally:
         await service.stop()

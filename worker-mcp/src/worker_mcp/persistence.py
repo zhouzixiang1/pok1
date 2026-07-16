@@ -42,6 +42,7 @@ class Persistence:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._initialize()
+        self.path.chmod(0o600)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -323,15 +324,85 @@ class Persistence:
             if cursor.rowcount != 1:
                 raise TaskNotFound(task_id)
 
-    def request_cancel(self, task_id: str) -> dict[str, Any]:
+    def cancel_or_request(
+        self,
+        task_id: str,
+        *,
+        pre_execution_result_json: str,
+    ) -> tuple[dict[str, Any], bool]:
+        """Atomically cancel an unclaimed task or flag an active executor.
+
+        The returned boolean is true only when this transaction performed the
+        terminal transition.  Keeping the status read, cancellation request,
+        and queued-task transition under one ``BEGIN IMMEDIATE`` prevents an
+        executor claim from racing a stale pre-cancel status read.
+        """
+
+        now = utc_now()
         with self._connect() as connection:
-            cursor = connection.execute(
-                "UPDATE tasks SET cancel_requested = 1, updated_at = ? WHERE task_id = ?",
-                (utc_now(), task_id),
+            connection.execute("BEGIN IMMEDIATE")
+            current_row = self._row(
+                connection.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+                ).fetchone()
             )
-            if cursor.rowcount != 1:
-                raise TaskNotFound(task_id)
-        return self.get_task(task_id)
+            current = TaskStatus(current_row["status"])
+            if is_terminal(current):
+                connection.commit()
+                return current_row, False
+            if current in {TaskStatus.ACCEPTED, TaskStatus.QUEUED}:
+                validate_transition(current, TaskStatus.CANCELLED)
+                summary = "Task was cancelled before execution"
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = ?, phase = ?, progress_summary = ?,
+                        result_json = ?, cancel_requested = 1,
+                        lease_owner = NULL, updated_at = ?
+                    WHERE task_id = ?
+                    """,
+                    (
+                        TaskStatus.CANCELLED.value,
+                        "cancelled",
+                        summary,
+                        pre_execution_result_json,
+                        now,
+                        task_id,
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO task_transitions(
+                        task_id, from_status, to_status, phase, reason, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        current.value,
+                        TaskStatus.CANCELLED.value,
+                        "cancelled",
+                        "cancel requested before executor claim",
+                        now,
+                    ),
+                )
+                terminal = True
+            else:
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET cancel_requested = 1, updated_at = ?
+                    WHERE task_id = ?
+                    """,
+                    (now, task_id),
+                )
+                terminal = False
+            updated = self._row(
+                connection.execute(
+                    "SELECT * FROM tasks WHERE task_id = ?", (task_id,)
+                ).fetchone()
+            )
+            connection.commit()
+        return updated, terminal
 
     def incomplete_tasks(self) -> list[dict[str, Any]]:
         terminal = tuple(status.value for status in TaskStatus if is_terminal(status))

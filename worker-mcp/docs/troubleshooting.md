@@ -16,6 +16,8 @@ when the server cannot initialize.
   configured loopback endpoint and `/health` returns valid JSON.
 - `worker_credential`: export the dedicated environment variable before Codex
   starts, then restart Codex so `env_vars` can forward it.
+- `linux_sandbox`: install both `bubblewrap` (`bwrap`) and `socat`; execution
+  intentionally fails closed if either is absent.
 - canary failures: run shallow diagnosis first; deep diagnosis invokes the
   logical backend and can fail independently of basic health.
 
@@ -30,12 +32,18 @@ The child process group is terminated; a dirty worktree is preserved as
 `needs_review`. Restarting the MCP server recovers durable rows using the rules
 in `operations.md`.
 
+If startup reports that another service owns `state_dir`, do not delete the
+lock file. Stop the existing STDIO process or use its MCP `healthcheck`. A flock
+is released by the kernel when the true owner exits; deleting the pathname does
+not safely revoke a live owner.
+
 ## Cleanup refuses
 
-This is expected when a diff exists or ownership evidence is incomplete. Never
-delete or prune broadly. Inspect the task result and exact worktree. Make it
-clean only after Codex has preserved or rejected the patch, then rerun cleanup
-with the same task ID.
+This is expected when a tracked, untracked, or ignored file exists, evidence was
+truncated, or ownership/base/HEAD evidence is incomplete. Never delete or prune
+broadly. Inspect the task result and exact worktree. Make it clean only after
+Codex has preserved or rejected the patch, then rerun cleanup with the same task
+ID.
 
 ## Gateway 5xx, timeout, or stream failure
 

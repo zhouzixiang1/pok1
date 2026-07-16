@@ -18,22 +18,47 @@ _BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
 _TOKENISH = re.compile(r"(?i)\b(?:sk|api)[-_][A-Za-z0-9_-]{12,}\b")
 
 
-def redact(value: Any, *, key: str = "") -> Any:
+def redact(
+    value: Any,
+    *,
+    key: str = "",
+    secrets: tuple[str, ...] = (),
+) -> Any:
     if _SENSITIVE_KEY.search(key):
         return "<redacted>"
     if isinstance(value, dict):
-        return {str(k): redact(v, key=str(k)) for k, v in value.items()}
+        return {
+            str(k): redact(v, key=str(k), secrets=secrets)
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [redact(item) for item in value]
+        return [redact(item, secrets=secrets) for item in value]
     if isinstance(value, str):
-        return _TOKENISH.sub("<redacted>", _BEARER.sub("Bearer <redacted>", value))
+        result = value
+        for secret in sorted(
+            (item for item in secrets if len(item) >= 4),
+            key=len,
+            reverse=True,
+        ):
+            result = result.replace(secret, "<redacted>")
+        return _TOKENISH.sub(
+            "<redacted>", _BEARER.sub("Bearer <redacted>", result)
+        )
     return value
 
 
 class AuditLogger:
-    def __init__(self, path: Path, *, max_bytes: int, backup_count: int):
+    def __init__(
+        self,
+        path: Path,
+        *,
+        max_bytes: int,
+        backup_count: int,
+        secrets: tuple[str, ...] = (),
+    ):
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = path
+        self._secrets = secrets
         self._logger = logging.getLogger(f"worker_mcp.audit.{id(self)}")
         self._logger.setLevel(logging.INFO)
         self._logger.propagate = False
@@ -45,10 +70,12 @@ class AuditLogger:
         )
         handler.setFormatter(logging.Formatter("%(message)s"))
         self._logger.addHandler(handler)
+        self.path.chmod(0o600)
 
     def log(self, event: str, **fields: Any) -> None:
-        payload = redact({"event": event, **fields})
+        payload = redact({"event": event, **fields}, secrets=self._secrets)
         self._logger.info(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        self.path.chmod(0o600)
 
     def close(self) -> None:
         for handler in list(self._logger.handlers):

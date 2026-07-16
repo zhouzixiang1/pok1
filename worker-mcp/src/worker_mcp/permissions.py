@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
@@ -13,11 +12,18 @@ from typing import Any
 from claude_agent_sdk import HookMatcher, PermissionResultAllow, PermissionResultDeny
 
 
-READ_TOOLS = frozenset({"Read", "Glob", "Grep", "Bash"})
+# The Agent SDK and Claude CLI currently share one process environment with
+# built-in Bash commands.  The CLI needs the dedicated gateway credential, so
+# repository-controlled pytest/npm code would inherit it too.  Until the SDK
+# provides a distinct tool-process environment, Bash is fail-closed here.
+READ_TOOLS = frozenset({"Read"})
 WRITE_TOOLS = frozenset({"Edit", "Write"})
 DISALLOWED_TOOLS = frozenset(
     {
         "Agent",
+        "Bash",
+        "Glob",
+        "Grep",
         "Task",
         "WebSearch",
         "WebFetch",
@@ -27,10 +33,26 @@ DISALLOWED_TOOLS = frozenset(
         "ExitPlanMode",
     }
 )
+INTERNAL_TOOLS = frozenset({"StructuredOutput"})
 
-_SHELL_CONTROL = re.compile(r"[\n\r;&|><`]|\$\(|\${")
+_SHELL_CONTROL = re.compile(r"[\n\r;&|><`$]")
+_BARE_EXECUTABLE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_PYTHON_EXECUTABLE = re.compile(r"^python(?:3(?:\.\d+)?)?$")
 _SENSITIVE_PARTS = frozenset(
-    {".git", ".env", ".ssh", ".gnupg", ".aws", ".kube", "id_rsa", "id_ed25519"}
+    {
+        ".git",
+        ".env",
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".kube",
+        ".claude",
+        ".evolution_pok",
+        ".codex_worktrees",
+        "archive",
+        "id_rsa",
+        "id_ed25519",
+    }
 )
 
 
@@ -143,12 +165,14 @@ class CommandPolicy:
             return self._deny("invalid shell quoting")
         if not words:
             return self._deny("empty Bash command")
-        executable = os.path.basename(words[0])
+        executable = words[0]
+        if not _BARE_EXECUTABLE.fullmatch(executable):
+            return self._deny("executable must be an explicit bare command name")
         if executable in {"sudo", "su", "env", "bash", "sh", "zsh", "curl", "wget"}:
             return self._deny("command wrapper or network command is forbidden")
         if executable == "git":
             return self._git(words[1:])
-        if executable.startswith("python"):
+        if _PYTHON_EXECUTABLE.fullmatch(executable):
             return self._python(words[1:])
         if executable in {"npm", "npm.cmd"}:
             return self._npm(words[1:])
@@ -253,11 +277,13 @@ class ToolAuditRecorder:
     denied: list[dict[str, str]] = field(default_factory=list)
     _started: dict[str, float] = field(default_factory=dict)
     _bash_by_use_id: dict[str, str] = field(default_factory=dict)
+    _read_by_use_id: dict[str, str] = field(default_factory=dict)
 
     def pre(self, tool_name: str, tool_input: dict[str, Any], tool_use_id: str) -> None:
-        self._started[tool_use_id] = time.monotonic()
+        if tool_name in {"Read", "Bash"}:
+            self._started[tool_use_id] = time.monotonic()
         if tool_name == "Read" and tool_input.get("file_path"):
-            self.files_read.add(str(tool_input["file_path"]))
+            self._read_by_use_id[tool_use_id] = str(tool_input["file_path"])
         if tool_name == "Bash":
             command = str(tool_input.get("command", ""))
             self._bash_by_use_id[tool_use_id] = command
@@ -265,19 +291,42 @@ class ToolAuditRecorder:
     def deny(self, tool_name: str, reason: str) -> None:
         self.denied.append({"tool": tool_name, "reason": reason})
 
-    def finish(self, tool_use_id: str, *, success: bool) -> None:
-        if tool_use_id not in self._bash_by_use_id:
-            return
+    @staticmethod
+    def _exit_code(tool_response: Any) -> int | None:
+        """Use only explicit structured exit evidence, never tool success itself."""
+
+        if not isinstance(tool_response, dict):
+            return None
+        for key in ("exit_code", "exitCode"):
+            value = tool_response.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                return value
+        return None
+
+    def finish(
+        self,
+        tool_use_id: str,
+        *,
+        success: bool,
+        tool_response: Any = None,
+    ) -> None:
+        read_path = self._read_by_use_id.pop(tool_use_id, None)
+        if read_path is not None and success:
+            self.files_read.add(read_path)
+
+        command = self._bash_by_use_id.pop(tool_use_id, None)
         started = self._started.pop(tool_use_id, time.monotonic())
-        command = self._bash_by_use_id.pop(tool_use_id)
-        self.commands.append(
-            {
-                "command": command,
-                "exit_code": 0 if success else 1,
-                "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
-                "allowed": True,
-            }
-        )
+        if command is not None:
+            self.commands.append(
+                {
+                    "command": command,
+                    "exit_code": self._exit_code(tool_response),
+                    "duration_ms": max(
+                        0, int((time.monotonic() - started) * 1000)
+                    ),
+                    "allowed": True,
+                }
+            )
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -297,21 +346,14 @@ class ToolPolicy:
             self.allowed_tools.update(WRITE_TOOLS)
 
     def decide(self, tool_name: str, tool_input: dict[str, Any]) -> PolicyDecision:
+        if tool_name in INTERNAL_TOOLS:
+            return PolicyDecision(True, "system structured-output tool allowed")
         if tool_name in DISALLOWED_TOOLS or tool_name not in self.allowed_tools:
             return PolicyDecision(False, f"tool is not allowed: {tool_name}")
         if tool_name == "Read":
             return self.paths.check(str(tool_input.get("file_path", "")), write=False)
         if tool_name in {"Edit", "Write"}:
             return self.paths.check(str(tool_input.get("file_path", "")), write=True)
-        if tool_name in {"Glob", "Grep"}:
-            pattern = str(tool_input.get("pattern", ""))
-            if ".." in PurePosixPath(pattern.replace("\\", "/")).parts:
-                return PolicyDecision(False, "search pattern contains traversal")
-            return self.paths.check(
-                str(tool_input.get("path", "")),
-                write=False,
-                recursive=True,
-            )
         if tool_name == "Bash":
             return self.commands.check(str(tool_input.get("command", "")))
         return PolicyDecision(False, "tool policy has no handler")
@@ -347,18 +389,30 @@ class ToolPolicy:
         }
 
     async def post_hook(self, hook_input: dict[str, Any], _tool_use_id: str | None, _context: Any):
-        self.recorder.finish(str(hook_input.get("tool_use_id", "")), success=True)
+        self.recorder.finish(
+            str(hook_input.get("tool_use_id", "")),
+            success=True,
+            tool_response=hook_input.get("tool_response"),
+        )
         return {}
 
     async def failure_hook(self, hook_input: dict[str, Any], _tool_use_id: str | None, _context: Any):
-        self.recorder.finish(str(hook_input.get("tool_use_id", "")), success=False)
+        self.recorder.finish(
+            str(hook_input.get("tool_use_id", "")),
+            success=False,
+            tool_response=hook_input.get("tool_response"),
+        )
         return {}
 
     def hooks(self) -> dict[str, list[HookMatcher]]:
         return {
             "PreToolUse": [HookMatcher(matcher=".*", hooks=[self.pre_hook], timeout=10)],
-            "PostToolUse": [HookMatcher(matcher="Bash", hooks=[self.post_hook], timeout=10)],
+            "PostToolUse": [
+                HookMatcher(matcher="Read", hooks=[self.post_hook], timeout=10),
+                HookMatcher(matcher="Bash", hooks=[self.post_hook], timeout=10),
+            ],
             "PostToolUseFailure": [
-                HookMatcher(matcher="Bash", hooks=[self.failure_hook], timeout=10)
+                HookMatcher(matcher="Read", hooks=[self.failure_hook], timeout=10),
+                HookMatcher(matcher="Bash", hooks=[self.failure_hook], timeout=10),
             ],
         }

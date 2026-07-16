@@ -58,7 +58,7 @@ def worker_config(tmp_path: Path, git_repo: Path) -> WorkerConfig:
                 "require_auth_token": False,
             },
             "runtime": {
-                "backend": "mock",
+                "backend": "claude_sdk",
                 "python_executable": sys.executable,
                 "expected_claude_agent_sdk": "0.2.91",
                 "expected_claude_code": "2.1.205",

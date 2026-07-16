@@ -4,14 +4,29 @@ from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+import re
+from typing import Literal
 from urllib.parse import urlparse
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
+SYSTEM_FORBIDDEN_PATHS = frozenset(
+    {
+        "archive",
+        "docs/archive",
+        ".evolution_pok",
+        ".codex_worktrees",
+        ".claude",
+        ".git",
+        ".env",
+    }
+)
+
+
 class ConfigModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_default=True)
 
 
 class GatewayConfig(ConfigModel):
@@ -43,34 +58,57 @@ class GatewayConfig(ConfigModel):
             raise ValueError("health_path must be an absolute URL path")
         return value
 
-
-class RuntimeConfig(ConfigModel):
-    backend: str = "claude_sdk"
-    claude_cli_path: str | None = None
-    python_executable: str | None = None
-    expected_claude_agent_sdk: str = "0.2.91"
-    expected_claude_code: str = "2.1.205"
-    expected_cc_switch: str = "3.17.0"
-    child_shutdown_grace_sec: float = Field(default=5.0, gt=0, le=30)
-    max_result_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
-
-    @field_validator("backend")
+    @field_validator("auth_token_env")
     @classmethod
-    def validate_backend(cls, value: str) -> str:
-        if value not in {"claude_sdk", "mock"}:
-            raise ValueError("runtime backend must be claude_sdk or mock")
+    def validate_auth_token_env(cls, value: str) -> str:
+        if not re.fullmatch(r"WORKER_MCP_[A-Z0-9][A-Z0-9_]{1,116}", value):
+            raise ValueError(
+                "auth_token_env must be a dedicated WORKER_MCP_* environment name"
+            )
+        if value in {
+            "PATH",
+            "HOME",
+            "PYTHONPATH",
+            "PYTHONHOME",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+        }:
+            raise ValueError("auth_token_env cannot replace a process-control variable")
         return value
 
+
+class RuntimeConfig(ConfigModel):
+    backend: Literal["claude_sdk"] = "claude_sdk"
+    claude_cli_path: str | None = None
+    python_executable: str | None = None
+    expected_claude_agent_sdk: Literal["0.2.91"] = "0.2.91"
+    expected_claude_code: Literal["2.1.205"] = "2.1.205"
+    expected_cc_switch: Literal["3.17.0"] = "3.17.0"
+    child_shutdown_grace_sec: float = Field(default=5.0, gt=0, le=30)
+    max_result_bytes: int = Field(default=4 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
 
 class LimitsConfig(ConfigModel):
     global_read_tasks: int = Field(default=4, ge=1, le=32)
     repository_read_tasks: int = Field(default=3, ge=1, le=16)
     global_write_tasks: int = Field(default=2, ge=1, le=8)
-    repository_write_tasks: int = Field(default=1, ge=1, le=2)
+    repository_write_tasks: int = Field(default=1, ge=1, le=1)
     max_subprocesses: int = Field(default=6, ge=1, le=32)
     max_task_timeout_sec: int = Field(default=3600, ge=30, le=7200)
     max_turns: int = Field(default=40, ge=1, le=100)
     read_retry_count: int = Field(default=1, ge=0, le=1)
+    max_changed_files: int = Field(default=256, ge=1, le=4096)
+    max_changed_file_bytes: int = Field(
+        default=16 * 1024 * 1024, ge=1024, le=256 * 1024 * 1024
+    )
+    max_diff_bytes: int = Field(
+        default=2 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
+    )
+    max_child_stdout_bytes: int = Field(
+        default=4 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024
+    )
+    max_child_stderr_bytes: int = Field(
+        default=256 * 1024, ge=1024, le=16 * 1024 * 1024
+    )
 
 
 class LoggingConfig(ConfigModel):
@@ -79,18 +117,12 @@ class LoggingConfig(ConfigModel):
 
 
 class WorkerConfig(ConfigModel):
-    schema_version: int = 1
+    schema_version: Literal[1] = 1
     state_dir: Path = Path("~/.local/state/pok-worker-mcp")
     worktree_root: Path = Path("~/.local/state/pok-worker-mcp/worktrees")
     allowed_repositories: list[Path]
     mandatory_forbidden_paths: list[str] = Field(
-        default_factory=lambda: [
-            "archive",
-            "docs/archive",
-            ".evolution_pok",
-            ".git",
-            ".env",
-        ]
+        default_factory=lambda: sorted(SYSTEM_FORBIDDEN_PATHS)
     )
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
@@ -118,19 +150,56 @@ class WorkerConfig(ConfigModel):
             if not text or text == "." or ".." in Path(text).parts:
                 raise ValueError("forbidden paths must be repository-relative")
             normalized.append(text)
-        return sorted(set(normalized))
+        # These scopes are system policy, not user-tunable defaults.  A local
+        # config may add restrictions but can never remove the runtime/archive
+        # trust boundary.
+        return sorted(set(normalized) | SYSTEM_FORBIDDEN_PATHS)
 
     @model_validator(mode="after")
-    def validate_limits(self) -> "WorkerConfig":
+    def validate_safety_contract(self) -> "WorkerConfig":
         if self.limits.repository_read_tasks > self.limits.global_read_tasks:
             raise ValueError("repository read limit cannot exceed global limit")
         if self.limits.repository_write_tasks > self.limits.global_write_tasks:
             raise ValueError("repository write limit cannot exceed global limit")
+
+        governed_paths = {
+            "state_dir": self.state_dir,
+            "worktree_root": self.worktree_root,
+            **{
+                f"allowed_repositories[{index}]": repository
+                for index, repository in enumerate(self.allowed_repositories)
+            },
+        }
+        for label, path in governed_paths.items():
+            if ".evolution_pok" in path.parts:
+                raise ValueError(f"{label} must not be .evolution_pok or reside beneath it")
+
+        if self.worktree_root == self.state_dir or not self.worktree_root.is_relative_to(
+            self.state_dir
+        ):
+            raise ValueError("worktree_root must be a strict descendant of state_dir")
+
+        for repository in self.allowed_repositories:
+            state_overlaps_repository = (
+                self.state_dir == repository
+                or self.state_dir.is_relative_to(repository)
+                or repository.is_relative_to(self.state_dir)
+            )
+            worktrees_overlap_repository = (
+                self.worktree_root == repository
+                or self.worktree_root.is_relative_to(repository)
+                or repository.is_relative_to(self.worktree_root)
+            )
+            if state_overlaps_repository or worktrees_overlap_repository:
+                raise ValueError(
+                    "state_dir and worktree_root must be outside allowed repositories"
+                )
         return self
 
     def prepare_directories(self) -> None:
         for path in (self.state_dir, self.worktree_root, self.state_dir / "logs"):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.chmod(0o700)
 
 
 def load_config(path: str | Path) -> WorkerConfig:

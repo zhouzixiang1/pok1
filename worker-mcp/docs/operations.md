@@ -2,16 +2,26 @@
 
 ## Lifecycle
 
-Install the package in its own virtual environment, copy and review the example
-configuration, export the dedicated credential, run shallow and deep diagnosis,
-then add the STDIO server to Codex manually. The poker web launcher and
-evolution orchestrator must not start or supervise this service.
+Source may be merged while remaining inert. As a separate manual Codex-side
+operation, install the package in its own virtual environment, copy and review
+the example configuration, export the dedicated credential, run shallow and
+deep diagnosis, then add the STDIO server to Codex manually. The poker web
+launcher, evolution orchestrator/WorkerWorkflow, daemons, candidate flow, and
+autonomous checkout must not start, supervise, call, or record this service.
+Its installation is never a reason to restart evolution or rotate evaluation
+identity.
 
 Tasks and transitions live in `<state_dir>/tasks.sqlite3`; JSONL audit records
 live in `<state_dir>/logs/worker-mcp.jsonl`; task worktrees live under the
 configured `worktree_root`. SQLite and log files may contain repository code
 paths and task text, so the state directory should remain mode 0700 and should
-not be published.
+not be published. Startup tightens the state/worktree/log directories to 0700
+and the SQLite/audit files to 0600; an ownership or permission failure aborts.
+
+Exactly one live service may own a state directory. A second server,
+`diagnose.py`, or smoke process using the same state fails closed instead of
+recovering live rows. Use the MCP `healthcheck` tool while the service is
+running; stop it before starting a standalone diagnostic or smoke server.
 
 ## Recovery
 
@@ -23,6 +33,10 @@ At startup:
 - write interruptions never replay;
 - any interrupted task with a diff becomes `needs_review`.
 
+The service child installs a parent-death process-group guard, so a hard server
+exit cannot leave the credential-bearing SDK/CLI tree running while a new
+owner recovers the journal.
+
 Codex should inspect `get_result.diff` and `worktree_path`. The service never
 commits. After Codex has accepted or rejected a task and the worktree is clean,
 remove exactly that task's worktree:
@@ -32,9 +46,11 @@ remove exactly that task's worktree:
   --config /absolute/path/config.yaml --task-id TASK_UUID
 ```
 
-The cleanup command has no broad mode. It refuses non-terminal, dirty,
-out-of-root, missing-marker, mismatched-task, and mismatched-repository targets.
-It never scans branch prefixes or calls broad `git worktree prune`.
+The cleanup command has no broad mode. It cross-checks the durable repository,
+base commit, task ID, canonical `path_for(...)`, owner marker, current HEAD, and
+configured root. It refuses non-terminal, tracked, untracked or ignored dirty,
+over-budget, missing-marker, or mismatched targets. It never scans branch
+prefixes or calls broad `git worktree prune`.
 
 ## Upgrade checklist
 
@@ -47,9 +63,16 @@ Before upgrading Claude Agent SDK, Claude Code, MCP SDK, or CC Switch:
    `can_use_tool`, hooks, JSON Schema, and sandbox CLI serialization.
 5. Run mock 503, timeout, bad JSON, bad structured output, cancel, restart, and
    dirty-write recovery tests.
-6. Run the deep real canary: text, Read, multi-turn tool loop, Bash, Edit in a
-   disposable repository, and structured output.
+6. Run the deep real canary: text, successful Read, multi-turn control loop,
+   and structured output. Bash is intentionally unavailable.
 7. Confirm the primary checkout is unchanged and no duplicate worktree exists.
 8. Confirm normal MCP results contain no routing identity or credential.
-9. Roll back the version if any contract changes; do not patch model-specific
+9. Submit a separate disposable write task to exercise Edit/diff verification;
+   run its tests from Codex after the Agent exits.
+10. Roll back the version if any contract changes; do not patch model-specific
    behavior into task-service logic.
+
+For supply-chain evidence, build twice from the same committed tree with the
+same pinned build frontend and `SOURCE_DATE_EPOCH`, then compare SHA-256. A hash
+from an ordinary timestamped wheel build proves only that one artifact built;
+it is not a reproducible commit identity.

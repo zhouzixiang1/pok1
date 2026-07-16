@@ -21,6 +21,7 @@ async def test_stdio_mcp_discovery_submit_poll_and_result(worker_config, git_rep
         encoding="utf-8",
     )
     source_root = Path(__file__).resolve().parents[2] / "src"
+    mock_server = Path(__file__).resolve().parents[1] / "mock_stdio_server.py"
     env = {
         "PATH": os.environ.get("PATH", ""),
         "HOME": os.environ.get("HOME", ""),
@@ -29,7 +30,7 @@ async def test_stdio_mcp_discovery_submit_poll_and_result(worker_config, git_rep
     }
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "worker_mcp.server", "--config", str(config_path)],
+        args=[str(mock_server), "--config", str(config_path)],
         env=env,
         cwd=str(git_repo),
     )
@@ -46,7 +47,7 @@ async def test_stdio_mcp_discovery_submit_poll_and_result(worker_config, git_rep
                 "healthcheck",
             }
             assert all(tool.outputSchema for tool in listed.tools)
-            health = await session.call_tool("healthcheck", {"deep": False})
+            health = await session.call_tool("healthcheck", {})
             assert not health.isError and health.structuredContent["components"]
 
             submit = await session.call_tool(

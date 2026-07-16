@@ -42,13 +42,13 @@ Acceptance criteria:
 
 Execution rules:
 1. Read the relevant code before acting and use the smallest viable plan.
-2. Cite concrete files, symbols, and actual command evidence.
+2. Cite concrete files, symbols, and successful Read evidence.
 3. Work only inside the assigned isolated worktree and allowed paths.
 4. Do not commit, push, reset, clean, rebase, alter Git config, or deploy.
 5. Do not access secrets, production resources, archive history, or the web.
 6. Do not start agents, teams, skills, plugins, hooks, or MCP servers.
-7. Run only allowlisted local checks. Do not retry the same failure indefinitely.
-8. Never claim a command or test ran unless it actually ran.
+7. Bash and repository-code execution are unavailable; Codex runs final checks.
+8. Never claim a command or test ran. Report checks as not run when applicable.
 9. Report summary, findings, checks, acceptance, risks, and unresolved items.
 10. Final acceptance belongs to Codex Commander.
 """

@@ -19,19 +19,27 @@ class AsyncFileLock:
         self.path = path
         self.fd: int | None = None
 
-    async def acquire(self) -> None:
+    async def acquire(self, *, wait: bool = True) -> None:
+        if self.fd is not None:
+            raise RuntimeError("file lock is already acquired")
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.fd = os.open(self.path, os.O_CREAT | os.O_RDWR, 0o600)
-        while True:
-            try:
-                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                return
-            except BlockingIOError:
-                await asyncio.sleep(0.1)
-            except BaseException:
+        try:
+            while True:
+                try:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return
+                except BlockingIOError:
+                    if not wait:
+                        raise LockUnavailable(
+                            f"file lock is already held: {self.path}"
+                        )
+                    await asyncio.sleep(0.1)
+        except BaseException:
+            if self.fd is not None:
                 os.close(self.fd)
                 self.fd = None
-                raise
+            raise
 
     def release(self) -> None:
         if self.fd is None:
@@ -41,6 +49,10 @@ class AsyncFileLock:
         finally:
             os.close(self.fd)
             self.fd = None
+
+
+class LockUnavailable(RuntimeError):
+    """Raised when a fail-closed process lock is already owned."""
 
 
 class ConcurrencyController:
@@ -66,11 +78,12 @@ class ConcurrencyController:
         if request.execution.read_only:
             return []
         repo_hash = hashlib.sha256(request.repo.encode("utf-8")).hexdigest()[:16]
-        paths = []
-        for scope in sorted(request.allowed_paths):
-            scope_hash = hashlib.sha256(scope.encode("utf-8")).hexdigest()
-            paths.append(self._lock_root / repo_hash / f"{scope_hash}.lock")
-        return paths
+        # A task always operates in its own detached worktree, but two edits to
+        # ancestor/descendant scopes (for example ``web`` and ``web/core``) are
+        # still logically conflicting results for the final Codex reviewer.
+        # One stable repository-wide lock is deliberately conservative and,
+        # unlike exact path hashes, cannot miss a hierarchical overlap.
+        return [self._lock_root / repo_hash / "repository-write.lock"]
 
     @asynccontextmanager
     async def slot(self, request: TaskEnvelope):

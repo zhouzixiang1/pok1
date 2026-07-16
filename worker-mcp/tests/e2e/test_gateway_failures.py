@@ -16,10 +16,13 @@ from worker_mcp.task_service import TaskService
 class Handler(BaseHTTPRequestHandler):
     status = 200
     body = b'{"status":"healthy"}'
+    response_headers = {}
 
     def do_GET(self):
         self.send_response(type(self).status)
         self.send_header("Content-Type", "application/json")
+        for name, value in type(self).response_headers.items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(type(self).body)
 
@@ -28,8 +31,16 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class LocalServer:
-    def __init__(self, status, body):
-        subclass = type("ScenarioHandler", (Handler,), {"status": status, "body": body})
+    def __init__(self, status, body, response_headers=None):
+        subclass = type(
+            "ScenarioHandler",
+            (Handler,),
+            {
+                "status": status,
+                "body": body,
+                "response_headers": response_headers or {},
+            },
+        )
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), subclass)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -46,6 +57,42 @@ class LocalServer:
 @pytest.mark.asyncio
 async def test_gateway_503_and_bad_schema_are_explicit(worker_config):
     with LocalServer(503, b'{"status":"down"}') as port:
+        config = worker_config.model_copy(
+            update={
+                "gateway": worker_config.gateway.model_copy(
+                    update={"endpoint": f"http://127.0.0.1:{port}"}
+                )
+            }
+        )
+        with pytest.raises(GatewayUnavailable):
+            await check_gateway(config)
+
+
+@pytest.mark.asyncio
+async def test_loopback_gateway_ignores_ambient_proxy(
+    worker_config, monkeypatch
+):
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "")
+    with LocalServer(200, b'{"status":"healthy"}') as port:
+        config = worker_config.model_copy(
+            update={
+                "gateway": worker_config.gateway.model_copy(
+                    update={"endpoint": f"http://127.0.0.1:{port}"}
+                )
+            }
+        )
+        assert (await check_gateway(config)).healthy
+
+
+@pytest.mark.asyncio
+async def test_loopback_gateway_refuses_redirects(worker_config):
+    with LocalServer(
+        302,
+        b"",
+        {"Location": "https://example.invalid/not-loopback"},
+    ) as port:
         config = worker_config.model_copy(
             update={
                 "gateway": worker_config.gateway.model_copy(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import datetime
 import os
@@ -13,6 +14,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .config import WorkerConfig, load_config
+from .agent_executor import BaseAgentExecutor
 from .healthcheck import HealthChecker
 from .schemas import (
     CancelResponse,
@@ -38,12 +40,19 @@ SERVER_INSTRUCTIONS = (
 )
 
 
-def build_server(config: WorkerConfig) -> FastMCP:
+def build_server(
+    config: WorkerConfig,
+    *,
+    executor_factory: Callable[[], BaseAgentExecutor] | None = None,
+) -> FastMCP:
     container: dict[str, TaskService] = {}
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP):
-        service = TaskService(config)
+        service = TaskService(
+            config,
+            executor=executor_factory() if executor_factory else None,
+        )
         container["service"] = service
         await service.start()
         try:
@@ -166,12 +175,12 @@ def build_server(config: WorkerConfig) -> FastMCP:
 
     @mcp.tool(
         name="healthcheck",
-        description="Check server, storage, queue, Git, pinned SDK/CLI, local gateway, and optional deep canaries.",
+        description="Run a shallow check of server, storage, queue, Git, pinned SDK/CLI, and the local gateway.",
         annotations=read_annotations,
         structured_output=True,
     )
-    async def healthcheck(deep: bool = False) -> HealthResponse:
-        return await HealthChecker(config, service()).check(deep=deep)
+    async def healthcheck() -> HealthResponse:
+        return await HealthChecker(config, service()).check(deep=False)
 
     return mcp
 

@@ -32,6 +32,7 @@ def main() -> int:
     manager.cleanup_owned_clean(
         task_id=args.task_id,
         repository=row["repository"],
+        base_commit=row["base_commit"],
         worktree_path=row["worktree_path"],
     )
     print(f"removed clean owner-marked worktree for task {args.task_id}")
