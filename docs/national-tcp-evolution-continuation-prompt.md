@@ -706,3 +706,18 @@ Next work, in order:
 5. Publish v144 through normal 5+3×70 official-full-v5, establish the immutable
    two-Bot native rating cycle, and only then begin the resettable 10-generation
    stability observation from `0/10`.
+
+Pre-merge runtime baseline on 2026-07-17: the autonomous checkout is still at
+`3bef73c1`, while the clean source freeze is
+`ceb669f63f53a0ae85445b77cccd3fe94f0e0d11`. Web PID `54540` runs from
+`.evolution_pok`, but control health is `overall=stopped`; the Orchestrator and
+rating daemon are absent. The checkpoint is absent, recovery is
+`active=false/recoverable=true/issues=[]`, epoch state is
+`fresh_bootstrap_ready`, active Bots are empty, the scheduler owns fresh v143,
+and stability is `0/10`. The last workflow-v30 was governed-abandoned for
+`infrastructure_exhausted:national_acceptance_harness` after incomplete
+70-hand coverage and has no publication or strength authority. Host-level
+official doctor is green on managed-executor profile v7. Do not stop PID 54540,
+sync, restart, or prepare v143 until the source is fast-forwarded through
+`origin/main`; if any checkpoint appears meanwhile, re-run recovery diagnostics
+and invalidate this clean-boundary assumption.

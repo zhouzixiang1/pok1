@@ -2196,3 +2196,45 @@ production build (165 modules), active-source `py_compile`, and `git diff
 --check`. Commit, push, merge, stopped-runtime sync, controlled abandon/
 re-prepare, v143 bootstrap, v144 full-v5, rating cycle and N/10 observation
 remain separate unclaimed steps.
+
+## 2026-07-17 — pre-merge stopped-orchestrator runtime baseline
+
+The source freeze is commit
+`ceb669f63f53a0ae85445b77cccd3fe94f0e0d11`, five commits ahead of
+`origin/main=3bef73c1bdec152c2c96a9a37bd1f05d2382514b`. The branch is clean, but
+neither the branch nor `origin/main` has been pushed because public-repository
+disclosure requires a fresh explicit operator confirmation. This is a delivery
+barrier, not permission to bypass Git or copy source into the runtime checkout.
+
+The autonomous checkout remains on clean tracked `main` at `3bef73c1`; its only
+untracked entry is the diagnostic Arena owner lock. Web PID `54540` has cwd
+`/home/zzx/project/pok/.evolution_pok` and writes stdout/stderr to
+`web/logs/server.stdout.log`. The Web surface remains available, but its actual
+control projection is `overall=stopped`: there is no Orchestrator task, daemon
+PID/heartbeat, rating process, active generation or active pipeline checkpoint.
+Do not fast-forward this checkout while PID `54540` is alive.
+
+The canonical read-only source projections are:
+
+- epoch `national_tcp_policy_v1`, initialized `true`, state
+  `fresh_bootstrap_ready`, `current_v=142`, `next_v=143`, empty active Bot pool;
+- scheduler `ready_to_prepare` with `source_v=null`, no operator action and no
+  post-publication handoff;
+- recovery diagnostics `active=false`, `recoverable=true`, `issues=[]`;
+- immutable evaluation cycle has `active_bots=[]`, `save_num=0`, and rating
+  stats contain zero games;
+- stability observation is `0/10`, continuity invalid/stale after the governed
+  `orchestrator_stopped` reset;
+- host-permission `official_certify.py doctor` is `ok=true`, execution profile
+  `official-exe-2021-wine9-managed-executor-v7`, signing identity valid, and
+  official verdict ledger valid with one historical v141 entry.
+
+The last v143 workflow (`generation:143:workflow-v30`) was canonically
+abandoned as `infrastructure_exhausted:national_acceptance_harness` after the
+70-hand native acceptance harness repeatedly stopped at incomplete hand counts
+(including 46, 8 and 39). It produced no Bot, tag, certificate, rating or
+stability credit, and its checkpoint is absent. Therefore evaluation-contract
+32 does not require abandoning an active old-contract checkpoint after sync;
+the correct next transition is a fresh governed v143 prepare. If a checkpoint
+appears before the stop boundary, this conclusion is revoked and recovery must
+be re-diagnosed before any sync or launch.
