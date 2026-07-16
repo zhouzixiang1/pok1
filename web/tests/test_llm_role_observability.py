@@ -88,6 +88,7 @@ def _rendered(role, text):
                 "protocol_bootstrap_prepared_only": False,
                 "source_symbol_index": "policy.py:decide",
                 "repair_kind": "",
+                "projection_hints": [],
                 "invocation_id": "1" * 32,
             },
         )

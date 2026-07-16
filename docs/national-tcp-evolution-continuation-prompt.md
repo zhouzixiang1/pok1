@@ -79,6 +79,15 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    日志。每次调用只能落在 `RESULTS_DIR/v<N>/logs/strict_invocations/<id>/`，后端只通过
    opaque id 和 results-root no-follow fd walk 读取，前端不得推导路径。Review/Critic
    prompt 只能由 durable descriptor 渲染；v143 Critic 的 strength read scope 必须为空。
+   Proposal Scout 只能收到紧凑 proposal contract 和冻结语义事实，绝不能注入完整
+   final-Master 教程或 final-plan output schema；bootstrap read scope 仅 target，normal
+   仅 exact source、target 和指定 frozen snapshot。系统应提供从真实 policy ABI
+   entrypoint 可达的 verified preferred current chain，并拒绝 ABI 不可达的 dead-helper
+   chain；future edge 只能写在 proposed diff，不能伪装成 current chain。bootstrap
+   projection rejection 必须把 generic error 和稳定 field-level errors 一并持久化；
+   normal evolution 必须把同一确定性错误 content-bind 到唯一 local repair prompt 和
+   provenance。两者都不得扩展 read scope 或两次尝试预算。被拒绝的 docs/其他越权
+   读取不得返回字节或形成证据。
    generation abandon 必须同时终止 Worker journal，并为不存在的 strict child 建立
    abandoned tombstone；真实/replay dispatch 都必须复核 running。任一权限/上下文/
    prompt/log 漂移走 canonical control-plane abandon，不能消耗 LLM infrastructure retry。
@@ -153,8 +162,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
   the terminal strict-authority abandonment repair is
-  `f7670341155de91f6f376f057a6d9ce11305254d`; a documentation-only bound-
-  manifest correction follows it. Query Git for the exact branch/main HEAD;
+  `f7670341155de91f6f376f057a6d9ce11305254d`, followed by documentation-only
+  bound-manifest correction `f7b19071c66b34a84eca0bd94592209da090c4e5`.
+  The Scout-context/projection repair is staged but not yet committed; query Git
+  for the exact branch/main HEAD;
 - delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
@@ -162,12 +173,12 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `ok=true` all passed for the delivered base. The follow-up frozen tree is Web
   `2719 passed, 20 skipped`, sever `31 passed`, focused abandon/Master/docs
   `136 passed`, frontend `18/18`, with lint/build, active Python compilation,
-  diff check and official doctor `ok=true` also passing;
-- `origin/main`: contains control-plane repair
-  `f7670341155de91f6f376f057a6d9ce11305254d`; require runtime HEAD to equal the
+  diff check and official doctor `ok=true` also passing. These are the last
+  delivered-tree gates; rerun focused and full gates for the staged Scout repair;
+- `origin/main`: `f7b19071c66b34a84eca0bd94592209da090c4e5`; require runtime HEAD to equal the
   exact current remote HEAD before start;
-- runtime HEAD: stopped and clean with the control-plane repair; no evolution
-  process is live and no checkpoint/candidate exists;
+- runtime HEAD: tracked `f7b19071c66b34a84eca0bd94592209da090c4e5`, stopped with no evolution process,
+  active checkpoint, or candidate after workflow-v27 canonical abandon;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
   drift. Workflow-v20 was canonically abandoned with receipt
@@ -199,13 +210,35 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `a26048886df4fe3410a633c4c7c6eb05a3d2c5b29a3431b090898345688372db`
   and finalize receipt
   `06a95624eb1589e52f3c291ef0918a9b04a19ccb7d26d76cb67ecfa04718a812`.
-  There is no active checkpoint/candidate; after delivery the next allocation
-  must be a fresh workflow-v24;
+  Workflow-v24 then exhausted compute-memory and completed exactly one canonical
+  abandon with ledger receipt
+  `f9eb8cf5c87c848df546ac1a0dfb1fdb14ecd54cafb6406c96c5ff75356999de`.
+  Workflow-v25 exhausted mechanism and completed exactly one canonical abandon
+  with receipt
+  `c58fb7fec0eee9d66d4c5688cd57486e8e24a4599f6f0e6e3b0a222875988faf`.
+  Workflow-v26 exhausted compute-memory and completed exactly one canonical
+  abandon with receipt
+  `38a7754cb2b67da865ac87646d50bf49c7c94825ac7c630c346a1da58a2c86b1`.
+  Across v24-v26 the read-scope guard blocked 12 documentation reads (2/2/8),
+  and no rejected bytes entered prompt projection or evidence. This proved the
+  one-shot terminal abandon fix but exposed that Scouts still received the full
+  final-Master tutorial and lacked exact field-level repair diagnostics.
+  Workflow-v27 was then canonically abandoned on the unchanged old contract HEAD
+  from `direction_audited`, revision 4, audit attempt 0. Its ledger receipt is
+  `40f2fecb8ec3524bc1632d54380a030140d5842f41a166a1e03a5a35880f1f09`,
+  transaction id
+  `ddc338ed1f1d876112ee72c6725dae6166d522e0b83633a1e50161206d23be85`,
+  and finalize receipt
+  `627869541aab54b63dcdb85f839c3a31e44ba5a8330913611c571ddaff4d8706`.
+  Both journals were fenced, the candidate quarantined, and the checkpoint
+  cleared. The next allocation must be a fresh workflow-v28;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published. The stopped runtime validates `first_strict_control_v1`
   artifact `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`;
   its signed-ledger consumption is valid, unused and `0/1`, so no v143 formal
-  bootstrap dependency is missing;
+  bootstrap dependency is missing. Official doctor is green. The 5+3 operator
+  action remains locked until fresh workflow-v28 reaches
+  `official_bootstrap_required`;
 - immutable rating cycle: none for the new strict two-bot pool;
 - stability observation: backend `/api/control/status`; only an unexpired
   background-verified `fresh` snapshot may expose N/10; no post-delivery
@@ -222,10 +255,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   while base identity remained
   `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
   only this empty instance may receive future native samples;
-- known next action: finish the documentation-only manifest correction,
-  fast-forward the stopped runtime to exact `origin/main`, verify identities,
-  and start workflow-v24.
-  Dynamically audit that any later terminal strict slot completes one abandon
-  transaction instead of looping. The first-strict operator command becomes
-  available only after the exact v143 checkpoint reaches
-  `official_bootstrap_required`.
+- known next action: commit/push the fully gated Scout repair, fast-forward the
+  stopped runtime through `origin/main`, verify identities, and start fresh
+  workflow-v28. Dynamically require materially
+  smaller Scout prompts, zero documentation-read attempts, preferred current
+  chains, and durable granular errors on any first rejection. The first-strict
+  operator command becomes available only after the exact v143 checkpoint
+  reaches `official_bootstrap_required`.

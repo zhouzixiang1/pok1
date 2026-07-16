@@ -210,7 +210,8 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         required_evidence_fields=(
             "planning_context_digest", "direction", "source_v", "next_v",
             "source_symbol_index_digest", "directive_digest",
-            "protocol_bootstrap_prepared_only", "repair_kind", "invocation_id",
+            "protocol_bootstrap_prepared_only", "repair_kind",
+            "projection_hints", "invocation_id",
         ),
         scope_policy="canonical_candidates",
         tools=(("Read",),),

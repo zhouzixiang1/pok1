@@ -294,6 +294,22 @@ checkpoint is `direction_audited`; its exact control-plane reason must fence
 both journals and complete canonical abandon instead of re-entering
 `run_master`. It cannot authorize abandon at any later gate.
 
+Master proposal Scouts receive a compact proposal contract plus system-rendered
+frozen planning facts, never the complete final-Master tutorial or final-plan
+output schema. During empty-pool bootstrap their read capability is the target
+artifact only. During normal evolution it is the exact source, target, and one
+assigned frozen evidence snapshot; delivery documentation and every other
+results path remain forbidden. The system renders a verified preferred current
+chain reachable from the policy ABI entrypoints. Proposal symbols and chain
+members must come from that current index, and the validator rejects a chain
+outside the policy-ABI reachable closure; future edges belong only in the
+proposed diff, never in the claimed current chain. Bootstrap projection failures
+append stable field-level error codes to the durable strict rejection. Normal
+evolution content-binds the same deterministic codes into its one local repair
+prompt and provenance. Both paths enforce the current falsifier enum. Granular
+diagnostics do not widen the two-attempt budget or turn rejected reads into
+evidence.
+
 Publishing does not authorize the next generation by itself. Before the
 publishing checkpoint is cleared, the publication lock creates and fsyncs an
 exact schema-2 post-publication handoff plus its archive base snapshot. The
@@ -483,6 +499,12 @@ Normal certification is five 70-hand self-play rounds plus three 70-hand rounds
 against an eligible strict-policy opponent. The v143-only system-control
 bootstrap and finalize steps are operator-only, zero-strength, and never an
 automatic fallback. The LLM/HTTP control plane can perform neither step.
+The checked-in `first_strict_control_v1` artifact hash is
+`2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`.
+Its valid, unused `0/1` consumption state and a green official doctor prove the
+5+3 dependency exists; they do not unlock the command. Bootstrap becomes
+available only after the exact v143 checkpoint parks at
+`official_bootstrap_required`.
 The archived v141 signed-ledger chain is validation history and is not executable.
 
 ## Working rules

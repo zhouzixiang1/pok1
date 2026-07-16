@@ -313,6 +313,14 @@ the five-file artifact, `.completed`, signed certificate, annotated
 Do not prepare v144 until the v143 durable handoff reaches `completed` and its
 final operational/external reproof succeeds.
 
+The current checked-in first-strict control is not missing: artifact
+`2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
+is valid, unused, and has consumption `0/1`, while official doctor is green.
+That proves the dependencies for five 70-hand self-play rounds plus three
+70-hand system-control rounds; it does not bypass the stage gate. Until the
+exact v143 checkpoint reaches `official_bootstrap_required`, bootstrap remains
+locked.
+
 ## Second bot and rating readiness
 
 v144 and later candidates use normal `official-full-v5`: five 70-hand
@@ -353,6 +361,20 @@ rollback, same-slot context drift, or any other binding mismatch is a
 control-plane failure, never provider unavailability and never permission to
 open a second authority budget.
 
+Proposal Scouts receive only the compact proposal contract and the frozen
+semantic facts needed for their slot. Do not embed the complete final-Master
+tutorial or final-plan output schema in Scout planning context. Bootstrap scope
+permits the exact target artifact only; normal scope permits the exact source,
+target, and assigned frozen snapshot. Documentation, archive, Git, operator
+records, and all other results paths remain denied. The system supplies a
+preferred current chain proven reachable from the policy ABI entrypoints;
+Scouts copy that chain, the validator rejects dead-helper chains, and future
+edges appear only in the proposed diff. On bootstrap rejection, persist the
+generic failure and stable field-level codes in the strict journal. On normal
+evolution rejection, content-bind the same deterministic codes into the sole
+local repair prompt and its renderer provenance. Both receive the exact prior
+defect without expanding read scope or retry count.
+
 Each accepted proposal, ballot, Reviewer, and Critic effect also owns one
 content-bound invocation-evidence receipt. It uses the accepted effect's final
 provider-visible prompt digest and binds terminal output, provider result/usage,
@@ -388,6 +410,24 @@ Review, Critic, precommit, certification, and publication stages. If an older
 runtime instead emits `pipeline.abandon_refused_state_guard`, stop it before it
 can loop over the exhausted journal, canonically abandon the unchanged Master
 checkpoint, deliver the control-plane repair, and prepare a new workflow.
+
+The 2026-07-16 dynamic audit proved this terminal path three times. Workflows
+v24, v25, and v26 each completed exactly one canonical abandon after a terminal
+proposal slot, with abandon-ledger receipts respectively
+`f9eb8cf5c87c848df546ac1a0dfb1fdb14ecd54cafb6406c96c5ff75356999de`,
+`c58fb7fec0eee9d66d4c5688cd57486e8e24a4599f6f0e6e3b0a222875988faf`,
+and `38a7754cb2b67da865ac87646d50bf49c7c94825ac7c630c346a1da58a2c86b1`.
+Across those workflows the read-scope guard rejected 12 attempted documentation
+reads (2, 2, and 8); none of the rejected bytes entered a prompt, projection,
+or evidence receipt. The service was then stopped with workflow-v27 active at
+`direction_audited`, revision 4, audit attempt 0. On the unchanged pre-repair
+runtime HEAD, the exact canonical transaction fenced both journals, quarantined
+the candidate and cleared the checkpoint: abandon receipt
+`40f2fecb8ec3524bc1632d54380a030140d5842f41a166a1e03a5a35880f1f09`,
+transaction `ddc338ed1f1d876112ee72c6725dae6166d522e0b83633a1e50161206d23be85`,
+finalize receipt
+`627869541aab54b63dcdb85f839c3a31e44ba5a8330913611c571ddaff4d8706`.
+No active checkpoint or candidate remains at the synchronization boundary.
 
 The first-strict Reviewer and Critic never rebuild their prompts from live
 checkpoint or evidence state after call creation. Their descriptor freezes the

@@ -25,6 +25,8 @@ import stat
 import tempfile
 from typing import Any, Iterable
 
+from output_schema import MASTER_PROPOSAL_FALSIFIER_TESTS
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BLUEPRINT_DIR = Path(__file__).resolve().parent / "bootstrap_assets" / "strict_v1"
@@ -54,15 +56,7 @@ _MATERIALIZED_FILES = frozenset({
     "national_runtime_manifest.json",
     "policy_epoch_receipt.json",
 })
-_ALLOWED_FALSIFIERS = frozenset({
-    "fast_policy_baseline",
-    "incremental_refinement_protocol",
-    "incremental_opponent_model",
-    "terminal_response_adaptation",
-    "showdown_range_adaptation",
-    "donk_line_reachability",
-    "delayed_probe_line_reachability",
-})
+_ALLOWED_FALSIFIERS = frozenset(MASTER_PROPOSAL_FALSIFIER_TESTS)
 
 # Numeric namespace boundary only.  It contains no historical source, Git tree,
 # match evidence, or executable identity from the archived epoch.

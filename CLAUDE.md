@@ -28,6 +28,13 @@ API/frontend use a validated opaque id and never infer authority from a path.
 A terminal strict Master slot canonically abandons only at
 `direction_audited`; it must not loop through `run_master` or bypass a later
 gate.
+Proposal Scouts do not receive the complete final-Master tutorial. Bootstrap
+Scouts may read only the target; normal Scouts may read only source, target and
+the exact frozen snapshot. They copy a system-verified current ABI-reachable
+chain, and the validator rejects dead-helper chains. Bootstrap persists
+field-level errors in the strict journal; normal evolution content-binds the
+same errors into its sole repair prompt/provenance. Blocked documentation reads
+are never prompt or evidence input.
 Checkpoint disappearance is terminal only with one unique canonical result
 from the current authorized owner tool, including `workflow_run_id`, and a
 current-head reproof of both complete journals, the transaction, ledger and
@@ -62,3 +69,7 @@ python scripts/official_certify.py doctor
 
 Do not treat the Arena or official EXE chip result as strength evidence. Local
 Glicko/H2H strength uses complete 70-hand raw native TCP matches only.
+For v143, a green doctor and valid unused `first_strict_control_v1` at artifact
+hash `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
+prove the official 5+3 dependency is present. Only the checkpoint stage
+`official_bootstrap_required` unlocks the operator action.

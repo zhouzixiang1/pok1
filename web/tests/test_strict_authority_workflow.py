@@ -392,6 +392,141 @@ def test_projection_rejection_is_not_replayed_as_poison(authority, monkeypatch):
         )
 
 
+def test_proposal_projection_error_is_durable_and_repairs_once(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as module
+    from workflow_kernel import WorkflowStore
+
+    results_dir = tmp_path / "results"
+    store = WorkflowStore(results_dir / "workflow" / "events.sqlite3")
+    candidate_dir = tmp_path / "national_v155"
+    candidate_dir.mkdir()
+    (candidate_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n",
+        encoding="utf-8",
+    )
+    _source_graph, source_digest = agent_master._source_symbol_graph(candidate_dir)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: candidate_dir)
+    monkeypatch.setattr(module, "_store", lambda: store)
+
+    invalid_proposal = json.dumps({
+        "targeted_failure": "The current reachable decision path repeats one bounded failure.",
+        "structural_change": "Replace that decision mechanism with one bounded state path.",
+        "counterfactual": "Hold cards and legality fixed while changing only this mechanism.",
+        "measurement_plan": "This wrong field name must not satisfy measurement.",
+        "why_not_threshold_tuning": "This changes state flow and its consumer, not one threshold.",
+        "expected_diff": "The existing entrypoint still reaches the changed intent consumer.",
+        "target_files": ["policy.py"],
+        "source_symbols": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
+        "reachable_chain": [
+            "policy.py:get_baseline_decision",
+            "policy.py:_choose_intent",
+        ],
+        "falsifier": {
+            "test_name": "fast_policy_baseline",
+            "control": "Run the frozen parent on the same canonical state and seed.",
+            "intervention": "Run only the proposed mechanism on that identical state.",
+            "expected_observation": "The intervention changes while the paired control stays fixed.",
+        },
+        "evidence_refs": [
+            "source:policy.py:get_baseline_decision",
+            "source:policy.py:_choose_intent",
+        ],
+        "risks": "Sparse evidence can overfit, so the mechanism remains bounded.",
+    })
+    checkpoint = _checkpoint()
+    context = {"source_code_digest": source_digest}
+
+    def complete_invalid(call, session_id):
+        module.dispatch_call(
+            call,
+            full_prompt=f"invalid proposal {session_id}",
+            tools=module.SLOT_TOOLS["proposal:mechanism"],
+            owner="pytest",
+        )
+        result = ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id=session_id,
+            total_cost_usd=0.01,
+            usage={},
+            result=invalid_proposal,
+        )
+        module._observe_provider_result(
+            result,
+            invocation_id=call["invocation_id"],
+            effect_id=call["effect_id"],
+        )
+        module.complete_provider_call(
+            call,
+            raw_output=invalid_proposal,
+            provider_results=[result],
+        )
+
+    first = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding=context,
+    )
+    complete_invalid(first, "granular-projection-one")
+    expected_errors = [
+        "strict_authority_role_projection_rejected:proposal:mechanism",
+        "strict_authority_proposal_projection:"
+        "proposal_required_text_invalid:measurement",
+    ]
+    rejections = [
+        event
+        for event in store.events(first["run_id"])
+        if event.event_type == module.REJECTED_EVENT
+    ]
+    assert len(rejections) == 1
+    assert rejections[0].payload["projection_errors"] == expected_errors
+
+    repair = module.new_call(
+        checkpoint,
+        slot="proposal:mechanism",
+        context_binding=context,
+    )
+    assert repair["schema_retry_required"] is True
+    assert repair["schema_attempt"] == module.MAX_SCHEMA_ATTEMPTS_PER_SLOT == 2
+    assert repair["prior_schema_rejection"]["projection_errors"] == expected_errors
+    repair_prompt = module.schema_retry_prompt(repair)
+    assert "single permitted schema-only repair attempt" in repair_prompt
+    assert expected_errors[1] in repair_prompt
+
+    complete_invalid(repair, "granular-projection-two")
+    rejections = [
+        event
+        for event in store.events(first["run_id"])
+        if event.event_type == module.REJECTED_EVENT
+    ]
+    assert len(rejections) == 2
+    assert all(
+        event.payload["projection_errors"] == expected_errors
+        for event in rejections
+    )
+    with pytest.raises(module.StrictAuthorityError, match="schema_retry_exhausted"):
+        module.new_call(
+            checkpoint,
+            slot="proposal:mechanism",
+            context_binding=context,
+        )
+
+
 def test_dead_provider_owner_is_fenced_before_fresh_dispatch(authority, monkeypatch):
     module, store = authority
     checkpoint = _checkpoint()

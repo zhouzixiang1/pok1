@@ -66,7 +66,8 @@ EXPECTED_PROVENANCE_FIELDS = {
     "master_proposal": (
         "planning_context_digest", "direction", "source_v", "next_v",
         "source_symbol_index_digest", "directive_digest",
-        "protocol_bootstrap_prepared_only", "repair_kind", "invocation_id",
+        "protocol_bootstrap_prepared_only", "repair_kind", "projection_hints",
+        "invocation_id",
     ),
     "master_final": (
         "master_context_digest", "proposal_packet_digest", "source_v", "next_v",
@@ -130,7 +131,7 @@ def _renderer_inputs(role_id, marker):
         "h2h_results": "none",
     }
     values = {
-        "master_proposal": {"planning_context": marker, "direction": "mechanism", "directive": "structural mechanism", "source_v": 143, "next_v": 145, "protocol_bootstrap_prepared_only": False, "source_symbol_index": "policy.py:decide", "repair_kind": "", "invocation_id": "1" * 32},
+        "master_proposal": {"planning_context": marker, "direction": "mechanism", "directive": "structural mechanism", "source_v": 143, "next_v": 145, "protocol_bootstrap_prepared_only": False, "source_symbol_index": "policy.py:decide", "repair_kind": "", "projection_hints": [], "invocation_id": "1" * 32},
         "master_proposal_critic": {"proposal_name": "mechanism", "lens": marker, "planning_context_digest": "1" * 64, "proposals": [{"proposal_id": "p1"}], "criteria": {"falsifiability": "required"}, "schema_retry": False, "invocation_id": "2" * 32},
         "master_final": {"template_values": {}, "master_context": marker, "proposal_ensemble": "{}", "source_v": 143, "next_v": 145, "invocation_id": "", "schema_repair_suffix": ""},
         "worker_cot_audit": {

@@ -43,7 +43,7 @@ def _proposal(direction: str, *, shared_claims: bool = False) -> str:
             "policy.py:_choose_intent",
         ],
         "falsifier": {
-            "test_name": f"test_{label}_decision_path",
+            "test_name": "fast_policy_baseline",
             "control": "Run the frozen parent on the same state, cards, and deterministic seed.",
             "intervention": "Run only the proposed mechanism on that identical canonical state.",
             "expected_observation": "The target action changes while the paired control remains unchanged.",
@@ -211,8 +211,287 @@ def test_source_symbol_prompt_index_is_deterministic_and_line_bounded(tmp_path):
     bounded = agent_master._source_symbol_prompt_index(graph, maximum_chars=130)
 
     assert first == second
+    assert (
+        '- ["policy.py:get_baseline_decision","policy.py:_choose_intent"]'
+        in first
+    )
+    assert "SYSTEM-VERIFIED PREFERRED CURRENT CHAINS" in first
     assert "policy.py:get_baseline_decision -> policy.py:_choose_intent" in first
     assert all(len(line) <= 130 for line in bounded.splitlines())
+    assert len(bounded) <= 130
+
+
+def test_preferred_current_chains_exclude_unreachable_policy_helpers():
+    import agent_master
+
+    graph = {
+        "policy.py:get_baseline_decision": {"_live"},
+        "policy.py:iter_decisions": set(),
+        "policy.py:_live": {"card_id"},
+        "policy.py:_dead_sorted_first": {"_live"},
+        "precompute.py:card_id": set(),
+    }
+    prompt = agent_master._source_symbol_prompt_index(graph)
+    preferred = prompt.split(
+        "SYSTEM-VERIFIED PREFERRED CURRENT CHAINS", 1
+    )[1].split("FULL VALIDATED EDGE INDEX", 1)[0]
+
+    assert "policy.py:get_baseline_decision" in preferred
+    assert "policy.py:_live" in preferred
+    assert "policy.py:_dead_sorted_first" not in preferred
+
+
+def test_source_graph_does_not_invent_edges_from_nested_or_class_scopes(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    def nested():\n"
+        "        return _dead(context)\n"
+        "    callback = lambda: _dead(context)\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def _dead(context):\n"
+        "    return {'kind': 'fold'}\n\n"
+        "class Helper:\n"
+        "    def method(self, context):\n"
+        "        return _dead(context)\n",
+        encoding="utf-8",
+    )
+
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+
+    assert graph["policy.py:get_baseline_decision"] == set()
+    assert graph["policy.py:Helper"] == set()
+    assert graph["policy.py:Helper.method"] == {"_dead"}
+    assert "policy.py:_dead" not in agent_master._policy_abi_reachable_depths(
+        graph
+    )
+
+
+def test_unreachable_dead_helper_chain_is_rejected_by_validator_and_hints(tmp_path):
+    import agent_master
+
+    graph = {
+        "policy.py:get_baseline_decision": {"_live"},
+        "policy.py:iter_decisions": set(),
+        "policy.py:_live": set(),
+        "policy.py:_dead": {"_live"},
+    }
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload["source_symbols"] = ["policy.py:_dead", "policy.py:_live"]
+    payload["reachable_chain"] = ["policy.py:_dead", "policy.py:_live"]
+    payload["evidence_refs"] = [
+        "source:policy.py:_dead",
+        "source:policy.py:_live",
+    ]
+    raw = json.dumps(payload)
+
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    ) is None
+    assert (
+        "proposal_reachable_chain_not_policy_abi_reachable"
+        in agent_master._master_proposal_projection_hints(
+            raw,
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+        )
+    )
+
+
+def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
+    import agent_master
+
+    rendered = agent_master._render_master_proposal_provider_prompt({
+        "planning_context": (
+            "Embedded final-Master text says Read "
+            "docs/official-terminal-settlement-oracle-2026-07-11.md and "
+            "propose iter_decisions -> evaluate_seven as future wiring."
+        ),
+        "direction": "mechanism",
+        "directive": "one structural mechanism",
+        "source_v": 142,
+        "next_v": 143,
+        "protocol_bootstrap_prepared_only": True,
+        "source_symbol_index": (
+            "SYSTEM-VERIFIED PREFERRED CURRENT CHAINS\n"
+            '- ["policy.py:get_baseline_decision","policy.py:_hole_ids"]'
+        ),
+        "repair_kind": "schema",
+        "projection_hints": [
+            "proposal_reachable_chain_edge_not_current",
+        ],
+        "invocation_id": "1" * 32,
+    })
+    prompt = rendered.text
+    scope = prompt.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
+
+    assert "Do not call Read on any docs/" in scope
+    assert "Use Read only inside the prepared target bots/national_v143/" in scope
+    assert "Never use a future edge" in scope
+    assert "A blocked Read grants no evidence" in scope
+    assert "Copy one two-symbol SYSTEM-VERIFIED PREFERRED CURRENT CHAIN" in prompt
+    assert "every chain symbol must also be present in source_symbols" in prompt
+    assert "Every adjacent reachable_chain edge must exist in the current" in prompt
+    assert "proposal_reachable_chain_edge_not_current" in prompt
+
+    normal = agent_master._render_master_proposal_provider_prompt({
+        "planning_context": "Frozen snapshot path is evidence data only.",
+        "direction": "mechanism",
+        "directive": "one structural mechanism",
+        "source_v": 143,
+        "next_v": 144,
+        "protocol_bootstrap_prepared_only": False,
+        "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
+        "repair_kind": "",
+        "projection_hints": [],
+        "invocation_id": "2" * 32,
+    }).text.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
+    assert "bots/national_v143/" in normal
+    assert "bots/national_v144/" in normal
+    assert "one exact supplied frozen evidence snapshot" in normal
+    assert "Other web/core/results paths" in normal
+
+    many_hints = agent_master._render_master_proposal_provider_prompt({
+        "planning_context": "Frozen facts.",
+        "direction": "mechanism",
+        "directive": "one structural mechanism",
+        "source_v": 143,
+        "next_v": 144,
+        "protocol_bootstrap_prepared_only": False,
+        "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
+        "repair_kind": "schema",
+        "projection_hints": [
+            f"proposal_field_invalid:{index}" for index in range(17)
+        ],
+        "invocation_id": "3" * 32,
+    }).text
+    assert "proposal_field_invalid:16" in many_hints
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected"),
+    (
+        (
+            lambda payload: (
+                payload.pop("measurement"),
+                payload.update({"measurement_plan": "wrong embedded schema"}),
+            ),
+            "proposal_required_text_invalid:measurement",
+        ),
+        (
+            lambda payload: payload.update({
+                "reachable_chain": [
+                    "policy.py:_choose_intent",
+                    "policy.py:get_baseline_decision",
+                ],
+            }),
+            "proposal_reachable_chain_edge_not_current",
+        ),
+        (
+            lambda payload: payload.update({
+                "source_symbols": ["policy.py:get_baseline_decision"],
+            }),
+            "proposal_reachable_chain_member_not_in_source_symbols",
+        ),
+        (
+            lambda payload: payload.update({
+                "source_symbols": payload["source_symbols"] * 5,
+            }),
+            "proposal_source_symbols_count_invalid",
+        ),
+        (
+            lambda payload: payload.update({
+                "target_files": ["precompute.py"],
+            }),
+            "proposal_reachable_chain_target_file_missing",
+        ),
+        (
+            lambda payload: payload["falsifier"].update({
+                "test_name": "test_future_unbound_check",
+            }),
+            "proposal_falsifier_test_name_invalid",
+        ),
+        (
+            lambda payload: payload.update({
+                "evidence_refs": [
+                    "source:policy.py:get_baseline_decision",
+                    "source:policy.py:get_baseline_decision",
+                ],
+            }),
+            "proposal_evidence_ref_invalid",
+        ),
+    ),
+)
+def test_proposal_projection_hints_explain_common_strict_rejections(
+    tmp_path,
+    mutate,
+    expected,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    mutate(payload)
+    raw = json.dumps(payload)
+
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    ) is None
+    hints = agent_master._master_proposal_projection_hints(
+        raw,
+        source_graph=graph,
+        national_policy_only=True,
+    )
+    assert expected in hints
+
+
+def test_valid_and_tolerantly_normalized_proposals_have_no_projection_hints(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload["source_symbols"][1] = "policy.py:_choose_inten"
+    payload["reachable_chain"][1] = "policy.py:_choose_inten"
+    payload["evidence_refs"] = {
+        "entry": "code:policy.py:get_baseline_decision [current entry]",
+        "consumer": "ref:policy.py:_choose_inten — fuzzy tolerated",
+    }
+    raw = json.dumps(payload)
+
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    ) is not None
+    assert agent_master._master_proposal_projection_hints(
+        raw,
+        source_graph=graph,
+        national_policy_only=True,
+    ) == []
 
 
 def test_same_leaf_in_two_files_is_not_accepted_as_reachability(tmp_path):
@@ -308,10 +587,10 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
     snapshot_dir = tmp_path / "snapshot"
     _write_source(source_dir)
     snapshot_dir.mkdir()
-    roles = []
+    calls = []
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
-        roles.append(role_name)
+        calls.append((role_name, prompt))
         if role_name.startswith("MASTER PROPOSAL CRITIC"):
             if (
                 "falsification" in role_name
@@ -323,7 +602,13 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
             )))
             return _critic_output(agent_master, ids), 0.0, {}
         if "mechanism" in role_name and "SCHEMA RETRY" not in role_name:
-            return "{}", 0.0, {}
+            payload = json.loads(
+                _proposal("mechanism").split("```json\n", 1)[1].rsplit(
+                    "\n```", 1
+                )[0]
+            )
+            payload["measurement_plan"] = payload.pop("measurement")
+            return json.dumps(payload), 0.0, {}
         direction = next(
             name
             for name in ("mechanism", "counterfactual", "compute_memory")
@@ -346,9 +631,16 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
     assert packet["valid"] is True
     assert packet["proposal_count"] == 3
     assert packet["valid_critic_count"] == 2
+    roles = [role for role, _prompt in calls]
     assert len(roles) == 7
     assert "MASTER PROPOSAL mechanism SCHEMA RETRY" in roles
     assert "MASTER PROPOSAL CRITIC falsification SCHEMA RETRY" in roles
+    mechanism_retry_prompt = next(
+        prompt
+        for role, prompt in calls
+        if role == "MASTER PROPOSAL mechanism SCHEMA RETRY"
+    )
+    assert "proposal_required_text_invalid:measurement" in mechanism_retry_prompt
 
 
 @pytest.mark.asyncio
@@ -1058,7 +1350,7 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
             "policy.py:_choose_intent",
         ],
         "falsifier": {
-            "test_name": "test_bound_mechanism",
+            "test_name": "fast_policy_baseline",
             "control": "Keep the parent state and deterministic seed fixed for comparison.",
             "intervention": "Enable only the selected mechanism on the same state and seed.",
             "expected_observation": "The selected action changes only under the intervention.",

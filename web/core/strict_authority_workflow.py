@@ -1815,8 +1815,13 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
     slot = str(call.get("slot") or "")
     context = call.get("context_binding") or {}
     binding = call.get("generation_binding") or {}
+    projection_detail_errors: list[str] = []
     if slot.startswith("proposal:"):
-        from agent_master import _source_symbol_graph, _validated_master_proposal
+        from agent_master import (
+            _master_proposal_projection_hints,
+            _source_symbol_graph,
+            _validated_master_proposal,
+        )
         from evolution_infra import get_bot_dir
 
         direction = slot.split(":", 1)[1]
@@ -1835,6 +1840,19 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             ),
             national_policy_only=True,
         )
+        if not isinstance(projected, dict):
+            hints = _master_proposal_projection_hints(
+                raw_output,
+                source_graph=source_graph,
+                snapshot_dir=(
+                    candidate_dir / ".protocol_bootstrap_no_strength_evidence"
+                ),
+                national_policy_only=True,
+            ) or ["proposal_contract_invalid"]
+            projection_detail_errors = [
+                "strict_authority_proposal_projection:" + hint
+                for hint in hints
+            ]
     elif slot.startswith("ballot:"):
         from agent_master import _validated_proposal_critique
 
@@ -1881,9 +1899,10 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
     else:
         projected = None
     if not isinstance(projected, dict):
-        raise StrictAuthorityError(
-            f"strict_authority_role_projection_rejected:{slot}"
-        )
+        raise StrictAuthorityError([
+            f"strict_authority_role_projection_rejected:{slot}",
+            *projection_detail_errors,
+        ])
     return _json_value(projected)
 
 

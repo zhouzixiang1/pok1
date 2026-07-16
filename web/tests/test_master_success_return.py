@@ -36,7 +36,7 @@ BOUND_PROPOSAL = {
         "policy.py:_choose_intent",
     ],
     "falsifier": {
-        "test_name": "test_selected_mechanism",
+        "test_name": "fast_policy_baseline",
         "control": "The frozen parent keeps the original decision on the paired state.",
         "intervention": "Only the selected mechanism changes on the paired state.",
         "expected_observation": "The intervention changes the target action and control does not.",
@@ -73,7 +73,9 @@ def _valid_proposal_packet(agent_master, selected_proposal, log_dir):
                 f"Independent alternative {index} reaches the existing decision consumer."
             )
             proposal["falsifier"]["test_name"] = (
-                f"test_alternative_{index}_mechanism"
+                "incremental_opponent_model"
+                if index == 2
+                else "showdown_range_adaptation"
             )
         proposal["proposal_id"] = agent_master._proposal_identity(proposal)
         proposals.append(proposal)
@@ -275,6 +277,47 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
         agent_master.get_bot_dir(143),
         agent_master.get_bot_dir(144),
     ]
+
+
+@pytest.mark.asyncio
+async def test_proposal_context_excludes_final_master_tutorial(monkeypatch, tmp_path):
+    import agent_master
+
+    captured = {}
+    packet = json.dumps(_valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "scoped_proposal_logs",
+    ))
+
+    async def capture_context(planning_context, **_kwargs):
+        captured["planning_context"] = planning_context
+        return packet
+
+    async def final_master(*_args, **_kwargs):
+        return _mock_llm_output(), 0.0, {}
+
+    monkeypatch.setattr(
+        agent_master,
+        "_run_master_proposal_ensemble",
+        capture_context,
+    )
+    monkeypatch.setattr(agent_master, "run_claude_query", final_master)
+
+    result = await agent_master._run_master_analysis(
+        source_v=143,
+        next_v=144,
+        stagnation_info="declining frozen selection signal",
+        ui=_MockUI(),
+    )
+
+    assert result is not None
+    context = captured["planning_context"]
+    assert "SYSTEM-OWNED PROPOSAL CONTEXT" in context
+    assert "# Stagnation diagnosis\ndeclining frozen selection signal" in context
+    assert "You are the Master Bot Architect" not in context
+    assert "Strategic analysis as a single string" not in context
+    assert "<output_format>" not in context
 
 
 @pytest.mark.asyncio

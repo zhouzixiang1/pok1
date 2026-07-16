@@ -110,6 +110,15 @@ STATE_LEARNING_PRIMARY_CHECKS = {
     "donk": ("donk_line_reachability",),
     "delayed_probe": ("delayed_probe_line_reachability",),
 }
+MASTER_PROPOSAL_FALSIFIER_TESTS = (
+    "fast_policy_baseline",
+    "incremental_refinement_protocol",
+    "incremental_opponent_model",
+    "terminal_response_adaptation",
+    "showdown_range_adaptation",
+    "donk_line_reachability",
+    "delayed_probe_line_reachability",
+)
 STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
     "sample_counted_candidate_batch": ("sample_count", "deadline"),
     "action_profile": ("action_profile", "context", "opponent"),

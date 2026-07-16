@@ -33,6 +33,14 @@ active `national_tcp_policy_v1` architecture.
 - An exhausted strict Master slot canonically abandons only at
   `direction_audited`; never re-enter `run_master` or extend that reason across
   Review, Critic, precommit, certification, or publication.
+- Proposal Scouts receive compact frozen facts, not the full final-Master
+  tutorial/output schema. Bootstrap read scope is target-only; normal scope is
+  exact source, target, and one frozen snapshot. A system-verified current
+  ABI-reachable chain is the preferred proposal chain and dead-helper chains are
+  rejected. Stable field-level projection errors persist in the bootstrap strict
+  journal; normal evolution content-binds the same errors into its sole repair
+  prompt/provenance. A denied docs or other out-of-scope read contributes no
+  evidence.
 - A disappeared checkpoint is a completed abandon only when one unique
   canonical result from the current authorized owner tool includes
   `workflow_run_id` and exactly re-proves the current transaction,
@@ -62,6 +70,11 @@ active `national_tcp_policy_v1` architecture.
 - Native precommit owns a monotonic per-attempt cancellation token and a frozen
   first-strict execution scope. Late complete matches are not admitted and no
   next sample starts after cancellation; retries reuse the same control journal.
+- The v143 first-strict 5+3 dependency is present only when doctor is green and
+  `first_strict_control_v1` hash
+  `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
+  is valid, unused, and `0/1`. Even then, only
+  `official_bootstrap_required` unlocks the operator action.
 - Arena and official EXE chip output have zero strength authority.
 - The official raise-boundary and terminal-settlement oracle files are exact,
   pinned evaluation inputs.

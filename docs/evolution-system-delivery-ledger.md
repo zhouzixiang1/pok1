@@ -88,8 +88,8 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented at `baadaa821d979b4b651260852ebcc48ae0a6aba8`; per-invocation evidence/log/UI contract green | 19-role semantic-producer, provenance, poison/render/root/path/symlink/fd-walk/TOCTOU/hook/budget and accepted-effect/log tests |
 | P3 | Master stream/effect recovery and bounded retries | implemented; frozen phase, durable binding recovery, child tombstone and real/replay dispatch fence green | timeout/lease/replay/provider-termination/partial-packet/final-projection/abandon tests |
 | P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | source implementation and frontend/backend/actual-log parity green; live publication observation pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | prior delivery synchronized through `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; pre-red-team repair gates are supporting evidence, post-fix frozen-tree rerun/commit/merge/runtime sync pending | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | workflow-v22 canonically abandoned; stopped runtime is clean with no active checkpoint/candidate; fresh workflow-v23 follows the pending repair delivery | tags, certificates, immutable cycles and live observation ledger |
+| P5 | full verification and merge to `origin/main` | delivered through `f7b19071c66b34a84eca0bd94592209da090c4e5`; Scout-context/projection repair is in the current worktree with gates, commit, merge and runtime sync pending | full suites, Git and remote identities |
+| P6 | runtime recovery, v143/v144 publication and ten generations | workflows v24-v27 each proved one terminal canonical abandon; runtime is stopped with no active checkpoint/candidate, pending Scout-contract sync and fresh workflow-v28 | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -1331,5 +1331,67 @@ transaction
 `a26048886df4fe3410a633c4c7c6eb05a3d2c5b29a3431b090898345688372db`,
 finalize receipt
 `06a95624eb1589e52f3c291ef0918a9b04a19ccb7d26d76cb67ecfa04718a812`.
-No active v143 candidate/checkpoint remains. Repair commit/push, runtime sync
-and workflow-v24 dynamic observation remain pending.
+No active v143 candidate/checkpoint remained at that boundary. Repair commit
+`f7670341155de91f6f376f057a6d9ce11305254d` and documentation correction
+`f7b19071c66b34a84eca0bd94592209da090c4e5` were subsequently pushed to
+`origin/main` and synchronized into the stopped runtime before workflow-v24.
+
+## 2026-07-16 — workflow-v24-v27 Scout contract dynamic closure
+
+The terminal Master abandon repair worked as intended under live scheduling.
+Workflows v24, v25, and v26 each exhausted one proposal slot, completed exactly
+one schema-2 canonical abandon, and allowed only the outer scheduler to prepare
+the successor. Their abandon-ledger receipts are:
+
+- workflow-v24, compute-memory:
+  `f9eb8cf5c87c848df546ac1a0dfb1fdb14ecd54cafb6406c96c5ff75356999de`;
+- workflow-v25, mechanism:
+  `c58fb7fec0eee9d66d4c5688cd57486e8e24a4599f6f0e6e3b0a222875988faf`;
+- workflow-v26, compute-memory:
+  `38a7754cb2b67da865ac87646d50bf49c7c94825ac7c630c346a1da58a2c86b1`.
+
+No ballot, final plan, Worker, gate, native match, certificate, publication, or
+rating row was fabricated by those terminal paths. The resolved-path guard also
+blocked 12 attempted reads of operator documentation: two in v24, two in v25,
+and eight in v26. The blocked bytes were not returned to the provider and were
+not admitted into any prompt projection or evidence receipt.
+
+The live failures exposed a narrower proposal-context mismatch. Every Scout was
+receiving the complete 39,025-character final-Master tutorial and final-plan
+output contract even though its capability allowed only bootstrap target bytes,
+or in normal evolution exact source, target, and the assigned frozen snapshot.
+That surplus tutorial encouraged documentation reads and final-plan-shaped
+answers, while the strict journal retained only a generic projection rejection.
+The staged repair removes the final-Master tutorial from Scout context and
+supplies only frozen semantic facts, an explicit capability block, and a
+system-verified preferred current chain reachable from the real policy ABI
+entrypoints; the validator also rejects a direct but ABI-unreachable dead-helper
+chain. Future edges may be proposed only as changes, not asserted as members of
+the current chain. Bootstrap projection rejection now persists stable granular
+codes such as missing `measurement`, source-symbol count, chain-member, current-
+edge, target-file, falsifier, or evidence-ref failures alongside the generic
+error. Normal evolution content-binds the same deterministic codes into its one
+local repair prompt and renderer provenance. The read allowlist, current
+falsifier enum, and two-attempt budget remain unchanged.
+
+After three safe but non-producing workflows, the service was stopped to avoid
+more provider spend. The remaining `generation:143:workflow-v27` checkpoint at
+`direction_audited`, revision 4, audit attempt 0 was then abandoned on the
+unchanged pre-repair runtime HEAD through the exact schema-2 transaction. Its
+abandon receipt is
+`40f2fecb8ec3524bc1632d54380a030140d5842f41a166a1e03a5a35880f1f09`,
+transaction id
+`ddc338ed1f1d876112ee72c6725dae6166d522e0b83633a1e50161206d23be85`,
+and finalize receipt
+`627869541aab54b63dcdb85f839c3a31e44ba5a8330913611c571ddaff4d8706`.
+Both journals were fenced, the exact candidate was quarantined, and the
+checkpoint was cleared. No active v143 candidate/checkpoint remains before
+Scout-contract synchronization; the next allocation is fresh workflow-v28.
+
+The publication blocker is therefore stage progress, not a missing official
+dependency. Official doctor is green. `first_strict_control_v1` artifact
+`2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
+remains valid and unused with consumption `0/1`. It supplies the three
+system-control rounds alongside five self-play rounds, all 70 hands, but remains
+operator-locked until the exact v143 checkpoint reaches
+`official_bootstrap_required`.
