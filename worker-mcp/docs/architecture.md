@@ -32,7 +32,9 @@ never restart automatically.
 SQLite uses WAL, `synchronous=FULL`, foreign keys, and `BEGIN IMMEDIATE` for
 idempotency, claims, and the cancel-versus-claim decision. One fail-closed flock
 owns a state directory for the service lifetime, so a diagnostic or second
-STDIO process cannot recover a live lease. State transitions include timestamp,
+second daemon cannot recover a live lease. Multiple Codex clients connect to one
+authenticated loopback Streamable HTTP process, so service recovery and bounded
+concurrency remain process-global. State transitions include timestamp,
 previous/next state, phase, and reason.
 
 ## Isolation

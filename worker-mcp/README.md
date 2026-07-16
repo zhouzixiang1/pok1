@@ -3,7 +3,7 @@
 `pok-worker-mcp` is an external Codex control-plane helper for desktop/CLI
 tasks. Codex keeps planning,
 risk decisions, diff review, final tests, commits, merges, and publication. The
-service exposes exactly six STDIO MCP tools and runs each bounded task through
+service exposes exactly six MCP tools and runs each bounded task through
 Claude Agent SDK in a detached, owner-marked Git worktree.
 
 It is not a poker-evolution Worker. `web/core`, Orchestrator, WorkerWorkflow,
@@ -16,8 +16,10 @@ does not enable it, restart evolution, or rotate evaluation identity.
 ## Architecture
 
 ```text
-Codex Commander
-  -> STDIO MCP: submit/get_status/get_result/cancel/list/healthcheck
+Codex sessions
+  -> authenticated loopback Streamable HTTP MCP
+  -> one operator-managed Worker daemon
+  -> submit/get_status/get_result/cancel/list/healthcheck
   -> SQLite-WAL queue + state history + idempotency + locks
   -> detached Git worktree + path/tool policy
   -> sanitized, parent-fenced child process + Claude Agent SDK
@@ -50,6 +52,7 @@ in Git or Codex configuration:
 
 ```bash
 export WORKER_MCP_ANTHROPIC_AUTH_TOKEN='...'
+export WORKER_MCP_ACCESS_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
 ```
 
 The service does not load user/project Claude settings, MCP servers, plugins,
@@ -68,9 +71,12 @@ only in the final Codex review, outside the credential-bearing Agent process.
 
 `--deep` performs a real text + successful Read + structured-output canary. It
 may invoke the configured logical backend. A shallow healthcheck never sends a
-model request. The state directory has one live service owner: stop the STDIO
-service before running `diagnose.py`, or call its public shallow `healthcheck`
-tool instead.
+model request. For concurrent Codex sessions, set `server.transport` to
+`streamable-http` and keep one operator-managed process running. The state
+directory has one live service owner; all Codex sessions share it over the
+loopback endpoint. Stop that daemon before running `diagnose.py`, or call its
+public shallow `healthcheck` tool instead. `--transport stdio` remains an
+explicit one-shot compatibility and smoke-test override.
 
 ## Codex MCP configuration
 
@@ -79,10 +85,8 @@ user-level `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.pok_worker]
-command = "/home/zzx/project/pok/worker-mcp/.venv/bin/python"
-args = ["-m", "worker_mcp.server", "--config", "/home/zzx/project/pok/worker-mcp/config.yaml"]
-cwd = "/home/zzx/project/pok/worker-mcp"
-env_vars = ["WORKER_MCP_ANTHROPIC_AUTH_TOKEN"]
+url = "http://127.0.0.1:8765/mcp"
+bearer_token_env_var = "WORKER_MCP_ACCESS_TOKEN"
 required = true
 startup_timeout_sec = 30
 tool_timeout_sec = 30
@@ -103,7 +107,10 @@ approval_mode = "auto"
 ```
 
 Restart Codex after adding the server. Long work happens after `submit`; MCP
-calls themselves stay short.
+calls themselves stay short. The same `WORKER_MCP_ACCESS_TOKEN` must be injected
+into the daemon and the Codex app-server environment by the operator's OS
+credential launcher. Do not put either the local access token or the model
+credential in TOML, YAML, scripts, task data, SQLite, or logs.
 
 ## Example submit
 

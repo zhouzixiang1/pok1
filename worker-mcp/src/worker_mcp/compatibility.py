@@ -50,7 +50,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def _gateway_health_sync(config: WorkerConfig) -> GatewayHealth:
     url = config.gateway.endpoint + config.gateway.health_path
-    request = Request(url, method="GET", headers={"User-Agent": "pok-worker-mcp/0.1"})
+    request = Request(url, method="GET", headers={"User-Agent": "pok-worker-mcp/0.2"})
     try:
         opener = build_opener(ProxyHandler({}), _NoRedirect())
         with opener.open(

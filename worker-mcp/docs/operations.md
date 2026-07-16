@@ -4,8 +4,9 @@
 
 Source may be merged while remaining inert. As a separate manual Codex-side
 operation, install the package in its own virtual environment, copy and review
-the example configuration, export the dedicated credential, run shallow and
-deep diagnosis, then add the STDIO server to Codex manually. The poker web
+the example configuration, inject the dedicated credentials, run shallow and
+deep diagnosis, then add the loopback Streamable HTTP endpoint to Codex
+manually. The poker web
 launcher, evolution orchestrator/WorkerWorkflow, daemons, candidate flow, and
 autonomous checkout must not start, supervise, call, or record this service.
 Its installation is never a reason to restart evolution or rotate evaluation
@@ -18,10 +19,39 @@ paths and task text, so the state directory should remain mode 0700 and should
 not be published. Startup tightens the state/worktree/log directories to 0700
 and the SQLite/audit files to 0600; an ownership or permission failure aborts.
 
-Exactly one live service may own a state directory. A second server,
-`diagnose.py`, or smoke process using the same state fails closed instead of
-recovering live rows. Use the MCP `healthcheck` tool while the service is
-running; stop it before starting a standalone diagnostic or smoke server.
+Exactly one live daemon may own a state directory. Any number of authenticated
+Codex clients share that daemon; they do not each start a Worker service. A
+second daemon, `diagnose.py`, or smoke process using the same state fails closed
+instead of recovering live rows. Use the MCP `healthcheck` tool while the
+daemon is running; stop it before starting a standalone diagnostic or smoke
+server.
+
+## Multi-session service
+
+Set the following configuration and start exactly one user-level service:
+
+```yaml
+server:
+  transport: streamable-http
+  host: 127.0.0.1
+  port: 8765
+  path: /mcp
+  access_token_env: WORKER_MCP_ACCESS_TOKEN
+```
+
+The service manager should execute only:
+
+```bash
+python -m worker_mcp.server --config /absolute/path/config.yaml
+```
+
+Use `Restart=on-failure`, a private umask, and an OS credential launcher that
+injects `WORKER_MCP_ACCESS_TOKEN` and the configured gateway credential. Do not
+put credentials in the unit, repository, YAML, or command line. Bind failures,
+missing/short access tokens, a second state owner, and non-loopback config all
+fail before serving tools. Stop the service to roll back, restore the previous
+Codex MCP stanza, and restart Codex; durable task rows remain in the same state
+directory.
 
 ## Recovery
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from worker_mcp.config import GatewayConfig, LimitsConfig, WorkerConfig
+from worker_mcp.config import GatewayConfig, LimitsConfig, MCPServerConfig, WorkerConfig
 
 
 def _payload(tmp_path: Path) -> dict[str, object]:
@@ -109,6 +109,28 @@ def test_resource_limits_have_bounded_defaults() -> None:
 def test_credential_environment_name_is_not_process_control(name: str) -> None:
     with pytest.raises(ValidationError):
         GatewayConfig(auth_token_env=name)
+
+
+def test_http_server_contract_is_loopback_and_credential_bound() -> None:
+    config = MCPServerConfig(
+        transport="streamable-http",
+        host="127.0.0.1",
+        port=8765,
+        path="/mcp/",
+        access_token_env="WORKER_MCP_ACCESS_TOKEN",
+    )
+    assert config.path == "/mcp"
+
+    for patch in (
+        {"host": "0.0.0.0"},
+        {"host": "localhost"},
+        {"port": 80},
+        {"path": "/"},
+        {"path": "/../mcp"},
+        {"access_token_env": "ANTHROPIC_AUTH_TOKEN"},
+    ):
+        with pytest.raises(ValidationError):
+            MCPServerConfig.model_validate(patch)
 
 
 def test_system_forbidden_paths_cannot_be_removed_by_local_config(

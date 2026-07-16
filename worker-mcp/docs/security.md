@@ -49,8 +49,12 @@ forbidden descendant.
 
 ## Credentials and logs
 
-Production should forward only `WORKER_MCP_ANTHROPIC_AUTH_TOKEN` to the STDIO
-server. The SDK child receives that value under the protocol variable inside a
+Production should inject only `WORKER_MCP_ANTHROPIC_AUTH_TOKEN` as the model
+credential and a separate random `WORKER_MCP_ACCESS_TOKEN` as the local HTTP
+bearer credential. The server binds exactly `127.0.0.1`, validates the exact
+Host and any supplied Origin, and compares bearer tokens in constant time.
+Missing, short, malformed, or incorrect credentials fail closed. The SDK child
+receives only the model credential under the protocol variable inside a
 dedicated HOME and isolated import environment; it does not inherit the
 configured variable name or ambient Claude credentials. The task envelope,
 SQLite request, MCP result, and normal logs do not contain the credential.
@@ -62,7 +66,10 @@ such as `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, cloud credentials, PATH, or
 HOME are rejected rather than reclassified as Worker credentials.
 
 Do not place tokens in `config.yaml`, prompts, task context, allowed commands,
-or Codex static `env` maps. Use Codex `env_vars` forwarding.
+Codex TOML, service units, SQLite, scripts, or logs. Use an OS credential
+launcher for both the daemon and Codex app-server, and configure Codex with
+`bearer_token_env_var`. The HTTP access token grants only loopback MCP access;
+it must never be reused as the model credential.
 
 ## Remaining trust
 

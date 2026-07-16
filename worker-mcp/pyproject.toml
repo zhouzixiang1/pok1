@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pok-worker-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "Isolated asynchronous Claude Agent SDK workers controlled by Codex over MCP"
 readme = "README.md"
 requires-python = ">=3.11"

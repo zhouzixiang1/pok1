@@ -33,7 +33,10 @@ The child process group is terminated; a dirty worktree is preserved as
 in `operations.md`.
 
 If startup reports that another service owns `state_dir`, do not delete the
-lock file. Stop the existing STDIO process or use its MCP `healthcheck`. A flock
+lock file. In the multi-session deployment, every Codex client must point to the
+one Streamable HTTP daemon instead of launching another Worker process. Stop the
+existing daemon only for diagnostics or upgrade, otherwise use its MCP
+`healthcheck`. A flock
 is released by the kernel when the true owner exits; deleting the pathname does
 not safely revoke a live owner.
 

@@ -23,6 +23,15 @@ gateway:
   require_auth_token: true
   connect_timeout_sec: 5
 
+# Keep stdio for one-shot diagnostics. For multiple Codex sessions, run one
+# operator-managed streamable-http daemon and point every session at /mcp.
+server:
+  transport: stdio
+  host: 127.0.0.1
+  port: 8765
+  path: /mcp
+  access_token_env: WORKER_MCP_ACCESS_TOKEN
+
 runtime:
   backend: claude_sdk
   claude_cli_path: /home/zzx/.local/bin/claude

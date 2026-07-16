@@ -82,7 +82,14 @@ async def run(args: argparse.Namespace) -> int:
     config = load_config(config_path)
     parameters = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "worker_mcp.server", "--config", str(config_path)],
+        args=[
+            "-m",
+            "worker_mcp.server",
+            "--config",
+            str(config_path),
+            "--transport",
+            "stdio",
+        ],
         cwd=str(config_path.parent),
         env=_server_environment(config),
     )

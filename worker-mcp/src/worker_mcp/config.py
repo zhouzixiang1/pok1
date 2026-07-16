@@ -116,6 +116,32 @@ class LoggingConfig(ConfigModel):
     backup_count: int = Field(default=5, ge=1, le=20)
 
 
+class MCPServerConfig(ConfigModel):
+    """Transport settings for the operator-started Codex MCP endpoint."""
+
+    transport: Literal["stdio", "streamable-http"] = "stdio"
+    host: Literal["127.0.0.1"] = "127.0.0.1"
+    port: int = Field(default=8765, ge=1024, le=65535)
+    path: str = "/mcp"
+    access_token_env: str = "WORKER_MCP_ACCESS_TOKEN"
+
+    @field_validator("path")
+    @classmethod
+    def validate_path(cls, value: str) -> str:
+        if not value.startswith("/") or value == "/" or ".." in value:
+            raise ValueError("MCP HTTP path must be an absolute non-root URL path")
+        return "/" + value.strip("/")
+
+    @field_validator("access_token_env")
+    @classmethod
+    def validate_access_token_env(cls, value: str) -> str:
+        if not re.fullmatch(r"WORKER_MCP_[A-Z0-9][A-Z0-9_]{1,116}", value):
+            raise ValueError(
+                "access_token_env must be a dedicated WORKER_MCP_* environment name"
+            )
+        return value
+
+
 class WorkerConfig(ConfigModel):
     schema_version: Literal[1] = 1
     state_dir: Path = Path("~/.local/state/pok-worker-mcp")
@@ -125,6 +151,7 @@ class WorkerConfig(ConfigModel):
         default_factory=lambda: sorted(SYSTEM_FORBIDDEN_PATHS)
     )
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
+    server: MCPServerConfig = Field(default_factory=MCPServerConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
