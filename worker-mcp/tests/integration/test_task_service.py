@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
 
@@ -22,7 +23,7 @@ from worker_mcp.schemas import (
     TaskType,
     WorkerReportedResult,
 )
-from worker_mcp.task_service import TaskService
+from worker_mcp.task_service import TaskService, _iter_original_strings
 
 
 def request(git_repo, *, key="service-test-0001", read_only=True, task_type=TaskType.ANALYZE):
@@ -437,6 +438,89 @@ async def test_http_access_token_is_rejected_before_persistence_and_redacted_fro
     audit_text = audit.read_text(encoding="utf-8")
     assert access_token not in audit_text
     assert "<redacted>" in audit_text
+
+
+@pytest.mark.parametrize(
+    ("secret", "location", "source"),
+    [
+        ('local-http-quote-"-credential-123456', "context", "additional"),
+        (r"model-backslash-\-credential-123456", "context", "model"),
+        ("local-http-control-\n-credential-123456", "context", "additional"),
+        ("模型-访问凭据-credential-123456", "context", "model"),
+        ('local-http-nested-"\\\n-凭据-123456', "constraints", "additional"),
+    ],
+    ids=["quote", "backslash", "control", "non-ascii", "nested-dict-list"],
+)
+@pytest.mark.asyncio
+async def test_escaped_credential_is_rejected_before_any_durable_write(
+    worker_config, git_repo, monkeypatch, secret, location, source
+):
+    config = worker_config
+    additional_secrets = (secret,)
+    if source == "model":
+        credential_env = "WORKER_MCP_ESCAPED_TEST_TOKEN"
+        monkeypatch.setenv(credential_env, secret)
+        config = worker_config.model_copy(
+            update={
+                "gateway": worker_config.gateway.model_copy(
+                    update={"auth_token_env": credential_env}
+                )
+            }
+        )
+        additional_secrets = ()
+    service = TaskService(
+        config,
+        executor=MockAgentExecutor(),
+        additional_redaction_secrets=additional_secrets,
+    )
+    await service.start()
+    try:
+        candidate = request(
+            git_repo,
+            key=f"service-escaped-credential-{source}-{location}-0001",
+        )
+        update = (
+            {"context": f"never persist [{secret}]"}
+            if location == "context"
+            else {"constraints": ["ordinary", f"nested [{secret}]"]}
+        )
+        with pytest.raises(ValueError, match="contains the dedicated Worker credential"):
+            await service.submit(candidate.model_copy(update=update))
+        service.audit.log("security.probe", message=secret)
+    finally:
+        await service.stop()
+
+    database = config.state_dir / "tasks.sqlite3"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    assert secret.encode("utf-8") not in database.read_bytes()
+
+    audit = config.state_dir / "logs" / "worker-mcp.jsonl"
+    audit_bytes = audit.read_bytes()
+    assert secret.encode("utf-8") not in audit_bytes
+    records = [json.loads(line) for line in audit_bytes.decode("utf-8").splitlines()]
+    assert records == [{"event": "security.probe", "message": "<redacted>"}]
+
+
+def test_original_string_walker_covers_mapping_keys_sequences_sets_and_cycles():
+    cycle = []
+    cycle.append(cycle)
+    payload = {
+        "mapping-value": ["list-value", ("tuple-value", {"set-value"})],
+        "mapping-key": {"nested-key": "nested-value"},
+        "cycle": cycle,
+    }
+
+    assert set(_iter_original_strings(payload)) == {
+        "mapping-value",
+        "list-value",
+        "tuple-value",
+        "set-value",
+        "mapping-key",
+        "nested-key",
+        "nested-value",
+        "cycle",
+    }
 
 
 @pytest.mark.asyncio

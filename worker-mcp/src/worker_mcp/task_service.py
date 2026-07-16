@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator, Mapping
 from datetime import datetime
 import os
 from pathlib import Path, PurePosixPath
@@ -41,6 +42,41 @@ from .schemas import (
 )
 from .state_machine import is_terminal
 from .worktree import WorktreeManager, WorktreeSnapshot
+
+
+def _iter_original_strings(value: Any) -> Iterator[str]:
+    """Yield raw strings from a model-dumped Python container graph.
+
+    JSON serialization is deliberately not involved: quotes, backslashes, and
+    control characters are escaped by JSON and therefore cannot be compared
+    safely with the original credential.  ``model_dump(mode="python")`` emits
+    ordinary containers today, but the walker also handles mapping keys and
+    the common sequence/set containers defensively.  Container identities are
+    fenced so an unexpected cyclic object cannot make validation loop forever.
+    """
+
+    pending = [value]
+    seen_containers: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            yield current
+            continue
+        if isinstance(current, Mapping):
+            identity = id(current)
+            if identity in seen_containers:
+                continue
+            seen_containers.add(identity)
+            for key, item in current.items():
+                pending.append(key)
+                pending.append(item)
+            continue
+        if isinstance(current, (list, tuple, set, frozenset)):
+            identity = id(current)
+            if identity in seen_containers:
+                continue
+            seen_containers.add(identity)
+            pending.extend(current)
 
 
 class TaskService:
@@ -123,8 +159,10 @@ class TaskService:
         return child_path == parent_path or parent_path in child_path.parents
 
     def _validate_scope_contract(self, request: TaskEnvelope) -> None:
+        request_values = _iter_original_strings(request.model_dump(mode="python"))
         if any(
-            secret and secret in request.model_dump_json()
+            secret in value
+            for value in request_values
             for secret in self._redaction_secrets
         ):
             raise ValueError("task envelope contains the dedicated Worker credential")
