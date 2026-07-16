@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pok-worker-mcp"
+version = "0.1.0"
+description = "Isolated asynchronous Claude Agent SDK workers controlled by Codex over MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "claude-agent-sdk==0.2.91",
+  "mcp==1.27.2",
+  "pydantic>=2.12,<3",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "pytest-asyncio>=0.24"]
+
+[project.scripts]
+pok-worker-mcp = "worker_mcp.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+asyncio_mode = "auto"
+testpaths = ["tests"]

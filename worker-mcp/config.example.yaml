@@ -1,0 +1,48 @@
+schema_version: 1
+
+state_dir: ~/.local/state/pok-worker-mcp
+worktree_root: ~/.local/state/pok-worker-mcp/worktrees
+
+allowed_repositories:
+  - /home/zzx/project/pok
+
+# These paths are denied even when an allowed path is one of their ancestors.
+mandatory_forbidden_paths:
+  - archive
+  - docs/archive
+  - .evolution_pok
+  - .codex_worktrees
+  - .claude/worktrees
+  - .git
+  - .env
+
+gateway:
+  endpoint: http://127.0.0.1:15721
+  health_path: /health
+  auth_token_env: WORKER_MCP_ANTHROPIC_AUTH_TOKEN
+  require_auth_token: true
+  connect_timeout_sec: 5
+
+runtime:
+  backend: claude_sdk
+  claude_cli_path: /home/zzx/.local/bin/claude
+  python_executable: /home/zzx/project/pok/worker-mcp/.venv/bin/python
+  expected_claude_agent_sdk: 0.2.91
+  expected_claude_code: 2.1.205
+  expected_cc_switch: 3.17.0
+  child_shutdown_grace_sec: 5
+  max_result_bytes: 4194304
+
+limits:
+  global_read_tasks: 4
+  repository_read_tasks: 3
+  global_write_tasks: 2
+  repository_write_tasks: 1
+  max_subprocesses: 6
+  max_task_timeout_sec: 3600
+  max_turns: 40
+  read_retry_count: 1
+
+logging:
+  max_bytes: 10485760
+  backup_count: 5
