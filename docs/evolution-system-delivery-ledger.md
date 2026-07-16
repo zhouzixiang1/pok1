@@ -2018,15 +2018,16 @@ runtime/precompute/evaluation-contract source changes; a fresh full rerun and
 independent review remain freeze gates. No runtime synchronization, v143
 certificate or N/10 credit is recorded here.
 
-## 2026-07-16 — Codex-only Worker MCP multi-session handoff (three-commit series pending inclusion)
+## 2026-07-16 — Codex-only Worker MCP multi-session handoff (three-commit series included)
 
-The detached source handoff remains outside the alignment tree. Its complete
-candidate order is `4a458dc8fdf65a6105cb3d06f435a76a05576a1e` (parent
+The detached source handoff was reviewed after the poker alignment freeze and
+included without path overlap. Its original complete order is
+`4a458dc8fdf65a6105cb3d06f435a76a05576a1e` (parent
 `3bef73c1bdec152c2c96a9a37bd1f05d2382514b`), then
 `7bd7c78ce72924c4899fd5403c188c14ea98deec` (parent exactly `4a458dc8`), then
 `c7a254ce14863926c5da31a9387288170d7fb05d` (parent exactly `7bd7c78c`).
-The raw-secret P1 now has a follow-up; the complete three-commit series still
-requires ordered main-tree review and inclusion.
+The resulting branch commits are `f55a9d13`, `db8cb175` and `89b71101` in that
+same order. The raw-secret P1 is closed by the final child.
 
 The first commit changes only 15 `worker-mcp/**` files. Its root cause is that
 per-Codex-session STDIO subprocesses contended for TaskService's singleton lock
@@ -2051,19 +2052,20 @@ literal `127.0.0.1:8765` and the Codex app-server environment bridge. HTTP
 access is HMAC-domain-separated from the dedicated model credential; no token
 is written to repository config, SQLite or logs. Rollback stops/disables those
 two user services and restores the earlier explicit STDIO stanza/wheel without
-deleting durable SQLite. All three detached source commits must remain
-reachable and must not be cherry-picked until this alignment tree is stable,
-independently reviewed and green; installed operator state supplies no poker
-acceptance credit.
+deleting durable SQLite. Source inclusion did not install a wheel, change
+operator configuration or restart either service; installed operator state
+supplies no poker acceptance credit.
 
 The second commit introduced credential separation and pre-bind hardening but
 searched a raw access secret only in `model_dump_json()` output, so JSON
 escaping could conceal the same secret. Follow-up `c7a254ce` recursively scans
 raw strings before task/audit serialization and covers escaped/nested cases;
 the complete Worker MCP suite reports `118 passed`. This closes the identified
-source P1 but does not authorize a partial cherry-pick: review and include
-`4a458dc8` → `7bd7c78c` → `c7a254ce` in order. This Codex helper is never part
-of, imported by, launched by, supervised by or evidenced through the poker
+source P1. The reviewed inclusion preserves `4a458dc8` → `7bd7c78c` →
+`c7a254ce` as `f55a9d13` → `db8cb175` → `89b71101`; an independent run in an
+environment permitting loopback sockets reports `118 passed, 2 dependency
+deprecation warnings` in 10.32 seconds. This Codex helper is never part of,
+imported by, launched by, supervised by or evidenced through the poker
 evolution runtime.
 
 A later clean-CLI check found a separate operator persistence defect, not a

@@ -660,7 +660,7 @@ focused shard is `148 passed`. The prior `2853 passed` result is historical;
 the current source identities passed the complete Web suite at `2901 passed,
 20 skipped, 1 warning` in 156.14 seconds. Merge remains unclaimed.
 
-## Codex-only Worker MCP boundary and three-commit pending series
+## Codex-only Worker MCP boundary and included three-commit series
 
 `worker-mcp/**` is an inert external control-plane helper for Codex desktop/CLI
 sessions. It is not an evolution Worker or poker component: `web/core`, the
@@ -669,8 +669,7 @@ generation, checkpoints, evidence and ratings must never import, start,
 supervise or call it. Source merge and operator installation/restart remain
 separate actions and supply zero poker acceptance credit.
 
-The still-unmerged candidate series must be reviewed and included in this exact
-order:
+The reviewed candidate series is included in this exact original order:
 
 1. `4a458dc8fdf65a6105cb3d06f435a76a05576a1e` — fixes the root cause that
    per-session STDIO processes contend for the singleton TaskService state lock
@@ -686,24 +685,24 @@ order:
 Independent review found that `7bd7c78c` compared the raw access secret with
 `model_dump_json()` output, allowing JSON escaping to hide the same secret.
 Child `c7a254ce` closes that P1 and the complete Worker MCP suite reports
-`118 passed`. Do not cherry-pick a subset: the accepted candidate order is
-`4a458dc8` → `7bd7c78c` → `c7a254ce`. Installed MCP health remains separate
-from source review and supplies no poker acceptance evidence.
+`118 passed`. The original-to-branch mapping is `4a458dc8` → `f55a9d13`,
+`7bd7c78c` → `db8cb175`, and `c7a254ce` → `89b71101`; no source subset was
+used. No wheel installation, operator-config mutation or service restart was
+part of source inclusion. Installed MCP health remains separate from source
+review and supplies no poker acceptance evidence.
 
 Next work, in order:
 
-1. Review the complete dirty alignment tree and close every remaining
-   `repairing` matrix row with focused and full source tests.
-2. Commit, push and merge the frozen tree to `origin/main`.
-3. Stop-state synchronize `.evolution_pok`, run recovery diagnostics, and use
+1. Push the reviewed commit series and fast-forward `origin/main`.
+2. Stop-state synchronize `.evolution_pok`, run recovery diagnostics, and use
    controlled abandon/re-prepare if the evaluation contract changed.
-4. Re-prove the provenance-bound clean-room strict-v1 blueprint and use it to
+3. Re-prove the provenance-bound clean-room strict-v1 blueprint and use it to
    prepare strict v143; do not import LLL source/history or change the pinned
    source/policy/artifact identities without a new reviewed provenance record.
-5. Complete Master → Worker → quality → review → advisory Critic → native TCP
+4. Complete Master → Worker → quality → review → advisory Critic → native TCP
    precommit → operator first-strict bootstrap → commit → `.completed` → signed
    certificate → paired annotated tags. It then appears as Web `Bot 1` with
    real tag `national-bot-v143`.
-6. Publish v144 through normal 5+3×70 official-full-v5, establish the immutable
+5. Publish v144 through normal 5+3×70 official-full-v5, establish the immutable
    two-Bot native rating cycle, and only then begin the resettable 10-generation
    stability observation from `0/10`.
