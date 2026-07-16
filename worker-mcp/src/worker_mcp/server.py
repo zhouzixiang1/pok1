@@ -10,6 +10,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import secrets
+import socket
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -64,14 +65,35 @@ class StaticTokenVerifier(TokenVerifier):
         )
 
 
-def _http_access_token(config: WorkerConfig) -> str:
+def _validated_http_access_token(config: WorkerConfig) -> str:
+    """Read the HTTP credential once and reject unsafe credential reuse."""
+
     token = os.environ.get(config.server.access_token_env, "")
     if len(token) < 32 or len(token) > 4096 or token.strip() != token:
         raise RuntimeError(
             f"{config.server.access_token_env} must contain a 32-4096 character "
             "local MCP access token without surrounding whitespace"
         )
+    gateway_token = os.environ.get(config.gateway.auth_token_env, "")
+    if gateway_token and secrets.compare_digest(token, gateway_token):
+        raise RuntimeError(
+            "HTTP access token must not reuse the gateway model credential"
+        )
     return token
+
+
+def _bind_http_listener(config: WorkerConfig) -> socket.socket:
+    """Reserve the configured loopback endpoint before any task recovery."""
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind((config.server.host, config.server.port))
+        listener.listen(128)
+        return listener
+    except BaseException:
+        listener.close()
+        raise
 
 
 def build_server(
@@ -80,11 +102,19 @@ def build_server(
     executor_factory: Callable[[], BaseAgentExecutor] | None = None,
     transport: str | None = None,
     shared_service: TaskService | None = None,
+    http_access_token: str | None = None,
 ) -> FastMCP:
     active_transport = transport or config.server.transport
     if active_transport not in {"stdio", "streamable-http"}:
         raise ValueError(f"unsupported MCP transport: {active_transport}")
     container: dict[str, TaskService] = {}
+    active_http_token: str | None = None
+    if active_transport == "streamable-http":
+        active_http_token = (
+            http_access_token
+            if http_access_token is not None
+            else _validated_http_access_token(config)
+        )
 
     @asynccontextmanager
     async def lifespan(_server: FastMCP):
@@ -92,7 +122,11 @@ def build_server(
             yield {"service": shared_service}
             return
         service = TaskService(
-            config, executor=executor_factory() if executor_factory else None
+            config,
+            executor=executor_factory() if executor_factory else None,
+            additional_redaction_secrets=(
+                (active_http_token,) if active_http_token else ()
+            ),
         )
         container["service"] = service
         await service.start()
@@ -114,7 +148,7 @@ def build_server(
             "json_response": True,
             "stateless_http": True,
             "token_verifier": StaticTokenVerifier(
-                _http_access_token(config), resource
+                active_http_token or "", resource
             ),
             "auth": AuthSettings(
                 issuer_url=f"http://{host}:{port}/",
@@ -274,19 +308,39 @@ def _arguments(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _run_streamable_http(config: WorkerConfig) -> None:
-    """Own TaskService once per daemon, independently of HTTP client sessions."""
+    """Preflight auth/bind, then own one recovery-capable daemon service."""
 
-    service = TaskService(config)
-    await service.start()
+    access_token = _validated_http_access_token(config)
+    listener = _bind_http_listener(config)
+    service: TaskService | None = None
     try:
+        service = TaskService(
+            config,
+            additional_redaction_secrets=(access_token,),
+        )
+        await service.start()
         server = build_server(
             config,
             transport="streamable-http",
             shared_service=service,
+            http_access_token=access_token,
         )
-        await server.run_streamable_http_async()
+        import uvicorn
+
+        uvicorn_server = uvicorn.Server(
+            uvicorn.Config(
+                server.streamable_http_app(),
+                host=config.server.host,
+                port=config.server.port,
+                log_level="warning",
+                lifespan="on",
+            )
+        )
+        await uvicorn_server.serve(sockets=[listener])
     finally:
-        await service.stop()
+        if service is not None:
+            await service.stop()
+        listener.close()
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -68,8 +68,12 @@ HOME are rejected rather than reclassified as Worker credentials.
 Do not place tokens in `config.yaml`, prompts, task context, allowed commands,
 Codex TOML, service units, SQLite, scripts, or logs. Use an OS credential
 launcher for both the daemon and Codex app-server, and configure Codex with
-`bearer_token_env_var`. The HTTP access token grants only loopback MCP access;
-it must never be reused as the model credential.
+`bearer_token_env_var`. The HTTP access token grants only loopback MCP access.
+Configuration rejects a shared environment name, startup rejects equal
+credential values, and the daemon validates both the access token and listening
+socket before constructing the task service or recovering durable tasks. The
+access token is also a task-envelope rejection and redaction secret, so it
+cannot be persisted to SQLite or forwarded to the model.
 
 ## Remaining trust
 

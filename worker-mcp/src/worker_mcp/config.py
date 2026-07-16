@@ -184,6 +184,11 @@ class WorkerConfig(ConfigModel):
 
     @model_validator(mode="after")
     def validate_safety_contract(self) -> "WorkerConfig":
+        if self.gateway.auth_token_env == self.server.access_token_env:
+            raise ValueError(
+                "gateway model credential and HTTP access token must use "
+                "different environment names"
+            )
         if self.limits.repository_read_tasks > self.limits.global_read_tasks:
             raise ValueError("repository read limit cannot exceed global limit")
         if self.limits.repository_write_tasks > self.limits.global_write_tasks:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 
 import pytest
 
@@ -403,6 +404,39 @@ async def test_custom_named_credential_is_redacted_from_failure_state_and_audit(
         encoding="utf-8"
     )
     assert secret not in audit_text
+
+
+@pytest.mark.asyncio
+async def test_http_access_token_is_rejected_before_persistence_and_redacted_from_audit(
+    worker_config, git_repo
+):
+    access_token = "local-http-access-token-" + "z" * 40
+    service = TaskService(
+        worker_config,
+        executor=MockAgentExecutor(),
+        additional_redaction_secrets=(access_token,),
+    )
+    await service.start()
+    try:
+        with pytest.raises(ValueError, match="contains the dedicated Worker credential"):
+            await service.submit(
+                request(
+                    git_repo,
+                    key="service-http-credential-in-envelope-0001",
+                ).model_copy(update={"context": f"never persist {access_token}"})
+            )
+        service.audit.log("security.probe", message=access_token)
+    finally:
+        await service.stop()
+
+    database = worker_config.state_dir / "tasks.sqlite3"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    audit = worker_config.state_dir / "logs" / "worker-mcp.jsonl"
+    assert access_token.encode() not in database.read_bytes()
+    audit_text = audit.read_text(encoding="utf-8")
+    assert access_token not in audit_text
+    assert "<redacted>" in audit_text
 
 
 @pytest.mark.asyncio

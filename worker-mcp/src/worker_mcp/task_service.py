@@ -49,6 +49,7 @@ class TaskService:
         config: WorkerConfig,
         *,
         executor: BaseAgentExecutor | None = None,
+        additional_redaction_secrets: tuple[str, ...] = (),
     ):
         self.config = config
         self.config.prepare_directories()
@@ -57,7 +58,13 @@ class TaskService:
         self.executor = executor or executor_for_config(config)
         self.concurrency = ConcurrencyController(config)
         credential = os.environ.get(config.gateway.auth_token_env, "")
-        self._redaction_secrets = (credential,) if credential else ()
+        self._redaction_secrets = tuple(
+            dict.fromkeys(
+                secret
+                for secret in (credential, *additional_redaction_secrets)
+                if secret
+            )
+        )
         self.audit = AuditLogger(
             config.state_dir / "logs" / "worker-mcp.jsonl",
             max_bytes=config.logging.max_bytes,

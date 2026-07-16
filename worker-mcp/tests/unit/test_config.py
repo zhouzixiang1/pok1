@@ -133,6 +133,17 @@ def test_http_server_contract_is_loopback_and_credential_bound() -> None:
             MCPServerConfig.model_validate(patch)
 
 
+def test_http_and_gateway_credentials_require_distinct_environment_names(
+    tmp_path: Path,
+) -> None:
+    payload = _payload(tmp_path)
+    payload["gateway"] = {"auth_token_env": "WORKER_MCP_SHARED_TOKEN"}
+    payload["server"] = {"access_token_env": "WORKER_MCP_SHARED_TOKEN"}
+
+    with pytest.raises(ValidationError, match="different environment names"):
+        WorkerConfig.model_validate(payload)
+
+
 def test_system_forbidden_paths_cannot_be_removed_by_local_config(
     tmp_path: Path,
 ) -> None:

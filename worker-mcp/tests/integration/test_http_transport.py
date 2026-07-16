@@ -10,6 +10,7 @@ from mcp.client.streamable_http import streamable_http_client
 import pytest
 import uvicorn
 
+import worker_mcp.server as server_module
 from worker_mcp.agent_executor import MockAgentExecutor
 from worker_mcp.config import WorkerConfig
 from worker_mcp.server import build_server
@@ -34,7 +35,11 @@ def _http_config(worker_config: WorkerConfig, port: int) -> WorkerConfig:
 
 @asynccontextmanager
 async def _running_server(config: WorkerConfig):
-    service = TaskService(config, executor=MockAgentExecutor())
+    service = TaskService(
+        config,
+        executor=MockAgentExecutor(),
+        additional_redaction_secrets=(TOKEN,),
+    )
     await service.start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -44,6 +49,7 @@ async def _running_server(config: WorkerConfig):
         config,
         transport="streamable-http",
         shared_service=service,
+        http_access_token=TOKEN,
     )
     uvicorn_server = uvicorn.Server(
         uvicorn.Config(
@@ -130,3 +136,99 @@ async def test_two_clients_share_one_service_with_auth_and_transport_gates(
     replacement = TaskService(config, executor=MockAgentExecutor())
     await replacement.start()
     await replacement.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("value", [None, "too-short"])
+async def test_invalid_http_token_cannot_construct_or_recover_task_service(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    value: str | None,
+) -> None:
+    config = _http_config(worker_config, 18765)
+    calls: list[str] = []
+
+    class SentinelTaskService:
+        def __init__(self, *args, **kwargs):
+            calls.append("init")
+
+        async def start(self):
+            calls.append("start")
+            await self._recover()
+
+        async def _recover(self):
+            calls.append("recover")
+
+    monkeypatch.setattr(server_module, "TaskService", SentinelTaskService)
+    if value is None:
+        monkeypatch.delenv(config.server.access_token_env, raising=False)
+    else:
+        monkeypatch.setenv(config.server.access_token_env, value)
+
+    with pytest.raises(RuntimeError, match="32-4096 character"):
+        await server_module._run_streamable_http(config)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_equal_gateway_and_http_token_values_fail_before_task_service(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _http_config(worker_config, 18766)
+    shared = "different-env-names-but-identical-value-" + "x" * 32
+    calls: list[str] = []
+
+    class SentinelTaskService:
+        def __init__(self, *args, **kwargs):
+            calls.append("init")
+
+        async def start(self):
+            calls.append("start")
+
+        async def _recover(self):
+            calls.append("recover")
+
+    monkeypatch.setattr(server_module, "TaskService", SentinelTaskService)
+    monkeypatch.setenv(config.server.access_token_env, shared)
+    monkeypatch.setenv(config.gateway.auth_token_env, shared)
+
+    with pytest.raises(RuntimeError, match="must not reuse"):
+        await server_module._run_streamable_http(config)
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_bind_failure_cannot_construct_or_recover_task_service(
+    worker_config: WorkerConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    occupied = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    occupied.bind(("127.0.0.1", 0))
+    occupied.listen(1)
+    port = occupied.getsockname()[1]
+    config = _http_config(worker_config, port)
+    calls: list[str] = []
+
+    class SentinelTaskService:
+        def __init__(self, *args, **kwargs):
+            calls.append("init")
+
+        async def start(self):
+            calls.append("start")
+
+        async def _recover(self):
+            calls.append("recover")
+
+    monkeypatch.setattr(server_module, "TaskService", SentinelTaskService)
+    monkeypatch.setenv(config.server.access_token_env, TOKEN)
+    monkeypatch.delenv(config.gateway.auth_token_env, raising=False)
+    try:
+        with pytest.raises(OSError):
+            await server_module._run_streamable_http(config)
+    finally:
+        occupied.close()
+
+    assert calls == []
