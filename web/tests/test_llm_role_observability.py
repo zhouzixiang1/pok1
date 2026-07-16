@@ -729,8 +729,9 @@ def test_process_stream_hard_times_out_idle_role(monkeypatch, tmp_path):
             usage={"input_tokens": 4, "output_tokens": 2},
         )
 
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "0.02")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_IDLE_TIMEOUT", "0.02")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_STALL_TIMEOUT", "0")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "1")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,
@@ -783,8 +784,9 @@ def test_process_stream_unknown_messages_do_not_refresh_idle_timeout(
             usage={"input_tokens": 4, "output_tokens": 2},
         )
 
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "0.025")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_IDLE_TIMEOUT", "0.025")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_STALL_TIMEOUT", "0")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "1")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,
@@ -855,9 +857,9 @@ def test_process_stream_system_thinking_messages_are_observed_but_not_substantiv
 
     # Generous first-activity budget so the bookkeeping stream completes; this
     # verifies SystemMessages are observed and the ResultMessage terminates.
-    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "5")
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "5")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "10")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_IDLE_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "10")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,
@@ -897,6 +899,55 @@ def test_process_stream_system_thinking_messages_are_observed_but_not_substantiv
 
     role_log = log_file.read_text(encoding="utf-8")
     assert "[SYSTEM_MESSAGE subtype=thinking_tokens" in role_log
+
+
+def test_final_master_system_bookkeeping_can_cross_old_first_activity_window(
+    monkeypatch, tmp_path
+):
+    async def fake_stream():
+        # Keep emitting only non-substantive SDK bookkeeping beyond a scaled
+        # representation of the old first-activity ceiling (0.05s).  The final
+        # Result still arrives inside the new first-substantive-output ceiling.
+        for index in range(5):
+            await asyncio.sleep(0.02)
+            yield SystemMessage(
+                subtype="thinking_tokens",
+                data={
+                    "estimated_tokens": index + 1,
+                    "estimated_tokens_delta": 1,
+                },
+            )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=100,
+            duration_api_ms=100,
+            is_error=False,
+            num_turns=1,
+            session_id="late-but-bounded-final-master",
+            total_cost_usd=0.2,
+            usage={"input_tokens": 4, "output_tokens": 2},
+        )
+
+    monkeypatch.setenv(
+        "POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "0.2"
+    )
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_IDLE_TIMEOUT", "0.2")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_STALL_TIMEOUT", "0.2")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+
+    texts, cost, usage = asyncio.run(
+        llm_query._process_stream(
+            fake_stream(),
+            str(tmp_path / "bounded-final-master-io.txt"),
+            _DummyUI(),
+            "MASTER (Try 1)",
+        )
+    )
+
+    assert texts == []
+    assert cost == 0.2
+    assert usage["output_tokens"] == 2
 
 
 def test_process_stream_binds_real_result_to_strict_call_context(tmp_path):
@@ -965,9 +1016,9 @@ def test_process_stream_system_only_stall_times_out_at_first_activity(
 
     # first_activity is short, idle is long: only correct if SystemMessage does
     # NOT satisfy the substantive first-activity gate.
-    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "0.05")
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "5")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "10")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "0.05")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_IDLE_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "10")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,
@@ -1074,10 +1125,10 @@ def test_process_stream_mid_loop_stall_cuts_at_stall_timeout(monkeypatch, tmp_pa
 
     # stall_timeout is SHORT; idle is LONG: only correct if the stall ceiling
     # is enforced inside the tool/think loop.
-    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "5")
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "300")
-    monkeypatch.setenv("POK_LLM_MASTER_STALL_TIMEOUT", "0.5")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "600")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "5")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_IDLE_TIMEOUT", "300")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_STALL_TIMEOUT", "0.5")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_TOTAL_TIMEOUT", "600")
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
         llm_query,
@@ -1125,6 +1176,64 @@ def test_default_role_timeout_policy_is_bounded(monkeypatch):
     # B3: stall_timeout is derived from idle (~55%, clamped) and exposed.
     assert policy["stall_timeout"] > 0
     assert policy["stall_timeout"] < policy["idle_timeout"]
+
+
+def test_final_master_has_independent_bounded_silence_policy(monkeypatch):
+    for suffix in (
+        "FIRST_ACTIVITY_TIMEOUT",
+        "IDLE_TIMEOUT",
+        "STALL_TIMEOUT",
+        "TOTAL_TIMEOUT",
+    ):
+        monkeypatch.delenv(f"POK_LLM_MASTER_FINAL_{suffix}", raising=False)
+        monkeypatch.delenv(f"POK_LLM_MASTER_{suffix}", raising=False)
+
+    final_policy = llm_query._role_timeout_policy("MASTER (Try 1)")
+    proposal_policy = llm_query._role_timeout_policy(
+        "MASTER PROPOSAL mechanism"
+    )
+
+    assert final_policy == {
+        "policy_key": "MASTER_FINAL",
+        "first_activity_timeout": 240.0,
+        "idle_timeout": 240.0,
+        "stall_timeout": 240.0,
+        "total_timeout": 900.0,
+    }
+    assert proposal_policy["policy_key"] == "MASTER"
+    assert proposal_policy["stall_timeout"] == 132.0
+    assert proposal_policy["stall_timeout"] < proposal_policy["idle_timeout"]
+
+
+def test_final_master_timeout_override_precedence_and_legacy_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "17")
+    monkeypatch.setenv("POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "31")
+    assert llm_query._role_timeout_policy(
+        "MASTER (Try 1)"
+    )["first_activity_timeout"] == 31.0
+
+    monkeypatch.delenv(
+        "POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", raising=False
+    )
+    assert llm_query._role_timeout_policy(
+        "MASTER (Try 1)"
+    )["first_activity_timeout"] == 17.0
+
+    monkeypatch.setenv(
+        "POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "invalid"
+    )
+    assert llm_query._role_timeout_policy(
+        "MASTER (Try 1)"
+    )["first_activity_timeout"] == 17.0
+
+    monkeypatch.setenv(
+        "POK_LLM_MASTER_FINAL_FIRST_ACTIVITY_TIMEOUT", "nan"
+    )
+    assert llm_query._role_timeout_policy(
+        "MASTER (Try 1)"
+    )["first_activity_timeout"] == 17.0
 
 
 def test_crossover_role_timeout_policy_has_extended_total(monkeypatch):

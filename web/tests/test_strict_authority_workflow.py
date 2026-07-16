@@ -113,6 +113,29 @@ def _strict_log(module, store, call, basename):
     )
 
 
+def test_final_master_dispatch_rejects_filesystem_tool(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    call = module.new_call(
+        checkpoint,
+        slot="master:final",
+        context_binding={"slot": "master:final", "suffix": "zero-tool"},
+    )
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_tools_mismatch:master:final",
+    ):
+        module.dispatch_call(
+            call,
+            full_prompt="final master must consume only frozen context",
+            tools=["Read"],
+            owner="pytest",
+        )
+
+    assert store.instance(call["run_id"]) == {}
+
+
 def test_provider_result_without_schema_acceptance_is_not_authority(authority):
     module, _store = authority
     checkpoint = _checkpoint()

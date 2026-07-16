@@ -364,10 +364,9 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     assert 'build_phase="module_import"' in rendered_prompt
     assert "runtime_contract.match_memory" in rendered_prompt
     assert 'snapshot_field="opponent"' in rendered_prompt
-    assert captured_kwargs[0]["allowed_read_dirs"] == [
-        agent_master.get_bot_dir(143),
-        agent_master.get_bot_dir(144),
-    ]
+    assert captured_kwargs[0]["tools"] == []
+    assert captured_kwargs[0].get("allowed_read_dirs") is None
+    assert captured_kwargs[0].get("allowed_evidence_snapshot_dir") is None
 
 
 @pytest.mark.asyncio
@@ -501,7 +500,7 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
             strict_authority_workflow.dispatch_call(
                 strict_call,
                 full_prompt=prompt,
-                tools=["Read"],
+                tools=_kwargs["tools"],
                 owner="pytest",
                 actual_role=str(_args[2]),
             )
@@ -621,6 +620,13 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     assert "numeric completion high-water v142" in rendered
     assert "bots/national_v143/" in rendered
     assert captured_kwargs
+    final_calls = [
+        call for call in captured_kwargs
+        if call.get("tools") == []
+    ]
+    assert len(final_calls) == 1
+    assert final_calls[0].get("allowed_read_dirs") is None
+    assert final_calls[0].get("allowed_evidence_snapshot_dir") is None
     assert all(
         call.get("allowed_read_dirs") == [agent_master.get_bot_dir(143)]
         for call in captured_kwargs
@@ -836,7 +842,9 @@ async def test_singleton_v144_master_uses_published_parent_without_strict_journa
     assert ensemble_kwargs["protocol_bootstrap_prepared_only"] is False
     assert ensemble_kwargs["singleton_no_strength"] is True
     assert final_kwargs and final_kwargs[0]["strict_authority"] is None
-    assert final_kwargs[0]["allowed_read_dirs"] == [source, target]
+    assert final_kwargs[0]["tools"] == []
+    assert final_kwargs[0].get("allowed_read_dirs") is None
+    assert final_kwargs[0].get("allowed_evidence_snapshot_dir") is None
     assert result["proposal_ensemble"]["evidence_mode"] == (
         "singleton_parent_no_strength"
     )

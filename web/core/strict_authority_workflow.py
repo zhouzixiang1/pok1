@@ -9,7 +9,7 @@ separate domain event.
 The authority stream deliberately uses a run id distinct from the Worker
 stream while sharing ``RESULTS_DIR/workflow/events.sqlite3``::
 
-    {workflow_run_id}:strict-authority-v1
+    {workflow_run_id}:strict-authority-v2
 
 Only :func:`llm_query.run_claude_query` completes provider effects.  Role code
 may append an acceptance event only after the completed provider effect has
@@ -40,15 +40,15 @@ from claude_agent_sdk import ResultMessage
 from workflow_kernel import WorkflowConflict, WorkflowStore, content_digest
 
 
-DEFINITION_VERSION = 1
-RUN_SUFFIX = "strict-authority-v1"
-EFFECT_KIND = "first-strict-llm-provider-call-v1"
+DEFINITION_VERSION = 2
+RUN_SUFFIX = "strict-authority-v2"
+EFFECT_KIND = "first-strict-llm-provider-call-v2"
 ACCEPTED_EVENT = "StrictRoleAccepted"
 REJECTED_EVENT = "StrictRoleRejected"
 INVOCATION_EVIDENCE_BOUND_EVENT = "StrictInvocationEvidenceBound"
-RECEIPT_KIND = "first-strict-llm-authority-receipt-v1"
+RECEIPT_KIND = "first-strict-llm-authority-receipt-v2"
 INVOCATION_EVIDENCE_BINDING_KIND = (
-    "first-strict-invocation-evidence-binding-v1"
+    "first-strict-invocation-evidence-binding-v2"
 )
 MAX_SCHEMA_ATTEMPTS_PER_SLOT = 2
 
@@ -110,7 +110,7 @@ SLOT_PARSE_CONTRACTS = {
 SLOT_TOOLS = {
     **{slot: ["Read"] for slot in MASTER_SLOTS[:3]},
     **{slot: [] for slot in MASTER_SLOTS[3:5]},
-    "master:final": ["Read"],
+    "master:final": [],
     "review": ["Read"],
     "critic": ["Read"],
 }

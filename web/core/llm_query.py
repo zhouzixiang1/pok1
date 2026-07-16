@@ -12,6 +12,7 @@ import hashlib
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -236,14 +237,15 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
             "master_context_digest", "proposal_packet_digest", "source_v", "next_v",
             "template_values_digest", "schema_repair_digest", "invocation_id",
         ),
-        scope_policy="canonical_candidates",
-        tools=(("Read",),),
-        read_scope="explicit_candidate_and_generation_snapshot_dirs",
+        scope_policy="none",
+        tools=((),),
+        read_scope="none",
         evidence_policy="generation_snapshot_plus_compiled_proposal_packet",
         history_policy="frozen_generation_context_only",
-        requires_read_scope=True,
-        allows_evidence_snapshot=True,
         allows_strict_authority=True,
+        # Keep the decision-changing-role evidence hook even with zero tools.
+        # It is a fail-closed tripwire if capability drift ever reintroduces a
+        # filesystem tool; the current role still receives no read authority.
         requires_frozen_evidence_guard=True,
     ),
     _llm_role_contract(
@@ -4286,6 +4288,14 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # slower than gate roles on GLM-backed Claude-compatible endpoints, but must
     # still have a hard ceiling so the pipeline cannot wait forever.
     "DEFAULT": (240.0, 360.0, 900.0),
+    # The final Master is a zero-tool selector/compiler over the frozen three-
+    # proposal/two-ballot packet.  Its prompt and output schema are necessarily
+    # large, so give the selection/compiler 240s both for its first substantive
+    # output and for later productive-message silence instead of paying for
+    # three deterministic 132s false stalls.  This is independent from the
+    # Scout/critic MASTER policy below and remains bounded by the same 900s total
+    # ceiling.
+    "MASTER_FINAL": (240.0, 240.0, 900.0),
     # Master is the highest leverage failure point: it plans, reads evidence,
     # and can otherwise burn the whole orchestrator cycle before any code exists.
     "MASTER": (120.0, 240.0, 900.0),
@@ -4313,7 +4323,9 @@ def _role_timeout_policy(role_name: str) -> dict:
     """
     role = str(role_name or "").upper()
     key = ""
-    if "MASTER" in role:
+    if re.fullmatch(r"MASTER(?:\s+\(TRY\s+\d+\))?", role):
+        key = "MASTER_FINAL"
+    elif "MASTER" in role:
         key = "MASTER"
     elif "REVIEW" in role:
         key = "REVIEW"
@@ -4326,10 +4338,28 @@ def _role_timeout_policy(role_name: str) -> dict:
     defaults = _ROLE_TIMEOUT_DEFAULTS.get(key or "DEFAULT", (0.0, 0.0, 0.0))
 
     def _env(name, default):
-        try:
-            return float(os.environ.get(name, str(default)))
-        except Exception:
-            return float(default)
+        names = [name]
+        # Preserve existing operator overrides while giving the zero-tool final
+        # compiler its own more-specific namespace.  MASTER_FINAL wins when
+        # both are present; legacy MASTER remains a safe fallback.
+        if key == "MASTER_FINAL" and "POK_LLM_MASTER_FINAL_" in name:
+            names.append(name.replace(
+                "POK_LLM_MASTER_FINAL_", "POK_LLM_MASTER_", 1
+            ))
+        for candidate in names:
+            if candidate not in os.environ:
+                continue
+            try:
+                parsed = float(os.environ[candidate])
+                if math.isfinite(parsed):
+                    return parsed
+            except Exception:
+                pass
+            # A malformed/non-finite role-specific override must not mask a
+            # valid legacy operator override. Continue through the ordered
+            # fallback chain and use the compiled default only if none parses.
+            continue
+        return float(default)
 
     prefix = f"POK_LLM_{key}_" if key else "POK_LLM_DEFAULT_"
     first_activity = _env(prefix + "FIRST_ACTIVITY_TIMEOUT", defaults[0])
@@ -4346,8 +4376,8 @@ def _role_timeout_policy(role_name: str) -> dict:
     # restart. Default to ~55% of idle (clamped to [60, 180]s) so a stall is
     # caught well before the full idle ceiling while still tolerating legit
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
-    stall_default = 0.0
-    if idle > 0:
+    stall_default = 240.0 if key == "MASTER_FINAL" else 0.0
+    if idle > 0 and key != "MASTER_FINAL":
         stall_default = max(60.0, min(180.0, idle * 0.55))
     stall = _env(prefix + "STALL_TIMEOUT", stall_default)
     return {
@@ -5128,7 +5158,7 @@ async def _process_stream(query_gen, log_file_path, ui, role_name):
                 # this layer and falls back to idle_timeout.
                 idle_budget = (idle_timeout - (now - last_message_at)) if idle_timeout > 0 else None
                 stall_budget = (stall_timeout - (now - last_message_at)) if stall_timeout > 0 else None
-                if stall_budget is not None and (idle_budget is None or stall_budget < idle_budget):
+                if stall_budget is not None and (idle_budget is None or stall_budget <= idle_budget):
                     wait_timeout = max(0.0, stall_budget)
                     timeout_kind = "stall"
                 elif idle_budget is not None:

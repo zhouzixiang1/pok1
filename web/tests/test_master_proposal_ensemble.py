@@ -1443,7 +1443,7 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     authority.dispatch_call(
         final_call,
         full_prompt="sealed final Master prompt",
-        tools=["Read"],
+        tools=[],
         owner="pytest-strict-final-master",
         actual_role="MASTER (Try 1)",
     )
@@ -1540,7 +1540,7 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     authority.dispatch_call(
         replay_final,
         full_prompt="re-rendered final Master prompt after restart",
-        tools=["Read"],
+        tools=[],
         owner="pytest-strict-final-master-replay",
         actual_role="MASTER (Try 1)",
     )

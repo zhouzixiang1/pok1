@@ -435,12 +435,12 @@ def _validate_active_abandon_claim(claim: dict) -> dict:
 def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
     """Read-only proof that both generation journals are terminal and fenced."""
 
-    from strict_authority_workflow import DEFINITION_VERSION
+    from strict_authority_workflow import DEFINITION_VERSION, authority_run_id
     from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
     from workflow_kernel import KERNEL_SCHEMA_VERSION, canonical_json
 
     workflow_run_id = str(claim["checkpoint"]["workflow_run_id"])
-    strict_run_id = f"{workflow_run_id}:strict-authority-v1"
+    strict_run_id = authority_run_id(workflow_run_id)
     database = Path(RESULTS_DIR) / "workflow" / "events.sqlite3"
     if not os.path.lexists(database):
         raise RuntimeError("completed_abandon_workflow_database_missing")

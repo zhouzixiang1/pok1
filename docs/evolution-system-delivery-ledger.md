@@ -89,7 +89,7 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | P3 | Master stream/effect recovery and bounded retries | implemented; frozen phase, durable binding recovery, child tombstone and real/replay dispatch fence green | timeout/lease/replay/provider-termination/partial-packet/final-projection/abandon tests |
 | P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | source implementation and frontend/backend/actual-log parity green; live publication observation pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
 | P5 | full verification and merge to `origin/main` | Scout reachability is frozen at `007020a90f9829a9e0a5aa124ff65bb590009e44`; singleton/precommit, proposal-packet-v4, executable-quality evidence and daemon-pair alignment are frozen at `0b99c7e6d6e46783828d79b370a1d6715ebefe16`; documentation/merge/runtime evidence follows | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | workflows v24-v27 each proved one terminal canonical abandon; runtime is stopped with no active checkpoint/candidate, pending Scout-contract sync and fresh workflow-v28 | tags, certificates, immutable cycles and live observation ledger |
+| P6 | runtime recovery, v143/v144 publication and ten generations | v28 dynamically passed three Scouts/two critics then exposed the final-Master read/stall defect; v28/v29 are canonically abandoned, runtime is stopped with no checkpoint/candidate, and this delivery freezes the zero-tool repair before runtime sync and fresh v30 | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -1517,11 +1517,108 @@ Earlier real-link evidence on follow-up `46f79b8e` is retained as bounded
 historical integration evidence, not substituted for the final commit:
 task `31378718-5b19-4bd9-b247-186bc6d2bb2e` on base `c99762dc` traversed
 accepted→queued→preparing→running→verifying→succeeded in one attempt, four
-turns/34,212 ms, with zero changed files and zero diff. Final enablement remains
-blocked on host capability: `bwrap` exists but `socat` is not installed on the
-system PATH. The exact runtime gate therefore fails closed before a real Agent
-child. After the operator installs `socat`, a dedicated `WORKER_MCP_*`
-credential must be used to rerun deep diagnosis and a full STDIO
-submit/poll/result canary before registration. CC Switch `3.17.0` remains an
+turns/34,212 ms, with zero changed files and zero diff. At this frozen
+source-delivery point final enablement was blocked because `bwrap` existed but
+`socat` was not yet installed on system PATH; the exact runtime gate correctly
+failed closed. The following operator-side section records the later dependency,
+credential, deep-diagnosis and STDIO closure. CC Switch `3.17.0` remains an
 external operational pin; its loopback `/health` proves availability, not the
 installed version.
+
+## 2026-07-16 — Codex-only Worker MCP manual enablement
+
+The later operator-side installation completed as a separate action; it did not
+change repository bytes or poker runtime state. The installed artifact was
+rebuilt from the exact Worker tree at
+`81b75070d550e9000aced1d79f909ccf843011e2` with
+`SOURCE_DATE_EPOCH=1784182231`, reproducing SHA-256
+`aa2060e732d2d4fa99dd9e37760d9f1f9a946b0e58933b8d1868695a1d40a400`.
+It is installed in the user-level isolated venv
+`~/.local/share/pok-worker-mcp/venv`; `pip check`, console entrypoint and
+isolated `python -I` import passed. System `bwrap` and `socat` now pass the
+runtime gate.
+
+Manual Codex registration lives in user configuration, not the repository.
+The sanitizing wrapper prefers an explicit `WORKER_MCP_*` credential and,
+under the user's single-user-machine policy, otherwise reads an encrypted
+default login-keyring item. No credential value is stored in TOML, YAML,
+scripts, SQLite or logs. Two minimal-environment cold starts and a fresh Codex
+task both loaded the persistent registration, reported `healthy`, and exposed
+exactly submit/get_status/get_result/list/cancel/healthcheck; the fresh-task
+health call completed in 71 ms.
+
+The final real STDIO canary task
+`63b1af95-e391-483b-8fd0-1a91cf251e4c` used base `8d623ca7`, completed one
+attempt in three turns/60,539 ms through
+preparing→running→verifying→succeeded, read only `AGENTS.md`, and produced zero
+changed files and zero diff. Its owner-marked worktree was removed by the
+bounded cleanup script. The external helper has no resident server process
+between Codex calls. None of these installation facts are evolution prompt,
+checkpoint, rating, certification or strength evidence.
+
+## 2026-07-16 — workflow-v28/v29 final-Master stall closure
+
+The stopped runtime was fast-forwarded to merged `8d623ca7`, then its changed
+rating authority was explicitly initialized as empty instance
+`771bfaeb48b64b248ce3fd3be6c4a906`. Daemon start bound the canonical
+`national_native`, native-TCP, 70-hand, five-match direct-artifact profile;
+the prior identity was archived at
+`web/core/results/archive/evaluation_identity/20260716_141841`;
+base identity is
+`0f3094ac881e0873f8776d6a12e96ea5ca74d8994a1e7bedfc26a03a85f2f996`
+and manifest is
+`f8ef8c2aa6ab28b13c9b5bcec947d4e980d1ddc98f0de1dfdbe53f469da45de1`.
+Official doctor remained green.
+
+Fresh `generation:143:workflow-v28` proved the proposal-v4 repair dynamically:
+all three content-bound proposal Scouts completed, both anonymous critics
+completed, and the final Master began from a valid frozen 3+2 packet. The next
+failure was a different control-plane inefficiency. Each of three final-Master
+attempts received a 94,214-character provider prompt (97,478-character full
+prompt), then redundantly read `policy.py`, `precompute.py`, and the first
+2,004/2,481 lines of system-owned `national_bot.py`; that third result alone
+reported 26,306 tokens at the 25k Read cap. After the last real tool result the
+provider continued emitting 7,783–10,758 thinking-token deltas, but produced no
+trusted terminal semantic output before the fixed 132-second stall ceiling.
+The owned child exited on each bounded cleanup; no late output or candidate
+mutation was accepted.
+
+After infrastructure attempt 3/3 the system canonically abandoned v28 with
+receipt
+`7953e317aecc28ce1ef3659837fad4c02c8491615cec7bc6f10a5cd04a3fd6eb`,
+transaction
+`63ace03409fd33d351021cdb6bac693f24c5a8a896a64065fe62340de6ace462`,
+and finalize receipt
+`fdc59860bea80740dc01133bde8fcc86c8702a01220a7ef2dfbff6eec2d019d8`.
+The outer scheduler prepared workflow-v29 immediately. It was stopped before
+repeating the same final-Master cost and abandoned on the unchanged old contract
+HEAD with exact workflow/version/revision/stage fences: receipt
+`0e9ea4843761e42a3ecf410aac6b4f92718e3b53c643a96812e57690ec24f1f3`,
+transaction
+`db52589abcf72d42d6b356299568cfc1fc45fa3761267a23be958e9b558176d1`,
+and finalize receipt
+`41ae0d93611eb7ef900c8d188007630bd1e021b72ec7d76f354e5310ffaa4695`.
+The runtime is stopped, clean at `8d623ca7`, with no checkpoint or candidate.
+
+The repair makes final Master a zero-tool selector/compiler over the frozen
+three-Scout/two-critic packet. Scouts retain content-bound code exploration;
+source-symbol AST digests are reverified before final selection, and Workers
+still read the exact leased target. The strict `master:final` journal slot now
+binds an empty tool set under isolated `strict-authority-v2` receipts. Fresh
+workflow-v30 is the first allocation allowed to use that v2 journal. The exact
+`MASTER (Try N)` role has independent 240-second first-substantive-output and
+post-substantive silence ceilings, plus a 900-second total policy;
+proposal/critic roles keep their shorter 132-second stall. Existing
+`POK_LLM_MASTER_*` overrides remain a compatibility fallback behind the new
+`POK_LLM_MASTER_FINAL_*` namespace. Thinking telemetry remains diagnostic and
+never refreshes trusted liveness.
+
+Frozen verification for this repair is Web `2757 passed, 20 skipped`, sever
+`31 passed`, frontend `18/18`, ESLint and TypeScript/Vite production build
+(165 modules), including
+the zero-tool role registry, strict-authority replay, evidence tripwire,
+signature retry, Master infrastructure overlay, proposal ensemble, bootstrap,
+prompt, and stream-cleanup tests; touched Python compilation and
+`git diff --check`, tracked active Python compilation, tracked shell syntax and
+official doctor `ok=true` also pass. The next dynamic allocation after syncing
+the stopped runtime is a fresh workflow-v30, not a continuation of v28 or v29.

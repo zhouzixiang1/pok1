@@ -53,52 +53,72 @@ does not reinterpret them and has zero rating or strategy authority.
 
 ## Current dynamic evidence
 
-On 2026-07-16 workflows v24, v25, and v26 each completed one terminal canonical
-abandon, with receipts `f9eb8cf5c87c848df546ac1a0dfb1fdb14ecd54cafb6406c96c5ff75356999de`,
-`c58fb7fec0eee9d66d4c5688cd57486e8e24a4599f6f0e6e3b0a222875988faf`, and
-`38a7754cb2b67da865ac87646d50bf49c7c94825ac7c630c346a1da58a2c86b1`.
-The role guard blocked 12 documentation reads (2/2/8) with no rejected bytes
-admitted as prompt or evidence. Workflow-v27 was canonically abandoned on the
-old contract HEAD with receipt
-`40f2fecb8ec3524bc1632d54380a030140d5842f41a166a1e03a5a35880f1f09`,
-transaction `ddc338ed1f1d876112ee72c6725dae6166d522e0b83633a1e50161206d23be85`,
+Runtime consumed merged `8d623ca7`, rotated the changed rating authority to
+empty instance `771bfaeb48b64b248ce3fd3be6c4a906`, and bound manifest
+`f8ef8c2aa6ab28b13c9b5bcec947d4e980d1ddc98f0de1dfdbe53f469da45de1`
+when the canonical native daemon started. The prior identity archive is
+`web/core/results/archive/evaluation_identity/20260716_141841`. Official doctor
+remained green.
+
+Workflow-v28 dynamically closed the prior Scout blocker: exactly three valid
+content-bound proposals and two anonymous critic ballots completed. The final
+Master then exposed a new, narrower efficiency mismatch. Its already compiled
+97,478-character prompt still granted directory-wide Read, so all three
+infrastructure attempts redundantly loaded `policy.py`, `precompute.py`, and a
+25k-token partial `national_bot.py`, then hit the same 132-second trusted-output
+stall while thinking telemetry continued. The checkpoint/candidate remained
+fenced and v28 canonically abandoned with receipt
+`7953e317aecc28ce1ef3659837fad4c02c8491615cec7bc6f10a5cd04a3fd6eb`,
+transaction
+`63ace03409fd33d351021cdb6bac693f24c5a8a896a64065fe62340de6ace462`,
 and finalize receipt
-`627869541aab54b63dcdb85f839c3a31e44ba5a8330913611c571ddaff4d8706`.
-Runtime is stopped with no active checkpoint or candidate before synchronization.
+`fdc59860bea80740dc01133bde8fcc86c8702a01220a7ef2dfbff6eec2d019d8`.
+
+The automatically prepared workflow-v29 was stopped before repeating that cost
+and canonically abandoned on the unchanged contract HEAD with receipt
+`0e9ea4843761e42a3ecf410aac6b4f92718e3b53c643a96812e57690ec24f1f3`,
+transaction
+`db52589abcf72d42d6b356299568cfc1fc45fa3761267a23be958e9b558176d1`,
+and finalize receipt
+`41ae0d93611eb7ef900c8d188007630bd1e021b72ec7d76f354e5310ffaa4695`.
+Runtime is now stopped and clean at `8d623ca7`, with no checkpoint/candidate.
+
+The current repair removes all final-Master tools/read scope, keeps the frozen
+evidence tripwire, binds an empty strict `master:final` tool set, and gives only
+the exact final compiler role 240-second first-substantive-output and
+post-substantive silence ceilings under an isolated `strict-authority-v2`
+journal and unchanged 900-second total. Fresh workflow-v30 is the first
+allocation allowed to use v2. Scouts retain code exploration; proposal symbol AST
+digests and selection binding remain deterministic; Workers still read the
+leased target. Thinking telemetry remains non-authoritative. Web verification is
+`2757 passed, 20 skipped`; the next live proof is fresh workflow-v30 after the
+stopped runtime fast-forwards to the exact merged commit.
 
 Official doctor is green and `first_strict_control_v1` hash
 `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
-is valid, unused, and `0/1`. The v143 5+3 dependency is present, but the operator
-action remains locked until fresh workflow-v28 reaches
+remains valid, unused, and `0/1`. No v143 official dependency is missing; the
+operator action stays locked until the exact fresh checkpoint reaches
 `official_bootstrap_required`.
 
-Source commit `0b99c7e6d6e46783828d79b370a1d6715ebefe16` now closes
-singleton-v144 Master/precommit authority, proposal-packet-v4 strength-node and
-prepared-symbol bindings, reachable-chain/typed-check quality evidence, retry
-feedback, full binding/cache validation and the daemon-pairs 1..8 backend/
-frontend/runtime loop. It deliberately labels v143 as a fixed correctness
-anchor and proposal quality as mechanism-scope evidence; neither is native
-strength proof. Runtime has not yet consumed this commit, so the first dynamic
-proof remains workflow-v28 after merge/synchronization.
-
 Codex-only helper commit
-`81b75070d550e9000aced1d79f909ccf843011e2` is intentionally outside this
-matrix's poker authority graph. Its source is confined to `worker-mcp/**`; a
-boundary test rejects any tracked active runtime import/start/call reference.
-It is not an evolution Worker, checkpoint/evidence producer, runtime dependency,
-restart cause, or evaluation-identity input. Source merge and later manual
-Codex MCP enablement are separate operations.
+`81b75070d550e9000aced1d79f909ccf843011e2` remains outside this matrix's poker
+authority graph. Its exact wheel was manually installed and passed persistent
+cold-start/deep/STDIO canaries, but that user-side operation neither changed nor
+restarted poker runtime and supplies no prompt/checkpoint/rating evidence.
 
 ## Completion rule
 
-The current implementation through
-`0b99c7e6d6e46783828d79b370a1d6715ebefe16` is frozen-verified by Web
-`2753 passed, 20 skipped`, sever `31 passed`, frontend `18/18`, ESLint,
-TypeScript/Vite production build, every tracked active Python file compilation,
-`bash -n`, `git diff --check`, and official doctor with tracked execution
-profile v7. Source gates do not replace merged-commit or live runtime evidence.
-The separately verified Codex helper does not change any row's status or count
-as live national-protocol evidence.
+Merged `8d623ca7` retained the frozen Web `2753 passed, 20 skipped`, sever
+`31 passed`, frontend `18/18`, ESLint/TypeScript/Vite build, active Python
+compilation, `bash -n`, diff check and official-doctor evidence. The current
+final-Master repair adds Web `2757 passed, 20 skipped`, sever `31 passed`,
+frontend `18/18`, ESLint/TypeScript/Vite production build (165 modules), active
+Python/shell checks, diff check and official doctor `ok=true`, plus focused
+zero-tool, strict-journal, prompt, timeout and proposal-governance coverage.
+The stopped runtime must fast-forward to its exact merged commit. Source gates
+do not replace merged-commit or live runtime evidence. The separately verified
+Codex helper does not change any row's status or count as live national-protocol
+evidence.
 
 Before this matrix may be marked complete, each **repairing** or **planned** row
 must cite the exact test command/result and the merged commit containing its

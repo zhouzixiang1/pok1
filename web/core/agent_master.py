@@ -3986,16 +3986,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             output, _, _ = await run_claude_query(
                 rendered_prompt, [], ui,
                 final_role, final_log_file,
-                tools=["Read"],
-                allowed_evidence_snapshot_dir=allowed_evidence_snapshot_dir,
-                allowed_read_dirs=(
-                    [get_bot_dir(int(next_v))]
-                    if fresh_bootstrap
-                    else [
-                        get_bot_dir(int(source_v)),
-                        get_bot_dir(int(next_v)),
-                    ]
-                ),
+                tools=[],
                 strict_authority=strict_final_call,
             )
         except LLMAvailabilityBlocked:

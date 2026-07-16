@@ -187,8 +187,9 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   proposal-packet-v4, executable proposal evidence and daemon-pair alignment are
   `0b99c7e6d6e46783828d79b370a1d6715ebefe16`. The separately scoped Codex-only
   helper hardening is `81b75070d550e9000aced1d79f909ccf843011e2`;
-  it is not an evolution-runtime commit. This documentation closure follows.
-  Query Git for the exact branch/main HEAD;
+  it is not an evolution-runtime commit. Merged source/docs reached
+  `8d623ca74e371ac4aa986b046da16eaa43c1ef18`; this delivery adds the
+  final-Master zero-tool repair. Query Git for the exact branch/main HEAD;
 - delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
@@ -201,12 +202,17 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   Codex helper adds `102 passed`, compileall, entrypoint checks, byte-identical
   double wheel build/install and a tracked-code no-runtime-reference boundary
   test; reproducible wheel SHA-256 is
-  `aa2060e732d2d4fa99dd9e37760d9f1f9a946b0e58933b8d1868695a1d40a400`;
+  `aa2060e732d2d4fa99dd9e37760d9f1f9a946b0e58933b8d1868695a1d40a400`.
+  The current final-Master repair is Web `2757 passed, 20 skipped`, sever
+  `31 passed`, frontend `18/18`, ESLint/TypeScript/Vite build (165 modules),
+  focused zero-tool/strict-journal/proposal/timeout/prompt coverage, active
+  Python/shell checks, diff check and official doctor `ok=true`;
 - `origin/main`: require the implementation plus following documentation
   closure to be the exact current remote HEAD, and require runtime HEAD to equal
   it before start;
-- runtime HEAD: tracked `f7b19071c66b34a84eca0bd94592209da090c4e5`, stopped with no evolution process,
-  active checkpoint, or candidate after workflow-v27 canonical abandon;
+- runtime HEAD: tracked `8d623ca74e371ac4aa986b046da16eaa43c1ef18`, stopped and clean with no
+  evolution process, active checkpoint, or candidate after workflow-v29
+  canonical abandon;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
   drift. Workflow-v20 was canonically abandoned with receipt
@@ -259,13 +265,29 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   and finalize receipt
   `627869541aab54b63dcdb85f839c3a31e44ba5a8330913611c571ddaff4d8706`.
   Both journals were fenced, the candidate quarantined, and the checkpoint
-  cleared. The next allocation must be a fresh workflow-v28;
+  cleared. Workflow-v28 then proved exactly three valid Scouts and two valid
+  anonymous critics, but its final Master redundantly read a 25k-token partial
+  system runtime and exhausted three identical 132-second stalls. It was
+  canonically abandoned with receipt
+  `7953e317aecc28ce1ef3659837fad4c02c8491615cec7bc6f10a5cd04a3fd6eb`,
+  transaction
+  `63ace03409fd33d351021cdb6bac693f24c5a8a896a64065fe62340de6ace462`,
+  and finalize receipt
+  `fdc59860bea80740dc01133bde8fcc86c8702a01220a7ef2dfbff6eec2d019d8`.
+  The automatically prepared workflow-v29 was stopped before repeating that
+  cost and canonically abandoned with receipt
+  `0e9ea4843761e42a3ecf410aac6b4f92718e3b53c643a96812e57690ec24f1f3`,
+  transaction
+  `db52589abcf72d42d6b356299568cfc1fc45fa3761267a23be958e9b558176d1`,
+  and finalize receipt
+  `41ae0d93611eb7ef900c8d188007630bd1e021b72ec7d76f354e5310ffaa4695`.
+  The next allocation after stopped-runtime sync must be fresh workflow-v30;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
   been published. The stopped runtime validates `first_strict_control_v1`
   artifact `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`;
   its signed-ledger consumption is valid, unused and `0/1`, so no v143 formal
   bootstrap dependency is missing. Official doctor is green. The 5+3 operator
-  action remains locked until fresh workflow-v28 reaches
+  action remains locked until the fresh post-repair workflow reaches
   `official_bootstrap_required`;
 - immutable rating cycle: none for the new strict two-bot pool;
 - stability observation: backend `/api/control/status`; only an unexpired
@@ -279,29 +301,30 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `.evolution_pok`; it is neither checkpoint/evidence authority nor an
   evaluation-identity input. Baseline `38792977` was incorporated as
   `4470f550`; overlapping real-link fix `46f79b8e` was semantically reviewed
-  into `81b75070`, not blindly replayed. Manual Codex MCP install/registration is
-  a separate operator action and currently remains blocked because host PATH
-  lacks `socat` (`bwrap` is present). After installation, rerun dedicated-token
-  deep diagnosis and full STDIO submit/poll/result. CC Switch 3.17.0 remains an
-  external pin; `/health` does not prove its version;
+  into `81b75070`, not blindly replayed. Manual Codex MCP install/registration
+  later completed as a separate user-side action from the exact epoch-pinned
+  `aa2060e7...` wheel. `bwrap`/`socat`, deep health, two cold starts, six-tool
+  discovery and STDIO task `63b1af95-e391-483b-8fd0-1a91cf251e4c` are green;
+  the task made zero changes. Credentials stay outside repository/config/log
+  plaintext and use the user's encrypted login keyring. This remains zero
+  evolution authority and caused no poker restart/identity rotation;
 - current evaluation identity was explicitly rotated after runtime sync. The
-  previous manifest was archived under
-  `archive/evaluation_identity/20260716_085940`; the empty rotated manifest was
-  initially `1624e2b2791b4bb943ea402884a7bd36a2be6da0251c804737ad5a463fadad9b`.
-  The first daemon start then bound the canonical `national_native`, 70-hand,
-  five-match, direct-artifact runtime profile, yielding current manifest
-  `e5465500ee534815e58a3df4950d99d6e61a1df80ce65c4ff6f8beb5214228b9`
-  while base identity remained
-  `5af513111f6784fffff3b23d7165553bbf65c3a2731088f1ef29fb790157f64c`;
+  current empty instance is `771bfaeb48b64b248ce3fd3be6c4a906`.
+  The prior identity is archived at
+  `web/core/results/archive/evaluation_identity/20260716_141841`.
+  Daemon start bound the canonical `national_native`, 70-hand, five-match,
+  direct-artifact runtime profile, yielding manifest
+  `f8ef8c2aa6ab28b13c9b5bcec947d4e980d1ddc98f0de1dfdbe53f469da45de1`
+  while base identity is
+  `0f3094ac881e0873f8776d6a12e96ea5ca74d8994a1e7bedfc26a03a85f2f996`;
   only this empty instance may receive future native samples;
-- known next action: commit/push this documentation closure, fast-forward the
-  stopped runtime through the exact merged `origin/main` for the active national
-  alignment, rotate/reprove only if an active evaluation input changed, and
-  start fresh workflow-v28. The inert `worker-mcp/**` source is not a restart or
-  identity-rotation reason and its missing `socat` does not block evolution.
-  Dynamically require compact Scout prompts, zero documentation
-  bytes, decision-first current anchors, proposal-v4 symbol/snapshot bindings and
-  honest mechanism-only quality evidence. Publish fixed v143 only after the exact
+- known next action: fast-forward the stopped runtime through the exact merged
+  `origin/main` for the active national alignment, reprove evaluation identity
+  without rotating unless a rating input changed, and start fresh workflow-v30.
+  Dynamically require final Master `tools=[]`, zero read dirs/files/TOOL_CALL,
+  `strict-authority-v2`, one accepted 3+2 packet, and
+  `pipeline.master_plan_accepted`; thinking telemetry alone is never success.
+  Publish fixed v143 only after the exact
   checkpoint reaches `official_bootstrap_required` and the operator completes
   both official bootstrap and finalize. Then prove singleton v144, normal 5+3,
   the first two-Bot immutable native cycle and continued strong-Bot selection.

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import tool_bot_management as tbm
+import strict_authority_workflow as strict_authority
 
 pytestmark = pytest.mark.usefixtures("synthetic_checkpoint_authority")
 
@@ -327,15 +328,18 @@ class TestDoAbandonGeneration:
         candidate = tmp_path / "national_v144"
         _strict_artifact(candidate, 144)
         workflow = WorkerWorkflow.for_checkpoint(checkpoint)
-        from strict_authority_workflow import authority_run_id
-
-        strict_run_id = authority_run_id(checkpoint["workflow_run_id"])
-        workflow.store.ensure_instance(strict_run_id, definition_version=1)
+        strict_run_id = strict_authority.authority_run_id(
+            checkpoint["workflow_run_id"]
+        )
+        workflow.store.ensure_instance(
+            strict_run_id,
+            definition_version=strict_authority.DEFINITION_VERSION,
+        )
         strict_effect_id = "strict-llm-" + "9" * 64
         workflow.store.request_effect(
             run_id=strict_run_id,
             effect_id=strict_effect_id,
-            kind="first-strict-llm-provider-call-v1",
+            kind=strict_authority.EFFECT_KIND,
             input_payload={"slot": "proposal:mechanism"},
             causation_id="strict-provider-started-before-abandon",
             max_attempts=1,
@@ -1554,7 +1558,7 @@ def test_completed_abandon_handoff_allows_monotonic_terminal_revision(
     ("run_suffix", "event_type"),
     (
         ("", "WorkerAbandoned"),
-        (":strict-authority-v1", "StrictAuthorityAbandoned"),
+        (f":{strict_authority.RUN_SUFFIX}", "StrictAuthorityAbandoned"),
     ),
 )
 def test_completed_abandon_handoff_rejects_unfenced_workflow_journal(

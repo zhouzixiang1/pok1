@@ -373,7 +373,11 @@ def test_role_prompts_match_the_runtime_read_capability_guard():
     assert "python -m py_compile {candidate_path}/policy.py" in worker
     assert "diff -rq bots/national_v" not in worker
     assert "python -B -c" not in worker
-    assert "Only the `Read` tool is available" in master
+    assert "no filesystem tools" in master
+    assert "Only the `Read` tool is available" not in master
+    assert "select exactly one allowed proposal mechanism" in master
+    assert "select or synthesize" not in master
+    assert "Never synthesize, merge, or average proposals into a fourth" in master
     assert "python -c" not in master
     assert "python -c" not in reviewer
     assert "git log" not in reviewer
