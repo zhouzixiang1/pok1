@@ -1411,7 +1411,6 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             active_stage = existing.get("stage")
             if active_stage not in {
                 None,
-                "timed_out",
                 "archived",
                 "abandoned",
             }:
@@ -1464,8 +1463,6 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 active_revision = -1
             if active_stage not in {
                 None,
-                "timed_out",
-                "infra_timed_out",
                 "archived",
                 "abandoned",
             } and (
@@ -1607,7 +1604,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             )
         elif existing:
             active_stage = existing.get("stage")
-            dead_stages = {None, "timed_out", "archived", "abandoned"}
+            dead_stages = {None, "archived", "abandoned"}
             if active_stage not in dead_stages:
                 log.warning(
                     "Refusing checkpoint identity mismatch: active v%s/source v%s stage=%s, attempted v%s/source v%s stage=%s",
@@ -3605,7 +3602,12 @@ def _validate_abandoned_checkpoint(checkpoint, *, project_root):
     stage = checkpoint.get("stage") if isinstance(checkpoint, dict) else None
     if not isinstance(stage, str) or not stage.strip():
         errors.append("abandon_checkpoint_stage_missing")
-    elif stage in {"timed_out", "infra_timed_out", "archived", "abandoned"}:
+    # ``timed_out`` is an active terminalization lease: the only legal next
+    # route is the recorded canonical-abandon transaction, which appends this
+    # receipt before quarantining bytes and clearing the exact checkpoint.
+    # Infra timeouts preserve the candidate for precommit retry, while archived
+    # and abandoned states have already crossed their terminal boundary.
+    elif stage in {"infra_timed_out", "archived", "abandoned"}:
         errors.append("abandon_checkpoint_stage_not_active")
     workflow_run_id = (
         checkpoint.get("workflow_run_id") if isinstance(checkpoint, dict) else None

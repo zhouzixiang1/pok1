@@ -331,6 +331,42 @@ epoch initialization false and exposes no active bots. A completed historical
 receipt remains valid after later legitimate commits and ledger rows because it
 binds its original prefix and exact successor row; it never adopts later bytes.
 
+A provider stream may treat a vanished checkpoint as a completed abandon only
+when the current authorized owner tool returned one unique canonical result,
+flattened or nested, containing `workflow_run_id` plus the exact transaction,
+abandon-ledger, finalize-receipt, and checkpoint identities. Recovery reopens
+the transaction at the current Git and ledger heads and replays every event in
+both the outer Worker and strict-authority journals: sequence numbers must be
+continuous, every payload digest must match, the single `abandoned` event must
+be last, and no live effect may remain. Missing, duplicated, ambiguous, stale,
+or unreadable proof is `recovery_blocked`; it never becomes permission to
+prepare a successor. A terminal result must bind exactly one pending
+route-mutating ToolUse by explicit tool/parent id or the SDK's bounded
+sole-pending form. Unknown, reused, swapped-owner, multi-pending, unsettled, or
+read-only-owner results block recovery. A genuinely absent checkpoint is a provider-stream
+boundary: the provider ends the stream and only the outer scheduler may call
+the non-MCP `prepare_generation`. `prepare_next_gen` is legal only through an
+exact validated `selected` first-materialization route or `preparing`
+crash-recovery route. Both timeout states remain active checkpoint leases and
+cannot be overwritten by a restart or successor. Plain `timed_out` is allowed
+only from the fixed disposable-stage allowlist and canonically abandons.
+`infra_timed_out` is allowed only over `critic_checked`; before retry it must
+re-prove the full artifact, current quality/review/critic identities, and
+quality fingerprint = repair baseline = live bytes, then exact-CAS back to
+`critic_checked`. An unbound target preimage found during selected/preparing
+materialization causes system-owned canonical abandon/quarantine, never
+adoption or deletion.
+After commit, pending/running/blocked post-publication handoff state also makes
+the provider end its stream; only outer deterministic recovery owns
+`run_archivist`.
+
+`orchestrator.py --one-gen` owns one workflow/generation, not one provider
+session. It may open fresh provider streams and execute deterministic routes
+until that same workflow publishes and completes cleanup, canonically abandons,
+parks for an operator action, or blocks recovery. It must never prepare a
+successor after abandon, treat failed post-publication cleanup as success, or
+collapse abandon/operator/recovery/accounting outcomes into one success code.
+
 The operator stability projection reaches 10/10 only for ten consecutive
 fully published generations under one web process, one live rating-daemon
 identity, one effective runtime-configuration digest, and one evaluation-contract
@@ -357,6 +393,30 @@ Critic `approved` means the advisory role completed, while
 never substitute one for the other. `daemon_enabled=false` is a supported
 runtime mode: an absent daemon PID is `not_applicable`, while a live disabled
 daemon or an enabled-but-missing daemon remains unhealthy.
+
+Control health publishes no executable route when checkpoint revalidation or
+recovery is blocked, and `/api/control/start` applies that same launch barrier
+before resetting stability or owning a task. Operator actions are a distinct
+409 boundary. With an initialized epoch but no checkpoint or handoff, health may
+publish only a typed outer-scheduler boundary: provider `end_stream`, non-MCP
+`prepare_generation`, authoritative `next_v`, and `source_v=null` because parent
+selection has not happened. The frontend must validate that projection, disable
+Start on blocked/operator authority, and clear detailed checkpoint state after
+a failed poll; it may not infer a route or source from `current_v`. Checkpoint
+absence uses a before/read/after observation: unreadable, disappearing, terminal
+looking, or incomplete bytes never become a clean scheduler boundary. Process
+launch additionally distinguishes a resumable pending/dead-owner handoff from a
+live foreign owner. Owner reservation double-samples one fence digest; AppState
+and the global LLM shutdown manager are both owner-CAS fenced, and an unowned or
+failed lifespan may not alter the live owner's running/UI/manager state.
+
+Native precommit cancellation is attempt-local and monotonic. The exact token
+is passed into the real 70-hand loop, checked before every opponent/repeat and
+after each complete match/journal, and permanently set on timeout/cancellation.
+Reset rotates only an already-cancelled token. A new attempt cannot revive old
+detached work, admit its late match, or let it launch the next sample. The
+first-strict system-control execution scope is frozen in the checkpoint so an
+infra retry recovers the same journal identity rather than repeating a match.
 
 ## Evidence authority
 

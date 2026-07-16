@@ -159,6 +159,7 @@ def _read_pipeline_health(status: dict) -> dict:
             "exists": False,
             "stage": None,
             "authority": authority,
+            "blocked": True,
             "error": "canonical_epoch_projection_unavailable",
         }
 
@@ -166,16 +167,71 @@ def _read_pipeline_health(status: dict) -> dict:
     handoff = status.get("post_publication_handoff")
     if isinstance(handoff, dict) and handoff.get("status") != "none":
         conflict = isinstance(active, dict)
-        blocked = bool(handoff.get("blocked")) or conflict
+        operator_action = status.get("operator_action")
+        operator_blocked = bool(operator_action)
+        ignored_checkpoint = status.get("ignored_checkpoint")
+        ignored_blocked = isinstance(ignored_checkpoint, dict)
+        epoch_blocked = not bool(status.get("epoch_initialized"))
+        handoff_state = str(handoff.get("state") or "")
+        owner_scope = str(handoff.get("owner_scope") or "unknown")
+        task = app_state.task_snapshot()
+        runtime_owner_id = app_state.runtime_owner_id()
+        current_runtime_owner = bool(
+            status.get("running") is True
+            and task.get("present") is True
+            and task.get("done") is False
+            and isinstance(runtime_owner_id, str)
+            and bool(runtime_owner_id)
+            and task.get("owner_id") == runtime_owner_id
+        )
+        owner_blocked = False
+        owner_issue = None
+        if handoff_state == "running":
+            if owner_scope == "foreign_process":
+                owner_blocked = True
+                owner_issue = "post_publication_handoff_foreign_owner_active"
+            elif owner_scope == "current_process":
+                if not current_runtime_owner:
+                    owner_blocked = True
+                    owner_issue = (
+                        "post_publication_handoff_current_owner_unbound"
+                    )
+            else:
+                owner_blocked = True
+                owner_issue = "post_publication_handoff_owner_unknown"
+        elif handoff_state == "pending" and owner_scope != "none":
+            owner_blocked = True
+            owner_issue = "post_publication_handoff_owner_scope_invalid"
+        blocked = (
+            bool(handoff.get("blocked"))
+            or conflict
+            or operator_blocked
+            or ignored_blocked
+            or epoch_blocked
+            or owner_blocked
+        )
         issues = list(handoff.get("issues") or [])
         if conflict:
             issues.append("active_generation_and_handoff_overlap")
+        if operator_blocked:
+            issues.append("operator_action_required")
+        if ignored_blocked:
+            issues.append("ignored_checkpoint_requires_recovery")
+        if epoch_blocked:
+            issues.append("policy_epoch_not_initialized")
+        if owner_issue:
+            issues.append(owner_issue)
         return {
             "exists": True,
             "stage": "post_publication_handoff",
             "authority": "post_publication_handoff_journal",
             "epoch_state": status.get("epoch_state"),
             "blocked": blocked,
+            "operator_action_required": operator_blocked,
+            "operator_action": operator_action,
+            "ignored_checkpoint": (
+                ignored_checkpoint if ignored_blocked else None
+            ),
             "issues": list(dict.fromkeys(issues)),
             "next_v": handoff.get("version"),
             "source_v": handoff.get("source_v"),
@@ -184,6 +240,7 @@ def _read_pipeline_health(status: dict) -> dict:
             "handoff_identity_digest": handoff.get("identity_digest"),
             "handoff_projection_digest": handoff.get("projection_digest"),
             "publication_id": handoff.get("publication_id"),
+            "handoff_owner_scope": owner_scope,
             "route": None if blocked else {
                 "stage": "post_publication_handoff",
                 "next_tool": "run_archivist",
@@ -201,13 +258,39 @@ def _read_pipeline_health(status: dict) -> dict:
         }
     ignored = status.get("ignored_checkpoint")
     if not isinstance(active, dict):
+        ignored_present = isinstance(ignored, dict)
+        operator_action = status.get("operator_action")
+        operator_blocked = bool(operator_action)
+        blocked = (
+            not bool(status.get("epoch_initialized"))
+            or ignored_present
+            or operator_blocked
+        )
+        issues = []
+        if ignored_present:
+            issues.append("ignored_checkpoint_requires_recovery")
+        if operator_blocked:
+            issues.append("operator_action_required")
         return {
             "exists": False,
             "stage": None,
             "authority": authority,
             "epoch_state": status.get("epoch_state"),
-            "blocked": not bool(status.get("epoch_initialized")),
+            "blocked": blocked,
+            "issues": issues,
+            "operator_action_required": operator_blocked,
+            "operator_action": operator_action,
             "ignored_checkpoint": ignored if isinstance(ignored, dict) else None,
+            "scheduler_boundary": None if blocked else {
+                "authority": "outer_scheduler",
+                "state": "ready_to_prepare",
+                "provider_action": "end_stream",
+                "scheduler_action": "prepare_generation",
+                "next_v": status.get("next_v"),
+                # Parent/source selection belongs to prepare_generation and is
+                # not derivable from current_v once a strict pool exists.
+                "source_v": None,
+            },
         }
 
     # Only an initialized projection with a validated active generation may
@@ -301,6 +384,7 @@ def _read_pipeline_health(status: dict) -> dict:
                 "stage": active.get("stage"),
                 "authority": authority,
                 "epoch_state": status.get("epoch_state"),
+                "blocked": True,
                 "error": "strict_checkpoint_revalidation_failed",
                 "issues": list(dict.fromkeys(map(str, issues))),
                 "identity_changed": bool(identity_mismatches),
@@ -309,15 +393,21 @@ def _read_pipeline_health(status: dict) -> dict:
                 "observed_identity": observed_identity,
             }
         recovery = checkpoint_recovery_diagnostics(checkpoint)
-        route = route_policy(checkpoint)
-        if not isinstance(route, dict):
-            raise RuntimeError("canonical route is not an object")
+        recovery_blocked = recovery.get("recoverable") is not True
+        operator_action = status.get("operator_action")
+        operator_blocked = bool(operator_action)
+        route = None
+        if not recovery_blocked and not operator_blocked:
+            route = route_policy(checkpoint)
+            if not isinstance(route, dict):
+                raise RuntimeError("canonical route is not an object")
     except Exception as exc:
         return {
             "exists": True,
             "stage": active.get("stage"),
             "authority": authority,
             "epoch_state": status.get("epoch_state"),
+            "blocked": True,
             "error": f"strict_checkpoint_diagnostic_failed:{type(exc).__name__}",
         }
 
@@ -337,8 +427,22 @@ def _read_pipeline_health(status: dict) -> dict:
         "precommit_attempt": attempt.get("precommit"),
         "ignored_checkpoint": None,
         "recovery": recovery,
-        "route": route,
+        "blocked": False,
+        "operator_action_required": False,
     }
+    if recovery_blocked or operator_blocked:
+        snapshot["blocked"] = True
+        snapshot["operator_action_required"] = operator_blocked
+        snapshot["operator_action"] = operator_action
+        snapshot["route"] = None
+        blocked_issues = list(recovery.get("issues") or [])
+        if recovery_blocked and not blocked_issues:
+            blocked_issues.append("checkpoint_recovery_not_proven")
+        if operator_blocked:
+            blocked_issues.append("operator_action_required")
+        snapshot["issues"] = list(dict.fromkeys(map(str, blocked_issues)))
+    else:
+        snapshot["route"] = route
     now = time.time()
     for source_key, target_key in (
         ("last_stage_change_ts", "last_stage_age_sec"),
@@ -940,6 +1044,197 @@ def _control_status_snapshot() -> dict[str, Any]:
     return _sync_evolution_fields(app_state.to_dict())
 
 
+def _control_launch_authority_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the canonical status and live-revalidated launch barrier."""
+
+    status = _control_status_snapshot()
+    return status, _read_pipeline_health(status)
+
+
+def _runtime_launch_barrier_snapshot() -> dict[str, Any]:
+    """Build one content-bound launch decision shared by HTTP and lifespan."""
+
+    status, pipeline = _control_launch_authority_snapshot()
+    recovery = (
+        pipeline.get("recovery")
+        if isinstance(pipeline.get("recovery"), dict)
+        else {}
+    )
+    active = status.get("active_generation")
+    handoff = status.get("post_publication_handoff")
+    handoff = handoff if isinstance(handoff, dict) else {"status": "none"}
+    scheduler = pipeline.get("scheduler_boundary")
+    scheduler = scheduler if isinstance(scheduler, dict) else None
+    route = pipeline.get("route")
+    route = route if isinstance(route, dict) else None
+
+    denial_code = None
+    issues: list[str] = []
+    if status.get("epoch_initialized") is not True:
+        denial_code = "policy_epoch_not_initialized"
+        issues.extend(status.get("reset_receipt_issues") or [])
+    elif status.get("operator_action"):
+        denial_code = "operator_action_required"
+        issues.append("operator_action_required")
+    elif (
+        pipeline.get("blocked") is True
+        or recovery.get("recoverable") is False
+        or pipeline.get("error")
+    ):
+        denial_code = "pipeline_recovery_blocked"
+        issues.extend(pipeline.get("issues") or [])
+        issues.extend(recovery.get("issues") or [])
+        if pipeline.get("error"):
+            issues.append(str(pipeline["error"]))
+    elif isinstance(active, dict):
+        if pipeline.get("exists") is not True or route is None:
+            denial_code = "pipeline_launch_boundary_invalid"
+            issues.append("active_generation_route_not_proven")
+    elif handoff.get("status") != "none":
+        if pipeline.get("exists") is not True or route is None:
+            denial_code = "pipeline_launch_boundary_invalid"
+            issues.append("post_publication_handoff_route_not_proven")
+    elif (
+        scheduler is None
+        or scheduler.get("authority") != "outer_scheduler"
+        or scheduler.get("state") != "ready_to_prepare"
+        or scheduler.get("provider_action") != "end_stream"
+        or scheduler.get("scheduler_action") != "prepare_generation"
+        or scheduler.get("next_v") != status.get("next_v")
+        or scheduler.get("source_v") is not None
+    ):
+        denial_code = "pipeline_launch_boundary_invalid"
+        issues.append("scheduler_boundary_not_proven")
+
+    fence_material = {
+        "schema_version": 1,
+        "evaluation_epoch": status.get("evaluation_epoch"),
+        "stream_authority_digest": status.get("stream_authority_digest"),
+        "epoch_state": status.get("epoch_state"),
+        "epoch_initialized": status.get("epoch_initialized"),
+        "operator_action": status.get("operator_action"),
+        "ignored_checkpoint": status.get("ignored_checkpoint"),
+        "active_generation": active,
+        "post_publication_handoff": {
+            key: handoff.get(key)
+            for key in (
+                "status",
+                "state",
+                "blocked",
+                "version",
+                "source_v",
+                "workflow_run_id",
+                "identity_digest",
+                "projection_digest",
+                "record_revision",
+                "owner_scope",
+            )
+        },
+        "pipeline": {
+            key: pipeline.get(key)
+            for key in (
+                "exists",
+                "authority",
+                "blocked",
+                "error",
+                "stage",
+                "next_v",
+                "source_v",
+                "run_id",
+                "workflow_run_id",
+                "checkpoint_revision",
+                "handoff_identity_digest",
+                "handoff_projection_digest",
+                "handoff_owner_scope",
+            )
+        },
+        "recovery": {
+            "active": recovery.get("active"),
+            "recoverable": recovery.get("recoverable"),
+            "issues": list(recovery.get("issues") or []),
+        },
+        "route": route,
+        "scheduler_boundary": scheduler,
+    }
+    try:
+        fence_bytes = json.dumps(
+            fence_material,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        denial_code = denial_code or "pipeline_launch_boundary_invalid"
+        issues.append("launch_fence_not_canonical_json")
+        fence_bytes = b"invalid-launch-fence"
+    fence_digest = hashlib.sha256(fence_bytes).hexdigest()
+    return {
+        "allowed": denial_code is None,
+        "denial_code": denial_code,
+        "issues": list(dict.fromkeys(map(str, issues))),
+        "fence_digest": fence_digest,
+        "status": status,
+        "pipeline": pipeline,
+    }
+
+
+async def _reserve_runtime_launch_owner() -> dict[str, Any]:
+    """Fence launch authority across the atomic runtime-owner reservation."""
+
+    before = await run_blocking_isolated(
+        _runtime_launch_barrier_snapshot,
+        thread_name_prefix="runtime-launch-before-owner",
+    )
+    if before.get("allowed") is not True:
+        return {"acquired": False, "reason": "barrier", "barrier": before}
+    owner_id = app_state.begin_runtime_owner()
+    if owner_id is None:
+        return {
+            "acquired": False,
+            "reason": "already_owned",
+            "barrier": before,
+        }
+    try:
+        after = await run_blocking_isolated(
+            _runtime_launch_barrier_snapshot,
+            thread_name_prefix="runtime-launch-after-owner",
+        )
+    except BaseException:
+        # The reservation exists before the second authority sample starts.
+        # Cancellation and ordinary sampling failures must release that exact
+        # owner before propagating; otherwise AppState remains running with no
+        # task and every later launch is permanently rejected as already owned.
+        app_state.abort_runtime_owner(owner_id)
+        raise
+    if (
+        after.get("allowed") is not True
+        or after.get("fence_digest") != before.get("fence_digest")
+    ):
+        app_state.abort_runtime_owner(owner_id)
+        if after.get("allowed") is True:
+            after = {
+                **after,
+                "allowed": False,
+                "denial_code": "launch_authority_changed",
+                "issues": [
+                    *list(after.get("issues") or []),
+                    "launch_authority_changed_during_owner_reservation",
+                ],
+            }
+        return {
+            "acquired": False,
+            "reason": "authority_changed",
+            "barrier": after,
+        }
+    return {
+        "acquired": True,
+        "reason": "acquired",
+        "owner_id": owner_id,
+        "barrier": after,
+    }
+
+
 @router.get("/status")
 async def control_status():
     return await run_blocking_isolated(
@@ -973,60 +1268,91 @@ async def get_decisions(limit: int = 50):
 
 async def _start_evolution_transaction() -> dict[str, str]:
     _require_initialized_epoch("control_start_evolution")
-    if not app_state.try_set_running(True):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "evolution_runtime_already_owned",
-                "task": app_state.task_snapshot(),
-            },
-        )
-    owner_id = app_state.runtime_owner_id()
-
-    from server.app import web_ui
-    web_ui._broadcaster.clear()
-    config = app_state.get_config()
-
-    try:
-        await run_blocking_isolated(
-            _bind_and_reset_stability,
-            config,
-            "orchestrator_restart",
-            {"trigger": "control_start"},
-            thread_name_prefix="control-start-stability",
-        )
-    except Exception as exc:
-        app_state.abort_runtime_owner(owner_id)
-        if "owner_process_still_alive" in str(exc):
+    reservation = await _reserve_runtime_launch_owner()
+    if reservation.get("acquired") is not True:
+        if reservation.get("reason") == "already_owned":
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "stability_observation_owner_active",
-                    "message": (
-                        "Another live runtime process owns the uninterrupted "
-                        "evolution observation. Stop that runtime before starting."
-                    ),
+                    "code": "evolution_runtime_already_owned",
+                    "task": app_state.task_snapshot(),
+                },
+            )
+        barrier = reservation.get("barrier") or {}
+        status = barrier.get("status") or {}
+        pipeline = barrier.get("pipeline") or {}
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": barrier.get("denial_code")
+                or "pipeline_launch_boundary_invalid",
+                "operation": "control_start_evolution",
+                "operator_action": status.get("operator_action"),
+                "operator_command": status.get("operator_command"),
+                "epoch_state": status.get("epoch_state"),
+                "stage": pipeline.get("stage"),
+                "issues": list(barrier.get("issues") or []),
+                "fence_digest": barrier.get("fence_digest"),
+            },
+        )
+    owner_id = reservation.get("owner_id")
+    task: asyncio.Task | None = None
+    llm_shutdown_manager_bound = False
+    try:
+        # Enter the cleanup boundary immediately after owner acquisition.  Even
+        # imports, broadcaster maintenance, and config reads are fallible; none
+        # may strand a running owner with no attached task.
+        from server.app import web_ui
+
+        web_ui._broadcaster.clear()
+        config = app_state.get_config()
+
+        try:
+            await run_blocking_isolated(
+                _bind_and_reset_stability,
+                config,
+                "orchestrator_restart",
+                {"trigger": "control_start"},
+                thread_name_prefix="control-start-stability",
+            )
+        except Exception as exc:
+            if "owner_process_still_alive" in str(exc):
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "stability_observation_owner_active",
+                        "message": (
+                            "Another live runtime process owns the uninterrupted "
+                            "evolution observation. Stop that runtime before starting."
+                        ),
+                    },
+                ) from None
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "stability_observation_reset_failed",
+                    "failure": f"{type(exc).__name__}:{str(exc)[:200]}",
                 },
             ) from None
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "stability_observation_reset_failed",
-                "failure": f"{type(exc).__name__}:{str(exc)[:200]}",
-            },
-        ) from None
 
-    task: asyncio.Task | None = None
-    try:
         from shutdown_manager import ShutdownManager
 
         shutdown_mgr = ShutdownManager(grace_period=15.0)
         app_state.set_shutdown_mgr(shutdown_mgr, owner_id=owner_id)
         try:
             from llm_query import set_shutdown_manager
-            set_shutdown_manager(shutdown_mgr)
+            llm_shutdown_manager_bound = bool(
+                set_shutdown_manager(
+                    shutdown_mgr,
+                    owner_id=owner_id,
+                )
+            )
+            if not llm_shutdown_manager_bound:
+                raise RuntimeError(
+                    "LLM shutdown manager owner fencing conflict"
+                )
         except Exception:
-            pass
+            raise
 
         from orchestrator import orchestrator_loop
         task = asyncio.create_task(run_evolution_task(orchestrator_loop(
@@ -1040,14 +1366,15 @@ async def _start_evolution_transaction() -> dict[str, str]:
             task.cancel()
             try:
                 await task
-            except (asyncio.CancelledError, Exception):
+            except BaseException:
+                pass
+        if llm_shutdown_manager_bound:
+            try:
+                from llm_query import set_shutdown_manager
+                set_shutdown_manager(None, owner_id=owner_id)
+            except Exception:
                 pass
         app_state.abort_runtime_owner(owner_id)
-        try:
-            from llm_query import set_shutdown_manager
-            set_shutdown_manager(None)
-        except Exception:
-            pass
         raise
 
     return {"status": "started", "mode": "orchestrator"}

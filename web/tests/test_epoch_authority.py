@@ -882,6 +882,151 @@ def test_projection_splits_published_high_water_from_allocation_floor(
     assert projection["next_v_authority"] == "published_tags_and_abandon_receipts"
 
 
+@pytest.mark.parametrize(
+    ("checkpoint_case", "expected_issue"),
+    (
+        ("archived", "terminal_checkpoint_requires_cleanup:archived"),
+        ("abandoned", "terminal_checkpoint_requires_cleanup:abandoned"),
+        ("missing_stage", "checkpoint_stage_missing"),
+        ("missing_next_v", "checkpoint_next_v_missing"),
+    ),
+)
+def test_claimed_terminal_or_incomplete_checkpoint_never_becomes_scheduler_boundary(
+    tmp_path,
+    monkeypatch,
+    checkpoint_case,
+    expected_issue,
+):
+    import epoch_authority
+    import evolution_infra
+    import server.routes.control as control
+
+    monkeypatch.setattr(
+        epoch_authority,
+        "policy_epoch_initialization",
+        lambda **_kwargs: {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "strict_published",
+            "initialized": True,
+            "strict_published": True,
+            "strict_published_bots": ["national_v143"],
+            "reset_receipt_valid": False,
+            "reset_receipt_digest": None,
+            "reset_receipt_issues": [],
+            "version_authority_high_water": 143,
+            "first_strict_version": 143,
+            "operator_action": None,
+            "operator_command": None,
+        },
+    )
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(
+        evolution_infra,
+        "abandoned_version_authority",
+        lambda **_kwargs: {
+            "floor": 143,
+            "head_digest": None,
+            "receipt_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "PIPELINE_STATE_FILE",
+        tmp_path / "pipeline_state.json",
+    )
+    if checkpoint_case in {"archived", "abandoned"}:
+        checkpoint = _strict_checkpoint(144, 143, stage=checkpoint_case)
+    elif checkpoint_case == "missing_stage":
+        checkpoint = {"stage": None, "next_v": 144, "source_v": 143}
+    else:
+        checkpoint = {"stage": "master_planned", "next_v": None, "source_v": 143}
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+
+    projection = epoch_authority.strict_epoch_projection()
+    health = control._read_pipeline_health({
+        **projection,
+        "epoch_initialized": True,
+        "epoch_state": projection["state"],
+        "post_publication_handoff": {"status": "none"},
+    })
+
+    assert projection["active_generation"] is None
+    assert projection["operator_action"] == "archive_incompatible_checkpoint"
+    assert expected_issue in projection["ignored_checkpoint"]["issues"]
+    assert health["blocked"] is True
+    assert health["scheduler_boundary"] is None
+
+
+def test_checkpoint_disappearing_during_projection_is_not_clean_scheduler_boundary(
+    tmp_path,
+    monkeypatch,
+):
+    import epoch_authority
+    import evolution_infra
+    import server.routes.control as control
+
+    monkeypatch.setattr(
+        epoch_authority,
+        "policy_epoch_initialization",
+        lambda **_kwargs: {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "strict_published",
+            "initialized": True,
+            "strict_published": True,
+            "strict_published_bots": ["national_v143"],
+            "reset_receipt_valid": False,
+            "reset_receipt_digest": None,
+            "reset_receipt_issues": [],
+            "version_authority_high_water": 143,
+            "first_strict_version": 143,
+            "operator_action": None,
+            "operator_command": None,
+        },
+    )
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(
+        evolution_infra,
+        "abandoned_version_authority",
+        lambda **_kwargs: {
+            "floor": 143,
+            "head_digest": None,
+            "receipt_count": 0,
+        },
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "PIPELINE_STATE_FILE",
+        tmp_path / "pipeline_state.json",
+    )
+    monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: None)
+    observations = iter((True, False))
+    monkeypatch.setattr(
+        epoch_authority.os.path,
+        "lexists",
+        lambda _path: next(observations),
+    )
+
+    projection = epoch_authority.strict_epoch_projection()
+    health = control._read_pipeline_health({
+        **projection,
+        "epoch_initialized": True,
+        "epoch_state": projection["state"],
+        "post_publication_handoff": {"status": "none"},
+    })
+
+    assert projection["active_generation"] is None
+    assert projection["operator_action"] == "archive_incompatible_checkpoint"
+    assert projection["ignored_checkpoint"]["issues"] == [
+        "checkpoint_disappeared_during_read"
+    ]
+    assert health["blocked"] is True
+    assert health["scheduler_boundary"] is None
+
+
 def test_valid_active_checkpoint_owns_target_but_not_published_high_water(
     tmp_path,
     monkeypatch,

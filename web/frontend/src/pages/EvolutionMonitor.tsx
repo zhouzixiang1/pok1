@@ -1,6 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useEvolutionSSE, fetchEvolutionState } from "../api/evolution";
 import type { GenerationCostPolicyState, IOLine } from "../api/evolution";
+import {
+  controlPipelineBlocked,
+  controlPipelineIssues,
+  controlSchedulerOwnsPrepareBoundary,
+} from "../api/control";
 import { api } from "../api/client";
 import type { BotRating, PipelineCheckpoint, WorkerFailure } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
@@ -76,11 +81,13 @@ export default function EvolutionMonitor() {
   const openToolId = useRef<number | null>(null);
   const thinkingId = useRef<number | null>(null);
   const activeRoleRef = useRef<string>(activeRole);
+  const checkpointRequestSequence = useRef(0);
   activeRoleRef.current = activeRole;
   const streamAuthorityKey = epochStreamAuthorityKey(epochStatus);
   const epochReady = streamAuthorityKey !== null;
 
   const clearEpochProjection = useCallback(() => {
+    ++checkpointRequestSequence.current;
     setMessages([]);
     setHistoryLines([]);
     setStatus("等待 epoch 权威");
@@ -327,6 +334,7 @@ export default function EvolutionMonitor() {
   }, streamAuthorityKey);
 
   useEffect(() => {
+    const requestSequenceRef = checkpointRequestSequence;
     if (!epochReady) {
       setStreamState("blocked");
       clearEpochProjection();
@@ -354,9 +362,18 @@ export default function EvolutionMonitor() {
         clearEpochProjection();
       }
     }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
-    const refreshPipeline = () => api.pipelineCheckpoint().then((value) => {
-      if (!cancelled) setCheckpoint(value);
-    }).catch((e) => console.error("[EvolutionMonitor] API error:", e));
+    const refreshPipeline = () => {
+      const requestSequence = ++checkpointRequestSequence.current;
+      api.pipelineCheckpoint().then((value) => {
+        if (!cancelled && requestSequence === checkpointRequestSequence.current) {
+          setCheckpoint(value);
+        }
+      }).catch((e) => {
+        if (cancelled || requestSequence !== checkpointRequestSequence.current) return;
+        setCheckpoint(null);
+        console.error("[EvolutionMonitor] API error:", e);
+      });
+    };
     refreshPipeline();
     const pipeInterval = setInterval(refreshPipeline, 5000);
     const refreshFailures = () => api.pipelineFailures(3).then((value) => {
@@ -367,6 +384,7 @@ export default function EvolutionMonitor() {
     const disconnect = connect();
     return () => {
       cancelled = true;
+      ++requestSequenceRef.current;
       clearInterval(pipeInterval);
       clearInterval(failInterval);
       disconnect();
@@ -406,6 +424,12 @@ export default function EvolutionMonitor() {
     && controlHealth?.overall === "healthy"
     && taskActive,
   );
+  const pipelineBlocked = controlPipelineBlocked(controlHealth?.pipeline);
+  const pipelineIssues = controlPipelineIssues(controlHealth?.pipeline);
+  const schedulerOwnsPrepare = controlSchedulerOwnsPrepareBoundary(
+    epochStatus,
+    controlHealth,
+  );
   const authoritativeWorking = Boolean(runtimeHealthy && streamState === "connected" && isWorking);
   const monitorState = !epochStatus
     ? { label: "控制权威不可用", variant: "error" as const }
@@ -421,8 +445,10 @@ export default function EvolutionMonitor() {
             ? { label: streamState === "connecting" ? "运行中，SSE 连接中" : "运行中，SSE 已断开", variant: "warning" as const }
             : authoritativeWorking
               ? { label: "正在执行工具", variant: "success" as const }
-              : runtimeHealthy
-                ? { label: "编排器运行，等待下一动作", variant: "warning" as const }
+              : schedulerOwnsPrepare
+                ? { label: "外层调度器准备下一代", variant: "warning" as const }
+                : runtimeHealthy
+                  ? { label: "编排器运行，等待下一动作", variant: "warning" as const }
                 : { label: "已停止", variant: "neutral" as const };
 
   const tabs: { key: TabKey; label: string }[] = [
@@ -640,7 +666,18 @@ export default function EvolutionMonitor() {
           <div className="flex-1 overflow-y-auto">
             {activeTab === "pipeline" && (
               <div className="divide-y divide-gray-100 dark:divide-gray-800">
-                <PipelineStatus checkpoint={checkpoint} activeGeneration={epochStatus?.active_generation ?? null} handoff={epochStatus?.post_publication_handoff ?? null} handoffBlocked={controlHealth?.pipeline.blocked === true} />
+                <PipelineStatus
+                  checkpoint={checkpoint}
+                  activeGeneration={epochStatus?.active_generation ?? null}
+                  handoff={epochStatus?.post_publication_handoff ?? null}
+                  handoffBlocked={Boolean(
+                    epochStatus?.post_publication_handoff.status !== "none"
+                    && pipelineBlocked
+                  )}
+                  activeBlocked={Boolean(epochStatus?.active_generation && pipelineBlocked)}
+                  activeIssues={pipelineIssues}
+                  schedulerActive={schedulerOwnsPrepare}
+                />
                 <WorkerProgress workers={workers} />
                 {epochStatus?.epoch_initialized && (
                   <CostBreakdown costs={roleCosts} grand={grand} gen={gen} policy={costPolicy} onReset={() => { setRoleCosts([]); setGen(0); }} />

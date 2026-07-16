@@ -225,7 +225,22 @@ SESSION_RECOVERABLE_STAGES = frozenset(
     stage
     for stage in STAGE_ORDER
     if stage not in {"official_bootstrap_required", "official_inconclusive", "archived"}
-)
+) | frozenset({"timed_out", "infra_timed_out"})
+
+# A plain cycle timeout may terminalize only stages whose ordinary generic
+# abandon policy is disposable.  Later gates, repairs, certification and
+# publication must retain their exact stage and resume their canonical owner;
+# rewriting them to ``timed_out`` would erase the stage-specific safety rule.
+TIMEOUT_ABANDONABLE_STAGES = frozenset({
+    "selected",
+    "preparing",
+    "prepared",
+    "crossover_running",
+    "direction_audited",
+    "master_planned",
+    "workers_done",
+    "quality_failed",
+})
 
 STAGE_GATE_ALLOWLIST = {
     "selected": set(),
@@ -273,7 +288,7 @@ NEXT_TOOL_BY_STAGE = {
     "official_inconclusive": None,
     "publishing": "commit_bot",
     "archived": "run_archivist",
-    "timed_out": "prepare_next_gen",
+    "timed_out": "abandon_generation",
     "infra_timed_out": "run_precommit_eval",
 }
 
@@ -310,6 +325,22 @@ HEAD_DRIFT_RESUME_POLICY = {
         "warning_suffix": "selected",
         "requires_target": False,
         "requires_contract_unchanged": False,
+        "branch_alias_allowed": True,
+    },
+    "timed_out": {
+        "allowed_tools": ("abandon_generation",),
+        "resume_kind": "timeout_abandon",
+        "warning_suffix": "timed_out",
+        "requires_target": False,
+        "requires_contract_unchanged": False,
+        "branch_alias_allowed": True,
+    },
+    "infra_timed_out": {
+        "allowed_tools": ("run_precommit_eval",),
+        "resume_kind": "infra_precommit_retry",
+        "warning_suffix": "infra_timed_out",
+        "requires_target": True,
+        "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
     "prepared": {
@@ -716,18 +747,26 @@ def validate_stage_transition(current_stage, proposed_stage):
             return True, "official_bootstrap_certificate_validated"
         return False, "operator_bootstrap_pause_is_durable"
     if proposed_stage == "timed_out":
-        return True, "timeout_override"
+        if current_stage in TIMEOUT_ABANDONABLE_STAGES:
+            return True, "timeout_override"
+        return False, (
+            "timeout_cannot_erase_stage_authority: "
+            f"{current_stage}"
+        )
     if proposed_stage == "infra_timed_out":
-        return True, "infra_timeout_override"
-    if proposed_stage == "selected" and current_stage in {
-        "timed_out",
-        "archived",
-    }:
+        if current_stage == "critic_checked":
+            return True, "infra_timeout_override"
+        return False, (
+            "infra_timeout_requires_critic_checked: "
+            f"{current_stage}"
+        )
+    if proposed_stage == "selected" and current_stage == "archived":
         return True, "fresh_generation_selection"
     if current_stage == "timed_out":
-        if proposed_stage == "preparing":
-            return True, "prepare_started"
-        return False, f"timed_out_restart_requires_preparing: {proposed_stage}"
+        return False, (
+            "timed_out_requires_canonical_abandon: "
+            f"{proposed_stage}"
+        )
     if current_stage == "infra_timed_out":
         if proposed_stage == "critic_checked":
             return True, "infra_precommit_retry_recovery"

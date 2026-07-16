@@ -383,15 +383,28 @@ def _inject_master_plan_hint(checkpoint, lines):
     """
     plan = checkpoint.get("master_plan")
     route = route_policy(checkpoint)
+    next_tool = route.get("next_tool")
     if not plan:
         if checkpoint.get("parent2_v"):
             lines.append(
-                "Crossover checkpoint has no task plan because bot code is already generated. "
-                f"Follow the route policy: next_tool={route.get('next_tool')}, "
+                "Crossover checkpoint has no task plan yet. run_crossover may "
+                "create only a recombination baseline, never the governed "
+                "generation innovation. "
+                f"Follow the route policy: next_tool={next_tool}, "
                 f"intent={route.get('intent')}. {route.get('directive')}"
             )
             return
-        lines.append("WARNING: Master plan NOT in checkpoint — call run_master first, then execute_workers.")
+        if next_tool == "run_master":
+            lines.append(
+                "Master plan is not yet checkpoint-owned. Call run_master for "
+                "this exact route; do not reconstruct a plan from prompt text."
+            )
+        else:
+            lines.append(
+                "No Master plan is checkpoint-owned at this stage. This does "
+                f"not authorize run_master or Workers; follow next_tool={next_tool}. "
+                f"{route.get('directive')}"
+            )
         return
     tasks = plan.get("tasks", [])
     if plan.get("strategy") == "crossover" and checkpoint.get("parent2_v") and not tasks:
@@ -401,11 +414,18 @@ def _inject_master_plan_hint(checkpoint, lines):
         )
         return
     if tasks:
-        lines.append(
-            "Master plan is saved — do NOT call run_master again. "
-            "Call execute_workers with tasks=[] so the tool loads the exact "
-            "checkpoint-owned tasks. Do not paraphrase or reconstruct them:"
-        )
+        if next_tool == "execute_workers":
+            lines.append(
+                "Master plan is saved — do NOT call run_master again. "
+                "Call execute_workers with tasks=[] so the tool loads the exact "
+                "checkpoint-owned tasks. Do not paraphrase or reconstruct them:"
+            )
+        else:
+            lines.append(
+                "Master plan is retained as checkpoint evidence. Do NOT call "
+                "run_master or execute_workers unless the current route names "
+                f"that tool; follow next_tool={next_tool}:"
+            )
         for t in tasks:
             wid = t.get("worker_id", "?")
             role = t.get("role", "?")
@@ -417,6 +437,68 @@ def _inject_master_plan_hint(checkpoint, lines):
         lines.append("Master plan is saved — do NOT call run_master again.")
 
 
+def _append_no_checkpoint_directive(lines, *, reason="no active checkpoint"):
+    """Project the provider's fail-closed checkpoint-free action."""
+
+    lines.append(
+        "\nNO ACTIVE PIPELINE CHECKPOINT: "
+        f"{reason}. PROVIDER ACTION: end_stream. Make no MCP call. "
+        "end_stream is not a tool; finish this response now. The outer "
+        "scheduler alone may later call non-MCP prepare_generation to select "
+        "and publish a new validated selected checkpoint. Never call "
+        "prepare_next_gen without that exact checkpoint."
+    )
+
+
+def _append_post_publication_handoff_directive(lines, handoff):
+    """Project a provider-terminal post-publication boundary when present.
+
+    The provider never owns ``run_archivist``.  Returning ``True`` tells the
+    caller that a pending/blocked handoff (rather than a generic checkpoint-free
+    scheduler boundary) was projected.
+    """
+
+    status = handoff.get("status")
+    if status == "pending":
+        lines.append(
+            "POST-PUBLICATION HANDOFF ACTIVE: "
+            f"v{handoff.get('version')} from v{handoff.get('source_v')}, "
+            f"state={handoff.get('state')}. PROVIDER ACTION: end_stream. "
+            "The outer deterministic recovery path alone owns run_archivist; "
+            "do not call any MCP tool or prepare/select another generation."
+        )
+        return True
+    if status == "blocked":
+        lines.append(
+            "POST-PUBLICATION HANDOFF BLOCKED/AMBIGUOUS: "
+            + "; ".join(map(str, handoff.get("issues") or []))
+            + ". PROVIDER ACTION: end_stream. Make no MCP call. The outer "
+            "deterministic recovery path must surface or repair this handoff; "
+            "the provider never owns run_archivist or successor preparation."
+        )
+        return True
+    return False
+
+
+def _project_post_publication_handoff(lines):
+    """Append the current handoff boundary, failing closed if unreadable."""
+
+    try:
+        from post_publication_handoff import pending_handoff_route
+
+        return _append_post_publication_handoff_directive(
+            lines,
+            pending_handoff_route(),
+        )
+    except Exception as exc:
+        lines.append(
+            "POST-PUBLICATION HANDOFF AUTHORITY UNAVAILABLE: "
+            f"{type(exc).__name__}. PROVIDER ACTION: end_stream. Make no MCP "
+            "call; outer deterministic recovery must restore this authority."
+        )
+        return True
+
+
 def _format_checkpoint_info(checkpoint, lines):
     """Append pipeline checkpoint details to *lines*.
 
@@ -426,10 +508,83 @@ def _format_checkpoint_info(checkpoint, lines):
     stage = checkpoint.get("stage", "unknown")
     route = route_policy(checkpoint)
     hint = route.get("directive") or "inspect checkpoint context and continue with the matching MCP pipeline tool"
+    if route.get("next_tool") == "run_archivist":
+        lines.append(
+            f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} "
+            f"(from v{checkpoint['source_v']}) reached stage='{stage}'. "
+            "PROVIDER ACTION: end_stream. The outer deterministic recovery "
+            "path alone owns run_archivist; make no MCP call and do not "
+            "prepare/select a successor."
+        )
+        return
     lines.append(
         f"\nPIPELINE CHECKPOINT: v{checkpoint['next_v']} (from v{checkpoint['source_v']}) "
         f"reached stage='{stage}'. Next MCP tool: {route.get('next_tool')}. {hint}"
     )
+    if not route.get("next_tool"):
+        lines.append(
+            "NO AUTHORIZED CHECKPOINT ROUTE: PROVIDER ACTION: end_stream. "
+            "Make no MCP call; the outer recovery loop must validate or surface "
+            "this checkpoint state."
+        )
+    if (
+        stage in {"selected", "preparing"}
+        and route.get("next_tool") == "prepare_next_gen"
+    ):
+        preparation_kind = (
+            "the first materialization of the already-selected candidate"
+            if stage == "selected"
+            else (
+                "recovery of the interrupted preparation only while no "
+                "unbound target preimage exists"
+            )
+        )
+        lines.append(
+            "PREPARE ROUTE AUTHORIZATION: prepare_next_gen may be called only "
+            "for this exact runtime-validated checkpoint identity and its exact "
+            f"source_v/next_v. This route owns {preparation_kind}; it does not "
+            "select or start a generation. If target bytes exist without the "
+            "exact prepared-artifact contract, the system-owned prepare route "
+            "must canonically abandon/quarantine this checkpoint instead of "
+            "adopting, deleting, or continuing those bytes."
+        )
+    else:
+        lines.append(
+            "prepare_next_gen is NOT authorized at this checkpoint stage. "
+            "Follow only the checkpoint's current Next MCP tool."
+        )
+    if route.get("next_tool") == "abandon_generation":
+        lines.append(
+            "CANONICAL ABANDON ROUTE: call only the authorized owner tool, then "
+            "end_stream. Outer recovery accepts termination only from exactly "
+            "one canonical current-head result returned by that current "
+            "authorized owner tool, whether flattened or nested, with "
+            "workflow_run_id, abandoned=true, cleared_checkpoint=true, "
+            "abandon_transaction_id, "
+            "abandon_receipt_digest, finalize_receipt_digest, and "
+            "abandon_checkpoint_identity. Duplicate flattened/nested results, "
+            "a missing checkpoint, or bare success are not terminal proof. "
+            "The result must bind one pending route-mutating ToolUse by its "
+            "explicit id/parent id, or by the bounded sole-pending SDK form; "
+            "unknown, reused, swapped-owner, multi-pending, or unsettled ids "
+            "block recovery."
+        )
+    if stage == "timed_out":
+        lines.append(
+            "TIMEOUT ACTIVE LEASE: the only legal recovery is the "
+            "checkpoint-routed canonical abandon_generation owner. It is not "
+            "a dead/restartable checkpoint and cannot be overwritten by a new "
+            "generation. Never call prepare_next_gen for timed_out."
+        )
+    elif stage == "infra_timed_out":
+        lines.append(
+            "INFRASTRUCTURE TIMEOUT ACTIVE LEASE: retry only "
+            "run_precommit_eval. The tool must first re-prove the complete "
+            "candidate fingerprint, current quality/review/critic gate "
+            "identities, and quality fingerprint = repair baseline = live "
+            "bytes, then exact-CAS back to critic_checked. Any mismatch keeps "
+            "the overlay blocked; do not prepare or strategically rework it."
+        )
     gen_attempt = checkpoint.get("generation_attempt", 0)
     if gen_attempt > 0:
         lines.append(
@@ -514,9 +669,9 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         if gen_ctx.strategy == "crossover" and gen_ctx.crossover_parents:
             lines.append(f"Crossover parents: {bot_name(gen_ctx.crossover_parents[0])} x {bot_name(gen_ctx.crossover_parents[1])}")
 
-        # Tool reference — every provider session is fresh and MCP-only.
-        lines.append("\nAVAILABLE TOOLS (call by exact name):")
-        lines.append("  prepare_next_gen(source_v, next_v) — copy source bot dir")
+        # Tool reference — a capability catalog is not route authorization.
+        lines.append("\nMCP CAPABILITY CATALOG (not route authorization):")
+        lines.append("  prepare_next_gen(source_v, next_v) — first-materialize an exact runtime-validated selected checkpoint or idempotently recover its exact preparing checkpoint; never select/start a generation")
         lines.append("  run_direction_audit(source_v, next_v) — detect repetitive evolution directions")
         lines.append("  run_master(source_v, next_v, stagnation_info, match_analysis, performance_verification, direction_audit, research_proposals) — plan worker tasks")
         lines.append("  execute_workers(tasks, next_v, source_v, reviewer_feedback) — after Master, pass tasks=[] to load the exact checkpoint-owned plan; modifies bot code in parallel when target_files do not overlap (max 3), otherwise serial")
@@ -525,9 +680,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         lines.append("  run_critic(version, source_v, plan, reviewer_feedback, force_advance) — required schema-valid advisory strategy assessment; it does not accept, reject, or schedule repair")
         lines.append("  run_precommit_eval(version, source_v, n_games) — final local regression check over complete 70-hand native TCP matches")
         lines.append("  commit_bot(version, source_v, strategy, review_approved=true) — git commit + tag (requires all gates passed)")
-        lines.append("  run_archivist(version, source_v) — archive + cleanup after commit")
+        lines.append("  run_archivist(version, source_v) — outer deterministic recovery capability only; the provider must end_stream after commit/post-publication handoff")
         lines.append("  run_crossover(parent_a, parent_b, target_v) — prepare a two-parent baseline only; direction audit, optional research, Master planning, and Workers still follow")
         lines.append("  run_literature_probe(source_v, next_v, h2h_weakness, stagnation_info) — web-search ONE codable strategy hypothesis for the bot's biggest H2H weakness (governance-gated: auto-skips on cooldown). MANDATORY when stagnation analysis shows is_stagnant:true.")
+        lines.append("  abandon_generation(...) — callable only when the exact checkpoint route names it; other owner tools may perform centralized abandon, and intent/bare success is not terminal proof")
+        lines.append("  prepare_generation is deliberately absent: it is non-MCP and outer-scheduler-owned")
 
         if protocol_bootstrap_no_strength:
             if gen_ctx.strategy == "fresh_policy_bootstrap":
@@ -558,14 +715,22 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
             lines.append("MODE: Run exactly ONE generation, then stop.")
         else:
             lines.append("MODE: Execute this generation using the pipeline tools.")
-        # Pipeline checkpoint still relevant for resume
+        # Pipeline checkpoint is the sole route authority for this provider.
+        checkpoint = None
+        checkpoint_error = None
         try:
             from evolution_core import read_pipeline_checkpoint
             checkpoint = read_pipeline_checkpoint()
-            if checkpoint:
-                _format_checkpoint_info(checkpoint, lines)
-        except Exception:
-            pass
+        except Exception as exc:
+            checkpoint_error = f"checkpoint authority unreadable ({type(exc).__name__})"
+        handoff_boundary = _project_post_publication_handoff(lines)
+        if checkpoint and not handoff_boundary:
+            _format_checkpoint_info(checkpoint, lines)
+        elif not checkpoint and not handoff_boundary:
+            _append_no_checkpoint_directive(
+                lines,
+                reason=checkpoint_error or "no live checkpoint was supplied",
+            )
         return "\n".join(lines)
 
     from epoch_authority import (
@@ -602,9 +767,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                 f"OPERATOR RECOVERY REQUIRED: {epoch['operator_action']}"
             )
 
-    # Tool reference — prevents ToolSearch in non-gen_ctx path
-    lines.append("\nAVAILABLE TOOLS (call by exact name):")
-    lines.append("  prepare_next_gen | run_direction_audit | run_literature_probe | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover")
+    # Capability catalog — the current checkpoint route remains authoritative.
+    lines.append("\nMCP CAPABILITY CATALOG (not route authorization):")
+    lines.append("  prepare_next_gen | run_direction_audit | run_literature_probe | run_master | execute_workers | run_quality_gates | run_review | run_critic | run_precommit_eval | commit_bot | run_archivist | run_crossover | abandon_generation")
+    lines.append("  prepare_generation is non-MCP and exclusively owned by the outer scheduler")
+    lines.append("  run_archivist is outer deterministic recovery only; a provider that observes its route must end_stream")
 
     strict_active_versions = sorted(
         (
@@ -654,13 +821,13 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
         pass
 
     # Pipeline checkpoint — tell Orchestrator exactly where a killed cycle left off
+    checkpoint = None
+    checkpoint_error = None
     try:
         from evolution_core import read_pipeline_checkpoint
 
         if epoch.get("active_generation"):
             checkpoint = read_pipeline_checkpoint()
-            if checkpoint:
-                _format_checkpoint_info(checkpoint, lines)
         elif epoch.get("ignored_checkpoint"):
             ignored = epoch["ignored_checkpoint"]
             lines.append(
@@ -669,29 +836,16 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
                 f"stage={ignored.get('stage')}; it will be archived by the "
                 "operator reset and cannot route any pipeline tool."
             )
-    except Exception:
-        pass
-    try:
-        from post_publication_handoff import pending_handoff_route
-
-        handoff = pending_handoff_route()
-        if handoff.get("status") == "pending":
-            lines.append(
-                "POST-PUBLICATION HANDOFF ACTIVE: "
-                f"v{handoff['version']} from v{handoff['source_v']}, "
-                f"state={handoff.get('state')}. NEXT MCP TOOL: run_archivist. "
-                "Do not prepare or select another generation first."
-            )
-        elif handoff.get("status") == "blocked":
-            lines.append(
-                "POST-PUBLICATION HANDOFF BLOCKED/AMBIGUOUS: "
-                + "; ".join(map(str, handoff.get("issues") or []))
-                + ". Do not start another generation."
-            )
     except Exception as exc:
-        lines.append(
-            "POST-PUBLICATION HANDOFF AUTHORITY UNAVAILABLE: "
-            f"{type(exc).__name__}. Do not start another generation."
+        checkpoint_error = f"checkpoint authority unreadable ({type(exc).__name__})"
+    handoff_boundary = _project_post_publication_handoff(lines)
+
+    if checkpoint and not handoff_boundary:
+        _format_checkpoint_info(checkpoint, lines)
+    elif not checkpoint and not handoff_boundary:
+        _append_no_checkpoint_directive(
+            lines,
+            reason=checkpoint_error or "strict epoch projection has no live checkpoint",
         )
 
     debris = unpublished_candidate_versions()
@@ -715,7 +869,11 @@ def _build_context(one_gen=False, dry_run=False, gen_ctx=None):
     elif dry_run:
         lines.append("MODE: DRY RUN — only check status, do NOT modify anything.")
     else:
-        lines.append("MODE: Continuous evolution. After completing one generation, immediately start the next.")
+        lines.append(
+            "MODE: Continuous evolution is owned by the outer loop. Advance only "
+            "the current checkpoint; after terminal completion, end this provider "
+            "stream so the outer scheduler can decide whether to start the next."
+        )
 
     # Cycle time budget — helps Orchestrator avoid starting retry loops near timeout
     time_budget = _get_time_budget_info()
@@ -740,12 +898,27 @@ def _make_precompact_hook():
                 stage = checkpoint.get("stage", "unknown")
                 route = route_policy(checkpoint)
                 next_step = route.get("next_tool") or "inspect checkpoint context"
-                lines.append(
-                    f"ACTIVE GENERATION: v{checkpoint['next_v']} (from v{checkpoint['source_v']}), "
-                    f"stage={stage}. Next tool: {next_step}. "
-                    f"{route.get('directive')} DO NOT restart this generation — continue from this stage."
-                )
-                _inject_master_plan_hint(checkpoint, lines)
+                if route.get("next_tool") == "run_archivist":
+                    lines.append(
+                        f"ACTIVE POST-PUBLICATION CHECKPOINT: v{checkpoint['next_v']} "
+                        f"(from v{checkpoint['source_v']}), stage={stage}. "
+                        "PROVIDER ACTION: end_stream. Outer deterministic "
+                        "recovery alone owns run_archivist; make no MCP call."
+                    )
+                elif not route.get("next_tool"):
+                    lines.append(
+                        f"ACTIVE BLOCKED CHECKPOINT: v{checkpoint['next_v']} "
+                        f"(from v{checkpoint['source_v']}), stage={stage}. "
+                        "PROVIDER ACTION: end_stream. Make no MCP call; outer "
+                        "recovery must validate or surface this state."
+                    )
+                else:
+                    lines.append(
+                        f"ACTIVE GENERATION: v{checkpoint['next_v']} (from v{checkpoint['source_v']}), "
+                        f"stage={stage}. Next tool: {next_step}. "
+                        f"{route.get('directive')} DO NOT restart this generation — continue from this stage."
+                    )
+                    _inject_master_plan_hint(checkpoint, lines)
             elif epoch.get("ignored_checkpoint"):
                 ignored = epoch["ignored_checkpoint"]
                 lines.append(
@@ -753,6 +926,13 @@ def _make_precompact_hook():
                     f"v{ignored.get('next_v')} is incompatible evidence only; "
                     "do not resume it or treat it as a version floor."
                 )
+            else:
+                handoff_boundary = _project_post_publication_handoff(lines)
+                if not handoff_boundary:
+                    _append_no_checkpoint_directive(
+                        lines,
+                        reason="compaction projection has no live checkpoint",
+                    )
             if not epoch["initialized"]:
                 lines.append(
                     "Strict policy epoch is not initialized; operator reset is "
@@ -873,8 +1053,10 @@ def _make_bot_dir_guard_hook():
         next_step = route.get("next_tool") if stage else None
         if not stage or not next_step:
             return (
-                "Recovery: do NOT retry the denied direct mutation. Inspect the supplied "
-                "checkpoint context, then continue using MCP pipeline tools only."
+                "Recovery: no active checkpoint route exists. Do NOT retry the "
+                "denied direct mutation and do not call any MCP tool. PROVIDER "
+                "ACTION: end_stream. The outer scheduler alone owns non-MCP "
+                "prepare_generation."
             ), {"stage": stage, "next_v": next_v, "source_v": source_v, "next_step": next_step}
         return (
             f"Recovery: current checkpoint is v{next_v} from v{source_v}, "

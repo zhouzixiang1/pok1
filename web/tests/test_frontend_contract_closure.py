@@ -265,6 +265,7 @@ def test_control_hook_pairs_stability_and_full_checkpoint_revision_before_green(
     assert "stability_observation_digest" in types
     assert "checkpoint_revision: number" in types
     assert "healthStatus.stability_observation_digest !== status.stability_observation_digest" in hook
+    assert "const pipeline = health?.pipeline;" in panel
     for field in (
         "next_v",
         "source_v",
@@ -274,7 +275,7 @@ def test_control_hook_pairs_stability_and_full_checkpoint_revision_before_green(
         "checkpoint_revision",
     ):
         assert f"health.pipeline.{field}" in hook
-        assert f"health.pipeline.{field}" in panel
+        assert f"pipeline.{field}" in panel
 
 
 def test_unpublished_ui_does_not_guess_version_reusability():

@@ -2759,15 +2759,15 @@ async def run_master(args):
     # failure is silently dropped and the breaker never trips — which is exactly
     # how v125 retried 47× without ever hitting MAX_MASTER_TOTAL_FAILURES.
     # Fix: if an ACTIVE checkpoint exists with a different next_v, trust the
-    # checkpoint (system-authoritative) and surface the mismatch. Dead-stage
-    # checkpoints (timed_out/archived/abandoned) are NOT authoritative — the LLM
-    # is likely starting a fresh generation in that case.
+    # checkpoint (system-authoritative) and surface the mismatch. A timed-out
+    # checkpoint remains authoritative until its canonical abandon transaction
+    # completes; only truly inactive archived/abandoned states are ignored.
     try:
         from evolution_infra import read_pipeline_checkpoint
         _entry_ckpt = read_pipeline_checkpoint() or {}
         _entry_next_v = _entry_ckpt.get("next_v")
         _entry_stage = _entry_ckpt.get("stage")
-        _dead_stages = (None, "timed_out", "archived", "abandoned")
+        _dead_stages = (None, "archived", "abandoned")
         if (_entry_next_v is not None and _entry_next_v != next_v
                 and _entry_stage not in _dead_stages):
             _log.warning(

@@ -3,7 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    UserMessage,
+)
 import pytest
 
 import evolution_infra
@@ -135,6 +141,45 @@ def test_orchestrator_converts_trailing_generic_exception_using_prior_403_text(
 
     assert result == orchestrator.ORCH_LLM_AVAILABILITY_BLOCKED_COST
     assert pause_store.load_llm_pause()["category"] == "billing_cycle_usage_limit"
+
+
+def test_user_tool_result_stops_on_nested_persisted_pause(
+    isolated_cycle,
+    monkeypatch,
+):
+    from llm_availability import classify_llm_availability
+
+    tmp_path, clears = isolated_cycle
+    issue = classify_llm_availability(
+        ["HTTP 403 usage limit for this billing cycle"],
+        statuses=[403],
+    )
+    pause_store.persist_llm_pause(issue)
+    continued = {"value": False}
+
+    async def stream():
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="nested-master",
+            content=json.dumps({
+                "success": False,
+                "error": "legacy_master_llm_unavailable",
+            }),
+            is_error=False,
+        )])
+        continued["value"] = True
+        yield AssistantMessage(content=[TextBlock(text="must not continue")], model="sonnet")
+
+    monkeypatch.setattr(orchestrator, "claude_query", lambda **_kwargs: stream())
+
+    result = asyncio.run(orchestrator._run_one_cycle(
+        ui=_UI(),
+        log_file=tmp_path / "orchestrator-nested-pause.log",
+        gen_ctx=None,
+    ))
+
+    assert result == orchestrator.ORCH_LLM_AVAILABILITY_BLOCKED_COST
+    assert continued["value"] is False
+    assert "llm_availability_blocked" in clears
 
 
 def test_orchestrator_does_not_retry_normal_overload_discussion_as_529(

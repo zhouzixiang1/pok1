@@ -44,16 +44,34 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    wire settlement 加严格 THP state 69/footer 证明，不得伪造第 70 对 earnChips。
 5. Critic 仅 advisory；本地 native TCP precommit 是策略硬门。任何 required gate 的
    skipped/pending/inconclusive/env-disable 都不是 pass。不得放宽 validator、探针、
-   official oracle 或发布校验换取绿灯。
+   official oracle 或发布校验换取绿灯。每次 precommit 必须把 attempt-local 单调取消
+   token 传入真实 native loop；取消后迟到的完整 match 不得入 gate，也不得启动下一
+   sample。first-strict execution scope 冻结进 checkpoint，infra retry 复用同一 journal。
 6. Orchestrator 的 provider 会话 ID 不得持久化或 `resume`；每次恢复必须从已验证
    checkpoint、重新密封的 prompt 和 typed MCP projection 启动全新 provider stream。
    旧 `orchestrator_session.json` 只有待删除的历史 sidecar 身份，零提示词权威。
+   checkpoint 消失只有在当前 authorized owner tool 返回唯一 canonical result（nested
+   或 flattened，但不得重复）、包含 `workflow_run_id` 和精确 transaction、ledger/
+   finalize/checkpoint identities，并重证完整 Worker/strict journal 后才是终态；否则
+   recovery blocked。真正无 checkpoint 时 provider 必须 end_stream，只有外层 scheduler
+   能执行非 MCP `prepare_generation`。`prepare_next_gen` 只允许 exact validated
+   `selected` 首次物化或 `preparing` crash recovery；未绑定 target preimage 由 system
+   prepare route 直接 canonical abandon/quarantine。ToolResult 必须通过显式 id/parent id
+   或唯一 pending SDK form 绑定一个 route-mutating ToolUse，未知/复用/换 owner/未结算均
+   阻断。两种 timeout 都是 active leases；`timed_out` 仅从固定 disposable stages 写入并
+   canonical abandon，`infra_timed_out` 只有在 full artifact、三 gate identity、quality
+   fingerprint=repair baseline=live bytes 全部重证并 exact CAS 后才重跑 native precommit。
+   `--one-gen` 是一个完整
+   workflow/generation，不是一个 provider session，abandon 后不得准备后继代。
 7. Git/证书/标签发布后必须先完成同一 publication identity 的 schema-2 durable
    handoff，顺序固定为 stability_observation、reap_signal、priority_eval、
    archive_rotation、log_cleanup、pool_reap、cycle_annotation、housekeeping。每步 plan/
    output 都是 exact-key 且 digest-bound；finalize 必须重证 stability 行、锁保护的
    signal/priority、rotation/log archive、reap tombstone、annotation、HEAD/worktree。
-   pending/running/blocked handoff 是启动围栏，绝不能被当作 idle 或跳过。
+   pending/running/blocked handoff 是后继代调度围栏，绝不能被当作 idle 或跳过；provider
+   必须 end_stream，只有 outer deterministic recovery 能调用 `run_archivist`。进程启动
+   另看 owner：pending/dead owner 可由唯一 runtime 恢复，live foreign owner 阻止第二
+   runtime；HTTP 只暴露 bounded owner_scope。
 8. 首个严格工作流的六个 Master 槽位共享第一条 durable effect 冻结的 phase revision，
    但每个槽位拥有自己的 context binding；accepted/rejected/unaccepted effects 都要重证。
    proposal/ballot/Reviewer/Critic 的调用证据必须绑定 accepted effect 的最终 provider
@@ -67,6 +85,14 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 9. UI 必须把 Critic 的 `approved` 解释为 advisory 调用完成，只用
    `advisory_approved` 显示建议方向；独立 checkpoint 只有在 schema-2、正整数 revision
    及 epoch/version/stage/run/workflow 全部与 active generation 相同时才可显示。
+   recovery 不可恢复或 operator action 时后端必须隐藏 route，`/start` 在 stability reset
+   前返回 409，前端同时禁用。无 checkpoint 的运行态只能显示后端完整
+   `scheduler_boundary`：provider end_stream、scheduler 非 MCP prepare_generation、权威
+   next_v、`source_v=null`；不得从 current_v 猜父本，checkpoint 轮询失败必须清旧值。
+   checkpoint 必须 before/read/after 观测；读中消失、不可读、terminal-looking 或缺字段
+   都不是 clean absence。Start 必须精确匹配 active route、post-publication identity 或
+   clean scheduler 三者之一。owner reservation 前后双采样同一 fence；未获 owner 的
+   lifespan 不得改 live running/UI/ShutdownManager，全局 LLM manager 也必须 exact-owner CAS。
    `--no-daemon` 且 PID 不存在是健康的 `not_applicable`，但 enabled-missing 或
    disabled-live daemon 仍必须 degraded。
 10. 需要 host process owner 的 Bubblewrap 启动必须先停在一次性 `--block-fd`
@@ -126,21 +152,20 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
 每次交付收口时更新以下字段；它们只帮助操作员定位，不替代实时权威查询。
 
 - infrastructure branch/commit: `codex/national-protocol-evolution-alignment`;
-  strict invocation/evidence implementation is
-  `baadaa821d979b4b651260852ebcc48ae0a6aba8`; tested delivery/documentation is
-  `1abd2108f8afef5f6478584969ccce472e730c5f`; query the branch for this later
-  runtime-record commit rather than guessing its SHA;
-- final frozen-tree verification after the strict invocation repair: Web
-  `2580 passed, 20 skipped`; sever
-  `31 passed`; frontend `15 passed` plus lint/build; active-source `py_compile`
-  and `git diff --check` passed; official doctor is green on tracked execution
-  profile v7. Final focused authority/Master/Reviewer/Critic/API coverage is
-  `188 passed`; the strict child/root/fd-walk shard is `94 passed`;
-- `origin/main`: delivery is merged through
-  `1abd2108f8afef5f6478584969ccce472e730c5f`; push this runtime-record commit
-  before resuming;
+  stable delivered base is
+  `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; the alignment repair is a frozen
+  staged-delivery batch. Its exact delivered identity is the branch/main HEAD
+  after the recorded commit and push; query Git rather than copying a stale SHA;
+- current frozen-tree verification: Web `2717 passed, 20 skipped`, sever
+  `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
+  documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
+  every tracked active Python file compilation, diff check, and official doctor
+  `ok=true` all passed;
+- `origin/main`: currently
+  `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; do not resume runtime until the
+  tested repair is committed, merged and pushed;
 - runtime HEAD: stopped and clean at
-  `1abd2108f8afef5f6478584969ccce472e730c5f`; no evolution process is live;
+  `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; no evolution process is live;
 - strict epoch/checkpoint: legacy workflow-v18 was durably quarantined and
   abandoned; workflow-v19 was later canonically quarantined after contract HEAD
   drift. Workflow-v20 was canonically abandoned with receipt
@@ -151,11 +176,23 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `0673012c2aee294f006d8b388e291d17721588901de3f8da61b67e16b33c12c6`
   and finalize receipt
   `7ddd059c78a2de449438c8147b9d312413d052ed39454b9cdef01a76a79a42ec`.
+  Workflow-v22 accepted only compute-memory and mechanism proposals; its
+  counterfactual slot exhausted before ballots, plan, Worker or gates. It was
+  canonically abandoned with ledger head
+  `406bd93ee9391bbb7a5314a5f1e20c8f86619280c98f2ee573ddc5687f159c07`,
+  transaction
+  `fd99b1ad95aa3b11eae7b1235600a40dcaab1cc1a6d39d83c8c0992d2179f489`
+  and finalize receipt
+  `3161b9ae6efb9f553a2579c2d4c747d4188e27c3c2f918494a64941dcecf14da`.
   There is now no active checkpoint or candidate: current_v=142, next_v=143,
   active_bots=0, and the sole legal route is `prepare_generation` for a fresh
-  workflow-v22 after Git sync and evaluation-identity rotation;
+  workflow-v23 after repair delivery, runtime sync and evaluation-identity
+  rotation;
 - last completed strict tag/certificate: none for v143+; no v143 or v144 has
-  been published;
+  been published. The stopped runtime validates `first_strict_control_v1`
+  artifact `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`;
+  its signed-ledger consumption is valid, unused and `0/1`, so no v143 formal
+  bootstrap dependency is missing;
 - immutable rating cycle: none for the new strict two-bot pool;
 - stability observation: backend `/api/control/status`; only an unexpired
   background-verified `fresh` snapshot may expose N/10; no post-delivery
@@ -168,7 +205,9 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `2c8dbcb64ec2d8dfa4f293d2423868472e38761c33aacdfdee4e1972d58d09a5`
   / identity `ca708c5c01fff7310c89f6903de66b4289b24f2349a998f958d884b1f9546855`;
   only the empty new instance may receive future native samples;
-- known next action: push/pull this documentation-only runtime record, then
-  prepare workflow-v22. Runtime doctor is green on profile v7 and the dry-run
-  projection is v142→v143, active_bots=0, fresh_bootstrap_ready. No first-strict
-  official operator action is yet available.
+- known next action: finish the staged-delivery frozen-tree gates, commit and
+  merge the repair, fast-forward the stopped runtime, rotate evaluation
+  identity if the contract digest changed, rerun recovery diagnostics and start
+  workflow-v23. Dynamically audit checkpoint/daemon/API/UI/log behavior while
+  it runs. The first-strict operator command becomes available only after the
+  exact v143 checkpoint reaches `official_bootstrap_required`.

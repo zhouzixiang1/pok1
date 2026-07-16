@@ -92,48 +92,319 @@ def _hermetic_strict_parent_resolution(monkeypatch):
 # ──────────────────────────────────────────────
 
 def test_H1_precommit_shutdown_event_set_reset_is_set():
-    """set_precommit_shutdown / reset / is_precommit_shutdown round-trip."""
+    """A reset rotates tokens and can never clear a cancelled old attempt."""
     import sys
+    import threading
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
     import tool_eval
+
     tool_eval.reset_precommit_shutdown()
+    old_token = tool_eval.current_precommit_shutdown_token()
     assert tool_eval.is_precommit_shutdown() is False
     tool_eval.set_precommit_shutdown()
     assert tool_eval.is_precommit_shutdown() is True
+    assert old_token.is_set() is True
+
     tool_eval.reset_precommit_shutdown()
+    new_token = tool_eval.current_precommit_shutdown_token()
+    assert new_token is not old_token
     assert tool_eval.is_precommit_shutdown() is False
+    assert new_token.is_set() is False
+    assert old_token.is_set() is True
+
+    # A redundant cycle-start reset must not detach a live attempt.
+    tool_eval.reset_precommit_shutdown()
+    assert tool_eval.current_precommit_shutdown_token() is new_token
+
+    # Exact cancellation of a detached/foreign attempt cannot poison the new
+    # current attempt even if the calls are interleaved.
+    detached_token = threading.Event()
+    tool_eval.set_precommit_shutdown(detached_token)
+    assert detached_token.is_set() is True
+    assert new_token.is_set() is False
 
 
-def test_H1_drain_parent_breaks_on_shutdown():
-    """_drain_parent's inner loop must break when the shutdown flag is set,
-    returning partial results instead of running to completion."""
+@pytest.mark.asyncio
+async def test_H1_native_precommit_stops_after_cancelled_first_full_match(
+    tmp_path,
+    monkeypatch,
+):
+    """The production match loop must not launch a second sample after cancel."""
     import sys
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "core"))
+    import national_native
     import tool_eval
-    tool_eval.reset_precommit_shutdown()
 
-    # Fake generator that yields 100 values; we set shutdown partway through.
-    def fake_gen(*a, **kw):
-        for i in range(100):
-            yield i + 1   # positive => "win"
-
-    # Mirror the _drain_parent body inline (it's a closure in tool_eval,
-    # so we mirror its logic against the same module-level Event). Set the
-    # shutdown flag synchronously after 3 iterations to deterministically
-    # exercise the break branch (the real loop checks between subprocess games).
-    local = []
-    count = 0
-    for net in fake_gen():
-        count += 1
-        if count >= 3:
-            tool_eval.set_precommit_shutdown()
-        if tool_eval._PRECOMMIT_SHUTDOWN.is_set():
-            break
-        local.append(int(net))
     tool_eval.reset_precommit_shutdown()
-    # Must have stopped well before 100 (shutdown interrupted it).
-    assert 0 <= len(local) < 100, f"expected partial drain, got {len(local)}"
-    assert len(local) <= 3, f"break should fire on/after 3rd iteration, got {len(local)}"
+    token = tool_eval.current_precommit_shutdown_token()
+    candidate = tmp_path / "national_v9"
+    opponent = tmp_path / "national_v8"
+    candidate.mkdir()
+    opponent.mkdir()
+    match_calls = []
+
+    monkeypatch.setattr(
+        national_native,
+        "resolve_bot",
+        lambda value: (Path(value).name, Path(value)),
+    )
+    monkeypatch.setattr(
+        national_native,
+        "_acceptance_opponent_runtime_mode",
+        lambda *_args, **_kwargs: "strict_policy",
+    )
+
+    async def run_match(*_args, **_kwargs):
+        match_calls.append(True)
+        tool_eval.set_precommit_shutdown()
+        return {
+            "net_chips_a": 100,
+            "hands_played": 70,
+            "passed_compliance": True,
+            "issues": [],
+            "artifact_execution": {},
+        }
+
+    monkeypatch.setattr(national_native, "run_native_strength_pair", run_match)
+
+    with pytest.raises(asyncio.CancelledError):
+        await national_native.run_native_precommit(
+            candidate,
+            [{
+                "name": opponent.name,
+                "path": str(opponent),
+                "reason": "parent",
+                "precommit_gate_admitted": True,
+                "strength_admitted": True,
+            }],
+            hands=70,
+            matches_per_opponent=2,
+            cancel_token=token,
+        )
+
+    assert match_calls == [True]
+    assert token.is_set() is True
+
+    # A fresh deterministic retry gets a different live token, but the old
+    # detached loop remains permanently cancelled.
+    retry_token = tool_eval.begin_precommit_shutdown_attempt()
+    assert retry_token is not token
+    assert retry_token.is_set() is False
+    assert token.is_set() is True
+
+
+@pytest.mark.asyncio
+async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel(
+    tmp_path,
+    monkeypatch,
+):
+    """A journaled control match is reused, not relaunched, after cancellation."""
+    import first_strict_control
+    import first_strict_execution_journal
+    import national_native
+    import tool_eval
+    from bot_artifact import hash_path
+
+    candidate = tmp_path / "national_v9"
+    control = tmp_path / "first_strict_control_v1"
+    candidate.mkdir()
+    control.mkdir()
+    (candidate / "national_bot.py").write_text("# candidate\n", encoding="utf-8")
+    (control / "national_bot.py").write_text("# control\n", encoding="utf-8")
+
+    candidate_hash = hash_path(candidate)
+    control_hash = "c" * 64
+    receipt_digest = "d" * 64
+    execution_scope = {
+        "workflow_run_id": "generation:9:control-retry",
+        "checkpoint_revision": 7,
+        "candidate_version": 9,
+        "candidate_label": candidate.name,
+        "candidate_artifact_hash": candidate_hash,
+        "control_id": control.name,
+        "control_artifact_hash": control_hash,
+        "control_receipt_digest": receipt_digest,
+        "precommit_plan_digest": "e" * 64,
+        "evaluation_contract_digest": "f" * 64,
+        "precommit_attempt": 1,
+    }
+    control_receipt = {
+        "candidate_version": 9,
+        "source_version": 8,
+        "active_policy_bots": [],
+        "receipt_digest": receipt_digest,
+        "control": {
+            "control_id": control.name,
+            "path": str(control.absolute()),
+            "artifact_hash": control_hash,
+        },
+    }
+    opponent = {
+        "name": control.name,
+        "path": str(control.absolute()),
+        "reason": "first_strict_empty_pool_control",
+        "authority": "system_first_strict_control",
+        "precommit_gate_admitted": True,
+        "formal_bootstrap_opponent_admitted": True,
+        "formal_bootstrap_scope": "first_policy_bot_empty_pool_only",
+        "strength_admitted": False,
+        "rating_eligible": False,
+        "official_opponent_eligible": False,
+        "control_receipt": control_receipt,
+    }
+
+    tool_eval.reset_precommit_shutdown()
+    first_token = tool_eval.begin_precommit_shutdown_attempt()
+    match_calls = []
+    begin_calls = []
+    complete_calls = []
+    journal = {}
+    real_begin_control_execution = (
+        first_strict_execution_journal.begin_control_execution
+    )
+    real_complete_control_execution = (
+        first_strict_execution_journal.complete_control_execution
+    )
+    monkeypatch.setattr(
+        first_strict_execution_journal,
+        "CONTROL_EXECUTION_ROOT",
+        tmp_path / "control-execution-journal",
+    )
+
+    monkeypatch.setattr(
+        national_native,
+        "resolve_bot",
+        lambda value: (Path(value).name, Path(value)),
+    )
+    monkeypatch.setattr(
+        national_native,
+        "_artifact_execution_is_valid",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        national_native,
+        "_validate_first_strict_runner_execution_seal",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        national_native,
+        "_consume_first_strict_runner_execution_seal",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        national_native,
+        "precommit_outcome_blockers",
+        lambda *_args, **_kwargs: ([], {"primary_match_score": 1.0}),
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_control_receipt",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "control_gate_blockers",
+        lambda *_args, **_kwargs: ([], {"passed": True}),
+    )
+
+    def begin_control_execution(*, scope, repeat, **kwargs):
+        begin_calls.append((dict(scope), repeat))
+        return real_begin_control_execution(
+            scope=scope,
+            repeat=repeat,
+            **kwargs,
+        )
+
+    def complete_control_execution(ticket, *, execution):
+        complete_calls.append(ticket)
+        receipt = real_complete_control_execution(ticket, execution=execution)
+        journal.update(execution_receipt=receipt)
+        # Simulate the outer cycle timing out after the complete match has been
+        # durably journaled but before it can be admitted to the checkpoint.
+        tool_eval.set_precommit_shutdown(first_token)
+        return receipt
+
+    monkeypatch.setattr(
+        first_strict_execution_journal,
+        "begin_control_execution",
+        begin_control_execution,
+    )
+    monkeypatch.setattr(
+        first_strict_execution_journal,
+        "complete_control_execution",
+        complete_control_execution,
+    )
+
+    async def run_match(
+        *_args,
+        deck_seed_base,
+        bot_seed_base,
+        **_kwargs,
+    ):
+        match_calls.append(True)
+        settlements = []
+        hand_records = []
+        events = []
+        for hand in range(1, 71):
+            settlement = {
+                "hand": hand,
+                "earnings": [1, -1],
+                "pot": 2,
+                "is_showdown": False,
+                "winner_idx": 0,
+                "reason": "fold",
+            }
+            settlements.append(settlement)
+            hand_records.append({"hand": hand, "settlement": settlement})
+            events.append({"type": "settle", **settlement})
+        return {
+            "execution_mode": "native_tcp",
+            "hands_requested": 70,
+            "hands_played": 70,
+            "deck_seed_base": deck_seed_base,
+            "bot_seed_base": bot_seed_base,
+            "net_chips_a": 70,
+            "net_chips_b": -70,
+            "passed_compliance": True,
+            "issues": [],
+            "settlements": settlements,
+            "hand_records": hand_records,
+            "events": events,
+            "artifact_execution": {},
+        }
+
+    monkeypatch.setattr(national_native, "run_native_strength_pair", run_match)
+
+    with pytest.raises(asyncio.CancelledError):
+        await national_native.run_native_precommit(
+            candidate,
+            [opponent],
+            hands=70,
+            matches_per_opponent=1,
+            control_execution_scope=execution_scope,
+            cancel_token=first_token,
+        )
+
+    retry_token = tool_eval.begin_precommit_shutdown_attempt()
+    recovered = await national_native.run_native_precommit(
+        candidate,
+        [opponent],
+        hands=70,
+        matches_per_opponent=1,
+        control_execution_scope=execution_scope,
+        cancel_token=retry_token,
+    )
+
+    assert retry_token is not first_token
+    assert retry_token.is_set() is False
+    assert first_token.is_set() is True
+    assert match_calls == [True]
+    assert len(begin_calls) == 2
+    assert begin_calls[0] == begin_calls[1] == (execution_scope, 1)
+    assert len(complete_calls) == 1
+    assert complete_calls[0]["input_payload"]["scope"] == execution_scope
+    repeat = recovered["matchups"][0]["repeats"][0]
+    assert repeat["execution_receipt"] == journal["execution_receipt"]
 
 
 # ──────────────────────────────────────────────

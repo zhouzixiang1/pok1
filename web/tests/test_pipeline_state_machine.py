@@ -4,6 +4,7 @@ import json
 import pytest
 
 from core.pipeline_state import (
+    TIMEOUT_ABANDONABLE_STAGES,
     generic_abandon_block as _generic_abandon_block,
     literature_probe_receipt_binding,
     next_tool_for_checkpoint as _next_tool_for_checkpoint,
@@ -474,6 +475,86 @@ def test_selected_next_tool_distinguishes_master_and_crossover():
         )
         == "run_crossover"
     )
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected_tool"),
+    [
+        ("preparing", "prepare_next_gen"),
+        ("timed_out", "abandon_generation"),
+        ("infra_timed_out", "run_precommit_eval"),
+    ],
+)
+def test_recovery_only_stages_expose_their_single_canonical_tool(
+    stage,
+    expected_tool,
+):
+    route = route_policy({
+        "stage": stage,
+        "next_v": 265,
+        "source_v": 254,
+    })
+
+    assert route["next_tool"] == expected_tool
+    assert route["allowed_tools"] == [expected_tool]
+
+
+def test_timeout_stages_are_fresh_session_recoverable():
+    stages = session_recoverable_stages()
+
+    assert "timed_out" in stages
+    assert "infra_timed_out" in stages
+
+
+def test_plain_timeout_allowlist_is_exactly_the_disposable_stage_set():
+    assert TIMEOUT_ABANDONABLE_STAGES == frozenset({
+        "selected",
+        "preparing",
+        "prepared",
+        "crossover_running",
+        "direction_audited",
+        "master_planned",
+        "workers_done",
+        "quality_failed",
+    })
+
+
+def test_timed_out_cannot_restart_preparation_without_canonical_abandon():
+    ok, reason = validate_stage_transition("timed_out", "preparing")
+
+    assert ok is False
+    assert reason == "timed_out_requires_canonical_abandon: preparing"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "quality_passed",
+        "reviewed",
+        "critic_checked",
+        "precommit_failed",
+        "repair_planned",
+        "rework_running",
+        "verified",
+        "official_certifying",
+        "official_failed",
+    ],
+)
+def test_timeout_overlay_cannot_erase_non_disposable_stage_authority(stage):
+    ok, reason = validate_stage_transition(stage, "timed_out")
+
+    assert ok is False
+    assert reason == f"timeout_cannot_erase_stage_authority: {stage}"
+
+
+def test_infra_timeout_overlay_is_precommit_only():
+    assert validate_stage_transition(
+        "critic_checked",
+        "infra_timed_out",
+    ) == (True, "infra_timeout_override")
+    ok, reason = validate_stage_transition("reviewed", "infra_timed_out")
+    assert ok is False
+    assert reason == "infra_timeout_requires_critic_checked: reviewed"
 
 
 def test_route_policy_allows_crossover_quality_repair_workers():

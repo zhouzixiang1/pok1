@@ -8,6 +8,8 @@ import json
 import os
 import re
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from claude_agent_sdk import tool as sdk_tool
@@ -40,7 +42,39 @@ _PIPELINE_ROUTE_TOOLS = {
     "run_precommit_eval",
     "commit_bot",
     "run_archivist",
+    "abandon_generation",
 }
+
+_SYSTEM_DETERMINISTIC_ROUTE = ContextVar(
+    "pok_system_deterministic_route",
+    default=None,
+)
+
+
+@contextmanager
+def system_deterministic_route_authority(tool_name: str, checkpoint: dict):
+    """Authorize one in-process outer deterministic tool call.
+
+    The token is process-local and cannot be supplied by an MCP provider.  It
+    is currently required only for the checkpoint-free post-publication
+    Archivist boundary, where prompt ownership belongs to the outer loop.
+    """
+
+    value = {
+        "tool_name": str(tool_name),
+        "next_v": checkpoint.get("next_v"),
+        "source_v": checkpoint.get("source_v"),
+        "stage": checkpoint.get("stage"),
+        "handoff_identity_digest": checkpoint.get(
+            "post_publication_handoff_identity_digest"
+        ),
+        "publication_id": checkpoint.get("post_publication_id"),
+    }
+    token = _SYSTEM_DETERMINISTIC_ROUTE.set(value)
+    try:
+        yield
+    finally:
+        _SYSTEM_DETERMINISTIC_ROUTE.reset(token)
 
 
 def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
@@ -142,6 +176,24 @@ def _pipeline_route_guard(
         ):
             try:
                 from evolution_infra import validate_post_commit_archivist_receipt
+                from post_publication_handoff import pending_handoff_route
+
+                system_route = _SYSTEM_DETERMINISTIC_ROUTE.get()
+                handoff = pending_handoff_route()
+                system_owned = bool(
+                    isinstance(system_route, dict)
+                    and system_route.get("tool_name") == "run_archivist"
+                    and system_route.get("stage") == "archived"
+                    and system_route.get("next_v") == int(candidate_v)
+                    and system_route.get("source_v") == int(source_v)
+                    and handoff.get("status") == "pending"
+                    and handoff.get("state") == "pending"
+                    and handoff.get("owner_scope") == "none"
+                    and system_route.get("handoff_identity_digest")
+                    == handoff.get("identity_digest")
+                    and system_route.get("publication_id")
+                    == handoff.get("publication_id")
+                )
 
                 receipt_ok, _reason, receipt = (
                     validate_post_commit_archivist_receipt(
@@ -149,9 +201,10 @@ def _pipeline_route_guard(
                         int(source_v),
                     )
                 )
-                if receipt_ok:
+                if system_owned and receipt_ok:
                     return True, {
                         "post_commit_archivist": True,
+                        "system_deterministic_route": True,
                         "candidate_v": int(candidate_v),
                         "source_v": int(source_v),
                         "receipt_digest": str(
@@ -170,10 +223,15 @@ def _pipeline_route_guard(
             "checkpoint_stage": None,
             "next_tool": "prepare_generation",
             "allowed_tools": ["prepare_generation"],
+            "mcp_allowed_tools": [],
+            "provider_action": "end_stream",
+            "scheduler_owned": True,
             "directive": (
-                "No active generation checkpoint exists. Start only through "
-                "prepare_generation so the scheduler can bind source, target, "
-                "crossover parents, and evidence before any pipeline tool runs."
+                "No active generation checkpoint exists. End this provider "
+                "stream. The outer scheduler alone owns prepare_generation; it "
+                "is not an MCP tool. Do not call prepare_next_gen. The scheduler "
+                "must bind source, target, crossover parents, and evidence before "
+                "any pipeline tool runs."
             ),
         }
         _log_guard_event(

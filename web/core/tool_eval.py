@@ -1,5 +1,6 @@
 """Pipeline tools: pre-commit evaluation and inline evaluation (battle-based)."""
 
+import asyncio
 import json
 import logging
 import os
@@ -54,29 +55,65 @@ except Exception:  # pragma: no cover
 from logging_config import get_logger
 log = get_logger("tool_eval")
 
+_FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY = (
+    "first_strict_control_execution_scope"
+)
 
-# H1 (2026-06-29): thread-safe shutdown flag for precommit-eval cancellation.
-# Blocking mirror battles run in short-lived owned executors. A running Python
-# thread still cannot be force-cancelled and can keep spawning battles after an
-# outer timeout, so this Event is checked between mirror games to let an
-# orchestrator CYCLE_TIMEOUT abort the drain promptly.
-# Set by orchestrator via set_precommit_shutdown() on timeout/cancel.
+
+# H1 (2026-06-29): per-attempt shutdown token for precommit cancellation.
+# Blocking match work cannot always be force-cancelled.  Each precommit call
+# therefore captures the current Event and passes that exact object into the
+# native match loop.  A timeout sets the captured Event permanently; the next
+# cycle rotates to a new Event instead of clearing the old one, so starting a
+# retry can never revive a detached attempt from the previous cycle.
+_PRECOMMIT_SHUTDOWN_LOCK = threading.Lock()
 _PRECOMMIT_SHUTDOWN = threading.Event()
 
 
-def set_precommit_shutdown():
-    """Signal in-flight precommit mirror battles to abort ASAP.
+def set_precommit_shutdown(token: threading.Event | None = None):
+    """Permanently cancel every precommit holding the current attempt token.
 
     Called by the orchestrator's CYCLE_TIMEOUT / CancelledError handler so
-    subprocess-spawning drain loops break out instead of running to completion.
-    Idempotent; reset_precommit_shutdown() clears it before the next cycle.
+    subprocess-spawning loops stop before starting another complete match.
+    Idempotent; ``reset_precommit_shutdown`` rotates rather than clears it.
     """
-    _PRECOMMIT_SHUTDOWN.set()
+    if token is None:
+        with _PRECOMMIT_SHUTDOWN_LOCK:
+            token = _PRECOMMIT_SHUTDOWN
+    token.set()
 
 
 def reset_precommit_shutdown():
-    """Clear the precommit shutdown flag (call at the start of each cycle)."""
-    _PRECOMMIT_SHUTDOWN.clear()
+    """Rotate a cancelled token; never detach a still-live current attempt."""
+
+    global _PRECOMMIT_SHUTDOWN
+    with _PRECOMMIT_SHUTDOWN_LOCK:
+        if _PRECOMMIT_SHUTDOWN.is_set():
+            _PRECOMMIT_SHUTDOWN = threading.Event()
+
+
+def current_precommit_shutdown_token() -> threading.Event:
+    """Return the immutable-by-convention cancellation token for one attempt."""
+
+    with _PRECOMMIT_SHUTDOWN_LOCK:
+        return _PRECOMMIT_SHUTDOWN
+
+
+def begin_precommit_shutdown_attempt() -> threading.Event:
+    """Claim a live token, rotating only after the prior attempt was cancelled.
+
+    Deterministic ``infra_timed_out`` recovery can call ``run_precommit_eval``
+    before another provider cycle reaches the orchestrator's reset hook.  The
+    handler therefore performs this atomic cancelled-to-fresh handoff itself.
+    Concurrent calls while the token is live share it, so one timeout still
+    fences every duplicate attempt owned by that cycle.
+    """
+
+    global _PRECOMMIT_SHUTDOWN
+    with _PRECOMMIT_SHUTDOWN_LOCK:
+        if _PRECOMMIT_SHUTDOWN.is_set():
+            _PRECOMMIT_SHUTDOWN = threading.Event()
+        return _PRECOMMIT_SHUTDOWN
 
 
 async def _abandon_first_strict_generation(payload: dict, *, reason: str):
@@ -124,8 +161,9 @@ async def _abandon_first_strict_generation(payload: dict, *, reason: str):
 
 
 def is_precommit_shutdown() -> bool:
-    """True if precommit battles have been signalled to abort."""
-    return _PRECOMMIT_SHUTDOWN.is_set()
+    """True if the current precommit attempt has been signalled to abort."""
+
+    return current_precommit_shutdown_token().is_set()
 
 
 # Group A (root-cause-audit follow-up 2026-06-22): blocker reasons that indicate
@@ -307,6 +345,96 @@ def _observed_native_sample_plan(result: dict) -> list[dict]:
     return rows
 
 
+def _build_first_strict_control_execution_scope(
+    *,
+    v: int,
+    candidate_name: str,
+    code_fingerprint: str,
+    opponents: list,
+    precommit_plan: dict,
+    evaluation_contract: dict,
+    workflow_run_id: str,
+    checkpoint_revision: int,
+    precommit_attempt: int,
+) -> dict:
+    """Build the immutable identity for one first-strict match journal."""
+
+    control = next(
+        (
+            item
+            for item in opponents
+            if str(item.get("authority") or "")
+            == "system_first_strict_control"
+        ),
+        {},
+    )
+    control_receipt = control.get("control_receipt") or {}
+    return {
+        "workflow_run_id": str(workflow_run_id),
+        "checkpoint_revision": int(checkpoint_revision),
+        "candidate_version": int(v),
+        "candidate_label": str(candidate_name),
+        "candidate_artifact_hash": str(code_fingerprint),
+        "control_id": str(control.get("name") or ""),
+        "control_artifact_hash": str(
+            ((control_receipt.get("control") or {}).get("artifact_hash"))
+            or ""
+        ),
+        "control_receipt_digest": str(
+            control_receipt.get("receipt_digest") or ""
+        ),
+        "precommit_plan_digest": str(
+            precommit_plan.get("plan_digest") or ""
+        ),
+        "evaluation_contract_digest": str(
+            evaluation_contract.get("contract_digest") or ""
+        ),
+        "precommit_attempt": int(precommit_attempt),
+    }
+
+
+def _validate_first_strict_control_execution_scope(
+    scope,
+    *,
+    v: int,
+    candidate_name: str,
+    code_fingerprint: str,
+    opponents: list,
+    precommit_plan: dict,
+    evaluation_contract: dict,
+    workflow_run_id: str,
+    precommit_attempt: int,
+) -> tuple[dict | None, str | None]:
+    """Re-prove a frozen scope while retaining its attempt-origin revision."""
+
+    try:
+        from first_strict_execution_journal import normalize_execution_scope
+
+        normalized = normalize_execution_scope(scope)
+    except Exception as exc:
+        return None, (
+            "First-strict precommit execution scope is missing or invalid: "
+            f"{type(exc).__name__}: {str(exc)[:240]}"
+        )
+    expected = _build_first_strict_control_execution_scope(
+        v=v,
+        candidate_name=candidate_name,
+        code_fingerprint=code_fingerprint,
+        opponents=opponents,
+        precommit_plan=precommit_plan,
+        evaluation_contract=evaluation_contract,
+        workflow_run_id=workflow_run_id,
+        checkpoint_revision=int(normalized["checkpoint_revision"]),
+        precommit_attempt=precommit_attempt,
+    )
+    if normalized != expected:
+        return None, (
+            "First-strict precommit execution scope no longer binds the exact "
+            "workflow, artifact, plan, control, and logical attempt."
+        )
+    return normalized, None
+
+
 async def _run_national_precommit_backend(
     *,
     v: int,
@@ -328,6 +456,8 @@ async def _run_national_precommit_backend(
     evaluation_contract: dict,
     workflow_run_id: str = "",
     checkpoint_revision: int = 0,
+    shutdown_token: threading.Event | None = None,
+    control_execution_scope: dict | None = None,
 ):
     """Run the sole active 70-hand native TCP precommit backend."""
     candidate_observability = (
@@ -375,31 +505,36 @@ async def _run_national_precommit_backend(
 
     blockers = list(initial_blockers or [])
     execution_protocol = "national_native_tcp" if native_tcp_mode else "national"
-    control_execution_scope = None
     if system_control_plan:
-        control_receipt = opponents_with_paths[0].get("control_receipt") or {}
-        control_execution_scope = {
-            "workflow_run_id": str(workflow_run_id),
-            "checkpoint_revision": int(checkpoint_revision),
-            "candidate_version": int(v),
-            "candidate_label": str(candidate_name),
-            "candidate_artifact_hash": str(code_fingerprint),
-            "control_id": str(opponents_with_paths[0].get("name") or ""),
-            "control_artifact_hash": str(
-                ((control_receipt.get("control") or {}).get("artifact_hash"))
-                or ""
-            ),
-            "control_receipt_digest": str(
-                control_receipt.get("receipt_digest") or ""
-            ),
-            "precommit_plan_digest": str(
-                precommit_plan.get("plan_digest") or ""
-            ),
-            "evaluation_contract_digest": str(
-                evaluation_contract.get("contract_digest") or ""
-            ),
-            "precommit_attempt": int(precommit_attempt),
-        }
+        if control_execution_scope is None:
+            control_execution_scope = (
+                _build_first_strict_control_execution_scope(
+                    v=v,
+                    candidate_name=candidate_name,
+                    code_fingerprint=code_fingerprint,
+                    opponents=opponents_with_paths,
+                    precommit_plan=precommit_plan,
+                    evaluation_contract=evaluation_contract,
+                    workflow_run_id=workflow_run_id,
+                    checkpoint_revision=checkpoint_revision,
+                    precommit_attempt=precommit_attempt,
+                )
+            )
+        control_execution_scope, scope_error = (
+            _validate_first_strict_control_execution_scope(
+                control_execution_scope,
+                v=v,
+                candidate_name=candidate_name,
+                code_fingerprint=code_fingerprint,
+                opponents=opponents_with_paths,
+                precommit_plan=precommit_plan,
+                evaluation_contract=evaluation_contract,
+                workflow_run_id=workflow_run_id,
+                precommit_attempt=precommit_attempt,
+            )
+        )
+        if scope_error:
+            raise RuntimeError(scope_error)
     if national_hands != 70:
         blockers.append({
             "reason": "national_strength_hands_not_70",
@@ -417,6 +552,7 @@ async def _run_national_precommit_backend(
                 parent_label=parent_name,
                 sample_plan=list(precommit_plan.get("sample_plan") or []),
                 control_execution_scope=control_execution_scope,
+                cancel_token=shutdown_token,
             )
             blockers.extend(national_result.get("blockers") or [])
             if system_control_plan:
@@ -887,6 +1023,25 @@ async def _run_national_precommit_backend(
     return _json_tool_result(result)
 
 
+async def _run_national_precommit_attempt(
+    shutdown_token: threading.Event,
+    **kwargs,
+):
+    """Run one backend attempt and fence its exact token on task cancellation."""
+
+    try:
+        return await _run_national_precommit_backend(
+            shutdown_token=shutdown_token,
+            **kwargs,
+        )
+    except asyncio.CancelledError:
+        # Deterministic checkpoint routes can be cancelled outside
+        # ``_run_one_cycle``.  Set the locally captured identity rather than the
+        # module's possibly-rotated current token.
+        set_precommit_shutdown(shutdown_token)
+        raise
+
+
 # ──────────────────────────────────────────────
 # Precommit Eval
 # ──────────────────────────────────────────────
@@ -937,9 +1092,139 @@ def _worst_wins_losses(matchups, opponent):
     return 0, 0
 
 
+def _infra_timeout_retry_authority_error(
+    checkpoint,
+    *,
+    candidate_dir,
+    code_fingerprint,
+    version,
+    source_v,
+):
+    """Return why an infra-timeout candidate cannot reuse passed gate evidence.
+
+    ``infra_timed_out`` is only a transport/evaluation overlay.  Removing it is
+    safe only while the complete candidate artifact is still the byte identity
+    that passed the active quality -> review -> critic chain.  The quality gate
+    owns the complete-artifact fingerprint and ``repair_baseline_artifact_hash``
+    carries that same frozen identity through the later non-mutating gates.
+    """
+
+    candidate_dir = Path(candidate_dir)
+    candidate_entry = candidate_dir / "national_bot.py"
+    if (
+        not candidate_dir.is_dir()
+        or not candidate_entry.is_file()
+        or not isinstance(code_fingerprint, str)
+        or len(code_fingerprint) != 64
+        or any(char not in "0123456789abcdef" for char in code_fingerprint)
+    ):
+        return "Infra-timeout retry candidate artifact is missing or unreadable."
+
+    if not (
+        _quality_gate_ok(checkpoint)
+        and _review_gate_ok(checkpoint)
+        and _critic_gate_ok(checkpoint)
+    ):
+        return (
+            "Infra-timeout retry quality/review/critic gate chain is incomplete "
+            "or invalid."
+        )
+
+    precommit_attempt = checkpoint.get("precommit_attempt")
+    if type(precommit_attempt) is not int or precommit_attempt < 1:
+        return (
+            "Infra-timeout retry checkpoint is missing its frozen logical "
+            "precommit attempt identity."
+        )
+
+    gates = checkpoint.get("gate_results") or {}
+    for gate_name in ("quality", "review", "critic"):
+        gate = gates.get(gate_name) or {}
+        if (
+            gate.get("version") != int(version)
+            or gate.get("source_v") != int(source_v)
+        ):
+            return (
+                "Infra-timeout retry quality/review/critic gate identity does "
+                "not match the active generation."
+            )
+
+    quality_fingerprint = str(
+        ((gates.get("quality") or {}).get("code_fingerprint")) or ""
+    )
+    frozen_fingerprint = str(
+        checkpoint.get("repair_baseline_artifact_hash") or ""
+    )
+    for fingerprint in (quality_fingerprint, frozen_fingerprint):
+        if (
+            len(fingerprint) != 64
+            or any(char not in "0123456789abcdef" for char in fingerprint)
+        ):
+            return (
+                "Infra-timeout retry checkpoint is missing its frozen candidate "
+                "artifact identity."
+            )
+    if quality_fingerprint != frozen_fingerprint:
+        return (
+            "Infra-timeout retry quality gate and checkpoint artifact bindings "
+            "disagree."
+        )
+    if code_fingerprint != quality_fingerprint:
+        return (
+            "Infra-timeout retry candidate artifact drifted from the passed "
+            "quality/review/critic evidence."
+        )
+
+    audit_context = checkpoint.get("audit_context") or {}
+    stored_plan = audit_context.get("precommit_eval_plan")
+    plan_opponents = (
+        stored_plan.get("opponents")
+        if isinstance(stored_plan, dict)
+        else []
+    )
+    system_control_plan = any(
+        isinstance(item, dict)
+        and str(item.get("authority") or "")
+        == "system_first_strict_control"
+        for item in (plan_opponents or [])
+    )
+    if system_control_plan:
+        try:
+            frozen_opponents = opponents_from_plan(stored_plan)
+            frozen_contract = build_evaluation_contract(
+                stored_plan,
+                candidate_code_fingerprint=code_fingerprint,
+            )
+        except Exception as exc:
+            return (
+                "Infra-timeout retry first-strict plan identity is invalid: "
+                f"{type(exc).__name__}: {str(exc)[:240]}"
+            )
+        _scope, scope_error = _validate_first_strict_control_execution_scope(
+            audit_context.get(
+                _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY
+            ),
+            v=int(version),
+            candidate_name=active_bot_name(int(version)),
+            code_fingerprint=code_fingerprint,
+            opponents=frozen_opponents,
+            precommit_plan=stored_plan,
+            evaluation_contract=frozen_contract,
+            workflow_run_id=str(checkpoint.get("workflow_run_id") or ""),
+            precommit_attempt=int(precommit_attempt),
+        )
+        if scope_error:
+            return "Infra-timeout retry cannot re-prove its journal: " + scope_error
+    return None
+
+
 @tool("run_precommit_eval", "Run the final native national-TCP regression check before commit.", {"version": int, "source_v": int, "n_games": int})
 async def run_precommit_eval(args):
     _t0 = time.time()
+    # Capture before any await or checkpoint transition.  The outer cycle may
+    # rotate the module's current token as soon as this attempt is cancelled;
+    # this local reference must remain bound to the old, permanently-set token.
+    precommit_shutdown_token = begin_precommit_shutdown_attempt()
     v, source_v = _resolve_version_args(args)
     if v is None or source_v is None:
         return _json_tool_result({"error": "Missing version/source_v and no active pipeline checkpoint"})
@@ -976,6 +1261,58 @@ async def run_precommit_eval(args):
     # Idempotency guard: skip if precommit eval already passed for the same code snapshot
     # under the same workflow profile and national execution mode.
     _precommit_ckpt = _matching_checkpoint(v, source_v)
+    infra_timeout_retry = bool(
+        _precommit_ckpt
+        and _precommit_ckpt.get("stage") == "infra_timed_out"
+    )
+    if infra_timeout_retry:
+        authority_error = _infra_timeout_retry_authority_error(
+            _precommit_ckpt,
+            candidate_dir=candidate_dir,
+            code_fingerprint=code_fingerprint,
+            version=v,
+            source_v=source_v,
+        )
+        if authority_error:
+            return _state_blocked(
+                authority_error,
+                v,
+                source_v,
+                _precommit_ckpt,
+            )
+        # The timeout overlay preserves the already-approved candidate and gate
+        # evidence but is not itself a legal predecessor of verified/failed.
+        # Restore the exact critic_checked state by checkpoint CAS before any
+        # expensive retry so the normal precommit transitions remain valid.
+        restored = write_pipeline_checkpoint(
+            v,
+            source_v,
+            "critic_checked",
+            expected_checkpoint_revision=_precommit_ckpt.get(
+                "checkpoint_revision"
+            ),
+            expected_checkpoint_stage="infra_timed_out",
+            expected_workflow_run_id=_precommit_ckpt.get("workflow_run_id"),
+        )
+        if not restored:
+            return _state_blocked(
+                "Failed to restore infra_timed_out checkpoint for exact "
+                "precommit retry.",
+                v,
+                source_v,
+                _precommit_ckpt,
+            )
+        _precommit_ckpt = _matching_checkpoint(v, source_v)
+        if (
+            not isinstance(_precommit_ckpt, dict)
+            or _precommit_ckpt.get("stage") != "critic_checked"
+        ):
+            return _state_blocked(
+                "Infra-timeout checkpoint restoration could not be re-proven.",
+                v,
+                source_v,
+                _precommit_ckpt,
+            )
     stored_plan = (
         ((_precommit_ckpt.get("audit_context") or {}).get("precommit_eval_plan"))
         if _precommit_ckpt
@@ -1402,25 +1739,139 @@ async def run_precommit_eval(args):
             )
         return _json_tool_result(payload)
 
-    # Increment precommit_attempt only when a real precommit battle round is
-    # about to start. Idempotent already-verified calls, missing prerequisite
-    # gates, missing candidates, and no-opponent preflight exits must not spend
-    # an attempt because they do not evaluate the current bot code.
-    precommit_attempt = int(ckpt.get("precommit_attempt", 0) or 0) if ckpt else 0
-    if opponents:
-        current_stage = ckpt.get("stage", "critic_checked") if ckpt else "critic_checked"
+    # A normal battle round gets a new logical attempt.  An interrupted attempt
+    # is different: its frozen system-control journal scope (and, explicitly,
+    # ``infra_timed_out``) resumes the exact same identity, so a completed match
+    # can be recovered instead of relaunched under a new revision/attempt scope.
+    attempt_ckpt = _matching_checkpoint(v, source_v) if opponents else ckpt
+    precommit_attempt = (
+        int((attempt_ckpt or {}).get("precommit_attempt", 0) or 0)
+    )
+    system_control_plan = any(
+        str(item.get("authority") or "") == "system_first_strict_control"
+        for item in opponents
+    )
+    control_execution_scope = None
+    execution_ckpt = attempt_ckpt
+    resume_control_attempt = False
+    if opponents and system_control_plan and precommit_attempt >= 1:
+        frozen_scope = (
+            ((attempt_ckpt or {}).get("audit_context") or {}).get(
+                _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY
+            )
+        )
+        control_execution_scope, scope_error = (
+            _validate_first_strict_control_execution_scope(
+                frozen_scope,
+                v=v,
+                candidate_name=candidate_name,
+                code_fingerprint=code_fingerprint,
+                opponents=opponents,
+                precommit_plan=precommit_plan,
+                evaluation_contract=evaluation_contract,
+                workflow_run_id=str(
+                    (attempt_ckpt or {}).get("workflow_run_id") or ""
+                ),
+                precommit_attempt=precommit_attempt,
+            )
+        )
+        if scope_error:
+            return _state_blocked(
+                scope_error,
+                v,
+                source_v,
+                attempt_ckpt,
+            )
+        # A persisted scope with no terminal precommit stage is the durable
+        # in-flight marker.  Reuse it after process cancellation/crash as well
+        # as after an explicit infra_timed_out overlay.
+        resume_control_attempt = True
+    if opponents and not infra_timeout_retry and not resume_control_attempt:
+        current_stage = (
+            (attempt_ckpt or {}).get("stage", "critic_checked")
+        )
         precommit_attempt += 1
-        write_pipeline_checkpoint(
+        audit_context_update = None
+        predicted_scope = None
+        if system_control_plan:
+            current_revision = (attempt_ckpt or {}).get(
+                "checkpoint_revision"
+            )
+            workflow_run_id = str(
+                (attempt_ckpt or {}).get("workflow_run_id") or ""
+            )
+            if (
+                type(current_revision) is not int
+                or current_revision < 1
+                or not workflow_run_id
+            ):
+                return _state_blocked(
+                    "First-strict precommit cannot freeze an invalid checkpoint "
+                    "execution identity.",
+                    v,
+                    source_v,
+                    attempt_ckpt,
+                )
+            predicted_scope = _build_first_strict_control_execution_scope(
+                v=v,
+                candidate_name=candidate_name,
+                code_fingerprint=code_fingerprint,
+                opponents=opponents,
+                precommit_plan=precommit_plan,
+                evaluation_contract=evaluation_contract,
+                workflow_run_id=workflow_run_id,
+                checkpoint_revision=current_revision + 1,
+                precommit_attempt=precommit_attempt,
+            )
+            audit_context_update = {
+                _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY: predicted_scope,
+            }
+        persisted_attempt = write_pipeline_checkpoint(
             v,
             source_v,
             current_stage,
             precommit_attempt=precommit_attempt,
+            audit_context=audit_context_update,
+            expected_checkpoint_revision=(
+                (attempt_ckpt or {}).get("checkpoint_revision")
+            ),
+            expected_checkpoint_stage=(attempt_ckpt or {}).get("stage"),
+            expected_workflow_run_id=(
+                (attempt_ckpt or {}).get("workflow_run_id")
+            ),
         )
-
-    execution_ckpt = _matching_checkpoint(v, source_v) if opponents else ckpt
+        if not persisted_attempt:
+            return _state_blocked(
+                "Failed to persist the exact precommit attempt identity.",
+                v,
+                source_v,
+                attempt_ckpt,
+            )
+        execution_ckpt = _matching_checkpoint(v, source_v)
+        if system_control_plan:
+            stored_scope = (
+                ((execution_ckpt or {}).get("audit_context") or {}).get(
+                    _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY
+                )
+            )
+            if (
+                not isinstance(execution_ckpt, dict)
+                or execution_ckpt.get("checkpoint_revision")
+                != predicted_scope["checkpoint_revision"]
+                or stored_scope != predicted_scope
+            ):
+                return _state_blocked(
+                    "First-strict precommit execution identity persistence "
+                    "could not be re-proven.",
+                    v,
+                    source_v,
+                    execution_ckpt,
+                )
+            control_execution_scope = predicted_scope
 
     if national_evaluation:
-        return await _run_national_precommit_backend(
+        return await _run_national_precommit_attempt(
+            precommit_shutdown_token,
             v=v,
             source_v=source_v,
             requested_n_games=requested,
@@ -1444,6 +1895,7 @@ async def run_precommit_eval(args):
             checkpoint_revision=int(
                 (execution_ckpt or {}).get("checkpoint_revision") or 0
             ),
+            control_execution_scope=control_execution_scope,
         )
 
 # ──────────────────────────────────────────────

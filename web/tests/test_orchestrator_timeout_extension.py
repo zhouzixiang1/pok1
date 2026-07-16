@@ -52,6 +52,20 @@ def _strict_parent_authority(monkeypatch):
     monkeypatch.setattr(checkpoint_schema, "resolve_national_bot_spec", resolve)
 
 
+@pytest.fixture(autouse=True)
+def _restore_pipeline_state_paths_after_test():
+    import evolution_core
+    import evolution_infra
+
+    original_core = evolution_core.PIPELINE_STATE_FILE
+    original_infra = evolution_infra.PIPELINE_STATE_FILE
+    try:
+        yield
+    finally:
+        evolution_core.PIPELINE_STATE_FILE = original_core
+        evolution_infra.PIPELINE_STATE_FILE = original_infra
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -104,6 +118,9 @@ class _FakeUI:
     def set_header(self, *a, **kw):
         pass
 
+    def set_status(self, *a, **kw):
+        pass
+
     def update_cost(self, *a, **kw):
         pass
 
@@ -123,6 +140,68 @@ def test_orchestrator_default_daemon_workers_uses_authoritative_safe_cap(
 
     assert resolved == daemon_management.MAX_SAFE_DAEMON_WORKERS == 12
     assert orchestrator._resolve_daemon_workers(3) == 3
+
+
+@pytest.mark.parametrize(
+    "recovery",
+    [
+        {
+            "action": "blocked",
+            "reason": "unrecoverable_checkpoint",
+            "diagnostics": {"issues": ["checkpoint_identity_invalid"]},
+        },
+        {
+            "action": "operator_action_required",
+            "checkpoint": {
+                "stage": "official_bootstrap_required",
+                "next_v": 143,
+                "source_v": 142,
+            },
+        },
+    ],
+)
+def test_startup_recovery_stops_before_rating_daemon_side_effect(
+    monkeypatch,
+    recovery,
+):
+    import evolution_core
+    import orchestrator
+    import rate_limiter
+
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: recovery)
+    monkeypatch.setattr(
+        orchestrator,
+        "load_llm_pause",
+        lambda: pytest.fail(
+            "durable pause was read before blocked startup recovery stopped launch"
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "consume_operator_resume_ack_from_env",
+        lambda: pytest.fail(
+            "one-shot resume acknowledgement was consumed on blocked startup"
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "_runtime_branch_guard_enabled", lambda: False)
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        evolution_core,
+        "start_daemon",
+        lambda **_kwargs: pytest.fail(
+            "rating daemon started before recovery authority was accepted"
+        ),
+    )
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(_FakeUI(), no_daemon=False)
+    )
+
+    assert outcome == (
+        orchestrator.ORCH_RECOVERY_BLOCKED_COST
+        if recovery["action"] == "blocked"
+        else orchestrator.ORCH_OPERATOR_ACTION_REQUIRED_COST
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +231,74 @@ def test_timeout_at_verified_grants_extension_returns_sentinel(tmp_path, monkeyp
     assert after.get("timeout_extensions") == 1, after
 
 
+def test_timeout_overlay_cas_cannot_overwrite_late_checkpoint_progress(
+    tmp_path,
+):
+    import evolution_core
+    import orchestrator
+
+    observed = _write_checkpoint(
+        tmp_path,
+        "critic_checked",
+        timeout_extensions=0,
+    )
+    state_file = evolution_core.PIPELINE_STATE_FILE
+    advanced = {
+        **observed,
+        "stage": "verified",
+        "checkpoint_revision": observed["checkpoint_revision"] + 1,
+    }
+    state_file.write_text(json.dumps(advanced, indent=2), encoding="utf-8")
+
+    written = orchestrator._write_timeout_checkpoint_from_exact_snapshot(
+        observed,
+        "infra_timed_out",
+        master_plan=observed.get("master_plan"),
+    )
+
+    assert written is False
+    current = json.loads(state_file.read_text(encoding="utf-8"))
+    assert current["stage"] == "verified"
+    assert current["checkpoint_revision"] == advanced["checkpoint_revision"]
+
+
+def test_timeout_overlay_passes_full_workflow_cas_identity(monkeypatch):
+    import evolution_core
+    import orchestrator
+
+    checkpoint = {
+        "workflow_run_id": "generation:144:timeout-cas",
+        "checkpoint_revision": 11,
+        "stage": "critic_checked",
+        "next_v": 144,
+        "source_v": 143,
+    }
+    calls = []
+
+    def write(*args, **kwargs):
+        calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(evolution_core, "write_pipeline_checkpoint", write)
+
+    assert orchestrator._write_timeout_checkpoint_from_exact_snapshot(
+        checkpoint,
+        "infra_timed_out",
+        master_plan={"strategy": "single_parent"},
+    ) is True
+    assert calls == [
+        (
+            (144, 143, "infra_timed_out"),
+            {
+                "expected_checkpoint_revision": 11,
+                "expected_checkpoint_stage": "critic_checked",
+                "expected_workflow_run_id": "generation:144:timeout-cas",
+                "master_plan": {"strategy": "single_parent"},
+            },
+        )
+    ]
+
+
 def test_timeout_at_critic_checked_does_not_grant(tmp_path, monkeypatch):
     """Regression for the v101 bug: stage==critic_checked must NOT grant extension."""
     import orchestrator
@@ -167,12 +314,47 @@ def test_timeout_at_critic_checked_does_not_grant(tmp_path, monkeypatch):
         _drive_cycle(orchestrator, log_file, ui)
     )
 
-    # Must NOT be the extension sentinel — falls through to normal timeout
-    # handling which marks the checkpoint timed_out and returns a real cost.
+    # Must NOT be the extension sentinel.  The timeout cannot erase the
+    # precommit-stage authority: outer recovery will retry/rework from the exact
+    # critic_checked checkpoint instead of laundering it through generic abandon.
     assert cost != -99999.0, "critic_checked must not trigger the extension grant"
     after = json.loads(pipe_file.read_text())
-    # Normal timeout path marks the stage timed_out
-    assert after.get("stage") == "timed_out", after
+    assert after.get("stage") == "critic_checked", after
+
+
+def test_precommit_infra_timeout_is_not_misclassified_by_old_master_attempts(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "critic_checked",
+        timeout_extensions=0,
+    )
+    checkpoint["audit_attempt"] = 2
+    checkpoint["gate_results"] = {
+        "quality": {"passed": True},
+        "review": {"passed": True},
+        "critic": {"passed": True},
+    }
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    pipe_file.write_text(json.dumps(checkpoint, indent=2), encoding="utf-8")
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        _drive_cycle(
+            orchestrator,
+            tmp_path / "precommit_infra_old_master_attempts.txt",
+            _FakeUI(),
+        )
+    )
+
+    assert cost != orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    after = json.loads(pipe_file.read_text(encoding="utf-8"))
+    assert after["stage"] == "infra_timed_out"
+    assert after["audit_attempt"] == 2
 
 
 def test_second_timeout_at_verified_refuses_extension(tmp_path, monkeypatch):
@@ -190,14 +372,93 @@ def test_second_timeout_at_verified_refuses_extension(tmp_path, monkeypatch):
         _drive_cycle(orchestrator, log_file, ui)
     )
 
-    # Refused -> falls through to normal timeout handling (returns a real cost,
-    # NOT -99999.0), and marks the checkpoint timed_out. The fall-through rewrites
-    # the checkpoint via write_pipeline_checkpoint which only preserves its
-    # known fields, so timeout_extensions may be dropped — that is fine (the
-    # generation is abandoning this version via timed_out anyway).
+    # Refused -> returns a real cost, but preserves verified.  Generic timeout
+    # abandonment may not erase a passed precommit/certification boundary; outer
+    # deterministic recovery owns the idempotent commit route.
     assert cost != -99999.0, "second extension must be refused (no -99999.0)"
     after = json.loads(pipe_file.read_text())
-    assert after.get("stage") == "timed_out", after
+    assert after.get("stage") == "verified", after
+    assert after.get("timeout_extensions") == 1
+
+
+def test_master_timeout_breaker_returns_only_after_exact_abandon_proof(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    checkpoint["audit_attempt"] = 2
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    pipe_file.write_text(json.dumps(checkpoint, indent=2), encoding="utf-8")
+    terminal = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "1" * 64,
+        "abandon_receipt_digest": "2" * 64,
+        "finalize_receipt_digest": "3" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "stage": "direction_audited",
+        },
+    }
+    calls = []
+
+    async def abandon(*, reason, _bypass_rate_limit, **identity):
+        calls.append((reason, _bypass_rate_limit, identity))
+        pipe_file.unlink()
+        return dict(terminal)
+
+    monkeypatch.setattr(
+        tool_bot_management,
+        "_do_abandon_generation",
+        abandon,
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: (
+            {"valid": True}
+            if baseline == checkpoint and result == terminal
+            else (_ for _ in ()).throw(AssertionError("abandon proof mismatch"))
+        ),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        _drive_cycle(
+            orchestrator,
+            tmp_path / "master_timeout_exact_abandon.txt",
+            _FakeUI(),
+        )
+    )
+
+    assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
+    assert calls == [
+        (
+            "cycle_timeout_master_stuck (2 fails)",
+            True,
+            {
+                "expected_workflow_run_id": checkpoint["workflow_run_id"],
+                "expected_next_v": checkpoint["next_v"],
+                "expected_source_v": checkpoint["source_v"],
+                "expected_checkpoint_revision": checkpoint[
+                    "checkpoint_revision"
+                ],
+                "expected_checkpoint_stage": "direction_audited",
+            },
+        )
+    ]
+    assert not pipe_file.exists()
 
 
 async def _drive_cycle(orchestrator, log_file, ui):
@@ -275,6 +536,11 @@ def test_main_loop_sentinel_minus3_skips_cleanup_and_complete(tmp_path, monkeypa
     monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
     monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
     monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
 
     async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
         return
@@ -315,6 +581,129 @@ def test_main_loop_sentinel_minus3_skips_cleanup_and_complete(tmp_path, monkeypa
     assert complete_logs == [], "must NOT log 'gen complete' for -99999.0 sentinel"
     assert infra_backoff_logs == [], "must NOT apply infra/auth backoff for -99999.0 sentinel"
     assert state["calls"] == 1, f"loop should process one sentinel cycle then stop; got {state['calls']} calls"
+
+
+def test_main_loop_recovery_blocked_signal_stops_without_successor_prepare(
+    monkeypatch,
+):
+    import orchestrator
+
+    prepare_calls = []
+    run_calls = []
+    events = []
+
+    class _Ctx:
+        pass
+
+    async def _prepare(shutdown_mgr, ui, min_games=None):
+        prepare_calls.append(True)
+        return _Ctx()
+
+    async def _run(**kwargs):
+        run_calls.append(kwargs)
+        return orchestrator.ORCH_RECOVERY_BLOCKED_COST
+
+    async def _no_watchdog(ui, shutdown_mgr, check_interval=60):
+        return
+
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", _prepare)
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", _run)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", _no_watchdog)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    import rate_limiter
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    asyncio.new_event_loop().run_until_complete(
+        orchestrator.orchestrator_loop(
+            ui=_FakeUI(),
+            shutdown_mgr=None,
+            no_daemon=True,
+        )
+    )
+
+    assert prepare_calls == [True]
+    assert len(run_calls) == 1
+    assert any(
+        event[0] == "orchestrator.recovery_authority_blocked_stop"
+        for event in events
+    )
+
+
+def test_main_loop_blocks_successor_when_publication_accounting_is_invalid(
+    monkeypatch,
+):
+    import orchestrator
+    import rate_limiter
+
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "workflow_run_id": "generation:143:accounting-test",
+            "checkpoint_revision": 9,
+            "stage": "archived",
+            "next_v": 143,
+            "source_v": 142,
+        },
+        "stage": "post_publication_handoff",
+        "post_publication_handoff": True,
+    }
+    events = []
+
+    async def advance(*_args, **_kwargs):
+        return {
+            "routed": True,
+            "recovery": None,
+            "outcome": {"result": {"success": True}},
+            "terminal_action": "publication_handoff_completed",
+        }
+
+    async def no_watchdog(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: recovery)
+    monkeypatch.setattr(orchestrator, "_advance_deterministic_recovery", advance)
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", no_watchdog)
+    monkeypatch.setattr(orchestrator, "_runtime_branch_guard_enabled", lambda: False)
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "generation_cost_status",
+        lambda: {
+            "active": True,
+            "accounting_ok": False,
+            "accounting_errors": ["missing_provider_cost_receipt"],
+            "generation_id": "generation:143:accounting-test",
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(_FakeUI(), no_daemon=True)
+    )
+
+    assert outcome == orchestrator.ORCH_ACCOUNTING_BLOCKED_COST
+    assert any(
+        event[0] == "orchestrator.accounting_blocked_stop"
+        for event in events
+    )
 
 
 def test_main_loop_actionable_handoff_routes_without_backoff(tmp_path, monkeypatch):
@@ -715,8 +1104,8 @@ def test_main_loop_routes_fresh_selected_checkpoint_without_llm_cycle(monkeypatc
     assert ("selected_after_prepare", {"log_level": "info", "label": "[Pipeline]"}) in recovery_context_calls
 
 
-def test_main_loop_post_cleanup_timeout_still_marks_cycle_done(monkeypatch):
-    """Post-generation housekeeping timeout should not block the next evolution cycle."""
+def test_main_loop_post_cleanup_timeout_blocks_cycle_completion(monkeypatch):
+    """Post-generation verification timeout must block successor scheduling."""
     import orchestrator
     import generation_scheduler
     from generation_scheduler import GenerationContext
@@ -746,6 +1135,11 @@ def test_main_loop_post_cleanup_timeout_still_marks_cycle_done(monkeypatch):
     monkeypatch.setattr(orchestrator, "_run_one_cycle", _fake_run_one_cycle)
     monkeypatch.setattr(orchestrator, "_prepare_or_fail", _fake_prepare)
     monkeypatch.setattr(orchestrator, "_startup_recovery", lambda ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(orchestrator, "_watchdog_triggered", False)
     monkeypatch.setattr(orchestrator, "POST_GENERATION_CLEANUP_TIMEOUT", 0.01)
     monkeypatch.setattr(orchestrator, "log_system_event", _fake_log)
@@ -781,7 +1175,16 @@ def test_main_loop_post_cleanup_timeout_still_marks_cycle_done(monkeypatch):
 
     assert len(cleanup_calls) == 1
     assert any(e[0] == "orchestrator.post_cleanup_timeout" for e in events)
-    assert any(e[0] == "orchestrator.cycle_done" for e in events)
+    timeout_event = next(
+        e for e in events if e[0] == "orchestrator.post_cleanup_timeout"
+    )
+    assert "stopping before successor scheduling" in timeout_event[2]
+    assert "continuing evolution" not in timeout_event[2]
+    assert any(
+        e[0] == "orchestrator.post_cleanup_verification_blocked_stop"
+        for e in events
+    )
+    assert not any(e[0] == "orchestrator.cycle_done" for e in events)
 
 
 def test_first_activity_timeout_is_infra_and_preserves_checkpoint(tmp_path, monkeypatch):
@@ -1525,6 +1928,22 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
 
     events = []
     abandoned = []
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": "generation:268:test",
+        "abandon_transaction_id": "a" * 64,
+        "abandon_receipt_digest": "b" * 64,
+        "finalize_receipt_digest": "c" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": "generation:268:test",
+            "checkpoint_revision": 1,
+            "stage": "repair_planned",
+            "next_v": 268,
+            "source_v": 249,
+            "digest": "d" * 64,
+        },
+    }
     fake_execute = SimpleNamespace(
         handler=AsyncMock(
             return_value={
@@ -1543,7 +1962,7 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
 
     async def _fake_abandon(reason="abandon_generation", **_identity):
         abandoned.append(reason)
-        return {"abandoned": True, "reason": reason, "abandoned_v": 268}
+        return {**terminal_result, "reason": reason, "abandoned_v": 268}
 
     monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
     monkeypatch.setattr(
@@ -1575,6 +1994,8 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
     recovery = {
         "action": "resume",
         "checkpoint": {
+            "workflow_run_id": "generation:268:test",
+            "checkpoint_revision": 1,
             "stage": "repair_planned",
             "next_v": 268,
             "source_v": 249,
@@ -1583,14 +2004,24 @@ def test_deterministic_route_abandons_after_worker_circuit_breaker(monkeypatch):
         },
     }
     ui = _FakeUI()
+    outcome = {}
 
     handled = asyncio.new_event_loop().run_until_complete(
-        orchestrator._try_deterministic_checkpoint_route(recovery, ui)
+        orchestrator._try_deterministic_checkpoint_route(
+            recovery,
+            ui,
+            outcome=outcome,
+        )
     )
 
     assert handled is True
     fake_execute.handler.assert_awaited_once_with({"next_v": 268, "source_v": 249})
     assert abandoned == ["worker_circuit_breaker"]
+    assert outcome["terminal_abandon_result"] == {
+        **terminal_result,
+        "reason": "worker_circuit_breaker",
+        "abandoned_v": 268,
+    }
     assert any(e[0] == "pipeline.deterministic_route_abandoned" for e in events)
     assert not any(e[0] == "pipeline.deterministic_route_failed" for e in events)
 
@@ -2187,6 +2618,767 @@ def test_actionable_stage_handoff_interrupts_active_stream(tmp_path, monkeypatch
     assert not any(e[0] == "pipeline.sdk_stream_error" for e in events)
 
 
+def test_terminal_checkpoint_clear_hands_off_before_stale_mcp_retry(
+    tmp_path,
+    monkeypatch,
+):
+    """Canonical abandon must return control to the outer scheduler immediately."""
+
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+
+    import evolution_core
+    import orchestrator
+    import post_publication_handoff
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    events = []
+    continued = {"value": False}
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "a" * 64,
+        "abandon_receipt_digest": "b" * 64,
+        "finalize_receipt_digest": "c" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "d" * 64,
+        },
+    }
+
+    async def _abandon_then_offer_stale_prepare():
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="abandon-1",
+                name="mcp__evolution__abandon_generation",
+                input={},
+            )],
+            model="sonnet",
+        )
+        pipe_file.unlink()
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="abandon-1",
+            content=json.dumps(terminal_result),
+            is_error=False,
+        )])
+        continued["value"] = True
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="stale-prepare",
+                name="mcp__evolution__prepare_next_gen",
+                input={"source_v": 200, "next_v": 202},
+            )],
+            model="sonnet",
+        )
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _abandon_then_offer_stale_prepare(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    def validate_terminal(baseline, result):
+        assert baseline == checkpoint
+        assert result == terminal_result
+        return {
+            "transaction_id": result["abandon_transaction_id"],
+            "abandon_receipt_digest": result["abandon_receipt_digest"],
+            "finalize_receipt_digest": result["finalize_receipt_digest"],
+            "checkpoint_identity": result["abandon_checkpoint_identity"],
+        }
+
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        validate_terminal,
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "terminal_handoff_log.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
+    assert not pipe_file.exists()
+    assert continued["value"] is False
+    event = next(
+        item for item in events
+        if item[0] == "pipeline.actionable_stage_handoff"
+    )
+    assert event[3]["scheduler_handoff_required"] is True
+    assert event[3]["next_tool"] == "prepare_generation"
+    assert event[3]["stage"] == "generation_terminal"
+    assert not any(item[0] == "pipeline.sdk_stream_error" for item in events)
+
+
+@pytest.mark.parametrize("proof_owner", ["abandon-1", "status-1"])
+def test_terminal_proof_binds_tool_use_result_id_and_owner_across_parallel_results(
+    tmp_path,
+    monkeypatch,
+    proof_owner,
+):
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+
+    import evolution_core
+    import orchestrator
+    import post_publication_handoff
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "1" * 64,
+        "abandon_receipt_digest": "2" * 64,
+        "finalize_receipt_digest": "3" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "4" * 64,
+        },
+    }
+    continued = {"value": False}
+
+    async def _parallel_results():
+        yield AssistantMessage(
+            content=[
+                ToolUseBlock(id="status-1", name="mcp__evolution__status", input={}),
+                ToolUseBlock(
+                    id="abandon-1",
+                    name="mcp__evolution__abandon_generation",
+                    input={},
+                ),
+            ],
+            model="sonnet",
+        )
+        pipe_file.unlink()
+        yield UserMessage(
+            content="",
+            tool_use_result={
+                "tool_use_id": "abandon-1",
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps(
+                        terminal_result
+                        if proof_owner == "abandon-1"
+                        else {"success": True}
+                    ),
+                }],
+            },
+        )
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="status-1",
+            content=json.dumps(
+                terminal_result
+                if proof_owner == "status-1"
+                else {"success": True}
+            ),
+            is_error=False,
+        )])
+        continued["value"] = True
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _parallel_results(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: {
+            "transaction_id": result["abandon_transaction_id"],
+            "abandon_receipt_digest": result["abandon_receipt_digest"],
+            "finalize_receipt_digest": result["finalize_receipt_digest"],
+            "checkpoint_identity": result["abandon_checkpoint_identity"],
+        }
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("terminal binding mismatch")),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "parallel_terminal_results.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == (
+        orchestrator.ORCH_GENERATION_ABANDONED_COST
+        if proof_owner == "abandon-1"
+        else orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    )
+    assert continued["value"] is False
+
+
+def test_checkpoint_free_blocked_handoff_ends_provider_stream(
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+    import post_publication_handoff
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        lambda timeout_sec=0: None,
+    )
+    monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "blocked", "issues": ["journal_tampered"]},
+    )
+
+    route = orchestrator._detect_actionable_stage_handoff(
+        baseline_checkpoint_identity=(
+            "generation:143:workflow-v22",
+            5,
+            "direction_audited",
+            143,
+            142,
+        )
+    )
+
+    assert route["recovery_blocked"] is True
+    assert route["stage"] == "post_publication_handoff_blocked"
+    assert route["next_tool"] is None
+    assert route["issues"] == ["journal_tampered"]
+
+
+def test_checkpoint_free_postpublication_pending_precedes_abandon_proof(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+    import post_publication_handoff
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        lambda timeout_sec=0: None,
+    )
+    monkeypatch.setattr(
+        evolution_core,
+        "PIPELINE_STATE_FILE",
+        tmp_path / "absent-pipeline-state.json",
+    )
+    monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {
+            "status": "pending",
+            "version": 144,
+            "source_v": 143,
+        },
+    )
+
+    route = orchestrator._detect_actionable_stage_handoff(
+        baseline_checkpoint_identity=(
+            "generation:144:workflow-v1",
+            19,
+            "verified",
+            144,
+            143,
+        ),
+        baseline_checkpoint={
+            "workflow_run_id": "generation:144:workflow-v1",
+            "checkpoint_revision": 19,
+            "stage": "verified",
+            "next_v": 144,
+            "source_v": 143,
+        },
+        terminal_tool_result=None,
+    )
+
+    assert route["stage"] == "post_publication_handoff"
+    assert route["next_tool"] == "run_archivist"
+    assert route.get("recovery_blocked") is not True
+
+
+def test_terminal_checkpoint_clear_without_exact_proof_stops_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+
+    import evolution_core
+    import orchestrator
+    import post_publication_handoff
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+    continued = {"value": False}
+
+    async def _unproved_abandon_then_continue():
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="abandon-unproved",
+                name="mcp__evolution__abandon_generation",
+                input={},
+            )],
+            model="sonnet",
+        )
+        pipe_file.unlink()
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="abandon-unproved",
+            content=json.dumps({"abandoned": True}),
+            is_error=False,
+        )])
+        continued["value"] = True
+        yield AssistantMessage(content=[], model="sonnet")
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _unproved_abandon_then_continue(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "terminal_proof_blocked_log.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert continued["value"] is False
+
+
+def test_unknown_tool_result_id_stops_provider_stream_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+    continued = {"value": False}
+
+    async def _unknown_result():
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="expected-tool",
+                name="mcp__evolution__run_master",
+                input={},
+            )],
+            model="sonnet",
+        )
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="foreign-tool",
+            content=json.dumps({"success": True}),
+            is_error=False,
+        )])
+        continued["value"] = True
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _unknown_result(),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "unknown_result.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert continued["value"] is False
+
+
+def test_settled_tool_use_id_cannot_be_reused_in_same_provider_stream(
+    tmp_path,
+    monkeypatch,
+):
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ToolResultBlock,
+        ToolUseBlock,
+        UserMessage,
+    )
+
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+    continued = {"value": False}
+
+    async def _duplicate_tool_use_id():
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="reused-tool-id",
+                name="mcp__evolution__status",
+                input={},
+            )],
+            model="sonnet",
+        )
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="reused-tool-id",
+            content=json.dumps({"success": True}),
+            is_error=False,
+        )])
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="reused-tool-id",
+                name="mcp__evolution__abandon_generation",
+                input={},
+            )],
+            model="sonnet",
+        )
+        continued["value"] = True
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _duplicate_tool_use_id(),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "duplicate_tool_use_id.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert continued["value"] is False
+
+
+def test_missing_tool_use_id_stops_provider_stream_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+    continued = {"value": False}
+
+    async def _missing_tool_use_id():
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="",
+                name="mcp__evolution__run_master",
+                input={},
+            )],
+            model="sonnet",
+        )
+        continued["value"] = True
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _missing_tool_use_id(),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "missing_tool_use_id.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert continued["value"] is False
+
+
+def test_provider_eof_with_unsettled_tool_use_stops_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+
+    import evolution_core
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+    pipe_file = evolution_core.PIPELINE_STATE_FILE
+
+    async def _missing_result():
+        yield AssistantMessage(
+            content=[ToolUseBlock(
+                id="missing-result",
+                name="mcp__evolution__abandon_generation",
+                input={},
+            )],
+            model="sonnet",
+        )
+        pipe_file.unlink()
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _missing_result(),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "missing_result.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+
+
+def test_existing_unreadable_checkpoint_is_not_generation_terminal(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_detect_actionable_stage_stall",
+        lambda timeout_sec=0: None,
+    )
+
+    route = orchestrator._detect_actionable_stage_handoff(
+        baseline_checkpoint_identity=(
+            "generation:143:workflow-v22",
+            5,
+            "direction_audited",
+            143,
+            142,
+        ),
+        baseline_checkpoint={
+            "workflow_run_id": "generation:143:workflow-v22",
+            "checkpoint_revision": 5,
+            "stage": "direction_audited",
+            "next_v": 143,
+            "source_v": 142,
+        },
+    )
+
+    assert route["recovery_blocked"] is True
+    assert route["stage"] == "checkpoint_recovery_blocked"
+    assert route["issues"] == ["checkpoint_unreadable_or_invalid"]
+
+    recovery = orchestrator._checkpoint_recovery_context(
+        "test_unreadable",
+    )
+    assert recovery["action"] == "blocked"
+    assert recovery["reason"] == "checkpoint_unreadable_or_invalid"
+    assert recovery["diagnostics"]["checkpoint_path_exists"] is True
+
+
+def test_checkpoint_unlinked_during_read_is_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+
+    def unlink_while_reading():
+        state_file.unlink()
+        return None
+
+    monkeypatch.setattr(
+        evolution_core,
+        "read_pipeline_checkpoint",
+        unlink_while_reading,
+    )
+
+    observation = orchestrator._pipeline_checkpoint_observation()
+
+    assert observation["path_existed_before"] is True
+    assert observation["path_exists"] is False
+    assert observation["error"] == "checkpoint_disappeared_during_read"
+
+
+def test_unreadable_checkpoint_blocks_before_provider_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import orchestrator
+
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text("{not-json", encoding="utf-8")
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: None)
+    provider_calls = []
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **kwargs: provider_calls.append(kwargs),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "unreadable_checkpoint_log.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert provider_calls == []
+
+
+def test_official_bootstrap_recovery_accepts_only_expected_operator_diagnostic(
+    tmp_path,
+    monkeypatch,
+):
+    import orchestrator
+    import pipeline_recovery
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "official_bootstrap_required",
+        timeout_extensions=0,
+    )
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda _checkpoint: {
+            "active": True,
+            "recoverable": False,
+            "issues": ["official_bootstrap_requires_operator_action"],
+        },
+    )
+
+    recovery = orchestrator._checkpoint_recovery_context(
+        "operator_boundary_test",
+    )
+
+    assert recovery["action"] == "operator_action_required"
+    assert recovery["checkpoint"] == checkpoint
+    assert recovery["operator_action_required"] is True
+
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda _checkpoint: {
+            "active": True,
+            "recoverable": False,
+            "issues": [
+                "official_bootstrap_requires_operator_action",
+                "repo_head_drift",
+            ],
+        },
+    )
+    blocked = orchestrator._checkpoint_recovery_context(
+        "operator_boundary_with_drift",
+    )
+    assert blocked["action"] == "blocked"
+    assert "repo_head_drift" in blocked["diagnostics"]["issues"]
+
+
 def test_actionable_handoff_fences_checkpoint_already_owned_by_fresh_stream(
     monkeypatch,
 ):
@@ -2354,7 +3546,7 @@ def test_operator_bootstrap_stage_parks_active_stream_without_retry(tmp_path, mo
         )
     )
 
-    assert cost == orchestrator.ORCH_ACTIONABLE_HANDOFF_COST
+    assert cost == orchestrator.ORCH_OPERATOR_ACTION_REQUIRED_COST
     assert json.loads(pipe_file.read_text())["stage"] == "official_bootstrap_required"
     event = next(e for e in events if e[0] == "pipeline.actionable_stage_handoff")
     assert event[3]["operator_action_required"] is True

@@ -1,5 +1,14 @@
-import { useEffect, useState, useCallback } from "react";
-import { controlApi, type Decision, type AppConfig } from "../api/control";
+import { useEffect, useState, useCallback, useRef } from "react";
+import {
+  controlApi,
+  controlPipelineBlocked,
+  controlPipelineIssues,
+  controlPipelineRouteAllowed,
+  controlSchedulerOwnsPrepareBoundary,
+  controlStartBlocked,
+  type Decision,
+  type AppConfig,
+} from "../api/control";
 import { api } from "../api/client";
 import type { PipelineCheckpoint } from "../api/types";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
@@ -28,6 +37,7 @@ export default function ControlPanel() {
   const [connError, setConnError] = useState(false);
   const [operatorToken, setOperatorToken] = useState(getOperatorControlToken);
   const [mutationError, setMutationError] = useState("");
+  const checkpointRequestSequence = useRef(0);
 
   const updateOperatorToken = (value: string) => {
     setOperatorToken(value);
@@ -55,21 +65,30 @@ export default function ControlPanel() {
   }, []);
 
   const refreshCheckpoint = useCallback(async () => {
+    const requestSequence = ++checkpointRequestSequence.current;
     try {
-      setCheckpoint(await api.pipelineCheckpoint());
+      const value = await api.pipelineCheckpoint();
+      if (requestSequence !== checkpointRequestSequence.current) return;
+      setCheckpoint(value);
       setConnError(false);
     } catch {
+      if (requestSequence !== checkpointRequestSequence.current) return;
       setCheckpoint(null);
       setConnError(true);
     }
   }, []);
 
   useEffect(() => {
+    const requestSequenceRef = checkpointRequestSequence;
     refresh();
     refreshCheckpoint();
     const id = setInterval(refresh, 3000);
     const checkpointId = setInterval(refreshCheckpoint, 5000);
-    return () => { clearInterval(id); clearInterval(checkpointId); };
+    return () => {
+      ++requestSequenceRef.current;
+      clearInterval(id);
+      clearInterval(checkpointId);
+    };
   }, [refresh, refreshCheckpoint]);
 
   const handleSaveConfig = async () => {
@@ -85,7 +104,7 @@ export default function ControlPanel() {
   };
 
   const handleStart = async () => {
-    if (!status?.epoch_initialized || status.running || !config || controlTaskActive(health?.task)) return;
+    if (!config || controlStartBlocked(status, health)) return;
     setLoading("start");
     setMutationError("");
     try { await controlApi.start(); }
@@ -129,19 +148,24 @@ export default function ControlPanel() {
   const orphanTask = Boolean(taskActive && !status?.running);
   const runtimeMutationLocked = Boolean(status?.running || taskActive);
   const authorityTarget = authorityNextVersion(status);
-  const route = health?.pipeline.route ?? null;
+  const pipeline = health?.pipeline;
+  const route = pipeline?.route ?? null;
   const handoff = status?.post_publication_handoff;
+  const pipelineBlocked = controlPipelineBlocked(pipeline);
+  const pipelineIssues = controlPipelineIssues(pipeline);
+  const schedulerOwnsPrepare = controlSchedulerOwnsPrepareBoundary(status, health);
+  const startBlocked = !config || controlStartBlocked(status, health);
   const routeMatchesGeneration = Boolean(
     route
     && status?.active_generation
-    && health?.pipeline.exists === true
-    && health.pipeline.authority === "strict_epoch_projection"
-    && health.pipeline.next_v === status.active_generation.next_v
-    && health.pipeline.source_v === status.active_generation.source_v
-    && health.pipeline.stage === status.active_generation.stage
-    && health.pipeline.run_id === status.active_generation.run_id
-    && health.pipeline.workflow_run_id === status.active_generation.workflow_run_id
-    && health.pipeline.checkpoint_revision === status.active_generation.checkpoint_revision
+    && controlPipelineRouteAllowed(pipeline)
+    && pipeline?.authority === "strict_epoch_projection"
+    && pipeline.next_v === status.active_generation.next_v
+    && pipeline.source_v === status.active_generation.source_v
+    && pipeline.stage === status.active_generation.stage
+    && pipeline.run_id === status.active_generation.run_id
+    && pipeline.workflow_run_id === status.active_generation.workflow_run_id
+    && pipeline.checkpoint_revision === status.active_generation.checkpoint_revision
     && route.stage === status.active_generation.stage
     && route.next_v === status.active_generation.next_v
     && route.source_v === status.active_generation.source_v
@@ -159,12 +183,11 @@ export default function ControlPanel() {
     route
     && handoff
     && handoff.status !== "none"
-    && health?.pipeline.exists === true
-    && health.pipeline.authority === "post_publication_handoff_journal"
-    && health.pipeline.blocked !== true
-    && health.pipeline.handoff_projection_digest
+    && controlPipelineRouteAllowed(pipeline)
+    && pipeline?.authority === "post_publication_handoff_journal"
+    && pipeline.handoff_projection_digest
       === handoff.projection_digest
-    && health.pipeline.handoff_identity_digest
+    && pipeline.handoff_identity_digest
       === handoff.identity_digest
     && route.stage === "post_publication_handoff"
     && route.next_v === handoff.version
@@ -248,8 +271,18 @@ export default function ControlPanel() {
             {!status?.running && !taskActive ? (
               <button
                 onClick={handleStart}
-                disabled={loading === "start" || !status?.epoch_initialized || !config || taskActive}
-                title={!status?.epoch_initialized ? "完成操作员一次性 epoch reset 后才能启动" : undefined}
+                disabled={loading === "start" || startBlocked}
+                title={
+                  !status || !health
+                    ? "控制状态或健康权威不可用，暂不能启动"
+                    : !status.epoch_initialized
+                    ? "完成操作员一次性 epoch reset 后才能启动"
+                    : status.operator_action
+                      ? `当前需要操作员动作：${status.operator_action}`
+                      : pipelineBlocked
+                        ? `流水线恢复已阻断：${pipelineIssues.join("、") || "请检查权威诊断"}`
+                        : undefined
+                }
                 className="px-4 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {loading === "start" ? "启动中..." : "启动"}
@@ -283,12 +316,22 @@ export default function ControlPanel() {
                   <p>指令：{route.directive}</p>
                   <p className="font-mono text-[10px] text-gray-400">允许工具：{route.allowed_tools.length > 0 ? route.allowed_tools.join(", ") : "[]"}</p>
                 </div>
-              ) : status.post_publication_handoff.status === "blocked" || health?.pipeline.blocked ? (
+              ) : status.post_publication_handoff.status === "blocked" ? (
                 <p className="text-xs text-red-600 dark:text-red-300">
                   发布后交接已阻断；不会从旧 checkpoint 或阶段名称猜测下一工具。
                 </p>
+              ) : pipelineBlocked ? (
+                <p className="text-xs text-red-600 dark:text-red-300">
+                  流水线恢复已阻断；不会显示或执行 checkpoint route。
+                  {pipelineIssues.length > 0 ? ` ${pipelineIssues.join("、")}` : ""}
+                </p>
+              ) : schedulerOwnsPrepare ? (
+                <p className="text-xs text-amber-700 dark:text-amber-300">
+                  外层 generation scheduler 持有无 checkpoint 边界；下一动作是系统非 MCP
+                  <span className="font-mono"> prepare_generation</span>，不是可由页面调用的流水线工具。
+                </p>
               ) : !status.active_generation && status.post_publication_handoff.status === "none" ? (
-                <p className="text-xs text-gray-500">当前没有活跃代次或发布后交接，因此没有下一工具。</p>
+                <p className="text-xs text-gray-500">当前没有活跃代次或发布后交接；运行已停止或调度权威不可用。</p>
               ) : (
                 <p className="text-xs text-red-600 dark:text-red-300">
                   权威 route 不可用或与 active_generation 不一致；页面不从 stage 猜测下一工具。

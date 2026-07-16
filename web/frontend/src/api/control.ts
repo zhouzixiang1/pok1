@@ -1,4 +1,4 @@
-import { withOperatorControlHeader } from "./operatorControl";
+import { withOperatorControlHeader } from "./operatorControl.js";
 
 export type EvaluationEpoch = "national_tcp_policy_v1";
 
@@ -145,6 +145,7 @@ export interface PostPublicationHandoffStatus {
   identity_digest: string | null;
   publication_id: string | null;
   record_revision: number | null;
+  owner_scope: "none" | "current_process" | "foreign_process";
   next_tool: "run_archivist" | null;
   issues: string[];
   projection_digest: string;
@@ -225,6 +226,7 @@ export interface ControlDaemonHealth {
 export interface ControlPipelineHealth {
   exists: boolean;
   stage: string | null;
+  blocked?: boolean;
   next_v?: number | null;
   source_v?: number | null;
   run_id?: string | null;
@@ -233,8 +235,22 @@ export interface ControlPipelineHealth {
   authority?: "strict_epoch_projection" | "post_publication_handoff_journal";
   error?: string;
   issues?: string[];
+  ignored_checkpoint?: IgnoredCheckpoint | null;
+  handoff_identity_digest?: string | null;
+  handoff_projection_digest?: string | null;
+  publication_id?: string | null;
+  handoff_owner_scope?: "none" | "current_process" | "foreign_process" | "unknown";
+  scheduler_boundary?: {
+    authority: "outer_scheduler";
+    state: "ready_to_prepare";
+    provider_action: "end_stream";
+    scheduler_action: "prepare_generation";
+    next_v: number | null;
+    source_v: number | null;
+  } | null;
   route?: PipelineRoute | null;
   recovery?: {
+    active?: boolean;
     recoverable?: boolean;
     issues?: string[];
     [key: string]: unknown;
@@ -252,6 +268,152 @@ export interface ControlHealth {
   daemon: ControlDaemonHealth;
   pipeline: ControlPipelineHealth;
   checked_at: number;
+}
+
+export function controlPipelineBlocked(
+  pipeline: ControlPipelineHealth | null | undefined,
+): boolean {
+  return Boolean(
+    !pipeline
+    || pipeline.blocked === true
+    || pipeline.recovery?.recoverable === false
+    || pipeline.error,
+  );
+}
+
+export function controlPipelineIssues(
+  pipeline: ControlPipelineHealth | null | undefined,
+): string[] {
+  if (!pipeline) return ["pipeline_health_unavailable"];
+  const issues = [
+    ...(pipeline.issues ?? []),
+    ...(pipeline.recovery?.issues ?? []),
+    ...(pipeline.error ? [pipeline.error] : []),
+  ];
+  return [...new Set(issues.filter((issue) => typeof issue === "string" && issue.length > 0))];
+}
+
+export function controlPipelineRouteAllowed(
+  pipeline: ControlPipelineHealth | null | undefined,
+): boolean {
+  return Boolean(
+    pipeline?.exists === true
+    && pipeline.route
+    && !controlPipelineBlocked(pipeline),
+  );
+}
+
+export function controlStartBlocked(
+  status: ControlStatus | null | undefined,
+  health: ControlHealth | null | undefined,
+): boolean {
+  const taskActive = Boolean(health?.task.present && health.task.done === false);
+  const baseBlocked = Boolean(
+    !status
+    || !health
+    || !status.epoch_initialized
+    || status.running
+    || taskActive
+    || status.operator_action
+    || controlPipelineBlocked(health.pipeline),
+  );
+  if (baseBlocked || !status || !health) return true;
+  return !controlLaunchBoundaryAllowed(status, health);
+}
+
+/** Mirror the backend's three mutually-exclusive launch boundaries. */
+export function controlLaunchBoundaryAllowed(
+  status: ControlStatus,
+  health: ControlHealth,
+): boolean {
+  const pipeline = health.pipeline;
+  const route = pipeline.route;
+  const active = status.active_generation;
+  const handoff = status.post_publication_handoff;
+
+  if (active) {
+    return Boolean(
+      pipeline.exists === true
+      && pipeline.authority === "strict_epoch_projection"
+      && route
+      && pipeline.next_v === active.next_v
+      && pipeline.source_v === active.source_v
+      && pipeline.stage === active.stage
+      && pipeline.run_id === active.run_id
+      && pipeline.workflow_run_id === active.workflow_run_id
+      && pipeline.checkpoint_revision === active.checkpoint_revision
+      && route.stage === active.stage
+      && route.next_v === active.next_v
+      && route.source_v === active.source_v
+      && Array.isArray(route.allowed_tools)
+      && (route.next_tool === null || route.allowed_tools.includes(route.next_tool))
+    );
+  }
+
+  if (!handoff) return false;
+  if (handoff.status !== "none") {
+    return Boolean(
+      handoff.status !== "blocked"
+      && handoff.blocked !== true
+      && pipeline.exists === true
+      && pipeline.authority === "post_publication_handoff_journal"
+      && pipeline.handoff_projection_digest === handoff.projection_digest
+      && pipeline.handoff_identity_digest === handoff.identity_digest
+      && pipeline.handoff_owner_scope === handoff.owner_scope
+      && route
+      && route.stage === "post_publication_handoff"
+      && route.next_v === handoff.version
+      && route.source_v === handoff.source_v
+      && route.parent2_v == null
+      && route.next_tool === "run_archivist"
+      && Array.isArray(route.allowed_tools)
+      && route.allowed_tools.length === 1
+      && route.allowed_tools[0] === "run_archivist"
+      && route.intent === "post_publication_handoff"
+    );
+  }
+
+  const scheduler = pipeline.scheduler_boundary;
+  return Boolean(
+    pipeline.exists === false
+    && pipeline.authority === "strict_epoch_projection"
+    && !route
+    && scheduler?.authority === "outer_scheduler"
+    && scheduler.state === "ready_to_prepare"
+    && scheduler.provider_action === "end_stream"
+    && scheduler.scheduler_action === "prepare_generation"
+    && scheduler.next_v === status.next_v
+    && scheduler.source_v === null
+  );
+}
+
+export function controlSchedulerOwnsPrepareBoundary(
+  status: ControlStatus | null | undefined,
+  health: ControlHealth | null | undefined,
+): boolean {
+  const taskActive = Boolean(health?.task.present && health.task.done === false);
+  const scheduler = health?.pipeline.scheduler_boundary;
+  return Boolean(
+    status
+    && health
+    && status.epoch_initialized
+    && status.running
+    && health.running
+    && health.overall === "healthy"
+    && taskActive
+    && health.task.shutdown_requested !== true
+    && !status.operator_action
+    && !status.active_generation
+    && status.post_publication_handoff.status === "none"
+    && health.pipeline.exists === false
+    && scheduler?.authority === "outer_scheduler"
+    && scheduler.state === "ready_to_prepare"
+    && scheduler.provider_action === "end_stream"
+    && scheduler.scheduler_action === "prepare_generation"
+    && scheduler.next_v === status.next_v
+    && scheduler.source_v === null
+    && !controlPipelineBlocked(health.pipeline),
+  );
 }
 
 export interface Decision {

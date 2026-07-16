@@ -1001,15 +1001,17 @@ class TestDoAbandonGeneration:
         assert next_dir.exists()
 
 
-def _schema2_claim_fixture(tmp_path, monkeypatch):
+def _schema2_claim_fixture(tmp_path, monkeypatch, *, checkpoint=None):
     import evolution_core
+    import evolution_infra
 
-    checkpoint = _strict_checkpoint(144, 143, "master_planned")
+    checkpoint = checkpoint or _strict_checkpoint(144, 143, "master_planned")
     state_file = tmp_path / "pipeline_state.json"
     state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
     candidate = tmp_path / "national_v144"
     _strict_artifact(candidate, 144)
     monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
     monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
     monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
     monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
@@ -1304,6 +1306,8 @@ def test_schema2_completed_receipt_survives_later_head_and_ledger_append(
         path=tbm.RESULTS_DIR / "abandoned_versions.jsonl",
         project_root=tbm.PROJECT_ROOT,
     )
+    with pytest.raises(RuntimeError, match="active_ledger_advanced"):
+        tbm.validate_completed_abandon_handoff(checkpoint, completed)
     monkeypatch.setattr(
         tbm,
         "_evolution_git",
@@ -1318,6 +1322,288 @@ def test_schema2_completed_receipt_survives_later_head_and_ledger_append(
     ) == finalize
     assert len(rows) == 2
     assert not candidate.exists()
+
+
+def test_timed_out_checkpoint_completes_real_schema2_abandon_transaction(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+
+    timed_out = _strict_checkpoint(144, 143, "timed_out")
+    checkpoint, state_file, candidate, claim, transaction_dir = (
+        _schema2_claim_fixture(
+            tmp_path,
+            monkeypatch,
+            checkpoint=timed_out,
+        )
+    )
+
+    def clear(**expected):
+        assert expected == {
+            "expected_workflow_run_id": checkpoint["workflow_run_id"],
+            "expected_next_v": checkpoint["next_v"],
+            "expected_source_v": checkpoint["source_v"],
+            "expected_checkpoint_revision": checkpoint["checkpoint_revision"],
+            "expected_checkpoint_stage": "timed_out",
+        }
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+
+    assert result["abandoned"] is True
+    assert result["workflow_run_id"] == checkpoint["workflow_run_id"]
+    assert result["abandon_checkpoint_identity"] == claim["checkpoint"]
+    assert not state_file.exists()
+    assert not candidate.exists()
+    assert (transaction_dir / "receipt.json").is_file()
+    rows = evolution_infra.load_abandoned_version_receipts(
+        path=tbm.RESULTS_DIR / "abandoned_versions.jsonl",
+        project_root=tbm.PROJECT_ROOT,
+    )
+    assert rows[-1]["checkpoint_stage"] == "timed_out"
+    assert rows[-1]["workflow_run_id"] == checkpoint["workflow_run_id"]
+
+
+def test_completed_abandon_handoff_reproves_exact_live_terminal_result(
+    tmp_path,
+    monkeypatch,
+):
+    checkpoint, state_file, candidate, claim, transaction_dir = (
+        _schema2_claim_fixture(tmp_path, monkeypatch)
+    )
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+
+    assert result["abandoned"] is True
+    assert result["abandon_transaction_id"] == claim["transaction_id"]
+    assert result["abandon_checkpoint_identity"] == claim["checkpoint"]
+    assert result["finalize_receipt_digest"] == json.loads(
+        (transaction_dir / "receipt.json").read_text(encoding="utf-8")
+    )["receipt_digest"]
+    proof = tbm.validate_completed_abandon_handoff(checkpoint, result)
+    assert proof["transaction_id"] == claim["transaction_id"]
+    assert proof["abandon_receipt_digest"] == result["abandon_receipt_digest"]
+    assert proof["finalize_receipt_digest"] == result["finalize_receipt_digest"]
+    assert proof["checkpoint_identity"] == claim["checkpoint"]
+    assert proof["workflow_fences"]["worker"]["fence_epoch"] >= 1
+    assert (
+        proof["workflow_fences"]["strict_authority"]["fence_epoch"] >= 1
+    )
+    assert not candidate.exists()
+
+    forged_result = {
+        **result,
+        "finalize_receipt_digest": "f" * 64,
+    }
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_result_finalize_receipt_digest_mismatch",
+    ):
+        tbm.validate_completed_abandon_handoff(checkpoint, forged_result)
+
+    wrong_baseline = {
+        **checkpoint,
+        "workflow_run_id": "generation:144:foreign-workflow",
+    }
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_checkpoint_identity_mismatch",
+    ):
+        tbm.validate_completed_abandon_handoff(wrong_baseline, result)
+
+    newer_baseline = {**checkpoint, "checkpoint_revision": 2}
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_checkpoint_revision_invalid",
+    ):
+        tbm.validate_completed_abandon_handoff(newer_baseline, result)
+
+    state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_terminal_paths_still_live",
+    ):
+        tbm.validate_completed_abandon_handoff(checkpoint, result)
+    state_file.unlink()
+
+    live_claim = tbm.RESULTS_DIR / "policy_epoch_reconciliation_claim.json"
+    live_claim.write_text(json.dumps(claim), encoding="utf-8")
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_terminal_paths_still_live",
+    ):
+        tbm.validate_completed_abandon_handoff(checkpoint, result)
+
+
+def test_completed_abandon_handoff_allows_monotonic_terminal_revision(
+    tmp_path,
+    monkeypatch,
+):
+    terminal_checkpoint = _strict_checkpoint(
+        144,
+        143,
+        "master_planned",
+        checkpoint_revision=2,
+    )
+    checkpoint, state_file, _candidate, claim, _transaction_dir = (
+        _schema2_claim_fixture(
+            tmp_path,
+            monkeypatch,
+            checkpoint=terminal_checkpoint,
+        )
+    )
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+    baseline = {**checkpoint, "checkpoint_revision": 1}
+
+    proof = tbm.validate_completed_abandon_handoff(baseline, result)
+
+    assert proof["checkpoint_identity"] == claim["checkpoint"]
+    assert proof["checkpoint_identity"]["checkpoint_revision"] == 2
+
+
+@pytest.mark.parametrize(
+    ("run_suffix", "event_type"),
+    (
+        ("", "WorkerAbandoned"),
+        (":strict-authority-v1", "StrictAuthorityAbandoned"),
+    ),
+)
+def test_completed_abandon_handoff_rejects_unfenced_workflow_journal(
+    tmp_path,
+    monkeypatch,
+    run_suffix,
+    event_type,
+):
+    import sqlite3
+
+    checkpoint, state_file, _candidate, _claim, _transaction_dir = (
+        _schema2_claim_fixture(tmp_path, monkeypatch)
+    )
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+    assert result["abandoned"] is True
+
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE workflow_instances SET status = 'running', fence_epoch = 0 "
+            "WHERE run_id = ?",
+            (checkpoint["workflow_run_id"] + run_suffix,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"completed_abandon_{event_type}_terminal_invalid",
+    ):
+        tbm.validate_completed_abandon_handoff(checkpoint, result)
+
+
+def test_completed_abandon_handoff_rejects_workflow_event_payload_drift(
+    tmp_path,
+    monkeypatch,
+):
+    import sqlite3
+
+    checkpoint, state_file, _candidate, _claim, _transaction_dir = (
+        _schema2_claim_fixture(tmp_path, monkeypatch)
+    )
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+    assert result["abandoned"] is True
+
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE workflow_events SET payload = ? "
+            "WHERE run_id = ? AND event_type = 'WorkerAbandoned'",
+            (
+                json.dumps({
+                    "reason": "abandon_generation",
+                    "forged": True,
+                }),
+                checkpoint["workflow_run_id"],
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_WorkerAbandoned_history_digest_invalid",
+    ):
+        tbm.validate_completed_abandon_handoff(checkpoint, result)
+
+
+def test_completed_abandon_handoff_rejects_workflow_event_sequence_gap(
+    tmp_path,
+    monkeypatch,
+):
+    import sqlite3
+
+    checkpoint, state_file, _candidate, _claim, _transaction_dir = (
+        _schema2_claim_fixture(tmp_path, monkeypatch)
+    )
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+    assert result["abandoned"] is True
+
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute(
+            "UPDATE workflow_events SET seq = 2 WHERE run_id = ?",
+            (checkpoint["workflow_run_id"],),
+        )
+        connection.execute(
+            "UPDATE workflow_instances SET stream_version = 2 WHERE run_id = ?",
+            (checkpoint["workflow_run_id"],),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_WorkerAbandoned_history_sequence_invalid",
+    ):
+        tbm.validate_completed_abandon_handoff(checkpoint, result)
 
 
 def test_abandon_json_reader_rejects_same_inode_same_size_rewrite(

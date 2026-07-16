@@ -14,7 +14,7 @@ from evolution_scope import classify_status_entries
 from pipeline_state import head_drift_resume_policy, head_drift_resume_stages
 from repo_state import git_worktree_snapshot
 
-INACTIVE_STAGES = {None, "archived", "abandoned", "timed_out"}
+INACTIVE_STAGES = {None, "archived", "abandoned"}
 TARGET_DIR_STAGES = {
     "preparing",
     "prepared",

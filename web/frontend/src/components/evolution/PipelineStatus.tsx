@@ -92,11 +92,17 @@ export function PipelineStatus({
   activeGeneration = null,
   handoff,
   handoffBlocked = false,
+  activeBlocked = false,
+  activeIssues = [],
+  schedulerActive = false,
 }: {
   checkpoint: PipelineCheckpoint | null;
   activeGeneration?: ActiveGeneration | null;
   handoff?: PostPublicationHandoffStatus | null;
   handoffBlocked?: boolean;
+  activeBlocked?: boolean;
+  activeIssues?: string[];
+  schedulerActive?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -134,11 +140,34 @@ export function PipelineStatus({
     );
   }
 
+  if (activeGeneration && activeBlocked) {
+    return (
+      <div className="p-3">
+        <h3 className="mb-1 text-xs font-semibold uppercase text-red-700 dark:text-red-300">
+          流水线 v{activeGeneration.next_v} 恢复已阻断
+        </h3>
+        <p className="text-xs text-red-600 dark:text-red-300">
+          后端不会执行当前 checkpoint route；解决权威或恢复诊断前不会推进下一代。
+        </p>
+        {activeIssues.length > 0 && (
+          <p className="mt-1 text-[10px] text-red-500">{activeIssues.join("；")}</p>
+        )}
+      </div>
+    );
+  }
+
   if (!activeGeneration) {
     return (
       <div className="p-3">
         <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">流水线</h3>
-        <p className="text-xs text-gray-400">权威状态中没有活跃代次</p>
+        <p className={cn(
+          "text-xs",
+          schedulerActive ? "text-amber-700 dark:text-amber-300" : "text-gray-400",
+        )}>
+          {schedulerActive
+            ? "外层 generation scheduler 正在持有无 checkpoint 边界；下一动作是系统非 MCP prepare_generation。"
+            : "权威状态中没有活跃代次"}
+        </p>
       </div>
     );
   }

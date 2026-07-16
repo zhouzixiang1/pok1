@@ -42,6 +42,8 @@ from llm_failure import is_shutdown_cancel_error, is_success_error_result
 
 log = logging.getLogger("pok.infra")
 _shutdown_manager = None
+_shutdown_manager_owner = None
+_SHUTDOWN_MANAGER_LOCK = threading.Lock()
 _LLM_CANCEL_CONTEXT = contextvars.ContextVar("llm_cancel_context", default=None)
 _LLM_BILLING_RESULTS = contextvars.ContextVar("llm_billing_results", default=None)
 _LLM_TOOL_TRACE = contextvars.ContextVar("llm_tool_trace", default=None)
@@ -4402,15 +4404,53 @@ class LLMRoleTimeout(asyncio.TimeoutError):
         )
 
 
-def set_shutdown_manager(shutdown_mgr):
-    """Share the process shutdown state with all role-level LLM calls."""
-    global _shutdown_manager
-    _shutdown_manager = shutdown_mgr
+def set_shutdown_manager(shutdown_mgr, *, owner_id: str | None = None) -> bool:
+    """Bind or clear the process shutdown state with optional owner fencing.
+
+    Web/runtime launchers pass their exact AppState owner id.  A late cleanup
+    from owner A therefore cannot clear or replace owner B's manager after B
+    has acquired the process.  ``orchestrator_loop`` repeats the bind without
+    an owner; that is accepted only when it supplies the already-bound object,
+    preserving the outer launcher's owner identity.  Standalone CLI callers
+    remain an explicitly unowned, single-process boundary.
+    """
+
+    global _shutdown_manager, _shutdown_manager_owner
+    normalized_owner = (
+        owner_id
+        if isinstance(owner_id, str) and owner_id.strip()
+        else None
+    )
+    with _SHUTDOWN_MANAGER_LOCK:
+        if _shutdown_manager_owner is not None:
+            if normalized_owner != _shutdown_manager_owner:
+                if (
+                    normalized_owner is None
+                    and shutdown_mgr is _shutdown_manager
+                ):
+                    # Idempotent inner Orchestrator bind of the exact manager
+                    # already owned by the outer Web launch transaction.
+                    return True
+                return False
+        if shutdown_mgr is None:
+            if (
+                normalized_owner is not None
+                and normalized_owner != _shutdown_manager_owner
+            ):
+                return False
+            _shutdown_manager = None
+            _shutdown_manager_owner = None
+            return True
+        _shutdown_manager = shutdown_mgr
+        _shutdown_manager_owner = normalized_owner
+        return True
 
 
 def _is_shutdown_requested() -> bool:
     try:
-        return bool(_shutdown_manager and _shutdown_manager.is_shutting_down)
+        with _SHUTDOWN_MANAGER_LOCK:
+            manager = _shutdown_manager
+        return bool(manager and manager.is_shutting_down)
     except Exception:
         return False
 

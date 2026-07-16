@@ -4922,6 +4922,7 @@ async def run_native_precommit(
     deck_seed_base: int | None = 91_000,
     sample_plan: list[dict[str, Any]] | None = None,
     control_execution_scope: dict[str, Any] | None = None,
+    cancel_token: threading.Event | None = None,
 ) -> dict[str, Any]:
     from bot_artifact import hash_path
 
@@ -4954,7 +4955,14 @@ async def run_native_precommit(
             )
     if not opponents:
         blockers.append({"reason": "native_no_opponents", "details": "Native precommit requires at least one opponent."})
+    def raise_if_cancelled() -> None:
+        if cancel_token is not None and cancel_token.is_set():
+            raise asyncio.CancelledError(
+                "native precommit attempt cancelled before the next full match"
+            )
+
     for opp_index, item in enumerate(opponents):
+        raise_if_cancelled()
         reason = str(item.get("reason") or "precommit")
         token = item.get("path") or item.get("token") or item.get("name")
         system_control = str(item.get("authority") or "") == "system_first_strict_control"
@@ -5086,6 +5094,7 @@ async def run_native_precommit(
         opponent_issues: list[str] = []
         hands_played_total = 0
         for repeat in range(matches_per_opponent):
+            raise_if_cancelled()
             if system_control:
                 from first_strict_control import validate_control_receipt
 
@@ -5172,6 +5181,10 @@ async def run_native_precommit(
                     execution_ticket,
                     execution=result,
                 )
+            # A complete match/journal receipt is the smallest interruptible
+            # evidence unit.  Never admit it or launch the next sample after the
+            # owning cycle has timed out.
+            raise_if_cancelled()
             if system_control:
                 # Revalidate after every full match as well as before it.  A
                 # concurrently published strict bot, altered system asset, or

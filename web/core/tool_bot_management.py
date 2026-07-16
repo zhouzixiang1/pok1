@@ -7,6 +7,7 @@ import math
 import os
 from contextlib import nullcontext
 from pathlib import Path
+import sqlite3
 import stat
 import time
 from typing import TypedDict
@@ -431,6 +432,253 @@ def _validate_active_abandon_claim(claim: dict) -> dict:
     return claim
 
 
+def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
+    """Read-only proof that both generation journals are terminal and fenced."""
+
+    from strict_authority_workflow import DEFINITION_VERSION
+    from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
+    from workflow_kernel import KERNEL_SCHEMA_VERSION, canonical_json
+
+    workflow_run_id = str(claim["checkpoint"]["workflow_run_id"])
+    strict_run_id = f"{workflow_run_id}:strict-authority-v1"
+    database = Path(RESULTS_DIR) / "workflow" / "events.sqlite3"
+    if not os.path.lexists(database):
+        raise RuntimeError("completed_abandon_workflow_database_missing")
+    metadata = os.lstat(database)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+    ):
+        raise RuntimeError("completed_abandon_workflow_database_unsafe")
+    expected = Path(RESULTS_DIR).resolve() / "workflow" / "events.sqlite3"
+    try:
+        resolved = database.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(
+            "completed_abandon_workflow_database_unavailable"
+        ) from exc
+    if resolved != expected:
+        raise RuntimeError("completed_abandon_workflow_database_escaped")
+
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro",
+        uri=True,
+        timeout=30.0,
+        isolation_level=None,
+    )
+    connection.row_factory = sqlite3.Row
+    expected_reason = str(claim["abandon_reason"])[:1000]
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if user_version != KERNEL_SCHEMA_VERSION:
+            raise RuntimeError("completed_abandon_workflow_schema_invalid")
+        if connection.execute("PRAGMA foreign_key_check").fetchone() is not None:
+            raise RuntimeError("completed_abandon_workflow_foreign_key_invalid")
+        connection.execute("BEGIN")
+
+        def terminal_projection(
+            run_id: str,
+            event_type: str,
+            expected_definition_version: int,
+        ) -> dict:
+            instance = connection.execute(
+                "SELECT definition_version, stream_version, status, fence_epoch "
+                "FROM workflow_instances WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if instance is None:
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_instance_missing"
+                )
+            history = connection.execute(
+                "SELECT seq, event_type, schema_version, payload, "
+                "payload_digest FROM workflow_events "
+                "WHERE run_id = ? ORDER BY seq",
+                (run_id,),
+            ).fetchall()
+            stream_version = int(instance["stream_version"])
+            if (
+                len(history) != stream_version
+                or [int(row["seq"]) for row in history]
+                != list(range(1, stream_version + 1))
+            ):
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_history_sequence_invalid"
+                )
+            decoded_history = []
+            for row in history:
+                try:
+                    row_payload = json.loads(row["payload"])
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"completed_abandon_{event_type}_history_payload_invalid"
+                    ) from exc
+                row_digest = hashlib.sha256(
+                    canonical_json(row_payload).encode("utf-8")
+                ).hexdigest()
+                if (
+                    int(row["schema_version"]) != 1
+                    or row["payload_digest"] != row_digest
+                ):
+                    raise RuntimeError(
+                        f"completed_abandon_{event_type}_history_digest_invalid"
+                    )
+                decoded_history.append((row, row_payload))
+            events = [
+                item
+                for item in decoded_history
+                if item[0]["event_type"] == event_type
+            ]
+            if len(events) != 1:
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_event_count_invalid"
+                )
+            event, payload = events[0]
+            if (
+                int(instance["definition_version"])
+                != int(expected_definition_version)
+                or instance["status"] != "abandoned"
+                or int(instance["fence_epoch"]) < 1
+                or int(event["seq"]) != stream_version
+                or payload.get("reason") != expected_reason
+            ):
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_terminal_invalid"
+                )
+            if event_type == "StrictAuthorityAbandoned" and (
+                payload.get("workflow_run_id") != workflow_run_id
+            ):
+                raise RuntimeError(
+                    "completed_abandon_StrictAuthorityAbandoned_binding_invalid"
+                )
+            live_effects = connection.execute(
+                "SELECT COUNT(*) FROM effects WHERE run_id = ? "
+                "AND status NOT IN ('completed', 'exhausted', 'abandoned')",
+                (run_id,),
+            ).fetchone()[0]
+            if int(live_effects) != 0:
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_effects_still_live"
+                )
+            return {
+                "run_id": run_id,
+                "stream_version": int(instance["stream_version"]),
+                "fence_epoch": int(instance["fence_epoch"]),
+                "terminal_event": event_type,
+            }
+
+        main = terminal_projection(
+            workflow_run_id,
+            "WorkerAbandoned",
+            WORKER_WORKFLOW_DEFINITION_VERSION,
+        )
+        strict = terminal_projection(
+            strict_run_id,
+            "StrictAuthorityAbandoned",
+            DEFINITION_VERSION,
+        )
+        connection.rollback()
+    finally:
+        connection.close()
+    after = os.lstat(database)
+    if (
+        not stat.S_ISREG(after.st_mode)
+        or after.st_nlink != 1
+        or (after.st_dev, after.st_ino) != (metadata.st_dev, metadata.st_ino)
+    ):
+        raise RuntimeError("completed_abandon_workflow_database_changed")
+    return {"worker": main, "strict_authority": strict}
+
+
+def validate_completed_abandon_handoff(
+    checkpoint: dict,
+    result: dict,
+) -> dict:
+    """Reprove the exact finalized abandon returned to one provider stream."""
+
+    if not isinstance(checkpoint, dict) or not isinstance(result, dict):
+        raise RuntimeError("completed_abandon_handoff_material_invalid")
+    transaction_id = str(result.get("abandon_transaction_id") or "")
+    if (
+        len(transaction_id) != 64
+        or any(char not in "0123456789abcdef" for char in transaction_id)
+    ):
+        raise RuntimeError("completed_abandon_transaction_id_invalid")
+    transaction_dir = (
+        Path(RESULTS_DIR)
+        / "policy_epoch_abandon_transactions"
+        / transaction_id
+    )
+    _assert_safe_existing_transaction_chain(transaction_dir)
+    claim = _read_json_regular(transaction_dir / "claim.json")
+    if claim.get("transaction_id") != transaction_id:
+        raise RuntimeError("completed_abandon_transaction_identity_mismatch")
+    baseline_identity = _checkpoint_transaction_identity(checkpoint)
+    terminal_identity = claim.get("checkpoint")
+    if not isinstance(terminal_identity, dict):
+        raise RuntimeError("completed_abandon_checkpoint_identity_invalid")
+    if any(
+        terminal_identity.get(field) != baseline_identity.get(field)
+        for field in ("workflow_run_id", "next_v", "source_v")
+    ):
+        raise RuntimeError("completed_abandon_checkpoint_identity_mismatch")
+    baseline_revision = baseline_identity.get("checkpoint_revision")
+    terminal_revision = terminal_identity.get("checkpoint_revision")
+    if (
+        type(baseline_revision) is not int
+        or baseline_revision < 1
+        or type(terminal_revision) is not int
+        or terminal_revision < baseline_revision
+    ):
+        raise RuntimeError("completed_abandon_checkpoint_revision_invalid")
+    _validate_active_abandon_claim(claim)
+    workflow_fences = _validate_completed_abandon_workflow_fences(claim)
+    finalize_path = transaction_dir / "receipt.json"
+    if not os.path.lexists(finalize_path):
+        raise RuntimeError("completed_abandon_finalize_receipt_missing")
+    finalize_receipt = _read_json_regular(finalize_path)
+    rows = load_abandoned_version_receipts(
+        path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+        project_root=PROJECT_ROOT,
+    )
+    abandon_receipt = validate_schema2_abandon_ledger_history(
+        claim,
+        rows,
+        require_active_head=True,
+    )
+    validate_schema2_abandon_finalize_receipt(
+        claim,
+        finalize_receipt,
+        rows,
+    )
+    from evolution_core import PIPELINE_STATE_FILE
+
+    live_claim = Path(RESULTS_DIR) / "policy_epoch_reconciliation_claim.json"
+    if os.path.lexists(PIPELINE_STATE_FILE) or os.path.lexists(live_claim):
+        raise RuntimeError("completed_abandon_terminal_paths_still_live")
+    expected_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": baseline_identity["workflow_run_id"],
+        "abandon_transaction_id": transaction_id,
+        "abandon_receipt_digest": abandon_receipt.get("receipt_digest"),
+        "finalize_receipt_digest": finalize_receipt.get("receipt_digest"),
+        "abandon_checkpoint_identity": terminal_identity,
+    }
+    for field, value in expected_result.items():
+        if result.get(field) != value:
+            raise RuntimeError(f"completed_abandon_result_{field}_mismatch")
+    return {
+        "transaction_id": transaction_id,
+        "abandon_receipt_digest": abandon_receipt["receipt_digest"],
+        "finalize_receipt_digest": finalize_receipt["receipt_digest"],
+        "checkpoint_identity": terminal_identity,
+        "workflow_fences": workflow_fences,
+    }
+
+
 def _load_live_abandon_claim() -> dict | None:
     path = Path(RESULTS_DIR) / "policy_epoch_reconciliation_claim.json"
     if not os.path.lexists(path):
@@ -727,6 +975,8 @@ def _finalize_checkpoint_abandon_transaction(
     return {
         "abandon_receipt": abandon_receipt,
         "finalize_receipt": finalize_receipt,
+        "transaction_id": transaction_dir.name,
+        "checkpoint_identity": dict(claim["checkpoint"]),
         "removed_directory": (
             bot_name(int(claim["checkpoint"]["next_v"]))
             if claim["candidate"]["present"] is True
@@ -1689,6 +1939,9 @@ async def _do_abandon_generation(
     cleared_checkpoint = False
     removed_dir = None
     abandon_receipt = None
+    finalize_receipt = None
+    abandon_transaction_id = None
+    abandon_checkpoint_identity = None
     abandoned_v = (
         checkpoint.get("next_v")
         if isinstance(checkpoint, dict)
@@ -1768,6 +2021,9 @@ async def _do_abandon_generation(
                 clear_pipeline_state=clear_pipeline_checkpoint,
             )
             abandon_receipt = transaction["abandon_receipt"]
+            finalize_receipt = transaction["finalize_receipt"]
+            abandon_transaction_id = transaction["transaction_id"]
+            abandon_checkpoint_identity = transaction["checkpoint_identity"]
             removed_dir = transaction["removed_directory"]
             cleared_checkpoint = True
     except Exception as exc:
@@ -1857,4 +2113,11 @@ async def _do_abandon_generation(
             if isinstance(abandon_receipt, dict)
             else None
         ),
+        "finalize_receipt_digest": (
+            finalize_receipt.get("receipt_digest")
+            if isinstance(finalize_receipt, dict)
+            else None
+        ),
+        "abandon_transaction_id": abandon_transaction_id,
+        "abandon_checkpoint_identity": abandon_checkpoint_identity,
     }

@@ -25,6 +25,21 @@ provider log; historic flat logs and their evidence trailers have zero recovery
 or prompt authority. Generation abandonment fences both the Worker and strict
 child journals, including an abandoned tombstone before first dispatch. The log
 API/frontend use a validated opaque id and never infer authority from a path.
+Checkpoint disappearance is terminal only with one unique canonical result
+from the current authorized owner tool, including `workflow_run_id`, and a
+current-head reproof of both complete journals, the transaction, ledger and
+finalize receipt. Its result is bound to exactly one pending route-mutating
+ToolUse by explicit id/parent id or the bounded sole-pending SDK form; unknown,
+reused, swapped or unsettled ids block. Otherwise recovery blocks. With no active checkpoint the
+provider ends its stream; only the outer scheduler owns non-MCP
+`prepare_generation`. Exact `selected`/`preparing` routes respectively own
+first/crash-recovery `prepare_next_gen`; an unbound target preimage triggers
+system canonical abandon. Timeout states are active leases: `timed_out`
+abandons, while `infra_timed_out` retries native precommit only after exact
+artifact/gate/baseline reproof and CAS. Post-publication handoff makes the
+provider end its stream while outer deterministic recovery owns Archivist.
+`--one-gen` follows one workflow through as many fresh streams and deterministic
+stages as needed and never prepares its successor after abandon.
 
 Primary references:
 

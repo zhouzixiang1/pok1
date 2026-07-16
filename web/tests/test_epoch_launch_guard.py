@@ -361,6 +361,7 @@ def test_fresh_bootstrap_receipt_allows_web_orchestrator_launch(monkeypatch):
     import epoch_authority
     import orchestrator
     import server.app as app_module
+    import server.routes.control as control
     from server.state import app_state
 
     started = asyncio.Event()
@@ -373,6 +374,15 @@ def test_fresh_bootstrap_receipt_allows_web_orchestrator_launch(monkeypatch):
     async def noop(*_args, **_kwargs):
         return None
 
+    async def reserve_owner():
+        assert app_state.try_set_running(True) is True
+        return {
+            "acquired": True,
+            "reason": "acquired",
+            "owner_id": app_state.runtime_owner_id(),
+            "barrier": {"allowed": True, "fence_digest": "a" * 64},
+        }
+
     app_state.stop_running()
     app_state.override_runtime_config(daemon_enabled=False)
     monkeypatch.delenv("POK_WEB_VIEW_ONLY", raising=False)
@@ -382,6 +392,7 @@ def test_fresh_bootstrap_receipt_allows_web_orchestrator_launch(monkeypatch):
         lambda _operation: _state("fresh_bootstrap_ready", initialized=True),
     )
     monkeypatch.setattr(orchestrator, "orchestrator_loop", fake_loop)
+    monkeypatch.setattr(control, "_reserve_runtime_launch_owner", reserve_owner)
     monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
     monkeypatch.setattr(app_module.arena_manager, "startup", noop)
     monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
@@ -391,5 +402,186 @@ def test_fresh_bootstrap_receipt_allows_web_orchestrator_launch(monkeypatch):
             await asyncio.wait_for(started.wait(), timeout=1)
             assert app_state.to_dict()["running"] is True
             release.set()
+
+    asyncio.run(exercise())
+
+
+def test_web_lifespan_honors_shared_operator_recovery_launch_barrier(monkeypatch):
+    import epoch_authority
+    import server.app as app_module
+    import server.routes.control as control
+    import stability_observation
+    from server.state import app_state
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def blocked_reservation():
+        return {
+            "acquired": False,
+            "reason": "barrier",
+            "barrier": {
+                "allowed": False,
+                "denial_code": "pipeline_recovery_blocked",
+                "issues": ["repo_baseline_head_mismatch"],
+            },
+        }
+
+    app_state.stop_running()
+    monkeypatch.delenv("POK_WEB_VIEW_ONLY", raising=False)
+    monkeypatch.setattr(
+        epoch_authority,
+        "require_policy_epoch_initialized",
+        lambda _operation: _state("strict_published", initialized=True),
+    )
+    monkeypatch.setattr(control, "_reserve_runtime_launch_owner", blocked_reservation)
+    monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module.arena_manager, "startup", noop)
+    monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
+    monkeypatch.setattr(
+        stability_observation,
+        "initialize_stability_observation",
+        lambda *_args, **_kwargs: pytest.fail(
+            "stability initialization reached past launch barrier"
+        ),
+    )
+
+    async def exercise():
+        async with app_module.lifespan(app_module.app):
+            assert app_state.to_dict()["running"] is False
+            assert app_state.task_snapshot()["present"] is False
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("denial_mode", ("already_owned", "barrier", "epoch"))
+def test_web_lifespan_denial_does_not_mutate_existing_runtime_owner(
+    monkeypatch,
+    denial_mode,
+):
+    import epoch_authority
+    import llm_query
+    import server.app as app_module
+    import server.routes.control as control
+    from shutdown_manager import ShutdownManager
+    from server.state import app_state
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def denied_reservation():
+        if denial_mode == "barrier":
+            return {
+                "acquired": False,
+                "reason": "barrier",
+                "barrier": {
+                    "allowed": False,
+                    "denial_code": "pipeline_recovery_blocked",
+                    "issues": ["synthetic_recovery_block"],
+                    "fence_digest": "b" * 64,
+                },
+            }
+        return {
+            "acquired": False,
+            "reason": "already_owned",
+            "barrier": {"allowed": True, "fence_digest": "a" * 64},
+        }
+
+    monkeypatch.delenv("POK_WEB_VIEW_ONLY", raising=False)
+    monkeypatch.setattr(
+        epoch_authority,
+        "require_policy_epoch_initialized",
+        _deny
+        if denial_mode == "epoch"
+        else lambda _operation: _state("strict_published", initialized=True),
+    )
+    monkeypatch.setattr(
+        control,
+        "_reserve_runtime_launch_owner",
+        denied_reservation,
+    )
+    monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module.arena_manager, "startup", noop)
+    monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
+
+    async def exercise():
+        app_state.stop_running()
+        task = asyncio.current_task()
+        owner_id = app_state.begin_runtime_owner()
+        assert owner_id is not None
+        app_state.set_task(task, owner_id=owner_id)
+        manager = ShutdownManager(grace_period=15.0)
+        app_state.set_shutdown_mgr(manager, owner_id=owner_id)
+        assert llm_query.set_shutdown_manager(
+            manager,
+            owner_id=owner_id,
+        ) is True
+        app_module.web_ui.set_status("live owner status", is_working=True)
+        try:
+            async with app_module.lifespan(app_module.app):
+                assert app_state.to_dict()["running"] is True
+                assert app_state.runtime_owner_id() == owner_id
+                assert app_state.task_snapshot()["owner_id"] == owner_id
+                assert app_state._shutdown_mgr is manager
+                assert llm_query._shutdown_manager is manager
+                assert app_module.web_ui._state["status"] == "live owner status"
+                assert app_module.web_ui._state["is_working"] is True
+        finally:
+            llm_query.set_shutdown_manager(None, owner_id=owner_id)
+            app_state.clear_task_if(task, owner_id=owner_id)
+
+    asyncio.run(exercise())
+
+
+def test_web_lifespan_releases_owner_when_stability_state_is_unavailable(
+    monkeypatch,
+):
+    import epoch_authority
+    import orchestrator
+    import server.app as app_module
+    import server.routes.control as control
+    import stability_observation
+    from server.state import app_state
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    async def reserve_owner():
+        assert app_state.try_set_running(True) is True
+        return {
+            "acquired": True,
+            "reason": "acquired",
+            "owner_id": app_state.runtime_owner_id(),
+            "barrier": {"allowed": True, "fence_digest": "a" * 64},
+        }
+
+    async def trap_loop(*_args, **_kwargs):
+        pytest.fail("orchestrator started without durable stability state")
+
+    app_state.stop_running()
+    monkeypatch.delenv("POK_WEB_VIEW_ONLY", raising=False)
+    monkeypatch.setattr(
+        epoch_authority,
+        "require_policy_epoch_initialized",
+        lambda _operation: _state("strict_published", initialized=True),
+    )
+    monkeypatch.setattr(control, "_reserve_runtime_launch_owner", reserve_owner)
+    monkeypatch.setattr(orchestrator, "orchestrator_loop", trap_loop)
+    monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module.arena_manager, "startup", noop)
+    monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
+    monkeypatch.setattr(
+        stability_observation,
+        "initialize_stability_observation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("stability_store_unavailable")
+        ),
+    )
+
+    async def exercise():
+        async with app_module.lifespan(app_module.app):
+            assert app_state.to_dict()["running"] is False
+            assert app_state.task_snapshot()["present"] is False
+            assert app_state.runtime_owner_id() is None
 
     asyncio.run(exercise())

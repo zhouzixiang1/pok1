@@ -2,6 +2,11 @@ import { useEffect, useState, useMemo, useRef } from "react";
 import { Link } from "react-router";
 import { useRatings, useMatchStats, useDaemonStatus, useRateLimit, useRecentMatches, useH2H, useGenerations, useDataStreamStatus } from "../context/DataProvider";
 import { api } from "../api/client";
+import {
+  controlPipelineBlocked,
+  controlPipelineIssues,
+  controlSchedulerOwnsPrepareBoundary,
+} from "../api/control";
 import type { PipelineCheckpoint } from "../api/types";
 import PageMeta from "../components/common/PageMeta";
 import { Badge } from "../components/shared/Badge";
@@ -117,6 +122,7 @@ export default function Overview() {
   const [checkpoint, setCheckpoint] = useState<PipelineCheckpoint | null>(null);
   const [localElapsed, setLocalElapsed] = useState(0);
   const lastDaemonAgeRef = useRef<number | undefined>(undefined);
+  const checkpointRequestSequence = useRef(0);
   const rateLimit = useRateLimit();
 
   useEffect(() => {
@@ -132,16 +138,30 @@ export default function Overview() {
   }, [controlStatus?.epoch_initialized]);
 
   useEffect(() => {
+    const requestSequenceRef = checkpointRequestSequence;
     if (!controlStatus?.epoch_initialized) {
+      ++requestSequenceRef.current;
       setCheckpoint(null);
       return;
     }
     const refresh = () => {
-      api.pipelineCheckpoint().then(setCheckpoint).catch((e) => console.error("[Overview] API error:", e));
+      const requestSequence = ++checkpointRequestSequence.current;
+      api.pipelineCheckpoint().then((value) => {
+        if (requestSequence === checkpointRequestSequence.current) {
+          setCheckpoint(value);
+        }
+      }).catch((e) => {
+        if (requestSequence !== checkpointRequestSequence.current) return;
+        setCheckpoint(null);
+        console.error("[Overview] API error:", e);
+      });
     };
     refresh();
     const id = setInterval(refresh, 5000);
-    return () => clearInterval(id);
+    return () => {
+      ++requestSequenceRef.current;
+      clearInterval(id);
+    };
   }, [controlStatus?.epoch_initialized]);
 
   // Reset the local timer when SSE pushes a new daemon heartbeat age. Strength
@@ -219,6 +239,12 @@ export default function Overview() {
     && taskActive,
   );
   const orchestratorOrphan = Boolean(taskActive && !controlStatus?.running);
+  const pipelineBlocked = controlPipelineBlocked(controlHealth?.pipeline);
+  const pipelineIssues = controlPipelineIssues(controlHealth?.pipeline);
+  const schedulerOwnsPrepare = controlSchedulerOwnsPrepareBoundary(
+    controlStatus,
+    controlHealth,
+  );
   const daemonStatusLabel = !controlStatus?.epoch_initialized
     ? "未初始化"
     : dataStream.state === "disconnected" ? "评分投影流已断开"
@@ -423,7 +449,11 @@ export default function Overview() {
           </div>
 
           {/* Pipeline status bar */}
-          {controlStatus && (controlStatus.active_generation || controlStatus.post_publication_handoff.status !== "none") && (
+          {controlStatus && (
+            controlStatus.active_generation
+            || controlStatus.post_publication_handoff.status !== "none"
+            || schedulerOwnsPrepare
+          ) && (
             <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
@@ -433,11 +463,21 @@ export default function Overview() {
                   <span className="text-sm text-gray-500 dark:text-gray-400">
                     {controlStatus.active_generation
                       ? `target v${controlStatus.active_generation.next_v} · source_v ${controlStatus.active_generation.source_v == null ? "—" : `v${controlStatus.active_generation.source_v}`}`
-                      : `post-publication v${controlStatus.post_publication_handoff.version ?? "?"}`}
+                      : controlStatus.post_publication_handoff.status !== "none"
+                        ? `post-publication v${controlStatus.post_publication_handoff.version ?? "?"}`
+                        : `scheduler target ${nextAuthorityVersion == null ? "待恢复" : `v${nextAuthorityVersion}`}`}
                   </span>
                 </div>
               </div>
-              <PipelineStatus checkpoint={checkpoint} activeGeneration={controlStatus.active_generation} handoff={controlStatus.post_publication_handoff} handoffBlocked={controlHealth?.pipeline.blocked === true} />
+              <PipelineStatus
+                checkpoint={checkpoint}
+                activeGeneration={controlStatus.active_generation}
+                handoff={controlStatus.post_publication_handoff}
+                handoffBlocked={controlStatus.post_publication_handoff.status !== "none" && pipelineBlocked}
+                activeBlocked={Boolean(controlStatus.active_generation && pipelineBlocked)}
+                activeIssues={pipelineIssues}
+                schedulerActive={schedulerOwnsPrepare}
+              />
             </div>
           )}
         </div>

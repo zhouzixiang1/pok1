@@ -79,6 +79,9 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
         "identity_digest": None,
         "publication_id": None,
         "record_revision": None,
+        # Bounded ownership classification from the canonical journal
+        # validator.  Never expose PID, claim id, or process-start token.
+        "owner_scope": "none",
         "next_tool": None,
         "issues": [],
     }
@@ -115,6 +118,7 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
             workflow_run_id = route.get("workflow_run_id")
             identity_digest = route.get("identity_digest")
             publication_id = route.get("publication_id")
+            owner_scope = str(route.get("owner_scope") or "unknown")
             revision = (
                 record.get("revision") if isinstance(record, dict) else None
             )
@@ -134,6 +138,14 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
                 and all(char in "0123456789abcdef" for char in publication_id)
                 and type(revision) is int
                 and revision > 0
+                and (
+                    (state == "pending" and owner_scope == "none")
+                    or (
+                        state == "running"
+                        and owner_scope
+                        in {"current_process", "foreign_process"}
+                    )
+                )
             )
             if valid:
                 base.update({
@@ -145,6 +157,7 @@ def post_publication_handoff_projection(*, enabled: bool = True) -> dict:
                     "identity_digest": identity_digest,
                     "publication_id": publication_id,
                     "record_revision": revision,
+                    "owner_scope": owner_scope,
                     "next_tool": "run_archivist",
                 })
             else:

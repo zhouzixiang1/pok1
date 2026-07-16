@@ -415,10 +415,18 @@ class AppState:
         owner_id: str | None = None,
     ):
         with self._lock:
-            if owner_id is not None and self._runtime_owner_id != owner_id:
+            # Shutdown is an owner-scoped capability.  An unowned lifespan or
+            # late startup attempt must never replace the manager used by an
+            # already-running orchestrator.
+            if (
+                not isinstance(owner_id, str)
+                or not owner_id
+                or self._runtime_owner_id != owner_id
+                or not self.running
+            ):
                 raise RuntimeError("shutdown manager owner fencing conflict")
             self._shutdown_mgr = mgr
-            self._shutdown_owner_id = owner_id or self._runtime_owner_id
+            self._shutdown_owner_id = owner_id
 
     def request_shutdown(self):
         with self._lock:
@@ -454,7 +462,12 @@ async def run_evolution_task(coro, *, owner_id: str | None = None):
     try:
         return await coro
     finally:
-        app_state.clear_task_if(
-            owner_task,
-            owner_id=captured_owner_id,
-        )
+        try:
+            from llm_query import set_shutdown_manager
+
+            set_shutdown_manager(None, owner_id=captured_owner_id)
+        finally:
+            app_state.clear_task_if(
+                owner_task,
+                owner_id=captured_owner_id,
+            )

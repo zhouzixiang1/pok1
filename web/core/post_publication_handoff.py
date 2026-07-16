@@ -2032,16 +2032,39 @@ def pending_handoff_route() -> dict[str, Any]:
     identity = record["identity"]
     durable_state = record["state"]
     effective_state = durable_state
+    owner_scope = "none"
     if durable_state == "running":
         owner = record.get("owner") or {}
         claim_id = str(owner.get("claim_id") or "")
         with _ACTIVE_CLAIMS_LOCK:
             active_here = claim_id in _ACTIVE_CLAIMS
-        if not active_here and not _owner_alive(owner):
+        owner_alive = _owner_alive(owner)
+        current_process_owner = False
+        if owner_alive and int(owner.get("pid") or 0) == os.getpid():
+            try:
+                current_process_owner = (
+                    str(owner.get("process_start_token") or "")
+                    == _process_start_token()
+                )
+            except Exception:
+                current_process_owner = False
+        if active_here:
+            # The volatile claim id plus PID/start-token pair is the exact
+            # same-process ownership proof.  PID equality alone is insufficient:
+            # a stale/reused owner row must never be presented as our live work.
+            owner_scope = (
+                "current_process" if current_process_owner else "unknown"
+            )
+        elif owner_alive and not current_process_owner:
+            owner_scope = "foreign_process"
+        else:
             # A crashed owner leaves a durable running row for takeover, but it
             # is not truthful to tell operators that Archivist is still doing
-            # work. Claim CAS will replace this dead lease on the next route.
+            # work.  A same-process row whose volatile claim was already
+            # released is likewise resumable; claim CAS intentionally permits
+            # that exact case.  The next route replaces the dead/stale lease.
             effective_state = "pending"
+            owner_scope = "none"
     return {
         "status": "pending",
         "version": int(identity["version"]),
@@ -2051,6 +2074,7 @@ def pending_handoff_route() -> dict[str, Any]:
         "publication_id": identity["publication_id"],
         "state": effective_state,
         "durable_state": durable_state,
+        "owner_scope": owner_scope,
         "record": record,
         "issues": [],
     }

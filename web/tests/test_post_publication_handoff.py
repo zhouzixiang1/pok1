@@ -640,6 +640,7 @@ def test_released_claim_becomes_pending_and_another_claim_can_take_over(
     running_route = module.pending_handoff_route()
     assert running_route["status"] == "pending"
     assert running_route["state"] == "running"
+    assert running_route["owner_scope"] == "current_process"
 
     module.release_post_publication_handoff_claim(
         143, 142, first_claim, error="injected crash"
@@ -676,6 +677,23 @@ def test_dead_running_owner_projects_effective_pending(handoff_env):
     assert route["status"] == "pending"
     assert route["state"] == "pending"
     assert route["durable_state"] == "running"
+    assert route["owner_scope"] == "none"
+
+
+def test_same_process_running_row_without_exact_volatile_claim_is_resumable(
+    handoff_env,
+):
+    module, _results = handoff_env
+    _write_pair(module)
+    _record, claim_id = module.claim_post_publication_handoff(143, 142)
+    with module._ACTIVE_CLAIMS_LOCK:
+        module._ACTIVE_CLAIMS.discard(claim_id)
+
+    route = module.pending_handoff_route()
+
+    assert route["durable_state"] == "running"
+    assert route["state"] == "pending"
+    assert route["owner_scope"] == "none"
 
 
 def test_route_blocks_when_local_publication_reproof_fails(
@@ -717,6 +735,10 @@ def test_live_foreign_owner_cannot_be_stolen_even_with_old_heartbeat(
     with module._ACTIVE_CLAIMS_LOCK:
         module._ACTIVE_CLAIMS.discard(claim_id)
     monkeypatch.setattr(module, "_owner_alive", lambda _owner: True)
+
+    route = module.pending_handoff_route()
+    assert route["state"] == "running"
+    assert route["owner_scope"] == "foreign_process"
 
     with pytest.raises(
         module.PostPublicationHandoffError,

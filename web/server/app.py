@@ -82,21 +82,21 @@ async def lifespan(app: FastAPI):
     # which triggers sse-starlette shutdown → lifespan shutdown below.
     from shutdown_manager import ShutdownManager
     shutdown_mgr = ShutdownManager(grace_period=15.0)
-    app_state.set_shutdown_mgr(shutdown_mgr)
     app.state.national_arena_manager = arena_manager
     app.state.national_arena_epoch_authority = epoch_launch_state
     arena_started = False
     if epoch_launch_allowed:
         await arena_manager.startup(epoch_authority=epoch_launch_state)
         arena_started = True
-    try:
-        from llm_query import set_shutdown_manager
-        set_shutdown_manager(shutdown_mgr)
-    except Exception:
-        pass
-
     orchestrator_owned = False
     stability_launch_allowed = True
+    launch_reservation = None
+
+    def _live_runtime_owner_present() -> bool:
+        return bool(
+            app_state.runtime_owner_id()
+            and app_state.to_dict().get("running") is True
+        )
 
     # On shutdown: stop orchestrator + daemon in parallel for fast exit.
     async def _stop_orchestrator():
@@ -137,21 +137,60 @@ async def lifespan(app: FastAPI):
                 "info",
             )
         elif not epoch_launch_allowed:
-            app_state.set_running(False)
+            owner_retained = _live_runtime_owner_present()
             epoch_state = str(epoch_launch_state.get("state") or "reset_required")
             operator_command = epoch_launch_state.get("operator_command")
             message = (
-                "Dashboard started with evolution stopped: policy epoch "
-                f"initialization is {epoch_state}."
-            )
+                "Dashboard launch attempt retained the existing runtime owner; "
+                if owner_retained
+                else "Dashboard started with evolution stopped: "
+            ) + f"policy epoch initialization is {epoch_state}."
             if operator_command:
                 message += f" Run: {operator_command}"
             web_ui.log_history(message, "warn")
-            web_ui.set_status(
-                f"Stopped: {epoch_state}",
-                is_working=False,
-            )
+            if not owner_retained:
+                web_ui.set_status(
+                    f"Stopped: {epoch_state}",
+                    is_working=False,
+                )
         else:
+            from server.routes.control import _reserve_runtime_launch_owner
+
+            launch_reservation = await _reserve_runtime_launch_owner()
+            if launch_reservation.get("acquired") is not True:
+                stability_launch_allowed = False
+                owner_retained = _live_runtime_owner_present()
+                barrier = launch_reservation.get("barrier") or {}
+                denial = str(
+                    barrier.get("denial_code")
+                    or launch_reservation.get("reason")
+                    or "launch_authority_unavailable"
+                )
+                issues = list(barrier.get("issues") or [])
+                launch_message = (
+                    "Dashboard launch attempt retained the existing runtime owner: "
+                    if owner_retained
+                    else "Dashboard started with evolution stopped by the canonical "
+                ) + f"launch barrier: {denial}"
+                if issues:
+                    launch_message += f" ({'; '.join(map(str, issues))})"
+                web_ui.log_history(
+                    launch_message,
+                    "warn",
+                )
+                if not owner_retained:
+                    web_ui.set_status(
+                        f"Stopped: {denial}",
+                        is_working=False,
+                    )
+
+        if (
+            not view_only
+            and epoch_launch_allowed
+            and stability_launch_allowed
+            and launch_reservation is not None
+            and launch_reservation.get("acquired") is True
+        ):
             try:
                 from stability_observation import initialize_stability_observation
 
@@ -164,24 +203,31 @@ async def lifespan(app: FastAPI):
                     "info",
                 )
             except Exception as exc:
-                # Observation is not publication authority. Ordinary storage
-                # failure keeps evolution available with a fail-closed count;
-                # a proven live foreign owner blocks a second orchestrator.
-                if "owner_process_still_alive" in str(exc):
-                    stability_launch_allowed = False
-                    app_state.set_running(False)
-                web_ui.log_history(
-                    "连续进化验收状态无法初始化："
-                    f"{type(exc).__name__}: {str(exc)[:160]}",
-                    "error",
-                )
+                # Continuous-generation acceptance is part of the launch
+                # contract.  If its durable state cannot be initialized, both
+                # lifespan and POST start stay stopped instead of running an
+                # evolution task whose required 10-generation observation can
+                # never be proven.
+                stability_launch_allowed = False
+                try:
+                    web_ui.log_history(
+                        "连续进化验收状态无法初始化："
+                        f"{type(exc).__name__}: {str(exc)[:160]}",
+                        "error",
+                    )
+                    web_ui.set_status(
+                        "Stopped: stability observation unavailable",
+                        is_working=False,
+                    )
+                finally:
+                    app_state.abort_runtime_owner(
+                        launch_reservation.get("owner_id")
+                    )
 
         if view_only or not epoch_launch_allowed or not stability_launch_allowed:
             pass
-        elif not app_state.try_set_running(True):
-            web_ui.log_history("Orchestrator already running", "warn")
         else:
-            owner_id = app_state.runtime_owner_id()
+            owner_id = launch_reservation.get("owner_id")
             task = None
             try:
                 from orchestrator import orchestrator_loop
@@ -190,6 +236,18 @@ async def lifespan(app: FastAPI):
                     shutdown_mgr,
                     owner_id=owner_id,
                 )
+                try:
+                    from llm_query import set_shutdown_manager
+
+                    if not set_shutdown_manager(
+                        shutdown_mgr,
+                        owner_id=owner_id,
+                    ):
+                        raise RuntimeError(
+                            "LLM shutdown manager owner fencing conflict"
+                        )
+                except Exception:
+                    raise
                 task = asyncio.create_task(run_evolution_task(orchestrator_loop(
                     web_ui,
                     shutdown_mgr=shutdown_mgr,
@@ -205,8 +263,14 @@ async def lifespan(app: FastAPI):
                     task.cancel()
                     try:
                         await task
-                    except (asyncio.CancelledError, Exception):
+                    except BaseException:
                         pass
+                try:
+                    from llm_query import set_shutdown_manager
+
+                    set_shutdown_manager(None, owner_id=owner_id)
+                except Exception:
+                    pass
                 app_state.abort_runtime_owner(owner_id)
                 raise
         yield

@@ -2923,7 +2923,7 @@ async def prepare_next_gen(args):
             next_v = active_next_v
             using_active_checkpoint = True
         elif requested_source != active_source_v or requested_next != active_next_v:
-            if active_stage in {"selected", "preparing", "prepared", "timed_out"}:
+            if active_stage in {"selected", "preparing", "prepared"}:
                 log_system_event(
                     "pipeline.prepare_args_overridden",
                     "warn",
@@ -3077,7 +3077,12 @@ async def prepare_next_gen(args):
 
     # Guard: refuse to re-prepare if pipeline has already progressed past "prepared"
     _ckpt = _matching_checkpoint(next_v, source_v)
-    if _ckpt and _ckpt.get("stage") not in (None, "selected", "preparing", "prepared", "timed_out"):
+    if _ckpt and _ckpt.get("stage") not in (
+        None,
+        "selected",
+        "preparing",
+        "prepared",
+    ):
         return _json_tool_result({"error": f"Pipeline for v{next_v} already at stage '{_ckpt['stage']}'. Refusing to overwrite worker output. Call abandon_generation first if you want to restart."})
 
     if next_dir.exists():
@@ -3113,23 +3118,68 @@ async def prepare_next_gen(args):
                         "continue with run_direction_audit."
                     ),
                 })
+        # ``preparing`` is a crash-recovery lease, but bytes that appeared
+        # before the prepared-artifact contract was committed can never be
+        # adopted by filename.  Resolve that kill window here, inside the
+        # system-owned prepare route, with the same exact workflow/revision
+        # canonical-abandon transaction used by every other terminal path.
+        try:
+            from tool_bot_management import (
+                _do_abandon_generation,
+                expected_abandon_identity,
+            )
+
+            abandon_result = await _do_abandon_generation(
+                reason="stale_blueprint_rejection:prepare_preimage_unbound",
+                **expected_abandon_identity(_ckpt),
+            )
+        except Exception as exc:
+            abandon_result = {
+                "abandoned": False,
+                "reason": "prepare_preimage_abandon_exception",
+                "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+            }
         return _json_tool_result({
             "error": "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON",
             "version": int(next_v),
             "source_v": int(source_v),
             "stage": (_ckpt or {}).get("stage"),
+            "action": "abandon_generation",
+            "abandoned": abandon_result.get("abandoned") is True,
+            "abandon_result": abandon_result,
             "directive": (
                 "The existing target directory is not bound by this workflow's "
-                "exact prepared-artifact contract. Preserve it and run the "
-                "checkpoint-bound abandon/quarantine transaction; never rmtree "
-                "or adopt filename-matched bytes."
+                "exact prepared-artifact contract. The system-owned prepare "
+                "route attempted the checkpoint-bound abandon/quarantine "
+                "transaction; never rmtree or adopt filename-matched bytes."
             ),
         })
 
     from evolution_infra import write_pipeline_checkpoint
-    if not write_pipeline_checkpoint(next_v, source_v, "preparing", worker_failure_count=0):
+    if not write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "preparing",
+        worker_failure_count=0,
+        expected_checkpoint_revision=(_ckpt or {}).get(
+            "checkpoint_revision"
+        ),
+        expected_checkpoint_stage=(_ckpt or {}).get("stage"),
+        expected_workflow_run_id=(_ckpt or {}).get("workflow_run_id"),
+    ):
         return _json_tool_result({
             "error": f"Failed to persist preparing checkpoint for v{next_v}; refusing to mutate bot directory."
+        })
+    preparing_checkpoint = _matching_checkpoint(next_v, source_v)
+    if (
+        not isinstance(preparing_checkpoint, dict)
+        or preparing_checkpoint.get("stage") != "preparing"
+    ):
+        return _json_tool_result({
+            "error": (
+                f"Preparing checkpoint for v{next_v} could not be re-proven; "
+                "refusing to mutate bot directory."
+            )
         })
 
     workflow_profile = get_workflow_profile()
@@ -3292,6 +3342,13 @@ async def prepare_next_gen(args):
                 else {}
             ),
         },
+        expected_checkpoint_revision=preparing_checkpoint.get(
+            "checkpoint_revision"
+        ),
+        expected_checkpoint_stage="preparing",
+        expected_workflow_run_id=preparing_checkpoint.get(
+            "workflow_run_id"
+        ),
     ):
         return _json_tool_result({
             "error": f"Failed to persist prepared checkpoint for v{next_v}; generation recovery remains at preparing."

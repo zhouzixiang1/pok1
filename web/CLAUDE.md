@@ -30,15 +30,46 @@ active `national_tcp_policy_v1` architecture.
 - Canonical abandon fences the outer Worker journal and creates or terminally
   transitions the strict child. Real and replay dispatch require `running` and
   cannot resurrect a stale pre-dispatch descriptor.
+- A disappeared checkpoint is a completed abandon only when one unique
+  canonical result from the current authorized owner tool includes
+  `workflow_run_id` and exactly re-proves the current transaction,
+  ledger/finalize receipts, checkpoint identity, and both complete terminal
+  journals. It must bind one pending route-mutating ToolUse through an explicit
+  id/parent id or the bounded sole-pending SDK form; unknown, reused,
+  swapped-owner or unsettled ids block. Invalid or unreadable authority blocks recovery. A genuinely absent
+  checkpoint ends the provider stream; the outer scheduler alone owns non-MCP
+  `prepare_generation`. Exact `selected`/`preparing` routes own first/crash
+  recovery `prepare_next_gen`, but unbound target bytes trigger system canonical
+  abandon. Both timeout states are active leases: `timed_out` abandons and
+  `infra_timed_out` retries only after full artifact/gate/baseline reproof and
+  exact CAS.
+- A pending/running/blocked post-publication handoff makes the provider
+  `end_stream`; outer deterministic recovery alone owns `run_archivist`.
+- `orchestrator.py --one-gen` means one complete workflow/generation, not one
+  provider session. Abandon, operator action, recovery failure, accounting
+  failure, and successful publication/cleanup remain distinct terminal states.
+- Control health withholds a route and `/api/control/start` returns 409 before
+  any stability reset when recovery or an operator boundary blocks launch. A
+  checkpoint-free scheduler projection carries authoritative `next_v` but a
+  null source: parent selection remains owned by non-MCP `prepare_generation`.
+  Checkpoint observation is before/read/after fail-closed. Frontend Start mirrors
+  the exact active-generation, post-publication, or clean scheduler boundary.
+  Live foreign handoff owners block a second runtime; AppState and the process
+  LLM shutdown manager are both exact-owner fenced.
+- Native precommit owns a monotonic per-attempt cancellation token and a frozen
+  first-strict execution scope. Late complete matches are not admitted and no
+  next sample starts after cancellation; retries reuse the same control journal.
 - Arena and official EXE chip output have zero strength authority.
 - The official raise-boundary and terminal-settlement oracle files are exact,
   pinned evaluation inputs.
 
 ## Generation stages
 
-Prepare → direction audit → governed literature probe when required → Master →
-Workers → quality → review → critic → native TCP precommit → signed official
-full certificate → commit/tag → archivist.
+Outer `prepare_generation` selection → exact routed materialization
+(`prepare_next_gen` or crossover) → direction audit → governed literature probe
+when required → Master → Workers → quality → review → critic → native TCP
+precommit → signed official full certificate → commit/tag → provider end-stream
+→ outer deterministic Archivist.
 
 Crossover prepares a baseline only. It does not bypass Master, Workers, or any
 gate. Worker tasks and artifacts are checkpoint-owned, digest-bound, and

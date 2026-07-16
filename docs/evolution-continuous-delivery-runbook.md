@@ -133,7 +133,84 @@ Preparation follows the same ownership rule. An existing target directory is
 never deleted or adopted from its name. Only a `prepared` checkpoint whose
 content-bound `prepared_artifact_contract` revalidates the exact live bytes may
 return an idempotent resume; every other preimage is preserved and routed to
-the canonical abandon/quarantine transaction.
+the canonical abandon/quarantine transaction. `selected→preparing` is an exact
+workflow/revision/stage CAS that must be re-read before candidate bytes are
+written; `preparing→prepared` is a second exact CAS. If selected/preparing sees
+target bytes without the prepared contract, the system-owned prepare route
+invokes canonical abandon with
+`stale_blueprint_rejection:prepare_preimage_unbound`. It never adopts, removes,
+or continues those bytes.
+
+## Provider-stream terminal handoff
+
+The absence of `pipeline_state.json` is not by itself proof that a generation
+finished. Each provider stream binds the full checkpoint identity it opened.
+If that checkpoint disappears, the stream may report `generation_abandoned`
+only when the current authorized owner tool result contains one unambiguous
+canonical result, flattened or nested, with all of:
+
+- `workflow_run_id`;
+- `abandon_transaction_id`;
+- `abandon_receipt_digest`;
+- `finalize_receipt_digest`;
+- `abandon_checkpoint_identity`;
+- `abandoned=true` and `cleared_checkpoint=true`.
+
+Recovery reopens the exact transaction claim/receipt, current Git and abandon
+ledger authority, proves the original checkpoint identity, and scans every row
+of both the outer Worker and strict-authority journals through each declared
+`stream_version`. Sequences must be exactly `1..N`; every schema, JSON payload
+and payload digest must validate; the unique `abandoned` event must be last;
+and no live effect may remain. A nested duplicate result, stale ledger head,
+changed Git/candidate identity, journal gap/drift, live claim/effect, unreadable
+checkpoint, or checkpoint read race is a recovery block, never a successful
+handoff. A flattened and nested duplicate is ambiguous rather than two
+corroborating proofs. The accepted result must bind exactly one pending
+route-mutating ToolUse. Typed results use their ToolUse id; SDK metadata may use
+an explicit `tool_use_id`, `parent_tool_use_id`, or only when exactly one use is
+pending the bounded sole-pending association. Unknown, reused, swapped-owner,
+multi-pending, unsettled, EOF-pending, and read-only-owner results all block.
+
+When no stream-owned checkpoint ever existed and no post-publication handoff is
+active, the provider must end its stream. It has no MCP tool authorized to
+allocate a generation. The outer scheduler alone calls the non-MCP
+`prepare_generation`, which freezes the source, target, parents and evidence;
+`prepare_next_gen` is used only for the exact validated `selected` first
+materialization or `preparing` crash-recovery route. `timed_out` and
+`infra_timed_out` remain active leases: neither can be overwritten by a same
+identity restart or new generation. Plain timeout may overlay only `selected`,
+`preparing`, `prepared`, `crossover_running`, `direction_audited`,
+`master_planned`, `workers_done`, or `quality_failed`, then routes only to
+schema-2 canonical abandon. Infra timeout may overlay only `critic_checked`;
+retry proves the live full-artifact fingerprint, current quality/review/critic
+identities, and `quality fingerprint = repair baseline = live bytes`, then
+exact-CAS restores `critic_checked`. Any mismatch preserves the overlay without
+calling the native backend.
+
+`python web/core/orchestrator.py --one-gen` follows one workflow, not one SDK
+stream. It may execute multiple fresh provider streams and deterministic routes
+for that workflow, then stops with a distinct outcome: successful publication
+and verified cleanup (exit 0), canonical abandon (2), operator action required
+(3), recovery blocked (4), generic startup/control failure (5), or accounting
+blocked (6). It never allocates the successor after abandon, and a failed or
+timed-out post-publication cleanup is recovery blocked rather than success.
+
+The Web control plane consumes the same boundary. Checkpoint revalidation or
+`checkpoint_recovery_diagnostics(...).recoverable=false` makes health
+`blocked=true` and withholds `route`; an operator action is reported separately.
+`POST /api/control/start` repeats that authority check and returns 409 before
+resetting the stability observation or acquiring the runtime task. For a clean,
+initialized, checkpoint-free state, health publishes a `scheduler_boundary`
+with `provider_action=end_stream`, `scheduler_action=prepare_generation`, the
+epoch-owned `next_v`, and `source_v=null`. Source/parent selection has not run
+yet and must never be inferred from `current_v`. Browser controls validate the
+whole boundary, disable Start when blocked, and clear a previously fetched
+checkpoint when polling fails. Epoch projection samples checkpoint existence
+before and after the read; unreadable, disappearing, `archived`/`abandoned`,
+missing-stage, or missing-target bytes never become the clean scheduler
+boundary. Browser Start mirrors exactly one of three backend boundaries: a
+content-matched active checkpoint route, a content-matched post-publication
+route, or the complete clean scheduler projection.
 
 ## Durable post-publication handoff
 
@@ -144,6 +221,19 @@ pointer, and archive base snapshot before clearing the publishing checkpoint.
 On first creation of either authority directory, the implementation fsyncs the
 child directory and its parent and rechecks both inode identities; a successful
 file write inside a directory whose entry is not durable is not accepted.
+
+Any provider that observes a pending, running, or blocked handoff must
+`end_stream` without another MCP call. Only the outer deterministic recovery
+path may invoke or resume `run_archivist`; provider ownership does not follow
+from the capability catalog, a completed commit result, or checkpoint absence.
+This generation-scheduling fence is distinct from process ownership: a pending
+or dead-owner handoff permits one runtime to start deterministic recovery, while
+a live foreign owner blocks a second runtime. HTTP exposes only the bounded
+`none/current_process/foreign_process` scope. Runtime-owner reservation samples
+one launch fence before and after atomic ownership. Every setup exception,
+including cancellation-class exceptions, releases only that unattached owner.
+Unowned/failed lifespans cannot change a live owner's running/UI state or its
+AppState/process-wide LLM shutdown manager; both managers use exact owner CAS.
 
 `run_archivist` executes or resumes these eight ordered journal steps for the
 same version, source, workflow, checkpoint digest, publication id, commit,
@@ -188,6 +278,20 @@ typed epoch, handoff and stability identities; on epoch change, stale sequence,
 stream loss or blocked handoff it clears derived state and disables controls.
 It never turns a handoff gap into an idle pipeline or recomputes authority from
 the bot list.
+
+## Native precommit cancellation boundary
+
+Every `run_precommit_eval` attempt captures one monotonic Event and passes that
+same object into the real native 70-hand loop. Timeout/cancellation permanently
+sets the captured token; reset rotates only an already-cancelled token and never
+clears or detaches live work. The loop checks before each opponent/repeat and
+after each complete match or first-strict execution-journal receipt. A late
+complete match is not admitted into aggregates or a terminal gate, and no next
+sample starts. A new attempt receives a new token, so old detached work remains
+cancelled forever. For the first strict control, the initial execution scope is
+frozen into checkpoint `audit_context`; infra-timeout or bare cancellation
+reuses that exact journal scope and completed match rather than incrementing an
+identity that would force duplicate execution.
 
 ## First strict publication
 

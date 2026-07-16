@@ -183,9 +183,10 @@ def test_operator_limit_parks_stream_and_preserves_checkpoint(
         "source_v": 142,
         "stage": "prepared",
         "generation_attempt": 0,
-        "run_id": "151#0",
-        "workflow_run_id": "generation:151:preserve-me",
-    }
+            "run_id": "151#0",
+            "workflow_run_id": "generation:151:preserve-me",
+            "checkpoint_revision": 1,
+        }
     monkeypatch.setattr(evolution_core, "read_pipeline_checkpoint", lambda: dict(checkpoint))
     monkeypatch.setattr(orchestrator, "_build_context", lambda **_kwargs: "")
     monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)

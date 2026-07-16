@@ -222,6 +222,8 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
         "source_v": 142,
         "next_v": 143,
         "stage": "selected",
+        "workflow_run_id": "generation:143:workflow-v9",
+        "checkpoint_revision": 4,
         "audit_context": {
             "protocol_bootstrap": receipt,
             "selection": {"strategy": "fresh_policy_bootstrap"},
@@ -239,6 +241,33 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
     marker = target / "unbound-policy.py"
     marker.write_text("UNTRUSTED_PREIMAGE = True\n", encoding="utf-8")
     before = marker.read_bytes()
+    import tool_bot_management
+
+    abandon_calls = []
+
+    async def canonical_abandon(*, reason, **identity):
+        abandon_calls.append((reason, identity))
+        return {
+            "abandoned": True,
+            "cleared_checkpoint": True,
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "abandon_transaction_id": "1" * 64,
+            "abandon_receipt_digest": "2" * 64,
+            "finalize_receipt_digest": "3" * 64,
+            "abandon_checkpoint_identity": {
+                "workflow_run_id": checkpoint["workflow_run_id"],
+                "next_v": 143,
+                "source_v": 142,
+                "checkpoint_revision": 4,
+                "stage": "selected",
+            },
+        }
+
+    monkeypatch.setattr(
+        tool_bot_management,
+        "_do_abandon_generation",
+        canonical_abandon,
+    )
 
     payload = _tool_payload(asyncio.run(
         tool_gates.prepare_next_gen.handler({"source_v": 142, "next_v": 143})
@@ -246,6 +275,19 @@ def test_preexisting_unbound_target_is_preserved_for_canonical_abandon(
 
     assert payload["error"] == "TARGET_PREIMAGE_REQUIRES_CANONICAL_ABANDON"
     assert payload["stage"] == "selected"
+    assert payload["abandoned"] is True
+    assert abandon_calls == [
+        (
+            "stale_blueprint_rejection:prepare_preimage_unbound",
+            {
+                "expected_workflow_run_id": checkpoint["workflow_run_id"],
+                "expected_next_v": 143,
+                "expected_source_v": 142,
+                "expected_checkpoint_revision": 4,
+                "expected_checkpoint_stage": "selected",
+            },
+        )
+    ]
     assert marker.read_bytes() == before
     assert writes == []
 

@@ -105,6 +105,59 @@ class TestEvolutionTaskOwnership:
 
         asyncio.run(scenario())
 
+    def test_shutdown_manager_requires_exact_reserved_owner(self, tmp_path):
+        from server.state import AppState
+
+        state = AppState(config_file=tmp_path / "app_config.json")
+        owner = state.begin_runtime_owner()
+        manager = type("Manager", (), {"is_shutting_down": False})()
+
+        with pytest.raises(RuntimeError, match="owner fencing conflict"):
+            state.set_shutdown_mgr(manager)
+        with pytest.raises(RuntimeError, match="owner fencing conflict"):
+            state.set_shutdown_mgr(manager, owner_id="foreign-owner")
+
+        state.set_shutdown_mgr(manager, owner_id=owner)
+        assert state.task_snapshot()["owner_id"] == owner
+        state.abort_runtime_owner(owner)
+
+    def test_llm_shutdown_manager_rejects_stale_owner_replace_and_clear(self):
+        import llm_query
+
+        class Manager:
+            def __init__(self, shutting_down):
+                self.is_shutting_down = shutting_down
+
+        owner_a = "runtime-owner-a"
+        owner_b = "runtime-owner-b"
+        manager_a = Manager(True)
+        manager_b = Manager(False)
+        assert llm_query.set_shutdown_manager(None) is True
+        try:
+            assert llm_query.set_shutdown_manager(
+                manager_a,
+                owner_id=owner_a,
+            ) is True
+            # The inner Orchestrator may repeat the exact bind without erasing
+            # the outer launch transaction's owner identity.
+            assert llm_query.set_shutdown_manager(manager_a) is True
+            assert llm_query.set_shutdown_manager(
+                manager_b,
+                owner_id=owner_b,
+            ) is False
+            assert llm_query.set_shutdown_manager(
+                None,
+                owner_id=owner_b,
+            ) is False
+            assert llm_query.set_shutdown_manager(None) is False
+            assert llm_query._is_shutdown_requested() is True
+        finally:
+            assert llm_query.set_shutdown_manager(
+                None,
+                owner_id=owner_a,
+            ) is True
+        assert llm_query._is_shutdown_requested() is False
+
 
 class TestConfig:
     def test_default_daemon_workers_handles_unknown_cpu_count(self, monkeypatch):
@@ -1090,6 +1143,151 @@ class TestStatus:
         assert snapshot["checkpoint_revision"] == 7
         assert seen == [checkpoint]
 
+    def test_pipeline_health_withholds_route_when_recovery_is_unproven(
+        self,
+        monkeypatch,
+    ):
+        import checkpoint_schema
+        import evolution_infra
+        import pipeline_recovery
+        import pipeline_state
+        import server.routes.control as control
+
+        checkpoint = {
+            "next_v": 143,
+            "source_v": 142,
+            "parent2_v": None,
+            "stage": "direction_audited",
+            "run_id": "143#0",
+            "workflow_run_id": "generation:143:blocked-route-test",
+            "checkpoint_revision": 7,
+            "generation_attempt": 0,
+        }
+        status = {
+            "epoch_initialized": True,
+            "epoch_state": "fresh_bootstrap_ready",
+            "operator_action": None,
+            "active_generation": {
+                "next_v": 143,
+                "source_v": 142,
+                "stage": "direction_audited",
+                "run_id": "143#0",
+                "workflow_run_id": "generation:143:blocked-route-test",
+                "checkpoint_revision": 7,
+                "attempt": {"generation": 0, "audit": 0, "precommit": 0},
+            },
+        }
+        route_calls = []
+        monkeypatch.setattr(checkpoint_schema, "checkpoint_epoch_errors", lambda _value: [])
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_policy_epoch_reset_receipt_errors",
+            lambda _value, **_kwargs: [],
+        )
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(
+            pipeline_recovery,
+            "checkpoint_recovery_diagnostics",
+            lambda _value: {
+                "recoverable": False,
+                "issues": ["repo_baseline_head_mismatch"],
+            },
+        )
+        monkeypatch.setattr(
+            pipeline_state,
+            "route_policy",
+            lambda value: route_calls.append(value) or {
+                "stage": "direction_audited",
+                "next_tool": "run_master",
+            },
+        )
+
+        snapshot = control._read_pipeline_health(status)
+
+        assert snapshot["blocked"] is True
+        assert snapshot["route"] is None
+        assert snapshot["issues"] == ["repo_baseline_head_mismatch"]
+        assert route_calls == []
+
+    def test_pipeline_health_projects_scheduler_owned_no_checkpoint_boundary(self):
+        import server.routes.control as control
+
+        snapshot = control._read_pipeline_health({
+            "epoch_initialized": True,
+            "epoch_state": "strict_published",
+            "current_v": 143,
+            "next_v": 145,
+            "active_generation": None,
+            "post_publication_handoff": {"status": "none"},
+            "ignored_checkpoint": None,
+        })
+
+        assert snapshot["blocked"] is False
+        assert snapshot.get("route") is None
+        assert snapshot["scheduler_boundary"] == {
+            "authority": "outer_scheduler",
+            "state": "ready_to_prepare",
+            "provider_action": "end_stream",
+            "scheduler_action": "prepare_generation",
+            "next_v": 145,
+            "source_v": None,
+        }
+
+        operator_blocked = control._read_pipeline_health({
+            "epoch_initialized": True,
+            "epoch_state": "fresh_bootstrap_ready",
+            "current_v": 142,
+            "next_v": 143,
+            "active_generation": None,
+            "post_publication_handoff": {"status": "none"},
+            "ignored_checkpoint": None,
+            "operator_action": "finalize_first_strict_publication",
+        })
+        assert operator_blocked["blocked"] is True
+        assert operator_blocked["operator_action_required"] is True
+        assert operator_blocked["scheduler_boundary"] is None
+
+    @pytest.mark.parametrize(
+        "status_patch",
+        (
+            {"operator_action": "operator_reconcile_checkpoint"},
+            {"ignored_checkpoint": {"reason": "checkpoint_invalid"}},
+            {"epoch_initialized": False},
+        ),
+    )
+    def test_pipeline_health_withholds_handoff_route_on_outer_authority_block(
+        self,
+        status_patch,
+    ):
+        import server.routes.control as control
+
+        status = {
+            "epoch_initialized": True,
+            "epoch_state": "strict_published",
+            "operator_action": None,
+            "ignored_checkpoint": None,
+            "active_generation": None,
+            "post_publication_handoff": {
+                "status": "pending",
+                "state": "pending",
+                "blocked": False,
+                "version": 144,
+                "source_v": 143,
+                "workflow_run_id": "generation:144:workflow-v1",
+                "identity_digest": "i" * 64,
+                "projection_digest": "p" * 64,
+                "publication_id": "u" * 64,
+                "record_revision": 1,
+                "issues": [],
+            },
+            **status_patch,
+        }
+
+        snapshot = control._read_pipeline_health(status)
+
+        assert snapshot["blocked"] is True
+        assert snapshot["route"] is None
+
     @pytest.mark.parametrize(
         ("field", "changed"),
         (
@@ -1443,15 +1641,44 @@ class TestStartConflict:
     def test_start_when_not_running(self, client, monkeypatch):
         client.post("/api/control/stop")
         import orchestrator
+        import server.routes.control as control
+
         async def fake_loop(*a, **kw):
             pass
         monkeypatch.setattr(orchestrator, "orchestrator_loop", fake_loop)
+        monkeypatch.setattr(
+            control,
+            "_control_launch_authority_snapshot",
+            lambda: (
+                {
+                    "epoch_initialized": True,
+                    "operator_action": None,
+                    "active_generation": None,
+                    "post_publication_handoff": {"status": "none"},
+                    "current_v": 142,
+                    "next_v": 143,
+                },
+                {
+                    "blocked": False,
+                    "exists": False,
+                    "scheduler_boundary": {
+                        "authority": "outer_scheduler",
+                        "state": "ready_to_prepare",
+                        "provider_action": "end_stream",
+                        "scheduler_action": "prepare_generation",
+                        "next_v": 143,
+                        "source_v": None,
+                    },
+                },
+            ),
+        )
         resp = client.post("/api/control/start")
         assert resp.status_code == 200
         client.post("/api/control/stop")
 
     def test_start_refuses_second_live_stability_owner(self, client, monkeypatch):
         import stability_observation
+        import server.routes.control as control
         from server.state import app_state
 
         client.post("/api/control/stop")
@@ -1464,6 +1691,32 @@ class TestStartConflict:
                 )
             ),
         )
+        monkeypatch.setattr(
+            control,
+            "_control_launch_authority_snapshot",
+            lambda: (
+                {
+                    "epoch_initialized": True,
+                    "operator_action": None,
+                    "active_generation": None,
+                    "post_publication_handoff": {"status": "none"},
+                    "current_v": 142,
+                    "next_v": 143,
+                },
+                {
+                    "blocked": False,
+                    "exists": False,
+                    "scheduler_boundary": {
+                        "authority": "outer_scheduler",
+                        "state": "ready_to_prepare",
+                        "provider_action": "end_stream",
+                        "scheduler_action": "prepare_generation",
+                        "next_v": 143,
+                        "source_v": None,
+                    },
+                },
+            ),
+        )
 
         response = client.post("/api/control/start")
 
@@ -1472,3 +1725,271 @@ class TestStartConflict:
             "stability_observation_owner_active"
         )
         assert app_state.to_dict()["running"] is False
+
+    @pytest.mark.parametrize(
+        ("status_patch", "pipeline_patch", "expected_code"),
+        (
+            (
+                {
+                    "operator_action": "run_first_strict_official_certification",
+                    "operator_command": "operator-command",
+                    "epoch_state": "fresh_bootstrap_ready",
+                },
+                {"blocked": True, "stage": "official_bootstrap_required"},
+                "operator_action_required",
+            ),
+            (
+                {"operator_action": None, "epoch_state": "strict_published"},
+                {
+                    "blocked": True,
+                    "stage": "workers_done",
+                    "issues": ["repo_baseline_head_mismatch"],
+                    "recovery": {"recoverable": True, "issues": []},
+                },
+                "pipeline_recovery_blocked",
+            ),
+            (
+                {"operator_action": None, "epoch_state": "strict_published"},
+                {
+                    "blocked": False,
+                    "stage": "workers_done",
+                    "issues": [],
+                    "recovery": {
+                        "recoverable": False,
+                        "issues": ["repo_baseline_head_mismatch"],
+                    },
+                },
+                "pipeline_recovery_blocked",
+            ),
+        ),
+    )
+    def test_start_refuses_operator_or_recovery_boundary_before_stability_reset(
+        self,
+        client,
+        monkeypatch,
+        status_patch,
+        pipeline_patch,
+        expected_code,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        client.post("/api/control/stop")
+        monkeypatch.setattr(control, "_require_initialized_epoch", lambda _operation: {})
+        monkeypatch.setattr(
+            control,
+            "_control_launch_authority_snapshot",
+            lambda: (
+                {"epoch_initialized": True, **status_patch},
+                pipeline_patch,
+            ),
+        )
+        monkeypatch.setattr(
+            control,
+            "_bind_and_reset_stability",
+            lambda *_args, **_kwargs: pytest.fail(
+                "stability reset reached past the launch barrier"
+            ),
+        )
+
+        response = client.post("/api/control/start")
+
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == expected_code
+        assert app_state.to_dict()["running"] is False
+
+    @pytest.mark.asyncio
+    async def test_start_refuses_live_foreign_handoff_owner_before_stability_reset(
+        self,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+        from fastapi import HTTPException
+        from server.state import app_state
+
+        app_state.stop_running()
+        status = {
+            "running": False,
+            "epoch_initialized": True,
+            "epoch_state": "strict_published",
+            "operator_action": None,
+            "ignored_checkpoint": None,
+            "active_generation": None,
+            "post_publication_handoff": {
+                "status": "running",
+                "state": "running",
+                "blocked": False,
+                "version": 144,
+                "source_v": 143,
+                "workflow_run_id": "generation:144:workflow-v1",
+                "identity_digest": "i" * 64,
+                "projection_digest": "p" * 64,
+                "publication_id": "u" * 64,
+                "record_revision": 3,
+                "owner_scope": "foreign_process",
+                "issues": [],
+            },
+        }
+        pipeline = control._read_pipeline_health(status)
+        assert pipeline["blocked"] is True
+        assert pipeline["route"] is None
+        monkeypatch.setattr(
+            control,
+            "_require_initialized_epoch",
+            lambda _operation: {},
+        )
+        monkeypatch.setattr(
+            control,
+            "_control_launch_authority_snapshot",
+            lambda: (status, pipeline),
+        )
+        monkeypatch.setattr(
+            control,
+            "_bind_and_reset_stability",
+            lambda *_args, **_kwargs: pytest.fail(
+                "stability reset reached past foreign handoff owner"
+            ),
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            await control._start_evolution_transaction()
+
+        assert caught.value.status_code == 409
+        assert caught.value.detail["code"] == "pipeline_recovery_blocked"
+        assert "post_publication_handoff_foreign_owner_active" in (
+            caught.value.detail["issues"]
+        )
+        assert app_state.to_dict()["running"] is False
+
+    @pytest.mark.asyncio
+    async def test_runtime_owner_reservation_rechecks_and_fences_authority_drift(
+        self,
+        monkeypatch,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.stop_running()
+        samples = iter((
+            {
+                "allowed": True,
+                "denial_code": None,
+                "issues": [],
+                "fence_digest": "a" * 64,
+                "status": {},
+                "pipeline": {},
+            },
+            {
+                "allowed": True,
+                "denial_code": None,
+                "issues": [],
+                "fence_digest": "b" * 64,
+                "status": {},
+                "pipeline": {},
+            },
+        ))
+        monkeypatch.setattr(
+            control,
+            "_runtime_launch_barrier_snapshot",
+            lambda: next(samples),
+        )
+
+        result = await control._reserve_runtime_launch_owner()
+
+        assert result["acquired"] is False
+        assert result["reason"] == "authority_changed"
+        assert result["barrier"]["denial_code"] == "launch_authority_changed"
+        assert app_state.to_dict()["running"] is False
+        assert app_state.task_snapshot()["present"] is False
+
+    @pytest.mark.parametrize(
+        "failure_type",
+        (RuntimeError, asyncio.CancelledError),
+    )
+    @pytest.mark.asyncio
+    async def test_runtime_owner_reservation_releases_owner_when_recheck_raises(
+        self,
+        monkeypatch,
+        failure_type,
+    ):
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.stop_running()
+        sample_count = 0
+
+        def sample():
+            nonlocal sample_count
+            sample_count += 1
+            if sample_count == 1:
+                return {
+                    "allowed": True,
+                    "denial_code": None,
+                    "issues": [],
+                    "fence_digest": "a" * 64,
+                    "status": {},
+                    "pipeline": {},
+                }
+            raise failure_type("second launch-authority sample failed")
+
+        monkeypatch.setattr(
+            control,
+            "_runtime_launch_barrier_snapshot",
+            sample,
+        )
+
+        with pytest.raises(failure_type, match="second launch-authority sample failed"):
+            await control._reserve_runtime_launch_owner()
+
+        assert sample_count == 2
+        assert app_state.to_dict()["running"] is False
+        task = app_state.task_snapshot()
+        assert task["present"] is False
+        assert task["owner_id"] is None
+        assert app_state.runtime_owner_id() is None
+
+    @pytest.mark.asyncio
+    async def test_start_setup_exception_releases_unattached_owner(
+        self,
+        monkeypatch,
+    ):
+        import server.app as app_module
+        import server.routes.control as control
+        from server.state import app_state
+
+        app_state.stop_running()
+        monkeypatch.setattr(
+            control,
+            "_require_initialized_epoch",
+            lambda _operation: {},
+        )
+
+        async def reserve_owner():
+            owner_id = app_state.begin_runtime_owner()
+            assert owner_id is not None
+            return {
+                "acquired": True,
+                "reason": "acquired",
+                "owner_id": owner_id,
+                "barrier": {"allowed": True, "fence_digest": "a" * 64},
+            }
+
+        monkeypatch.setattr(
+            control,
+            "_reserve_runtime_launch_owner",
+            reserve_owner,
+        )
+        monkeypatch.setattr(
+            app_module.web_ui._broadcaster,
+            "clear",
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("broadcaster clear failed")
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="broadcaster clear failed"):
+            await control._start_evolution_transaction()
+
+        assert app_state.to_dict()["running"] is False
+        assert app_state.runtime_owner_id() is None
+        assert app_state.task_snapshot()["present"] is False

@@ -15,6 +15,14 @@ import {
   epochStreamAuthorityKey,
 } from "../node_modules/.tmp/sse-tests/lib/epochStreamAuthority.js";
 import {
+  controlPipelineBlocked,
+  controlPipelineIssues,
+  controlPipelineRouteAllowed,
+  controlLaunchBoundaryAllowed,
+  controlSchedulerOwnsPrepareBoundary,
+  controlStartBlocked,
+} from "../node_modules/.tmp/sse-tests/api/control.js";
+import {
   controlTaskActive,
   controlTaskStopping,
 } from "../node_modules/.tmp/sse-tests/lib/controlRuntimeState.js";
@@ -91,6 +99,297 @@ test("unfinished control task retains ownership through cancel and shutdown requ
   assert.equal(controlTaskStopping({ ...fixture, shutdown_requested: true }), true);
   assert.equal(controlTaskActive({ ...fixture, done: true }), false);
   assert.equal(controlTaskActive({ ...fixture, present: false }), false);
+});
+
+test("control actions and route presentation fail closed on pipeline recovery", () => {
+  const status = {
+    epoch_initialized: true,
+    running: false,
+    operator_action: null,
+    active_generation: { next_v: 144 },
+    post_publication_handoff: { status: "none" },
+  };
+  const pipeline = {
+    exists: true,
+    stage: "reviewed",
+    route: { next_tool: "run_critic" },
+    recovery: { recoverable: false, issues: ["repo_baseline_head_mismatch"] },
+  };
+  const health = {
+    running: false,
+    overall: "stopped",
+    task: { present: false, done: null, shutdown_requested: false },
+    pipeline,
+  };
+
+  assert.equal(controlPipelineBlocked(pipeline), true);
+  assert.equal(controlPipelineRouteAllowed(pipeline), false);
+  assert.equal(controlStartBlocked(status, health), true);
+  assert.deepEqual(controlPipelineIssues(pipeline), ["repo_baseline_head_mismatch"]);
+  assert.equal(
+    controlStartBlocked({ ...status, active_generation: null, operator_action: "run_first_strict_official_certification" }, {
+      ...health,
+      pipeline: { exists: false, stage: null },
+    }),
+    true,
+  );
+});
+
+test("healthy checkpoint-free runtime projects the outer scheduler prepare boundary", () => {
+  const status = {
+    epoch_initialized: true,
+    running: true,
+    current_v: 143,
+    next_v: 144,
+    operator_action: null,
+    active_generation: null,
+    post_publication_handoff: { status: "none" },
+  };
+  const health = {
+    running: true,
+    overall: "healthy",
+    task: { present: true, done: false, shutdown_requested: false },
+    pipeline: {
+      exists: false,
+      stage: null,
+      blocked: false,
+      scheduler_boundary: {
+        authority: "outer_scheduler",
+        state: "ready_to_prepare",
+        provider_action: "end_stream",
+        scheduler_action: "prepare_generation",
+        next_v: 144,
+        source_v: null,
+      },
+    },
+  };
+
+  assert.equal(controlSchedulerOwnsPrepareBoundary(status, health), true);
+  assert.equal(
+    controlSchedulerOwnsPrepareBoundary(status, {
+      ...health,
+      pipeline: { ...health.pipeline, blocked: true },
+    }),
+    false,
+  );
+  assert.equal(
+    controlSchedulerOwnsPrepareBoundary({
+      ...status,
+      post_publication_handoff: { status: "pending" },
+    }, health),
+    false,
+  );
+  assert.equal(
+    controlSchedulerOwnsPrepareBoundary(status, {
+      ...health,
+      pipeline: { ...health.pipeline, scheduler_boundary: undefined },
+    }),
+    false,
+  );
+  assert.equal(
+    controlSchedulerOwnsPrepareBoundary(status, {
+      ...health,
+      pipeline: {
+        ...health.pipeline,
+        scheduler_boundary: { ...health.pipeline.scheduler_boundary, source_v: 143 },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    controlSchedulerOwnsPrepareBoundary(status, {
+      ...health,
+      pipeline: {
+        ...health.pipeline,
+        scheduler_boundary: { ...health.pipeline.scheduler_boundary, source_v: undefined },
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    controlSchedulerOwnsPrepareBoundary(status, {
+      ...health,
+      pipeline: {
+        ...health.pipeline,
+        scheduler_boundary: { ...health.pipeline.scheduler_boundary, next_v: 145 },
+      },
+    }),
+    false,
+  );
+});
+
+test("Start permission mirrors exact backend launch boundaries", () => {
+  const stoppedTask = {
+    present: false,
+    done: null,
+    cancelled: null,
+    shutdown_requested: false,
+  };
+  const schedulerStatus = {
+    epoch_initialized: true,
+    running: false,
+    next_v: 144,
+    operator_action: null,
+    active_generation: null,
+    post_publication_handoff: { status: "none" },
+  };
+  const schedulerHealth = {
+    running: false,
+    overall: "stopped",
+    task: stoppedTask,
+    pipeline: {
+      exists: false,
+      stage: null,
+      authority: "strict_epoch_projection",
+      blocked: false,
+      route: null,
+      scheduler_boundary: {
+        authority: "outer_scheduler",
+        state: "ready_to_prepare",
+        provider_action: "end_stream",
+        scheduler_action: "prepare_generation",
+        next_v: 144,
+        source_v: null,
+      },
+    },
+  };
+
+  assert.equal(controlLaunchBoundaryAllowed(schedulerStatus, schedulerHealth), true);
+  assert.equal(controlStartBlocked(schedulerStatus, schedulerHealth), false);
+  for (const pipeline of [
+    { ...schedulerHealth.pipeline, scheduler_boundary: undefined },
+    {
+      ...schedulerHealth.pipeline,
+      scheduler_boundary: {
+        ...schedulerHealth.pipeline.scheduler_boundary,
+        next_v: 145,
+      },
+    },
+    {
+      ...schedulerHealth.pipeline,
+      scheduler_boundary: {
+        ...schedulerHealth.pipeline.scheduler_boundary,
+        source_v: 143,
+      },
+    },
+  ]) {
+    assert.equal(
+      controlStartBlocked(schedulerStatus, { ...schedulerHealth, pipeline }),
+      true,
+    );
+  }
+
+  const active = {
+    next_v: 144,
+    source_v: 143,
+    stage: "reviewed",
+    run_id: "144#1",
+    workflow_run_id: "generation:144:workflow-v1",
+    checkpoint_revision: 8,
+    attempt: { generation: 1, audit: 0, precommit: 0 },
+  };
+  const activeRoute = {
+    stage: "reviewed",
+    next_v: 144,
+    source_v: 143,
+    parent2_v: null,
+    next_tool: "run_critic",
+    allowed_tools: ["run_critic"],
+    intent: "gate",
+    directive: "Call run_critic",
+  };
+  const activeStatus = {
+    ...schedulerStatus,
+    active_generation: active,
+  };
+  const activeHealth = {
+    ...schedulerHealth,
+    pipeline: {
+      exists: true,
+      stage: active.stage,
+      authority: "strict_epoch_projection",
+      blocked: false,
+      next_v: active.next_v,
+      source_v: active.source_v,
+      run_id: active.run_id,
+      workflow_run_id: active.workflow_run_id,
+      checkpoint_revision: active.checkpoint_revision,
+      route: activeRoute,
+    },
+  };
+  assert.equal(controlStartBlocked(activeStatus, activeHealth), false);
+  assert.equal(
+    controlStartBlocked(activeStatus, {
+      ...activeHealth,
+      pipeline: { ...activeHealth.pipeline, checkpoint_revision: 7 },
+    }),
+    true,
+  );
+
+  const handoff = {
+    schema_version: 1,
+    authority: "post_publication_handoff_journal",
+    status: "pending",
+    state: "pending",
+    blocked: false,
+    version: 144,
+    source_v: 143,
+    workflow_run_id: "generation:144:workflow-v1",
+    identity_digest: "a".repeat(64),
+    publication_id: "b".repeat(64),
+    record_revision: 2,
+    owner_scope: "none",
+    next_tool: "run_archivist",
+    issues: [],
+    projection_digest: "c".repeat(64),
+  };
+  const handoffStatus = {
+    ...schedulerStatus,
+    post_publication_handoff: handoff,
+  };
+  const handoffHealth = {
+    ...schedulerHealth,
+    pipeline: {
+      exists: true,
+      stage: "post_publication_handoff",
+      authority: "post_publication_handoff_journal",
+      blocked: false,
+      handoff_identity_digest: handoff.identity_digest,
+      handoff_projection_digest: handoff.projection_digest,
+      handoff_owner_scope: "none",
+      route: {
+        stage: "post_publication_handoff",
+        next_v: 144,
+        source_v: 143,
+        parent2_v: null,
+        next_tool: "run_archivist",
+        allowed_tools: ["run_archivist"],
+        intent: "post_publication_handoff",
+        directive: "Resume Archivist",
+      },
+    },
+  };
+  assert.equal(controlStartBlocked(handoffStatus, handoffHealth), false);
+  assert.equal(
+    controlStartBlocked({
+      ...handoffStatus,
+      post_publication_handoff: {
+        ...handoff,
+        status: "running",
+        state: "running",
+        owner_scope: "foreign_process",
+      },
+    }, {
+      ...handoffHealth,
+      pipeline: {
+        ...handoffHealth.pipeline,
+        blocked: true,
+        handoff_owner_scope: "foreign_process",
+        route: null,
+      },
+    }),
+    true,
+  );
 });
 
 class FakeEventSource {

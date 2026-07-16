@@ -1329,12 +1329,44 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
 
     checkpoint_path = Path(infra.PIPELINE_STATE_FILE)
     checkpoint_read_error = None
+    checkpoint_path_existed_before = os.path.lexists(checkpoint_path)
     try:
         checkpoint = infra.read_pipeline_checkpoint()
     except Exception as exc:
         checkpoint = None
         checkpoint_read_error = f"{type(exc).__name__}: {exc}"
-    checkpoint_claimed = os.path.lexists(checkpoint_path) or checkpoint is not None
+    checkpoint_path_exists_after = os.path.lexists(checkpoint_path)
+    checkpoint_disappeared_during_read = bool(
+        checkpoint_path_existed_before and not checkpoint_path_exists_after
+    )
+    checkpoint_claimed = bool(
+        checkpoint_path_existed_before
+        or checkpoint_path_exists_after
+        or checkpoint is not None
+    )
+    if checkpoint_disappeared_during_read:
+        projection["ignored_checkpoint"] = {
+            "next_v": (
+                checkpoint.get("next_v")
+                if isinstance(checkpoint, dict)
+                else None
+            ),
+            "source_v": (
+                checkpoint.get("source_v")
+                if isinstance(checkpoint, dict)
+                else None
+            ),
+            "stage": (
+                checkpoint.get("stage")
+                if isinstance(checkpoint, dict)
+                else None
+            ),
+            "reason": "checkpoint_unreadable_or_not_object",
+            "issues": ["checkpoint_disappeared_during_read"],
+        }
+        projection["operator_action"] = "archive_incompatible_checkpoint"
+        projection["operator_command"] = None
+        return projection
     if checkpoint_claimed and (not isinstance(checkpoint, dict) or not checkpoint):
         unreadable_reason: IgnoredCheckpointReason = (
             "checkpoint_unreadable_or_not_object"
@@ -1354,7 +1386,35 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
     if not isinstance(checkpoint, dict) or not checkpoint:
         return projection
     stage = checkpoint.get("stage")
-    if stage in (None, "archived") or checkpoint.get("next_v") is None:
+    # A claimed checkpoint path is never equivalent to the scheduler's clean
+    # no-checkpoint boundary.  In particular, a crash can leave a terminal
+    # ``archived``/``abandoned`` row (or a partially-written object with no
+    # stage/target) after the publication handoff was created.  Treating that
+    # file as absent lets the Web launch barrier advertise
+    # ``ready_to_prepare`` while the in-core checkpoint reader correctly stops
+    # on the malformed identity.  Require explicit operator cleanup instead.
+    if (
+        stage in (None, "archived", "abandoned")
+        or checkpoint.get("next_v") is None
+    ):
+        terminal_issues = []
+        if stage in {"archived", "abandoned"}:
+            terminal_issues.append(
+                f"terminal_checkpoint_requires_cleanup:{stage}"
+            )
+        if stage is None:
+            terminal_issues.append("checkpoint_stage_missing")
+        if checkpoint.get("next_v") is None:
+            terminal_issues.append("checkpoint_next_v_missing")
+        projection["ignored_checkpoint"] = {
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "stage": stage,
+            "reason": "checkpoint_not_bound_to_strict_epoch",
+            "issues": terminal_issues,
+        }
+        projection["operator_action"] = "archive_incompatible_checkpoint"
+        projection["operator_command"] = None
         return projection
 
     issues = checkpoint_epoch_errors(checkpoint)

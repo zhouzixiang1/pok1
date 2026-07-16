@@ -88,8 +88,8 @@ unfiltered Git history, evaluation-contract scope, and Master stream recovery.
 | P2 | rendered prompts, history injection, role read/write/tool/model scope | implemented at `baadaa821d979b4b651260852ebcc48ae0a6aba8`; per-invocation evidence/log/UI contract green | 19-role semantic-producer, provenance, poison/render/root/path/symlink/fd-walk/TOCTOU/hook/budget and accepted-effect/log tests |
 | P3 | Master stream/effect recovery and bounded retries | implemented; frozen phase, durable binding recovery, child tombstone and real/replay dispatch fence green | timeout/lease/replay/provider-termination/partial-packet/final-projection/abandon tests |
 | P4 | quality gates, capability probes, durable post-publication handoff, backend/frontend and N/10 projection | source implementation and frontend/backend/actual-log parity green; live publication observation pending | journal/effect reproof, AST/runtime causality/API/TS/component tests |
-| P5 | full verification and merge to `origin/main` | implementation and delivery record merged/synchronized through `1abd2108f8afef5f6478584969ccce472e730c5f`; final runtime-record commit pending | full suites, Git and remote identities |
-| P6 | runtime recovery, v143/v144 publication and ten generations | workflows v20/v21 canonically abandoned; identity rotation complete; no active checkpoint/candidate; fresh v22 is next | tags, certificates, immutable cycles and live observation ledger |
+| P5 | full verification and merge to `origin/main` | prior delivery synchronized through `5af87da02eb0328222c954d4c04c9e9cec5e6e68`; pre-red-team repair gates are supporting evidence, post-fix frozen-tree rerun/commit/merge/runtime sync pending | full suites, Git and remote identities |
+| P6 | runtime recovery, v143/v144 publication and ten generations | workflow-v22 canonically abandoned; stopped runtime is clean with no active checkpoint/candidate; fresh workflow-v23 follows the pending repair delivery | tags, certificates, immutable cycles and live observation ledger |
 
 ### v18 failure evidence and repaired invariant
 
@@ -1036,3 +1036,238 @@ tests pass, the exact task commit reaches `origin/main`, and the runtime is at
 a stopped safe point. A later contract-changing repair must repeat that gate;
 any future v143 checkpoint is resumed or terminally abandoned only through
 canonical recovery logic, never by deleting files.
+
+## 2026-07-16 — provider-terminal proof and one-generation driver repair
+
+### Runtime evidence before repair
+
+The stopped runtime is clean on `main` at
+`5af87da02eb0328222c954d4c04c9e9cec5e6e68`, with no web, Orchestrator or
+rating-daemon process, no live checkpoint, no abandon claim, no v143 candidate,
+current_v=142, next_v=143 and an empty strict pool. Workflow-v22 durably
+accepted only its compute-memory and mechanism proposal slots; the
+counterfactual slot exhausted before any ballot, selected plan, Worker, quality,
+review, Critic, native precommit or official action existed. It was abandoned
+only through the canonical transaction:
+
+- workflow: `generation:143:workflow-v22`;
+- abandon ledger receipt:
+  `406bd93ee9391bbb7a5314a5f1e20c8f86619280c98f2ee573ddc5687f159c07`;
+- transaction:
+  `fd99b1ad95aa3b11eae7b1235600a40dcaab1cc1a6d39d83c8c0992d2179f489`;
+- finalize receipt:
+  `3161b9ae6efb9f553a2579c2d4c747d4188e27c3c2f918494a64941dcecf14da`.
+
+### Root causes
+
+The continuous runner could observe a checkpoint disappearing after an MCP
+call and infer terminal progress without binding the exact canonical abandon
+result. The checkpoint reader also collapsed a genuinely absent path, an
+invalid/unreadable file, and a file that vanished during the read into the same
+`None` projection. SDK streams with multiple pending tool uses did not require
+an exact result-to-use identity before accepting a terminal transition. Finally,
+`--one-gen` meant one provider session in practice: deterministic stage
+handoffs could return to the CLI before the same workflow reached a real
+terminal boundary, while several continuous call sites implemented subtly
+different recovery rules.
+
+The status plane had a separate semantic split: control health still exposed a
+route after recovery diagnostics returned `recoverable=false`, and both the
+browser Start control and `POST /api/control/start` could launch a task that the
+Orchestrator would immediately stop. The no-checkpoint state was rendered as
+“no next tool” even while the outer scheduler owned `prepare_generation`, and
+old checkpoint details survived a failed poll. A post-publication cleanup
+timeout also logged “continuing evolution” although every caller correctly
+stopped before successor scheduling.
+
+### Implemented contract
+
+The current authorized owner tool now returns one canonical abandon result,
+flattened or nested, containing `workflow_run_id` and the exact checkpoint,
+transaction, abandon-ledger and finalize-receipt identities. Terminal
+validation reopens those authorities at the current heads and verifies the
+complete outer Worker and strict-authority journal histories, including
+continuous sequence, schema, JSON, per-row payload digest, unique last
+`abandoned` event and zero live effects. The Orchestrator preserves
+absent/invalid/read-race checkpoint states, binds tool results to pending
+tool-use ids, rejects duplicate or ambiguous terminal proof, and shares one
+deterministic-recovery classifier across all continuous and one-generation
+paths.
+
+No checkpoint is now an explicit provider `end_stream` boundary; only the outer
+scheduler owns non-MCP `prepare_generation`. An exact `selected` route owns
+first materialization and an exact `preparing` route owns idempotent recovery
+through `prepare_next_gen`; `timed_out` routes to canonical abandon while
+`infra_timed_out` routes to unchanged-candidate `run_precommit_eval`. A
+pending/running/blocked post-publication handoff also requires provider
+`end_stream`; outer deterministic recovery alone owns `run_archivist`.
+`--one-gen` binds one workflow and continues across fresh streams and
+deterministic routes until publication plus verified cleanup, canonical
+abandon, operator park or recovery block. Canonical abandon, operator action,
+recovery failure and accounting failure use distinct sentinels and CLI exits.
+The v143 operator-bootstrap projection is permitted only when full diagnostics
+contain that sole expected issue.
+
+Control health now withholds blocked routes and projects operator actions as a
+distinct boundary. `/start` applies the same live-revalidated barrier before
+stability reset and task ownership. The clean no-checkpoint projection exposes
+only an outer-scheduler action and authoritative target; `source_v` is null
+because source/parent selection belongs to `prepare_generation`. ControlPanel,
+Overview, EvolutionMonitor and PipelineStatus validate that complete projection,
+disable invalid starts, show active recovery issues and clear stale checkpoint
+details. Cleanup timeout telemetry now says that successor scheduling stops.
+
+### Verification state and delivery boundary
+
+Before the final red-team repair, the combined focused
+prompt/recovery/abandon/control/documentation shard was `401 passed` and the
+then-frozen Web verification was `2625 passed, 20 skipped`. The first full
+attempt had exposed one stale text-shape assertion that required literal
+`health.pipeline.*` expressions even though the component content-bound that
+object to `pipeline` before checking all six identity fields; the corrected
+test proved the alias source plus all six consumers. The independent national
+server suite was `31 passed`. Frontend contract tests were `17/17`; ESLint,
+TypeScript, the Vite production build, active Python compilation and
+`git diff --check` all passed.
+
+The final read-only red team then found a route-ownership contradiction:
+provider text admitted only `selected`, production also treated `preparing` as
+recovery, and `timed_out` still appeared restartable. It also found incomplete
+canonical-abandon field/source wording and a PreCompact no-checkpoint projection
+that could hide post-publication handoff authority. The follow-up repair makes
+the selected/preparing/timeout and outer-Archivist ownership explicit in
+prompt, context, tests and memory documents. Because source changed after the
+counts above, those results are supporting evidence only. The post-fix focused
+prompt/context/documentation shard is `58 passed`; the final frozen-tree
+Web/sever/frontend/pycompile/diff/doctor gates are still required before
+delivery.
+
+Official doctor reports `ok=true` on execution profile
+`official-exe-2021-wine9-managed-executor-v7`, profile SHA-256
+`5bf7c8a7a36dff9dd8a7098d95d8509ccc51999c3bf6a88d6accb453ecbdd643`
+and profile digest
+`f16714a0f55bcf87e09f5bd4c2599ebea0f067d5ffb76dffc141babbf0f16fee`.
+The checked-in oracle bytes still exactly match policy:
+
+- raise boundary:
+  `a83a1ec2680577d71ddb985ddba00c5bcda40817ef2fb92c0c41938dccef3756`;
+- terminal settlement:
+  `ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9`.
+
+### Changed-file inventory
+
+- control/recovery production: `web/core/orchestrator.py`,
+  `web/core/tool_bot_management.py`, `web/core/tool_runtime_guard.py`,
+  `web/server/routes/control.py`;
+- prompt/context production: `web/core/orchestrator_context.py`,
+  `web/core/prompts/orchestrator.md`;
+- frontend production: `web/frontend/src/api/control.ts`,
+  `web/frontend/src/components/evolution/PipelineStatus.tsx`,
+  `web/frontend/src/pages/ControlPanel.tsx`,
+  `web/frontend/src/pages/EvolutionMonitor.tsx`,
+  `web/frontend/src/pages/Overview.tsx`;
+- regression evidence: `web/tests/test_abandon_helper.py`,
+  `web/tests/test_frontend_contract_closure.py`,
+  `web/tests/test_orchestrator_llm_availability.py`,
+  `web/tests/test_orchestrator_one_gen_driver.py`,
+  `web/tests/test_orchestrator_prompt_contract.py`,
+  `web/tests/test_orchestrator_timeout_extension.py`,
+  `web/tests/test_routes_control.py`,
+  `web/tests/test_runtime_governance_refactor.py`,
+  `web/frontend/tests/sseController.test.mjs`;
+- active contracts/memory: `AGENTS.md`, `CLAUDE.md`, `web/CLAUDE.md`,
+  `docs/evolution-continuous-delivery-runbook.md`, this ledger,
+  `docs/national-tcp-evolution-alignment-matrix.md`, and
+  `docs/national-tcp-evolution-continuation-prompt.md`.
+
+The final read-only review found and adjudicated the explicit prepare-route P1
+described above; post-fix review and frozen-tree gates are pending. P5 remains
+open for those gates, the reviewed commit, remote merge/push and stopped-runtime
+synchronization. No repair commit has yet been created or merged, the runtime
+has not been synchronized past `5af87da0`, evaluation identity has not been
+rotated for this contract change, and workflow-v23 has not been prepared.
+Stability remains 0/10.
+
+## 2026-07-16 — second recovery/launch red-team closure
+
+The preceding “final review” paragraph is historical and was superseded by a
+second independent pass. That pass found that timeout overlays were still
+partly treated as dead checkpoints, provider terminal proof did not yet lock
+ToolUse reuse/owner pairing, infra retry did not completely re-prove candidate
+and gate identity, the real native precommit loop did not consume its shutdown
+signal, and startup consumed a one-time LLM resume acknowledgement before
+proving checkpoint recovery. It also found that continuous CLI recovery blocks
+could return zero, terminal-looking or disappearing checkpoint bytes could be
+projected as clean absence, live foreign Archivist ownership was not separated
+from resumable pending work, and an unowned/failed Web lifespan could overwrite
+live runtime/UI/shutdown-manager state.
+
+The repaired contract makes `timed_out` and `infra_timed_out` active leases.
+Plain timeout is limited to the exact eight disposable stages and both timeout
+writes use workflow/revision/stage/version/source CAS; later gates retain their
+original stage. Timed-out work can only complete schema-2 canonical abandon.
+Infra retry remains over `critic_checked`, and before removing the overlay it
+proves the full live artifact, current quality/review/critic version/source, and
+quality fingerprint = repair baseline = live bytes. Selected/preparing writes
+CAS before bytes and before prepared publication; an unbound target preimage is
+system-abandoned/quarantined rather than adopted or deleted.
+
+Provider results now retain a stream-wide set of ToolUse ids and bind each
+result to one pending owner. The accepted SDK forms are an explicit tool id,
+parent id, or the bounded sole-pending association. Missing/reused/unknown,
+parallel owner swaps, read-only-owner terminal proof, EOF/Result with pending
+work, and ambiguous nested proof are recovery blocks. Startup proves canonical
+recovery before consuming the one-time resume acknowledgement or clearing a
+durable pause. Continuous and one-generation runners return typed abandon,
+operator, recovery and accounting outcomes, including the no-successor rule
+when cost accounting is invalid.
+
+Native precommit now carries a monotonic attempt-local cancellation Event into
+`national_native.run_native_precommit`. It checks before every opponent/repeat
+and after each complete 70-hand match/journal, so cancelled late work cannot be
+admitted or launch another sample. Reset rotates only a cancelled token. The
+first-strict execution scope is frozen in checkpoint audit context and reused
+after infra timeout or process cancellation; a real SQLite journal test proves
+the completed match is recovered once rather than repeated under a changed
+revision/attempt identity.
+
+Epoch/control launch observes checkpoint existence before/read/after and treats
+unreadable, disappearing, archived/abandoned, missing-stage and missing-target
+bytes as ignored/operator recovery. Handoff projection exports only bounded
+owner scope. Pending/dead-owner work may start one deterministic recovery
+runtime; live foreign ownership blocks a second. Browser Start mirrors exactly
+the content-bound active route, post-publication route, or clean scheduler
+boundary. Owner reservation double-samples one fence digest. AppState and the
+process-wide LLM shutdown manager both use exact owner fencing, and denial or
+late cleanup from an unowned/old lifespan cannot change a live owner's running,
+UI or manager state.
+
+Frozen staged-delivery verification after the shutdown-manager CAS and prompt/
+memory update is Web `2717 passed, 20 skipped`, sever `31 passed`, frontend
+`18/18`, ESLint and TypeScript/Vite production build. The combined high-risk
+recovery/launch/precommit shard is `435 passed`; the prompt/documentation shard
+is `55 passed`. Every Git-tracked active Python file compiled, `git diff
+--check` passed, and official doctor returned `ok=true` with profile
+`official-exe-2021-wine9-managed-executor-v7`, profile SHA-256
+`5bf7c8a7a36dff9dd8a7098d95d8509ccc51999c3bf6a88d6accb453ecbdd643`
+and digest
+`f16714a0f55bcf87e09f5bd4c2599ebea0f067d5ffb76dffc141babbf0f16fee`.
+
+The stopped runtime remains clean at `5af87da0` with no v143 candidate or live
+checkpoint. The repository-owned `first_strict_control_v1` was read directly
+there: artifact
+`2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`,
+signed-ledger consumption valid, unused, and `0/1`. Thus no v143 certification
+dependency is missing. Its operator-only bootstrap will run official-full-v5
+as five self-play plus three system-control 70-hand rounds after native
+precommit parks the exact checkpoint; v144 then uses normal v143 opposition.
+
+Additional production files in this closure are `epoch_authority.py`,
+`pipeline_state.py`, `evolution_infra.py`, `tool_gates.py`, `tool_eval.py`,
+`national_native.py`, `post_publication_handoff.py`, `llm_query.py`,
+`server/app.py`, `server/state.py`, and `server/routes/_helpers.py`, plus their
+focused backend/frontend tests. The `fc7d62d3` decision remains unchanged:
+semantically superseded, history-only, and not cherry-picked. Delivery is now
+staged: finish frozen-tree gates, fast-forward `origin/main`, synchronize the
+stopped runtime, then use live checkpoint/daemon/API/UI/log evidence for the
+next audit. No runtime state is copied or manually cleared.

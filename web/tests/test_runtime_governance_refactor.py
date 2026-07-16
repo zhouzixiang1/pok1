@@ -901,6 +901,10 @@ def test_pipeline_route_guard_blocks_mutating_tools_without_checkpoint(monkeypat
         assert payload["reason"] == "no_active_checkpoint"
         assert payload["next_tool"] == "prepare_generation"
         assert payload["allowed_tools"] == ["prepare_generation"]
+        assert payload["mcp_allowed_tools"] == []
+        assert payload["provider_action"] == "end_stream"
+        assert payload["scheduler_owned"] is True
+        assert "not an MCP tool" in payload["directive"]
 
 
 def test_pipeline_route_guard_no_checkpoint_keeps_scheduler_and_read_only_exceptions(monkeypatch):
@@ -925,6 +929,7 @@ def test_pipeline_route_guard_allows_only_tagged_post_commit_archivist(
     monkeypatch,
 ):
     import evolution_infra
+    import post_publication_handoff
     import tool_runtime_guard
 
     monkeypatch.setattr(tool_runtime_guard, "PROJECT_ROOT", tmp_path)
@@ -939,6 +944,19 @@ def test_pipeline_route_guard_allows_only_tagged_post_commit_archivist(
             {"receipt_digest": "r" * 64},
         ),
     )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {
+            "status": "pending",
+            "version": 300,
+            "source_v": 299,
+            "identity_digest": "i" * 64,
+            "publication_id": "p" * 64,
+            "state": "pending",
+            "owner_scope": "none",
+        },
+    )
 
     ok, payload = tool_runtime_guard._pipeline_route_guard(
         tool_name="run_archivist",
@@ -947,15 +965,107 @@ def test_pipeline_route_guard_allows_only_tagged_post_commit_archivist(
         source_v=299,
     )
 
+    assert ok is False
+    assert payload["reason"] == "no_active_checkpoint"
+
+    checkpoint = {
+        "stage": "archived",
+        "next_v": 300,
+        "source_v": 299,
+        "post_publication_handoff_identity_digest": "i" * 64,
+        "post_publication_id": "p" * 64,
+    }
+    with tool_runtime_guard.system_deterministic_route_authority(
+        "run_archivist",
+        checkpoint,
+    ):
+        ok, payload = tool_runtime_guard._pipeline_route_guard(
+            tool_name="run_archivist",
+            args={"version": 300, "source_v": 299},
+            candidate_v=300,
+            source_v=299,
+        )
+
     assert ok is True
     assert payload == {
         "post_commit_archivist": True,
+        "system_deterministic_route": True,
         "candidate_v": 300,
         "source_v": 299,
         "receipt_digest": "r" * 64,
     }
 
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {
+            "status": "pending",
+            "version": 300,
+            "source_v": 299,
+            "identity_digest": "i" * 64,
+            "publication_id": "p" * 64,
+            "state": "running",
+            "owner_scope": "foreign_process",
+        },
+    )
+    with tool_runtime_guard.system_deterministic_route_authority(
+        "run_archivist",
+        checkpoint,
+    ):
+        ok, payload = tool_runtime_guard._pipeline_route_guard(
+            tool_name="run_archivist",
+            args={"version": 300, "source_v": 299},
+            candidate_v=300,
+            source_v=299,
+        )
+    assert ok is False
+    assert payload["reason"] == "no_active_checkpoint"
+
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {
+            "status": "pending",
+            "version": 300,
+            "source_v": 299,
+            "identity_digest": "i" * 64,
+            "publication_id": "p" * 64,
+            "state": "pending",
+            "owner_scope": "none",
+        },
+    )
     pending["value"] = False
+    with tool_runtime_guard.system_deterministic_route_authority(
+        "run_archivist",
+        checkpoint,
+    ):
+        ok, payload = tool_runtime_guard._pipeline_route_guard(
+            tool_name="run_archivist",
+            args={"version": 300, "source_v": 299},
+            candidate_v=300,
+            source_v=299,
+        )
+    assert ok is False
+    assert payload["reason"] == "no_active_checkpoint"
+
+    pending["value"] = True
+    mismatched = {
+        **checkpoint,
+        "post_publication_handoff_identity_digest": "x" * 64,
+    }
+    with tool_runtime_guard.system_deterministic_route_authority(
+        "run_archivist",
+        mismatched,
+    ):
+        ok, payload = tool_runtime_guard._pipeline_route_guard(
+            tool_name="run_archivist",
+            args={"version": 300, "source_v": 299},
+            candidate_v=300,
+            source_v=299,
+        )
+    assert ok is False
+    assert payload["reason"] == "no_active_checkpoint"
+
     ok, payload = tool_runtime_guard._pipeline_route_guard(
         tool_name="run_archivist",
         args={"version": 300, "source_v": 299},
@@ -1027,6 +1137,9 @@ def test_runtime_guard_blocks_random_pipeline_tool_without_checkpoint(monkeypatc
     assert payload["reason"] == "no_active_checkpoint"
     assert payload["next_tool"] == "prepare_generation"
     assert payload["allowed_tools"] == ["prepare_generation"]
+    assert payload["mcp_allowed_tools"] == []
+    assert payload["provider_action"] == "end_stream"
+    assert payload["scheduler_owned"] is True
 
 
 def test_operator_bootstrap_stage_blocks_commit_without_valid_certificate(monkeypatch):
@@ -2187,7 +2300,7 @@ def test_evaluation_contract_hash_ignores_non_contract_national_docs(tmp_path, m
     assert after_server_change != before
 
 
-def test_runtime_guard_allows_explicit_abandon_after_contract_head_drift(monkeypatch):
+def test_runtime_guard_allows_canonical_timeout_abandon_after_contract_head_drift(monkeypatch):
     import tool_runtime_guard
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
@@ -2202,11 +2315,11 @@ def test_runtime_guard_allows_explicit_abandon_after_contract_head_drift(monkeyp
     monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
         300,
         299,
-        "direction_audited",
+        "timed_out",
         repo_baseline={
             "head": "old123",
             "branch": "main...origin/main",
-            "captured_stage": "direction_audited",
+            "captured_stage": "timed_out",
         },
     ))
 
@@ -2218,6 +2331,31 @@ def test_runtime_guard_allows_explicit_abandon_after_contract_head_drift(monkeyp
     assert ok is True
     assert payload["guard"] == "ok"
     assert payload["candidate_v"] == 300
+
+
+def test_pipeline_route_guard_blocks_provider_abandon_outside_canonical_route(
+    monkeypatch,
+):
+    import tool_runtime_guard
+
+    checkpoint = _strict_checkpoint(300, 299, "selected")
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+
+    ok, payload = tool_runtime_guard._pipeline_route_guard(
+        tool_name="abandon_generation",
+        args={},
+        candidate_v=300,
+        source_v=299,
+    )
+
+    assert ok is False
+    assert payload["reason"] == "wrong_pipeline_stage"
+    assert payload["next_tool"] == "prepare_next_gen"
+    assert payload["allowed_tools"] == ["prepare_next_gen"]
 
 
 def test_runtime_guard_abandon_still_blocks_unrelated_dirty_entries(monkeypatch):
@@ -2776,6 +2914,60 @@ def test_write_pipeline_checkpoint_persists_repo_baseline(tmp_path, monkeypatch)
     assert state["repo_baseline"]["head"] == "abc123"
     assert state["repo_baseline"]["branch"] == "main...origin/main"
     assert state["repo_baseline"]["captured_stage"] == "prepared"
+
+
+@pytest.mark.parametrize(
+    ("predecessor", "timeout_stage"),
+    [
+        ("selected", "timed_out"),
+        ("critic_checked", "infra_timed_out"),
+    ],
+)
+def test_timeout_checkpoint_is_an_active_lease_that_cannot_be_overwritten(
+    tmp_path,
+    monkeypatch,
+    predecessor,
+    timeout_stage,
+):
+    import evolution_infra
+
+    state_file = tmp_path / "pipeline_state.json"
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", state_file)
+
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        predecessor,
+    ) is True
+    predecessor_checkpoint = evolution_infra.read_pipeline_checkpoint()
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        timeout_stage,
+        expected_checkpoint_revision=predecessor_checkpoint[
+            "checkpoint_revision"
+        ],
+        expected_checkpoint_stage=predecessor,
+        expected_workflow_run_id=predecessor_checkpoint["workflow_run_id"],
+    ) is True
+    timeout_checkpoint = evolution_infra.read_pipeline_checkpoint()
+    assert timeout_checkpoint["stage"] == timeout_stage
+    before = state_file.read_bytes()
+
+    # Neither a same-label restart nor a different generation identity may
+    # consume the lease.  Only the timeout stage's canonical route can do so.
+    assert evolution_infra.write_pipeline_checkpoint(
+        300,
+        299,
+        "selected",
+    ) is False
+    assert state_file.read_bytes() == before
+    assert evolution_infra.write_pipeline_checkpoint(
+        301,
+        300,
+        "selected",
+    ) is False
+    assert state_file.read_bytes() == before
 
 
 def test_write_pipeline_checkpoint_refreshes_baseline_after_planning_handoff(tmp_path, monkeypatch):
@@ -4045,145 +4237,175 @@ def test_checkpoint_recovery_diagnostics_tracks_rework_target_dirs(tmp_path):
         assert diag["target"]["exists"] is True
 
 
-def test_startup_recovery_blocks_unrecoverable_checkpoint(monkeypatch):
-    import sys
-    from types import SimpleNamespace
+def _install_startup_recovery_checkpoint(tmp_path, monkeypatch, payload):
+    import evolution_core
+    import evolution_infra
+    import orchestrator
 
-    import orchestrator_session
+    checkpoint_path = tmp_path / "pipeline_state.json"
+    raw = payload if isinstance(payload, str) else json.dumps(payload, sort_keys=True)
+    checkpoint_path.write_text(raw, encoding="utf-8")
+    monkeypatch.setattr(evolution_infra, "PIPELINE_STATE_FILE", checkpoint_path)
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", checkpoint_path)
+
+    def _unexpected_clear(*_args, **_kwargs):
+        raise AssertionError("startup recovery must preserve checkpoint authority")
+
+    monkeypatch.setattr(evolution_infra, "clear_pipeline_checkpoint", _unexpected_clear)
+    monkeypatch.setattr(evolution_core, "clear_pipeline_checkpoint", _unexpected_clear)
+    monkeypatch.setattr(orchestrator, "_clear_orchestrator_session", _unexpected_clear)
+    monkeypatch.setattr(orchestrator, "log_system_event", lambda *_args, **_kwargs: None)
+    return checkpoint_path, raw
+
+
+def test_startup_recovery_blocks_unrecoverable_checkpoint(tmp_path, monkeypatch):
+    import orchestrator
     import pipeline_recovery
 
     checkpoint = _strict_checkpoint(
         257, 197, "workers_done", repo_baseline={"branch": "old", "head": "old123"}
     )
-    cleared = []
-    events = []
-    fake_evolution_core = SimpleNamespace(
-        read_pipeline_checkpoint=lambda: checkpoint,
-        clear_pipeline_checkpoint=lambda: None,
-    )
-    fake_system_log = SimpleNamespace(
-        log_system_event=lambda *args, **kwargs: events.append((args, kwargs))
-    )
-
-    monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
-    monkeypatch.setitem(sys.modules, "system_log", fake_system_log)
-    monkeypatch.setattr(orchestrator_session, "_load_orchestrator_session", lambda: "session-abc")
-    monkeypatch.setattr(
-        orchestrator_session,
-        "_clear_orchestrator_session",
-        lambda reason="completed_or_reset": cleared.append(reason),
+    checkpoint_path, original = _install_startup_recovery_checkpoint(
+        tmp_path, monkeypatch, checkpoint
     )
     monkeypatch.setattr(
         pipeline_recovery,
         "checkpoint_recovery_diagnostics",
-        lambda _checkpoint: {
-            "active": True,
+        lambda observed: {
+            "active": observed == checkpoint,
             "recoverable": False,
             "issues": ["repo_baseline_head_mismatch"],
         },
     )
 
-    result = orchestrator_session._startup_recovery()
+    result = orchestrator._startup_recovery()
 
     assert result["action"] == "blocked"
     assert result["reason"] == "unrecoverable_checkpoint"
-    assert cleared == ["unrecoverable_checkpoint"]
-    assert any(args[0] == "orchestrator.recovery_blocked" for args, _ in events)
+    assert result["checkpoint"] == checkpoint
+    assert checkpoint_path.read_text(encoding="utf-8") == original
 
 
-def test_startup_recovery_resumes_prepared_without_master_plan(monkeypatch):
-    import sys
-    from types import SimpleNamespace
-
-    import evolution_infra
-    import orchestrator_session
+@pytest.mark.parametrize(
+    ("stage", "next_tool"),
+    [
+        ("prepared", "run_direction_audit"),
+        ("quality_failed", "execute_workers"),
+    ],
+)
+def test_startup_recovery_resumes_valid_checkpoint(
+    tmp_path, monkeypatch, stage, next_tool
+):
+    import orchestrator
     import pipeline_recovery
+    import pipeline_state
 
     checkpoint = _strict_checkpoint(
         260,
         254,
-        "prepared",
+        stage,
         master_plan=None,
-        repo_baseline={"branch": "main", "head": "same123"},
-    )
-    cleared = []
-    events = []
-    fake_evolution_core = SimpleNamespace(
-        read_pipeline_checkpoint=lambda: checkpoint,
-        clear_pipeline_checkpoint=lambda: cleared.append("checkpoint"),
-    )
-    fake_system_log = SimpleNamespace(
-        log_system_event=lambda *args, **kwargs: events.append((args, kwargs))
-    )
-
-    monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
-    monkeypatch.setitem(sys.modules, "system_log", fake_system_log)
-    monkeypatch.setattr(orchestrator_session, "_load_orchestrator_session", lambda: None)
-    monkeypatch.setattr(
-        orchestrator_session,
-        "_clear_orchestrator_session",
-        lambda reason="completed_or_reset": cleared.append(reason),
-    )
-    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
-    monkeypatch.setattr(
-        pipeline_recovery,
-        "checkpoint_recovery_diagnostics",
-        lambda _checkpoint: {"active": True, "recoverable": True, "issues": []},
-    )
-
-    result = orchestrator_session._startup_recovery()
-
-    assert result["action"] == "resume"
-    assert result["stage"] == "prepared"
-    assert result["next_v"] == 260
-    assert cleared == []
-    assert any(args[0] == "orchestrator.recovery_decision" for args, _ in events)
-
-
-def test_startup_recovery_resumes_old_quality_failed_checkpoint(monkeypatch):
-    import sys
-    from types import SimpleNamespace
-
-    import evolution_infra
-    import orchestrator_session
-    import pipeline_recovery
-
-    checkpoint = _strict_checkpoint(
-        261,
-        254,
-        "quality_failed",
         timestamp="2000-01-01T00:00:00",
         repo_baseline={"branch": "main", "head": "same123"},
     )
-    cleared = []
-    events = []
-    fake_evolution_core = SimpleNamespace(
-        read_pipeline_checkpoint=lambda: checkpoint,
-        clear_pipeline_checkpoint=lambda: cleared.append("checkpoint"),
+    checkpoint_path, original = _install_startup_recovery_checkpoint(
+        tmp_path, monkeypatch, checkpoint
     )
-    fake_system_log = SimpleNamespace(
-        log_system_event=lambda *args, **kwargs: events.append((args, kwargs))
-    )
-
-    monkeypatch.setitem(sys.modules, "evolution_core", fake_evolution_core)
-    monkeypatch.setitem(sys.modules, "system_log", fake_system_log)
-    monkeypatch.setattr(orchestrator_session, "_load_orchestrator_session", lambda: None)
-    monkeypatch.setattr(
-        orchestrator_session,
-        "_clear_orchestrator_session",
-        lambda reason="completed_or_reset": cleared.append(reason),
-    )
-    monkeypatch.setattr(evolution_infra, "git_has_tag", lambda _v: False)
     monkeypatch.setattr(
         pipeline_recovery,
         "checkpoint_recovery_diagnostics",
-        lambda _checkpoint: {"active": True, "recoverable": True, "issues": []},
+        lambda observed: {
+            "active": observed == checkpoint,
+            "recoverable": True,
+            "issues": [],
+        },
     )
 
-    result = orchestrator_session._startup_recovery()
+    result = orchestrator._startup_recovery()
 
     assert result["action"] == "resume"
-    assert result["stage"] == "quality_failed"
-    assert result["next_v"] == 261
-    assert cleared == []
-    assert any(args[0] == "orchestrator.recovery_decision" for args, _ in events)
+    assert result["checkpoint"] == checkpoint
+    assert result["stage"] == stage
+    assert result["next_v"] == 260
+    assert pipeline_state.route_policy(result["checkpoint"])["next_tool"] == next_tool
+    assert checkpoint_path.read_text(encoding="utf-8") == original
+
+
+def test_startup_recovery_preserves_timed_out_checkpoint_for_abandon_route(
+    tmp_path, monkeypatch
+):
+    import orchestrator
+    import pipeline_recovery
+    import pipeline_state
+
+    checkpoint = _strict_checkpoint(261, 254, "timed_out")
+    checkpoint_path, original = _install_startup_recovery_checkpoint(
+        tmp_path, monkeypatch, checkpoint
+    )
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda observed: {
+            "active": observed == checkpoint,
+            "recoverable": True,
+            "issues": [],
+        },
+    )
+
+    result = orchestrator._startup_recovery()
+
+    assert result["action"] == "resume"
+    assert result["checkpoint"] == checkpoint
+    assert result["stage"] == "timed_out"
+    assert pipeline_state.route_policy(result["checkpoint"])["next_tool"] == "abandon_generation"
+    assert checkpoint_path.read_text(encoding="utf-8") == original
+
+
+def test_startup_recovery_preserves_infra_timeout_for_precommit_resume(
+    tmp_path, monkeypatch
+):
+    import orchestrator
+    import pipeline_recovery
+    import pipeline_state
+
+    checkpoint = _strict_checkpoint(262, 254, "infra_timed_out")
+    checkpoint_path, original = _install_startup_recovery_checkpoint(
+        tmp_path, monkeypatch, checkpoint
+    )
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "checkpoint_recovery_diagnostics",
+        lambda observed: {
+            "active": observed == checkpoint,
+            "recoverable": True,
+            "issues": [],
+        },
+    )
+
+    result = orchestrator._startup_recovery()
+
+    assert result["action"] == "resume"
+    assert result["checkpoint"] == checkpoint
+    assert result["stage"] == "infra_timed_out"
+    assert pipeline_state.route_policy(result["checkpoint"])["next_tool"] == "run_precommit_eval"
+    assert checkpoint_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("raw", ["{}", "{not-json"])
+def test_startup_recovery_fails_closed_for_malformed_existing_checkpoint(
+    tmp_path, monkeypatch, raw
+):
+    import orchestrator
+
+    checkpoint_path, original = _install_startup_recovery_checkpoint(
+        tmp_path, monkeypatch, raw
+    )
+
+    result = orchestrator._startup_recovery()
+
+    assert result["action"] == "blocked"
+    assert result["reason"] == "checkpoint_unreadable_or_invalid"
+    assert result["checkpoint"] is None
+    assert result["diagnostics"]["active"] is True
+    assert result["diagnostics"]["recoverable"] is False
+    assert checkpoint_path.read_text(encoding="utf-8") == original

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 
-def _route(*, state="pending", revision=2):
+def _route(*, state="pending", revision=2, owner_scope=None):
+    owner_scope = owner_scope or (
+        "current_process" if state == "running" else "none"
+    )
     return {
         "status": "pending",
         "version": 143,
@@ -12,6 +15,7 @@ def _route(*, state="pending", revision=2):
         "identity_digest": "a" * 64,
         "publication_id": "b" * 64,
         "state": state,
+        "owner_scope": owner_scope,
         "record": {
             "revision": revision,
             "private_checkpoint_and_receipts": "must-not-reach-http",
@@ -34,6 +38,7 @@ def test_handoff_projection_is_whitelisted_and_revision_bound(monkeypatch):
     assert first["status"] == "pending"
     assert first["record_revision"] == 2
     assert first["identity_digest"] == "a" * 64
+    assert first["owner_scope"] == "none"
     assert "record" not in first
     assert "private_checkpoint_and_receipts" not in str(first)
     assert len(first["projection_digest"]) == 64
@@ -45,6 +50,7 @@ def test_handoff_projection_is_whitelisted_and_revision_bound(monkeypatch):
     )
     second = post_publication_handoff_projection()
     assert second["status"] == "running"
+    assert second["owner_scope"] == "current_process"
     assert second["projection_digest"] != first["projection_digest"]
 
 
@@ -52,8 +58,8 @@ def test_pipeline_health_projects_handoff_when_checkpoint_is_cleared():
     import server.routes.control as control
 
     handoff = {
-        "status": "running",
-        "state": "running",
+        "status": "pending",
+        "state": "pending",
         "blocked": False,
         "version": 143,
         "source_v": 142,
@@ -62,6 +68,7 @@ def test_pipeline_health_projects_handoff_when_checkpoint_is_cleared():
         "publication_id": "b" * 64,
         "record_revision": 3,
         "projection_digest": "c" * 64,
+        "owner_scope": "none",
         "issues": [],
     }
     snapshot = control._read_pipeline_health({
@@ -77,6 +84,72 @@ def test_pipeline_health_projects_handoff_when_checkpoint_is_cleared():
     assert snapshot["route"]["next_tool"] == "run_archivist"
     assert snapshot["handoff_identity_digest"] == "a" * 64
     assert snapshot["handoff_projection_digest"] == "c" * 64
+
+
+def test_pipeline_health_blocks_foreign_handoff_owner_but_accepts_exact_current_owner(
+    monkeypatch,
+):
+    import server.routes.control as control
+
+    base_handoff = {
+        "status": "running",
+        "state": "running",
+        "blocked": False,
+        "version": 143,
+        "source_v": 142,
+        "workflow_run_id": "generation:143:workflow-v1",
+        "identity_digest": "a" * 64,
+        "publication_id": "b" * 64,
+        "record_revision": 3,
+        "projection_digest": "c" * 64,
+        "issues": [],
+    }
+    foreign = control._read_pipeline_health({
+        "running": False,
+        "epoch_initialized": True,
+        "epoch_state": "strict_published",
+        "active_generation": None,
+        "post_publication_handoff": {
+            **base_handoff,
+            "owner_scope": "foreign_process",
+        },
+    })
+
+    assert foreign["blocked"] is True
+    assert foreign["route"] is None
+    assert foreign["handoff_owner_scope"] == "foreign_process"
+    assert "post_publication_handoff_foreign_owner_active" in foreign["issues"]
+
+    monkeypatch.setattr(
+        control.app_state,
+        "task_snapshot",
+        lambda: {
+            "present": True,
+            "done": False,
+            "cancelled": False,
+            "shutdown_requested": False,
+            "owner_id": "runtime-owner",
+        },
+    )
+    monkeypatch.setattr(
+        control.app_state,
+        "runtime_owner_id",
+        lambda: "runtime-owner",
+    )
+    current = control._read_pipeline_health({
+        "running": True,
+        "epoch_initialized": True,
+        "epoch_state": "strict_published",
+        "active_generation": None,
+        "post_publication_handoff": {
+            **base_handoff,
+            "owner_scope": "current_process",
+        },
+    })
+
+    assert current["blocked"] is False
+    assert current["route"]["next_tool"] == "run_archivist"
+    assert current["handoff_owner_scope"] == "current_process"
 
 
 def test_active_generation_and_handoff_overlap_is_blocked():
