@@ -188,8 +188,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   `0b99c7e6d6e46783828d79b370a1d6715ebefe16`. The separately scoped Codex-only
   helper hardening is `81b75070d550e9000aced1d79f909ccf843011e2`;
   it is not an evolution-runtime commit. Merged source/docs reached
-  `8d623ca74e371ac4aa986b046da16eaa43c1ef18`; this delivery adds the
-  final-Master zero-tool repair. Query Git for the exact branch/main HEAD;
+  `8d623ca74e371ac4aa986b046da16eaa43c1ef18`; the final-Master zero-tool repair
+  is `f6c1c86aeffce9f98970744237a242bda161eb30`. Query Git for the exact
+  branch/main HEAD and require any following documentation-only closure to be
+  present before runtime start;
 - delivered-base verification: Web `2717 passed, 20 skipped`, sever
   `31 passed`, combined high-risk recovery/launch/precommit `435 passed`, prompt/
   documentation `55 passed`, frontend `18/18`, ESLint, TypeScript/Vite build,
@@ -318,10 +320,20 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   while base identity is
   `0f3094ac881e0873f8776d6a12e96ea5ca74d8994a1e7bedfc26a03a85f2f996`;
   only this empty instance may receive future native samples;
-- known next action: fast-forward the stopped runtime through the exact merged
-  `origin/main` for the active national alignment, reprove evaluation identity
-  without rotating unless a rating input changed, and start fresh workflow-v30.
-  Dynamically require final Master `tools=[]`, zero read dirs/files/TOOL_CALL,
+- stopped-runtime sync/recovery: the clean runtime fast-forwarded only through
+  `origin/main` to `f6c1c86aeffce9f98970744237a242bda161eb30`. Post-sync epoch
+  projection is `fresh_bootstrap_ready`, `current_v=142`, `next_v=143`, zero
+  active bots and no active generation; checkpoint recovery is
+  `active=false/recoverable=true/issues=[]`; no candidate, checkpoint,
+  reconciliation claim or evolution process exists. The evaluation instance,
+  base identity and manifest above revalidate exactly, so no rotation occurred.
+  Runtime official doctor remains `ok=true`, and the exact final-Master/
+  strict-journal/proposal/prompt/abandon rerun is `232 passed`;
+- known next action: after the documentation-only closure is merged and the
+  stopped runtime is fast-forwarded to that exact `origin/main`, start the
+  single long-running Web/Orchestrator/rating ownership and allocate fresh
+  workflow-v30. Do not start it from two Codex tasks. Dynamically require final
+  Master `tools=[]`, zero read dirs/files/TOOL_CALL,
   `strict-authority-v2`, one accepted 3+2 packet, and
   `pipeline.master_plan_accepted`; thinking telemetry alone is never success.
   Publish fixed v143 only after the exact

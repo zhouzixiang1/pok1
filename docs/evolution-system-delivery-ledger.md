@@ -1622,3 +1622,43 @@ prompt, and stream-cleanup tests; touched Python compilation and
 `git diff --check`, tracked active Python compilation, tracked shell syntax and
 official doctor `ok=true` also pass. The next dynamic allocation after syncing
 the stopped runtime is a fresh workflow-v30, not a continuation of v28 or v29.
+
+## 2026-07-16 — merged f6 stopped-runtime synchronization and handoff fence
+
+The alignment worktree, `origin/codex/national-protocol-evolution-alignment`
+and `origin/main` were independently fetched and re-proved clean at
+`f6c1c86aeffce9f98970744237a242bda161eb30`. Before mutation, the autonomous
+checkout was clean and stopped at `8d623ca74e371ac4aa986b046da16eaa43c1ef18`,
+with no checkpoint, candidate, reconciliation claim, Web process, Orchestrator
+or rating daemon. It was fast-forwarded with `git pull --ff-only --tags`; no
+file or runtime state was copied, reset, cleaned or deleted.
+
+Post-sync runtime evidence is:
+
+- local `main`, `origin/main` and HEAD all resolved to `f6c1c86a` and the
+  tracked worktree remained clean;
+- strict epoch projection remained `fresh_bootstrap_ready`, initialized, with
+  `current_v=142`, `next_v=143`, `active_bots=[]`, no active generation and
+  no operator action;
+- checkpoint recovery diagnostics returned
+  `active=false`, `recoverable=true`, `issues=[]`;
+- the rating manifest self-digest revalidated as
+  `f8ef8c2aa6ab28b13c9b5bcec947d4e980d1ddc98f0de1dfdbe53f469da45de1`;
+  instance `771bfaeb48b64b248ce3fd3be6c4a906` and base identity
+  `0f3094ac881e0873f8776d6a12e96ea5ca74d8994a1e7bedfc26a03a85f2f996`
+  exactly match the merged evaluator contract, so no evaluation identity was
+  rotated;
+- runtime `python scripts/official_certify.py doctor` returned `ok=true` on
+  `official-exe-2021-wine9-managed-executor-v7`;
+- a fresh source-side final-Master/strict-authority/proposal/prompt/abandon
+  shard returned `232 passed, 1 warning`.
+
+No workflow-v30 checkpoint was allocated and no evolution process was started.
+The launch fence is intentional while one separate Codex task repairs only its
+own `pok_worker` tool-cache loading. That task has no poker repository or
+runtime authority. Once it independently proves six injected tools plus a real
+healthy MCP call, ownership may be handed to that single task; this checkout
+must stop before the successor starts Web/Orchestrator/rating. After this
+documentation-only closure reaches `origin/main`, the stopped runtime must
+fast-forward once more to the exact remote HEAD before fresh workflow-v30.
+Stability remains `0/10`.

@@ -94,6 +94,22 @@ leased target. Thinking telemetry remains non-authoritative. Web verification is
 `2757 passed, 20 skipped`; the next live proof is fresh workflow-v30 after the
 stopped runtime fast-forwards to the exact merged commit.
 
+The stopped runtime has now fast-forwarded only through `origin/main` to the
+exact merged repair `f6c1c86aeffce9f98970744237a242bda161eb30`. Post-sync
+reproof remains fail-closed and clean: no evolution process, checkpoint,
+candidate or reconciliation claim; epoch state `fresh_bootstrap_ready` with
+`current_v=142`, `next_v=143` and zero active strict bots; checkpoint recovery
+`active=false`, `recoverable=true`, `issues=[]`. The existing evaluation
+instance `771bfaeb48b64b248ce3fd3be6c4a906`, base identity
+`0f3094ac881e0873f8776d6a12e96ea5ca74d8994a1e7bedfc26a03a85f2f996`
+and manifest
+`f8ef8c2aa6ab28b13c9b5bcec947d4e980d1ddc98f0de1dfdbe53f469da45de1`
+all revalidate byte-for-byte against the repair, so no rating identity was
+rotated. Runtime official doctor is still `ok=true`. A fresh focused rerun of
+the final-Master/strict-journal/proposal/prompt/abandon causal chain is
+`232 passed`; workflow-v30 has deliberately not been allocated or started at
+this handoff fence.
+
 Official doctor is green and `first_strict_control_v1` hash
 `2a0d58ed7126e46a04107903633ae7667e8196ae4d6a26b8aca60c8e18245c33`
 remains valid, unused, and `0/1`. No v143 official dependency is missing; the
