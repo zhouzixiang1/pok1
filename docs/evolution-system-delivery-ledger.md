@@ -2068,6 +2068,23 @@ deprecation warnings` in 10.32 seconds. This Codex helper is never part of,
 imported by, launched by, supervised by or evidenced through the poker
 evolution runtime.
 
+Post-inclusion recovery review found one separate P1: `_recover()` trusted
+durable `accepted`/`queued`/retry envelopes created under an older redaction
+set, so a task containing the later HTTP access secret could bypass current
+submit validation and be enqueued after upgrade. Detached source commit
+`1b57228e3aa9e53fb4ecf6d33d3ea4be747bfeb6` is replayed on this delivery line
+as `2ade21159d12b551dcab46f0ee75b309125d7a2c`. Recovery now revalidates the
+complete envelope against current
+raw secrets, mandatory scope/limits, repository allowlist and canonical base
+before any enqueue or worktree snapshot. Drift or secret detection transitions
+the row to `needs_review`, clears its lease and preserves executor count zero;
+it never executes or serializes a new potentially sensitive snapshot. Tests
+cover safe and rejected `accepted`/`queued`/retry rows plus mandatory-path and
+repository-allowlist drift. Focused evidence is `70 passed`; the complete
+Worker MCP suite is `126 passed, 2 dependency deprecation warnings` in 11.41
+seconds, with compile/diff checks green. Source inclusion does not restart or
+reconfigure the installed helper and remains zero poker authority.
+
 A later clean-CLI check found a separate operator persistence defect, not a
 model-proxy failure: CC Switch 3.17.0 kept its model endpoint healthy but its
 Codex MCP importer treated URL-only Streamable HTTP entries as STDIO and
@@ -2084,11 +2101,11 @@ service, restore the backed-up CC Switch common configuration (or remove only
 the added exact stanza by CAS), then apply the selected STDIO/HTTP Codex stanza;
 it must not delete Worker task SQLite or alter poker runtime state.
 
-## 2026-07-17 — current strict-v1 strength baseline (runtime 10; full rerun green)
+## 2026-07-17 — pre-merge strict-v1 strength baseline (historical runtime 10 freeze)
 
 This section supersedes only the earlier clean-room source snapshot above; the
 older hashes and test counts remain preserved as explicitly historical audit
-records. The current unmerged source identity is:
+records. The then-unmerged source identity was:
 
 - evaluation contract `32` and national decision runtime `10`;
 - runtime-probe schema/orchestrator/worker/scenario `15/15/16/7`;
@@ -2193,9 +2210,10 @@ proved the 2493-line normalized runtime AST-equivalent to the pre-normalized
 template. The same frozen source also reports sever `33 passed`, documentation/
 prompt focused `96 passed`, frontend dynamic `1/1`, ESLint and TypeScript/Vite
 production build (165 modules), active-source `py_compile`, and `git diff
---check`. Commit, push, merge, stopped-runtime sync, controlled abandon/
-re-prepare, v143 bootstrap, v144 full-v5, rating cycle and N/10 observation
-remain separate unclaimed steps.
+--check`. At this historical freeze, commit, push, merge, stopped-runtime sync,
+controlled abandon/re-prepare, v143 bootstrap, v144 full-v5, rating cycle and
+N/10 observation were separate unclaimed steps. The later `c8ea16b9` and
+workflow-v31 sections supersede that source status.
 
 ## 2026-07-17 — pre-merge stopped-orchestrator runtime baseline
 

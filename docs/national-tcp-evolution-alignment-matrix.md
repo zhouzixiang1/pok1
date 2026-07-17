@@ -339,6 +339,10 @@ seconds; merge and runtime publication remain separate unclaimed steps.
 The Codex-only Worker MCP remains outside evolution. Its raw-secret P1 now has
 follow-up `c7a254ce14863926c5da31a9387288170d7fb05d` (parent exactly
 `7bd7c78ce72924c4899fd5403c188c14ea98deec`) with `118 passed`; it recursively
-scans raw strings before serialization. The complete series awaits ordered
-main-tree review and inclusion as `4a458dc8` → `7bd7c78c` → `c7a254ce`; no
-subset or installed service supplies poker runtime/evidence credit.
+scans raw strings before serialization. The complete series is already in main
+as `f55a9d13` → `db8cb175` → `89b71101`; the divergent original SHAs must not
+be cherry-picked again. Recovery follow-up
+`2ade21159d12b551dcab46f0ee75b309125d7a2c` revalidates legacy
+durable envelopes against current secrets/scope/repository/base before enqueue
+and quarantines drift as `needs_review`; its complete suite is `126 passed`.
+No source subset or installed service supplies poker runtime/evidence credit.

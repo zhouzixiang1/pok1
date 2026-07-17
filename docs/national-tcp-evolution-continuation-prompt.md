@@ -691,6 +691,16 @@ used. No wheel installation, operator-config mutation or service restart was
 part of source inclusion. Installed MCP health remains separate from source
 review and supplies no poker acceptance evidence.
 
+The later recovery audit is also included: detached commit
+`1b57228e3aa9e53fb4ecf6d33d3ea4be747bfeb6` replays as
+`2ade21159d12b551dcab46f0ee75b309125d7a2c`. It closes
+the P1 where legacy durable accepted/queued/retry rows could enter `_recover()`
+without current raw-secret, scope, repository-allowlist and canonical-base
+validation. Invalid legacy rows now become `needs_review` before enqueue, with
+no executor or new snapshot. Worker MCP focused/full evidence is `70/126`
+passed. This source change neither installs nor restarts the Codex helper and
+does not touch poker runtime state.
+
 Next work, in order:
 
 1. Push the reviewed commit series and fast-forward `origin/main`.
