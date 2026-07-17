@@ -284,6 +284,9 @@ def _assert_current_strict_alignment_in_final_provider_prompt(
         "archive/legacy source, ratings, replays, lessons, experience, and mutable live result files are quarantined",
         "historical_memory_authority\": \"zero",
         "archive/legacy content",
+        "selected master proposal is system-bound by its `proposal_id` and `contract_digest`",
+        "never a sixth bot artifact, certificate, or recovery receipt",
+        "no role may substitute a different proposal",
     )
     for token in required:
         assert token in normalized, (role_id, token)

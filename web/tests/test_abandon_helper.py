@@ -1019,6 +1019,26 @@ class TestDoAbandonGeneration:
         assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
         assert blocked["stage"] == "reviewed"
 
+    @pytest.mark.parametrize("reason", (
+        "system_strict_bootstrap_master_receipt_invalid:"
+        "system_bootstrap_proposal_contract_digest_mismatch",
+        "system_strict_bootstrap_master_receipt_error:"
+        "RuntimeError:receipt_projection_unavailable",
+    ))
+    def test_strict_bootstrap_master_receipt_failure_is_disposable_only_during_master(
+        self,
+        reason,
+    ):
+
+        master_checkpoint = _strict_checkpoint(144, 143, "direction_audited")
+        assert tbm._generic_abandon_stage_block(master_checkpoint, reason) is None
+
+        reviewed_checkpoint = _strict_checkpoint(144, 143, "reviewed")
+        blocked = tbm._generic_abandon_stage_block(reviewed_checkpoint, reason)
+        assert blocked["blocked"] is True
+        assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
+        assert blocked["stage"] == "reviewed"
+
     def test_strict_authority_terminal_failure_canonically_abandons_master(
         self,
         tmp_path,

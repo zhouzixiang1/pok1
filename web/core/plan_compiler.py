@@ -153,6 +153,49 @@ def _compiled_prompt_validation_terms(
     return tuple(dict.fromkeys(terms))
 
 
+def _compiled_selected_proposal_anchor(
+    plan: dict[str, Any],
+    selected_blocks: list[str],
+) -> str:
+    """Keep the immutable selected-proposal identity in a compiled stub.
+
+    The full selected-proposal contract remains in the system-owned temporary
+    task brief so the Worker has its complete context.  The plan itself,
+    however, is later revalidated after a crash and the brief is deliberately
+    not a durable candidate artifact.  Preserve the two identity terms and
+    boundary markers in the compact prompt so receipt validation can bind the
+    compiled form to the sealed proposal without trusting a transient path.
+    """
+
+    if len(selected_blocks) != 1:
+        return ""
+    binding = plan.get("proposal_binding")
+    if not isinstance(binding, dict):
+        return ""
+    proposal_id = str(binding.get("selected_proposal_id") or "")
+    contract_digest = str(binding.get("contract_digest") or "")
+    if not proposal_id or not contract_digest:
+        return ""
+    selected_block = selected_blocks[0]
+    required_terms = (
+        SELECTED_PROPOSAL_BEGIN,
+        SELECTED_PROPOSAL_END,
+        f"proposal_id={proposal_id}",
+        f"contract_digest={contract_digest}",
+    )
+    if any(term not in selected_block for term in required_terms):
+        return ""
+    return "\n\n".join((
+        SELECTED_PROPOSAL_BEGIN,
+        "# SYSTEM-BOUND SELECTED PROPOSAL IDENTITY ANCHOR",
+        f"proposal_id={proposal_id}",
+        f"contract_digest={contract_digest}",
+        "The complete digest-bound proposal contract is in the compiler-owned "
+        "task brief; do not substitute a different proposal.",
+        SELECTED_PROPOSAL_END,
+    ))
+
+
 def bind_system_owned_policy_abi(
     plan: dict[str, Any],
     *,
@@ -405,6 +448,10 @@ def compile_master_plan(
                 + ", ".join(validation_terms)
                 + "."
             )
+        selected_proposal_anchor = _compiled_selected_proposal_anchor(
+            compiled,
+            selected_blocks,
+        )
         task["task_brief_file"] = rel_context
         task["worker_prompt_compiled"] = True
         task["worker_prompt_original_chars"] = len(prompt)
@@ -414,6 +461,7 @@ def compile_master_plan(
             f"for v{next_v}. Target files: {targets}. Do not broaden scope. "
             "Run the checks named in the task context and report the exact files changed."
             + validation_anchor
+            + selected_proposal_anchor
         )
         meta["compiled"] = True
         meta["compiled_tasks"].append({

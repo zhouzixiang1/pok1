@@ -874,6 +874,71 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
     ),
     MatrixRow(
+        rule_id="master_receipt_compiled_proposal_contract",
+        coverage=("master_receipt_compiled_proposal_contract",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("web/core/agent_master.py", "_selected_proposal_binding"),
+            _ref(
+                "web/core/system_strict_bootstrap.py",
+                "validate_selected_proposal_for_blueprint",
+            ),
+            _ref(
+                "web/core/strict_authority_workflow.py",
+                "validate_master_final_projection",
+            ),
+        ),
+        production_owners=(
+            _ref("web/core/plan_compiler.py", "_compiled_selected_proposal_anchor"),
+            _ref("web/core/system_strict_bootstrap.py", "build_master_receipt"),
+            _ref("web/core/tool_bot_management.py", "_generic_abandon_stage_block"),
+        ),
+        dynamic_gates=(
+            _ref(
+                "web/core/system_strict_bootstrap.py",
+                "validate_selected_proposal_for_blueprint",
+            ),
+            _ref(
+                "web/core/strict_authority_workflow.py",
+                "validate_master_final_projection",
+            ),
+            _ref("web/core/tool_bot_management.py", "_generic_abandon_stage_block"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles preserve the typed, quality-gated selected-proposal "
+            "boundary: only a Worker consumes the sealed proposal_id and contract_digest, "
+            "and no role may substitute a brief or elevate it into a candidate-owned sixth artifact."
+        ),
+        prompt_required_terms=("proposal_id", "contract_digest"),
+        producer_consumer=(
+            "Scout packet + ballots → canonical Master typed-primary contract → sealed "
+            "proposal binding/full Worker block → compiler-owned transient brief plus compact "
+            "identity anchor → bootstrap receipt/final-Master replay → deterministic Worker envelope"
+        ),
+        positive_tests=(
+            "web/tests/test_master_plan_contract_alignment.py::"
+            "test_system_bootstrap_reuses_canonical_selected_proposal_contract",
+            "web/tests/test_master_plan_contract_alignment.py::"
+            "test_compiler_externalizes_long_prompt_without_losing_selected_contract",
+            "web/tests/test_abandon_helper.py::"
+            "test_strict_bootstrap_master_receipt_failure_is_disposable_only_during_master",
+        ),
+        negative_tests=(
+            "web/tests/test_master_plan_contract_alignment.py::"
+            "test_system_bootstrap_reuses_canonical_selected_proposal_contract",
+            "web/tests/test_abandon_helper.py::"
+            "test_strict_bootstrap_master_receipt_failure_is_disposable_only_during_master",
+        ),
+        fail_closed=(
+            "A missing or mismatched typed-primary field, packet binding, compact identity "
+            "anchor, source graph, or final-Master replay blocks Worker dispatch. A receipt "
+            "failure can canonically abandon only the pre-Worker direction_audited stage; it "
+            "cannot spin, bypass a later gate, or be repaired by a sixth Bot file."
+        ),
+    ),
+    MatrixRow(
         rule_id="first_strict_v143_v144_contract",
         coverage=("first_strict_v143_v144",),
         status=CURRENT_STATUS,

@@ -2205,6 +2205,17 @@ def generic_abandon_block(checkpoint: dict | None, *,
             ("cycle_timeout_master_stuck", {"direction_audited"}),
             ("master_", {"direction_audited"}),
             ("system_strict_authority_invalid:", {"direction_audited"}),
+            # A deterministic first-strict Master receipt rejection proves that
+            # this pre-Worker checkpoint cannot become executable.  It must
+            # reach the same canonical abandon boundary as other strict
+            # authority failures instead of leaving the scheduler in a
+            # direction_audited recovery loop.
+            ("system_strict_bootstrap_master_receipt_invalid:", {"direction_audited"}),
+            # Unexpected receipt-construction exceptions have the same
+            # pre-Worker safety property: no valid Master receipt exists, so
+            # the checkpoint must take the canonical abandon path rather than
+            # rerunning a sealed invalid Master indefinitely.
+            ("system_strict_bootstrap_master_receipt_error:", {"direction_audited"}),
             ("crossover_", {"preparing", "prepared", "crossover_running"}),
             ("worker_circuit_breaker", {"master_planned", "workers_done", "quality_failed"}),
             ("worker_infrastructure_exhausted", {"master_planned", "workers_done", "quality_failed", "repair_planned", "rework_running"}),

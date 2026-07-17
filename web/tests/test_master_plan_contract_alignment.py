@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 
@@ -990,6 +991,159 @@ def test_compiler_keeps_long_prompt_inline_when_selected_contract_cannot_fit(tmp
     assert compiled["tasks"][0]["worker_prompt"] == original_prompt
     assert selected_block in compiled["tasks"][0]["worker_prompt"]
     assert not (tmp_path / "national_v144" / ".task_context").exists()
+
+
+def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatch, tmp_path):
+    """A sealed final Master must verify against its own prompt digest.
+
+    The bootstrap receipt used to reproduce only a subset of the Master
+    contract, so adding typed state-learning fields in the canonical Master
+    projection made the bootstrap recompute a different digest.  That falsely
+    rejected an otherwise valid v143 plan before the deterministic Worker was
+    allowed to start.
+    """
+
+    import agent_master
+    import system_strict_bootstrap
+    from tests.test_master_success_return import _valid_proposal_packet
+
+    proposal, _contract, _selected_block = _proposal_contract_fixture(agent_master)
+    packet = _valid_proposal_packet(
+        agent_master,
+        proposal,
+        tmp_path / "proposal_invocations",
+    )
+    selected = packet["ordered_proposals"][0]
+    binding = agent_master._selected_proposal_binding(selected, packet)
+    selected_contract = agent_master._selected_proposal_contract(selected)
+    selected_block = agent_master._selected_proposal_worker_block(selected)
+    assert binding["contract_digest"] == selected_contract["contract_digest"]
+
+    # This is the smallest complete graph needed by the selected proposal;
+    # the test is about Master/bootstrap contract equality, not file parsing.
+    graph = {
+        "policy.py:get_baseline_decision": {"_choose_intent"},
+        "policy.py:_choose_intent": set(),
+    }
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "_prepared_graph",
+        lambda: (graph, packet["source_code_digest"], []),
+    )
+    import plan_compiler
+
+    # Force the deterministic compiler onto its externalized form without
+    # trimming the digest-bound selected contract.
+    padding = "x" * max(
+        1,
+        plan_compiler.HARD_WORKER_PROMPT_CHARS + 1 - len(selected_block),
+    )
+    plan = {
+        "selected_proposal_id": selected["proposal_id"],
+        "proposal_binding": binding,
+        "proposal_ensemble": packet,
+        "tasks": [{
+            "worker_id": 1,
+            "role": "Algorithmic Logic Architect",
+            "target_files": ["policy.py"],
+            "files_allowed": ["policy.py"],
+            "worker_prompt": (
+                padding
+                + "\n\nImplement only the typed, bounded selected mechanism.\n\n"
+                + selected_block
+            ),
+        }],
+    }
+
+    compiled, compiler = plan_compiler.compile_master_plan(
+        plan,
+        next_v=143,
+        target_dir=tmp_path / "candidate",
+        project_root=tmp_path,
+    )
+    assert compiler["compiled"] is True
+    compiled_prompt = compiled["tasks"][0]["worker_prompt"]
+    assert plan_compiler.SELECTED_PROPOSAL_BEGIN in compiled_prompt
+    assert plan_compiler.SELECTED_PROPOSAL_END in compiled_prompt
+    assert f"proposal_id={selected['proposal_id']}" in compiled_prompt
+    assert f"contract_digest={binding['contract_digest']}" in compiled_prompt
+    assert system_strict_bootstrap.validate_selected_proposal_for_blueprint(compiled) == []
+
+    # The brief is a system-owned, version-local Worker aid, not a durable
+    # receipt.  Recovery still proves the sealed contract from the compact
+    # anchor and the deterministic final-Master projection.
+    import shutil
+
+    shutil.rmtree(tmp_path / "candidate" / ".task_context")
+    assert system_strict_bootstrap.validate_selected_proposal_for_blueprint(compiled) == []
+
+    missing_anchor = deepcopy(compiled)
+    missing_anchor["tasks"][0]["worker_prompt"] = (
+        "Read the transient task brief, but no selected proposal identity is present."
+    )
+    assert "system_bootstrap_worker_selected_proposal_block_missing" in (
+        system_strict_bootstrap.validate_selected_proposal_for_blueprint(
+            missing_anchor
+        )
+    )
+
+    drifted = deepcopy(compiled)
+    drifted["proposal_binding"]["state_learning_primary"] = "showdown_range"
+    assert "system_bootstrap_proposal_contract_packet_mismatch" in (
+        system_strict_bootstrap.validate_selected_proposal_for_blueprint(drifted)
+    )
+
+    # A later canonical typed field must flow through the one binding helper
+    # without requiring a parallel bootstrap field inventory.  The prior
+    # verifier manually reconstructed its contract and would reject this
+    # otherwise coherent extension as a packet mismatch.
+    original_contract = agent_master._selected_proposal_contract
+    original_binding = agent_master._selected_proposal_binding
+
+    def _future_contract(item):
+        unsigned = {
+            key: value
+            for key, value in original_contract(item).items()
+            if key != "contract_digest"
+        }
+        unsigned["future_typed_primary"] = "policy_contextuality"
+        return {
+            **unsigned,
+            "contract_digest": hashlib.sha256(
+                json.dumps(
+                    unsigned,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def _future_binding(item, source_packet):
+        canonical = original_binding(item, source_packet)
+        future_contract = _future_contract(item)
+        return {
+            **canonical,
+            "contract_digest": future_contract["contract_digest"],
+            "future_typed_primary": future_contract["future_typed_primary"],
+        }
+
+    monkeypatch.setattr(agent_master, "_selected_proposal_contract", _future_contract)
+    monkeypatch.setattr(agent_master, "_selected_proposal_binding", _future_binding)
+    extended = deepcopy(compiled)
+    extended_binding = _future_binding(selected, packet)
+    extended["proposal_binding"] = extended_binding
+    extended["tasks"][0]["worker_prompt"] = extended["tasks"][0]["worker_prompt"].replace(
+        binding["contract_digest"],
+        extended_binding["contract_digest"],
+    )
+    assert system_strict_bootstrap.validate_selected_proposal_for_blueprint(extended) == []
+
+    future_drift = deepcopy(extended)
+    future_drift["proposal_binding"]["future_typed_primary"] = "tampered"
+    assert "system_bootstrap_proposal_contract_packet_mismatch" in (
+        system_strict_bootstrap.validate_selected_proposal_for_blueprint(future_drift)
+    )
 
 
 def test_selected_proposal_quality_requires_executed_typed_check(tmp_path):

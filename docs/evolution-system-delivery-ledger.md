@@ -3345,3 +3345,56 @@ canonical safe boundary; a source sync/restart before then would reset the
 observation and invalidate the running evaluation contract. Current stability
 remains `0/10`, and no health display can be treated as Bot, certificate,
 rating or strength evidence.
+
+## 2026-07-18 — v143 Master receipt split-brain and recovery-loop repair
+
+Live `generation:143:workflow-v43` exposed a deterministic control-plane
+failure after the second final Master had been accepted. It is not a model
+quality verdict, a bootstrap-reset failure, or a candidate-policy failure:
+the checkpoint remains pre-Worker at `direction_audited`, with no persisted
+Master plan, Worker output, quality receipt, certificate, tag, rating row, or
+strength sample.
+
+The event chain identified two coupled source defects. First, the canonical
+Master proposal digest includes `state_learning_primary`, `mechanism_target`,
+`intervention_target`, and `required_primary_checks`, while the bootstrap
+validator independently reimplemented the digest without those four fields.
+It therefore rejected the exact sealed Master result with
+`system_bootstrap_proposal_contract_digest_mismatch`. Second, an oversized
+prompt may be compiled into a system-owned `.task_context` brief and a compact
+Worker stub; the old validator demanded the full selected-proposal markers in
+the stub and reported `system_bootstrap_worker_selected_proposal_block_missing`.
+The subsequent forced-abandon reason was absent from the
+`direction_audited` allowlist, leaving the outer scheduler to re-enter the same
+sealed result instead of reaching a canonical terminal boundary.
+
+The pending source repair removes the digest split by reusing the Master’s
+single canonical packet-to-plan binding projection in the bootstrap validator.
+The compiler now retains a bounded `proposal_id` + `contract_digest` identity
+anchor with the selected-proposal begin/end markers in an externalized stub.
+The executable full Worker prompt remains only in the compiler-owned transient
+brief; the strict final-Master journal separately seals the full source for
+deterministic replay. Neither path is adopted as a sixth Bot file, certificate,
+rating, or recovery receipt. Both exact
+`system_strict_bootstrap_master_receipt_invalid:` and
+`system_strict_bootstrap_master_receipt_error:` reasons are disposable only at
+`direction_audited`; a later stage remains refused.
+
+Focused cross-layer evidence passes: `237 passed, 1 warning` across the
+Master/compiled-anchor, canonical-abandon, strict-governance, matrix, and role
+contract shards. An isolated replay of
+the actual v43 10,239-character sealed Master plan compiles to a
+909-character anchored stub and returns zero bootstrap proposal errors under
+the repaired source. On the host that permits loopback sockets and bwrap,
+the final full Web command passed `3090 passed, 20 skipped, 1 warning` in
+175.22 seconds; Sever passed `33`, and frontend lint, `22/22` production-stream
+tests, and build passed. Compile/diff validation remains part of the
+pre-commit record below, not a runtime or Bot-delivery claim.
+
+The safe operational sequence is deliberate: finish source tests and review;
+commit/push/merge; then, while the runtime is stopped and still at its old
+HEAD, perform a schema-2 exact-CAS canonical abandon of this pre-Worker v43
+checkpoint (never hand-delete it), fast-forward only from `origin/main`, run
+checkpoint/evaluation/official diagnostics, and prepare a fresh v143 workflow.
+This control-plane repair or restart keeps observation at `0/10`; it does not
+reuse the rejected Master output or claim a Bot delivery.

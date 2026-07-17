@@ -1449,3 +1449,39 @@ stability/matrix regressions, but **must not be synchronized or restart v43**.
 Commit/review it in the alignment worktree, wait for v43's canonical terminal
 safe boundary, then use the normal stopped-checkout git/diagnostic/restart path.
 Any such sync or restart keeps observation at `0/10`.
+
+## Latest superseding handoff — v43 Master receipt repair is source-pending
+
+Supersede the preceding instruction to wait passively for `workflow-v43`: it
+cannot reach Worker with its current runtime source. The accepted final Master
+was deterministically rejected by a split bootstrap receipt recipe, not by a
+model, policy, reset, or certification failure. The exact errors are
+`system_bootstrap_proposal_contract_digest_mismatch` and
+`system_bootstrap_worker_selected_proposal_block_missing`. Its checkpoint is
+still pre-Worker at `direction_audited`; do not replay its final output, edit
+its candidate, add a receipt, or delete/checkpoint-clean it by hand.
+
+The source repair has three coupled parts: use
+`agent_master._selected_proposal_binding` as the bootstrap validator's one
+canonical packet-to-plan projection; retain a compact selected-proposal identity anchor
+in compiler-externalized Worker stubs while the executable full prompt remains
+in the temporary system-owned brief and the strict final-Master journal seals
+the authoritative source; and authorize both the deterministic `..._invalid:`
+route and unexpected `..._error:` route to canonically abandon only at
+`direction_audited`, preventing an outer recovery loop. The Bot ABI stays five
+executable/identity files. The compiler
+brief and any future table/model are not candidate-owned sixth files: only the
+separate future R0 system-asset ABI may introduce a table/model outside the Bot
+directory after its own resolver/influence gates.
+
+Source evidence: focused cross-layer contract shards `237 passed, 1 warning`,
+host full Web `3090 passed, 20 skipped, 1 warning` in 175.22 seconds, Sever
+`33 passed`, and frontend lint + `22/22` production-stream tests + build;
+an isolated replay of the real v43 10,239-character sealed plan has zero
+repaired bootstrap errors. Complete independent review plus final
+compile/diff checks before any runtime mutation. Then stop the
+old runtime, use its schema-2 exact-CAS
+canonical abandon transaction for v43, fast-forward only from merged
+`origin/main`, run checkpoint/evaluation/official diagnostics, and launch a
+fresh v143. This reset/restart starts stability again at `0/10`; it does not
+create a Bot, certificate, rating cycle, or strength claim.
