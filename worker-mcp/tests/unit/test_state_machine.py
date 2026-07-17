@@ -25,3 +25,12 @@ def test_illegal_and_recovery_transitions():
     with pytest.raises(InvalidTransition):
         validate_transition(TaskStatus.RUNNING, TaskStatus.QUEUED)
     validate_transition(TaskStatus.RUNNING, TaskStatus.QUEUED, recovery=True)
+
+    for status in (TaskStatus.ACCEPTED, TaskStatus.QUEUED):
+        with pytest.raises(InvalidTransition):
+            validate_transition(status, TaskStatus.NEEDS_REVIEW)
+        validate_transition(
+            status,
+            TaskStatus.NEEDS_REVIEW,
+            recovery=True,
+        )

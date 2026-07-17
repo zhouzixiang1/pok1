@@ -73,7 +73,12 @@ Configuration rejects a shared environment name, startup rejects equal
 credential values, and the daemon validates both the access token and listening
 socket before constructing the task service or recovering durable tasks. The
 access token is also a task-envelope rejection and redaction secret, so it
-cannot be persisted to SQLite or forwarded to the model.
+cannot be persisted by a new submission or forwarded to the model. Recovery
+revalidates every incomplete durable envelope against the current scope and
+secret set before enqueue; a legacy violation is terminally quarantined for
+operator review without execution. Quarantine does not erase a historical
+request row, so an access token already present in legacy state must still be
+rotated and that state handled as credential-bearing material.
 
 ## Remaining trust
 

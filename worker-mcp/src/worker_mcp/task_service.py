@@ -41,7 +41,7 @@ from .schemas import (
     TaskType,
 )
 from .state_machine import is_terminal
-from .worktree import WorktreeManager, WorktreeSnapshot
+from .worktree import WorktreeError, WorktreeManager, WorktreeSnapshot
 
 
 def _iter_original_strings(value: Any) -> Iterator[str]:
@@ -302,6 +302,31 @@ class TaskService:
             task_id = row["task_id"]
             request = TaskEnvelope.model_validate_json(row["request_json"])
             status = TaskStatus(row["status"])
+            try:
+                self._validate_scope_contract(request)
+                canonical = await asyncio.to_thread(
+                    self.worktrees.validate_request, request
+                )
+                if canonical != request:
+                    raise WorktreeError(
+                        "durable task identity is no longer canonical"
+                    )
+            except (ValueError, WorktreeError):
+                # Do not inspect or serialize a quarantined worktree: content
+                # created under the stale contract may contain the same secret.
+                # The owner-locked path remains available for operator review.
+                await self._finish_abnormal(
+                    task_id,
+                    request,
+                    TaskStatus.NEEDS_REVIEW,
+                    (
+                        "Persisted task violates the current safety contract; "
+                        "operator review is required"
+                    ),
+                    None,
+                    recovery=True,
+                )
+                continue
             if row["cancel_requested"]:
                 snapshot = await self._safe_snapshot(row["worktree_path"])
                 uncertain_worktree = bool(row["worktree_path"]) and snapshot is None
@@ -393,6 +418,7 @@ class TaskService:
         snapshot: WorktreeSnapshot | None,
         *,
         error: Exception | None = None,
+        recovery: bool = False,
     ) -> None:
         row = self.persistence.get_task(task_id)
         partial = target is TaskStatus.NEEDS_REVIEW
@@ -411,6 +437,7 @@ class TaskService:
             phase=target.value,
             reason=summary,
             progress_summary=summary,
+            recovery=recovery,
             clear_lease=True,
             error_class=type(error).__name__ if error else None,
             error_message=(
@@ -425,7 +452,9 @@ class TaskService:
             "task.terminal",
             timestamp=datetime.now().astimezone().isoformat(),
             trace_id=(
-                redact_sensitive_text(request.trace_id)
+                redact_sensitive_text(
+                    request.trace_id, secrets=self._redaction_secrets
+                )
                 if request.trace_id
                 else None
             ),

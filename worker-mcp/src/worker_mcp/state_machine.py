@@ -32,6 +32,15 @@ NORMAL_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
 RECOVERY_REQUEUE_FROM = frozenset(
     {TaskStatus.ACCEPTED, TaskStatus.PREPARING, TaskStatus.RUNNING, TaskStatus.VERIFYING}
 )
+RECOVERY_QUARANTINE_FROM = frozenset(
+    {
+        TaskStatus.ACCEPTED,
+        TaskStatus.QUEUED,
+        TaskStatus.PREPARING,
+        TaskStatus.RUNNING,
+        TaskStatus.VERIFYING,
+    }
+)
 
 
 class InvalidTransition(RuntimeError):
@@ -51,6 +60,12 @@ def validate_transition(
     source = TaskStatus(current)
     destination = TaskStatus(target)
     if recovery and destination is TaskStatus.QUEUED and source in RECOVERY_REQUEUE_FROM:
+        return
+    if (
+        recovery
+        and destination is TaskStatus.NEEDS_REVIEW
+        and source in RECOVERY_QUARANTINE_FROM
+    ):
         return
     if destination not in NORMAL_TRANSITIONS.get(source, frozenset()):
         raise InvalidTransition(f"invalid task transition: {source.value} -> {destination.value}")

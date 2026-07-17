@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -9,7 +10,7 @@ from worker_mcp.agent_executor import AgentCancelled, MockAgentExecutor
 from worker_mcp.idempotency import request_fingerprint
 from worker_mcp.persistence import Persistence
 from worker_mcp.schemas import ExecutionProfile, TaskEnvelope, TaskStatus, TaskType
-from worker_mcp.task_service import TaskService
+from worker_mcp.task_service import TaskService, _iter_original_strings
 from worker_mcp.worktree import WorktreeManager
 
 
@@ -29,12 +30,14 @@ def make_request(git_repo, *, read_only, key):
     )
 
 
-def interrupted_running(worker_config, request):
+def staged_incomplete(worker_config, request, stage):
     manager = WorktreeManager(worker_config)
     request = manager.validate_request(request)
     store = Persistence(worker_config.state_dir / "tasks.sqlite3")
     row, _ = store.create_or_get(request, request_fingerprint(request))
     task_id = row["task_id"]
+    if stage == "accepted":
+        return task_id, None
     store.transition(
         task_id,
         TaskStatus.QUEUED,
@@ -42,6 +45,9 @@ def interrupted_running(worker_config, request):
         reason="test",
         progress_summary="queued",
     )
+    if stage == "queued":
+        return task_id, None
+    assert stage == "retry"
     store.claim_task(task_id, "dead-process")
     worktree = manager.prepare(request, task_id)
     store.update_worktree(task_id, str(worktree))
@@ -53,6 +59,128 @@ def interrupted_running(worker_config, request):
         progress_summary="running",
     )
     return task_id, worktree
+
+
+def interrupted_running(worker_config, request):
+    task_id, worktree = staged_incomplete(worker_config, request, "retry")
+    assert worktree is not None
+    return task_id, worktree
+
+
+@pytest.mark.parametrize("stage", ["accepted", "queued", "retry"])
+@pytest.mark.parametrize(
+    "contains_current_secret",
+    [False, True],
+    ids=["safe-request", "current-secret"],
+)
+@pytest.mark.asyncio
+async def test_recovery_revalidates_legacy_requests_before_enqueue(
+    worker_config,
+    git_repo,
+    stage,
+    contains_current_secret,
+):
+    access_token = 'legacy-http-"\\\n-access-token-' + "z" * 32
+    candidate = make_request(
+        git_repo,
+        read_only=True,
+        key=f"recovery-legacy-{stage}-{int(contains_current_secret)}-0001",
+    )
+    if contains_current_secret:
+        candidate = candidate.model_copy(
+            update={
+                "context": f"legacy request contains [{access_token}]",
+                "trace_id": f"legacy-trace-[{access_token}]",
+            }
+        )
+    task_id, worktree = staged_incomplete(worker_config, candidate, stage)
+    if contains_current_secret and worktree is not None:
+        (worktree / "src" / "module.py").write_text(
+            f"CREDENTIAL = {access_token!r}\n",
+            encoding="utf-8",
+        )
+    executor = MockAgentExecutor()
+    service = TaskService(
+        worker_config,
+        executor=executor,
+        additional_redaction_secrets=(access_token,),
+    )
+    await service.start()
+    try:
+        if contains_current_secret:
+            status = service.status(task_id)
+            assert status.status is TaskStatus.NEEDS_REVIEW
+            assert executor.calls == 0
+            result = service.result(task_id)
+            assert result.status.value == "partial"
+            assert result.files_changed == []
+            row = service.persistence.get_task(task_id)
+            assert row["lease_owner"] is None
+            for field in ("progress_summary", "result_json", "error_message"):
+                assert access_token not in (row[field] or "")
+        else:
+            async with asyncio.timeout(10):
+                while service.status(task_id).status not in {
+                    TaskStatus.SUCCEEDED,
+                    TaskStatus.FAILED,
+                }:
+                    await asyncio.sleep(0.05)
+            status = service.status(task_id)
+            assert status.status is TaskStatus.SUCCEEDED
+            assert status.attempt == (2 if stage == "retry" else 1)
+            assert executor.calls == 1
+    finally:
+        await service.stop()
+
+    if contains_current_secret:
+        audit_path = worker_config.state_dir / "logs" / "worker-mcp.jsonl"
+        records = [
+            json.loads(line)
+            for line in audit_path.read_text(encoding="utf-8").splitlines()
+        ]
+        assert records
+        assert not any(
+            access_token in value
+            for record in records
+            for value in _iter_original_strings(record)
+        )
+
+
+@pytest.mark.parametrize(
+    "policy_change",
+    ["mandatory-path", "repository-allowlist"],
+)
+@pytest.mark.asyncio
+async def test_recovery_quarantines_request_outside_current_scope(
+    worker_config,
+    git_repo,
+    policy_change,
+):
+    candidate = make_request(
+        git_repo,
+        read_only=True,
+        key="recovery-legacy-scope-drift-0001",
+    ).model_copy(update={"allowed_paths": ["newly-forbidden"]})
+    task_id, _ = staged_incomplete(worker_config, candidate, "queued")
+    payload = worker_config.model_dump(mode="python")
+    if policy_change == "mandatory-path":
+        payload["mandatory_forbidden_paths"] = [
+            *worker_config.mandatory_forbidden_paths,
+            "newly-forbidden",
+        ]
+    else:
+        payload["allowed_repositories"] = [git_repo.parent / "replacement-repo"]
+    current_config = type(worker_config).model_validate(payload)
+    executor = MockAgentExecutor()
+    service = TaskService(current_config, executor=executor)
+
+    await service.start()
+    try:
+        assert service.status(task_id).status is TaskStatus.NEEDS_REVIEW
+        assert service.result(task_id).status.value == "partial"
+        assert executor.calls == 0
+    finally:
+        await service.stop()
 
 
 @pytest.mark.asyncio
