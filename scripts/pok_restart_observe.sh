@@ -73,6 +73,30 @@ validate_integer_range() {
 validate_integer_range "--daemon-workers" "$DAEMON_WORKERS" 1 12
 validate_integer_range "--daemon-pairs" "$DAEMON_PAIRS" 1 8
 
+# Reuse pokctl's one interpreter-selection and isolated Web-dependency
+# preflight before stopping an owned service.  A remote shell can lack a bare
+# `python` even when POK_PYTHON/Conda/.venv is valid; discovering that only
+# after stop creates avoidable downtime.
+RUNTIME_PYTHON=""
+if [ "$DRY_RUN" = "0" ]; then
+    if ! RUNTIME_PYTHON="$(./pokctl.sh resolve-python)"; then
+        echo "refusing restart: managed project Python preflight failed before stopping service" >&2
+        exit 1
+    fi
+    if ! "$RUNTIME_PYTHON" -I - "$ROOT" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+sys.path[:0] = [str(root / "web"), str(root / "web" / "core")]
+from server.state import AppState  # noqa: F401
+PY
+    then
+        echo "refusing restart: durable config writer import preflight failed before stopping service" >&2
+        exit 1
+    fi
+fi
+
 : "${POK_EVOLUTION_RUNTIME:=1}"
 : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
 : "${EVOLUTION_GIT_PUSH:=$POK_REQUIRE_EVOLUTION_PUSH}"
@@ -143,7 +167,7 @@ else
     log "persisting daemon config atomically workers=$DAEMON_WORKERS pairs=$DAEMON_PAIRS"
 fi
 if [ "$DRY_RUN" = "0" ] && [ "$OBSERVE_ONLY" = "0" ]; then
-    python - "$RESULTS_DIR/app_config.json" "$DAEMON_WORKERS" "$DAEMON_PAIRS" <<'PY' \
+    "$RUNTIME_PYTHON" - "$RESULTS_DIR/app_config.json" "$DAEMON_WORKERS" "$DAEMON_PAIRS" <<'PY' \
         | tee -a "$RUN_LOG"
 import json
 import pathlib
@@ -202,7 +226,7 @@ fi
 
 if [ "$DRY_RUN" = "0" ]; then
     log "waiting for HTTP health"
-    python - "$HOST" "$PORT" "$RUN_LOG" <<'PY'
+    "$RUNTIME_PYTHON" - "$HOST" "$PORT" "$RUN_LOG" <<'PY'
 import json
 import sys
 import time
@@ -237,7 +261,7 @@ fi
 
 log "observing terminal generation events count=$OBSERVE_GENERATIONS timeout=${OBSERVE_TIMEOUT}s"
 if [ "$DRY_RUN" = "0" ]; then
-    python - "$RESULTS_DIR/events.jsonl" "$OBSERVE_GENERATIONS" "$OBSERVE_TIMEOUT" "$RUN_LOG" \
+    "$RUNTIME_PYTHON" - "$RESULTS_DIR/events.jsonl" "$OBSERVE_GENERATIONS" "$OBSERVE_TIMEOUT" "$RUN_LOG" \
         "$LOG_DIR/.server.pid" "$RESULTS_DIR/.daemon_pid" "$RESULTS_DIR/pipeline_state.json" "$HOST" "$PORT" <<'PY'
 import json
 import pathlib

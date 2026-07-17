@@ -140,6 +140,13 @@ reuse an old running process, disable dynamic gates, or restart an old
 checkpoint. Repair/select the interpreter, rerun the stopped-state
 diagnostics, and launch only the current `origin/main` checkout.
 
+`scripts/pok_restart_observe.sh` obtains that same verified interpreter through
+`./pokctl.sh resolve-python` before it stops the owned service. It uses that
+path for its durable AppState transaction, HTTP health check, and observer. A
+missing interpreter or an unimportable config writer therefore fails before any
+avoidable downtime; the helper must never fall back to a bare `python` after a
+service has stopped.
+
 After `.evolution_pok` publishes a bot:
 
 ```bash

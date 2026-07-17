@@ -479,6 +479,14 @@ cmd_logs() {
     tail -f "$target"
 }
 
+cmd_resolve_python() {
+    # Expose only the already-validated launcher interpreter.  Operator
+    # helpers use this instead of duplicating the POK_PYTHON/venv/Conda/PATH
+    # selection policy or accidentally falling back to a bare `python`.
+    require_web_python >&2 || exit 1
+    printf '%s\n' "$PYTHON"
+}
+
 # ── 入口 ──
 usage() {
     cat <<EOF
@@ -495,6 +503,7 @@ Commands:
   status             查询服务状态
   restart [args...]  重启服务
   logs [file]        实时查看日志 (默认: server.stdout.log, 可指定 app.log)
+  resolve-python     输出已经过隔离 Web 依赖校验的项目 Python 路径
 
 Examples:
   $0 start                    # 默认启动 (端口 8000)
@@ -517,6 +526,14 @@ case "${1:-}" in
     status)  shift; cmd_status ;;
     restart) shift; cmd_restart "$@" ;;
     logs)    shift; cmd_logs "$@" ;;
+    resolve-python)
+        shift
+        if [ "$#" -ne 0 ]; then
+            echo "resolve-python does not accept arguments" >&2
+            exit 2
+        fi
+        cmd_resolve_python
+        ;;
     -h|--help|help) usage ;;
     *)       echo "未知命令: ${1:-}"; usage; exit 1 ;;
 esac

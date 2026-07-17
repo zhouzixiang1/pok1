@@ -1485,3 +1485,27 @@ canonical abandon transaction for v43, fast-forward only from merged
 `origin/main`, run checkpoint/evaluation/official diagnostics, and launch a
 fresh v143. This reset/restart starts stability again at `0/10`; it does not
 create a Bot, certificate, rating cycle, or strength claim.
+
+## Latest operational status — v45 is live; restart helper hardening is pending
+
+After the schema-2 v43 abandon and the `2d182c89` fast-forward, stopped-state
+recovery diagnostics reported `active=false/recoverable=true/issues=[]`,
+evaluation identity was consistent, and the official doctor was green. The
+runtime started `generation:143:workflow-v44` on `2d182c89`, but that attempt
+canonically abandoned before a Worker when strict-authority proposal validation
+exhausted its `compute_memory` schema retry. Its checkpoint and candidate were
+removed only through the schema-2 transaction; it produced no Bot, certificate,
+tag, rating, or strength sample. The healthy scheduler then started fresh
+`generation:143:workflow-v45` on the same merged HEAD. v45 has completed its
+direction audit and is conducting Master proposal work. It remains actual
+in-flight work, not yet a Worker, candidate delivery, certificate, tag, rating,
+or strength sample.
+
+The first restart attempt revealed that `scripts/pok_restart_observe.sh` used a
+bare `python` after safely stopping the service. It was retried with the exact
+verified project interpreter and is now healthy. A source-pending operational
+patch introduces `pokctl.sh resolve-python`, resolves/import-preflights it
+before stop, and reuses it for config/health/observer inline calls; regression
+coverage includes both resolved-path and missing-path fail-closed cases. Do not
+sync or restart v45 merely for this helper change. Let the active evaluation
+reach its canonical safe boundary first; any later restart resets `N/10`.

@@ -3398,3 +3398,33 @@ checkpoint (never hand-delete it), fast-forward only from `origin/main`, run
 checkpoint/evaluation/official diagnostics, and prepare a fresh v143 workflow.
 This control-plane repair or restart keeps observation at `0/10`; it does not
 reuse the rejected Master output or claim a Bot delivery.
+
+## 2026-07-18 — restart helper interpreter handoff preflight
+
+The first controlled post-abandon restart exposed an operator-path defect:
+`pok_restart_observe.sh` correctly delegated the Web launch to `pokctl.sh`, but
+stopped the service and then invoked a bare `python` for its AppState config
+transaction. This shell had no such executable, so it exited before a new
+checkpoint or candidate was created. A one-process PATH workaround using the
+same verified project interpreter restarted `workflow-v44`; it is recorded as
+an operational recovery, not as a substitute for the source fix. That workflow
+was later canonically abandoned for its independently recorded strict-authority
+schema failure; the scheduler then began fresh `workflow-v45` on the same
+merged runtime HEAD.
+
+The pending source hardening makes `pokctl.sh resolve-python` the sole
+interpreter-selection surface. It reuses the existing explicit
+`POK_PYTHON`/virtualenv/Conda/.venv/verified-PATH selection and isolated Web
+dependency check. The restart helper resolves it and imports the actual
+`server.state.AppState` config writer before it can stop a service; its config
+transaction, HTTP health check, and observer all use that exact path. A missing
+or unusable resolver output fails closed before `pokctl stop`, never after
+avoidable downtime.
+
+Regression evidence: the helper suite passes `10 passed, 1 warning`; it uses a
+fake bare `python` that exits and a separate resolved project interpreter to
+prove preflight/config/health never fall back, plus a missing-interpreter
+negative case that records no `stop` or `start`. `bash -n` passes for both
+scripts; real `POK_PYTHON` resolution succeeds and an invalid override rejects
+without process control. This source-only operational hardening is not synced
+into the active v45 runtime while its Master work is in flight.
