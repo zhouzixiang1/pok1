@@ -2388,3 +2388,47 @@ remains at `1ceeffa9` with only the existing Arena owner lock; view-only Web PID
 Orchestrator/rating daemon, checkpoint, candidate or active Bot exists.
 Stability is `0/10`. Merge, stopped-runtime sync and fresh workflow-v32+ are
 unclaimed here.
+
+## 2026-07-17 — contract-33 merge and stopped-runtime synchronization
+
+The reviewed code-bearing integration freeze is
+`e83d99634c581551995d7838a012f00fcb92eecb` on `origin/main`:
+typed proposal/compiler repair `a01f545e0d4eab9d60b6b6e67542a433b562e7b5`,
+workflow-v31 evidence documentation `c59d8cfa`, Worker MCP recovered-task
+quarantine `2ade21159d12b551dcab46f0ee75b309125d7a2c`, and its boundary record
+`e83d9963`. The transient `codex/v143-master-binding-contract` ref was detached
+and deleted after remote ancestry verification. Local and remote long-lived
+refs remain only `main`, `pok-arena` and `codex/three-bot-consolidation`; owner
+locked and unrelated detached worktrees were not cleaned by name or prefix.
+
+Final source evidence is focused `332 passed`, complete Web `2934 passed, 20
+skipped, 1 warning` in 163.90 seconds, Sever `33 passed`, frontend production
+build green, and Worker MCP `126 passed, 2 dependency deprecation warnings` in
+11.41 seconds. Compile and diff checks are green. The Worker MCP source remains
+an inert Codex helper: this merge did not install/restart its services or grant
+it poker checkpoint/evidence authority.
+
+View-only Web PID `1803477` was verified to have runtime-checkout cwd and was
+terminated cleanly before synchronization. With no Orchestrator, rating daemon
+or checkpoint, `.evolution_pok` fast-forwarded only through `origin/main` from
+`1ceeffa9` to `e83d9963`; its only untracked entry remained the pre-existing
+Arena owner lock. Post-sync canonical diagnostics report recovery
+`active=false/recoverable=true/issues=[]`, empty Bot pool, allocation authority
+valid, `current_v=142`, `next_v=143`, and epoch state
+`fresh_bootstrap_ready`. Reset receipt digest
+`cde5ec5aaa566ca7053dbd4f1e03086a33d43654917dd3fc97bae50cbc9da34d`
+validates with no issue; strict blueprint validation is empty; the loaded
+first-control policy is `official-first-strict-control-bootstrap-v1` with
+`first_strict_control_v1` and exact 5+3×70 suite.
+
+The mandatory read-only reconciliation mode returned the already-completed
+schema-1 receipt
+`af23c438202943b8c95b1a405a9c1f7f8ddb4a56e3802d4399b2e8156f2fd2f3`.
+The earlier invocation without its required quarantine-mode selector rejected
+before mutation, as designed. Host official doctor remains `ok=true` on
+`official-exe-2021-wine9-managed-executor-v7`; signing and the one-entry
+historical v141 verdict ledger validate. Evaluation contract changed 32→33,
+but no live checkpoint exists, so there is nothing to abandon or replay. The
+next authorized transition is a fresh v143 prepare (workflow attempt allocated
+by the live scheduler), not workflow-v31 replay. All poker processes remain
+stopped and stability remains `0/10`.

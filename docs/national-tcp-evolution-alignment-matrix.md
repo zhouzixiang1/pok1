@@ -57,6 +57,18 @@ does not reinterpret them and has zero rating or strategy authority.
 
 ## Current dynamic evidence
 
+At code-bearing integration freeze
+`e83d99634c581551995d7838a012f00fcb92eecb`, the stopped
+autonomous checkout is synchronized and contract-33 recovery is
+`active=false/recoverable=true/issues=[]`. The epoch is
+`fresh_bootstrap_ready` at v142→v143 with no checkpoint or active Bot;
+blueprint, reset receipt, first-control 5+3×70 policy and official doctor are
+green. Completed reconciliation receipt
+`af23c438202943b8c95b1a405a9c1f7f8ddb4a56e3802d4399b2e8156f2fd2f3`
+revalidates. No v143 publication, certificate, rating row or stability credit
+is implied; the next transition is a fresh prepare and the counter remains
+`0/10`.
+
 ### 2026-07-16 — workflow-v30 quality evidence invalidated the old native liveness budget
 
 Fresh `generation:143:workflow-v30` reached Worker completion after three

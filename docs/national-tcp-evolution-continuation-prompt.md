@@ -802,3 +802,14 @@ Resume order:
 5. continue v143 publication, v144 normal full-v5, immutable rating cycle and
    resettable ten-generation observation. Any further repair/restart resets
    observation to `0/10`.
+
+Post-merge update: steps 1–3 above are complete. `origin/main` and the stopped
+runtime reached `e83d99634c581551995d7838a012f00fcb92eecb`; the transient source
+branch was deleted. Recovery is inactive/recoverable with no issues, epoch is
+`fresh_bootstrap_ready` at v142→v143 with an empty Bot pool, blueprint/reset
+receipt/first-control are valid, reconciliation revalidated completed receipt
+`af23c438202943b8c95b1a405a9c1f7f8ddb4a56e3802d4399b2e8156f2fd2f3`,
+and official doctor is green on managed-executor profile v7. No checkpoint
+exists, so contract 33 requires a fresh prepare rather than abandon or replay.
+All poker processes are intentionally stopped; the next task begins at step 4
+with stability `0/10`.
