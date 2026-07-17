@@ -566,6 +566,18 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "every chain symbol must also be present in source_symbols" in prompt
     assert "Every adjacent reachable_chain edge must exist in the current" in prompt
     assert "proposal_reachable_chain_edge_not_current" in prompt
+    assert (
+        "mechanism_target = row.mechanism_target = row.intervention_target = "
+        "falsifier.intervention_target"
+    ) in prompt
+    assert "mechanism_target is NEVER the state_learning_primary label" in prompt
+    assert '"mechanism_target":"opponent.rates"' in prompt
+    assert "context['opponent']['rates'] does not replace" in prompt
+    assert "opponent.rates.fold_to_raise belongs to the action-profile target" in prompt
+    assert (
+        "opponent.terminal_response.fold_to_raise belongs to the "
+        "terminal-response target"
+    ) in prompt
 
     normal = agent_master._render_master_proposal_provider_prompt({
         "planning_context": "Frozen snapshot path is evidence data only.",
@@ -1063,6 +1075,24 @@ async def test_second_duplicate_fails_closed_without_critics_or_another_repair(
     ) == 1
     assert len(roles) == 4
     assert not any("CRITIC" in role for role in roles)
+
+
+def test_error_packet_parser_reports_only_the_primary_rejection():
+    import agent_master
+
+    reason = "three_distinct_schema_valid_scout_proposals_required:got_2"
+    packet = agent_master._proposal_packet_error(
+        reason,
+        context_digest="c" * 64,
+        source_code_digest="s" * 64,
+    )
+
+    parsed, errors = agent_master._parse_valid_proposal_packet(packet)
+
+    assert parsed is None
+    assert errors == [f"proposal_packet_invalid:{reason}"]
+    assert "proposal_packet_evidence_mode_invalid" not in errors
+    assert "proposal_packet_fields_mismatch" not in errors
 
 
 @pytest.mark.asyncio
@@ -1824,8 +1854,6 @@ def test_proposal_falsifier_must_match_typed_state_learning_primary(tmp_path):
         "terminal response",
         "terminal-response",
         "terminalresponse",
-        "fold to raise",
-        "fold-to-raise",
     ),
 )
 def test_typed_mechanism_rejects_natural_language_foreign_aliases(
@@ -1889,6 +1917,107 @@ def test_typed_mechanism_rejects_natural_language_foreign_aliases(
             "opponent.terminal_response"
         )
         for item in hints
+    )
+
+
+def test_shared_fold_to_raise_leaf_is_bound_by_full_opponent_namespace(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.rates",
+        "structural_change": (
+            "Route only opponent.rates.fold_to_raise through the bounded "
+            "action_profile consumer in the live policy decision path."
+        ),
+        "expected_diff": (
+            "The paired typed intent changes only when "
+            "opponent.rates.fold_to_raise changes."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": "opponent.rates",
+        "control": (
+            "Hold opponent.rates.fold_to_raise at its bounded action-profile prior."
+        ),
+        "intervention": (
+            "Change only opponent.rates.fold_to_raise in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under that opponent action-profile "
+            "intervention."
+        ),
+    }
+
+    accepted = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    )
+    assert accepted is not None
+
+    payload["structural_change"] = (
+        "Route opponent.rates through the live consumer while the actual "
+        "mechanism varies opponent.terminal_response.fold_to_raise."
+    )
+    raw_foreign = json.dumps(payload)
+    assert agent_master._validated_master_proposal(
+        raw_foreign,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+    assert (
+        "proposal_mechanism_foreign_targets_in_executable_claim:"
+        "opponent.terminal_response"
+        in agent_master._master_proposal_projection_hints(
+            raw_foreign,
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+            evidence_mode="fresh_strict_control_no_strength",
+        )
+    )
+
+    payload["structural_change"] = (
+        "Route only opponent.rates.fold_to_raise through the bounded "
+        "action_profile consumer in the live policy decision path."
+    )
+    payload["expected_diff"] = (
+        "The paired consumer reads context['opponent']['rates'] and changes the "
+        "typed decision without emitting the exact target literal."
+    )
+    bracket_only = json.dumps(payload)
+    assert any(
+        item == (
+            "proposal_mechanism_target_missing_from_executable_fields:"
+            "opponent.rates:expected_diff"
+        )
+        for item in agent_master._master_proposal_projection_hints(
+            bracket_only,
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+            evidence_mode="fresh_strict_control_no_strength",
+        )
     )
 
 

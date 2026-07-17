@@ -140,6 +140,10 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
     "deadline": ("deadline",),
     "opponent.rates": (
         "opponent.rates",
+        "opponent.rates.aggression",
+        "opponent.rates.preflop_vpip",
+        "opponent.rates.fold_to_raise",
+        "opponent.rates.fold_to_allin",
         "action_profile",
         "fold_rate",
         "call_rate",
@@ -148,8 +152,10 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
     ),
     "opponent.terminal_response": (
         "opponent.terminal_response",
+        "opponent.terminal_response.fold_to_raise",
+        "opponent.terminal_response.fold_to_jam",
+        "opponent.terminal_response.river_overcall",
         "terminal_response",
-        "fold_to_raise",
         "call_raise",
         "raise_over_raise",
     ),

@@ -71,7 +71,7 @@ def test_system_control_plane_is_exact_and_restart_critical_at_every_stage():
         | ORCHESTRATOR_ROOT_GUARD_FILES
         | FORMAL_BOOTSTRAP_FILES
     )
-    assert evaluation_contract.CONTRACT_VERSION == 33
+    assert evaluation_contract.CONTRACT_VERSION == 34
     assert SYSTEM_BOOTSTRAP_FILES == set(
         evolution_scope.CRITICAL_SYSTEM_BOOTSTRAP_EXACT
     )

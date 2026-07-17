@@ -130,12 +130,22 @@ def _render_master_proposal_provider_prompt(inputs):
         "Choose the one that best matches your proposed mechanism. The exact "
         "typed falsifier -> state_learning primary contract is: "
         + _proposal_falsifier_mapping_text()
-        + ". Copy top-level mechanism_target, falsifier.state_learning_primary, "
-        "and falsifier.intervention_target exactly from that mapping; the two "
-        "target fields must be equal and prose cannot substitute for them. Copy "
+        + ". For the selected test_name, copy these exact equalities from its "
+        "single row: top-level mechanism_target = row.mechanism_target = "
+        "row.intervention_target = falsifier.intervention_target, while "
+        "falsifier.state_learning_primary = row.state_learning_primary. "
+        "mechanism_target is NEVER the state_learning_primary label. Example: "
+        "incremental_opponent_model requires mechanism_target=opponent.rates, "
+        "state_learning_primary=action_profile, and "
+        "intervention_target=opponent.rates. Copy "
         "the exact intervention_target literal into structural_change, "
         "expected_diff, and falsifier.intervention; each field must describe only "
-        "that target and must not name another closed mechanism target or alias. The "
+        "that target and must not name another closed mechanism target or alias. "
+        "Bracket notation such as context['opponent']['rates'] does not replace "
+        "the required exact opponent.rates literal. Shared leaf names are "
+        "namespace-sensitive: opponent.rates.fold_to_raise is an action-profile "
+        "field, while opponent.terminal_response.fold_to_raise is a distinct "
+        "terminal-response target; always include the full owning namespace. The "
         "required_proposal_terms become final Worker-prompt obligations. A "
         "plan_required_floor_checks entry is an additional generation-wide quality "
         "floor; it is NOT the proposal falsifier unless this mapping says it is "
@@ -216,6 +226,14 @@ def _render_master_proposal_provider_prompt(inputs):
                 if require_snapshot_evidence
                 else "10. Do not invent a snapshot reference; this mode has no strength snapshot.\n"
             )
+            + "11. mechanism_target is the selected row's intervention_target, "
+            "NEVER its state_learning_primary. Include the exact dot literal in "
+            "structural_change, expected_diff, and falsifier.intervention; bracket "
+            "notation alone does not satisfy the binding.\n"
+            "12. Qualify shared leaf names with their owner. In particular, "
+            "opponent.rates.fold_to_raise belongs to the action-profile target, "
+            "whereas opponent.terminal_response.fold_to_raise belongs to the "
+            "terminal-response target.\n"
             + "Keep the same independent lens, reread the verified index, "
             "and emit a complete object without commentary."
         )
@@ -529,6 +547,9 @@ def _proposal_falsifier_mapping_text() -> str:
     rows = {
         test_name: {
             "state_learning_primary": primary,
+            "mechanism_target": (
+                STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+            ),
             "intervention_target": (
                 STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
             ),
@@ -2028,6 +2049,11 @@ def _parse_valid_proposal_packet_impl(
         errors.append("proposal_packet_schema_mismatch")
     if packet.get("valid") is not True:
         errors.append(f"proposal_packet_invalid:{packet.get('reason', 'unknown')}")
+        # Error packets intentionally contain only the primary rejection and
+        # safe identity fields. Do not feed that reduced shape through the
+        # success-packet validator and obscure the actual cause with secondary
+        # field, evidence-mode, and critic diagnostics.
+        return None, errors
     expected_packet_fields = {
         "schema_version",
         "valid",
