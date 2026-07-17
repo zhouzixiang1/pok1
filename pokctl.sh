@@ -23,19 +23,52 @@ STDOUT_LOG="$LOG_DIR/server.stdout.log"
 MAIN_PY="web/main.py"
 
 # ── 检测 Python ──
+web_python_ready() {
+    "$1" -I -c 'import fastapi, sse_starlette, uvicorn' >/dev/null 2>&1
+}
+
 detect_python() {
-    if [ -n "${VIRTUAL_ENV:-}" ]; then
+    # A service or remote shell often has neither an activated virtualenv nor
+    # a Conda shell hook. Let the operator pin the project interpreter rather
+    # than silently falling back to a system Python that cannot launch FastAPI.
+    if [ -n "${POK_PYTHON:-}" ]; then
+        echo "$POK_PYTHON"
+    elif [ -n "${VIRTUAL_ENV:-}" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
         echo "$VIRTUAL_ENV/bin/python"
+    elif [ -n "${CONDA_PREFIX:-}" ] && [ -x "$CONDA_PREFIX/bin/python" ]; then
+        echo "$CONDA_PREFIX/bin/python"
     elif [ -x ".venv/bin/python" ]; then
         echo ".venv/bin/python"
-    elif command -v python3 &>/dev/null; then
-        echo "python3"
     else
-        echo "python"
+        # PATH is only a convenience fallback. Prefer the first interpreter
+        # that can pass the isolated Web preflight; an explicitly selected
+        # environment above remains fail-closed in require_web_python().
+        local candidate
+        for candidate in python3 python; do
+            if command -v "$candidate" >/dev/null 2>&1 && web_python_ready "$candidate"; then
+                echo "$candidate"
+                return
+            fi
+        done
+        if command -v python3 >/dev/null 2>&1; then
+            echo "python3"
+        else
+            echo "python"
+        fi
     fi
 }
 
 PYTHON="$(detect_python)"
+
+require_web_python() {
+    # Fail before spawning a detached server. A two-second PID liveness check
+    # used to turn this ordinary dependency error into an opaque start failure.
+    if ! web_python_ready "$PYTHON"; then
+        echo "✗ 所选 Python 无法在隔离模式导入 FastAPI、SSE-Starlette 和 Uvicorn: $PYTHON"
+        echo "  请设置 POK_PYTHON=/绝对路径/项目python，或激活目标 virtualenv/Conda 环境。"
+        return 1
+    fi
+}
 
 # ── 工具函数 ──
 read_pid() {
@@ -250,6 +283,8 @@ cmd_start() {
         exit 1
     fi
 
+    require_web_python || exit 1
+
     # 清理孤儿
     kill_orphan
 
@@ -424,6 +459,10 @@ cmd_status() {
 
 cmd_restart() {
     echo "正在重启服务..."
+    # Validate before stopping a healthy owned server. An invalid explicit
+    # override must fail closed without converting a configuration typo into
+    # avoidable downtime.
+    require_web_python || exit 1
     cmd_stop
     sleep 1
     cmd_start "$@"
@@ -466,6 +505,9 @@ Examples:
   $0 status
   $0 logs                     # 查看 stdout 日志
   $0 logs web/logs/app.log    # 查看应用日志
+
+Environment:
+  POK_PYTHON                  Absolute project Python override (checked before launch)
 EOF
 }
 

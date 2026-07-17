@@ -121,6 +121,25 @@ an old schema as a migration shortcut. If the verdict ledger is corrupt or
 truncated, do not initialize over it; recover the operator ledger/history and
 run doctor again.
 
+`pokctl.sh` must launch the Web process with the same project Python used for
+the verified runtime, rather than silently choosing an arbitrary system
+`python3`. It resolves, in order, an explicit `POK_PYTHON`, an active virtual
+environment, an active Conda environment, `.venv`, then a verified PATH
+fallback; it checks `fastapi`, `sse_starlette`, and `uvicorn` in isolated mode
+before it detaches a process. For a service or
+remote shell that has no activated environment, start explicitly, for example:
+
+```bash
+cd /home/zzx/project/pok/.evolution_pok
+POK_PYTHON=/absolute/path/to/project-python \
+  ./pokctl.sh start --host 0.0.0.0 --port 8000 --no-build
+```
+
+An interpreter validation failure is a launcher failure, not a reason to
+reuse an old running process, disable dynamic gates, or restart an old
+checkpoint. Repair/select the interpreter, rerun the stopped-state
+diagnostics, and launch only the current `origin/main` checkout.
+
 After `.evolution_pok` publishes a bot:
 
 ```bash

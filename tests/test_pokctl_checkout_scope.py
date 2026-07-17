@@ -35,9 +35,15 @@ def _fake_proc(proc_root: Path, pid: int, cwd: Path, cmd: list[str]) -> None:
     (proc_dir / "cmdline").write_bytes(b"\0".join(part.encode("utf-8") for part in cmd) + b"\0")
 
 
-def _run_pokctl(root: Path, proc_root: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run_pokctl(
+    root: Path,
+    proc_root: Path,
+    *args: str,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["POKCTL_PROC_ROOT"] = str(proc_root)
+    env.update(extra_env or {})
     return subprocess.run(
         ["bash", str(root / "pokctl.sh"), *args],
         cwd=root,
@@ -113,3 +119,52 @@ def test_pokctl_no_build_requires_existing_static_bundle(tmp_path):
     assert result.returncode == 1
     assert "--no-build requested" in result.stdout
     assert "web/server/static/index.html" in result.stdout
+
+
+def test_pokctl_rejects_missing_web_dependencies_for_explicit_python(tmp_path):
+    outer = tmp_path / "pok"
+    proc_root = tmp_path / "proc"
+    selected_python = outer / "missing-project-python"
+
+    _init_git_repo(outer)
+    _install_pokctl(outer)
+    static = outer / "web" / "server" / "static"
+    static.mkdir(parents=True)
+    (static / "assets").mkdir()
+    (static / "index.html").write_text("<!doctype html>", encoding="utf-8")
+
+    result = _run_pokctl(
+        outer,
+        proc_root,
+        "start",
+        "--no-build",
+        extra_env={"POK_PYTHON": str(selected_python)},
+    )
+
+    assert result.returncode == 1
+    assert str(selected_python) in result.stdout
+    assert "POK_PYTHON" in result.stdout
+    assert not (outer / "web" / "logs" / ".server.pid").exists()
+
+
+def test_pokctl_restart_preserves_owned_server_when_override_is_invalid(tmp_path):
+    outer = tmp_path / "pok"
+    proc_root = tmp_path / "proc"
+    pid = 12348
+    selected_python = outer / "missing-project-python"
+
+    _init_git_repo(outer)
+    _install_pokctl(outer)
+    _write_pid_file(outer, pid)
+    _fake_proc(proc_root, pid, outer, ["python3", "web/main.py", "--port", "8000"])
+
+    result = _run_pokctl(
+        outer,
+        proc_root,
+        "restart",
+        extra_env={"POK_PYTHON": str(selected_python)},
+    )
+
+    assert result.returncode == 1
+    assert str(selected_python) in result.stdout
+    assert (outer / "web" / "logs" / ".server.pid").exists()

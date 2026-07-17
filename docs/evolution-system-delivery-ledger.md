@@ -3277,3 +3277,38 @@ this ledger update, then commit and publish this reviewed batch. The stopped
 candidate/publication/certificate/rating or stability credit exists; only after
 merge plus stopped-checkout fast-forward and diagnostics may fresh v143 begin.
 Observation remains `0/10`.
+
+## 2026-07-18 — stopped runtime synchronization and launcher interpreter gate
+
+The reviewed alignment batch was committed and fast-forwarded to
+`origin/main` as `3b7e360427e4330e2bbc29d005a3b2e52e47b5fc`. Its final
+host evidence is Web `3085 passed, 20 skipped, 1 warning`, Sever `33 passed`,
+frontend producer test `22/22`, lint/build, compile and diff checks. The
+autonomous checkout was first proved idle: no active checkpoint, candidate,
+strict Bot, evaluator child or rating pool; recovery diagnostics reported
+`active=false`, `recoverable=true`, `issues=[]`, and epoch projection was
+`fresh_bootstrap_ready`, `v142 -> v143`. Web and the idle daemon were stopped
+through their verified ownership paths, then the runtime fast-forwarded from
+`855861bf` to `3b7e3604`; its pre-existing untracked Arena lock was preserved.
+
+That new revision changed the native evaluator identity. The old identity
+manifest was therefore not reused: the explicit
+`scripts/evaluation_data_identity.py --archive-and-initialize` transaction
+archived only the declared rating/evaluation payloads to
+`web/core/results/archive/evaluation_identity/20260718_023738` and created
+the fresh instance `2107c99acb154ecb9f6d9c91e1e4fe96` with manifest digest
+`430acb424553ee3f5dff5bcdbeff594186e7fef9922fd9686e5d59263ab121fa`.
+Post-migration identity and checkpoint diagnostics are green; official doctor
+reports the EXE, managed sandbox, signing identity and verdict ledger valid.
+This was an identity rotation with an empty strict pool, not a rating migration
+or an observation-credit event; stability remains `0/10`.
+
+The first managed restart then exposed an independent operational bug:
+`pokctl.sh` selected a service PATH `python3` without `uvicorn` and reported
+only a later liveness failure. The launcher now accepts explicit
+`POK_PYTHON`, recognizes a valid active Conda environment, validates
+FastAPI/Uvicorn before detach, and refuses to launch when they are missing.
+Its focused checkout/override regressions and shell syntax check are required
+before this repair is committed, synchronized, and used to launch fresh v143.
+No v143 candidate, certificate, tag, rating row or strength sample has been
+created by this failed launch attempt.
