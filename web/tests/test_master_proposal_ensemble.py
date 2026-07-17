@@ -48,7 +48,7 @@ def _proposal(
     label = "shared" if shared_claims else direction
     payload = {
         "targeted_failure": f"{label} identifies one repeated reachable decision failure.",
-        "structural_change": f"{label} replaces the parent decision mechanism with one bounded path.",
+        "structural_change": f"{label} replaces the parent decision mechanism with one deadline-bounded path.",
         "counterfactual": f"{label} changes one input while holding cards, seed, and legality fixed.",
         "measurement": (
             "target=fixed_blueprint_control; "
@@ -62,7 +62,8 @@ def _proposal(
             "secondary=net_chip_ci"
         ),
         "why_not_threshold_tuning": f"{label} changes state flow and a reachable consumer, not one number.",
-        "expected_diff": f"{label} changes get_baseline_decision through the existing _choose_intent call edge.",
+        "mechanism_target": "deadline",
+        "expected_diff": f"{label} changes get_baseline_decision through the existing _choose_intent call edge before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
@@ -74,8 +75,10 @@ def _proposal(
         ],
         "falsifier": {
             "test_name": "fast_policy_baseline",
-            "control": "Run the frozen parent on the same state, cards, and deterministic seed.",
-            "intervention": "Run only the proposed mechanism on that identical canonical state.",
+            "state_learning_primary": "sample_counted_candidate_batch",
+            "intervention_target": "deadline",
+            "control": "Run the frozen parent with sample_count=1 before the deadline on the same state, cards, and deterministic seed.",
+            "intervention": "Run only the proposed mechanism with a changed deadline on that identical canonical state.",
             "expected_observation": "The target action changes while the paired control remains unchanged.",
         },
         "evidence_refs": [
@@ -161,7 +164,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     packet = json.loads(packet_text)
 
     assert packet["valid"] is True
-    assert packet["schema_version"] == "master-proposal-packet-v4"
+    assert packet["schema_version"] == "master-proposal-packet-v5"
     assert packet["proposal_count"] == 3
     assert packet["valid_critic_count"] == 2
     assert len(packet["allowed_proposal_ids"]) == 3
@@ -1110,7 +1113,7 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
 
     def fake_accept(call, *, role_result, parse_contract):
         assert parse_contract in {
-            "master-proposal-v2",
+            "master-proposal-v3",
             "master-proposal-ballot-v1",
         }
         accepted_by_slot[call["slot"]] = role_result
@@ -1677,12 +1680,13 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
             "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
         ),
         "target_files": ["policy.py"],
-        "structural_change": "Replace one reachable branch with a bounded state mechanism.",
+        "structural_change": "Replace one reachable branch with a deadline-bounded state mechanism.",
         "counterfactual": (
             "Hold the state, cards, legality, and seed fixed while toggling only "
             "the selected mechanism."
         ),
-        "expected_diff": "Wire that mechanism through the existing sanitized action path.",
+        "mechanism_target": "deadline",
+        "expected_diff": "Wire that mechanism through the existing sanitized action path before the deadline.",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
@@ -1693,8 +1697,10 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
         ],
         "falsifier": {
             "test_name": "fast_policy_baseline",
+            "state_learning_primary": "sample_counted_candidate_batch",
+            "intervention_target": "deadline",
             "control": "Keep the parent state and deterministic seed fixed for comparison.",
-            "intervention": "Enable only the selected mechanism on the same state and seed.",
+            "intervention": "Enable only the selected mechanism with a changed deadline on the same state and seed.",
             "expected_observation": "The selected action changes only under the intervention.",
         },
         "why_not_threshold_tuning": (
@@ -1721,6 +1727,396 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
         "tasks": [{"target_files": ["opponent.py"]}],
     }, packet)
     assert errors == ["selected_proposal_target_files_not_writable:['policy.py']"]
+
+
+def test_proposal_falsifier_must_match_typed_state_learning_primary(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload["mechanism_target"] = "opponent.rates"
+    payload["structural_change"] = (
+        "Change only opponent.terminal_response.fold_to_raise in the live consumer."
+    )
+    payload["expected_diff"] = (
+        "The decision changes only when opponent.terminal_response is changed."
+    )
+    payload["falsifier"].update({
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": "opponent.rates",
+        "intervention": (
+            "Change only opponent.terminal_response.fold_to_raise in the paired state."
+        ),
+    })
+    raw_mislabeled = json.dumps(payload)
+
+    assert agent_master._validated_master_proposal(
+        raw_mislabeled,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    ) is None
+    hints = agent_master._master_proposal_projection_hints(
+        raw_mislabeled,
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+    assert any(
+        item.startswith(
+            "proposal_mechanism_target_missing_from_executable_fields:"
+            "opponent.rates:"
+        )
+        for item in hints
+    )
+    assert (
+        "proposal_mechanism_foreign_targets_in_executable_claim:"
+        "opponent.terminal_response"
+        in hints
+    )
+
+    payload["mechanism_target"] = "opponent.terminal_response"
+    payload["structural_change"] = (
+        "Consume opponent.terminal_response confidence through the bounded decision path."
+    )
+    payload["expected_diff"] = (
+        "The paired intent changes only through opponent.terminal_response."
+    )
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": (
+            "Hold terminal_response confidence at the bounded prior for the paired state."
+        ),
+        "intervention": (
+            "Change only opponent.terminal_response confidence in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only with the terminal_response confidence intervention."
+        ),
+    }
+    accepted = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+
+    assert accepted is not None
+    compilation = agent_master._selected_proposal_compilation_contract(accepted)
+    assert compilation["state_learning_primary"] == "terminal_response"
+    assert compilation["required_primary_checks"] == [
+        "terminal_response_adaptation"
+    ]
+
+
+@pytest.mark.parametrize(
+    "foreign_alias",
+    (
+        "terminal response",
+        "terminal-response",
+        "terminalresponse",
+        "fold to raise",
+        "fold-to-raise",
+    ),
+)
+def test_typed_mechanism_rejects_natural_language_foreign_aliases(
+    tmp_path,
+    foreign_alias,
+):
+    import agent_master
+    from output_schema import (
+        STATE_LEARNING_INTERVENTION_TARGET_ALIASES,
+        STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS,
+    )
+
+    assert set(STATE_LEARNING_INTERVENTION_TARGET_ALIASES) == set(
+        STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS.values()
+    )
+    assert all(
+        target in aliases
+        for target, aliases in STATE_LEARNING_INTERVENTION_TARGET_ALIASES.items()
+    )
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.rates",
+        "structural_change": (
+            "Route opponent.rates through the live decision consumer while the "
+            f"actual mechanism varies {foreign_alias}."
+        ),
+        "expected_diff": (
+            "The paired typed intent changes through opponent.rates only."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": "opponent.rates",
+        "control": "Hold opponent rates at the bounded prior for the paired state.",
+        "intervention": "Change only opponent.rates in the paired decision context.",
+        "expected_observation": "The typed intent changes only under that rate intervention.",
+    }
+
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    ) is None
+    hints = agent_master._master_proposal_projection_hints(
+        json.dumps(payload),
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+    assert any(
+        item.startswith(
+            "proposal_mechanism_foreign_targets_in_executable_claim:"
+            "opponent.terminal_response"
+        )
+        for item in hints
+    )
+
+
+def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    proposal = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+    assert proposal is not None
+    packet = {
+        "ordered_proposals": [proposal],
+        "allowed_proposal_ids": [proposal["proposal_id"]],
+    }
+    root = Path(__file__).resolve().parents[2]
+    prompt = (root / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    plan = json.loads(prompt[start:end])
+    plan.update({
+        "selected_proposal_id": proposal["proposal_id"],
+        "targeted_failure": proposal["targeted_failure"],
+        "measurement_plan": proposal["measurement"],
+    })
+    compilation = agent_master._selected_proposal_compilation_contract(proposal)
+    exact_limit = compilation["max_provider_chars"]
+    plan["tasks"][0]["worker_prompt"] = "x" * exact_limit
+
+    assert agent_master._validate_final_proposal_binding(plan, packet) == []
+
+    plan["tasks"][0]["worker_prompt"] += "x"
+    errors = agent_master._validate_final_proposal_binding(plan, packet)
+    budget_error = next(
+        item
+        for item in errors
+        if item.startswith("selected_proposal_worker_prompt_has_no_binding_budget:")
+    )
+    payload = json.loads(budget_error.split(":", 1)[1])
+    assert payload == {
+        "actual_provider_chars": exact_limit + 1,
+        "character_metric": "python_unicode_code_points",
+        "combined_chars": 12001,
+        "global_cap_chars": 12000,
+        "max_provider_chars": exact_limit,
+        "overflow_chars": 1,
+        "proposal_id": proposal["proposal_id"],
+        "reserved_selected_contract_chars": compilation[
+            "reserved_selected_contract_chars"
+        ],
+        "reserved_runtime_contract_max_chars": 2048,
+        "separator_chars": 2,
+        "worker_id": 1,
+    }
+
+
+def test_final_binding_rejects_wrong_primary_and_missing_typed_check(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": (
+            "Route opponent.terminal_response through the bounded live decision consumer."
+        ),
+        "expected_diff": (
+            "The typed decision changes only through opponent.terminal_response."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold opponent terminal-response confidence at its bounded prior.",
+        "intervention": (
+            "Change only opponent.terminal_response in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under the terminal-response intervention."
+        ),
+    }
+    proposal = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+    assert proposal is not None
+    packet = {
+        "ordered_proposals": [proposal],
+        "allowed_proposal_ids": [proposal["proposal_id"]],
+    }
+    root = Path(__file__).resolve().parents[2]
+    prompt = (root / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    plan = json.loads(prompt[start:end])
+    plan.update({
+        "selected_proposal_id": proposal["proposal_id"],
+        "targeted_failure": proposal["targeted_failure"],
+        "measurement_plan": proposal["measurement"],
+    })
+    task = plan["tasks"][0]
+    state_learning = task["runtime_contract"]["state_learning"]
+    state_learning.update({
+        "work_primitive": None,
+        "profile_dimensions": ["action_profile"],
+        "line_controls": [],
+    })
+    task["runtime_contract"]["reference_pack_id"] = ""
+    task["checks_required"] = [
+        "incremental_opponent_model",
+        "terminal_response_adaptation",
+    ]
+
+    wrong_primary = agent_master._validate_final_proposal_binding(plan, packet)
+    assert any(
+        item.startswith(
+            "selected_proposal_falsifier_not_bound_to_runtime_primary_check:"
+        )
+        and '"expected_state_learning_primary":"terminal_response"' in item
+        and '"state_learning_primary":"action_profile"' in item
+        for item in wrong_primary
+    )
+
+    state_learning["profile_dimensions"] = ["terminal_response"]
+    task["checks_required"] = ["incremental_opponent_model"]
+    missing_check = agent_master._validate_final_proposal_binding(plan, packet)
+    assert any(
+        item.startswith("selected_proposal_primary_checks_missing:")
+        and '"missing_checks":["terminal_response_adaptation"]' in item
+        for item in missing_check
+    )
+
+    task["checks_required"].append("terminal_response_adaptation")
+    assert agent_master._validate_final_proposal_binding(plan, packet) == []
+
+
+def test_oversized_scout_is_repaired_before_critics_and_packet_reproof(tmp_path):
+    import agent_master
+    from tests.test_master_success_return import _valid_proposal_packet
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", snapshot=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload.update({
+        "targeted_failure": "failure " + "x" * 1592,
+        "structural_change": "deadline " + "s" * 1591,
+        "counterfactual": "counterfactual " + "c" * 1585,
+        "why_not_threshold_tuning": "not threshold " + "n" * 1586,
+        "expected_diff": "deadline " + "d" * 1591,
+        "risks": "risk " + "r" * 1195,
+    })
+    payload["falsifier"].update({
+        "control": "control " + "a" * 993,
+        "intervention": "deadline " + "b" * 991,
+        "expected_observation": "observation " + "o" * 988,
+    })
+    raw = json.dumps(payload)
+    normalized_without_budget = agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+        enforce_bindability=False,
+    )
+    assert normalized_without_budget is not None
+    assert agent_master._proposal_worker_bindability_error(
+        normalized_without_budget
+    ) is not None
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+    ) is None
+    hints = agent_master._master_proposal_projection_hints(
+        raw,
+        source_graph=graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=True,
+        require_snapshot_evidence=True,
+        evidence_mode="frozen_strength_snapshot",
+    )
+    assert any(
+        item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt:")
+        for item in hints
+    )
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        normalized_without_budget,
+        tmp_path / "oversized_invocations",
+        source_dir=source_dir,
+    )
+    parsed, packet_errors = agent_master._parse_valid_proposal_packet(
+        json.dumps(packet)
+    )
+    assert parsed is None
+    assert any(
+        item.startswith("proposal_worker_binding_cannot_fit_minimum_prompt:")
+        for item in packet_errors
+    )
 
 
 def test_selected_proposal_is_compiled_into_worker_prompt(tmp_path):
@@ -1837,7 +2233,7 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
     ]
     assert all(proposal is not None for proposal in proposals)
     packet = {
-        "schema_version": "master-proposal-packet-v4",
+        "schema_version": "master-proposal-packet-v5",
         "valid": True,
         "context_digest": "c" * 64,
         "source_code_digest": source_digest,
@@ -1859,7 +2255,7 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
         json.dumps(malformed_falsifier)
     )
     assert parsed is None
-    assert any(error.startswith("proposal_falsifier_not_object:") for error in errors)
+    assert any(error.startswith("proposal_falsifier_invalid:") for error in errors)
 
     packet["ordered_proposals"][0]["structural_change"] += " tampered"
 
@@ -1867,3 +2263,40 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
 
     assert parsed is None
     assert any(error.startswith("proposal_identity_mismatch:") for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid", "error_code"),
+    (
+        ("evidence_refs", 1, "proposal_packet_evidence_refs_shape_invalid:"),
+        ("source_symbols", {}, "proposal_packet_source_symbols_shape_invalid:"),
+        ("target_files", "policy.py", "proposal_packet_target_files_shape_invalid:"),
+        ("reachable_chain", None, "proposal_packet_reachable_chain_shape_invalid:"),
+        ("snapshot_evidence", 1, "proposal_packet_snapshot_evidence_shape_invalid:"),
+    ),
+)
+def test_v5_packet_parser_is_total_for_malformed_proposal_collections(
+    tmp_path,
+    field,
+    invalid,
+    error_code,
+):
+    import agent_master
+    from tests.test_master_success_return import (
+        BOUND_PROPOSAL,
+        _valid_proposal_packet,
+    )
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / f"malformed_packet_{field}",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    packet["ordered_proposals"][0][field] = invalid
+
+    parsed, errors = agent_master._parse_valid_proposal_packet(json.dumps(packet))
+
+    assert parsed is None
+    assert any(item.startswith(error_code) for item in errors)
+    assert not any(item.startswith("proposal_packet_validation_error:") for item in errors)

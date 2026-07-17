@@ -265,6 +265,31 @@ def test_system_binding_never_creates_or_pads_a_missing_worker_brief():
         assert errors
 
 
+def test_system_binding_rejects_unclosed_provider_system_marker():
+    import plan_compiler
+
+    prompt = (ROOT / "web/core/prompts/master_prompt.md").read_text(encoding="utf-8")
+    start = prompt.index('{\n  "analysis": "Strategic analysis as a single string.')
+    end = prompt.index("\n\n- Do NOT include `branch_from`", start)
+    plan = json.loads(prompt[start:end])
+    original = (
+        "Implement the selected structured policy mechanism and its typed checks.\n"
+        + plan_compiler.SYSTEM_OWNED_CONTRACT_BEGIN
+    )
+    plan["tasks"][0]["worker_prompt"] = original
+
+    bound, meta = plan_compiler.bind_system_owned_worker_contract_terms(plan)
+
+    assert bound["tasks"][0]["worker_prompt"] == original
+    assert meta["bound"] is False
+    assert meta["invalid_prompt_tasks"] == [{
+        "worker_id": plan["tasks"][0]["worker_id"],
+        "reason": "worker_prompt_reserved_system_marker",
+        "reserved_markers": [plan_compiler.SYSTEM_OWNED_CONTRACT_BEGIN],
+        "original_chars": len(original),
+    }]
+
+
 def test_system_binding_replaces_one_block_when_policy_adds_focus_terms():
     import plan_compiler
 
@@ -777,13 +802,13 @@ def test_compiler_preserves_dynamic_focus_terms(tmp_path):
 
 def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
     proposal = {
-        "schema_version": "master-proposal-v2",
+        "schema_version": "master-proposal-v3",
         "direction": "mechanism",
         "targeted_failure": (
             "A reachable parent decision branch ignores the selected bounded state."
         ),
         "structural_change": (
-            "Route one bounded state feature through the existing decision consumer."
+            "Route one deadline-bounded state feature through the existing decision consumer."
         ),
         "counterfactual": (
             "Hold cards, legality, state, and seed fixed while toggling only that feature."
@@ -796,8 +821,9 @@ def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
         "why_not_threshold_tuning": (
             "The change adds state flow into a reachable consumer instead of tuning one cutoff."
         ),
+        "mechanism_target": "deadline",
         "expected_diff": (
-            "The paired intervention changes the selected intent through _choose_intent."
+            "The paired deadline intervention changes the selected intent through _choose_intent."
         ),
         "target_files": ["policy.py"],
         "source_symbols": [
@@ -810,8 +836,10 @@ def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
         ],
         "falsifier": {
             "test_name": "fast_policy_baseline",
-            "control": "Run the frozen parent on the same canonical decision state.",
-            "intervention": "Enable only the selected bounded state mechanism.",
+            "state_learning_primary": "sample_counted_candidate_batch",
+            "intervention_target": "deadline",
+            "control": "Run the frozen parent with sample_count=1 before the deadline on the same canonical decision state.",
+            "intervention": "Enable only the selected bounded state mechanism with a changed deadline.",
             "expected_observation": (
                 "The intervention changes the intended action while the control stays fixed."
             ),
@@ -828,6 +856,32 @@ def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
     contract = agent_master._selected_proposal_contract(proposal)
     block = agent_master._selected_proposal_worker_block(proposal)
     return proposal, contract, block
+
+
+def test_system_owned_contract_reserve_bounds_all_closed_terms():
+    import output_schema
+    import plan_compiler
+    import runtime_architecture_policy
+    import strategy_reference_pack
+
+    terms = []
+    for values in output_schema.RUNTIME_CONTRACT_WORKER_PROMPT_TERMS.values():
+        terms.extend(values)
+    for values in output_schema.STATE_LEARNING_PRIMARY_PROMPT_TERMS.values():
+        terms.extend(values)
+    for card in strategy_reference_pack._CARDS:
+        terms.extend(card.required_worker_terms)
+    for focus in runtime_architecture_policy.architecture_focus_specs():
+        terms.extend(focus.get("required_terms") or [])
+    terms.extend((
+        "f" * 64,
+        max(output_schema.MASTER_PROPOSAL_FALSIFIER_TESTS, key=len),
+    ))
+    unique_terms = tuple(dict.fromkeys(map(str, terms)))
+    block = plan_compiler._system_owned_contract_binding_block(unique_terms)
+
+    assert len(block) <= plan_compiler.SYSTEM_OWNED_CONTRACT_MAX_CHARS
+    assert plan_compiler.SYSTEM_OWNED_CONTRACT_MAX_CHARS == 2048
 
 
 def test_compiler_externalizes_long_prompt_without_losing_selected_contract(tmp_path):

@@ -9,7 +9,7 @@ separate domain event.
 The authority stream deliberately uses a run id distinct from the Worker
 stream while sharing ``RESULTS_DIR/workflow/events.sqlite3``::
 
-    {workflow_run_id}:strict-authority-v2
+    {workflow_run_id}:strict-authority-v3
 
 Only :func:`llm_query.run_claude_query` completes provider effects.  Role code
 may append an acceptance event only after the completed provider effect has
@@ -40,15 +40,15 @@ from claude_agent_sdk import ResultMessage
 from workflow_kernel import WorkflowConflict, WorkflowStore, content_digest
 
 
-DEFINITION_VERSION = 2
-RUN_SUFFIX = "strict-authority-v2"
-EFFECT_KIND = "first-strict-llm-provider-call-v2"
+DEFINITION_VERSION = 3
+RUN_SUFFIX = "strict-authority-v3"
+EFFECT_KIND = "first-strict-llm-provider-call-v3"
 ACCEPTED_EVENT = "StrictRoleAccepted"
 REJECTED_EVENT = "StrictRoleRejected"
 INVOCATION_EVIDENCE_BOUND_EVENT = "StrictInvocationEvidenceBound"
-RECEIPT_KIND = "first-strict-llm-authority-receipt-v2"
+RECEIPT_KIND = "first-strict-llm-authority-receipt-v3"
 INVOCATION_EVIDENCE_BINDING_KIND = (
-    "first-strict-invocation-evidence-binding-v2"
+    "first-strict-invocation-evidence-binding-v3"
 )
 MAX_SCHEMA_ATTEMPTS_PER_SLOT = 2
 
@@ -101,7 +101,7 @@ SLOT_STAGES = {
     "critic": "reviewed",
 }
 SLOT_PARSE_CONTRACTS = {
-    **{slot: "master-proposal-v2" for slot in MASTER_SLOTS[:3]},
+    **{slot: "master-proposal-v3" for slot in MASTER_SLOTS[:3]},
     **{slot: "master-proposal-ballot-v1" for slot in MASTER_SLOTS[3:5]},
     "master:final": "master-plan-schema-v1",
     "review": "reviewer-output-schema-v1",
@@ -3170,6 +3170,14 @@ def validate_master_final_projection(
         precompiled, _contract = bind_system_owned_worker_contract_terms(
             precompiled
         )
+        if any(_contract.get(key) for key in (
+            "invalid_contract_tasks",
+            "invalid_prompt_tasks",
+            "overflow_tasks",
+        )):
+            projection_errors.append(
+                "strict_authority_master_projection_contract_binding_invalid"
+            )
 
         with tempfile.TemporaryDirectory(prefix="pok-strict-master-replay-") as raw:
             replay_root = Path(raw).resolve()
@@ -3181,6 +3189,15 @@ def validate_master_final_projection(
                 target_dir=replay_target,
                 project_root=replay_root,
             )
+            replay_contract = compiler.get("contract_binding") or {}
+            if any(replay_contract.get(key) for key in (
+                "invalid_contract_tasks",
+                "invalid_prompt_tasks",
+                "overflow_tasks",
+            )):
+                projection_errors.append(
+                    "strict_authority_master_projection_compiler_binding_invalid"
+                )
             compiled_rows = compiler.get("compiled_tasks") or []
             if any(row.get("context_trimmed") is not False for row in compiled_rows):
                 projection_errors.append(

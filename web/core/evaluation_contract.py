@@ -37,7 +37,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 32
+CONTRACT_VERSION = 33
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 

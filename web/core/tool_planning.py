@@ -3947,6 +3947,7 @@ async def run_master(args):
     async def _compile_and_hard_validate_master_plan(plan, *, phase: str):
         """Normalize, compile, and hard-validate a Master plan before LLM audit."""
         plan = _normalize_and_log_master_plan_paths(plan, source_v, next_v)
+        compiler_errors = []
         try:
             from plan_compiler import compile_master_plan
             plan, _compile_meta = compile_master_plan(
@@ -3962,7 +3963,26 @@ async def run_master(args):
                     f"Master plan v{next_v}: compiled {len(_compile_meta.get('compiled_tasks', []))} oversized worker prompt(s)",
                     {"next_v": next_v, "source_v": source_v, "phase": phase, "compiler": _compile_meta},
                 )
+            _contract_binding = _compile_meta.get("contract_binding") or {}
+            if any(_contract_binding.get(key) for key in (
+                "invalid_contract_tasks",
+                "invalid_prompt_tasks",
+                "overflow_tasks",
+            )):
+                compiler_errors.append(
+                    "master_plan_system_contract_binding_invalid:"
+                    + json.dumps(
+                        _contract_binding,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )[:2000]
+                )
         except Exception as _compile_exc:
+            compiler_errors.append(
+                "master_plan_compile_failed:"
+                f"{type(_compile_exc).__name__}:{str(_compile_exc)[:500]}"
+            )
             log_system_event(
                 "pipeline.master_plan_compile_failed",
                 "error",
@@ -3971,6 +3991,7 @@ async def run_master(args):
             )
 
         plan_errors, plan_warnings = _validate_master_plan(plan, next_v=next_v)
+        plan_errors = list(dict.fromkeys([*compiler_errors, *plan_errors]))
         if plan_warnings:
             try:
                 log_system_event(

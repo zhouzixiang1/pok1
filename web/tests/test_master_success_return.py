@@ -9,6 +9,7 @@ dispatch and no-strength receipt boundary.
 import json
 import asyncio
 from pathlib import Path
+import re
 
 import pytest
 
@@ -19,9 +20,9 @@ BOUND_TARGETED_FAILURE = (
     "The selected evidence-bound mechanism fixes one reachable parent decision failure."
 )
 BOUND_PROPOSAL = {
-    "schema_version": "master-proposal-v2",
+    "schema_version": "master-proposal-v3",
     "targeted_failure": BOUND_TARGETED_FAILURE,
-    "structural_change": "Replace one reachable parent branch with a bounded mechanism.",
+    "structural_change": "Replace one reachable parent branch with a deadline-bounded mechanism.",
     "counterfactual": "Hold cards, seed, state, and legality fixed while toggling only the mechanism.",
     "measurement": (
         "target=national_v143; primary=complete_70_hand_wld; "
@@ -29,7 +30,8 @@ BOUND_PROPOSAL = {
         "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
     ),
     "why_not_threshold_tuning": "The change replaces state flow and its consumer rather than one numeric cutoff.",
-    "expected_diff": "The existing get_baseline_decision to _choose_intent path consumes the new mechanism.",
+    "mechanism_target": "deadline",
+    "expected_diff": "The existing get_baseline_decision to _choose_intent path consumes the new mechanism before the deadline.",
     "target_files": ["policy.py"],
     "source_symbols": [
         "policy.py:get_baseline_decision",
@@ -41,8 +43,10 @@ BOUND_PROPOSAL = {
     ],
     "falsifier": {
         "test_name": "fast_policy_baseline",
-        "control": "The frozen parent keeps the original decision on the paired state.",
-        "intervention": "Only the selected mechanism changes on the paired state.",
+        "state_learning_primary": "sample_counted_candidate_batch",
+        "intervention_target": "deadline",
+        "control": "The frozen parent keeps the original decision with sample_count=1 before the deadline on the paired state.",
+        "intervention": "Only the selected deadline changes on the paired state.",
         "expected_observation": "The intervention changes the target action and control does not.",
     },
     "evidence_refs": [
@@ -125,6 +129,51 @@ def _valid_proposal_packet(
                 if index == 2
                 else "showdown_range_adaptation"
             )
+            if index == 2:
+                proposal["mechanism_target"] = "opponent.rates"
+                proposal["structural_change"] += (
+                    " Route the bounded change only through opponent.rates."
+                )
+                proposal["expected_diff"] += " The consumer reads opponent.rates."
+                proposal["falsifier"].update({
+                    "state_learning_primary": "action_profile",
+                    "intervention_target": "opponent.rates",
+                    "control": (
+                        "Hold the decision context and opponent action_profile fixed "
+                        "at the prior baseline."
+                    ),
+                    "intervention": (
+                        "Change only opponent.rates action_profile aggression evidence "
+                        "inside the same decision context."
+                    ),
+                    "expected_observation": (
+                        "The typed intent changes only when the opponent action_profile "
+                        "intervention is active."
+                    ),
+                })
+            else:
+                proposal["mechanism_target"] = "opponent.showdown_range"
+                proposal["structural_change"] += (
+                    " Route the bounded change only through opponent.showdown_range."
+                )
+                proposal["expected_diff"] += (
+                    " The consumer reads opponent.showdown_range."
+                )
+                proposal["falsifier"].update({
+                    "state_learning_primary": "showdown_range",
+                    "intervention_target": "opponent.showdown_range",
+                    "control": (
+                        "Hold showdown_range confidence at the bounded prior on the "
+                        "paired decision context."
+                    ),
+                    "intervention": (
+                        "Change only opponent.showdown_range confidence for the paired state."
+                    ),
+                    "expected_observation": (
+                        "The typed intent changes only with the showdown_range "
+                        "confidence intervention."
+                    ),
+                })
         proposal["proposal_id"] = agent_master._proposal_identity(proposal)
         proposals.append(proposal)
     proposal_ids = [proposal["proposal_id"] for proposal in proposals]
@@ -197,7 +246,7 @@ def _valid_proposal_packet(
             for proposal in proposals
         }
     return {
-        "schema_version": "master-proposal-packet-v4",
+        "schema_version": "master-proposal-packet-v5",
         "valid": True,
         "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
@@ -364,6 +413,14 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     assert 'build_phase="module_import"' in rendered_prompt
     assert "runtime_contract.match_memory" in rendered_prompt
     assert 'snapshot_field="opponent"' in rendered_prompt
+    assert (
+        "state_learning primary 'sample_counted_candidate_batch' requires "
+        'checks_required: "fast_policy_baseline", "incremental_refinement_protocol", '
+        '"budget_scaled_refinement".'
+    ) in rendered_prompt
+    assert "SYSTEM-DERIVED PER-PROPOSAL COMPILATION CONTRACTS" in rendered_prompt
+    assert '"character_metric":"python_unicode_code_points"' in rendered_prompt
+    assert '"max_provider_chars":' in rendered_prompt
     assert captured_kwargs[0]["tools"] == []
     assert captured_kwargs[0].get("allowed_read_dirs") is None
     assert captured_kwargs[0].get("allowed_evidence_snapshot_dir") is None
@@ -413,6 +470,265 @@ async def test_master_binding_retry_receives_deterministic_failure_feedback(
     assert "Previous proposal binding failed" not in prompts[0]
     assert "Previous proposal binding failed" in prompts[1]
     assert "measurement_plan_must_exactly_copy_selected_proposal" in prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_master_binding_retry_receives_exact_prompt_budget(monkeypatch):
+    import agent_master
+
+    invalid = json.loads(json.dumps(VALID_PLAN))
+    invalid["tasks"][0]["worker_prompt"] = "x" * 12000
+    prompts = []
+
+    async def fake_run_claude_query(
+        prompt,
+        _ctx,
+        _ui,
+        _role_name,
+        _log_file,
+        **_kwargs,
+    ):
+        prompts.append(str(prompt))
+        plan = invalid if len(prompts) == 1 else VALID_PLAN
+        return "```json\n" + json.dumps(plan) + "\n```", 0.0, {}
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    result = await agent_master._run_master_analysis(
+        source_v=143,
+        next_v=144,
+        stagnation_info="declining",
+        ui=_MockUI(),
+    )
+
+    assert result is not None
+    assert len(prompts) == 2
+    match = re.search(
+        r"selected_proposal_worker_prompt_has_no_binding_budget:(\{[^\n]+\})",
+        prompts[1],
+    )
+    assert match is not None
+    payload = json.loads(match.group(1))
+    assert payload["actual_provider_chars"] == 12000
+    assert payload["global_cap_chars"] == 12000
+    assert payload["max_provider_chars"] == (
+        12000
+        - payload["reserved_selected_contract_chars"]
+        - payload["reserved_runtime_contract_max_chars"]
+        - 2
+    )
+    assert payload["combined_chars"] == (
+        12000
+        + payload["reserved_selected_contract_chars"]
+        + payload["reserved_runtime_contract_max_chars"]
+        + 2
+    )
+    assert payload["overflow_chars"] == 12000 - payload["max_provider_chars"]
+
+
+def test_strict_projection_rejects_malformed_provider_worker_prompts(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "strict_prompt_type_invocations",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    base_plan = json.loads(json.dumps(VALID_PLAN))
+    base_plan.update({
+        "selected_proposal_id": selected["proposal_id"],
+        "targeted_failure": selected["targeted_failure"],
+        "measurement_plan": selected["measurement"],
+    })
+    architecture_policy = {"schema_version": 1}
+
+    for invalid in (None, [], {}, "", "x" * 19, " " * 20):
+        plan = json.loads(json.dumps(base_plan))
+        plan["tasks"][0]["worker_prompt"] = invalid
+        projected, errors = agent_master._project_strict_final_master_result(
+            json.dumps(plan),
+            proposal_packet=packet,
+            architecture_policy=architecture_policy,
+        )
+        assert projected is None
+        expected_code = (
+            "selected_proposal_worker_prompt_type_invalid:"
+            if not isinstance(invalid, str)
+            else "selected_proposal_worker_prompt_below_minimum:"
+        )
+        assert any(item.startswith(expected_code) for item in errors)
+        bound = agent_master._bind_selected_proposal_workers(plan, selected)
+        assert bound["tasks"][0]["worker_prompt"] == invalid
+
+
+def test_strict_projection_rejects_all_provider_reserved_markers(tmp_path):
+    import agent_master
+    import plan_compiler
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "strict_reserved_marker_invocations",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    for marker in (
+        plan_compiler.SELECTED_PROPOSAL_BEGIN,
+        plan_compiler.SELECTED_PROPOSAL_END,
+        plan_compiler.SYSTEM_OWNED_CONTRACT_BEGIN,
+        plan_compiler.SYSTEM_OWNED_CONTRACT_END,
+    ):
+        plan = json.loads(json.dumps(VALID_PLAN))
+        plan.update({
+            "selected_proposal_id": selected["proposal_id"],
+            "targeted_failure": selected["targeted_failure"],
+            "measurement_plan": selected["measurement"],
+        })
+        original = plan["tasks"][0]["worker_prompt"] + "\n" + marker
+        plan["tasks"][0]["worker_prompt"] = original
+
+        projected, errors = agent_master._project_strict_final_master_result(
+            json.dumps(plan),
+            proposal_packet=packet,
+            architecture_policy={"schema_version": 1},
+        )
+
+        assert projected is None
+        assert any(
+            item.startswith("selected_proposal_worker_prompt_reserved_marker:")
+            and marker in item
+            for item in errors
+        )
+        bound = agent_master._bind_selected_proposal_workers(plan, selected)
+        assert bound["tasks"][0]["worker_prompt"] == original
+
+
+def test_selected_and_system_blocks_survive_repeated_plan_compilation(tmp_path):
+    import agent_master
+    import plan_compiler
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "strict_recompile_invocations",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    plan = json.loads(json.dumps(VALID_PLAN))
+    plan.update({
+        "selected_proposal_id": selected["proposal_id"],
+        "targeted_failure": selected["targeted_failure"],
+        "measurement_plan": selected["measurement"],
+    })
+    projected, errors = agent_master._project_strict_final_master_result(
+        json.dumps(plan),
+        proposal_packet=packet,
+        architecture_policy={"schema_version": 1},
+    )
+    assert errors == []
+    assert projected is not None
+
+    first, first_meta = plan_compiler.compile_master_plan(
+        projected,
+        next_v=143,
+        target_dir=tmp_path / "candidate",
+        project_root=tmp_path,
+    )
+    second, second_meta = plan_compiler.compile_master_plan(
+        first,
+        next_v=143,
+        target_dir=tmp_path / "candidate",
+        project_root=tmp_path,
+    )
+    for compiled, meta in ((first, first_meta), (second, second_meta)):
+        prompt = compiled["tasks"][0]["worker_prompt"]
+        assert prompt.count(plan_compiler.SELECTED_PROPOSAL_BEGIN) == 1
+        assert prompt.count(plan_compiler.SELECTED_PROPOSAL_END) == 1
+        assert prompt.count(plan_compiler.SYSTEM_OWNED_CONTRACT_BEGIN) == 1
+        assert prompt.count(plan_compiler.SYSTEM_OWNED_CONTRACT_END) == 1
+        assert meta["contract_binding"]["invalid_prompt_tasks"] == []
+
+
+@pytest.mark.parametrize("field", ("target_files", "files_allowed"))
+@pytest.mark.parametrize("invalid", (None, 1, {}, "policy.py", [1]))
+def test_strict_projection_rejects_malformed_worker_scope(
+    tmp_path,
+    field,
+    invalid,
+):
+    import agent_master
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / f"strict_scope_{field}_{type(invalid).__name__}",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    plan = json.loads(json.dumps(VALID_PLAN))
+    plan.update({
+        "selected_proposal_id": selected["proposal_id"],
+        "targeted_failure": selected["targeted_failure"],
+        "measurement_plan": selected["measurement"],
+    })
+    plan["tasks"][0][field] = invalid
+
+    projected, errors = agent_master._project_strict_final_master_result(
+        json.dumps(plan),
+        proposal_packet=packet,
+        architecture_policy={"schema_version": 1},
+    )
+
+    assert projected is None
+    assert any(
+        item.startswith("selected_proposal_worker_scope_type_invalid:")
+        and f'"field":"{field}"' in item
+        for item in errors
+    )
+
+
+def test_strict_projection_fails_closed_when_system_block_exceeds_reserve(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import plan_compiler
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "strict_system_block_invocations",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    plan = json.loads(json.dumps(VALID_PLAN))
+    plan.update({
+        "selected_proposal_id": selected["proposal_id"],
+        "targeted_failure": selected["targeted_failure"],
+        "measurement_plan": selected["measurement"],
+    })
+    monkeypatch.setattr(plan_compiler, "SYSTEM_OWNED_CONTRACT_MAX_CHARS", 1)
+
+    projected, errors = agent_master._project_strict_final_master_result(
+        json.dumps(plan),
+        proposal_packet=packet,
+        architecture_policy={"schema_version": 1},
+    )
+
+    assert projected is None
+    assert any(
+        item.startswith("system_owned_worker_contract_binding_overflow:")
+        for item in errors
+    )
 
 
 @pytest.mark.asyncio

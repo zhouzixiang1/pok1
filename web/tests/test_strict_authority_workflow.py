@@ -442,11 +442,12 @@ def test_proposal_projection_error_is_durable_and_repairs_once(
 
     invalid_proposal = json.dumps({
         "targeted_failure": "The current reachable decision path repeats one bounded failure.",
-        "structural_change": "Replace that decision mechanism with one bounded state path.",
+        "structural_change": "Replace that decision mechanism with one deadline-bounded state path.",
         "counterfactual": "Hold cards and legality fixed while changing only this mechanism.",
         "measurement_plan": "This wrong field name must not satisfy measurement.",
         "why_not_threshold_tuning": "This changes state flow and its consumer, not one threshold.",
-        "expected_diff": "The existing entrypoint still reaches the changed intent consumer.",
+        "mechanism_target": "deadline",
+        "expected_diff": "The existing entrypoint still reaches the changed intent consumer before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
@@ -456,10 +457,12 @@ def test_proposal_projection_error_is_durable_and_repairs_once(
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
         ],
-        "falsifier": {
-            "test_name": "fast_policy_baseline",
-            "control": "Run the frozen parent on the same canonical state and seed.",
-            "intervention": "Run only the proposed mechanism on that identical state.",
+            "falsifier": {
+                "test_name": "fast_policy_baseline",
+                "state_learning_primary": "sample_counted_candidate_batch",
+                "intervention_target": "deadline",
+                "control": "Run the frozen parent with sample_count=1 before the deadline on the same canonical state and seed.",
+                "intervention": "Run only the proposed mechanism with a changed deadline on that identical state.",
             "expected_observation": "The intervention changes while the paired control stays fixed.",
         },
         "evidence_refs": [
@@ -945,6 +948,24 @@ def test_wrong_stage_and_parse_contract_fail_closed(authority):
             call,
             role_result={"valid": True},
             parse_contract="wrong-schema",
+        )
+
+
+def test_pre_contract_33_proposal_parse_contract_cannot_be_replayed(authority):
+    module, _store = authority
+    call, _result, _receipt = _call(
+        module,
+        _checkpoint(),
+        "proposal:mechanism",
+        accept=False,
+    )
+
+    assert module.SLOT_PARSE_CONTRACTS["proposal:mechanism"] == "master-proposal-v3"
+    with pytest.raises(module.StrictAuthorityError, match="parse_contract"):
+        module.accept_role_result(
+            call,
+            role_result={"schema_version": "master-proposal-v2"},
+            parse_contract="master-proposal-v2",
         )
 
 

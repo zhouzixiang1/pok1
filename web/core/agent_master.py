@@ -16,7 +16,14 @@ from evolution_infra import (
 )
 
 from output_schema import (
+    MASTER_PROPOSAL_FALSIFIER_PRIMARY,
     MASTER_PROPOSAL_FALSIFIER_TESTS,
+    STATE_LEARNING_INTERVENTION_TARGET_ALIASES,
+    STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS,
+    STATE_LEARNING_PRIMARY_CHECKS,
+    STATE_LEARNING_PRIMARY_PROMPT_TERMS,
+    WORKER_PROMPT_MAX_CHARS,
+    WORKER_PROMPT_MIN_CHARS,
     master_plan_executable_contract_text,
 )
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
@@ -87,11 +94,13 @@ def _render_master_proposal_provider_prompt(inputs):
     is_distinctness_repair = repair_kind == "distinctness"
     output_contract = (
         "Return one JSON object with exactly: targeted_failure, structural_change, "
-        "counterfactual, measurement, why_not_threshold_tuning, target_files "
+        "counterfactual, measurement, why_not_threshold_tuning, mechanism_target, "
+        "target_files "
         "(exactly [\"policy.py\"]), expected_diff, source_symbols (1-8 exact "
         "source-relative file.py:symbol references), reachable_chain (2-8 of those "
-        "symbols in direct caller-to-callee order), falsifier {test_name, control, "
-        "intervention, expected_observation}, evidence_refs (source:file.py:symbol "
+        "symbols in direct caller-to-callee order), falsifier {test_name, "
+        "state_learning_primary, intervention_target, control, intervention, "
+        "expected_observation}, evidence_refs (source:file.py:symbol "
         "for EVERY source_symbols item; "
         + (
             "at least one snapshot:relative/file.json#/verified/json/pointer"
@@ -118,7 +127,19 @@ def _render_master_proposal_provider_prompt(inputs):
         "IMPORTANT: falsifier.test_name MUST be exactly one of: "
         + ", ".join(_PROPOSAL_FALSIFIER_TESTS)
         + ". "
-        "Choose the one that best matches your proposed mechanism."
+        "Choose the one that best matches your proposed mechanism. The exact "
+        "typed falsifier -> state_learning primary contract is: "
+        + _proposal_falsifier_mapping_text()
+        + ". Copy top-level mechanism_target, falsifier.state_learning_primary, "
+        "and falsifier.intervention_target exactly from that mapping; the two "
+        "target fields must be equal and prose cannot substitute for them. Copy "
+        "the exact intervention_target literal into structural_change, "
+        "expected_diff, and falsifier.intervention; each field must describe only "
+        "that target and must not name another closed mechanism target or alias. The "
+        "required_proposal_terms become final Worker-prompt obligations. A "
+        "plan_required_floor_checks entry is an additional generation-wide quality "
+        "floor; it is NOT the proposal falsifier unless this mapping says it is "
+        "compatible."
         + " " + measurement_contract
     )
     code_scope = (
@@ -463,8 +484,8 @@ _MASTER_PROPOSAL_DIRECTIONS = (
 )
 
 
-_PROPOSAL_SCHEMA_VERSION = "master-proposal-v2"
-_PROPOSAL_PACKET_SCHEMA_VERSION = "master-proposal-packet-v4"
+_PROPOSAL_SCHEMA_VERSION = "master-proposal-v3"
+_PROPOSAL_PACKET_SCHEMA_VERSION = "master-proposal-packet-v5"
 _POLICY_ABI_ENTRYPOINT_SYMBOLS = (
     "policy.py:get_baseline_decision",
     "policy.py:iter_decisions",
@@ -494,6 +515,115 @@ _UTILITY_SYMBOL_TERMS = (
     "number",
 )
 _PROPOSAL_FALSIFIER_TESTS = MASTER_PROPOSAL_FALSIFIER_TESTS
+
+
+def _proposal_falsifier_primary(test_name: object) -> str | None:
+    """Return the closed state-learning primary for one typed falsifier."""
+
+    return MASTER_PROPOSAL_FALSIFIER_PRIMARY.get(str(test_name or "").strip())
+
+
+def _proposal_falsifier_mapping_text() -> str:
+    """Render the one machine mapping used by scouts, Master, and validators."""
+
+    rows = {
+        test_name: {
+            "state_learning_primary": primary,
+            "intervention_target": (
+                STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+            ),
+            "diagnostic_target_aliases": list(
+                STATE_LEARNING_INTERVENTION_TARGET_ALIASES[
+                    STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+                ]
+            ),
+            "required_primary_checks": list(STATE_LEARNING_PRIMARY_CHECKS[primary]),
+            "required_proposal_terms": list(
+                STATE_LEARNING_PRIMARY_PROMPT_TERMS[primary]
+            ),
+        }
+        for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
+    }
+    return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _proposal_mechanism_target_errors(
+    proposal: dict,
+    falsifier: dict,
+) -> tuple[str, ...]:
+    """Cross-bind the typed mechanism target to the executable proposal fields."""
+
+    primary = _proposal_falsifier_primary(falsifier.get("test_name"))
+    if primary is None:
+        return ("proposal_mechanism_target_primary_invalid",)
+    expected = STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+    declared = proposal.get("mechanism_target")
+    intervention_target = falsifier.get("intervention_target")
+    errors: list[str] = []
+    if declared != expected:
+        errors.append(
+            f"proposal_mechanism_target_mismatch:expected={expected}:actual={declared}"
+        )
+    if intervention_target != expected:
+        errors.append(
+            "proposal_falsifier_intervention_target_mismatch:"
+            f"expected={expected}:actual={intervention_target}"
+        )
+    executable_fields = {
+        "structural_change": proposal.get("structural_change"),
+        "expected_diff": proposal.get("expected_diff"),
+        "intervention": falsifier.get("intervention"),
+    }
+    missing_target_fields = sorted(
+        field
+        for field, value in executable_fields.items()
+        if not isinstance(value, str) or expected.lower() not in value.lower()
+    )
+    if missing_target_fields:
+        errors.append(
+            "proposal_mechanism_target_missing_from_executable_fields:"
+            + expected
+            + ":"
+            + ",".join(missing_target_fields)
+        )
+    mechanism_text = " ".join(
+        value.lower()
+        for value in executable_fields.values()
+        if isinstance(value, str)
+    )
+    normalized_mechanism_text = re.sub(
+        r"[^a-z0-9]+", "_", mechanism_text
+    ).strip("_")
+    bounded_mechanism_text = f"_{normalized_mechanism_text}_"
+    compact_mechanism_text = re.sub(r"[^a-z0-9]+", "", mechanism_text)
+
+    def alias_appears(alias: str) -> bool:
+        normalized_alias = re.sub(r"[^a-z0-9]+", "_", alias.lower()).strip("_")
+        compact_alias = re.sub(r"[^a-z0-9]+", "", alias.lower())
+        if f"_{normalized_alias}_" in bounded_mechanism_text:
+            return True
+        # Compact matching closes deliberate separator elision such as
+        # ``terminalresponse`` without making short words such as ``donk``
+        # match unrelated identifiers like ``donkey``.
+        return len(compact_alias) >= 8 and compact_alias in compact_mechanism_text
+    # ``deadline`` is a universal safety boundary and can legitimately appear
+    # in every bounded strategy proposal.  All other closed mechanism axes have
+    # narrow aliases so a proposal cannot carry the correct typed label while
+    # its executable prose actually varies terminal, range, or line state.
+    foreign_targets = sorted({
+        target
+        for target, aliases in STATE_LEARNING_INTERVENTION_TARGET_ALIASES.items()
+        if target not in {expected, "deadline"}
+        and any(alias_appears(alias) for alias in aliases)
+    })
+    if foreign_targets:
+        errors.append(
+            "proposal_mechanism_foreign_targets_in_executable_claim:"
+            + ",".join(foreign_targets)
+        )
+    return tuple(errors)
+
+
 _PROPOSAL_CRITIC_CRITERIA = {
     "evidence_traceability": (
         "Every claimed source fact is bound to a verified source symbol or a frozen "
@@ -506,7 +636,9 @@ _PROPOSAL_CRITIC_CRITERIA = {
         "The control/intervention/expected observation can disprove the mechanism."
     ),
     "causal_attribution": (
-        "The measurement distinguishes the mechanism from unrelated threshold drift."
+        "The structured mechanism_target equals the falsifier intervention_target, "
+        "and the executable claim varies only that target rather than unrelated "
+        "threshold or profile axes."
     ),
     "frozen_strength_relevance": (
         "When a frozen strength snapshot exists, bind one concrete weakness and "
@@ -581,6 +713,7 @@ _PROPOSAL_SUBSTANTIVE_FIELDS = (
     "counterfactual",
     "measurement",
     "why_not_threshold_tuning",
+    "mechanism_target",
     "expected_diff",
     "target_files",
     "source_symbols",
@@ -1267,6 +1400,7 @@ def _validated_master_proposal(
     evidence_mode: str | None = None,
     expected_measurement_target: str | None = None,
     forbidden_measurement_target: str | None = None,
+    enforce_bindability: bool = True,
 ) -> dict | None:
     """Normalize one evidence-bound proposal before critics or Master see it."""
     from llm_query import parse_json_output_with_mode
@@ -1294,6 +1428,15 @@ def _validated_master_proposal(
     }:
         return None
     normalized["execution_mode"] = execution_mode
+    raw_mechanism_target = data.get("mechanism_target")
+    if not isinstance(raw_mechanism_target, str):
+        return None
+    mechanism_target = raw_mechanism_target.strip()
+    if mechanism_target not in set(
+        STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS.values()
+    ):
+        return None
+    normalized["mechanism_target"] = mechanism_target
     for key in required:
         value = str(data.get(key) or "").strip()
         if len(value) < 20:
@@ -1368,12 +1511,27 @@ def _validated_master_proposal(
     normalized["reachable_chain"] = chain
 
     falsifier = data.get("falsifier")
-    if not isinstance(falsifier, dict):
+    falsifier_fields = {
+        "test_name",
+        "state_learning_primary",
+        "intervention_target",
+        "control",
+        "intervention",
+        "expected_observation",
+    }
+    if not isinstance(falsifier, dict) or set(falsifier) != falsifier_fields:
         return None
     normalized_falsifier = {}
-    for key in ("test_name", "control", "intervention", "expected_observation"):
-        value = str(falsifier.get(key) or "").strip()
-        minimum = 3 if key == "test_name" else 20
+    for key in falsifier_fields:
+        raw_value = falsifier.get(key)
+        if not isinstance(raw_value, str):
+            return None
+        value = raw_value.strip()
+        minimum = 3 if key in {
+            "test_name",
+            "state_learning_primary",
+            "intervention_target",
+        } else 20
         if len(value) < minimum:
             return None
         if key == "test_name" and not value.replace("_", "").isalnum():
@@ -1381,6 +1539,20 @@ def _validated_master_proposal(
         if key == "test_name" and value not in _PROPOSAL_FALSIFIER_TESTS:
             return None
         normalized_falsifier[key] = value[:1000]
+    primary = _proposal_falsifier_primary(normalized_falsifier["test_name"])
+    if (
+        primary is None
+        or normalized_falsifier["test_name"]
+        not in STATE_LEARNING_PRIMARY_CHECKS[primary]
+        or normalized_falsifier["state_learning_primary"] != primary
+        or normalized_falsifier["intervention_target"]
+        != STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+        or _proposal_mechanism_target_errors(
+            normalized,
+            normalized_falsifier,
+        )
+    ):
+        return None
     normalized["falsifier"] = normalized_falsifier
     raw_refs = data.get("evidence_refs")
     # Weak models sometimes produce evidence_refs as a dict instead of a list.
@@ -1473,6 +1645,8 @@ def _validated_master_proposal(
     # Identity is a pure function of the proposal claims and verified evidence,
     # not scout identity, critic order, generation number, or wall clock.
     normalized["proposal_id"] = _proposal_identity(normalized)
+    if enforce_bindability and _proposal_worker_bindability_error(normalized):
+        return None
     return normalized
 
 
@@ -1513,6 +1687,13 @@ def _master_proposal_projection_hints(
     ):
         if len(str(data.get(key) or "").strip()) < 20:
             errors.append(f"proposal_required_text_invalid:{key}")
+    mechanism_target = data.get("mechanism_target")
+    if (
+        not isinstance(mechanism_target, str)
+        or mechanism_target.strip()
+        not in set(STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS.values())
+    ):
+        errors.append("proposal_mechanism_target_invalid")
     if evidence_mode is not None and not _proposal_measurement_contract_valid(
         str(data.get("measurement") or ""), evidence_mode
     ):
@@ -1591,19 +1772,71 @@ def _master_proposal_projection_hints(
             errors.append("proposal_reachable_chain_target_file_missing")
 
     falsifier = data.get("falsifier")
-    if not isinstance(falsifier, dict) or any(
-        len(str(falsifier.get(key) or "").strip()) < (
-            3 if key == "test_name" else 20
-        )
-        for key in (
-            "test_name", "control", "intervention", "expected_observation",
+    falsifier_fields = {
+        "test_name",
+        "state_learning_primary",
+        "intervention_target",
+        "control",
+        "intervention",
+        "expected_observation",
+    }
+    if (
+        not isinstance(falsifier, dict)
+        or set(falsifier) != falsifier_fields
+        or any(not isinstance(falsifier.get(key), str) for key in falsifier_fields)
+        or any(
+            len(falsifier[key].strip())
+            < (
+                3
+                if key in {
+                    "test_name",
+                    "state_learning_primary",
+                    "intervention_target",
+                }
+                else 20
+            )
+            for key in falsifier_fields
         )
     ):
         errors.append("proposal_falsifier_invalid")
-    elif str(falsifier.get("test_name") or "").strip() not in (
-        _PROPOSAL_FALSIFIER_TESTS
-    ):
+    elif falsifier["test_name"].strip() not in _PROPOSAL_FALSIFIER_TESTS:
         errors.append("proposal_falsifier_test_name_invalid")
+    else:
+        test_name = falsifier["test_name"].strip()
+        primary = _proposal_falsifier_primary(test_name)
+        if primary is None or test_name not in STATE_LEARNING_PRIMARY_CHECKS[primary]:
+            errors.append("proposal_falsifier_primary_mapping_invalid")
+        elif falsifier["state_learning_primary"].strip() != primary:
+            errors.append(
+                "proposal_falsifier_state_learning_primary_mismatch:"
+                f"expected={primary}:actual="
+                f"{falsifier['state_learning_primary'].strip()}"
+            )
+        elif falsifier["intervention_target"].strip() != (
+            STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+        ):
+            errors.append(
+                "proposal_falsifier_intervention_target_mismatch:"
+                "expected="
+                f"{STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]}:"
+                f"actual={falsifier['intervention_target'].strip()}"
+            )
+        else:
+            normalized_target_probe = dict(data)
+            normalized_target_probe["mechanism_target"] = (
+                mechanism_target.strip()
+                if isinstance(mechanism_target, str)
+                else mechanism_target
+            )
+            normalized_falsifier_probe = {
+                key: value.strip()
+                for key, value in falsifier.items()
+                if isinstance(value, str)
+            }
+            errors.extend(_proposal_mechanism_target_errors(
+                normalized_target_probe,
+                normalized_falsifier_probe,
+            ))
 
     raw_refs = data.get("evidence_refs")
     if isinstance(raw_refs, dict):
@@ -1668,6 +1901,25 @@ def _master_proposal_projection_hints(
             errors.append("proposal_snapshot_evidence_too_many")
     if len(str(data.get("risks") or "").strip()) < 20:
         errors.append("proposal_risks_invalid")
+    budget_probe = _validated_master_proposal(
+        output,
+        "projection",
+        source_graph=source_graph,
+        snapshot_dir=snapshot_dir,
+        national_policy_only=national_policy_only,
+        require_snapshot_evidence=require_snapshot_evidence,
+        execution_mode=(
+            "fixed_blueprint_capability_audit"
+            if evidence_mode == "fresh_strict_control_no_strength"
+            else "strategy_implementation"
+        ),
+        evidence_mode=evidence_mode,
+        enforce_bindability=False,
+    )
+    if isinstance(budget_probe, dict):
+        bindability_error = _proposal_worker_bindability_error(budget_probe)
+        if bindability_error:
+            errors.append(bindability_error)
     return list(dict.fromkeys(errors))
 
 
@@ -1761,7 +2013,9 @@ def _proposal_packet_error(
     }, ensure_ascii=False, sort_keys=True)
 
 
-def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[str]]:
+def _parse_valid_proposal_packet_impl(
+    packet_text: str,
+) -> tuple[dict | None, list[str]]:
     """Validate the machine packet again at the final-Master trust boundary."""
     try:
         packet = json.loads(packet_text)
@@ -1830,6 +2084,7 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
         "counterfactual",
         "measurement",
         "why_not_threshold_tuning",
+        "mechanism_target",
         "expected_diff",
         "target_files",
         "source_symbols",
@@ -1846,6 +2101,51 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
         if set(item) != required_proposal_fields:
             errors.append(f"proposal_packet_fields_missing:{item.get('proposal_id', '')}")
             continue
+        proposal_id = item.get("proposal_id")
+        malformed_shape = False
+        if (
+            not isinstance(proposal_id, str)
+            or re.fullmatch(r"[0-9a-f]{16}", proposal_id) is None
+        ):
+            errors.append("proposal_id_invalid")
+            malformed_shape = True
+        scalar_minimums = {
+            "targeted_failure": 20,
+            "structural_change": 20,
+            "counterfactual": 20,
+            "measurement": 20,
+            "why_not_threshold_tuning": 20,
+            "expected_diff": 20,
+            "risks": 20,
+        }
+        for field, minimum in scalar_minimums.items():
+            value = item.get(field)
+            if not isinstance(value, str) or len(value.strip()) < minimum:
+                errors.append(f"proposal_packet_{field}_invalid:{proposal_id or ''}")
+                malformed_shape = True
+        collection_contracts = {
+            "target_files": (1, 3),
+            "source_symbols": (1, 8),
+            "reachable_chain": (2, 8),
+            "evidence_refs": (1, 10),
+            "snapshot_evidence": (0, 2),
+        }
+        for field, (minimum, maximum) in collection_contracts.items():
+            value = item.get(field)
+            if (
+                not isinstance(value, list)
+                or not minimum <= len(value) <= maximum
+                or (
+                    field != "snapshot_evidence"
+                    and any(not isinstance(entry, str) for entry in value)
+                )
+            ):
+                errors.append(
+                    f"proposal_packet_{field}_shape_invalid:{proposal_id or ''}"
+                )
+                malformed_shape = True
+        if malformed_shape:
+            continue
         if item.get("schema_version") != _PROPOSAL_SCHEMA_VERSION:
             errors.append(f"proposal_schema_mismatch:{item.get('proposal_id', '')}")
         if item.get("execution_mode") != expected_execution_mode:
@@ -1859,16 +2159,72 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
             errors.append(
                 f"proposal_measurement_contract_invalid:{item.get('proposal_id', '')}"
             )
-        falsifier = item.get("falsifier")
-        if not isinstance(falsifier, dict):
+        if item.get("mechanism_target") not in set(
+            STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS.values()
+        ):
             errors.append(
-                f"proposal_falsifier_not_object:{item.get('proposal_id', '')}"
+                f"proposal_mechanism_target_invalid:{item.get('proposal_id', '')}"
             )
-            falsifier = {}
-        if str(falsifier.get("test_name") or "") not in _PROPOSAL_FALSIFIER_TESTS:
+        falsifier = item.get("falsifier")
+        falsifier_fields = {
+            "test_name",
+            "state_learning_primary",
+            "intervention_target",
+            "control",
+            "intervention",
+            "expected_observation",
+        }
+        if (
+            not isinstance(falsifier, dict)
+            or set(falsifier) != falsifier_fields
+            or any(not isinstance(falsifier.get(key), str) for key in falsifier_fields)
+        ):
             errors.append(
                 f"proposal_falsifier_invalid:{item.get('proposal_id', '')}"
             )
+        else:
+            test_name = falsifier["test_name"].strip()
+            primary = _proposal_falsifier_primary(test_name)
+            if (
+                primary is None
+                or test_name not in STATE_LEARNING_PRIMARY_CHECKS[primary]
+            ):
+                errors.append(
+                    "proposal_falsifier_primary_mapping_invalid:"
+                    f"{item.get('proposal_id', '')}"
+                )
+            elif falsifier["state_learning_primary"].strip() != primary:
+                errors.append(
+                    "proposal_falsifier_state_learning_primary_mismatch:"
+                    f"{item.get('proposal_id', '')}:expected={primary}:actual="
+                    f"{falsifier['state_learning_primary'].strip()}"
+                )
+            elif falsifier["intervention_target"].strip() != (
+                STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+            ):
+                errors.append(
+                    "proposal_falsifier_intervention_target_mismatch:"
+                    f"{item.get('proposal_id', '')}:expected="
+                    f"{STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]}:"
+                    f"actual={falsifier['intervention_target'].strip()}"
+                )
+            else:
+                errors.extend(
+                    error + f":{item.get('proposal_id', '')}"
+                    for error in _proposal_mechanism_target_errors(
+                        item,
+                        falsifier,
+                    )
+                )
+        try:
+            bindability_error = _proposal_worker_bindability_error(item)
+        except Exception:
+            errors.append(
+                f"proposal_worker_binding_invalid:{item.get('proposal_id', '')}"
+            )
+        else:
+            if bindability_error:
+                errors.append(bindability_error)
         snapshot_evidence = item.get("snapshot_evidence")
         if not isinstance(snapshot_evidence, list):
             errors.append(
@@ -2164,6 +2520,80 @@ def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[st
     return (None, errors) if errors else (packet, [])
 
 
+def _parse_valid_proposal_packet(packet_text: str) -> tuple[dict | None, list[str]]:
+    """Total fail-closed wrapper around durable proposal-packet validation."""
+
+    try:
+        return _parse_valid_proposal_packet_impl(packet_text)
+    except Exception as exc:
+        return None, [
+            "proposal_packet_validation_error:"
+            f"{type(exc).__name__}:{str(exc)[:200]}"
+        ]
+
+
+def _proposal_binding_error(code: str, payload: dict) -> str:
+    return code + ":" + json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _provider_prompt_reserved_markers(prompt: str) -> tuple[str, ...]:
+    """Return system-owned delimiters a provider is never allowed to emit."""
+
+    from plan_compiler import (
+        SELECTED_PROPOSAL_BEGIN,
+        SELECTED_PROPOSAL_END,
+        SYSTEM_OWNED_CONTRACT_BEGIN,
+        SYSTEM_OWNED_CONTRACT_END,
+    )
+
+    return tuple(
+        marker
+        for marker in (
+            SELECTED_PROPOSAL_BEGIN,
+            SELECTED_PROPOSAL_END,
+            SYSTEM_OWNED_CONTRACT_BEGIN,
+            SYSTEM_OWNED_CONTRACT_END,
+        )
+        if marker in prompt
+    )
+
+
+def _task_proposal_scope_paths(task: dict) -> tuple[set[str], tuple[dict, ...]]:
+    """Parse proposal-writable task paths without iterating provider scalars."""
+
+    paths: set[str] = set()
+    invalid: list[dict] = []
+    for field in ("target_files", "files_allowed"):
+        if field not in task:
+            continue
+        values = task.get(field)
+        if not isinstance(values, list):
+            invalid.append({
+                "field": field,
+                "expected_type": "list",
+                "actual_type": type(values).__name__,
+            })
+            continue
+        for index, value in enumerate(values):
+            if not isinstance(value, str):
+                invalid.append({
+                    "field": field,
+                    "index": index,
+                    "expected_type": "str",
+                    "actual_type": type(value).__name__,
+                })
+                continue
+            path = _safe_relative_python_path(value)
+            if path is not None:
+                paths.add(path)
+    return paths, tuple(invalid)
+
+
 def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
     """Require one exact proposal selection and its writable-file contract."""
     if not isinstance(data, dict):
@@ -2189,38 +2619,39 @@ def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
         errors.append("measurement_plan_must_exactly_copy_selected_proposal")
     writable: set[str] = set()
     tasks = data.get("tasks")
+    task_scopes: list[tuple[dict, set[str]]] = []
     if isinstance(tasks, list):
         for task in tasks:
             if not isinstance(task, dict):
                 continue
-            for key in ("target_files", "files_allowed"):
-                values = task.get(key) or []
-                if isinstance(values, list):
-                    writable.update(
-                        path
-                        for value in values
-                        if (path := _safe_relative_python_path(value)) is not None
-                    )
+            task_files, scope_errors = _task_proposal_scope_paths(task)
+            task_scopes.append((task, task_files))
+            writable.update(task_files)
+            for scope_error in scope_errors:
+                errors.append(_proposal_binding_error(
+                    "selected_proposal_worker_scope_type_invalid",
+                    {
+                        "worker_id": task.get("worker_id"),
+                        "proposal_id": selected,
+                        **scope_error,
+                    },
+                ))
     missing_files = sorted(set(proposal["target_files"]) - writable)
     if missing_files:
         errors.append(f"selected_proposal_target_files_not_writable:{missing_files}")
-    binding_block = _selected_proposal_worker_block(proposal)
+    compilation = _selected_proposal_compilation_contract(proposal)
+    binding_chars = int(compilation["reserved_selected_contract_chars"])
+    expected_primary = str(compilation["state_learning_primary"])
+    selected_check = str(compilation["falsifier_test_name"])
+    required_primary_checks = set(map(
+        str,
+        compilation["required_primary_checks"],
+    ))
     bound_task_count = 0
     falsifier_check_bound = False
-    try:
-        from output_schema import WORKER_PROMPT_MAX_CHARS
-    except Exception:
-        WORKER_PROMPT_MAX_CHARS = 16_000
+    observed_primaries: list[dict] = []
     if isinstance(tasks, list):
-        for task in tasks:
-            if not isinstance(task, dict):
-                continue
-            task_files = {
-                path
-                for key in ("target_files", "files_allowed")
-                for value in (task.get(key) or [])
-                if (path := _safe_relative_python_path(value)) is not None
-            }
+        for task, task_files in task_scopes:
             if not task_files.intersection(proposal["target_files"]):
                 continue
             bound_task_count += 1
@@ -2237,33 +2668,126 @@ def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
                 if runtime_contract is not None
                 else None
             )
-            selected_check = str(
-                (proposal.get("falsifier") or {}).get("test_name") or ""
-            )
             checks_required = task.get("checks_required") or []
-            if (
-                state_learning is not None
-                and selected_check in state_learning.primary_checks()
-                and isinstance(checks_required, list)
-                and selected_check in set(map(str, checks_required))
-            ):
-                falsifier_check_bound = True
-            prompt = str(task.get("worker_prompt") or "")
-            if len(prompt) + len(binding_block) + 2 > WORKER_PROMPT_MAX_CHARS:
-                errors.append(
-                    "selected_proposal_worker_prompt_has_no_binding_budget:"
-                    f"{task.get('worker_id', bound_task_count)}"
-                )
+            actual_primary = (
+                state_learning.primary_innovation()
+                if state_learning is not None
+                else None
+            )
+            task_checks = (
+                set(map(str, checks_required))
+                if isinstance(checks_required, list)
+                else set()
+            )
+            observed_primaries.append({
+                "worker_id": task.get("worker_id", bound_task_count),
+                "state_learning_primary": actual_primary,
+                "checks_required": sorted(task_checks),
+            })
+            if actual_primary == expected_primary:
+                missing_checks = sorted(required_primary_checks - task_checks)
+                if not missing_checks and selected_check in required_primary_checks:
+                    falsifier_check_bound = True
+                elif missing_checks:
+                    errors.append(_proposal_binding_error(
+                        "selected_proposal_primary_checks_missing",
+                        {
+                            "worker_id": task.get("worker_id", bound_task_count),
+                            "proposal_id": selected,
+                            "state_learning_primary": expected_primary,
+                            "proposal_falsifier": selected_check,
+                            "missing_checks": missing_checks,
+                            "required_primary_checks": sorted(required_primary_checks),
+                        },
+                    ))
+            raw_prompt = task.get("worker_prompt")
+            if not isinstance(raw_prompt, str):
+                errors.append(_proposal_binding_error(
+                    "selected_proposal_worker_prompt_type_invalid",
+                    {
+                        "worker_id": task.get("worker_id", bound_task_count),
+                        "proposal_id": selected,
+                        "expected_type": "str",
+                        "actual_type": type(raw_prompt).__name__,
+                    },
+                ))
+                continue
+            prompt = raw_prompt
+            if len(prompt.strip()) < WORKER_PROMPT_MIN_CHARS:
+                errors.append(_proposal_binding_error(
+                    "selected_proposal_worker_prompt_below_minimum",
+                    {
+                        "worker_id": task.get("worker_id", bound_task_count),
+                        "proposal_id": selected,
+                        "actual_provider_chars": len(prompt),
+                        "actual_non_whitespace_chars": len(prompt.strip()),
+                        "minimum_provider_chars": WORKER_PROMPT_MIN_CHARS,
+                    },
+                ))
+            reserved_markers = _provider_prompt_reserved_markers(prompt)
+            if reserved_markers:
+                errors.append(_proposal_binding_error(
+                    "selected_proposal_worker_prompt_reserved_marker",
+                    {
+                        "worker_id": task.get("worker_id", bound_task_count),
+                        "proposal_id": selected,
+                        "reserved_markers": list(reserved_markers),
+                    },
+                ))
+            runtime_contract_reserve = int(
+                compilation["reserved_runtime_contract_max_chars"]
+            )
+            combined_chars = (
+                len(prompt) + binding_chars + 2 + runtime_contract_reserve
+            )
+            if combined_chars > WORKER_PROMPT_MAX_CHARS:
+                errors.append(_proposal_binding_error(
+                    "selected_proposal_worker_prompt_has_no_binding_budget",
+                    {
+                        "worker_id": task.get("worker_id", bound_task_count),
+                        "proposal_id": selected,
+                        "actual_provider_chars": len(prompt),
+                        "reserved_selected_contract_chars": binding_chars,
+                        "reserved_runtime_contract_max_chars": (
+                            runtime_contract_reserve
+                        ),
+                        "separator_chars": 2,
+                        "combined_chars": combined_chars,
+                        "global_cap_chars": WORKER_PROMPT_MAX_CHARS,
+                        "max_provider_chars": compilation["max_provider_chars"],
+                        "overflow_chars": combined_chars - WORKER_PROMPT_MAX_CHARS,
+                        "character_metric": compilation["character_metric"],
+                    },
+                ))
     if bound_task_count == 0 and not missing_files:
         errors.append("selected_proposal_has_no_bound_worker_task")
     elif bound_task_count and not falsifier_check_bound:
-        errors.append(
-            "selected_proposal_falsifier_not_bound_to_runtime_primary_check"
-        )
+        errors.append(_proposal_binding_error(
+            "selected_proposal_falsifier_not_bound_to_runtime_primary_check",
+            {
+                "proposal_id": selected,
+                "proposal_falsifier": selected_check,
+                "expected_state_learning_primary": expected_primary,
+                "required_primary_checks": sorted(required_primary_checks),
+                "observed_bound_tasks": observed_primaries,
+            },
+        ))
     return errors
 
 
 def _selected_proposal_contract(proposal: dict) -> dict:
+    falsifier = dict(proposal["falsifier"])
+    state_learning_primary = _proposal_falsifier_primary(
+        falsifier.get("test_name")
+    )
+    if (
+        state_learning_primary is None
+        or falsifier.get("state_learning_primary") != state_learning_primary
+        or falsifier.get("intervention_target")
+        != STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[state_learning_primary]
+        or proposal.get("mechanism_target") != falsifier.get("intervention_target")
+    ):
+        raise ValueError("selected proposal falsifier has no typed primary")
     contract = {
         "schema_version": 1,
         "proposal_id": str(proposal["proposal_id"]),
@@ -2275,7 +2799,13 @@ def _selected_proposal_contract(proposal: dict) -> dict:
         "target_files": list(proposal["target_files"]),
         "source_symbols": list(proposal["source_symbols"]),
         "reachable_chain": list(proposal["reachable_chain"]),
-        "falsifier": dict(proposal["falsifier"]),
+        "falsifier": falsifier,
+        "state_learning_primary": state_learning_primary,
+        "mechanism_target": proposal["mechanism_target"],
+        "intervention_target": falsifier["intervention_target"],
+        "required_primary_checks": list(
+            STATE_LEARNING_PRIMARY_CHECKS[state_learning_primary]
+        ),
         "evidence_refs": list(proposal["evidence_refs"]),
         "snapshot_evidence": list(proposal.get("snapshot_evidence") or []),
         "execution_mode": str(
@@ -2309,6 +2839,10 @@ def _selected_proposal_binding(proposal: dict, packet: dict) -> dict:
         "source_symbols": list(contract["source_symbols"]),
         "reachable_chain": list(contract["reachable_chain"]),
         "falsifier": dict(contract["falsifier"]),
+        "mechanism_target": contract["mechanism_target"],
+        "state_learning_primary": contract["state_learning_primary"],
+        "intervention_target": contract["intervention_target"],
+        "required_primary_checks": list(contract["required_primary_checks"]),
         "evidence_refs": list(contract["evidence_refs"]),
         "snapshot_evidence": list(contract["snapshot_evidence"]),
         "execution_mode": contract["execution_mode"],
@@ -2367,6 +2901,14 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
         "reachable_chain=" + json.dumps(
             contract["reachable_chain"], ensure_ascii=False, separators=(",", ":")
         ),
+        f"state_learning_primary={contract['state_learning_primary']}",
+        f"mechanism_target={contract['mechanism_target']}",
+        f"intervention_target={contract['intervention_target']}",
+        "required_primary_checks=" + json.dumps(
+            contract["required_primary_checks"],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         "falsifier=" + json.dumps(
             contract["falsifier"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ),
@@ -2386,21 +2928,83 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
     ))
 
 
+def _selected_proposal_compilation_contract(proposal: dict) -> dict:
+    """Return the exact provider budget and typed-primary binding for a proposal."""
+
+    from plan_compiler import SYSTEM_OWNED_CONTRACT_MAX_CHARS
+
+    contract = _selected_proposal_contract(proposal)
+    binding_chars = len(_selected_proposal_worker_block(proposal))
+    separator_chars = 2
+    return {
+        "proposal_id": contract["proposal_id"],
+        "falsifier_test_name": contract["falsifier"]["test_name"],
+        "mechanism_target": contract["mechanism_target"],
+        "state_learning_primary": contract["state_learning_primary"],
+        "intervention_target": contract["intervention_target"],
+        "required_primary_checks": list(contract["required_primary_checks"]),
+        "reserved_selected_contract_chars": binding_chars,
+        "separator_chars": separator_chars,
+        "reserved_runtime_contract_max_chars": (
+            SYSTEM_OWNED_CONTRACT_MAX_CHARS
+        ),
+        "global_cap_chars": WORKER_PROMPT_MAX_CHARS,
+        "max_provider_chars": (
+            WORKER_PROMPT_MAX_CHARS
+            - binding_chars
+            - separator_chars
+            - SYSTEM_OWNED_CONTRACT_MAX_CHARS
+        ),
+        "character_metric": "python_unicode_code_points",
+    }
+
+
+def _proposal_worker_bindability_error(proposal: dict) -> str | None:
+    compilation = _selected_proposal_compilation_contract(proposal)
+    if int(compilation["max_provider_chars"]) >= WORKER_PROMPT_MIN_CHARS:
+        return None
+    return _proposal_binding_error(
+        "proposal_worker_binding_cannot_fit_minimum_prompt",
+        {
+            **compilation,
+            "minimum_provider_chars": WORKER_PROMPT_MIN_CHARS,
+        },
+    )
+
+
+def _proposal_compilation_contract_text(packet: dict) -> str:
+    """Render all allowed proposal budgets before the final Master chooses one."""
+
+    allowed = set(map(str, packet.get("allowed_proposal_ids") or []))
+    rows = [
+        _selected_proposal_compilation_contract(proposal)
+        for proposal in packet.get("ordered_proposals") or []
+        if str(proposal.get("proposal_id") or "") in allowed
+    ]
+    return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _bind_selected_proposal_workers(data: dict, proposal: dict) -> dict:
     """Compile the selected mechanism into every writable target task."""
     result = json.loads(json.dumps(data, ensure_ascii=False))
     block = _selected_proposal_worker_block(proposal)
     target_files = set(proposal["target_files"])
     for task in result.get("tasks") or []:
-        task_files = {
-            path
-            for key in ("target_files", "files_allowed")
-            for value in (task.get(key) or [])
-            if (path := _safe_relative_python_path(value)) is not None
-        }
+        if not isinstance(task, dict):
+            continue
+        task_files, scope_errors = _task_proposal_scope_paths(task)
+        if scope_errors:
+            continue
         if task_files.intersection(target_files):
+            provider_prompt = task.get("worker_prompt")
+            if (
+                not isinstance(provider_prompt, str)
+                or len(provider_prompt.strip()) < WORKER_PROMPT_MIN_CHARS
+                or _provider_prompt_reserved_markers(provider_prompt)
+            ):
+                continue
             task["worker_prompt"] = (
-                str(task.get("worker_prompt") or "").rstrip()
+                provider_prompt.rstrip()
                 + "\n\n"
                 + block
             )
@@ -2460,6 +3064,11 @@ def _project_strict_final_master_result(
         policy=architecture_policy,
     )
     data, _terms = bind_system_owned_worker_contract_terms(data)
+    if _terms.get("overflow_tasks"):
+        return None, [_proposal_binding_error(
+            "system_owned_worker_contract_binding_overflow",
+            {"tasks": _terms["overflow_tasks"]},
+        )]
     if any(data.get(field) for field in (
         "branch_from",
         "source_override",
@@ -3928,7 +4537,17 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "proposal target_files path must be writable in at least one task. You may "
         "elaborate implementation details, but may not synthesize a fourth proposal, "
         "combine mechanisms, or treat critic votes as permission to change source, "
-        "evidence, scope, or gates.\n"
+        "evidence, scope, or gates. The proposal falsifier's "
+        "state_learning_primary and every required_primary_checks item are exact; "
+        "plan_required_floor_checks are additional and do not replace them.\n"
+        "SYSTEM-DERIVED PER-PROPOSAL COMPILATION CONTRACTS (Python Unicode "
+        "character counts, not tokens or UTF-8 bytes):\n"
+        + _proposal_compilation_contract_text(proposal_packet)
+        + "\nFor the selected proposal, every provider worker_prompt that touches a "
+        "target file MUST be no longer than max_provider_chars. The system then "
+        "appends reserved_selected_contract_chars, separator_chars, and a bounded "
+        "runtime-contract block no longer than reserved_runtime_contract_max_chars; do not "
+        "repeat the immutable proposal prose merely to consume that reserved budget.\n"
     )
 
     master_schema_repair_suffix = ""
@@ -4106,6 +4725,27 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 )
             )
             data, _binding_meta = bind_system_owned_worker_contract_terms(data)
+            if _binding_meta.get("overflow_tasks"):
+                binding_overflow_error = _proposal_binding_error(
+                    "system_owned_worker_contract_binding_overflow",
+                    {"tasks": _binding_meta["overflow_tasks"]},
+                )
+                ui.log_history(
+                    "Master plan rejected by system-owned contract binding: "
+                    + binding_overflow_error,
+                    "warn",
+                )
+                if attempt + 1 < MAX_MASTER_RETRIES:
+                    master_schema_repair_suffix += (
+                        "\n\n# Previous system-owned contract binding failed; "
+                        "re-emit the complete plan and fix this item:\n- "
+                        + binding_overflow_error[:1500]
+                        + "\n"
+                    )
+                    import asyncio
+                    await asyncio.sleep(2)
+                    continue
+                return None
             if _policy_abi_binding_meta.get("bound"):
                 ui.log_history(
                     "Master plan compiler bound the closed national policy ABI.",

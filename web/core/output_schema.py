@@ -119,6 +119,52 @@ MASTER_PROPOSAL_FALSIFIER_TESTS = (
     "donk_line_reachability",
     "delayed_probe_line_reachability",
 )
+MASTER_PROPOSAL_FALSIFIER_PRIMARY = {
+    "fast_policy_baseline": "sample_counted_candidate_batch",
+    "incremental_refinement_protocol": "sample_counted_candidate_batch",
+    "incremental_opponent_model": "action_profile",
+    "terminal_response_adaptation": "terminal_response",
+    "showdown_range_adaptation": "showdown_range",
+    "donk_line_reachability": "donk",
+    "delayed_probe_line_reachability": "delayed_probe",
+}
+STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS = {
+    "sample_counted_candidate_batch": "deadline",
+    "action_profile": "opponent.rates",
+    "terminal_response": "opponent.terminal_response",
+    "showdown_range": "opponent.showdown_range",
+    "donk": "line.can_donk",
+    "delayed_probe": "line.can_delayed_probe",
+}
+STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
+    "deadline": ("deadline",),
+    "opponent.rates": (
+        "opponent.rates",
+        "action_profile",
+        "fold_rate",
+        "call_rate",
+        "raise_rate",
+        "allin_rate",
+    ),
+    "opponent.terminal_response": (
+        "opponent.terminal_response",
+        "terminal_response",
+        "fold_to_raise",
+        "call_raise",
+        "raise_over_raise",
+    ),
+    "opponent.showdown_range": (
+        "opponent.showdown_range",
+        "showdown_range",
+        "oppo_hands",
+    ),
+    "line.can_donk": ("line.can_donk", "can_donk", "donk"),
+    "line.can_delayed_probe": (
+        "line.can_delayed_probe",
+        "can_delayed_probe",
+        "delayed_probe",
+    ),
+}
 STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
     "sample_counted_candidate_batch": ("sample_count", "deadline"),
     "action_profile": ("action_profile", "context", "opponent"),
@@ -582,6 +628,13 @@ def master_plan_executable_contract_text() -> str:
         lines.append(
             f"- state_learning primary {primary!r} requires worker_prompt terms: "
             + ", ".join(f'\"{term}\"' for term in terms)
+            + "."
+        )
+        lines.append(
+            f"- state_learning primary {primary!r} requires checks_required: "
+            + ", ".join(
+                f'\"{check}\"' for check in STATE_LEARNING_PRIMARY_CHECKS[primary]
+            )
             + "."
         )
     for section, terms in RUNTIME_CONTRACT_WORKER_PROMPT_TERMS.items():

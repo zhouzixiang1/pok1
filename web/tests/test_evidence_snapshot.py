@@ -72,6 +72,30 @@ def _valid_proposal_packet(
                 if index == 2
                 else "showdown_range_adaptation"
             )
+            if index == 2:
+                proposal["mechanism_target"] = "opponent.rates"
+                proposal["structural_change"] += " Route only through opponent.rates."
+                proposal["expected_diff"] += " The consumer reads opponent.rates."
+                proposal["falsifier"].update({
+                    "state_learning_primary": "action_profile",
+                    "intervention_target": "opponent.rates",
+                    "control": "Hold the decision context and opponent action_profile at its prior.",
+                    "intervention": "Change only opponent.rates action_profile in that decision context.",
+                    "expected_observation": "The typed intent changes only with the opponent action_profile intervention.",
+                })
+            else:
+                proposal["mechanism_target"] = "opponent.showdown_range"
+                proposal["structural_change"] += (
+                    " Route only through opponent.showdown_range."
+                )
+                proposal["expected_diff"] += " The consumer reads opponent.showdown_range."
+                proposal["falsifier"].update({
+                    "state_learning_primary": "showdown_range",
+                    "intervention_target": "opponent.showdown_range",
+                    "control": "Hold showdown_range confidence at its prior in the paired context.",
+                    "intervention": "Change only opponent.showdown_range confidence in the paired context.",
+                    "expected_observation": "The typed intent changes only with the showdown_range confidence intervention.",
+                })
         proposal["proposal_id"] = agent_master._proposal_identity(proposal)
         proposals.append(proposal)
     proposal_ids = [proposal["proposal_id"] for proposal in proposals]
@@ -141,7 +165,7 @@ def _valid_proposal_packet(
         }
     )
     return {
-        "schema_version": "master-proposal-packet-v4",
+        "schema_version": "master-proposal-packet-v5",
         "valid": True,
         "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
@@ -978,9 +1002,9 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     captured = {}
     targeted_failure = "The selected frozen-evidence mechanism fixes one reachable leak."
     proposal = {
-        "schema_version": "master-proposal-v2",
+        "schema_version": "master-proposal-v3",
         "targeted_failure": targeted_failure,
-        "structural_change": "Replace one reachable frozen-evidence branch with a bounded mechanism.",
+        "structural_change": "Replace one reachable frozen-evidence branch with a deadline-bounded mechanism.",
         "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
         "measurement": (
             "target=national_v2; primary=complete_70_hand_wld; "
@@ -988,7 +1012,8 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
             "uncertainty=wilson_wld_interval; secondary=net_chip_ci"
         ),
         "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
-        "expected_diff": "The strategy decision path consumes the selected structural mechanism.",
+        "mechanism_target": "deadline",
+        "expected_diff": "The strategy decision path consumes the selected structural mechanism before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
@@ -1000,8 +1025,10 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         ],
         "falsifier": {
             "test_name": "fast_policy_baseline",
-            "control": "The frozen parent preserves the original paired decision.",
-            "intervention": "Only the selected frozen-evidence mechanism is enabled.",
+            "state_learning_primary": "sample_counted_candidate_batch",
+            "intervention_target": "deadline",
+            "control": "The frozen parent preserves the original paired decision with sample_count=1 before the deadline.",
+            "intervention": "Only the selected frozen-evidence deadline mechanism is enabled.",
             "expected_observation": "The intervention changes the target action while control does not.",
         },
         "evidence_refs": [

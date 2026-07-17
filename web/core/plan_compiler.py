@@ -35,11 +35,15 @@ SYSTEM_OWNED_CONTRACT_HEADER = (
 )
 SYSTEM_OWNED_CONTRACT_BEGIN = "[[SYSTEM_OWNED_WORKER_CONTRACT:BEGIN]]"
 SYSTEM_OWNED_CONTRACT_END = "[[SYSTEM_OWNED_WORKER_CONTRACT:END]]"
+SYSTEM_OWNED_CONTRACT_MAX_CHARS = 2_048
 _SYSTEM_OWNED_CONTRACT_RE = re.compile(
     r"\n\n"
     + re.escape(SYSTEM_OWNED_CONTRACT_BEGIN)
+    + r"\n"
+    + re.escape(SYSTEM_OWNED_CONTRACT_HEADER)
     + r"\n.*?\n"
-    + re.escape(SYSTEM_OWNED_CONTRACT_END),
+    + re.escape(SYSTEM_OWNED_CONTRACT_END)
+    + r"\Z",
     re.DOTALL,
 )
 SELECTED_PROPOSAL_BEGIN = "[[SELECTED_PROPOSAL_CONTRACT:BEGIN]]"
@@ -50,6 +54,22 @@ _SELECTED_PROPOSAL_RE = re.compile(
     + re.escape(SELECTED_PROPOSAL_END),
     re.DOTALL,
 )
+
+
+def _system_owned_contract_binding_block(terms: tuple[str, ...]) -> str:
+    """Render the bounded deterministic block appended to one Worker prompt."""
+
+    return (
+        f"\n\n{SYSTEM_OWNED_CONTRACT_BEGIN}\n"
+        f"{SYSTEM_OWNED_CONTRACT_HEADER}\n"
+        "- Required literal execution anchors: "
+        + " | ".join(str(term) for term in terms)
+        + ".\n"
+        "- These anchors name executable obligations already selected in the "
+        "structured contract. Implement their behavior and control evidence; "
+        "do not treat them as labels.\n"
+        f"{SYSTEM_OWNED_CONTRACT_END}"
+    )
 
 
 def _safe_worker_id(value: Any, fallback: int) -> str:
@@ -238,32 +258,43 @@ def bind_system_owned_worker_contract_terms(
             })
             continue
 
+        prompt, replaced_blocks = _SYSTEM_OWNED_CONTRACT_RE.subn("", raw_prompt)
+        injected_system_markers = tuple(
+            marker
+            for marker in (
+                SYSTEM_OWNED_CONTRACT_BEGIN,
+                SYSTEM_OWNED_CONTRACT_END,
+            )
+            if marker in prompt
+        )
+        if injected_system_markers:
+            meta["invalid_prompt_tasks"].append({
+                "worker_id": worker_id,
+                "reason": "worker_prompt_reserved_system_marker",
+                "reserved_markers": list(injected_system_markers),
+                "original_chars": len(raw_prompt),
+            })
+            continue
         terms = _compiled_prompt_validation_terms(bound, task)
         if not terms:
             continue
-        prompt, replaced_blocks = _SYSTEM_OWNED_CONTRACT_RE.subn("", raw_prompt)
         prompt_lower = prompt.lower()
         missing_terms = tuple(
             term for term in terms if str(term).lower() not in prompt_lower
         )
 
-        binding_block = (
-            f"\n\n{SYSTEM_OWNED_CONTRACT_BEGIN}\n"
-            f"{SYSTEM_OWNED_CONTRACT_HEADER}\n"
-            "- Required literal execution anchors: "
-            + " | ".join(str(term) for term in terms)
-            + ".\n"
-            "- These anchors name executable obligations already selected in the "
-            "structured contract. Implement their behavior and control evidence; "
-            "do not treat them as labels.\n"
-            f"{SYSTEM_OWNED_CONTRACT_END}"
-        )
+        binding_block = _system_owned_contract_binding_block(terms)
         bound_prompt = prompt + binding_block
-        if len(bound_prompt) > max_prompt_chars:
+        if (
+            len(binding_block) > SYSTEM_OWNED_CONTRACT_MAX_CHARS
+            or len(bound_prompt) > max_prompt_chars
+        ):
             meta["overflow_tasks"].append({
                 "worker_id": worker_id,
                 "original_chars": len(prompt),
                 "required_chars": len(bound_prompt),
+                "binding_chars": len(binding_block),
+                "binding_max_chars": SYSTEM_OWNED_CONTRACT_MAX_CHARS,
                 "required_terms": list(terms),
             })
             continue
