@@ -1233,7 +1233,8 @@ async def _run_crossover(
                 "\n\n# Previous Attempt Rejected By Artifact Write Boundary\n"
                 "Rebuild from Parent A and edit exactly policy.py. Do not write "
                 "identity JSON, runtime/precompute, helper modules, directories, "
-                "or binary assets.\n"
+                "candidate-owned or unbound binary assets. A future system asset is "
+                "brokered infrastructure, never a crossover write.\n"
                 + json.dumps(
                     crossover_boundary.violations[:12],
                     indent=2,

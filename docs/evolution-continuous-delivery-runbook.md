@@ -162,9 +162,10 @@ selecting one research bot:
 
 Each component is a separate, auditable migration proposal. It must be
 reimplemented from behavior rather than copied, materialized as a new strict
-five-file artifact, place any necessary data behind a system-owned immutable
-asset path, bind its own runtime identity/probes/gates, and first produce only
-zero-strength design evidence. Each then needs new native and official
+five-executable/identity-file artifact, place any necessary data behind a
+system-owned immutable asset profile (registry/receipt/manifest/broker/common
+resolver/influence proof), bind its own runtime identity/probes/gates, and
+first produce only zero-strength design evidence. Each then needs new native and official
 evaluation/certification. A later combined canonical Bot is itself another new
 five-file artifact with fresh identity, probes, gates, official certification,
 and immutable rating cycle; it inherits neither research evidence nor any

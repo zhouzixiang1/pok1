@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from server.app import _install_static_spa_routes
+from testclient_compat import backend_options_for_testclient
 
 
 def _client_with_static(tmp_path):
@@ -16,7 +17,7 @@ def _client_with_static(tmp_path):
 
     app = FastAPI()
     _install_static_spa_routes(app, static_dir)
-    return TestClient(app)
+    return TestClient(app, backend_options=backend_options_for_testclient())
 
 
 def test_unknown_api_path_returns_404(tmp_path):

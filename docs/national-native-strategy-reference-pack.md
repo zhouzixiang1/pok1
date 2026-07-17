@@ -145,15 +145,17 @@ Retired experiments contain candidate equity matrices, but files below
 them directly.
 
 The source-controlled evaluator and compact 169-class prior are admitted parts
-of the exact five-file submission ABI. Admission of any larger exact equity or
-blueprint table still requires a system-owned asset registry,
-license and source provenance, source and decoded SHA-256 values, a deterministic
-read-only packed or `mmap` loader, card/key schema, byte and startup limits,
-empty/corrupt fallback, official bundle compatibility, and a measured live
-consumer. A Worker may select or consume an admitted system asset but may not
-generate an opaque replacement or open arbitrary files. Until that contract is
-complete, policies use only the source-controlled compact evaluator/tables
-inside `precompute.py`.
+of the exact five executable/identity Bot files. Admission of any larger exact
+equity or blueprint table still requires a system-owned asset registry,
+issuance receipt, license and source provenance, source and decoded SHA-256
+values, a deterministic read-only packed loader, card/key schema, byte/startup/
+query limits, no-follow verification, empty/corrupt fail-closed handling, a
+nonce/quota-bound system broker, official bundle compatibility, one resolver
+shared by native/precommit/probe/Arena/official paths, and a measured live
+decision-influence proof. A Worker may select or consume an admitted system
+asset but may not generate an opaque replacement or open arbitrary files. Until
+that contract is complete, policies use only the source-controlled compact
+evaluator/tables inside `precompute.py`.
 
 ## Deadline and evidence boundary
 

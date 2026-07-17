@@ -136,6 +136,218 @@ def test_final_master_dispatch_rejects_filesystem_tool(authority):
     assert store.instance(call["run_id"]) == {}
 
 
+def test_recover_accepted_final_master_skips_duplicate_scout_rebuild(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    policy = {"policy_digest": "d" * 64, "focus": "action_profile"}
+    packet = {
+        "context_digest": "e" * 64,
+        "source_code_digest": "f" * 64,
+        "ordered_proposals": [],
+    }
+    role_result = {
+        "analysis": "sealed final master plan",
+        "proposal_ensemble": packet,
+        "tasks": [],
+    }
+    call = module.new_call(
+        checkpoint,
+        slot="master:final",
+        context_binding=module.final_master_call_context(packet, policy),
+    )
+    module.dispatch_call(
+        call,
+        full_prompt="sealed final master prompt",
+        tools=[],
+        owner="pytest",
+    )
+    result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="sealed-final",
+        total_cost_usd=0.01,
+        usage={},
+        result=json.dumps(role_result, sort_keys=True),
+    )
+    module._observe_provider_result(
+        result,
+        invocation_id=call["invocation_id"],
+        effect_id=call["effect_id"],
+    )
+    module.complete_provider_call(
+        call,
+        raw_output=result.result,
+        provider_results=[result],
+    )
+    module.accept_role_result(
+        call,
+        role_result=role_result,
+        parse_contract="master-plan-schema-v1",
+    )
+
+    assert module.recover_accepted_master_final_result(
+        checkpoint,
+        architecture_policy=policy,
+    ) == role_result
+    assert len([
+        event for event in store.events(call["run_id"])
+        if event.event_type == "EffectRequested"
+    ]) == 1
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_phase_slot_context_drift:master:master:final",
+    ):
+        module.recover_accepted_master_final_result(
+            checkpoint,
+            architecture_policy={"policy_digest": "changed"},
+        )
+
+    # A same-phase revision may legitimately replay a sealed effect, but a
+    # later stage is a new state-machine boundary, never a duplicate entry.
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_checkpoint_stage_invalid:master:final:master_plan_ready",
+    ):
+        module.recover_accepted_master_final_result(
+            {**checkpoint, "checkpoint_revision": 11, "stage": "master_plan_ready"},
+            architecture_policy=policy,
+        )
+    assert len([
+        event for event in store.events(call["run_id"])
+        if event.event_type == "EffectRequested"
+    ]) == 1
+
+
+def test_real_strict_proposal_projection_enforces_frozen_allowed_primary(
+    monkeypatch,
+    tmp_path,
+):
+    """The persisted Scout context, not renderer prose, owns the axis gate."""
+
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as module
+    from workflow_kernel import WorkflowStore
+
+    results_dir = tmp_path / "results"
+    store = WorkflowStore(results_dir / "workflow" / "events.sqlite3")
+    candidate_dir = tmp_path / "national_v155"
+    candidate_dir.mkdir()
+    (candidate_dir / "policy.py").write_text(
+        "def get_baseline_decision(context):\n"
+        "    return _choose_intent(context)\n\n"
+        "def _choose_intent(context):\n"
+        "    return {'kind': 'pass'}\n",
+        encoding="utf-8",
+    )
+    (candidate_dir / ".protocol_bootstrap_no_strength_evidence").mkdir()
+    source_graph, source_digest = agent_master._source_symbol_graph(candidate_dir)
+    assert source_graph
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: candidate_dir)
+    monkeypatch.setattr(module, "_store", lambda: store)
+
+    architecture_policy = {
+        "plan_required_floor_checks": ["incremental_opponent_model"],
+        "selected_focus": {"required_checks": ["incremental_opponent_model"]},
+    }
+    allowed = agent_master._architecture_proposal_primaries(architecture_policy)
+    assert allowed == ("action_profile",)
+    context = module.proposal_call_context(
+        context_digest="a" * 64,
+        source_code_digest=source_digest,
+        direction="mechanism",
+        allowed_primaries=allowed,
+    )
+    assert context["allowed_primaries"] == ["action_profile"]
+    call = module.new_call(
+        _checkpoint(),
+        slot="proposal:mechanism",
+        context_binding=context,
+    )
+
+    def proposal_for(*, primary, test_name, target):
+        leaf = f"{target}.fold_to_raise"
+        return {
+            "targeted_failure": (
+                f"The bounded {primary} consumer misses one reachable action profile."
+            ),
+            "structural_change": (
+                f"Route only {leaf} through the bounded live decision consumer."
+            ),
+            "counterfactual": (
+                f"Hold cards, legality, deadline, and all roots except {target} fixed."
+            ),
+            "measurement": (
+                "target=fixed_blueprint_control; "
+                "primary=typed_falsifier_and_official_5_plus_3; "
+                "expected_delta=not_applicable; samples=official_5_plus_3; "
+                "uncertainty=no_strength_claim; secondary=none"
+            ),
+            "why_not_threshold_tuning": (
+                "This changes a reachable state consumer rather than one numeric threshold."
+            ),
+            "mechanism_target": target,
+            "expected_diff": (
+                f"The paired typed intent changes only when {leaf} changes."
+            ),
+            "target_files": ["policy.py"],
+            "source_symbols": [
+                "policy.py:get_baseline_decision",
+                "policy.py:_choose_intent",
+            ],
+            "reachable_chain": [
+                "policy.py:get_baseline_decision",
+                "policy.py:_choose_intent",
+            ],
+            "falsifier": {
+                "test_name": test_name,
+                "state_learning_primary": primary,
+                "intervention_target": target,
+                "control": f"Hold {leaf} at its bounded paired-state prior.",
+                "intervention": f"Change only {leaf} in the paired decision context.",
+                "expected_observation": (
+                    "The typed intent changes only under that owner-qualified intervention."
+                ),
+            },
+            "evidence_refs": [
+                "source:policy.py:get_baseline_decision",
+                "source:policy.py:_choose_intent",
+            ],
+            "risks": "Sparse evidence remains bounded by the system fallback and probe.",
+        }
+
+    accepted = module._project_role_result(
+        call,
+        json.dumps(
+            proposal_for(
+                primary="action_profile",
+                test_name="incremental_opponent_model",
+                target="opponent.rates",
+            )
+        ),
+    )
+    assert accepted["falsifier"]["state_learning_primary"] == "action_profile"
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="proposal_falsifier_primary_not_permitted",
+    ):
+        module._project_role_result(
+            call,
+            json.dumps(
+                proposal_for(
+                    primary="terminal_response",
+                    test_name="terminal_response_adaptation",
+                    target="opponent.terminal_response",
+                )
+            ),
+        )
+
+
 def test_provider_result_without_schema_acceptance_is_not_authority(authority):
     module, _store = authority
     checkpoint = _checkpoint()

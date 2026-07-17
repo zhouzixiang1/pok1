@@ -5,6 +5,7 @@ from __future__ import annotations
 from starlette.testclient import TestClient
 
 from server.state import app_state
+from testclient_compat import backend_options_for_testclient
 
 
 def _client(
@@ -24,6 +25,7 @@ def _client(
         base_url="http://127.0.0.1",
         headers=headers,
         client=(address, 42_424),
+        backend_options=backend_options_for_testclient(),
     )
 
 

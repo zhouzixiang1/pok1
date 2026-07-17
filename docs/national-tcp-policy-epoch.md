@@ -86,8 +86,14 @@ The system prepares a fresh artifact containing:
 - candidate-owned `policy.py`;
 - `national_runtime_manifest.json` and `policy_epoch_receipt.json`.
 
-Those are the exact five artifact files. Candidate helper modules and
-candidate-owned data/model assets are rejected rather than dynamically loaded.
+Those are the exact five executable/identity files in the Bot directory.
+Candidate helper modules and candidate-owned data/model assets are rejected
+rather than dynamically loaded. This does not preclude a future system-owned
+table/model outside that directory: it must first be admitted by the versioned
+asset ABI, with registry/issuance receipt, content-bound manifest, bounded
+bytes/query access, no-follow verification, a brokered resolver common to all
+launch paths, and a measured decision-influence gate. Until then, no policy has
+external file access.
 
 The two JSON files are system-derived outputs, not an expanded Worker write
 scope. Preparation first rebinds a copied strict parent to the new version and
@@ -98,8 +104,9 @@ JSON documents. Quality compares the final artifact with the frozen prepared
 manifest and exempts that exact two-file consequence only when its refresh
 receipt matches the durable Worker effect, final artifact hash, target version,
 and lineage. A partial/equivalent-but-reformatted identity rewrite, or any
-extra helper, directory, or binary asset, remains an undeclared change and
-fails closed.
+extra helper, directory, or binary asset inside the Bot directory, remains an
+undeclared change and fails closed. A system asset is separately bound in a
+runtime asset profile; it is never smuggled into the candidate artifact.
 
 Candidate code receives a schema-versioned authoritative `decision_context` and
 returns only typed `pass`, `fold`, `allin`, or `raise` intents. It never parses

@@ -290,7 +290,10 @@ and do not require a worker unless quality evidence says they still fail.
   caches, and dead reads are not evidence; the socket-validated policy path
   must consume the bounded artifact and remain legal when the mapping is empty.
   A Worker may not edit `precompute.py`, create a candidate asset, or declare a
-  policy-owned table as though it were system precompute.
+  policy-owned table as though it were system precompute. A future file-backed
+  model/table is permissible only through a system-owned, manifest-and-receipt-
+  bound asset broker with no policy path I/O; until that ABI is admitted it is
+  unavailable and must be reported as an infrastructure blocker.
 - `match_memory`: required for `match_memory` and `opponent_model`. Declare
   `tracker_class`, `owner_file`, `reset_boundary="tcp_connection"`,
   `update_events`, `snapshot_field="opponent"`, `max_recent_hands`,

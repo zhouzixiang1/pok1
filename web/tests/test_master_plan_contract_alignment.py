@@ -361,6 +361,24 @@ def test_master_reference_summary_exposes_every_card_literal_contract():
             assert term.lower() in worker_card
 
 
+def test_master_reference_summary_filters_closed_axes_and_fails_closed_for_none():
+    from strategy_reference_pack import master_reference_summary
+
+    action_profile = master_reference_summary(
+        allowed_primaries=("action_profile",),
+    ).lower()
+    assert "action_profile_confidence_v1" in action_profile
+    assert "opponent.terminal_response.fold_to_raise" not in action_profile
+    assert "opponent.showdown_range.bucket_rates" not in action_profile
+    assert "allowed_primaries=['action_profile']" in action_profile
+
+    unavailable = master_reference_summary(
+        allowed_primaries=("not_a_real_primary",),
+    ).lower()
+    assert "no compatible reference card exists" in unavailable
+    assert "action_profile_confidence_v1" not in unavailable
+
+
 def test_checkpoint_worker_authority_binds_tasks_to_runtime_ledger():
     import tool_planning
     from runtime_architecture_policy import attach_runtime_contract_ledger

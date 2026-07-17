@@ -22,6 +22,8 @@ from pathlib import Path
 import stat
 from typing import Any, Iterable
 
+from bot_namespace import strict_artifact_layout_errors
+
 
 CAPABILITY_SCHEMA_VERSION = 5
 NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v4"
@@ -1438,6 +1440,12 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
     root = Path(bot_dir).resolve()
     sources, source_issues = _python_sources(root)
     trees, parse_issues = _parse_sources(sources)
+    # Static decision checks must not give a green result to an artifact that
+    # the launch/certification path would reject for carrying an unbound model,
+    # table, helper, cache, or symlink.  A future system asset remains outside
+    # this directory and is admitted by a separate bound asset profile; it is
+    # not an exception to the closed candidate layout.
+    layout_errors = strict_artifact_layout_errors(root)
     infrastructure_failures = []
     if source_issues or parse_issues:
         infrastructure_failures.append({
@@ -1451,6 +1459,12 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         set(sources).difference({"national_bot.py", "precompute.py", "policy.py"})
     )
     policy_tree = trees.get("policy.py")
+    policy_module_ok = (
+        policy_tree is not None
+        and not retired_present
+        and not extra_python
+        and not layout_errors
+    )
     functions = _function_map(policy_tree)
     static = _policy_static_evidence(policy_tree)
     runtime_ok, runtime_issues, runtime_hashes = _exact_system_runtime(root)
@@ -1509,19 +1523,21 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
     checks: list[dict[str, Any]] = [
         _check(
             "national_policy_module",
-            policy_tree is not None and not retired_present and not extra_python,
+            policy_module_ok,
             guidance=(
-                "Provide policy.py only for candidate decisions; remove retired active ABI files."
+                "Provide the exact five executable/identity Bot files only; remove retired "
+                "ABI files, helpers, and candidate-owned/unbound assets."
             ),
             summary=(
                 "policy.py is the sole active candidate decision module"
-                if policy_tree is not None and not retired_present and not extra_python
+                if policy_module_ok
                 else (
                     "policy_missing_or_forbidden_python_present:"
-                    f"retired={retired_present}:extra={extra_python}"
+                    f"retired={retired_present}:extra={extra_python}:layout={layout_errors}"
                 )
             ),
-            locations=["policy.py", *retired_present, *extra_python],
+            locations=["policy.py", *retired_present, *extra_python, *layout_errors],
+            details={"strict_artifact_layout_errors": layout_errors},
         ),
         _check(
             "system_runtime_current",

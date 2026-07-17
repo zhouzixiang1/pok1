@@ -1340,3 +1340,84 @@ official/certification 和 live 历史均不得直接消费或重导它。
 v39 的 schema 失败已经以 closed skeleton、提示词、validator 和负回归修复，而不是作为
 可迁移策略或强度经验。该 facility 仍是 future source work，不授权当前 runtime 启动或
 改变 `0/10`。
+
+## 最新接续状态 — workflow-v40/v41/v42 后的唯一启动路径
+
+本文较早的 v39/v38 操作描述仅保留历史审计价值。当前事实是：v143 的
+`workflow-v40`、`v41`、`v42` 都已通过 canonical abandon 安全结束；没有 Worker、质量、
+review、Critic、precommit、official、commit、tag、rating 或 strength 产物。v42 的首个
+final Master 已被严格 authority 接受，但重复外层 Master 入口重新拼装 packet 后触发
+`master:final` context drift；系统正确拒绝该重复 effect。三次同 `(142,143)` canonical
+abandon 已达上限，scheduler 已停，不得手工删 checkpoint/候选或创建 v43。
+
+新的源代码修复把 architecture-policy 选择的 primary 同时绑定到 Scout reference card、
+falsifier mapping、strict-authority call context 和 deterministic projection；action-profile
+bootstrap 只能看到自己的 root。schema retry 不回显旧 provider 原文。若 final Master 已
+sealed，则先用 sealed packet + 同一 immutable architecture policy 重建 exact binding 并
+replay，不再调用 Scout/Critic/provider；缺包、策略漂移、重复 final 或 journal 不一致都
+fail-closed。
+
+严格 ABI 的正确表述是“Bot 目录五个可执行/身份文件”，不是永久禁止模型或预加载表。
+候选仍不能携带资产或执行文件 I/O。未来 R0 资产 ABI 只能把模型/表置于 Bot 目录外的
+系统拥有根，要求 registry/issuance receipt、内容绑定 manifest、大小/查询上限、no-follow
+只读验证、带 nonce/quota 的 broker、native/precommit/probe/Arena/official 同一 resolver，
+以及系统观察到的决策影响正负测试。未完成这些条件前，v143 只使用 system-owned
+`precompute.py`，绝不把资产放行给 Worker 或 policy 路径。
+
+下一步顺序不得改变：完成 full Web/Sever/frontend/compile/diff 与独立审阅 → commit/push/merge
+到 `origin/main` → 在 runtime 停机且无 active checkpoint/candidate 时只通过 git fast-forward
+同步 `.evolution_pok` → checkpoint/evaluation/official diagnostics → fresh v143 prepare/start。
+任何源码修复、同步或重启都使稳定观察保持 `0/10`；第一代正式上线后再按每个已验证发布代次
+累加。
+
+## 最新接续补充 — 资产边界 P1 与可执行验证状态
+
+已经发现并修复一个不能忽略的假绿：最终 publication shape 原本会拒绝 Bot 目录中的
+`foreign-model.bin`，但 `evaluate_national_capabilities()` 只扫描 Python、
+`check_native_contract()` 也未检查严格布局，因此两个较早门会误报通过。现在它们都调用
+`strict_artifact_layout_errors`；完整五文件 Bot 只要多出模型/表/缓存/软链/辅助文件，就在
+静态能力和 native TCP 合同阶段 fail-closed。`national_alignment_matrix.py` schema 6 已把
+`system_asset_boundary` 纳入生成式跨层矩阵，绑定五角色 overlay、当前所有者、正反回归及
+“assetless-v1”状态。
+
+这不是把大模型/预加载表永久禁止：**五文件限制的是 Bot 目录的 executable/identity
+surface，不是整个系统的文件数。** 当前 v143 只能使用 `precompute.py`。未来 R0 才可通过
+系统拥有的 Bot 外资产根放行表/模型，并必须同时绑定 registry/issuance receipt、manifest/blob/
+resolver digest、大小/查询/解码上限、no-follow、sealed broker、所有 launcher 的同一 resolver、
+runtime/evidence/rating/official identity 和决策影响正反探针；禁止 Worker 写资产、policy 读路径
+或将其作为第六 Bot 文件。未完成这整套 ABI 前不启用。
+
+本机 Python 3.14 的 Starlette TestClient 停滞已通过仅测试侧 uvloop portal compatibility
+闭环（有/无 uvloop 和旧版本回归均覆盖），所以 full Web 能跑到终态；但当前 Codex 沙箱禁止
+AF_INET/AF_INET6 loopback 与 bwrap NETLINK_ROUTE。最新 aggregate 结果为 `3044 passed, 20
+skipped, 41 failed`，41 项均在真实 socket/bwrap 产品集成测试的宿主能力前置处失败，不能称
+为代码失败或 full-green，也不得通过 skip 绕过。已跑过的 source focused shard 为 `398 passed`，
+Sever `33 passed`，frontend build、compile、diff-check 均通过。必须在允许 loopback+bwrap 的
+宿主重跑完整 Web 后，才允许 merge/sync/restart。
+
+## 最新 superseding handoff — 宿主全量验证已通过，待正常发布
+
+上节 `3044 passed, 20 skipped, 41 failed` 仅描述受限 Codex sandbox；不要再把它
+当作当前源码 blocker。相同源码已在允许 loopback socket 与 bwrap NETLINK_ROUTE 的宿主
+执行 `PYTHONPATH=web/core <project-python> -m pytest -q web/tests`，结果为 **`3085
+passed, 20 skipped, 1 warning`**。Sever 是 **`33 passed`**。这覆盖此前 41 个 native
+TCP/managed-executor/official-wire/import-contract 测试，不得把它们重新标为 skip。
+
+前端还修复了一处真实测试流程错配：SSE Python 生产者→TypeScript validator 测试现在要求
+`PYTHON` 指向含 Web/FastAPI/Claude SDK 依赖的项目解释器，禁止回退 bare `python` 或
+伪造生产者。正确命令是：
+
+```bash
+cd web/frontend
+PYTHON=/home/zzx/anaconda3/envs/pytorch/bin/python npm test
+npm run lint
+npm run build
+```
+
+该真实生产者链路为 **22/22**，lint/build 通过。当前工作树与 fetched
+`origin/main=855861bf85221a13f841593d6690cc9990ece611` 同基线；完成最后
+compile/diff 后，下一步是正常 commit/push/merge，再在 runtime 停机且无 active checkpoint/
+candidate 时只通过 Git fast-forward 同步 `.evolution_pok`，重跑 recovery/epoch/evaluation/
+official diagnostics，随后 fresh v143 prepare/start。`.evolution_pok` 当前停止、HEAD 同为
+`855861bf`，其已有的 `national_arena/storage_owner.lock` 不得手删。v143/v144/rating/N=10
+均仍未产生，观察计数保持 **0/10**。

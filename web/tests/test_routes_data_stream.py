@@ -3,6 +3,7 @@
 from fastapi.testclient import TestClient
 
 from server.routes.data_stream import router
+from testclient_compat import backend_options_for_testclient
 
 
 class TestDataStream:
@@ -24,7 +25,10 @@ class TestDataStream:
         app = FastAPI()
         app.include_router(router)
 
-        response = TestClient(app).get("/api/data/stream")
+        response = TestClient(
+            app,
+            backend_options=backend_options_for_testclient(),
+        ).get("/api/data/stream")
 
         assert response.status_code == 200
         assert "event: epoch_blocked" in response.text
@@ -52,7 +56,10 @@ class TestDataStream:
         app = FastAPI()
         app.include_router(router)
 
-        response = TestClient(app).get(
+        response = TestClient(
+            app,
+            backend_options=backend_options_for_testclient(),
+        ).get(
             f"/api/data/stream?authority={'a' * 64}"
         )
 

@@ -157,8 +157,12 @@ not a reconstructed compatibility path.
 - `precompute.py` is system-owned, read-only pure import-time data. Reuse its 1,326 hole
   combinations, 8,192 rank masks, and 21 five-of-seven selections before
   doing equivalent work. Candidate-owned tables/assets and candidate file I/O
-  are outside this epoch ABI; a proposal that needs a new asset is blocked on
-  an infrastructure-owned packager/manifest change, not a Worker edit.
+  are outside this epoch ABI. A future file-backed model/table is allowed only
+  outside the Bot directory through a system-owned, manifest-and-receipt-bound
+  asset broker with byte/query caps, no-follow verification, common launch-path
+  resolution, and an observed influence gate; it is an infrastructure change,
+  never a Worker edit. Until that ABI is admitted, the policy has no external
+  asset access.
 - Match-level opponent state persists for one TCP connection and updates
   incrementally from actions, inferred terminal responses, showdown cards, and
   settlement. Hand state resets each hand. Sparse contexts retain explicit

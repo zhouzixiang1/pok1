@@ -571,6 +571,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "projection_hints": [
             "proposal_reachable_chain_edge_not_current",
         ],
+        "allowed_primaries": ["action_profile"],
         "invocation_id": "1" * 32,
     })
     prompt = rendered.text
@@ -582,7 +583,8 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "A blocked Read grants no evidence" in scope
     assert "Copy one complete two-symbol PREFERRED CURRENT ENTRY ANCHOR" in prompt
     assert "Every reachable_chain entry must also appear in source_symbols" in prompt
-    assert "proposal_reachable_chain_edge_not_current" in prompt
+    assert "precise rejection in its immutable audit record" in prompt
+    assert "proposal_reachable_chain_edge_not_current" not in prompt
     assert (
         "mechanism_target = row.mechanism_target = row.intervention_target = "
         "falsifier.intervention_target"
@@ -594,23 +596,18 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "MUST NOT contain mechanism_target" in prompt
     assert '"mechanism_target":"opponent.rates"' in prompt
     assert "context['opponent']['rates'] does not replace" in prompt
-    assert "opponent.rates.fold_to_raise is an action-profile field" in prompt
-    assert "opponent.samples.fold_to_raise is its sample-count field" in prompt
-    assert "foreign closed owner for every selectable primary" in prompt
-    assert (
-        "opponent.terminal_response.fold_to_raise is a distinct "
-        "terminal-response target"
-    ) in prompt
-    assert (
-        "A bare fold_to_raise, fold-to-raise, fold to raise, or foldtoraise is invalid"
-        in prompt
-    )
+    assert "Shared leaf names are namespace-sensitive" in prompt
+    assert "opponent.terminal_response.fold_to_raise" not in prompt
+    assert "opponent.samples.fold_to_raise" not in prompt
     assert "Never append identifier characters to an owner-qualified target literal" in prompt
     assert "A foreign target remains forbidden when mentioned only to deny" in prompt
-    mapping = agent_master._proposal_falsifier_mapping_text()
+    mapping = agent_master._proposal_falsifier_mapping_text(
+        allowed_primaries=("action_profile",),
+    )
     assert len(mapping) < 1800
     assert '"mechanism_target":"opponent.rates"' in mapping
     assert '"state_learning_primary":"action_profile"' in mapping
+    assert "terminal_response_adaptation" not in mapping
     assert "diagnostic_target_aliases" not in mapping
     assert "required_primary_checks" not in mapping
 
@@ -625,6 +622,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
         "repair_kind": "",
         "projection_hints": [],
+        "allowed_primaries": [],
         "invocation_id": "2" * 32,
     }).text.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
     assert "bots/national_v143/" in normal
@@ -645,9 +643,11 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "projection_hints": [
             f"proposal_field_invalid:{index}" for index in range(17)
         ],
+        "allowed_primaries": [],
         "invocation_id": "3" * 32,
     }).text
-    assert "proposal_field_invalid:16" in many_hints
+    assert "precise rejection in its immutable audit record" in many_hints
+    assert "proposal_field_invalid:16" not in many_hints
 
 
 def test_schema_repair_guidance_is_targeted_and_negation_safe():
@@ -660,12 +660,86 @@ def test_schema_repair_guidance_is_targeted_and_negation_safe():
             "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise",
         ),
         require_snapshot_evidence=False,
+        allowed_primaries=("action_profile",),
     )
 
-    assert "leave opponent.showdown_range unchanged" in guidance
+    assert "Rewrite the complete object from scratch" in guidance
     assert "all other decision_context fields are byte-identical" in guidance
-    assert "Never emit bare fold_to_raise" in guidance
+    assert "The only executable root for this frozen proposal is opponent.rates" in guidance
+    assert "fold_to_raise" not in guidance
+    assert "showdown_range" not in guidance
     assert len(guidance.splitlines()) == 2
+
+
+def test_shared_leaf_retry_prompt_is_root_locked_and_hides_raw_rejection():
+    import agent_master
+
+    prompt = agent_master._render_master_proposal_provider_prompt({
+        "planning_context": "Frozen action-profile architecture policy.",
+        "direction": "mechanism",
+        "directive": "one structural mechanism",
+        "source_v": 142,
+        "next_v": 143,
+        "protocol_bootstrap_prepared_only": True,
+        "singleton_no_strength": False,
+        "source_symbol_index": "policy.py:get_baseline_decision",
+        "repair_kind": "schema",
+        "projection_hints": [
+            "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise",
+            "proposal_mechanism_foreign_targets_in_executable_claim:opponent.terminal_response",
+        ],
+        "allowed_primaries": ["action_profile"],
+        "invocation_id": "4" * 32,
+    }).text
+
+    assert "The only executable root for this frozen proposal is opponent.rates" in prompt
+    assert "Rewrite the complete object from scratch" in prompt
+    assert "Prior deterministic projection errors" not in prompt
+    assert "opponent.terminal_response" not in prompt
+    assert "fold_to_raise" not in prompt
+
+
+def test_architecture_policy_derives_only_action_profile_scout_primary():
+    import agent_master
+
+    policy = {
+        "plan_required_floor_checks": ["incremental_opponent_model"],
+        "selected_focus": {"required_checks": ["incremental_opponent_model"]},
+    }
+
+    assert agent_master._architecture_proposal_primaries(policy) == (
+        "action_profile",
+    )
+
+
+def test_focused_primary_is_a_dynamic_scout_admission_gate(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    raw = _proposal("mechanism", fresh=True)
+
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        allowed_primaries=("action_profile",),
+    ) is None
+    assert "proposal_falsifier_primary_not_permitted" in (
+        agent_master._master_proposal_projection_hints(
+            raw,
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+            evidence_mode="fresh_strict_control_no_strength",
+            allowed_primaries=("action_profile",),
+        )
+    )
 
 
 def test_falsifier_schema_repair_explicitly_removes_top_level_target_duplication():
@@ -1044,7 +1118,8 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
         for role, prompt in calls
         if role == "MASTER PROPOSAL mechanism SCHEMA RETRY"
     )
-    assert "proposal_required_text_invalid:measurement" in mechanism_retry_prompt
+    assert "precise rejection in its immutable audit record" in mechanism_retry_prompt
+    assert "proposal_required_text_invalid:measurement" not in mechanism_retry_prompt
     assert "Common failure modes to fix" not in mechanism_retry_prompt
 
 

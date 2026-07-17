@@ -1304,12 +1304,22 @@ test("all production stream events have rejecting minimal runtime schemas", () =
 });
 
 test("actual Python producers satisfy the TypeScript stream validators", () => {
+  const python = process.env.PYTHON;
+  assert.ok(
+    python,
+    "set PYTHON to the project Web interpreter before npm test; the producer "
+      + "contract imports live FastAPI/LLM dependencies and must not run on a bare Python",
+  );
   const result = spawnSync(
-    process.env.PYTHON || "python",
+    python,
     ["tests/captureProducerEvents.py"],
     { cwd: process.cwd(), encoding: "utf8", timeout: 30_000 },
   );
-  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(
+    result.status,
+    0,
+    result.error?.message || result.stderr || result.stdout,
+  );
   const captured = JSON.parse(result.stdout);
   for (const [eventType, payload] of Object.entries(captured.evolution)) {
     assert.equal(

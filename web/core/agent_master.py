@@ -34,6 +34,7 @@ def _proposal_schema_repair_guidance(
     projection_hints: tuple[str, ...],
     *,
     require_snapshot_evidence: bool,
+    allowed_primaries: tuple[str, ...] | None = None,
 ) -> str:
     """Render bounded, error-directed Scout repair instructions.
 
@@ -52,17 +53,31 @@ def _proposal_schema_repair_guidance(
 
     if any("proposal_mechanism_foreign_targets" in item for item in hints):
         add(
-            "A foreign closed target is forbidden even in a no/not/unchanged/"
-            "without disclaimer. Invalid: 'leave opponent.showdown_range "
-            "unchanged'. State instead that all other decision_context fields "
-            "are byte-identical."
+            "Do not name, deny, preserve, or qualify any foreign closed target. "
+            "State instead that all other decision_context fields are "
+            "byte-identical."
         )
     if any("proposal_mechanism_shared_leaf" in item for item in hints):
+        roots = tuple(
+            sorted({
+                STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+                for primary in allowed_primaries or ()
+                if primary in STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS
+            })
+        )
+        root_clause = (
+            f" The only executable root for this frozen proposal is {roots[0]}."
+            if len(roots) == 1
+            else " Use only the root selected by the mapping row."
+        )
         add(
-            "Never emit bare fold_to_raise/fold-to-raise/fold to raise/"
-            "foldtoraise. Use one complete owner-qualified field such as "
-            "opponent.rates.fold_to_raise and keep every other field "
-            "byte-identical."
+            "Rewrite the complete object from scratch; do not preserve prior "
+            "prose. In structural_change, expected_diff, and "
+            "falsifier.intervention, use the selected root literal only, never "
+            "a bare or qualified leaf, confidence field, or another opponent "
+            "path."
+            + root_clause
+            + " State that all other decision_context fields are byte-identical."
         )
     if any(
         "proposal_mechanism_target_missing" in item
@@ -128,7 +143,7 @@ def _render_master_proposal_provider_prompt(inputs):
         "planning_context", "direction", "directive", "source_v", "next_v",
         "protocol_bootstrap_prepared_only", "singleton_no_strength",
         "source_symbol_index",
-        "repair_kind", "projection_hints", "invocation_id",
+        "repair_kind", "projection_hints", "allowed_primaries", "invocation_id",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected:
         raise ValueError("Master proposal renderer input contract mismatch")
@@ -182,6 +197,17 @@ def _render_master_proposal_provider_prompt(inputs):
         for item in projection_hints
     ):
         raise ValueError("Master proposal projection hints are invalid")
+    allowed_primaries = _canonical_proposal_primaries(
+        inputs["allowed_primaries"]
+    )
+    mapping_text = _proposal_falsifier_mapping_text(
+        allowed_primaries=allowed_primaries,
+    )
+    allowed_tests = tuple(
+        test_name
+        for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
+        if allowed_primaries is None or primary in allowed_primaries
+    )
     is_repair = bool(repair_kind)
     is_distinctness_repair = repair_kind == "distinctness"
     output_contract = (
@@ -218,15 +244,17 @@ def _render_master_proposal_provider_prompt(inputs):
         "source choice, proposal_id, Markdown, or commentary."
         " This is national_tcp_policy_v1. policy.py is the only candidate-owned "
         "writable source file; national_bot.py and precompute.py are system-owned "
-        "read-only files, and candidate helper modules/assets are forbidden. Propose "
+        "read-only files. Candidate helper modules and candidate-owned assets are "
+        "forbidden; a future model/table is allowed only through the system-owned, "
+        "manifest-declared, content-bound asset ABI. Propose "
         "a causally distinct policy mechanism over decision_context that returns only "
         "typed pass/fold/allin/raise intents (raise uses raise_to). "
         "IMPORTANT: falsifier.test_name MUST be exactly one of: "
-        + ", ".join(_PROPOSAL_FALSIFIER_TESTS)
+        + ", ".join(allowed_tests)
         + ". "
         "Choose the one that best matches your proposed mechanism. The exact "
         "typed falsifier -> state_learning primary contract is: "
-        + _proposal_falsifier_mapping_text()
+        + mapping_text
         + ". For the selected test_name, copy these exact equalities from its "
         "single row: top-level mechanism_target = row.mechanism_target = "
         "row.intervention_target = falsifier.intervention_target, while "
@@ -244,21 +272,15 @@ def _render_master_proposal_provider_prompt(inputs):
         "Bracket notation such as context['opponent']['rates'] does not replace "
         "the required exact opponent.rates literal. A complete bracket path may "
         "supplement the dot literal, but an incomplete or bare leaf is invalid. "
-        "Shared leaf names are "
-        "namespace-sensitive: opponent.rates.fold_to_raise is an action-profile "
-        "field, opponent.samples.fold_to_raise is its sample-count field, while "
-        "opponent.terminal_response.fold_to_raise is a distinct terminal-response "
-        "target; always include the full owning namespace. The samples path is a "
-        "foreign closed owner for every selectable primary and must not appear in "
-        "an executable field, even as unchanged. It does not replace the required "
-        "opponent.rates target literal. A "
-        "bare fold_to_raise, fold-to-raise, fold to raise, or foldtoraise is "
-        "invalid even when the target root appears elsewhere in the field. Never "
-        "append identifier characters to an owner-qualified target literal. The "
+        "Shared leaf names are namespace-sensitive. If a shared leaf is necessary, "
+        "use only its complete owner-qualified form belonging to the selected root; "
+        "a bare leaf is invalid. Do not name another closed target, its child, or a "
+        "sample-count owner in an executable field, even as unchanged. Never append "
+        "identifier characters to an owner-qualified target literal. The "
         "required_proposal_terms become final Worker-prompt obligations. A "
         "plan_required_floor_checks entry is an additional generation-wide quality "
-        "floor; it is NOT the proposal falsifier unless this mapping says it is "
-        "compatible."
+        "floor; it is NOT the proposal falsifier unless this filtered mapping says "
+        "it is compatible."
         + " " + measurement_contract
     )
     code_scope = (
@@ -312,13 +334,14 @@ def _render_master_proposal_provider_prompt(inputs):
             + _proposal_schema_repair_guidance(
                 projection_hints,
                 require_snapshot_evidence=require_snapshot_evidence,
+                allowed_primaries=allowed_primaries,
             )
         )
         if projection_hints:
             repair_text += (
-                "\nPrior deterministic projection errors: "
-                + ", ".join(projection_hints)
-                + ". Repair those exact fields without changing the evidence scope."
+                "\nThe system retained the precise rejection in its immutable audit "
+                "record. Do not quote or preserve prior rejected prose; repair only "
+                "the closed schema while keeping the evidence scope unchanged."
             )
     invocation_id = str(inputs["invocation_id"])
     purpose = f"master_proposal_scout:{direction}"
@@ -388,6 +411,7 @@ def _render_master_proposal_provider_prompt(inputs):
             "evidence_mode": evidence_mode,
             "repair_kind": repair_kind,
             "projection_hints": list(projection_hints),
+            "allowed_primaries": list(allowed_primaries or ()),
             "invocation_id": invocation_id,
         },
     )
@@ -631,7 +655,58 @@ def _proposal_falsifier_primary(test_name: object) -> str | None:
     return MASTER_PROPOSAL_FALSIFIER_PRIMARY.get(str(test_name or "").strip())
 
 
-def _proposal_falsifier_mapping_text() -> str:
+def _canonical_proposal_primaries(
+    values: object,
+) -> tuple[str, ...] | None:
+    """Normalize an optional frozen set of permitted proposal primaries."""
+
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        raise ValueError("proposal allowed primaries must be a collection")
+    known = set(STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS)
+    normalized = tuple(sorted({
+        str(value).strip()
+        for value in values
+        if str(value).strip()
+    }))
+    if not normalized:
+        return None
+    if any(value not in known for value in normalized):
+        raise ValueError("proposal allowed primaries are invalid")
+    return normalized
+
+
+def _architecture_proposal_primaries(
+    architecture_policy: dict | None,
+) -> tuple[str, ...] | None:
+    """Derive Scout-visible primaries from immutable architecture checks.
+
+    This is deliberately a projection of the system policy, not an LLM choice.
+    If the policy has no falsifier-mapped deficit we preserve the historic
+    all-card view.  A focused policy receives only matching cards/mapping rows,
+    preventing cross-axis examples from leaking into the sole schema retry.
+    """
+
+    if not isinstance(architecture_policy, dict):
+        return None
+    required_checks = list(architecture_policy.get("plan_required_floor_checks") or ())
+    focus = architecture_policy.get("selected_focus")
+    if isinstance(focus, dict):
+        required_checks.extend(focus.get("required_checks") or ())
+    required_set = {str(check).strip() for check in required_checks if str(check).strip()}
+    primaries = tuple(
+        primary
+        for _test, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
+        if _test in required_set
+    )
+    return _canonical_proposal_primaries(primaries) if primaries else None
+
+
+def _proposal_falsifier_mapping_text(
+    *,
+    allowed_primaries: tuple[str, ...] | None = None,
+) -> str:
     """Render the compact machine mapping needed by proposal Scouts.
 
     Aliases, derived quality checks, and final Worker prompt terms remain
@@ -640,6 +715,7 @@ def _proposal_falsifier_mapping_text() -> str:
     output fields.
     """
 
+    allowed = _canonical_proposal_primaries(allowed_primaries)
     rows = {
         test_name: {
             "state_learning_primary": primary,
@@ -651,7 +727,10 @@ def _proposal_falsifier_mapping_text() -> str:
             ),
         }
         for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
+        if allowed is None or primary in allowed
     }
+    if not rows:
+        raise ValueError("proposal falsifier mapping has no permitted rows")
     return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
@@ -1696,10 +1775,12 @@ def _validated_master_proposal(
     expected_measurement_target: str | None = None,
     forbidden_measurement_target: str | None = None,
     enforce_bindability: bool = True,
+    allowed_primaries: tuple[str, ...] | None = None,
 ) -> dict | None:
     """Normalize one evidence-bound proposal before critics or Master see it."""
     from llm_query import parse_json_output_with_mode
 
+    allowed_primaries = _canonical_proposal_primaries(allowed_primaries)
     data, _mode = parse_json_output_with_mode(output or "")
     if not isinstance(data, dict):
         return None
@@ -1837,6 +1918,10 @@ def _validated_master_proposal(
     primary = _proposal_falsifier_primary(normalized_falsifier["test_name"])
     if (
         primary is None
+        or (
+            allowed_primaries is not None
+            and primary not in allowed_primaries
+        )
         or normalized_falsifier["test_name"]
         not in STATE_LEARNING_PRIMARY_CHECKS[primary]
         or normalized_falsifier["state_learning_primary"] != primary
@@ -1953,6 +2038,7 @@ def _master_proposal_projection_hints(
     national_policy_only: bool = False,
     require_snapshot_evidence: bool = False,
     evidence_mode: str | None = None,
+    allowed_primaries: tuple[str, ...] | None = None,
 ) -> list[str]:
     """Return stable field-level hints without weakening proposal validation.
 
@@ -1963,6 +2049,11 @@ def _master_proposal_projection_hints(
     """
 
     from llm_query import parse_json_output_with_mode
+
+    try:
+        allowed_primaries = _canonical_proposal_primaries(allowed_primaries)
+    except ValueError:
+        return ["proposal_allowed_primaries_invalid"]
 
     data, _mode = parse_json_output_with_mode(output or "")
     if not isinstance(data, dict):
@@ -2101,6 +2192,11 @@ def _master_proposal_projection_hints(
         primary = _proposal_falsifier_primary(test_name)
         if primary is None or test_name not in STATE_LEARNING_PRIMARY_CHECKS[primary]:
             errors.append("proposal_falsifier_primary_mapping_invalid")
+        elif (
+            allowed_primaries is not None
+            and primary not in allowed_primaries
+        ):
+            errors.append("proposal_falsifier_primary_not_permitted")
         elif falsifier["state_learning_primary"].strip() != primary:
             errors.append(
                 "proposal_falsifier_state_learning_primary_mismatch:"
@@ -2210,6 +2306,7 @@ def _master_proposal_projection_hints(
         ),
         evidence_mode=evidence_mode,
         enforce_bindability=False,
+        allowed_primaries=allowed_primaries,
     )
     if isinstance(budget_probe, dict):
         bindability_error = _proposal_worker_bindability_error(budget_probe)
@@ -3444,6 +3541,7 @@ async def _run_master_proposal_ensemble(
     protocol_bootstrap_prepared_only: bool = False,
     singleton_no_strength: bool = False,
     strict_checkpoint: dict | None = None,
+    allowed_primaries: tuple[str, ...] | None = None,
 ) -> str:
     """Three proposals, two anonymous criterion critics, deterministic veto/order.
 
@@ -3455,6 +3553,7 @@ async def _run_master_proposal_ensemble(
 
     if protocol_bootstrap_prepared_only and singleton_no_strength:
         raise ValueError("Master proposal planning mode is ambiguous")
+    allowed_primaries = _canonical_proposal_primaries(allowed_primaries)
 
     context_digest = hashlib.sha256(planning_context.encode("utf-8")).hexdigest()
     try:
@@ -3528,6 +3627,7 @@ async def _run_master_proposal_ensemble(
                     context_digest=context_digest,
                     source_code_digest=source_code_digest,
                     direction=direction,
+                    allowed_primaries=allowed_primaries,
                 ),
             )
             invocation_id = strict_call["invocation_id"]
@@ -3603,6 +3703,7 @@ async def _run_master_proposal_ensemble(
                 "source_symbol_index": source_symbol_index,
                 "repair_kind": repair_kind,
                 "projection_hints": projection_hints,
+                "allowed_primaries": list(allowed_primaries or ()),
                 "invocation_id": str(invocation_id),
             },
         )
@@ -3665,6 +3766,7 @@ async def _run_master_proposal_ensemble(
             forbidden_measurement_target=(
                 bot_name(int(next_v)) if require_snapshot_evidence else None
             ),
+            allowed_primaries=allowed_primaries,
         )
         if proposal is None:
             repair = {"kind": "schema"}
@@ -3676,6 +3778,7 @@ async def _run_master_proposal_ensemble(
                     national_policy_only=True,
                     require_snapshot_evidence=require_snapshot_evidence,
                     evidence_mode=evidence_mode,
+                    allowed_primaries=allowed_primaries,
                 )
                 or ["proposal_contract_invalid"]
             )
@@ -3763,6 +3866,7 @@ async def _run_master_proposal_ensemble(
                 forbidden_measurement_target=(
                     bot_name(int(next_v)) if require_snapshot_evidence else None
                 ),
+                allowed_primaries=allowed_primaries,
             )
             if proposal is None:
                 continue
@@ -4380,6 +4484,24 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     ).hexdigest(),
                     ";".join(dict.fromkeys(singleton_errors)),
                 )
+    if fresh_bootstrap:
+        from strict_authority_workflow import recover_accepted_master_final_result
+
+        recovered_final = recover_accepted_master_final_result(
+            strict_checkpoint,
+            architecture_policy=(
+                architecture_policy
+                if isinstance(architecture_policy, dict)
+                else {}
+            ),
+        )
+        if recovered_final is not None:
+            ui.log_history(
+                "Master recovered sealed final authority without re-running "
+                "Scout or Critic providers.",
+                "info",
+            )
+            return recovered_final
     # Apply section budgets so one evidence source cannot crowd out match analysis.
     # C-class: render the sentinel (returned when the analyst LLM crashed on an
     # infrastructure error) into an explicit warning BEFORE trimming, so the
@@ -4476,9 +4598,17 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             )
     else:
         architecture_policy_text = "System-owned runtime architecture policy: not active for this source."
+    proposal_allowed_primaries = _architecture_proposal_primaries(
+        architecture_policy if isinstance(architecture_policy, dict) else None
+    )
     try:
         from strategy_reference_pack import master_reference_summary
-        strategy_reference_packet = _trim_to_budget(master_reference_summary(), 6_000)
+        strategy_reference_packet = _trim_to_budget(
+            master_reference_summary(
+                allowed_primaries=proposal_allowed_primaries,
+            ),
+            6_000,
+        )
     except Exception as exc:
         strategy_reference_packet = (
             "Local strategy reference cards unavailable: "
@@ -4748,6 +4878,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             protocol_bootstrap_prepared_only=fresh_bootstrap,
             singleton_no_strength=singleton_no_strength,
             strict_checkpoint=strict_checkpoint,
+            allowed_primaries=proposal_allowed_primaries,
         )
     except LLMAvailabilityBlocked:
         raise

@@ -12,10 +12,15 @@ Use the repository-pinned lockfile:
 ```bash
 cd web/frontend
 npm ci
-npm test
+PYTHON=/path/to/project-python npm test
 npm run lint
 npm run build
 ```
+
+The SSE producer contract imports the live Web producer graph, including its
+FastAPI and LLM-SDK dependencies. `PYTHON` must therefore name the same project
+Python environment used for `web` tests; a bare system `python3` is rejected
+rather than silently validating a substitute producer graph.
 
 `npm run dev` starts the Vite development server. `npm run build` writes
 `web/frontend/dist/` and copies the generated application to

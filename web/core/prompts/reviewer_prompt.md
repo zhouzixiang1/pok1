@@ -44,8 +44,11 @@ the canonical wire token. Verify that `raise_to=400` emits exactly `raise 400`;
 no layer may add the current street contribution again.
 
 The formal entry is the immutable system-owned `national_bot.py`. The only
-candidate-owned writable file is `policy.py`; any helper module, asset, or
-change to another artifact is a hard scope violation. Preserve
+candidate-owned writable file is `policy.py`; any helper module,
+candidate-owned asset, unbound external asset, or change to another artifact
+is a hard scope violation. A future model/table can be used only via a
+system-owned manifest-and-receipt-bound asset broker; it is never a Worker
+write or direct policy file read. Preserve
 `POK_OFFICIAL_ACTION_DELAY` (default near 0.30 seconds) and
 `_send_wire_action`; reject unsolicited timeout-rescue sends, wire `bet`, a
 stack-consuming raise instead of all-in, or postflop TCP `check-check`.

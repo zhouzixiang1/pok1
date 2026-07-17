@@ -33,6 +33,7 @@ from bot_namespace import (
     STRICT_ARTIFACT_FILES,
     bot_name,
     parse_bot_version,
+    strict_artifact_layout_errors,
     version_sort_key,
 )
 from national_runtime_telemetry import (
@@ -3946,9 +3947,18 @@ def check_native_contract(
 ) -> list[str]:
     bot_dir = Path(bot_dir)
     entry = bot_dir / NATIVE_ENTRY
-    errors: list[str] = []
+    # Keep native-contract diagnostics aligned with the static capability and
+    # publication boundaries.  An extra candidate file (including a model or
+    # precomputed table) must fail before native TCP launch; future system-owned
+    # assets are external and require their own bound asset profile, never a
+    # sixth file in this directory.  Do not return early: callers still need
+    # the concrete protocol/runtime diagnostics for the same malformed bot.
+    errors = list(strict_artifact_layout_errors(bot_dir))
     if not entry.exists():
-        return [f"{NATIVE_ENTRY} missing; national_native bots must have a direct TCP entrypoint"]
+        errors.append(
+            f"{NATIVE_ENTRY} missing; national_native bots must have a direct TCP entrypoint"
+        )
+        return list(dict.fromkeys(errors))
     try:
         text = entry.read_text(encoding="utf-8")
     except OSError as exc:

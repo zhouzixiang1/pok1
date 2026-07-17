@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 5
+MATRIX_SCHEMA_VERSION = 6
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -79,6 +79,7 @@ REQUIRED_COVERAGE = frozenset({
     "raw_tcp_name_handshake",
     "raise_terminal_hand70",
     "strict_abi_context_fallback_deadline",
+    "system_asset_boundary",
     "strict_connection_memory",
     "official_replay_harness",
     "quality_precommit_certification",
@@ -411,6 +412,64 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         fail_closed=(
             "A bad, late, or missing policy result is ignored; the precomputed legal "
             "fallback is sent and the timed worker process group is terminated."
+        ),
+    ),
+    MatrixRow(
+        rule_id="system_asset_boundary",
+        coverage=("system_asset_boundary",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("AGENTS.md", "Strict candidate ABI"),
+            _ref("AGENTS.md", "Space-for-time assets"),
+        ),
+        production_owners=(
+            _ref("web/core/bot_namespace.py", "strict_artifact_layout_errors"),
+            _ref(
+                "web/core/national_capability_contract.py",
+                "evaluate_national_capabilities",
+            ),
+            _ref("web/core/national_native.py", "check_native_contract"),
+        ),
+        dynamic_gates=(
+            _ref("web/core/bot_namespace.py", "strict_artifact_layout_errors"),
+            _ref(
+                "web/core/national_capability_contract.py",
+                "evaluate_national_capabilities",
+            ),
+            _ref("web/core/national_native.py", "check_native_contract"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles must preserve five executable/identity files and "
+            "treat an external asset as unavailable to v1 policy until its separate "
+            "system-owned asset ABI is bound; no role may make a model/table a Worker "
+            "write, a sixth Bot file, or a direct policy path read."
+        ),
+        prompt_required_terms=(
+            "five executable/identity",
+            "asset ABI",
+            "external asset",
+        ),
+        producer_consumer=(
+            "five-file Bot directory → strict layout/capability/native checks → "
+            "quality/precommit/certification; a future external asset requires a "
+            "separate system-owned profile before any policy consumer exists"
+        ),
+        positive_tests=(
+            "web/tests/test_policy_pipeline_stages.py::"
+            "test_current_candidate_stage_requires_the_exact_five_file_artifact",
+        ),
+        negative_tests=(
+            "web/tests/test_national_capability_hardening.py::"
+            "test_static_capability_contract_rejects_unbound_candidate_model_file",
+            "web/tests/test_national_decision_tester.py::"
+            "test_native_contract_rejects_unbound_candidate_model_file",
+        ),
+        fail_closed=(
+            "Any extra Bot file, symlink, cache, candidate-owned/unbound model, or "
+            "direct policy asset access blocks static quality and native launch. R0 "
+            "assets remain unavailable until every resolver and identity binding exists."
         ),
     ),
     MatrixRow(

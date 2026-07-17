@@ -451,10 +451,22 @@ merge, or runtime-resume claim.  The stopped v38 exact-CAS handoff remains
 mandatory; v143/v144, immutable two-Bot rating and the resettable `0/10`
 observation remain pending.
 
+## Contract-39 superseding overlay — closed-axis Master recovery and system-asset boundary
+
+The following rows replace only the current Master re-entry and asset wording;
+they do not weaken protocol, Worker-write, native, official, evidence, or
+publication gates.
+
+| Rule | Authority | Production owner | Dynamic gate | Rendered prompt contract | Data producer → consumer | Positive / negative regression | Fail-closed behavior | Status |
+|---|---|---|---|---|---|---|---|---|
+| frozen architecture axis must bind Scout prompt, authority call and projection | closed `MASTER_PROPOSAL_FALSIFIER_PRIMARY`; architecture policy; strict-authority context binding | `agent_master.py` permitted-primary derivation, filtered mapping/card renderer and validator; `strict_authority_workflow.py` proposal context/projection | only mapping-compatible primaries are rendered and accepted; retry rebuilds a closed object and never echoes rejected provider prose | Master sees only the immutable architecture-selected primary, matching reference card/mapping rows and root-only repair guidance; all roles retain strict candidate scope | architecture policy required checks → permitted primary set → sealed Scout prompt/call context → deterministic projection → packet/critics/final Master | action-profile filtered-card/render positive; foreign deadline/sample primary, bare shared leaf, mismatched allowed set and raw-error reuse negative | missing/invalid mapping, foreign primary, wrong root, malformed retry or exhausted retry rejects before Worker and canonically abandons; no wider axis is inferred | source repaired; full suite/merge/runtime re-prepare pending |
+| sealed final Master is recovered, not rebuilt | strict-authority accepted-event journal; phase-slot context binding | `strict_authority_workflow.py::recover_accepted_master_final_result`; `agent_master.py::_run_master_analysis` | exactly one accepted `master:final`, valid sealed packet, matching immutable architecture policy and replay descriptor are required before return | Master/Orchestrator cannot treat a previously accepted final as permission to rerun Scouts or synthesize a new packet | accepted final role result + packet + architecture policy → exact final context → sealed descriptor replay → outer Master return | sealed-final replay positive; policy mismatch, malformed packet, duplicate accepted final and abandoned journal negative | any absent/malformed/mismatched/ambiguous evidence stops before provider work; an accepted final cannot be overwritten or context-drifted | source repaired; full suite/merge/runtime re-prepare pending |
+| five executable/identity files with future system-managed tables/models | `AGENTS.md::Strict candidate ABI`; `AGENTS.md::Space-for-time assets` | `bot_namespace.py::strict_artifact_layout_errors`; `national_capability_contract.py::evaluate_national_capabilities`; `national_native.py::check_native_contract`; `poker_assets.py` remains an unbound prototype | current v1 keeps the Bot directory exact-five; capability and native-contract gates reject candidate-owned/unbound binary files before quality or launch; future system asset requires registry/receipt/manifest/caps/no-follow broker/common resolver/influence gate | all five roles state that a future model/table is infrastructure, never a Worker write or policy path read; v143 has no external asset | current: Bot directory → layout/capability/native gates → quality/precommit/certification; future: system build/issuance → content-bound external asset registry → system broker → resolved bounded context/query → policy consumer → probe/precommit/official identity | exact-five current positive; new static capability/native `.bin` rejection, helper/symlink/unbound negatives; future broker tests required before activation | no candidate file, direct path read, unbound asset, different launcher resolver, missing receipt, cap breach or absent influence proof can reach policy, precommit, certification or rating | v1 source gate repaired; R0 design/runtime pending; v143 deliberately uses only `precompute.py` |
+
 <!-- executable-national-alignment-matrix:begin -->
 ## Executable current-contract registry (generated)
 
-This block is generated from `web/core/national_alignment_matrix.py` (schema 5) and is regression-checked.  `source_contract` verifies source paths/symbols/test anchors only; `runtime_pending` is not a runtime, certificate, or strength claim. `current` means an active requirement, and only `superseded` rows may point at historical archive material.
+This block is generated from `web/core/national_alignment_matrix.py` (schema 6) and is regression-checked.  `source_contract` verifies source paths/symbols/test anchors only; `runtime_pending` is not a runtime, certificate, or strength claim. `current` means an active requirement, and only `superseded` rows may point at historical archive material.
 
 ### `raw_tcp_delimiter_stream` — current / source_contract
 
@@ -503,6 +515,18 @@ This block is generated from `web/core/national_alignment_matrix.py` (schema 5) 
 - Positive regression: `web/tests/test_national_runtime_probe.py::test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire`; `web/tests/test_national_capability_hardening.py::test_checked_in_strict_policy_passes_hardened_static_decision_guards`
 - Negative regression: `web/tests/test_national_runtime_probe.py::test_worker_rejects_non_typed_policy_output`; `web/tests/test_national_runtime_probe.py::test_worker_rejects_deadline_profile_specific_late_baseline`
 - Fail-closed: A bad, late, or missing policy result is ignored; the precomputed legal fallback is sent and the timed worker process group is terminated.
+
+### `system_asset_boundary` — current / source_contract
+
+- Authority/source: `AGENTS.md::Strict candidate ABI`; `AGENTS.md::Space-for-time assets`
+- Production owner: `web/core/bot_namespace.py::strict_artifact_layout_errors`; `web/core/national_capability_contract.py::evaluate_national_capabilities`; `web/core/national_native.py::check_native_contract`
+- Dynamic gate: `web/core/bot_namespace.py::strict_artifact_layout_errors`; `web/core/national_capability_contract.py::evaluate_national_capabilities`; `web/core/national_native.py::check_native_contract`
+- Prompt renderer/template: Master=`web/core/agent_master.py::_render_master_final_provider_prompt` → `web/core/prompts/master_prompt.md`; Worker=`web/core/agent_workers.py::_render_worker_provider_prompt` → `web/core/prompts/worker_prompt.md`, `web/core/prompts/worker_profile_national_native.md`; Reviewer=`web/core/tool_gates.py::_render_reviewer_provider_prompt` → `web/core/prompts/reviewer_prompt.md`; Critic=`web/core/agent_review.py::_render_critic_provider_prompt` → `web/core/prompts/critic_prompt.md`; Orchestrator=`web/core/orchestrator.py::_render_orchestrator_provider_prompt` → `web/core/prompts/orchestrator.md`
+- Prompt statement: All five rendered roles must preserve five executable/identity files and treat an external asset as unavailable to v1 policy until its separate system-owned asset ABI is bound; no role may make a model/table a Worker write, a sixth Bot file, or a direct policy path read.
+- Producer → consumer: five-file Bot directory → strict layout/capability/native checks → quality/precommit/certification; a future external asset requires a separate system-owned profile before any policy consumer exists
+- Positive regression: `web/tests/test_policy_pipeline_stages.py::test_current_candidate_stage_requires_the_exact_five_file_artifact`
+- Negative regression: `web/tests/test_national_capability_hardening.py::test_static_capability_contract_rejects_unbound_candidate_model_file`; `web/tests/test_national_decision_tester.py::test_native_contract_rejects_unbound_candidate_model_file`
+- Fail-closed: Any extra Bot file, symlink, cache, candidate-owned/unbound model, or direct policy asset access blocks static quality and native launch. R0 assets remain unavailable until every resolver and identity binding exists.
 
 ### `strict_connection_memory` — current / source_contract
 

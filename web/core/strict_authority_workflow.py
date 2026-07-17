@@ -301,13 +301,61 @@ def proposal_call_context(
     context_digest: str,
     source_code_digest: str,
     direction: str,
+    allowed_primaries: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    return {
+    context = {
         "phase": "proposal",
         "direction": str(direction),
         "planning_context_digest": str(context_digest),
         "source_code_digest": str(source_code_digest),
     }
+    if allowed_primaries is not None:
+        if isinstance(allowed_primaries, (str, bytes)):
+            raise StrictAuthorityError(
+                "strict_authority_proposal_allowed_primaries_invalid"
+            )
+        values = tuple(sorted({
+            str(value).strip()
+            for value in allowed_primaries
+            if str(value).strip()
+        }))
+        if not values or any(
+            re.fullmatch(r"[a-z][a-z0-9_]{1,79}", value) is None
+            for value in values
+        ):
+            raise StrictAuthorityError(
+                "strict_authority_proposal_allowed_primaries_invalid"
+            )
+        context["allowed_primaries"] = list(values)
+    return context
+
+
+def _architecture_proposal_primaries(
+    architecture_policy: dict[str, Any] | None,
+) -> tuple[str, ...] | None:
+    """Reconstruct the frozen Scout-primary set from plan policy bytes."""
+
+    if not isinstance(architecture_policy, dict):
+        return None
+    try:
+        from output_schema import MASTER_PROPOSAL_FALSIFIER_PRIMARY
+
+        checks = list(architecture_policy.get("plan_required_floor_checks") or ())
+        focus = architecture_policy.get("selected_focus")
+        if isinstance(focus, dict):
+            checks.extend(focus.get("required_checks") or ())
+        check_set = {str(check).strip() for check in checks if str(check).strip()}
+        values = tuple(
+            primary
+            for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
+            if test_name in check_set
+        )
+    except Exception as exc:
+        raise StrictAuthorityError(
+            "strict_authority_proposal_allowed_primaries_unavailable:"
+            f"{type(exc).__name__}"
+        ) from exc
+    return values or None
 
 
 def ballot_call_context(
@@ -374,6 +422,9 @@ def expected_master_contexts(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
             context_digest=context_digest,
             source_code_digest=source_code_digest,
             direction=direction,
+            allowed_primaries=_architecture_proposal_primaries(
+                (plan or {}).get("architecture_policy")
+            ),
         )
         for direction in ("mechanism", "counterfactual", "compute_memory")
     }
@@ -999,6 +1050,86 @@ def _recover_accepted_call(descriptor: dict[str, Any]) -> dict[str, Any] | None:
         "model": provider.get("model"),
         "tools": deepcopy(provider.get("tools")),
     }
+
+
+def recover_accepted_master_final_result(
+    checkpoint: dict[str, Any],
+    *,
+    architecture_policy: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Recover a sealed final-Master projection before rebuilding scouts.
+
+    The final Master result is already an append-only authority once accepted.
+    A duplicate outer ``run_master`` entry must not re-render the Scout packet
+    and then compare a newly assembled packet against the sealed final slot:
+    that is wasteful and can turn an otherwise valid recovery into a context
+    drift.  Reconstruct the exact expected context from the sealed role result
+    and current system-owned architecture policy, then reuse the ordinary
+    descriptor recovery path.  Any malformed role result or policy drift still
+    fails closed before a provider call is possible.
+    """
+
+    if not isinstance(architecture_policy, dict) or not architecture_policy:
+        raise StrictAuthorityError(
+            "strict_authority_master_final_recovery_policy_missing"
+        )
+    binding = generation_binding(checkpoint)
+    run_id = authority_run_id(binding["workflow_run_id"])
+    store = _store()
+    try:
+        instance = store.instance(run_id)
+        if not instance:
+            return None
+        if instance.get("status") == "abandoned":
+            raise StrictAuthorityError(
+                "strict_authority_master_final_recovery_journal_abandoned"
+            )
+        final_events = [
+            event
+            for event in store.events(run_id)
+            if event.event_type == ACCEPTED_EVENT
+            and event.payload.get("slot") == "master:final"
+        ]
+    except StrictAuthorityError:
+        raise
+    except Exception as exc:
+        raise StrictAuthorityError(
+            "strict_authority_master_final_recovery_journal_unavailable:"
+            f"{type(exc).__name__}"
+        ) from exc
+    if not final_events:
+        return None
+    if len(final_events) != 1:
+        raise StrictAuthorityError(
+            "strict_authority_master:final_accepted_count:"
+            f"{len(final_events)}"
+        )
+    role_result = final_events[0].payload.get("role_result")
+    if not isinstance(role_result, dict):
+        raise StrictAuthorityError(
+            "strict_authority_master_final_recovery_role_result_invalid"
+        )
+    proposal_packet = role_result.get("proposal_ensemble")
+    if not isinstance(proposal_packet, dict):
+        raise StrictAuthorityError(
+            "strict_authority_master_final_recovery_packet_missing"
+        )
+    descriptor = new_call(
+        checkpoint,
+        slot="master:final",
+        context_binding=final_master_call_context(
+            proposal_packet,
+            architecture_policy,
+        ),
+    )
+    if (
+        descriptor.get("replay_provider") is not True
+        or not isinstance(descriptor.get("accepted_role_result"), dict)
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_master_final_recovery_descriptor_invalid"
+        )
+    return deepcopy(descriptor["accepted_role_result"])
 
 
 def _recover_completed_unaccepted_call(
@@ -1827,6 +1958,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
     projection_detail_errors: list[str] = []
     if slot.startswith("proposal:"):
         from agent_master import (
+            _canonical_proposal_primaries,
             _master_proposal_projection_hints,
             _source_symbol_graph,
             _validated_master_proposal,
@@ -1834,6 +1966,14 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
         from evolution_infra import get_bot_dir
 
         direction = slot.split(":", 1)[1]
+        try:
+            allowed_primaries = _canonical_proposal_primaries(
+                context.get("allowed_primaries")
+            )
+        except ValueError as exc:
+            raise StrictAuthorityError(
+                "strict_authority_projection_allowed_primaries_invalid"
+            ) from exc
         candidate_dir = get_bot_dir(int(binding.get("next_v")))
         source_graph, source_digest = _source_symbol_graph(candidate_dir)
         if source_digest != context.get("source_code_digest"):
@@ -1850,6 +1990,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             national_policy_only=True,
             execution_mode="fixed_blueprint_capability_audit",
             evidence_mode="fresh_strict_control_no_strength",
+            allowed_primaries=allowed_primaries,
         )
         if not isinstance(projected, dict):
             hints = _master_proposal_projection_hints(
@@ -1860,6 +2001,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                 ),
                 national_policy_only=True,
                 evidence_mode="fresh_strict_control_no_strength",
+                allowed_primaries=allowed_primaries,
             ) or ["proposal_contract_invalid"]
             projection_detail_errors = [
                 "strict_authority_proposal_projection:" + hint
@@ -3414,6 +3556,7 @@ __all__ = [
     "ballot_call_context",
     "proposal_call_context",
     "record_bound_invocation_evidence",
+    "recover_accepted_master_final_result",
     "render_gate_provider_prompt",
     "reject_duplicate_proposal",
     "schema_retry_prompt",

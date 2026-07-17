@@ -135,7 +135,11 @@ annotation that is never fed back into planning.
 6. **Workers** edit isolated lease-epoch workspaces. Each output is snapshotted,
    content-addressed, checked against its declared files, and materialized
    atomically. Candidate code may edit only `policy.py`; helper modules and
-   candidate-owned packaged assets are outside the five-file ABI.
+   candidate-owned packaged assets are outside the five executable/identity
+   files. A future large table/model is system-owned external infrastructure,
+   not a Worker-written sixth Bot file: it requires the separately reviewed
+   asset registry, content binding, broker, common launcher resolver, and
+   influence gate before a plan may name it.
 7. **Quality gates** verify artifact closure, stdlib portability, sandboxed
    execution, typed intents, raw-stream behavior, official action semantics,
    reachability, telemetry fidelity, and decision deadlines.

@@ -1422,7 +1422,9 @@ def crossover_architecture_policy_prompt(policy: dict[str, Any]) -> str:
     return "\n".join([
         "System-owned national_tcp_policy_v1 crossover baseline:",
         f"- policy_version={policy.get('policy_version')}",
-        "- crossover may combine policy.py only; helpers/assets are not writable ABI",
+        "- crossover may combine policy.py only; helpers, candidate-owned assets, and "
+        "unbound external assets are not writable ABI; a future model/table is "
+        "system-brokered infrastructure only",
         "- preserve exact national_bot.py, precompute.py, national_runtime_manifest.json, and policy_epoch_receipt.json",
         "- source inputs are the two frozen parent policy.py artifacts and digest-bound evidence",
         "- every candidate action remains a typed intent over decision_context v1",

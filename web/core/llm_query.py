@@ -213,7 +213,7 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
             "source_symbol_index_digest", "directive_digest",
             "protocol_bootstrap_prepared_only", "singleton_no_strength",
             "evidence_mode", "repair_kind",
-            "projection_hints", "invocation_id",
+            "projection_hints", "allowed_primaries", "invocation_id",
         ),
         scope_policy="canonical_candidates",
         tools=(("Read",),),

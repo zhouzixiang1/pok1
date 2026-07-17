@@ -81,8 +81,16 @@ def _diagnostic_target_hands(value: str) -> int:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     base = OfficialPlatformConfig()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--candidate", required=True, help="Strict five-file candidate bot directory.")
-    parser.add_argument("--opponent", required=True, help="Strict five-file opponent bot directory.")
+    parser.add_argument(
+        "--candidate",
+        required=True,
+        help="Strict five executable/identity-file candidate Bot directory.",
+    )
+    parser.add_argument(
+        "--opponent",
+        required=True,
+        help="Strict five executable/identity-file opponent Bot directory.",
+    )
     parser.add_argument(
         "--target-hands",
         type=_diagnostic_target_hands,

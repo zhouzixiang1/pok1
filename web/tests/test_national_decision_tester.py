@@ -204,6 +204,27 @@ def test_current_runtime_contract_requires_both_policy_entrypoints(tmp_path):
     assert any("iter_decisions" in error for error in incomplete)
 
 
+def test_native_contract_rejects_unbound_candidate_model_file(tmp_path):
+    bot_dir = tmp_path / "bot"
+    bot_dir.mkdir()
+    ensure_native_entry(bot_dir)
+    (bot_dir / "policy.py").write_text(
+        "def get_baseline_decision(context): return {'kind': 'pass'}\n"
+        "def iter_decisions(context, baseline, deadline): return iter(())\n",
+        encoding="utf-8",
+    )
+    _complete_strict_launch_fixture(bot_dir)
+    (bot_dir / "foreign-model.bin").write_bytes(b"unbound")
+
+    issues = native_tests.check_native_contract(
+        bot_dir,
+        require_current_stream_decoder=True,
+        require_current_decision_runtime=True,
+    )
+
+    assert "artifact_extra_file_forbidden:foreign-model.bin" in issues
+
+
 @pytest.mark.parametrize(
     "required_token",
     (

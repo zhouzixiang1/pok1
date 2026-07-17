@@ -73,8 +73,10 @@ _PROTOCOL_BOOTSTRAP_NO_STRENGTH = (
     "protocol evidence, and bootstrap receipt supplied by the system."
 )
 
-# national_tcp_policy_v1 has one candidate-owned source artifact.  System
-# runtime/precompute bytes and any extra helper/asset are never Worker targets.
+# national_tcp_policy_v1 has one candidate-owned source artifact. System
+# runtime/precompute bytes, helpers, candidate-owned assets, and unbound
+# external assets are never Worker targets. A future system-asset broker is a
+# separate infrastructure profile, not a writable candidate path.
 _ACTIVE_CANDIDATE_WRITABLE_FILES = frozenset({"policy.py"})
 
 
@@ -2230,7 +2232,8 @@ def _validate_master_plan(
             errors.append(
                 f"Task {i}: national_tcp_policy_v1 writable scope must be exactly "
                 f"['policy.py']; got {sorted(declared_rels)}. System files, helper "
-                "modules, and assets are not Worker targets."
+                "modules, candidate-owned assets, and unbound external assets are not "
+                "Worker targets."
             )
         role = str(task.get("role", ""))
         if normalize_worker_role(role) == "tuner":
@@ -6314,7 +6317,8 @@ def _official_repair_tasks(ckpt, feedback):
         "- Use only the checkpoint-injected deterministic round issues below; the raw official evidence path is system-owned.\n"
         "- Fix only the bot-side reason the official 70-hand full gate could not complete.\n"
         "- Do not loosen local validators, suppress official evidence, or mark certification passed manually.\n"
-        "- Keep the five-file strict artifact intact and the system-owned TCP entrypoint byte-identical."
+        "- Keep the five-file strict artifact (the five executable/identity files) intact and the system-owned TCP entrypoint byte-identical. "
+        "A model/table is only future system-owned brokered infrastructure, never a candidate file."
     )
     method += (
         "\n- Candidate scope is policy.py only. Repair only a policy exception, "

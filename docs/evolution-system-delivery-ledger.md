@@ -3125,3 +3125,155 @@ generation; free-text model memory, archive material, unbound logs and model
 self-reports are not eligible inputs. The v39 schema failure is already a
 deterministic prompt/validator/test repair, not an experience or strength
 claim. That future facility is not part of this runtime-restart authority.
+
+## 2026-07-17 — v143 workflow-v40/v41/v42 stop and Master-axis/re-entry repair
+
+This entry supersedes the older v39 restart wording. The stopped runtime
+attempted three fresh, canonical `v143 ← v142` workflows after the provider
+handoff repair: `workflow-v40`, `workflow-v41`, and `workflow-v42`. None
+reached Worker, quality, review, advisory Critic, native precommit, official
+certification, commit, tag, rating, or a strength sample. All candidates were
+quarantined and their checkpoints cleared by the canonical transaction; there
+is no published `national_v143`, certificate, tag, rating-cycle evidence, or
+stability credit. The observation counter remains `0/10`.
+
+`v40` and `v41` were correctly rejected by the closed Scout proposal contract:
+a repair respectively used a bare shared leaf and a foreign closed opponent
+axis. `v42` accepted all three Scouts, both critics, and the first final
+Master projection, then a duplicate outer `run_master` entry rebuilt the
+proposal packet and tried to open `master:final` with a different context
+binding. Strict authority correctly stopped it with
+`strict_authority_phase_slot_context_drift:master:master:final`; the accepted
+final effect was not a permission to rebuild or overwrite that slot. The three
+verified canonical abandons hit the per-`(source_v,next_v)` limit, so the outer
+scheduler stopped before a fourth workflow. This is a safety stop, not an
+inference about model strength or an invitation to hand-edit state.
+
+The pending source repair is deliberately narrow and coupled across prompt,
+authority, and tests. Architecture policy now derives the permitted Scout
+primary set, the Master sees only matching falsifier mapping rows and reference
+cards, and deterministic proposal projection rejects a foreign primary even if
+prompt prose is ignored. The bootstrap action-profile policy receives the new
+`action_profile_confidence_v1` card; retry guidance reconstructs the closed
+object without echoing rejected provider prose or teaching another closed axis.
+When a final Master effect is already accepted, recovery reconstructs its exact
+context from the sealed packet plus the immutable architecture policy and
+replays that result without rerunning Scouts/Critics. Missing/malformed policy,
+packet, journal, duplicate final effect, or context mismatch remains
+fail-closed before a provider call.
+
+Focused evidence for this repair is `343 passed, 1 warning` across the Master
+proposal, strict-authority, Master-success, role-contract, observability,
+prompt, matrix, five-file boundary and asset-loader shards. Full
+Web/Sever/frontend/compile/diff evidence, independent review,
+commit/merge, stopped-checkout synchronization, recovery diagnostics, and a
+fresh v143 re-prepare remain required. No runtime was started or changed by
+this source entry.
+
+On this host the aggregate Web command collected 3,100 tests but cannot yet be
+called green: after unrelated early tests, Starlette `TestClient` request
+dispatch stalls under the installed Python 3.14/Starlette 1.2.1/AnyIO stack.
+The same stall reproduces with a one-route minimal FastAPI application, so it
+is a local test-client compatibility blocker rather than a result of the
+Master/asset patch. The run was stopped without a failure result; do not treat
+the partial progress as full-suite evidence. The explicit source shards above,
+Sever `33 passed`, and the frontend production build are green. Before a final
+runtime claim, repeat the aggregate Web suite in a compatible pinned test
+environment or after a separately reviewed test-client dependency repair.
+
+The strict Bot boundary is now stated precisely: it is five
+**executable/identity** files, not a claim that tables or models can never
+exist. Candidate-owned assets and policy path I/O remain forbidden. A future
+R0 system-asset ABI may expose a compact table/model only from an external
+system-owned root after registry/issuance receipt plus content-bound manifest,
+byte/query caps, no-follow read-only verification, nonce/quota-bound broker,
+one resolver used by native/precommit/probe/Arena/official paths, and a
+system-observed influence probe. This ABI is not yet admitted and is not
+enabled for v143; `precompute.py` remains the only available system table.
+The rule prevents a model/table from being smuggled into the Bot directory
+while preserving a concrete, auditable route for later A1/A2/B clean-room work.
+
+## 2026-07-17 — unmerged P1: executable asset boundary and test-host accounting
+
+The strict ABI wording is now executable rather than merely documentary.  The
+Bot directory remains exactly five executable/identity files; that is not a
+prohibition on a future compact system table/model, but it does prohibit a
+candidate helper, table, model, cache, symlink, or arbitrary data file from
+being treated as an exception.  A future external asset remains a separate R0
+profile: registry/issuance receipt, content-bound manifest/blob/resolver
+identity, bounded decode/query/memory behavior, no-follow validation,
+nonce/quota-bound broker, one sealed resolver for native/probe/tester/Arena/
+official/precommit/rating, and an observed positive/negative decision-influence
+proof.  The current `poker_assets.py` metadata builder is not such a profile:
+it has no active launch binding and grants no policy access.  `v143` therefore
+continues to use only system-owned `precompute.py`.
+
+This audit found a real defense-in-depth inconsistency.  Final publication
+shape validation already rejected `foreign-model.bin`, but
+`evaluate_national_capabilities()` only scanned Python and
+`check_native_contract()` did not call the strict-layout validator, so both
+could falsely report green before a later gate failed.  Both now consume
+`strict_artifact_layout_errors`; an extra binary fails static capability and
+native contract before TCP launch.  New positive/negative anchors cover the
+exact-five candidate stage and an unbound model rejection in both gates.  The
+generated executable alignment matrix has schema 6 and a
+`system_asset_boundary` row binding this owner chain, all five rendered prompt
+roles, producer/consumer flow, regressions, and the current assetless-v1
+fail-closed state.  The hand-written Contract-39 row, CLI wording, epoch/stage/
+strategy/runbook docs and continuation prompt use the same distinction.
+
+The Python-3.14 Starlette test-client portal stall was repaired only in the
+test harness.  `testclient_compat.py` affects no production route: Linux
+Python 3.14 explicitly uses the installed `uvloop` portal and fails fast if
+`uvicorn[standard]` did not provide it; older/non-Linux test hosts keep their
+default backend.  Its positive, missing-dependency, and legacy-host regressions
+pass along with the affected HTTP/SSE/static tests.  Current local source
+evidence is: core/prompt/authority/asset/matrix/route shard `398 passed, 1
+warning`; Sever `33 passed`; frontend production build passed; modified Python
+compiled and `git diff --check` passed.  A fresh aggregate Web run now reaches
+the end instead of stalling but reports `3044 passed, 20 skipped, 41 failed`.
+All 41 failures are host-sandbox denials before product assertions:
+`socket(AF_INET/AF_INET6)` returns `EPERM`, and bwrap cannot create
+`NETLINK_ROUTE`; they cover real loopback/managed-sandbox/native tests.  They
+remain **not validated**, not skipped or reclassified as product green, and
+must be rerun on a host that permits loopback sockets and bwrap network
+namespaces before merge/runtime launch.
+
+The Codex-only Worker MCP server itself health-checked healthy, but a fresh
+read-only task (`7a43a3e9-f85c-405a-85d2-481ba89c5c92`) exposed only Read and
+StructuredOutput to its agent, not shell/Python execution.  It therefore
+reported the requested native test subset as not run, not pass/fail.  This is
+an operator tool-profile issue, distinct from the local sandbox denial and not
+evidence about poker code.  It has been sent to the Worker-MCP maintainer for
+repair; no runtime, checkpoint, candidate, rating, certificate, tag, or
+stability count changed.  The next safe sequence remains: capable-host full
+verification → commit/push/merge → stopped-checkout git synchronization and
+diagnostics → fresh `v143` re-prepare/start.  Observation remains `0/10`.
+
+## 2026-07-18 — superseding host validation and frontend producer-test contract
+
+The earlier `3044 passed / 41 failed` aggregate result is a Codex-sandbox-only
+observation, not an unresolved source failure. The same current source ran on
+a host with loopback sockets and bubblewrap network namespaces available:
+`PYTHONPATH=web/core <project-python> -m pytest -q web/tests` completed
+`3085 passed, 20 skipped, 1 warning` in 186.69 seconds. It crossed all
+previously unavailable native TCP, managed-executor, sandbox, official-wire,
+and import-contract tests. Sever remains `33 passed`.
+
+The host run exposed one real test-process contract drift: the frontend's live
+Python-producer/TypeScript-schema test silently tried bare `python`, while its
+producer graph needs the project's FastAPI and Claude SDK dependencies. It now
+requires explicit `PYTHON` and fails closed with a clear diagnostic instead of
+substituting a bare interpreter or mock producer. With
+`PYTHON=/home/zzx/anaconda3/envs/pytorch/bin/python`, the real producer chain
+passes `22/22`; ESLint and the 165-module production Vite build also pass.
+`AGENTS.md` and the frontend README record the same command contract.
+
+The branch remains based exactly on fetched `origin/main`
+`855861bf85221a13f841593d6690cc9990ece611`. Re-run compile/diff checks after
+this ledger update, then commit and publish this reviewed batch. The stopped
+`.evolution_pok` checkout remains at that same HEAD; its pre-existing untracked
+`web/core/national_arena/storage_owner.lock` remains untouched. No v143
+candidate/publication/certificate/rating or stability credit exists; only after
+merge plus stopped-checkout fast-forward and diagnostics may fresh v143 begin.
+Observation remains `0/10`.

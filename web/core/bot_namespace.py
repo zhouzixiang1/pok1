@@ -132,7 +132,16 @@ def strict_artifact_layout_errors(
     *,
     allow_working_task_context: bool = False,
 ) -> list[str]:
-    """Require the executable five-file policy ABI.
+    """Require the five executable/identity bot files, not a five-file host.
+
+    The active Bot directory itself is deliberately closed: it cannot contain
+    a candidate helper, model, table, symlink, cache, or arbitrary data file.
+    A future file-backed model/table is therefore not an exception to this
+    layout check. It must live under a separately versioned system-owned asset
+    root and be admitted through the asset ABI (registry, receipt, manifest,
+    broker, common resolver, and influence proof) before a runtime profile can
+    bind it. The current v1 profile has no external asset binding, so this
+    check remains exact-five and fail-closed.
 
     ``.task_context`` is a compiler-owned, non-executable Worker input.  The
     one host-owned identity refresh that runs before the compiler removes that

@@ -139,10 +139,19 @@ hashes; they do not rerun the official EXE.
 
 ## Strict candidate ABI
 
-Every active bot is exactly five artifact files: system-owned
+Every active Bot directory contains exactly five executable/identity files: system-owned
 `national_bot.py` and `precompute.py`, candidate-owned `policy.py`, plus
 `national_runtime_manifest.json` and `policy_epoch_receipt.json`. Candidate
-helpers and candidate-owned assets are not part of this ABI.
+helpers and candidate-owned assets are not part of this ABI. This is not a
+blanket prohibition on compact tables or models: a file-backed table/model may
+exist only outside the bot directory as a separately versioned, system-owned
+asset. It must have a registry/issuance receipt and content-bound manifest,
+bounded bytes and queries, no-follow read-only verification, a system broker
+with nonce/quota-bound access, one resolver used by every native/precommit/
+probe/Arena/official launch path, and an observed decision-influence probe.
+Until that complete asset ABI is implemented and admitted, candidate policy has
+no file-backed asset access. Candidate code must never load an arbitrary path
+or own the asset bytes.
 
 Candidate policy receives a schema-versioned `decision_context` containing
 authoritative public state, legality, pot/stacks/contributions, opponent
@@ -549,9 +558,14 @@ python web/core/orchestrator.py --one-gen
 python web/core/elo_daemon.py --once
 
 # Tests
-python -m pytest sever/tests -q
-cd web && python -m pytest tests -q
-cd web/frontend && npm test && npm run lint && npm run build
+export PYTHON=/path/to/project-python
+"$PYTHON" -m pytest sever/tests -q
+(
+  cd web && "$PYTHON" -m pytest tests -q
+)
+(
+  cd web/frontend && PYTHON="$PYTHON" npm test && npm run lint && npm run build
+)
 
 # National TCP platform
 cd sever && python main.py

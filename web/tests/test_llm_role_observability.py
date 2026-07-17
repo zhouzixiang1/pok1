@@ -90,6 +90,7 @@ def _rendered(role, text):
                 "source_symbol_index": "policy.py:decide",
                 "repair_kind": "",
                 "projection_hints": [],
+                "allowed_primaries": [],
                 "invocation_id": "1" * 32,
             },
         )

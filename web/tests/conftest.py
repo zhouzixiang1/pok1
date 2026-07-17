@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.testclient import TestClient
+from testclient_compat import backend_options_for_testclient
 
 # Ensure imports work
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -153,6 +154,7 @@ def client(app):
         base_url="http://127.0.0.1",
         headers={"Origin": "http://127.0.0.1"},
         client=("127.0.0.1", 50_000),
+        backend_options=backend_options_for_testclient(),
     )
 
 

@@ -976,7 +976,8 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         **sentinels,
     )
     assert replayed is not None
-    assert captured_strict_logs[1] == captured_strict_logs[0]
+    assert replayed == result
+    assert len(captured_strict_logs) == 1
 
 
 def test_master_official_feedback_requires_exact_current_artifact_identity(

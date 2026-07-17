@@ -20,7 +20,7 @@ import json
 from typing import Any
 
 
-REFERENCE_PACK_VERSION = "national-tcp-policy-reference-pack-v4"
+REFERENCE_PACK_VERSION = "national-tcp-policy-reference-pack-v5"
 UNAVAILABLE_PRIMARY_INNOVATIONS = {
     "bounded_precompute_lookup": (
         "system precompute is admitted only as a read-only consumer dependency, "
@@ -65,6 +65,12 @@ def current_strict_runtime_prompt_overlay() -> str:
         "and `precompute.py`: exact SHA-256/size for both plus `combined_digest`. "
         "Missing, malformed, mismatched, or precompute-only drift is stale and "
         "fails closed: refresh quality; do not reuse precommit or certify.\n"
+        "- The bot directory has exactly five executable/identity files. A model "
+        "or packed table is never candidate-owned or path-loaded: it is available "
+        "only after a system-owned, content-bound asset ABI binds its registry/"
+        "issuance receipt, manifest, byte/query caps, no-follow read-only broker, "
+        "all launch-path resolver, and observed influence probe. Until then, no "
+        "external asset is available to policy.\n"
         "- A normal full certification request must rebind its current admission before becoming "
         "a durable job, before queued/retry queue claim, pre-Popen worker spawn, worker claim, "
         "and EXE work. A stale admission is not an operator or model judgment call, is a "
@@ -355,6 +361,81 @@ _CARDS: tuple[StrategyReferenceCard, ...] = (
         ),
     ),
     StrategyReferenceCard(
+        reference_id="action_profile_confidence_v1",
+        title="Confidence-gated action-profile consumer",
+        primary_innovations=("action_profile",),
+        purpose=(
+            "Consume the reducer-owned incremental action-profile snapshot only "
+            "after its bounded confidence gate clears, then make one legal typed "
+            "intent decision depend on the action-rate root while preserving the "
+            "baseline decision below that gate."
+        ),
+        required_decision_context_fields=(
+            "opponent.rates.aggression",
+            "opponent.rates.fold_to_raise",
+            "opponent.confidence",
+            "opponent.adaptation_weight",
+            "legal.policy_kinds",
+            "legal.min_raise_to",
+            "legal.max_raise_to",
+        ),
+        required_any_decision_context_fields=(),
+        allowed_files=("policy.py",),
+        required_worker_terms=(
+            "action_profile_confidence_v1",
+            "opponent.rates",
+            "confidence gate",
+            "typed intent",
+            "byte-identical control",
+            "falsifier",
+        ),
+        expected_action_family="typed pass/fold/raise_to intent",
+        reachable_call_chain=(
+            "get_baseline_decision(context)",
+            "_bounded_action_profile(context)",
+            "_action_profile_adjusted_intent(context, baseline, profile)",
+            "typed pass/fold/raise_to intent",
+        ),
+        consumer_trace=(
+            "decision_context.opponent.rates + reducer-owned confidence -> "
+            "bounded action-profile adjustment -> legal typed intent -> "
+            "system socket validator"
+        ),
+        falsifier=(
+            "Hold every decision_context field byte-identical except the "
+            "opponent.rates root; a high-confidence paired profile must change "
+            "at least one legal final typed intent, while the low-confidence "
+            "control remains byte-identical to the baseline."
+        ),
+        counterfactual=(
+            "A paired control/intervention changes only the action-profile root "
+            "and keeps cards, betting, legality, deadline, and all other "
+            "opponent fields byte-identical; malformed or sparse profiles take "
+            "the baseline fallback."
+        ),
+        bounded_work=(
+            "Read only compact reducer-provided aggregate rates and confidence; "
+            "perform no history scan, profile rebuild, file I/O, or per-decision "
+            "model training. Clamp any raise_to through the existing legal range."
+        ),
+        table_boundary=(
+            "This card consumes live decision_context only. It does not authorize "
+            "terminal-response/showdown fields, candidate-owned assets, or opaque "
+            "model files; any future system-owned asset must use the separately "
+            "content-bound asset ABI."
+        ),
+        forbidden_axes=(
+            "opponent.terminal_response",
+            "opponent.showdown_range",
+            "opponent.samples.fold_to_raise",
+            "full match-history rescan",
+        ),
+        sources=(
+            "ReBeL: arXiv:2007.13544",
+            "DeepStack (continual resolving and public belief): arXiv:1701.01724",
+        ),
+    ),
+    StrategyReferenceCard(
         reference_id="robust_exploit_mixture_v1",
         title="Selection-guarded robust exploit mixture",
         primary_innovations=("sample_counted_candidate_batch",),
@@ -515,14 +596,53 @@ def validate_reference_task(
     return errors
 
 
-def master_reference_summary() -> str:
-    """Small card index for Master, intentionally far shorter than a survey."""
+def master_reference_summary(
+    *,
+    allowed_primaries: tuple[str, ...] | list[str] | None = None,
+) -> str:
+    """Render the cards compatible with a frozen architecture focus.
+
+    A normal caller receives the whole small registry.  A focused Master gets
+    only cards whose primary is allowed by its immutable architecture policy;
+    this prevents a card for one closed opponent axis from teaching literals
+    belonging to a different axis.  The selection itself is rendered so the
+    prompt digest remains an auditable input rather than an implicit filter.
+    """
+
+    selected_primaries: tuple[str, ...] | None
+    if allowed_primaries is None:
+        selected_primaries = None
+        cards = _CARDS
+    else:
+        selected_primaries = tuple(sorted({
+            str(item).strip()
+            for item in allowed_primaries
+            if str(item).strip()
+        }))
+        cards = tuple(
+            card
+            for card in _CARDS
+            if set(card.primary_innovations).intersection(selected_primaries)
+        )
     lines = [
         "Local, versioned strategy reference cards (source-controlled; choose a card "
-        "only for a work-primitive state_learning primary):",
+        "only for an allowed state_learning primary):",
         f"- registry_version={REFERENCE_PACK_VERSION}; registry_digest={reference_pack_registry_digest()}",
     ]
-    for card in _CARDS:
+    if selected_primaries is not None:
+        lines.append(
+            "- allowed_primaries=" + repr(list(selected_primaries))
+            + "; selected_card_ids="
+            + repr([card.reference_id for card in cards])
+        )
+    if selected_primaries is not None and not cards:
+        lines.append(
+            "- No compatible reference card exists for this frozen primary set. "
+            "Do not borrow fields, one-of clauses, or closed-axis examples from "
+            "another primary; emit only the system mapping and fail closed if no "
+            "valid proposal can be formed."
+        )
+    for card in cards:
         lines.extend((
             f"- {card.reference_id}: {card.title}. primary={list(card.primary_innovations)}; "
             f"action={card.expected_action_family}.",

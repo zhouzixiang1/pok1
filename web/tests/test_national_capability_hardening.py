@@ -39,11 +39,34 @@ def _write_bot(root: Path, policy: str) -> Path:
         encoding="utf-8",
     )
     (root / "policy.py").write_text(policy, encoding="utf-8")
+    (root / "national_runtime_manifest.json").write_text("{}\n", encoding="utf-8")
+    (root / "policy_epoch_receipt.json").write_text("{}\n", encoding="utf-8")
     return root
 
 
 def _check(result: dict, check_id: str) -> dict:
     return result["checks_by_id"][check_id]
+
+
+def test_static_capability_contract_rejects_unbound_candidate_model_file(tmp_path):
+    policy = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+    bot = _write_bot(tmp_path / "bot", policy)
+    (bot / "foreign-model.bin").write_bytes(b"not-a-bound-system-asset")
+
+    result = evaluate_national_capabilities(bot)
+    layout = _check(result, "national_policy_module")
+
+    assert result["ok"] is False
+    assert layout["passed"] is False
+    assert "artifact_extra_file_forbidden:foreign-model.bin" in layout["evidence"][
+        "strict_artifact_layout_errors"
+    ]
 
 
 @pytest.mark.parametrize(

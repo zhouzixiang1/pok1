@@ -590,7 +590,10 @@ def master_plan_executable_contract_text() -> str:
         ),
         (
             "- each task writable scope is exactly [\"policy.py\"]; candidate helper "
-            "modules/assets are forbidden. Every system runtime artifact owner_file must "
+            "modules, candidate-owned assets, and unbound external assets are forbidden. "
+            "A future model/table is system-owned infrastructure only, through a "
+            "manifest-and-receipt-bound broker rather than a Worker write or policy file read. "
+            "Every system runtime artifact owner_file must "
             "also appear in target_files/files_allowed (writable) or "
             "read_only_dependencies (context only; never writable)."
         ),

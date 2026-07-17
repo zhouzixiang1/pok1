@@ -10,7 +10,9 @@ system runtime, precompute, manifest, and epoch receipt bytes cannot drift.
 Some public helper names still say ``python_files`` because pipeline callers
 predate the exact artifact contract.  Their implementation covers every
 regular artifact file; this is rollback safety, not permission to create
-candidate helpers or binary assets.
+candidate helpers or binary assets.  A future model/table belongs in a
+separately versioned system asset root and is admitted by its own manifest,
+receipt, broker and launch-path gates, never by widening this Worker boundary.
 """
 
 from __future__ import annotations
