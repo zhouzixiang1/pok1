@@ -73,6 +73,12 @@ async def test_read_task_async_success_and_strict_idempotency(worker_config, git
         result = service.result(first.task_id)
         assert result.status.value == "succeeded"
         assert result.files_changed == []
+        fresh = await service.submit(
+            request(git_repo, key="service-test-new-logical-goal-0002")
+        )
+        assert fresh.task_id != first.task_id
+        assert not fresh.idempotent_replay
+        assert (await wait_terminal(service, fresh.task_id)).status is TaskStatus.SUCCEEDED
         with pytest.raises(IdempotencyConflict):
             await service.submit(
                 request(git_repo).model_copy(update={"goal": "different request"})

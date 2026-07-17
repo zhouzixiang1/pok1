@@ -54,6 +54,28 @@ def test_same_key_different_fingerprint_conflicts(tmp_path: Path):
         store.create_or_get(changed, request_fingerprint(changed))
 
 
+def test_idempotency_key_distinguishes_new_work_from_transport_retry(tmp_path: Path):
+    store = Persistence(tmp_path / "tasks.sqlite3")
+    original = request("logical goal")
+    first, replay = store.create_or_get(original, request_fingerprint(original))
+    assert not replay
+
+    retried, replay = store.create_or_get(original, request_fingerprint(original))
+    assert replay and retried["task_id"] == first["task_id"]
+
+    new_goal = original.model_copy(
+        update={"idempotency_key": "persistence-new-logical-goal-0002"}
+    )
+    fresh, replay = store.create_or_get(new_goal, request_fingerprint(new_goal))
+    assert not replay and fresh["task_id"] != first["task_id"]
+
+    changed_envelope = original.model_copy(update={"context": "changed request"})
+    with pytest.raises(IdempotencyConflict):
+        store.create_or_get(
+            changed_envelope, request_fingerprint(changed_envelope)
+        )
+
+
 def test_cancel_and_claim_are_one_atomic_decision(tmp_path: Path):
     store = Persistence(tmp_path / "tasks.sqlite3")
     item = request()

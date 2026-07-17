@@ -140,12 +140,16 @@ Read evidence; a write task needs a bounded, independently measured Git diff.
 Model-reported findings and checks remain advisory. Codex must inspect the
 actual worktree/diff and run final tests before accepting any write result.
 
-Every new user goal or independent work unit starts with exactly one `submit`.
-Follow-up turns for that same work unit reuse its returned `task_id` for status
-and result instead of submitting again. Never select an older task as a
-substitute. `list` returns only non-terminal recovery state by default. Terminal
-history requires an explicit terminal `status` or `include_terminal=true` and
-is reserved for explicit user-approved recovery or audit.
+Every new logical user goal or independent work unit uses a fresh `submit` with
+a new unique `idempotency_key`, then consumes only its returned `task_id`. If
+that same submit response is lost or its transport outcome is uncertain, retry
+the exact same envelope and key and explicitly accept `idempotent_replay=true`;
+the same key with a changed envelope fails closed. Follow-up turns for that same
+work unit reuse its `task_id` for status and result without submitting again.
+Never select an older task as a substitute. `list` returns only non-terminal
+recovery state by default. Terminal history requires an explicit terminal
+`status` or `include_terminal=true` and is reserved for explicit user-approved
+recovery or audit.
 
 ## Tests
 

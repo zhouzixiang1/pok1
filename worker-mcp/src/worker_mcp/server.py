@@ -39,15 +39,18 @@ from .task_service import TaskService
 
 
 SERVER_INSTRUCTIONS = (
-    "Each new user goal or independent work unit must call submit exactly once. "
-    "Follow-up get_status and get_result calls for that same work unit must reuse the "
-    "task_id returned by its submit; do not submit again on each follow-up turn. Never "
-    "select list history or a prior get_result as a substitute for fresh work. list "
-    "defaults to non-terminal recovery state; terminal history is allowed only when the "
-    "user explicitly requests recovery or audit. Codex remains the planner and final "
-    "reviewer. Every task requires an exact base commit and explicit allowed paths. "
-    "Workers never commit, push, deploy, access the web, or modify the primary checkout. "
-    "Inspect returned diffs and rerun final tests."
+    "Each new logical user goal or independent work unit must use a fresh submit with a "
+    "new unique idempotency_key, then consume only its returned task_id. Only when that "
+    "same submit response is lost or its transport outcome is uncertain may the exact "
+    "same envelope and key be retried and idempotent_replay=true accepted; reusing a key "
+    "with a changed envelope fails closed. Follow-up get_status and get_result calls for "
+    "that same work unit reuse its task_id without submitting again. Never select list "
+    "history or a prior get_result as a substitute for fresh work. list defaults to "
+    "non-terminal recovery state; terminal history is allowed only when the user "
+    "explicitly requests recovery or audit. Codex remains the planner and final reviewer. "
+    "Every task requires an exact base commit and explicit allowed paths. Workers never "
+    "commit, push, deploy, access the web, or modify the primary checkout. Inspect "
+    "returned diffs and rerun final tests."
 )
 HTTP_SCOPE = "worker-mcp"
 
@@ -198,7 +201,12 @@ def build_server(
 
     @mcp.tool(
         name="submit",
-        description="Durably submit one bounded asynchronous Worker task and return its task_id immediately.",
+        description=(
+            "Durably submit one bounded asynchronous Worker task. A new logical goal or "
+            "work unit requires a new unique idempotency_key. Retry the exact same "
+            "envelope and key only after a lost response or uncertain transport outcome; "
+            "then accept idempotent_replay=true and reuse the returned task_id."
+        ),
         annotations=control_annotations,
         structured_output=True,
     )

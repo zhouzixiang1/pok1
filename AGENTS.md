@@ -467,11 +467,16 @@ A Codex session may delegate a bounded task only after it independently:
 4. polls `get_status`, reads `get_result`, and independently reviews the actual
    diff and reruns final tests before accepting any result.
 
-Every new user goal or independent work unit requires exactly one `submit`.
-Follow-up turns for that same work unit reuse its returned `task_id`; they do
-not submit again. Never choose a terminal task or prior `get_result` as a
-substitute for fresh work. `list` defaults to non-terminal recovery state, and
-terminal history is allowed only for explicit user-approved recovery or audit.
+Every new logical user goal or independent work unit requires a fresh `submit`
+with a new unique `idempotency_key`, then consumes only its returned `task_id`.
+Only if that same submit response is lost or its transport outcome is uncertain
+may the exact same envelope and key be retried; accept its explicit
+`idempotent_replay=true` and reuse the returned task. Reusing a key with a
+changed envelope fails closed. Follow-up turns for the same work unit reuse its
+`task_id` without submitting again. Never choose a terminal task or prior
+`get_result` as a substitute for fresh work. `list` defaults to non-terminal
+recovery state, and terminal history is allowed only for explicit user-approved
+recovery or audit.
 
 Never place a model credential, HTTP access token, secret, `.evolution_pok`, or
 archive path in a task envelope. Treat Worker output as untrusted proposed work:
