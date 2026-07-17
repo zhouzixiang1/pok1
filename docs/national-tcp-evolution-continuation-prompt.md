@@ -1260,3 +1260,83 @@ bootstrap 不走 normal admission。pytest-only envelope 必须带 `spec_record(
 证书或 strength 证据；仍需在真实后台负载下完成 full Web/Sever/frontend build/
 compile/diff、独立审查、commit/push/merge，之后才执行 stopped v38 的 exact-CAS
 abandon、同步和 fresh v143 re-prepare。稳定计数仍为 `0/10`。
+
+## 最新 superseding handoff — v39 已安全 abandon，provider handoff P1 待合入
+
+先以工作树和 runtime 的真实状态为准，不要执行本文件较早的 “stopped v38”
+操作说明。v38 已按其旧 HEAD exact-CAS 规则完成 canonical abandon；runtime 已
+fast-forward 到 `7b90425900fec88181f5c2c4bc655fb8d8b7d879`，并因 formal runtime
+identity 变化进行 controlled evaluation-data archive/initialize。随后 fresh
+`generation:143:workflow-v39`（v143←v142）运行到 Master Proposal 阶段。
+
+v39 没有产生 Worker、quality、review、Critic、precommit、official、commit、tag、
+rating 或证书。它被严格 schema contract 正确终止：mechanism/compute 初稿把
+`mechanism_target` 错放进 closed `falsifier`，mechanism 唯一 repair 又在 executable
+text 使用 bare `fold_to_raise`；只有 2/3 Scout 合法，strict-authority schema retry
+耗尽后由系统 canonical abandon。其 transaction 是
+`379919048a9db4536b9727e02a259671225cab139000cccd9f7349c48a3d24ca`，candidate
+已在该 transaction 的 quarantine 中，checkpoint 已清除，两个 workflow journal
+terminal fence 已验证。绝不手动移动、删除或恢复该 transaction/candidate。
+
+当前 runtime 的 Web/daemon process 可以存活，但 evolution loop 必须视为 **stopped**，
+不是可启动状态。根因不是 transaction、checkpoint 或模型能力：SDK 可将
+`ToolUseBlock` 放在 `UserMessage`，并且真实 MCP handler 可能先于 outer stream 登记
+该 ToolUse 执行。旧 outer Orchestrator 只登记 `AssistantMessage` 的 pending tool ID，
+真实 `run_master` 的 terminal result 因而未被 handoff consumer 保留；consumer 用 `None`
+再验证时正确 fail-closed。不得用“交易在磁盘上已存在”或手工重建 result 来启动 successor。
+
+唯一可编辑位置仍是
+`/home/zzx/project/pok/.codex_worktrees/national-protocol-evolution-alignment`，当前
+基线 `7b904259` 上有未提交 P1 修复。修复必须同时做到：
+
+1. `UserMessage` 内的 `ToolUseBlock` 与 `AssistantMessage` 使用同一 explicit-id、
+   Evolution MCP owner、canonical arguments、duplicate 和 pending-result contract；
+2. 仅真实 guarded mutating owner 在返回后、以 pre-call checkpoint 成功调用
+   `validate_completed_abandon_handoff` 时，才可在 **同一 active provider attempt**
+   保存一个内存 terminal record；若 handler 先于 stream 登记，只能保存没有 ToolUse id、
+   对 consumer 不可见的 provisional record，且仅一个后续 exact owner/arguments
+   registration 可原子绑定它；
+3. 缺 SDK ToolResult 时，仅一个已经绑定的 **同 id、同 owner、同 canonical arguments、同
+   checkpoint** 的 pending ToolUse 缓存可补足，且 outer handoff 再次 revalidate；
+   SDK result 与缓存同时存在必须 canonical byte-identical。缓存生产/消费共享
+   terminal-owner whitelist，`run_archivist` 等非 terminal owner 永不接受。无缓存、
+   still-provisional、重复、settled-history、owner/arguments/id/identity/proof 不匹配、
+   进程重启或裸 receipt 一律
+   recovery-blocked；
+4. Master Scout prompt 输出 closed JSON skeleton，明确 falsifier 是六键 closed object，
+   `mechanism_target` 仅顶层；不要放宽 falsifier validator、shared-leaf namespace
+   validator 或两次 schema-attempt 上限。
+
+当前已新增的 focused regressions 覆盖 UserMessage ToolUse→canonical result、handler-before-
+stream provisional→unique exact bind→lost SDK result、missing/owner-mismatch/wrong-args/
+settled-history cache fail-closed、side-channel legacy result ignore、cache duplicate rejection、
+closed falsifier prompt/repair contract；已运行
+`web/tests/test_master_proposal_ensemble.py` +
+`web/tests/test_orchestrator_timeout_extension.py`（`165 passed`）和
+route/one-gen/prompt/role shard（`210 passed`）。在代码、matrix、ledger 和本节都
+更新后仍必须跑完整 Web/Sever/frontend/compile/diff 与独立审查，才可以 commit、push、
+merge。
+
+合入后，确认 `.evolution_pok` 无 active checkpoint/candidate、停止当前 launcher，
+只从 merged `origin/main` fast-forward；再运行 checkpoint recovery、epoch/evaluation
+identity、blueprint/control/official diagnostics。若诊断干净，受控启动 fresh v143，
+不得 replay v39。每次源码修复、canonical abandon 或重启都保持 stability `0/10`。
+
+三-Bot v5 研究线已在 `d53e5e43` 完成 480/480 valid direct-H2H cells，但 12/12
+Holm-adjusted comparisons均不显著；仍隔离、零 authority。future canonical Bot 只能
+吸收 A1/A2/B 的 clean-room behavior proposal，重新生成 strict five-file artifact、
+system asset/identity/probe/gates、官方认证和 immutable rating cycle，不能复制源码、
+资产或研究强度。
+
+后续的“系统经验”必须是单独的 evidence-derived lesson contract，而不是 Master 的可变
+自由文本文件：每张经验卡需绑定 active artifact identity、完整 replay/validator/runtime
+identity、immutable evaluation cycle、producer/derivation digest、适用/失效条件和正负
+回归；只将冻结快照注入下一代。无来源、冲突、过期、archive 或模型自述的内容均不消费。
+最小实现应把内容寻址的 `lesson_cards.json` 放在每代 `evidence_snapshot` 中，由 scheduler
+在既有 snapshot/evaluation lock 内从冻结、已验证、完整 70-hand native replay 确定性导出
+至多三张 `advisory_only` 卡；v143 的零池或证据不足必须产出显式空包。Master 只能引用
+冻结 `card_id+digest` 提出可证伪假设，Worker/Reviewer 重新验证来源；rating、selection、
+official/certification 和 live 历史均不得直接消费或重导它。
+v39 的 schema 失败已经以 closed skeleton、提示词、validator 和负回归修复，而不是作为
+可迁移策略或强度经验。该 facility 仍是 future source work，不授权当前 runtime 启动或
+改变 `0/10`。

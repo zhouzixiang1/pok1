@@ -588,6 +588,10 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "falsifier.intervention_target"
     ) in prompt
     assert "mechanism_target is NEVER the state_learning_primary label" in prompt
+    assert "CLOSED JSON SHAPE exactly" in prompt
+    assert agent_master._proposal_closed_json_shape() in prompt
+    assert "falsifier has additionalProperties=false" in prompt
+    assert "MUST NOT contain mechanism_target" in prompt
     assert '"mechanism_target":"opponent.rates"' in prompt
     assert "context['opponent']['rates'] does not replace" in prompt
     assert "opponent.rates.fold_to_raise is an action-profile field" in prompt
@@ -662,6 +666,19 @@ def test_schema_repair_guidance_is_targeted_and_negation_safe():
     assert "all other decision_context fields are byte-identical" in guidance
     assert "Never emit bare fold_to_raise" in guidance
     assert len(guidance.splitlines()) == 2
+
+
+def test_falsifier_schema_repair_explicitly_removes_top_level_target_duplication():
+    import agent_master
+
+    guidance = agent_master._proposal_schema_repair_guidance(
+        ("proposal_falsifier_invalid",),
+        require_snapshot_evidence=False,
+    )
+
+    assert "closed six-key object" in guidance
+    assert "Delete every extra key" in guidance
+    assert "mechanism_target appears exactly once at the top level" in guidance
 
 
 @pytest.mark.parametrize(

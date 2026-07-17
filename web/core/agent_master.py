@@ -106,8 +106,12 @@ def _proposal_schema_repair_guidance(
         add("Copy the mode-specific measurement contract exactly.")
     if any("proposal_falsifier" in item for item in hints):
         add(
-            "Copy test_name, state_learning_primary, mechanism_target, and "
-            "intervention_target from one mapping row without relabelling it."
+            "falsifier is a closed six-key object: test_name, "
+            "state_learning_primary, intervention_target, control, intervention, "
+            "expected_observation. Delete every extra key; mechanism_target "
+            "appears exactly once at the top level. Copy test_name, "
+            "state_learning_primary, mechanism_target, and intervention_target "
+            "from one mapping row without relabelling it."
         )
     if not guidance:
         add(
@@ -197,6 +201,11 @@ def _render_master_proposal_provider_prompt(inputs):
         )
         + "), "
         "and risks. Every chain edge must be a direct syntactic call in the baseline. "
+        "Use this CLOSED JSON SHAPE exactly (placeholders are values, not keys): "
+        + _proposal_closed_json_shape()
+        + ". falsifier has additionalProperties=false: it contains exactly its six "
+        "shown keys and MUST NOT contain mechanism_target, source_symbols, target_files, "
+        "or any explanatory alias. mechanism_target appears exactly once at the top level. "
         "A two-symbol entry anchor is sufficient to prove current reachability, "
         "but it is not the proposed poker mechanism. Copy one SYSTEM-VERIFIED "
         "PREFERRED CURRENT ENTRY ANCHOR exactly when available, then use "
@@ -644,6 +653,39 @@ def _proposal_falsifier_mapping_text() -> str:
         for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
     }
     return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _proposal_closed_json_shape() -> str:
+    """Return the exact proposal key shape shown to every Scout.
+
+    The runtime validator remains the authority.  This compact machine-readable
+    skeleton prevents a frequent provider mistake where the top-level typed
+    ``mechanism_target`` is redundantly copied into the closed ``falsifier``
+    object, consuming the single schema-repair attempt.
+    """
+
+    return json.dumps({
+        "targeted_failure": "<text>",
+        "structural_change": "<text>",
+        "counterfactual": "<text>",
+        "measurement": "<exact measurement contract>",
+        "why_not_threshold_tuning": "<text>",
+        "mechanism_target": "<exact mapping target>",
+        "target_files": ["policy.py"],
+        "expected_diff": "<text>",
+        "source_symbols": ["<file.py:symbol>"],
+        "reachable_chain": ["<file.py:caller>", "<file.py:callee>"],
+        "falsifier": {
+            "test_name": "<one allowed test>",
+            "state_learning_primary": "<mapped primary>",
+            "intervention_target": "<same mapping target>",
+            "control": "<text>",
+            "intervention": "<text>",
+            "expected_observation": "<text>",
+        },
+        "evidence_refs": ["source:<file.py:symbol>"],
+        "risks": "<text>",
+    }, ensure_ascii=False, separators=(",", ":"))
 
 
 def _proposal_mechanism_target_errors(

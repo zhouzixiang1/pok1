@@ -953,6 +953,149 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
     ),
     MatrixRow(
+        rule_id="provider_canonical_abandon_handoff",
+        coverage=("continuous_delivery_handoff",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("docs/evolution-continuous-delivery-runbook.md"),
+            _ref(
+                "web/core/tool_bot_management.py",
+                "validate_completed_abandon_handoff",
+            ),
+        ),
+        production_owners=(
+            _ref("web/core/tool_runtime_guard.py", "tool"),
+            _ref(
+                "web/core/llm_query.py",
+                "register_current_provider_evolution_tool_use",
+            ),
+            _ref(
+                "web/core/llm_query.py",
+                "cache_verified_provider_terminal_abandon",
+            ),
+            _ref("web/core/orchestrator.py", "_run_one_cycle"),
+            _ref(
+                "web/core/orchestrator.py",
+                "_detect_actionable_stage_handoff",
+            ),
+        ),
+        dynamic_gates=(
+            _ref(
+                "web/core/tool_bot_management.py",
+                "validate_completed_abandon_handoff",
+            ),
+            _ref(
+                "web/core/llm_query.py",
+                "cache_verified_provider_terminal_abandon",
+            ),
+            _ref("web/core/orchestrator.py", "_detect_actionable_stage_handoff"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles treat canonical abandon as a deterministic terminal "
+            "gate: only a routed owner may return a complete proof bound to one explicit "
+            "ToolUse id, owner, arguments, and same provider attempt. A handler-before-stream "
+            "provisional proof is unconsumable until one exact registration binds it. A missing "
+            "checkpoint, historical receipt, or unbound cache cannot authorize a successor."
+        ),
+        prompt_required_terms=(
+            "canonical abandon",
+            "ToolUse id",
+            "same provider attempt",
+        ),
+        producer_consumer=(
+            "guarded routed owner + immutable pre-call checkpoint → complete schema-2 result "
+            "→ same-attempt provisional record (unconsumable) or exact ToolUse "
+            "id/owner/arguments registration → unique binding → second handoff reproof → "
+            "outer scheduler terminal boundary"
+        ),
+        positive_tests=(
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_user_message_tool_use_binds_canonical_terminal_result",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_verified_attempt_cache_recovers_only_one_missing_terminal_result",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_attempt_terminal_cache_requires_verified_single_result",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_guarded_terminal_owner_records_registered_id_and_arguments",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_handler_before_user_tool_use_binds_and_recovers_terminal_handoff",
+        ),
+        negative_tests=(
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_attempt_terminal_cache_requires_exact_registered_args_and_terminal_owner",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_user_tool_use_without_matching_terminal_cache_fails_closed",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_terminal_cache_rejects_run_archivist_even_with_matching_tool_use",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_provisional_terminal_cache_rejects_wrong_args_and_settled_history",
+            "web/tests/test_orchestrator_timeout_extension.py::"
+            "test_user_message_side_channel_fallback_result_is_ignored",
+        ),
+        fail_closed=(
+            "Missing, duplicate, unregistered or still-provisional, cross-attempt, owner-mismatched, "
+            "argument-mismatched, settled-history, proof-mismatched, or SDK/cache-mismatched terminal "
+            "material is recovery-blocked; it never prepares a successor."
+        ),
+    ),
+    MatrixRow(
+        rule_id="master_scout_closed_falsifier_shape",
+        coverage=("master_proposal_closed_schema",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("web/core/output_schema.py", "MASTER_PROPOSAL_FALSIFIER_TESTS"),
+            _ref("web/core/agent_master.py", "_validated_master_proposal"),
+        ),
+        production_owners=(
+            _ref(
+                "web/core/agent_master.py",
+                "_render_master_proposal_provider_prompt",
+            ),
+            _ref("web/core/agent_master.py", "_proposal_closed_json_shape"),
+            _ref("web/core/agent_master.py", "_proposal_schema_repair_guidance"),
+            _ref("web/core/agent_master.py", "_validated_master_proposal"),
+        ),
+        dynamic_gates=(
+            _ref("web/core/agent_master.py", "_validated_master_proposal"),
+            _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles preserve the Master Scout closed falsifier contract: "
+            "a falsifier is a closed six-key object, mechanism_target appears only at top level, and "
+            "owner-qualified shared leaves remain mandatory in executable claims."
+        ),
+        prompt_required_terms=(
+            "closed six-key",
+            "mechanism_target",
+            "owner-qualified",
+        ),
+        producer_consumer=(
+            "frozen source/evidence mapping → closed Scout JSON prompt → deterministic proposal "
+            "validation and strict authority → packet/critics/final Master → bounded Worker contract"
+        ),
+        positive_tests=(
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_falsifier_schema_repair_explicitly_removes_top_level_target_duplication",
+        ),
+        negative_tests=(
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_final_packet_parser_rejects_claim_changed_after_id",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_shared_fold_to_raise_bare_leaf_fails_scout_and_packet_replay",
+        ),
+        fail_closed=(
+            "An extra falsifier key, top-level-target duplication, bare/foreign owner, or exhausted "
+            "schema repair is rejected before critics or Workers; the generation canonically abandons "
+            "rather than silently normalizing provider output."
+        ),
+    ),
+    MatrixRow(
         rule_id="superseded_archive_untrusted",
         coverage=("superseded_legacy_untrusted",),
         status=SUPERSEDED_STATUS,

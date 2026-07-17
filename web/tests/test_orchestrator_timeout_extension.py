@@ -3145,6 +3145,953 @@ def test_terminal_checkpoint_clear_hands_off_before_stale_mcp_retry(
     assert not any(item[0] == "pipeline.sdk_stream_error" for item in events)
 
 
+def test_user_message_tool_use_binds_canonical_terminal_result(
+    tmp_path,
+    monkeypatch,
+):
+    """SDK UserMessage ToolUseBlock has the same ID binding as AssistantMessage."""
+
+    from claude_agent_sdk import ToolResultBlock, ToolUseBlock, UserMessage
+
+    import evolution_core
+    import orchestrator
+    import post_publication_handoff
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "a" * 64,
+        "abandon_receipt_digest": "b" * 64,
+        "finalize_receipt_digest": "c" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "d" * 64,
+        },
+    }
+    continued = {"value": False}
+
+    async def _user_tool_use_then_result():
+        yield UserMessage(content=[ToolUseBlock(
+            id="master-abandon-1",
+            name="mcp__evolution__run_master",
+            input={},
+        )])
+        evolution_core.PIPELINE_STATE_FILE.unlink()
+        yield UserMessage(content=[ToolResultBlock(
+            tool_use_id="master-abandon-1",
+            content=json.dumps(terminal_result),
+            is_error=False,
+        )])
+        continued["value"] = True
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _user_tool_use_then_result(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: _verified_canonical_abandon_proof(
+            workflow_run_id=checkpoint["workflow_run_id"],
+            revision=checkpoint["checkpoint_revision"],
+            next_v=checkpoint["next_v"],
+            source_v=checkpoint["source_v"],
+            stage=checkpoint["stage"],
+        )
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("terminal binding mismatch")),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "user_tool_use_terminal.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
+    assert continued["value"] is False
+
+
+def test_verified_attempt_cache_recovers_only_one_missing_terminal_result(
+    tmp_path,
+    monkeypatch,
+):
+    """A lost SDK ToolResult may use only the same-attempt proved cache."""
+
+    from claude_agent_sdk import ToolUseBlock, UserMessage
+
+    import evolution_core
+    import llm_query
+    import orchestrator
+    import post_publication_handoff
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "1" * 64,
+        "abandon_receipt_digest": "2" * 64,
+        "finalize_receipt_digest": "3" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "4" * 64,
+        },
+    }
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id=checkpoint["workflow_run_id"],
+        revision=checkpoint["checkpoint_revision"],
+        next_v=checkpoint["next_v"],
+        source_v=checkpoint["source_v"],
+        stage=checkpoint["stage"],
+    )
+
+    async def _user_tool_use_without_result():
+        yield UserMessage(content=[ToolUseBlock(
+            id="master-abandon-cache-1",
+            name="mcp__evolution__run_master",
+            input={},
+        )])
+        evolution_core.PIPELINE_STATE_FILE.unlink()
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _user_tool_use_without_result(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: proof
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("cache proof mismatch")),
+    )
+    monkeypatch.setattr(
+        llm_query,
+        "current_provider_verified_terminal_abandon",
+        lambda: {
+            "tool_use_id": "master-abandon-cache-1",
+            "owner_tool": "run_master",
+            "arguments": "{}",
+            "terminal_result": terminal_result,
+            "terminal_proof": proof,
+        },
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "cached_terminal.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
+
+
+def test_attempt_terminal_cache_requires_verified_single_result(
+    tmp_path,
+    monkeypatch,
+):
+    """The handler cache is ephemeral and rejects a second terminal result."""
+
+    import llm_query
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "9" * 64,
+        "abandon_receipt_digest": "a" * 64,
+        "finalize_receipt_digest": "b" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "c" * 64,
+        },
+    }
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id=checkpoint["workflow_run_id"],
+        revision=checkpoint["checkpoint_revision"],
+        next_v=checkpoint["next_v"],
+        source_v=checkpoint["source_v"],
+        stage=checkpoint["stage"],
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: proof
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("cache validation mismatch")),
+    )
+    attempt = {"attempt_id": "attempt-cache-test"}
+    token = llm_query.activate_owned_provider_attempt(attempt)
+    try:
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "master-cache-1",
+            "mcp__evolution__run_master",
+            {},
+        ) is True
+        record = llm_query.cache_verified_provider_terminal_abandon(
+            "run_master",
+            checkpoint,
+            {"content": [{"type": "text", "text": json.dumps(terminal_result)}]},
+            {},
+        )
+        assert record["owner_tool"] == "run_master"
+        assert record["tool_use_id"] == "master-cache-1"
+        assert record["arguments"] == "{}"
+        assert record["terminal_result"] == terminal_result
+        assert llm_query.current_provider_verified_terminal_abandon() == record
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_master",
+            checkpoint,
+            {"content": [{"type": "text", "text": json.dumps(terminal_result)}]},
+            {},
+        ) is None
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+    finally:
+        llm_query.reset_owned_provider_attempt(token)
+
+
+def test_attempt_terminal_cache_requires_exact_registered_args_and_terminal_owner(
+    tmp_path,
+    monkeypatch,
+):
+    """A handler cannot cache a same-name replay or non-terminal owner result."""
+
+    import llm_query
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "d" * 64,
+        "abandon_receipt_digest": "e" * 64,
+        "finalize_receipt_digest": "f" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "0" * 64,
+        },
+    }
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda *_args: _verified_canonical_abandon_proof(
+            workflow_run_id=checkpoint["workflow_run_id"],
+            revision=checkpoint["checkpoint_revision"],
+            next_v=checkpoint["next_v"],
+            source_v=checkpoint["source_v"],
+            stage=checkpoint["stage"],
+        ),
+    )
+    attempt = {"attempt_id": "attempt-cache-args"}
+    token = llm_query.activate_owned_provider_attempt(attempt)
+    try:
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "master-args-1",
+            "mcp__evolution__run_master",
+            {"source_v": 142, "next_v": 143},
+        ) is True
+        raw = {"content": [{"type": "text", "text": json.dumps(terminal_result)}]}
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_master",
+            checkpoint,
+            raw,
+            {"source_v": 142, "next_v": 999},
+        ) is None
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_archivist",
+            checkpoint,
+            raw,
+            {"source_v": 142, "next_v": 143},
+        ) is None
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+    finally:
+        llm_query.reset_owned_provider_attempt(token)
+
+
+def test_provisional_terminal_cache_binds_only_after_one_exact_tool_use(
+    tmp_path,
+    monkeypatch,
+):
+    """Handler-before-stream proof is inert until one exact ToolUse binds it."""
+
+    import llm_query
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    args = {"source_v": checkpoint["source_v"], "next_v": checkpoint["next_v"]}
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "e" * 64,
+        "abandon_receipt_digest": "f" * 64,
+        "finalize_receipt_digest": "1" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "2" * 64,
+        },
+    }
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id=checkpoint["workflow_run_id"],
+        revision=checkpoint["checkpoint_revision"],
+        next_v=checkpoint["next_v"],
+        source_v=checkpoint["source_v"],
+        stage=checkpoint["stage"],
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: proof
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("provisional cache mismatch")),
+    )
+
+    attempt = {"attempt_id": "provisional-handler-before-stream"}
+    token = llm_query.activate_owned_provider_attempt(attempt)
+    try:
+        raw = {"content": [{"type": "text", "text": json.dumps(terminal_result)}]}
+        # No observed ToolUse id exists yet: this is deliberately not a usable
+        # cache result even though the guarded handler proof is valid.
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_master", checkpoint, raw, args
+        ) is None
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "master-provisional-1",
+            "mcp__evolution__run_master",
+            args,
+        ) is True
+        record = llm_query.current_provider_verified_terminal_abandon()
+        assert record is not None
+        assert record["tool_use_id"] == "master-provisional-1"
+        assert record["owner_tool"] == "run_master"
+
+        # A second indistinguishable ToolUse arrives before either result.  The
+        # handler had no id, so attribution becomes ambiguous and must close.
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "master-provisional-2",
+            "mcp__evolution__run_master",
+            args,
+        ) is True
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+    finally:
+        llm_query.reset_owned_provider_attempt(token)
+
+
+def test_provisional_terminal_cache_rejects_wrong_args_and_settled_history(
+    tmp_path,
+    monkeypatch,
+):
+    """Only a future exact first registration may bind a provisional proof."""
+
+    import llm_query
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    args = {"source_v": checkpoint["source_v"], "next_v": checkpoint["next_v"]}
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "7" * 64,
+        "abandon_receipt_digest": "8" * 64,
+        "finalize_receipt_digest": "9" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "a" * 64,
+        },
+    }
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id=checkpoint["workflow_run_id"],
+        revision=checkpoint["checkpoint_revision"],
+        next_v=checkpoint["next_v"],
+        source_v=checkpoint["source_v"],
+        stage=checkpoint["stage"],
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: proof
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("provisional strictness mismatch")),
+    )
+    raw = {"content": [{"type": "text", "text": json.dumps(terminal_result)}]}
+
+    wrong_attempt = {"attempt_id": "provisional-wrong-arguments"}
+    token = llm_query.activate_owned_provider_attempt(wrong_attempt)
+    try:
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_master", checkpoint, raw, args
+        ) is None
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "master-wrong-arguments-1",
+            "mcp__evolution__run_master",
+            {"source_v": checkpoint["source_v"], "next_v": 999},
+        ) is True
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+    finally:
+        llm_query.reset_owned_provider_attempt(token)
+
+    settled_attempt = {"attempt_id": "provisional-settled-history"}
+    token = llm_query.activate_owned_provider_attempt(settled_attempt)
+    try:
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "master-settled-history-1",
+            "mcp__evolution__run_master",
+            args,
+        ) is True
+        llm_query.settle_current_provider_evolution_tool_use(
+            "master-settled-history-1"
+        )
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_master", checkpoint, raw, args
+        ) is None
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+    finally:
+        llm_query.reset_owned_provider_attempt(token)
+
+
+@pytest.mark.asyncio
+async def test_guarded_terminal_owner_records_registered_id_and_arguments(
+    tmp_path,
+    monkeypatch,
+):
+    """The real MCP wrapper passes the matching handler arguments to the cache."""
+
+    import llm_query
+    import tool_bot_management
+    import tool_runtime_guard
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    args = {"source_v": checkpoint["source_v"], "next_v": checkpoint["next_v"]}
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "a" * 64,
+        "abandon_receipt_digest": "b" * 64,
+        "finalize_receipt_digest": "c" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "d" * 64,
+        },
+    }
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id=checkpoint["workflow_run_id"],
+        revision=checkpoint["checkpoint_revision"],
+        next_v=checkpoint["next_v"],
+        source_v=checkpoint["source_v"],
+        stage=checkpoint["stage"],
+    )
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "ensure_runtime_git_guard",
+        lambda *_args, **_kwargs: (True, {}),
+    )
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_terminal_abandon_baseline_snapshot",
+        lambda: checkpoint,
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: proof
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("guarded cache mismatch")),
+    )
+
+    @tool_runtime_guard.tool("run_master", "test terminal cache", {})
+    async def _terminal_owner(_args):
+        return {"content": [{"type": "text", "text": json.dumps(terminal_result)}]}
+
+    attempt = {"attempt_id": "guarded-handler-cache"}
+    token = llm_query.activate_owned_provider_attempt(attempt)
+    try:
+        assert llm_query.register_current_provider_evolution_tool_use(
+            "guarded-master-1",
+            "mcp__evolution__run_master",
+            args,
+        ) is True
+        await _terminal_owner.handler(args)
+        record = llm_query.current_provider_verified_terminal_abandon()
+        assert record["tool_use_id"] == "guarded-master-1"
+        assert record["owner_tool"] == "run_master"
+        assert record["arguments"] == json.dumps(
+            args,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    finally:
+        llm_query.reset_owned_provider_attempt(token)
+
+
+def test_user_message_non_evolution_tool_use_does_not_create_pending_gate(
+    tmp_path,
+    monkeypatch,
+):
+    """Side-channel UserMessage annotations cannot block an Evolution stream."""
+
+    from claude_agent_sdk import ResultMessage, ToolUseBlock, UserMessage
+
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+
+    async def _side_channel_annotation():
+        yield UserMessage(content=[ToolUseBlock(
+            id="side-channel-1",
+            name="mcp__other_server__read_only_annotation",
+            input={},
+        )])
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=0,
+            session_id="side-channel-session",
+            total_cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _side_channel_annotation(),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "side_channel_user_tool_use.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == 0.0
+
+
+def test_user_message_side_channel_fallback_result_is_ignored(
+    tmp_path,
+    monkeypatch,
+):
+    """The legacy UserMessage shortcut cannot revive an ignored annotation."""
+
+    from claude_agent_sdk import ResultMessage, ToolUseBlock, UserMessage
+
+    import orchestrator
+
+    _write_checkpoint(tmp_path, "direction_audited", timeout_extensions=0)
+
+    async def _side_channel_annotation_with_fallback():
+        yield UserMessage(
+            content=[ToolUseBlock(
+                id="side-channel-fallback-1",
+                name="mcp__other_server__read_only_annotation",
+                input={},
+            )],
+            tool_use_result={
+                "tool_use_id": "side-channel-fallback-1",
+                "content": {"annotation": "ignored"},
+            },
+        )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=0,
+            session_id="side-channel-fallback-session",
+            total_cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _side_channel_annotation_with_fallback(),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "side_channel_fallback.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == 0.0
+
+
+def test_handler_before_user_tool_use_binds_and_recovers_terminal_handoff(
+    tmp_path,
+    monkeypatch,
+):
+    """A real SDK scheduling race recovers only after exact stream binding."""
+
+    from claude_agent_sdk import ResultMessage, ToolUseBlock, UserMessage
+
+    import evolution_core
+    import llm_query
+    import orchestrator
+    import post_publication_handoff
+    import tool_bot_management
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    args = {"source_v": checkpoint["source_v"], "next_v": checkpoint["next_v"]}
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "3" * 64,
+        "abandon_receipt_digest": "4" * 64,
+        "finalize_receipt_digest": "5" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "6" * 64,
+        },
+    }
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id=checkpoint["workflow_run_id"],
+        revision=checkpoint["checkpoint_revision"],
+        next_v=checkpoint["next_v"],
+        source_v=checkpoint["source_v"],
+        stage=checkpoint["stage"],
+    )
+
+    async def _handler_before_stream_tool_use():
+        raw = {"content": [{"type": "text", "text": json.dumps(terminal_result)}]}
+        assert llm_query.cache_verified_provider_terminal_abandon(
+            "run_master", checkpoint, raw, args
+        ) is None
+        assert llm_query.current_provider_verified_terminal_abandon() is None
+        yield UserMessage(content=[ToolUseBlock(
+            id="master-handler-before-stream-1",
+            name="mcp__evolution__run_master",
+            input=args,
+        )])
+        record = llm_query.current_provider_verified_terminal_abandon()
+        assert record is not None
+        assert record["tool_use_id"] == "master-handler-before-stream-1"
+        evolution_core.PIPELINE_STATE_FILE.unlink()
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=0,
+            duration_api_ms=0,
+            is_error=False,
+            num_turns=1,
+            session_id="handler-before-stream-session",
+            total_cost_usd=0.0,
+        )
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _handler_before_stream_tool_use(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "validate_completed_abandon_handoff",
+        lambda baseline, result: proof
+        if baseline == checkpoint and result == terminal_result
+        else (_ for _ in ()).throw(AssertionError("handler-before-stream mismatch")),
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "handler_before_stream.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
+
+
+def test_terminal_cache_rejects_run_archivist_even_with_matching_tool_use(
+    tmp_path,
+    monkeypatch,
+):
+    """Only the shared terminal-owner whitelist may consume a cache record."""
+
+    from claude_agent_sdk import ToolUseBlock, UserMessage
+
+    import evolution_core
+    import llm_query
+    import orchestrator
+    import post_publication_handoff
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "1" * 64,
+        "abandon_receipt_digest": "2" * 64,
+        "finalize_receipt_digest": "3" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "4" * 64,
+        },
+    }
+
+    async def _run_archivist_without_result():
+        yield UserMessage(content=[ToolUseBlock(
+            id="archivist-cache-1",
+            name="mcp__evolution__run_archivist",
+            input={},
+        )])
+        evolution_core.PIPELINE_STATE_FILE.unlink()
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _run_archivist_without_result(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    monkeypatch.setattr(
+        llm_query,
+        "current_provider_verified_terminal_abandon",
+        lambda: {
+            "tool_use_id": "archivist-cache-1",
+            "owner_tool": "run_archivist",
+            "arguments": "{}",
+            "terminal_result": terminal_result,
+            "terminal_proof": {},
+        },
+    )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "archivist_cache.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+
+
+@pytest.mark.parametrize(
+    ("cache_owner", "cache_tool_use_id"),
+    [
+        (None, None),
+        ("execute_workers", "master-unproved-1"),
+        ("run_master", "a-different-tool-use-id"),
+    ],
+)
+def test_user_tool_use_without_matching_terminal_cache_fails_closed(
+    tmp_path,
+    monkeypatch,
+    cache_owner,
+    cache_tool_use_id,
+):
+    """Missing or owner-mismatched cache never turns absence into proof."""
+
+    from claude_agent_sdk import ToolUseBlock, UserMessage
+
+    import evolution_core
+    import llm_query
+    import orchestrator
+    import post_publication_handoff
+
+    checkpoint = _write_checkpoint(
+        tmp_path,
+        "direction_audited",
+        timeout_extensions=0,
+    )
+    terminal_result = {
+        "abandoned": True,
+        "cleared_checkpoint": True,
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "abandon_transaction_id": "5" * 64,
+        "abandon_receipt_digest": "6" * 64,
+        "finalize_receipt_digest": "7" * 64,
+        "abandon_checkpoint_identity": {
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "stage": checkpoint["stage"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "digest": "8" * 64,
+        },
+    }
+
+    async def _user_tool_use_without_result():
+        yield UserMessage(content=[ToolUseBlock(
+            id="master-unproved-1",
+            name="mcp__evolution__run_master",
+            input={},
+        )])
+        evolution_core.PIPELINE_STATE_FILE.unlink()
+
+    monkeypatch.setattr(
+        orchestrator,
+        "claude_query",
+        lambda **_kwargs: _user_tool_use_without_result(),
+    )
+    monkeypatch.setattr(
+        post_publication_handoff,
+        "pending_handoff_route",
+        lambda: {"status": "none"},
+    )
+    if cache_owner is not None:
+        monkeypatch.setattr(
+            llm_query,
+            "current_provider_verified_terminal_abandon",
+            lambda: {
+                "tool_use_id": cache_tool_use_id,
+                "owner_tool": cache_owner,
+                "arguments": "{}",
+                "terminal_result": terminal_result,
+                "terminal_proof": {},
+            },
+        )
+
+    cost = asyncio.new_event_loop().run_until_complete(
+        orchestrator._run_one_cycle(
+            ui=_FakeUI(),
+            log_file=tmp_path / "unproved_user_tool_use.txt",
+            one_gen=True,
+            dry_run=False,
+            max_turns=None,
+            gen_ctx=None,
+            shutdown_mgr=None,
+        )
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+
+
 @pytest.mark.parametrize("proof_owner", ["abandon-1", "status-1"])
 def test_terminal_proof_binds_tool_use_result_id_and_owner_across_parallel_results(
     tmp_path,

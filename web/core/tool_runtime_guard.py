@@ -81,6 +81,57 @@ def _json_tool_result(data: dict[str, Any]) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": json.dumps(data, indent=2, ensure_ascii=False)}]}
 
 
+def _terminal_abandon_baseline_snapshot() -> dict | None:
+    """Return an immutable pre-call checkpoint snapshot for SDK-loss recovery.
+
+    This is intentionally local to the mutating tool wrapper.  It is never
+    written to a checkpoint/evidence file and is useful only while the caller's
+    active provider attempt remains alive.
+    """
+
+    try:
+        checkpoint = read_pipeline_checkpoint()
+        if not isinstance(checkpoint, dict):
+            return None
+        return json.loads(json.dumps(checkpoint, sort_keys=True))
+    except Exception:
+        return None
+
+
+def _cache_verified_provider_terminal_abandon(
+    tool_name: str,
+    baseline_checkpoint: dict | None,
+    result,
+    args: dict[str, Any],
+) -> None:
+    """Best-effort in-memory bridge for a lost SDK ToolResult.
+
+    The cache helper itself performs the complete schema-2 reproof.  A cache
+    miss/error must not alter a real tool return: the normal SDK result path is
+    still authoritative, and an absent/ambiguous result remains fail-closed in
+    the Orchestrator.
+    """
+
+    if tool_name not in _PIPELINE_ROUTE_TOOLS or not isinstance(
+        baseline_checkpoint, dict
+    ):
+        return
+    try:
+        from llm_query import cache_verified_provider_terminal_abandon
+
+        cache_verified_provider_terminal_abandon(
+            tool_name,
+            baseline_checkpoint,
+            result,
+            args,
+        )
+    except Exception:
+        # Do not replace a genuine MCP response with a secondary observability
+        # failure.  If the SDK also loses that response, the parent has no
+        # cache and stops fail-closed.
+        return
+
+
 def _guard_enabled() -> bool:
     if os.environ.get("POK_DISABLE_TOOL_RUNTIME_GUARD") == "1":
         return False
@@ -983,9 +1034,16 @@ def tool(name: str, description: str, input_schema: dict[str, Any]):
                     "error": "runtime_git_guard_blocked",
                     **payload,
                 })
+            terminal_baseline = _terminal_abandon_baseline_snapshot()
             result = func(args)
             if inspect.isawaitable(result):
-                return await result
+                result = await result
+            _cache_verified_provider_terminal_abandon(
+                name,
+                terminal_baseline,
+                result,
+                args,
+            )
             return result
 
         return sdk_tool(name, description, input_schema)(guarded)

@@ -3040,3 +3040,88 @@ compile and diff checks for this newest P1 hardening remain required before a
 commit, merge, runtime synchronization, or launch. No `.evolution_pok` file,
 runtime process, candidate, official job, tag, certificate, rating, or `0/10`
 observation was changed by this documentation update.
+
+## 2026-07-17 — live workflow-v39 evidence and unmerged provider-handoff repair
+
+This entry records the first post-merge live attempt, not a publication or a
+strength result.  The old v38 checkpoint was already finalized through its
+exact-CAS schema-2 abandon, the runtime was fast-forwarded to
+`7b90425900fec88181f5c2c4bc655fb8d8b7d879`, evaluation identity was
+controlled-archived/reinitialized because the formal runtime contract changed,
+and fresh `generation:143:workflow-v39` was prepared from v142.  No v38 bytes,
+rating, H2H, candidate, certificate, or prompt result was replayed.
+
+The strict proposal validator correctly rejected two real Scout errors rather
+than treating them as model strength or transport failure: initial mechanism
+and compute Scouts added `mechanism_target` to the closed `falsifier` object;
+the one permitted mechanism repair then used bare `fold_to_raise` in an
+executable claim.  Counterfactual and the compute repair were valid, so the
+ensemble ended with only two of three legal proposals.  The strict-authority
+two-attempt limit therefore completed a canonical abandon, not a Worker,
+quality, review, Critic, precommit, official, commit, tag, or rating action.
+The complete transaction is
+`379919048a9db4536b9727e02a259671225cab139000cccd9f7349c48a3d24ca`;
+its finalized handoff receipts and both Worker/StrictAuthority terminal fences
+were independently revalidated.
+
+The subsequent stop exposed a separate P1 in transport bookkeeping.  The SDK
+may place `ToolUseBlock` in a `UserMessage`, while the outer Orchestrator had
+registered pending tool IDs only from `AssistantMessage`.  The actual
+`run_master` owner handler canonically abandoned v39, but its provider result
+was unavailable to `_detect_actionable_stage_handoff`; the latter correctly
+refused `None` with `completed_abandon_handoff_material_invalid` and stopped
+the loop.  That fail-closed stop is correct.  It means the visible Web process
+and idle daemon are not authority to start a successor; `/api/control/health`
+must remain stopped until this source repair is merged and the governed
+restart sequence completes.
+
+The pending repair has three coupled boundaries: UserMessage ToolUse receives
+the identical unique-id/owner binding as AssistantMessage ToolUse; a guarded
+mutating owner may retain one process-local terminal record only after
+`validate_completed_abandon_handoff` succeeds against its pre-call checkpoint.
+If the handler runs before the stream exposes the ToolUse, that record is a
+no-id **provisional** value which the consumer cannot read; only one later
+exact normalized-owner/canonical-arguments registration may atomically bind
+the provider id. The outer handoff may then use the bound cache only for that
+same pending ToolUse, revalidating the proof and requiring byte-identical
+agreement if an SDK result later arrives. Cache production and consumption
+share the terminal-owner whitelist; `run_archivist` or a future non-terminal
+owner cannot enter this path. The cache is not a checkpoint, evidence,
+transaction lookup, or restart authority; missing, duplicate, unregistered or
+still-provisional, settled-history, mismatched-owner/arguments/id/proof/
+SDK-result, different attempt, or process restart remains recovery-blocked.
+
+The proposal Scout renderer now prints a closed JSON skeleton and explicitly
+states `falsifier.additionalProperties=false`: `mechanism_target` appears only
+at top level.  The deterministic validator, full-namespace shared-leaf rule,
+single schema-repair budget and canonical-abandon behavior are deliberately
+unchanged.  Focused source evidence currently includes
+`web/tests/test_master_proposal_ensemble.py` plus
+`web/tests/test_orchestrator_timeout_extension.py`; it now includes the
+handler-before-stream, duplicate/settled-history and legacy side-channel
+negative regressions. Final source validation completed under the concurrent
+background evaluation load: full Web `3074 passed, 20 skipped, 1 warning` in
+164.48 seconds; Sever `33 passed`; frontend `22/22` tests, lint and production
+build; `py_compile` and `git diff --check` passed. Independent P1 review also
+rechecked exact attempt/id/owner/arguments binding, old-settled-history
+rejection and UserMessage side-channel behavior. Commit, merge and governed
+runtime recovery remain pending. The runtime has no active checkpoint/candidate,
+v143/v144 remain unpublished, and stability is reset at `0/10`.
+
+The isolated three-Bot research line reached its own v5 terminal state at
+`d53e5e43`: 480/480 direct-H2H cells have valid evidence, but all 12
+Holm-adjusted comparisons are non-significant (`p=1.0`).  It supplies no
+active strength, rating, source byte, asset, certificate, or migration
+authority.  Only future clean-room behavior-level A1/A2/B component proposals
+may be considered after a separate future-main design/ABI/gate review.
+
+The user also requested a system-maintained experience facility. This ledger
+remains explicitly excluded from it. A future implementation may admit only
+immutable, source-bound evidence cards keyed by active artifact identity,
+complete replay/validator/runtime identity, immutable evaluation cycle and
+derivation digest, with explicit applicability/expiry and positive/negative
+regressions. It must publish a frozen consumer snapshot for the next
+generation; free-text model memory, archive material, unbound logs and model
+self-reports are not eligible inputs. The v39 schema failure is already a
+deterministic prompt/validator/test repair, not an experience or strength
+claim. That future facility is not part of this runtime-restart authority.

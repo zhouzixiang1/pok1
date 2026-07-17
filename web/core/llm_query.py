@@ -4689,6 +4689,304 @@ def _new_provider_attempt(transport):
     }
 
 
+_CANONICAL_ABANDON_RESULT_FIELDS = frozenset({
+    "abandoned",
+    "cleared_checkpoint",
+    "workflow_run_id",
+    "abandon_transaction_id",
+    "abandon_receipt_digest",
+    "finalize_receipt_digest",
+    "abandon_checkpoint_identity",
+})
+TERMINAL_ABANDON_RESULT_OWNER_TOOLS = frozenset({
+    "abandon_generation",
+    "prepare_next_gen",
+    "run_crossover",
+    "run_direction_audit",
+    "run_literature_probe",
+    "run_master",
+    "execute_workers",
+    "run_quality_gates",
+    "run_review",
+    "run_critic",
+    "run_precommit_eval",
+    "commit_bot",
+})
+_EVOLUTION_PROVIDER_TOOL_PREFIX = "mcp__evolution__"
+
+
+def _normalized_provider_tool_name(name: object) -> str:
+    return str(name or "").rsplit("__", 1)[-1]
+
+
+def _canonical_provider_tool_args(args: object) -> str | None:
+    if not isinstance(args, dict):
+        return None
+    try:
+        return json.dumps(
+            args,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def register_current_provider_evolution_tool_use(
+    tool_use_id: str,
+    raw_name: object,
+    args: object,
+) -> bool:
+    """Bind one observed Evolution MCP ToolUse to the active SDK attempt.
+
+    An in-process MCP handler receives only name+arguments, not the provider's
+    ToolUse id.  The SDK is allowed to invoke that handler before the outer
+    stream yields its corresponding message, so a handler may have retained a
+    *provisional* same-attempt proof.  It becomes consumable only here, when
+    exactly one un-settled ToolUse has the exact normalized owner and canonical
+    arguments.  A duplicate exact registration makes attribution ambiguous and
+    invalidates the cache.  Other UserMessage content is deliberately not a
+    registration capability.
+    """
+
+    attempt = _LLM_PROVIDER_ATTEMPT.get()
+    name = str(raw_name or "")
+    canonical_args = _canonical_provider_tool_args(args)
+    identifier = str(tool_use_id or "")
+    if (
+        not isinstance(attempt, dict)
+        or not name.startswith(_EVOLUTION_PROVIDER_TOOL_PREFIX)
+        or not identifier
+        or canonical_args is None
+    ):
+        return False
+    entry = {
+        "tool_use_id": identifier,
+        "owner_tool": _normalized_provider_tool_name(name),
+        "arguments": canonical_args,
+        "settled": False,
+    }
+    with _PROVIDER_CLEANUP_LOCK:
+        registrations = attempt.setdefault("registered_evolution_tool_uses", {})
+        if not isinstance(registrations, dict) or identifier in registrations:
+            return False
+        registrations[identifier] = entry
+        provisional = attempt.get("provisional_verified_terminal_abandon")
+        bound = attempt.get("verified_terminal_abandon")
+        if isinstance(provisional, dict):
+            matches = [
+                value
+                for value in registrations.values()
+                if isinstance(value, dict)
+                and value.get("settled") is not True
+                and value.get("owner_tool") == provisional.get("owner_tool")
+                and value.get("arguments") == provisional.get("arguments")
+            ]
+            if len(matches) == 1:
+                candidate_id = str(matches[0].get("tool_use_id") or "")
+                if candidate_id:
+                    record = deepcopy(provisional)
+                    record["tool_use_id"] = candidate_id
+                    attempt.pop("provisional_verified_terminal_abandon", None)
+                    attempt["verified_terminal_abandon"] = record
+                else:
+                    attempt.pop("provisional_verified_terminal_abandon", None)
+                    attempt["verified_terminal_abandon_conflict"] = True
+            elif len(matches) > 1:
+                attempt.pop("provisional_verified_terminal_abandon", None)
+                attempt["verified_terminal_abandon_conflict"] = True
+        elif isinstance(bound, dict):
+            # The handler did not receive a ToolUse id.  A later duplicate
+            # exact owner+arguments registration would make the existing bind
+            # speculative, so retain neither candidate.
+            if (
+                bound.get("owner_tool") == entry["owner_tool"]
+                and bound.get("arguments") == entry["arguments"]
+                and str(bound.get("tool_use_id") or "") != identifier
+            ):
+                attempt.pop("verified_terminal_abandon", None)
+                attempt["verified_terminal_abandon_conflict"] = True
+    return True
+
+
+def settle_current_provider_evolution_tool_use(tool_use_id: str) -> None:
+    """Mark one stream-observed Evolution ToolUse settled after its SDK result."""
+
+    attempt = _LLM_PROVIDER_ATTEMPT.get()
+    identifier = str(tool_use_id or "")
+    if not isinstance(attempt, dict) or not identifier:
+        return
+    with _PROVIDER_CLEANUP_LOCK:
+        registrations = attempt.get("registered_evolution_tool_uses")
+        entry = registrations.get(identifier) if isinstance(registrations, dict) else None
+        if isinstance(entry, dict):
+            entry["settled"] = True
+
+
+def _single_canonical_abandon_result(value):
+    """Extract exactly one terminal-abandon payload from a tool return shape.
+
+    The SDK can carry a local MCP return as a JSON string, a text content
+    block, or an already-decoded nested mapping.  This helper deliberately
+    accepts only one complete payload: duplicated flattened/nested terminal
+    objects remain ambiguous and are not cacheable.
+    """
+
+    matches = []
+
+    def collect(candidate):
+        if isinstance(candidate, dict):
+            if _CANONICAL_ABANDON_RESULT_FIELDS.issubset(candidate):
+                matches.append(candidate)
+            for key in ("abandon_result", "result", "content", "text"):
+                if key in candidate:
+                    collect(candidate.get(key))
+            return
+        if isinstance(candidate, list):
+            for item in candidate:
+                collect(item)
+            return
+        if isinstance(candidate, str):
+            try:
+                collect(json.loads(candidate))
+            except (TypeError, json.JSONDecodeError):
+                pass
+
+    collect(value)
+    if len(matches) != 1:
+        return None
+    try:
+        return deepcopy(matches[0])
+    except Exception:
+        return None
+
+
+def cache_verified_provider_terminal_abandon(
+    owner_tool: str,
+    baseline_checkpoint: dict,
+    raw_result,
+    args: object,
+):
+    """Cache one already-reproved terminal result for the active SDK attempt.
+
+    This is a narrow transport-loss bridge, not durable recovery authority.
+    A guarded mutating MCP handler calls it only after returning its actual
+    result.  The cache exists solely in the active provider-attempt mapping.
+    If the SDK handler runs before the stream exposes its ToolUse, this
+    function retains an unconsumable provisional record; only a later unique
+    exact registration can attach the provider ToolUse id.  A process restart,
+    a different attempt, a missing registration, or a second candidate all
+    remain fail-closed in the Orchestrator.
+    """
+
+    attempt = _LLM_PROVIDER_ATTEMPT.get()
+    owner = str(owner_tool or "")
+    canonical_args = _canonical_provider_tool_args(args)
+    if (
+        not isinstance(attempt, dict)
+        or not isinstance(baseline_checkpoint, dict)
+        or owner not in TERMINAL_ABANDON_RESULT_OWNER_TOOLS
+        or canonical_args is None
+    ):
+        return None
+    terminal_result = _single_canonical_abandon_result(raw_result)
+    if terminal_result is None:
+        return None
+    try:
+        from tool_bot_management import validate_completed_abandon_handoff
+
+        terminal_proof = validate_completed_abandon_handoff(
+            deepcopy(baseline_checkpoint),
+            terminal_result,
+        )
+        record = {
+            "owner_tool": owner,
+            "arguments": canonical_args,
+            "terminal_result": terminal_result,
+            "terminal_proof": deepcopy(terminal_proof),
+        }
+        # Canonical JSON makes later SDK/cache equality checks independent of
+        # dictionary insertion order and prevents a caller from mutating our
+        # retained object after this function returns.
+        json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return None
+    with _PROVIDER_CLEANUP_LOCK:
+        if (
+            attempt.get("verified_terminal_abandon") is not None
+            or attempt.get("provisional_verified_terminal_abandon") is not None
+            or attempt.get("verified_terminal_abandon_conflict") is True
+        ):
+            # Two terminal results in one provider attempt are ambiguous even
+            # when their fields happen to look similar.  Do not retain either.
+            attempt.pop("verified_terminal_abandon", None)
+            attempt.pop("provisional_verified_terminal_abandon", None)
+            attempt["verified_terminal_abandon_conflict"] = True
+            return None
+        registrations = attempt.get("registered_evolution_tool_uses")
+        all_matches = (
+            [
+                value
+                for value in registrations.values()
+                if isinstance(value, dict)
+                and value.get("owner_tool") == owner
+                and value.get("arguments") == canonical_args
+            ]
+            if isinstance(registrations, dict)
+            else []
+        )
+        candidates = [
+            value for value in all_matches if value.get("settled") is not True
+        ]
+        # Same-name or same-argument concurrent calls cannot be inferred from
+        # the handler alone.  Preserve normal SDK delivery, but never cache
+        # ambiguity.  Zero matches is the documented handler-before-stream
+        # race: keep an unconsumable record until one exact registration binds.
+        # A settled historical exact registration is also ambiguous: the
+        # handler lacks a provider id, so it must not speculate that a later
+        # same-name/same-argument ToolUse is its owner.
+        if len(candidates) > 1 or len(all_matches) != len(candidates):
+            attempt["verified_terminal_abandon_conflict"] = True
+            return None
+        if len(candidates) == 1:
+            tool_use_id = str(candidates[0].get("tool_use_id") or "")
+            if not tool_use_id:
+                attempt["verified_terminal_abandon_conflict"] = True
+                return None
+            record["tool_use_id"] = tool_use_id
+            attempt["verified_terminal_abandon"] = record
+            return deepcopy(record)
+        attempt["provisional_verified_terminal_abandon"] = record
+    # A provisional record intentionally has no ToolUse id and is neither a
+    # successful cache return nor visible through
+    # ``current_provider_verified_terminal_abandon``.  It can become authority
+    # only through a later unique exact registration above.
+    return None
+
+
+def current_provider_verified_terminal_abandon():
+    """Return the active attempt's one in-memory verified terminal record.
+
+    Callers must still bind it to a pending SDK ToolUse and revalidate it
+    against their own immutable pre-call checkpoint snapshot.
+    """
+
+    attempt = _LLM_PROVIDER_ATTEMPT.get()
+    if not isinstance(attempt, dict):
+        return None
+    with _PROVIDER_CLEANUP_LOCK:
+        if attempt.get("verified_terminal_abandon_conflict") is True:
+            return None
+        record = attempt.get("verified_terminal_abandon")
+        if not isinstance(record, dict):
+            return None
+        try:
+            return deepcopy(record)
+        except Exception:
+            return None
+
+
 def _capture_owned_provider_process(attempt):
     if not isinstance(attempt, dict):
         return None

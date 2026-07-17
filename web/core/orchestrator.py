@@ -42,6 +42,7 @@ from claude_agent_sdk import (
 
 from bot_namespace import bot_relpath
 from tools import evolution_server, inject_ui
+from llm_query import TERMINAL_ABANDON_RESULT_OWNER_TOOLS
 from llm_failure import is_llm_infra_error, is_shutdown_cancel_error as _is_shutdown_cancel_error
 from llm_availability import (
     LLMAvailabilityBlocked,
@@ -166,20 +167,7 @@ def _remembered_canonical_abandon_proof(gen_ctx):
 # scheduler/daemon failures from real bot regressions.
 _INFRA_BLOCKER_REASONS_SET = frozenset(INFRA_BLOCKER_REASONS)
 
-_TERMINAL_ABANDON_RESULT_OWNER_TOOLS = frozenset({
-    "abandon_generation",
-    "prepare_next_gen",
-    "run_crossover",
-    "run_direction_audit",
-    "run_literature_probe",
-    "run_master",
-    "execute_workers",
-    "run_quality_gates",
-    "run_review",
-    "run_critic",
-    "run_precommit_eval",
-    "commit_bot",
-})
+_TERMINAL_ABANDON_RESULT_OWNER_TOOLS = TERMINAL_ABANDON_RESULT_OWNER_TOOLS
 
 
 def _normalized_provider_tool_name(name) -> str:
@@ -2434,8 +2422,233 @@ async def _run_one_cycle(
             _tool_call_counts = {}
             _pending_tool_uses = {}
             _seen_tool_use_ids = set()
+            _ignored_user_tool_use_ids = set()
             _terminal_tool_result_for_batch = None
             availability_trace = LLMAvailabilityTrace()
+
+            def _canonical_json_bytes(value):
+                try:
+                    return json.dumps(
+                        value,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                except (TypeError, ValueError):
+                    return None
+
+            def _current_verified_terminal_cache():
+                """Read the active attempt's guarded-handler-only cache."""
+
+                try:
+                    from llm_query import current_provider_verified_terminal_abandon
+
+                    return current_provider_verified_terminal_abandon()
+                except Exception:
+                    return None
+
+            def _validated_cached_terminal_for_owner(owner, tool_use_id):
+                """Reprove one cache entry before it can replace an SDK result."""
+
+                record = _current_verified_terminal_cache()
+                if record is None:
+                    return None
+                if not isinstance(record, dict):
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_shape_invalid"
+                    )
+                if owner not in _TERMINAL_ABANDON_RESULT_OWNER_TOOLS:
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_owner_not_terminal:"
+                        f"{owner or 'unknown'}"
+                    )
+                if str(record.get("owner_tool") or "") != str(owner or ""):
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_owner_mismatch:"
+                        f"{owner or 'unknown'}"
+                    )
+                if str(record.get("tool_use_id") or "") != str(tool_use_id or ""):
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_tool_use_id_mismatch"
+                    )
+                if not isinstance(record.get("arguments"), str):
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_arguments_invalid"
+                    )
+                cached_result = _completed_abandon_tool_result(
+                    record.get("terminal_result")
+                )
+                if cached_result is None or not isinstance(
+                    baseline_checkpoint, dict
+                ):
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_material_invalid"
+                    )
+                try:
+                    from tool_bot_management import validate_completed_abandon_handoff
+
+                    proof = validate_completed_abandon_handoff(
+                        baseline_checkpoint,
+                        cached_result,
+                    )
+                except Exception as exc:
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_proof_invalid:"
+                        f"{str(exc)[:160]}"
+                    )
+                if _canonical_json_bytes(proof) != _canonical_json_bytes(
+                    record.get("terminal_proof")
+                ):
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_proof_mismatch"
+                    )
+                return cached_result
+
+            def _settle_missing_terminal_result_from_cache():
+                """Settle exactly one pending ToolUse only from a proved cache."""
+
+                if not _pending_tool_uses:
+                    return None
+                record = _current_verified_terminal_cache()
+                if record is None:
+                    return None
+                if len(_pending_tool_uses) != 1:
+                    _raise_stream_result_binding_blocked(
+                        "provider_terminal_cache_pending_tool_uses_ambiguous"
+                    )
+                tool_use_id, pending_name = next(iter(_pending_tool_uses.items()))
+                owner = _normalized_provider_tool_name(pending_name)
+                cached_result = _validated_cached_terminal_for_owner(
+                    owner,
+                    tool_use_id,
+                )
+                if cached_result is None:
+                    return None
+                _pending_tool_uses.pop(tool_use_id, None)
+                return cached_result
+
+            def _register_pending_tool_use(block, *, source):
+                """Bind either SDK message placement of ToolUseBlock identically."""
+
+                nonlocal _terminal_tool_result_for_batch
+                tool_use_id = str(getattr(block, "id", "") or "")
+                if not tool_use_id or tool_use_id in _seen_tool_use_ids:
+                    _raise_stream_result_binding_blocked(
+                        "assistant_tool_use_id_missing_or_duplicate"
+                    )
+                _seen_tool_use_ids.add(tool_use_id)
+                raw_name = str(getattr(block, "name", "") or "")
+                if not raw_name.startswith("mcp__evolution__"):
+                    if source == "user":
+                        # SDK may surface non-MCP/User-side tool annotations in
+                        # a UserMessage.  They have no Evolution dispatch
+                        # authority and must not create a pending gate lease.
+                        _ignored_user_tool_use_ids.add(tool_use_id)
+                        return False
+                    _raise_stream_result_binding_blocked(
+                        "assistant_tool_use_not_evolution_mcp"
+                    )
+                if not _pending_tool_uses:
+                    _terminal_tool_result_for_batch = None
+                _pending_tool_uses[tool_use_id] = raw_name
+                try:
+                    from llm_query import register_current_provider_evolution_tool_use
+
+                    register_current_provider_evolution_tool_use(
+                        tool_use_id,
+                        raw_name,
+                        getattr(block, "input", None),
+                    )
+                except Exception:
+                    # Local binding remains sufficient for the normal SDK
+                    # result path.  Only the transport-loss fallback depends
+                    # on the stricter attempt-scoped registration.
+                    pass
+                if ui:
+                    ui.log_history(
+                        f"[Orchestrator] Calling tool: {raw_name}", "info"
+                    )
+                    ui.log_io(
+                        f"\n[tool: {raw_name}]", "tool", "Orchestrator"
+                    )
+                    ui.emit_tool_call(raw_name, block.input, "Orchestrator")
+                else:
+                    log.info("Calling tool: %s", raw_name)
+                args_str = json.dumps(
+                    block.input, ensure_ascii=False, indent=2
+                )[:2000]
+                lf.write(f"\n[tool: {raw_name}]\n[args] {args_str}\n")
+                tool_name = (
+                    raw_name.split("__")[-1]
+                    if "__" in raw_name
+                    else raw_name
+                )
+                _tool_call_counts[tool_name] = (
+                    _tool_call_counts.get(tool_name, 0) + 1
+                )
+                threshold = (
+                    _REDUNDANT_NOISY_THRESHOLD
+                    if tool_name in _NOISY_TOOLS
+                    else _REDUNDANT_STRICT_THRESHOLD
+                )
+                if _tool_call_counts[tool_name] != threshold:
+                    return
+                allowed_repeat = _classify_allowed_repeated_pipeline_tool(
+                    tool_name, block.input
+                )
+                if allowed_repeat:
+                    log.info(
+                        "Tool '%s' called %d times on a corrective route: %s",
+                        tool_name,
+                        _tool_call_counts[tool_name],
+                        allowed_repeat.get("reason"),
+                    )
+                    try:
+                        log_system_event(
+                            "pipeline.repeated_tool_call_allowed",
+                            "info",
+                            f"Orchestrator called {tool_name} "
+                            f"{_tool_call_counts[tool_name]}x on corrective route "
+                            f"{allowed_repeat.get('reason')}",
+                            {
+                                "tool": tool_name,
+                                "count": _tool_call_counts[tool_name],
+                                "threshold": threshold,
+                                **allowed_repeat,
+                            },
+                        )
+                    except Exception:
+                        pass
+                    return
+                log.warning(
+                    "Tool '%s' called %d times (possible redundant call)",
+                    tool_name,
+                    _tool_call_counts[tool_name],
+                )
+                try:
+                    log_system_event(
+                        "pipeline.redundant_tool_call",
+                        "warn",
+                        f"Orchestrator called {tool_name} "
+                        f"{_tool_call_counts[tool_name]}x in one cycle",
+                        {
+                            "tool": tool_name,
+                            "count": _tool_call_counts[tool_name],
+                            "threshold": threshold,
+                        },
+                    )
+                except Exception:
+                    pass
+
+                return True
+
+            def _settle_registered_evolution_tool_use(tool_use_id):
+                try:
+                    from llm_query import settle_current_provider_evolution_tool_use
+
+                    settle_current_provider_evolution_tool_use(tool_use_id)
+                except Exception:
+                    pass
 
             def _raise_actionable_handoff_if_ready(terminal_tool_result=None):
                 handoff = _detect_actionable_stage_handoff(
@@ -2536,6 +2749,19 @@ async def _run_one_cycle(
                         "terminal_abandon_result_owner_mismatch:"
                         f"{owner or 'unknown'}"
                     )
+                if terminal is not None:
+                    cached_result = _validated_cached_terminal_for_owner(
+                        owner,
+                        tool_use_id,
+                    )
+                    if (
+                        cached_result is not None
+                        and _canonical_json_bytes(cached_result)
+                        != _canonical_json_bytes(terminal)
+                    ):
+                        _raise_stream_result_binding_blocked(
+                            "provider_terminal_cache_sdk_result_mismatch"
+                        )
                 return terminal
 
             if getattr(opts, "resume", None) is not None:
@@ -2601,10 +2827,21 @@ async def _run_one_cycle(
                             _last_message_at = time.time()
                     except StopAsyncIteration:
                         if _pending_tool_uses:
-                            _raise_stream_result_binding_blocked(
-                                "provider_stream_ended_with_pending_tool_results"
+                            cached_terminal = (
+                                _settle_missing_terminal_result_from_cache()
                             )
-                        _raise_actionable_handoff_if_ready()
+                            if _pending_tool_uses:
+                                _raise_stream_result_binding_blocked(
+                                    "provider_stream_ended_with_pending_tool_results"
+                                )
+                            _terminal_tool_result_for_batch = (
+                                cached_terminal
+                                or _terminal_tool_result_for_batch
+                            )
+                        _raise_actionable_handoff_if_ready(
+                            terminal_tool_result=_terminal_tool_result_for_batch
+                        )
+                        _terminal_tool_result_for_batch = None
                         break
                     except asyncio.TimeoutError as e:
                         if not _first_activity_seen:
@@ -2648,55 +2885,10 @@ async def _run_one_cycle(
                                         ui.log_history("[Orchestrator] Mid-stream API error detected", "warning")
                             elif isinstance(block, ToolUseBlock):
                                 assistant_has_tool_use = True
-                                if not _pending_tool_uses:
-                                    _terminal_tool_result_for_batch = None
-                                tool_use_id = str(block.id or "")
-                                if (
-                                    not tool_use_id
-                                    or tool_use_id in _seen_tool_use_ids
-                                ):
-                                    _raise_stream_result_binding_blocked(
-                                        "assistant_tool_use_id_missing_or_duplicate"
-                                    )
-                                _seen_tool_use_ids.add(tool_use_id)
-                                _pending_tool_uses[tool_use_id] = block.name
-                                if ui:
-                                    ui.log_history(f"[Orchestrator] Calling tool: {block.name}", "info")
-                                    ui.log_io(f"\n[tool: {block.name}]", "tool", "Orchestrator")
-                                    ui.emit_tool_call(block.name, block.input, "Orchestrator")
-                                else:
-                                    log.info("Calling tool: %s", block.name)
-                                args_str = json.dumps(block.input, ensure_ascii=False, indent=2)[:2000]
-                                lf.write(f"\n[tool: {block.name}]\n[args] {args_str}\n")
-                                tool_name = block.name.split('__')[-1] if '__' in block.name else block.name
-                                _tool_call_counts[tool_name] = _tool_call_counts.get(tool_name, 0) + 1
-                                _thresh = _REDUNDANT_NOISY_THRESHOLD if tool_name in _NOISY_TOOLS else _REDUNDANT_STRICT_THRESHOLD
-                                if _tool_call_counts[tool_name] == _thresh:
-                                    _allowed_repeat = _classify_allowed_repeated_pipeline_tool(tool_name, block.input)
-                                    if _allowed_repeat:
-                                        log.info("Tool '%s' called %d times on a corrective route: %s",
-                                                 tool_name, _tool_call_counts[tool_name],
-                                                 _allowed_repeat.get("reason"))
-                                        try:
-                                            log_system_event("pipeline.repeated_tool_call_allowed", "info",
-                                                f"Orchestrator called {tool_name} {_tool_call_counts[tool_name]}x "
-                                                f"on corrective route {_allowed_repeat.get('reason')}",
-                                                {"tool": tool_name, "count": _tool_call_counts[tool_name],
-                                                 "threshold": _thresh, **_allowed_repeat})
-                                        except Exception:
-                                            pass
-                                        continue
-                                    # Warn exactly once when the threshold is first hit (not on every
-                                    # subsequent call). Noisy tools get a high threshold; pipeline
-                                    # tools stay strict. See _NOISY_TOOLS docstring.
-                                    log.warning("Tool '%s' called %d times (possible redundant call)", tool_name, _tool_call_counts[tool_name])
-                                    try:
-                                        log_system_event("pipeline.redundant_tool_call", "warn",
-                                            f"Orchestrator called {tool_name} {_tool_call_counts[tool_name]}x in one cycle",
-                                            {"tool": tool_name, "count": _tool_call_counts[tool_name],
-                                             "threshold": _thresh})
-                                    except Exception:
-                                        pass
+                                _register_pending_tool_use(
+                                    block,
+                                    source="assistant",
+                                )
                             elif isinstance(block, ThinkingBlock):
                                 thinking = block.thinking or "[thinking...]"
                                 if ui:
@@ -2734,6 +2926,9 @@ async def _run_one_cycle(
                                     or _terminal_tool_result_for_batch
                                 )
                                 _pending_tool_uses.pop(tool_use_id, None)
+                                _settle_registered_evolution_tool_use(
+                                    tool_use_id
+                                )
                                 # A nested role may have converted the typed
                                 # exception into its legacy infra payload. The
                                 # shared run_claude_query boundary persists the
@@ -2769,6 +2964,18 @@ async def _run_one_cycle(
                         terminal_tool_result = None
                         if isinstance(message.content, list):
                             for block in message.content:
+                                # The SDK parser permits ToolUseBlock in a
+                                # UserMessage.  Treat it identically to the
+                                # AssistantMessage placement; otherwise the
+                                # real handler can mutate/abandon a generation
+                                # while the parent has no pending id to bind its
+                                # eventual result to.
+                                if isinstance(block, ToolUseBlock):
+                                    _register_pending_tool_use(
+                                        block,
+                                        source="user",
+                                    )
+                                    continue
                                 if not isinstance(block, ToolResultBlock):
                                     continue
                                 saw_tool_result = True
@@ -2792,6 +2999,9 @@ async def _run_one_cycle(
                                 tool_use_id = str(
                                     getattr(block, "tool_use_id", "") or ""
                                 )
+                                if tool_use_id in _ignored_user_tool_use_ids:
+                                    _ignored_user_tool_use_ids.discard(tool_use_id)
+                                    continue
                                 if tool_use_id not in _pending_tool_uses:
                                     _raise_stream_result_binding_blocked(
                                         "user_tool_result_id_unknown_or_duplicate"
@@ -2808,6 +3018,9 @@ async def _run_one_cycle(
                                     or _terminal_tool_result_for_batch
                                 )
                                 _pending_tool_uses.pop(tool_use_id, None)
+                                _settle_registered_evolution_tool_use(
+                                    tool_use_id
+                                )
                         tool_use_result = getattr(
                             message,
                             "tool_use_result",
@@ -2839,7 +3052,16 @@ async def _run_one_cycle(
                                 fallback_tool_use_id = next(
                                     iter(_pending_tool_uses)
                                 )
-                            if fallback_tool_use_id in _pending_tool_uses:
+                            if fallback_tool_use_id in _ignored_user_tool_use_ids:
+                                # Keep the legacy ``tool_use_result`` shortcut
+                                # consistent with ToolResultBlock handling:
+                                # a non-Evolution annotation carried by a
+                                # UserMessage has no gate lease and cannot be
+                                # promoted into a missing-result failure.
+                                _ignored_user_tool_use_ids.discard(
+                                    fallback_tool_use_id
+                                )
+                            elif fallback_tool_use_id in _pending_tool_uses:
                                 terminal_tool_result = (
                                     _terminal_result_for_bound_tool(
                                         fallback_tool_use_id,
@@ -2854,6 +3076,9 @@ async def _run_one_cycle(
                                 _pending_tool_uses.pop(
                                     fallback_tool_use_id,
                                     None,
+                                )
+                                _settle_registered_evolution_tool_use(
+                                    fallback_tool_use_id
                                 )
                             elif not saw_tool_result:
                                 _raise_stream_result_binding_blocked(
@@ -2906,10 +3131,23 @@ async def _run_one_cycle(
                         _check_generation_cost_policy(ui)
                         if not message.is_error:
                             if _pending_tool_uses:
-                                _raise_stream_result_binding_blocked(
-                                    "provider_result_with_pending_tool_results"
+                                cached_terminal = (
+                                    _settle_missing_terminal_result_from_cache()
                                 )
-                            _raise_actionable_handoff_if_ready()
+                                if _pending_tool_uses:
+                                    _raise_stream_result_binding_blocked(
+                                        "provider_result_with_pending_tool_results"
+                                    )
+                                _terminal_tool_result_for_batch = (
+                                    cached_terminal
+                                    or _terminal_tool_result_for_batch
+                                )
+                            _raise_actionable_handoff_if_ready(
+                                terminal_tool_result=(
+                                    _terminal_tool_result_for_batch
+                                ),
+                            )
+                            _terminal_tool_result_for_batch = None
                             ok = True
                             if message.session_id:
                                 _save_orchestrator_session(message.session_id)
