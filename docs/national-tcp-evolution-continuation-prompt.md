@@ -735,3 +735,60 @@ the live 13-row ledger plus receipt digest
 `af23c438202943b8c95b1a405a9c1f7f8ddb4a56e3802d4399b2e8156f2fd2f3`.
 Keep all poker processes stopped until the repair reaches `origin/main`, the
 runtime fast-forwards again, and the real reconciliation CLI dry-run succeeds.
+
+## Latest superseding handoff: workflow-v31 and evaluation contract 33
+
+Treat all earlier “next run is workflow-v31” wording as historical. The
+reconciliation import repair is already in `origin/main=1ceeffa9`, the runtime
+was stopped/synchronized, and the actual reconciliation CLI dry-run passed.
+The subsequent fresh v143 `generation:143:workflow-v31` completed three Scouts,
+two critics and two final-Master provider calls, then canonically abandoned with
+receipt `f6724ecaf1a92e159fca0e89483a9142b6aa07c2e5668f7bc6adb32b350e9551`.
+No checkpoint/candidate/Bot/tag/certificate/rating remains; stability is
+`0/10`.
+
+The failure was a cross-layer compiler contract, not proof that the configured
+model or proposed poker mechanism is weak. Proposal `b6b193a1c026966e` was
+terminal-response-specific but froze generic falsifier
+`incremental_opponent_model`; the honest final task declared primary
+`terminal_response`, whose typed check is `terminal_response_adaptation`.
+Separately, an 8,181-character selected block left 3,817 characters of the old
+12,000 cap before the later runtime-contract block, while provider prompts were
+4,705/4,417 characters and the retry error exposed no arithmetic.
+
+Evaluation contract 33 fixes this with proposal schema v3, packet schema v5 and
+strict-authority v3. Scout admission binds falsifier→primary→exact mechanism
+target→checks, requires that exact target in all executable proposal fields and
+rejects foreign closed targets/aliases before voting. Old v2/v4 results cannot
+replay. Final Master receives per-proposal Unicode character budgets, including
+a bounded 2,048-character runtime-contract reserve; malformed/empty provider
+prompts, wrong primary/check and overflow enter deterministic fail-closed retry.
+Caps and retry count are unchanged. The reviewed source repair commit is
+`a01f545e0d4eab9d60b6b6e67542a433b562e7b5`. Focused evidence is
+`332 passed, 1 warning`; complete Web is `2934 passed, 20 skipped, 1 warning`
+in 163.90 seconds, sever is
+`33 passed`, the frontend production build passes, and touched-file
+compile/diff checks pass.
+
+Durable workflow-v31 evidence is under
+`web/core/results/v143/logs/strict_invocations/`; final invocations
+`103d05604a4a4141a34be170ce02b6c3` and
+`8b6cf73bc64a46249e0bc3fa8426eb3b` bind canonical packet SHA-256
+`b2c5d92c6ab0af3cda8efc8be426359dae6170e4760d3a7d820e3dd0d1da155e`.
+Abandon transaction `71e9b5131c355a774903337aa56a12ab72491b2752e8558c0a9b87b03749b5b8`
+binds the receipt above. These are diagnosis evidence only, not a replayable
+plan, candidate, rating or strength result.
+
+Resume order:
+
+1. verify the repair commit is an ancestor of `origin/main` and the transient
+   source branch is deleted;
+2. stop the view-only Web process and fast-forward `.evolution_pok` only through
+   `origin/main`;
+3. rerun recovery,
+   epoch, reconciliation, blueprint/control and official doctor diagnostics;
+4. because evaluation contract changed from 32 to 33, never replay workflow-v31;
+   checkpoint is absent, so freshly prepare workflow-v32+;
+5. continue v143 publication, v144 normal full-v5, immutable rating cycle and
+   resettable ten-generation observation. Any further repair/restart resets
+   observation to `0/10`.

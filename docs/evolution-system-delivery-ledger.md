@@ -2270,3 +2270,103 @@ then validates the completed receipt digest
 Publication and runtime restart remain withheld until this repair is merged,
 the autonomous checkout is fast-forwarded again, and the actual CLI dry-run
 passes from its native script entry point.
+
+## 2026-07-17 — workflow-v31 typed-falsifier and Worker-budget contract repair
+
+After `origin/main` and the autonomous checkout reached `1ceeffa9`, the native
+reconciliation CLI succeeded and a single controlled v143 run allocated fresh
+`generation:143:workflow-v31`. All three proposal Scouts and both anonymous
+critics completed. Both final-Master attempts returned complete JSON, but the
+strict projection correctly rejected them and the workflow was canonically
+abandoned at `direction_audited`; checkpoint and candidate are absent. The
+abandon receipt is
+`f6724ecaf1a92e159fca0e89483a9142b6aa07c2e5668f7bc6adb32b350e9551`.
+There is still no Bot, tag, certificate, rating row or stability credit.
+
+The live evidence exposed two producer/consumer P1s rather than a weak-model or
+poker-mechanism failure:
+
+1. The selected proposal `b6b193a1c026966e` changed
+   `opponent.terminal_response.fold_to_raise`, but its Scout used the generic
+   `incremental_opponent_model` falsifier because the prompt presented that
+   architecture floor without the closed primary mapping. Both final plans
+   honestly declared `state_learning.profile_dimensions=["terminal_response"]`.
+   The consumer derives `terminal_response_adaptation` for that primary, so the
+   frozen generic falsifier could never equal the typed primary check. Changing
+   the plan to `action_profile` would only relabel the mechanism and is
+   forbidden semantic repair.
+2. The selected immutable Worker block occupied 8,181 Unicode characters. The
+   unchanged 12,000-character schema therefore left 3,817 characters before
+   the separate system-owned runtime-contract block. Try 1 and Try 2 emitted
+   4,705 and 4,417 characters. The old error exposed only
+   `selected_proposal_worker_prompt_has_no_binding_budget:1`; because `budget`
+   is also a real decision-deadline term, Try 2 reasonably added a 250 ms time
+   budget paragraph and made the character problem worse. The producer was not
+   given the observed length, reserved length, maximum or overflow.
+
+The evidence is durable and independently addressable. Scout invocation IDs
+are `a013d40bc26b49978cc10048e74f2405`,
+`4a5ddaf64d7740c4baaa259232ea5384` and
+`840b6d87fe794ff3ba9294932a649369`; critic IDs are
+`0479888b344a49bab37c3d40d1142e8f` and
+`1421203722a942e89ebf328b0a030002`; final-Master IDs are
+`103d05604a4a4141a34be170ce02b6c3` and
+`8b6cf73bc64a46249e0bc3fa8426eb3b`. Their files live under
+`web/core/results/v143/logs/strict_invocations/<invocation_id>/`. In that order,
+the seven I/O log SHA-256 values are `2409ce51c418ef39`,
+`7c9f3dfc41b1de1d`, `1fe6155e8fde3e4a`, `87f450a15f0af4fe`,
+`f5867f5818dae951`, `eb4a26660fdf53d6` and `a224e57de36a351d`
+(prefixes shown; the invocation evidence inside the packet retains each full
+digest). Both final logs carry the same canonical packet: schema
+`master-proposal-packet-v4`, 39,823 Unicode characters, SHA-256
+`b2c5d92c6ab0af3cda8efc8be426359dae6170e4760d3a7d820e3dd0d1da155e`,
+context digest `97453f9c8a83b7435cc6cf40d8d7fb69147a472d9d77e46a400120986a2d94ae`
+and source digest
+`a9e5ca8b8a48763d8486565e46b24722ff9b98d6831d1380a1ec851868b0654d`.
+The canonical abandon transaction is
+`web/core/results/policy_epoch_abandon_transactions/71e9b5131c355a774903337aa56a12ab72491b2752e8558c0a9b87b03749b5b8/`;
+its `claim.json` and `receipt.json` file hashes are respectively
+`1b2bda22d7e6d42411099c10e594b3509cc18980a51031f5d47ec5e907e3f868`
+and `d0b68fb81663c6fc364006517ee7aedbece5e8fe0f970b494858b36ca58ed0e6`.
+
+Evaluation contract 33 repairs the full chain without raising the 12,000 cap,
+truncating provider text, rewriting a typed primary or increasing retries:
+
+- `MASTER_PROPOSAL_FALSIFIER_PRIMARY` and
+  `STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS` form one closed typed mapping
+  from falsifier to primary, exact intervention target and required checks.
+  Proposal schema v3 carries top-level `mechanism_target` plus a six-field
+  falsifier; packet schema v5 and strict-authority v3 make old v2/v4 role
+  results non-replayable after the contract change.
+- Scout admission and packet replay require the exact target literal in
+  `structural_change`, `expected_diff` and `falsifier.intervention`, and reject
+  any other closed target or alias. A correctly labelled action-profile object
+  whose executable prose varies terminal response therefore fails before the
+  critics/final Master. The terminal-response mechanism must use
+  `terminal_response_adaptation`; `incremental_opponent_model` remains an
+  additional generation floor rather than a substitute.
+- Final Master receives the exact per-proposal selected-block reserve, a bounded
+  2,048-character system-owned runtime-contract reserve, the unchanged cap and
+  the safe `max_provider_chars`, all measured as Python Unicode code points.
+  The closed union of runtime, reference-card and architecture-focus terms is
+  regression-proved to fit that reserve.
+- Exact-boundary input passes; one extra character returns canonical JSON with
+  provider, selected-block, system-block, separator, combined, cap, maximum and
+  overflow counts. Primary mismatches similarly return expected primary,
+  required checks and observed bound tasks. Non-string, empty, whitespace-only
+  or sub-20-character provider prompts are rejected before any system text can
+  make them schema-valid. Retry remains fail closed.
+
+Independent read-only Codex Worker MCP task
+`623e5166-f98b-4db5-814a-d22cd62d981e` corroborated both hidden contracts and
+made no changes. The current focused Master/proposal/plan/evidence/evaluation
+aggregate is `332 passed, 1 warning`; the final complete Web rerun is
+`2934 passed, 20 skipped, 1 warning` in 163.90 seconds. Sever is `33 passed`;
+the frontend production build, touched production/tests compile and
+`git diff --check` pass. The reviewed source repair commit is
+`a01f545e0d4eab9d60b6b6e67542a433b562e7b5`, based on clean `1ceeffa9`. The autonomous checkout
+remains at `1ceeffa9` with only the existing Arena owner lock; view-only Web PID
+`1803477` may remain available until the stopped-sync boundary, but no
+Orchestrator/rating daemon, checkpoint, candidate or active Bot exists.
+Stability is `0/10`. Merge, stopped-runtime sync and fresh workflow-v32+ are
+unclaimed here.
