@@ -171,6 +171,16 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
         "delayed_probe",
     ),
 }
+# Some public-state leaves exist under more than one independently governed
+# opponent-model namespace.  A proposal that names only the leaf is ambiguous
+# even when it also mentions one target root elsewhere: the executable claim
+# must use one of these complete owner-qualified literals.
+STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS = {
+    "fold_to_raise": (
+        "opponent.rates.fold_to_raise",
+        "opponent.terminal_response.fold_to_raise",
+    ),
+}
 STATE_LEARNING_PRIMARY_PROMPT_TERMS = {
     "sample_counted_candidate_batch": ("sample_count", "deadline"),
     "action_profile": ("action_profile", "context", "opponent"),

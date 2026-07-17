@@ -578,6 +578,11 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "opponent.terminal_response.fold_to_raise belongs to the "
         "terminal-response target"
     ) in prompt
+    assert (
+        "A bare fold_to_raise, fold-to-raise, fold to raise, or foldtoraise is invalid"
+        in prompt
+    )
+    assert "Never append identifier characters to an owner-qualified target literal" in prompt
 
     normal = agent_master._render_master_proposal_provider_prompt({
         "planning_context": "Frozen snapshot path is evidence data only.",
@@ -2019,6 +2024,402 @@ def test_shared_fold_to_raise_leaf_is_bound_by_full_opponent_namespace(tmp_path)
             evidence_mode="fresh_strict_control_no_strength",
         )
     )
+
+
+@pytest.mark.parametrize(
+    ("primary", "test_name", "target"),
+    (
+        ("action_profile", "incremental_opponent_model", "opponent.rates"),
+        (
+            "terminal_response",
+            "terminal_response_adaptation",
+            "opponent.terminal_response",
+        ),
+    ),
+)
+@pytest.mark.parametrize(
+    "leaf_spelling",
+    ("fold_to_raise", "fold-to-raise", "fold to raise", "foldtoraise"),
+)
+def test_shared_fold_to_raise_bare_leaf_fails_scout_and_packet_replay(
+    tmp_path,
+    primary,
+    test_name,
+    target,
+    leaf_spelling,
+):
+    import agent_master
+    from tests.test_master_success_return import _valid_proposal_packet
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    qualified_leaf = f"{target}.fold_to_raise"
+    payload.update({
+        "mechanism_target": target,
+        "structural_change": (
+            f"Route only {qualified_leaf} through the bounded live decision consumer."
+        ),
+        "expected_diff": (
+            f"The paired typed intent changes only when {qualified_leaf} changes."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": test_name,
+        "state_learning_primary": primary,
+        "intervention_target": target,
+        "control": f"Hold {target} at its bounded prior for the paired state.",
+        "intervention": (
+            f"Change only {qualified_leaf} in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under that owner-qualified intervention."
+        ),
+    }
+    accepted = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    )
+    assert accepted is not None
+
+    bare_fields = {
+        "structural_change": (
+            f"Route {target} through the bounded consumer while varying bare "
+            f"{leaf_spelling} only."
+        ),
+        "expected_diff": (
+            f"The {target} decision responds to bare {leaf_spelling} only."
+        ),
+        "intervention": (
+            f"Change {target} via bare {leaf_spelling} only in the paired state."
+        ),
+    }
+    payload["structural_change"] = bare_fields["structural_change"]
+    payload["expected_diff"] = bare_fields["expected_diff"]
+    payload["falsifier"]["intervention"] = bare_fields["intervention"]
+    expected_error = (
+        "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise"
+    )
+    assert expected_error in agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    raw = json.dumps(payload)
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+    assert expected_error in agent_master._master_proposal_projection_hints(
+        raw,
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+    )
+
+    packet_proposal = json.loads(json.dumps(accepted))
+    packet_proposal["structural_change"] = bare_fields["structural_change"]
+    packet_proposal["expected_diff"] = bare_fields["expected_diff"]
+    packet_proposal["falsifier"]["intervention"] = bare_fields["intervention"]
+    packet = _valid_proposal_packet(
+        agent_master,
+        packet_proposal,
+        tmp_path / "packet-logs",
+        evidence_mode="fresh_strict_control_no_strength",
+        source_dir=source_dir,
+    )
+    parsed, errors = agent_master._parse_valid_proposal_packet(json.dumps(packet))
+    assert parsed is None
+    assert any(error.startswith(expected_error + ":") for error in errors)
+
+
+@pytest.mark.parametrize(
+    (
+        "primary",
+        "test_name",
+        "target",
+        "qualified_leaf",
+        "foreign_claim",
+        "expects_qualified_continuation",
+    ),
+    (
+        (
+            "action_profile",
+            "incremental_opponent_model",
+            "opponent.rates",
+            "opponent.rates.fold_to_raise",
+            "opponent.rates.fold_to_raiseterminalresponse",
+            True,
+        ),
+        (
+            "terminal_response",
+            "terminal_response_adaptation",
+            "opponent.terminal_response",
+            "opponent.terminal_response.fold_to_raise",
+            "opponent.terminal_response.fold_to_raiseaction_profile",
+            True,
+        ),
+        (
+            "action_profile",
+            "incremental_opponent_model",
+            "opponent.rates",
+            "opponent.rates.fold_to_raise",
+            "opponent.terminal_responsebackup",
+            False,
+        ),
+        (
+            "terminal_response",
+            "terminal_response_adaptation",
+            "opponent.terminal_response",
+            "opponent.terminal_response.fold_to_raise",
+            "opponent.ratesbackup",
+            False,
+        ),
+    ),
+)
+def test_mechanism_alias_identifier_concatenation_fails_scout_and_packet(
+    tmp_path,
+    primary,
+    test_name,
+    target,
+    qualified_leaf,
+    foreign_claim,
+    expects_qualified_continuation,
+):
+    import agent_master
+    from tests.test_master_success_return import _valid_proposal_packet
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload.update({
+        "mechanism_target": target,
+        "structural_change": (
+            f"Route only {qualified_leaf} through the bounded live decision consumer."
+        ),
+        "expected_diff": (
+            f"The paired typed intent changes only when {qualified_leaf} changes."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": test_name,
+        "state_learning_primary": primary,
+        "intervention_target": target,
+        "control": f"Hold {target} at its bounded prior for the paired state.",
+        "intervention": (
+            f"Change only {qualified_leaf} in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under that owner-qualified intervention."
+        ),
+    }
+    accepted = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    )
+    assert accepted is not None
+
+    invalid_text = (
+        f"Route {target} through the bounded consumer while varying "
+        f"{foreign_claim} only."
+    )
+    payload["structural_change"] = invalid_text
+    payload["expected_diff"] = invalid_text
+    payload["falsifier"]["intervention"] = invalid_text
+    direct_errors = agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    foreign_error = "proposal_mechanism_foreign_targets_in_executable_claim:"
+    if expects_qualified_continuation:
+        assert any(
+            error.startswith(
+                "proposal_mechanism_qualified_target_identifier_continuation:"
+            )
+            for error in direct_errors
+        )
+        expected_packet_error = (
+            "proposal_mechanism_qualified_target_identifier_continuation:"
+        )
+    else:
+        assert any(error.startswith(foreign_error) for error in direct_errors)
+        expected_packet_error = foreign_error
+    raw = json.dumps(payload)
+    assert agent_master._validated_master_proposal(
+        raw,
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+
+    packet_proposal = json.loads(json.dumps(accepted))
+    packet_proposal["structural_change"] = invalid_text
+    packet_proposal["expected_diff"] = invalid_text
+    packet_proposal["falsifier"]["intervention"] = invalid_text
+    packet = _valid_proposal_packet(
+        agent_master,
+        packet_proposal,
+        tmp_path / "packet-logs",
+        evidence_mode="fresh_strict_control_no_strength",
+        source_dir=source_dir,
+    )
+    parsed, errors = agent_master._parse_valid_proposal_packet(json.dumps(packet))
+    assert parsed is None
+    assert any(expected_packet_error in error for error in errors)
+
+
+@pytest.mark.parametrize(
+    ("primary", "test_name", "target"),
+    (
+        ("action_profile", "incremental_opponent_model", "opponent.rates"),
+        (
+            "terminal_response",
+            "terminal_response_adaptation",
+            "opponent.terminal_response",
+        ),
+    ),
+)
+def test_mechanism_target_requires_an_exact_identifier_literal(
+    tmp_path,
+    primary,
+    test_name,
+    target,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    lookalike = target + "_backup"
+    payload.update({
+        "mechanism_target": target,
+        "structural_change": f"Route only {lookalike} through the live consumer.",
+        "expected_diff": f"The paired decision changes only through {lookalike}.",
+    })
+    payload["falsifier"] = {
+        "test_name": test_name,
+        "state_learning_primary": primary,
+        "intervention_target": target,
+        "control": f"Hold {target} fixed at the paired-state prior.",
+        "intervention": f"Change only {lookalike} in the paired decision context.",
+        "expected_observation": "The paired typed intent changes only under intervention.",
+    }
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    assert (
+        "proposal_mechanism_target_missing_from_executable_fields:"
+        + target
+        + ":expected_diff,intervention,structural_change"
+    ) in errors
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "qualified_statistic",
+    (
+        "opponent.terminal_response.fold_to_raise rate",
+        "opponent.terminal_response.river_overcall rate",
+        "opponent.terminal_response interactionprofile statistic",
+        "opponent.terminal_response donkey statistic",
+    ),
+)
+def test_terminal_response_qualified_rate_is_not_a_foreign_action_alias(
+    tmp_path,
+    qualified_statistic,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": (
+            f"Route only the {qualified_statistic} through the bounded consumer."
+        ),
+        "expected_diff": (
+            f"The paired typed intent responds only to the {qualified_statistic}."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold terminal-response confidence at its paired-state prior.",
+        "intervention": (
+            f"Change only the {qualified_statistic} in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under the terminal-response intervention."
+        ),
+    }
+    assert agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    ) == ()
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is not None
 
 
 def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_path):

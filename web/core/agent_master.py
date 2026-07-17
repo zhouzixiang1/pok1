@@ -19,6 +19,7 @@ from output_schema import (
     MASTER_PROPOSAL_FALSIFIER_PRIMARY,
     MASTER_PROPOSAL_FALSIFIER_TESTS,
     STATE_LEARNING_INTERVENTION_TARGET_ALIASES,
+    STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS,
     STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS,
     STATE_LEARNING_PRIMARY_CHECKS,
     STATE_LEARNING_PRIMARY_PROMPT_TERMS,
@@ -145,7 +146,10 @@ def _render_master_proposal_provider_prompt(inputs):
         "the required exact opponent.rates literal. Shared leaf names are "
         "namespace-sensitive: opponent.rates.fold_to_raise is an action-profile "
         "field, while opponent.terminal_response.fold_to_raise is a distinct "
-        "terminal-response target; always include the full owning namespace. The "
+        "terminal-response target; always include the full owning namespace. A "
+        "bare fold_to_raise, fold-to-raise, fold to raise, or foldtoraise is "
+        "invalid even when the target root appears elsewhere in the field. Never "
+        "append identifier characters to an owner-qualified target literal. The "
         "required_proposal_terms become final Worker-prompt obligations. A "
         "plan_required_floor_checks entry is an additional generation-wide quality "
         "floor; it is NOT the proposal falsifier unless this mapping says it is "
@@ -233,7 +237,10 @@ def _render_master_proposal_provider_prompt(inputs):
             "12. Qualify shared leaf names with their owner. In particular, "
             "opponent.rates.fold_to_raise belongs to the action-profile target, "
             "whereas opponent.terminal_response.fold_to_raise belongs to the "
-            "terminal-response target.\n"
+            "terminal-response target. Bare fold_to_raise, fold-to-raise, fold to "
+            "raise, and foldtoraise are invalid even if the target root appears "
+            "elsewhere. Never append identifier characters to an owner-qualified "
+            "target literal.\n"
             + "Keep the same independent lens, reread the verified index, "
             "and emit a complete object without commentary."
         )
@@ -595,10 +602,24 @@ def _proposal_mechanism_target_errors(
         "expected_diff": proposal.get("expected_diff"),
         "intervention": falsifier.get("intervention"),
     }
+
+    def literal_appears(value: object, literal: str) -> bool:
+        if not isinstance(value, str):
+            return False
+        # The required dot literal may prefix a qualified child, but must not
+        # pass as a substring of a different identifier (for example
+        # ``opponent.rates_backup``).
+        pattern = (
+            r"(?<![a-z0-9_])"
+            + re.escape(literal)
+            + r"(?![a-z0-9_])"
+        )
+        return re.search(pattern, value, flags=re.IGNORECASE) is not None
+
     missing_target_fields = sorted(
         field
         for field, value in executable_fields.items()
-        if not isinstance(value, str) or expected.lower() not in value.lower()
+        if not literal_appears(value, expected)
     )
     if missing_target_fields:
         errors.append(
@@ -612,21 +633,95 @@ def _proposal_mechanism_target_errors(
         for value in executable_fields.values()
         if isinstance(value, str)
     )
-    normalized_mechanism_text = re.sub(
-        r"[^a-z0-9]+", "_", mechanism_text
-    ).strip("_")
-    bounded_mechanism_text = f"_{normalized_mechanism_text}_"
-    compact_mechanism_text = re.sub(r"[^a-z0-9]+", "", mechanism_text)
+
+    def mask_literals(text: str, literals: tuple[str, ...] | list[str]) -> str:
+        masked = text
+        for literal in sorted(set(literals), key=len, reverse=True):
+            pattern = (
+                r"(?<![a-z0-9_])"
+                + re.escape(literal.lower())
+                + r"(?![a-z0-9_])"
+            )
+            masked = re.sub(pattern, " ", masked, flags=re.IGNORECASE)
+        return masked
+
+    ambiguous_shared_leaves: list[str] = []
+    for leaf, owners in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.items():
+        unowned_text = mask_literals(mechanism_text, list(owners))
+        normalized_unowned = re.sub(
+            r"[^a-z0-9]+", "_", unowned_text
+        ).strip("_")
+        bounded_unowned = f"_{normalized_unowned}_"
+        compact_leaf = re.sub(r"[^a-z0-9]+", "", leaf.lower())
+        if (
+            f"_{leaf.lower()}_" in bounded_unowned
+            or re.search(
+                r"(?<![a-z0-9])"
+                + re.escape(compact_leaf)
+                + r"(?![a-z0-9])",
+                unowned_text,
+            )
+        ):
+            ambiguous_shared_leaves.append(leaf)
+    if ambiguous_shared_leaves:
+        errors.append(
+            "proposal_mechanism_shared_leaf_requires_full_namespace:"
+            + ",".join(sorted(ambiguous_shared_leaves))
+        )
+
+    # Mask complete qualified fields owned by the expected axis before looking
+    # for foreign aliases. Otherwise a legitimate phrase such as
+    # ``opponent.terminal_response.fold_to_raise rate`` contains the token
+    # sequence ``raise rate`` and can be misclassified as the action-profile
+    # alias ``raise_rate``.
+    expected_qualified_aliases = tuple(
+        alias
+        for alias in STATE_LEARNING_INTERVENTION_TARGET_ALIASES[expected]
+        if alias.startswith(expected + ".")
+    )
+    qualified_identifier_continuations = sorted(
+        f"{alias}:{field}"
+        for field, value in executable_fields.items()
+        if isinstance(value, str)
+        for alias in expected_qualified_aliases
+        if re.search(
+            r"(?<![a-z0-9_])"
+            + re.escape(alias)
+            + r"(?=[a-z0-9_])",
+            value,
+            flags=re.IGNORECASE,
+        )
+    )
+    if qualified_identifier_continuations:
+        errors.append(
+            "proposal_mechanism_qualified_target_identifier_continuation:"
+            + ",".join(qualified_identifier_continuations)
+        )
+    foreign_scan_text = mask_literals(mechanism_text, expected_qualified_aliases)
 
     def alias_appears(alias: str) -> bool:
-        normalized_alias = re.sub(r"[^a-z0-9]+", "_", alias.lower()).strip("_")
-        compact_alias = re.sub(r"[^a-z0-9]+", "", alias.lower())
-        if f"_{normalized_alias}_" in bounded_mechanism_text:
+        parts = re.findall(r"[a-z0-9]+", alias.lower())
+        if not parts:
+            return False
+        alias_pattern = r"[^a-z0-9]*".join(map(re.escape, parts))
+        if re.search(
+            r"(?<![a-z0-9])"
+            + alias_pattern
+            + r"(?![a-z0-9])",
+            foreign_scan_text,
+        ):
             return True
-        # Compact matching closes deliberate separator elision such as
-        # ``terminalresponse`` without making short words such as ``donk``
-        # match unrelated identifiers like ``donkey``.
-        return len(compact_alias) >= 8 and compact_alias in compact_mechanism_text
+        # Long closed aliases must also fail closed when identifier characters
+        # are appended (``terminalresponsebackup``). Keep a leading boundary,
+        # and keep short lexical terms such as ``donk`` boundary-only, so words
+        # such as ``interactionprofile`` and ``donkey`` remain legal.
+        compact_alias = "".join(parts)
+        if len(compact_alias) < 8:
+            return False
+        return re.search(
+            r"(?<![a-z0-9])" + alias_pattern,
+            foreign_scan_text,
+        ) is not None
     # ``deadline`` is a universal safety boundary and can legitimately appear
     # in every bounded strategy proposal.  All other closed mechanism axes have
     # narrow aliases so a proposal cannot carry the correct typed label while
