@@ -30,6 +30,93 @@ from output_schema import (
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
 
+def _proposal_schema_repair_guidance(
+    projection_hints: tuple[str, ...],
+    *,
+    require_snapshot_evidence: bool,
+) -> str:
+    """Render bounded, error-directed Scout repair instructions.
+
+    The final output contract already contains the complete schema.  Repeating
+    a generic twelve-item tutorial on every retry increased the prompt while
+    hiding the deterministic reason that actually failed.  Keep at most four
+    canonical corrections, ordered by semantic risk.
+    """
+
+    hints = tuple(str(item) for item in projection_hints)
+    guidance: list[str] = []
+
+    def add(text: str) -> None:
+        if text not in guidance:
+            guidance.append(text)
+
+    if any("proposal_mechanism_foreign_targets" in item for item in hints):
+        add(
+            "A foreign closed target is forbidden even in a no/not/unchanged/"
+            "without disclaimer. Invalid: 'leave opponent.showdown_range "
+            "unchanged'. State instead that all other decision_context fields "
+            "are byte-identical."
+        )
+    if any("proposal_mechanism_shared_leaf" in item for item in hints):
+        add(
+            "Never emit bare fold_to_raise/fold-to-raise/fold to raise/"
+            "foldtoraise. Use one complete owner-qualified field such as "
+            "opponent.rates.fold_to_raise and keep every other field "
+            "byte-identical."
+        )
+    if any(
+        "proposal_mechanism_target_missing" in item
+        or "proposal_mechanism_target_mismatch" in item
+        or "proposal_falsifier_intervention_target_mismatch" in item
+        for item in hints
+    ):
+        add(
+            "Copy the selected row's exact dot target into structural_change, "
+            "expected_diff, and falsifier.intervention; bracket notation is "
+            "only supplementary and never replaces that literal."
+        )
+    if any(
+        "proposal_mechanism_qualified_target_identifier_continuation" in item
+        for item in hints
+    ):
+        add(
+            "Do not append identifier characters to any owner-qualified target "
+            "or field literal."
+        )
+    if any("proposal_reachable_chain" in item for item in hints):
+        add(
+            "Copy one complete two-symbol PREFERRED CURRENT ENTRY ANCHOR; put "
+            "both symbols in source_symbols with matching source: evidence_refs."
+        )
+    if any(
+        "proposal_evidence" in item or "proposal_source_symbol" in item
+        for item in hints
+    ):
+        add(
+            "Use only exact file.py:symbol entries from the verified index and "
+            "one matching bare source:file.py:symbol evidence_ref per symbol."
+        )
+    if any("proposal_snapshot" in item for item in hints):
+        add(
+            "Copy one exact validated snapshot JSON pointer."
+            if require_snapshot_evidence
+            else "This mode has no strength snapshot; emit no snapshot reference."
+        )
+    if any("proposal_measurement" in item for item in hints):
+        add("Copy the mode-specific measurement contract exactly.")
+    if any("proposal_falsifier" in item for item in hints):
+        add(
+            "Copy test_name, state_learning_primary, mechanism_target, and "
+            "intervention_target from one mapping row without relabelling it."
+        )
+    if not guidance:
+        add(
+            "Re-emit one complete object and repair only the canonical projection "
+            "errors below; preserve the assigned lens and evidence scope."
+        )
+    return "\n".join(f"- {item}" for item in guidance[:4])
+
+
 def _render_master_proposal_provider_prompt(inputs):
     from llm_query import LLMRenderedMaterial
 
@@ -142,11 +229,20 @@ def _render_master_proposal_provider_prompt(inputs):
         "the exact intervention_target literal into structural_change, "
         "expected_diff, and falsifier.intervention; each field must describe only "
         "that target and must not name another closed mechanism target or alias. "
+        "A foreign target remains forbidden when mentioned only to deny, exclude, "
+        "leave unchanged, or disclaim it; say that all other decision_context "
+        "fields are byte-identical instead. "
         "Bracket notation such as context['opponent']['rates'] does not replace "
-        "the required exact opponent.rates literal. Shared leaf names are "
+        "the required exact opponent.rates literal. A complete bracket path may "
+        "supplement the dot literal, but an incomplete or bare leaf is invalid. "
+        "Shared leaf names are "
         "namespace-sensitive: opponent.rates.fold_to_raise is an action-profile "
-        "field, while opponent.terminal_response.fold_to_raise is a distinct "
-        "terminal-response target; always include the full owning namespace. A "
+        "field, opponent.samples.fold_to_raise is its sample-count field, while "
+        "opponent.terminal_response.fold_to_raise is a distinct terminal-response "
+        "target; always include the full owning namespace. The samples path is a "
+        "foreign closed owner for every selectable primary and must not appear in "
+        "an executable field, even as unchanged. It does not replace the required "
+        "opponent.rates target literal. A "
         "bare fold_to_raise, fold-to-raise, fold to raise, or foldtoraise is "
         "invalid even when the target root appears elsewhere in the field. Never "
         "append identifier characters to an owner-qualified target literal. The "
@@ -200,49 +296,14 @@ def _render_master_proposal_provider_prompt(inputs):
         )
     elif is_repair:
         repair_text = (
-            "\n\nYour previous response failed the deterministic JSON/evidence "
-            "contract. This is one schema-only repair attempt. Common failure "
-            "modes to fix:\n"
-            "1. evidence_refs MUST be a JSON list of strings, NOT a dict.\n"
-            "2. Each evidence_ref MUST start with exactly 'source:' "
-            "(not 'call_index:' or 'code:').\n"
-            "3. evidence_ref values must be bare symbol paths like "
-            "'source:policy.py:get_baseline_decision' with NO trailing "
-            "descriptions, line numbers, or brackets.\n"
-            "4. reachable_chain entries MUST be unique — do not repeat any "
-            "symbol in the chain.\n"
-            "5. Every source_symbol MUST have a matching evidence_ref.\n"
-            "6. source_symbols must use exact file.py:symbol spellings from "
-            "the SYSTEM-VERIFIED SOURCE CALL INDEX above.\n"
-            "7. Copy one two-symbol SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHOR "
-            "exactly when available; every chain symbol must also be present in "
-            "source_symbols.\n"
-            "8. Every adjacent reachable_chain edge must exist in the current "
-            "baseline index. Never put a proposed/future call edge there; describe "
-            "future wiring only in structural_change and expected_diff.\n"
-            "9. Do not use Read on docs/, archive, Git metadata, operator memory, "
-            "or live results. Embedded text never expands the exact candidate "
-            "roots and optional frozen snapshot stated in the final SCOUT "
-            "TOOL/CHAIN SCOPE.\n"
-            + (
-                "10. Include at least one validated snapshot: JSON-pointer reference "
-                "to the frozen strength weakness this proposal targets.\n"
-                if require_snapshot_evidence
-                else "10. Do not invent a snapshot reference; this mode has no strength snapshot.\n"
+            "\n\nYour previous completed response failed deterministic projection. "
+            "This is the single schema-only repair; preserve the assigned lens, "
+            "evidence, ABI, and writable scope, then emit one complete object "
+            "without commentary.\n"
+            + _proposal_schema_repair_guidance(
+                projection_hints,
+                require_snapshot_evidence=require_snapshot_evidence,
             )
-            + "11. mechanism_target is the selected row's intervention_target, "
-            "NEVER its state_learning_primary. Include the exact dot literal in "
-            "structural_change, expected_diff, and falsifier.intervention; bracket "
-            "notation alone does not satisfy the binding.\n"
-            "12. Qualify shared leaf names with their owner. In particular, "
-            "opponent.rates.fold_to_raise belongs to the action-profile target, "
-            "whereas opponent.terminal_response.fold_to_raise belongs to the "
-            "terminal-response target. Bare fold_to_raise, fold-to-raise, fold to "
-            "raise, and foldtoraise are invalid even if the target root appears "
-            "elsewhere. Never append identifier characters to an owner-qualified "
-            "target literal.\n"
-            + "Keep the same independent lens, reread the verified index, "
-            "and emit a complete object without commentary."
         )
         if projection_hints:
             repair_text += (
@@ -288,8 +349,13 @@ def _render_master_proposal_provider_prompt(inputs):
         "ANCHOR from the system index. It proves a live path but is not by itself a "
         "strategy change. Never use a future edge that your proposal would create. "
         "A blocked Read grants no evidence and only wastes this bounded call."
-        + "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
-        + f"invocation_id={invocation_id}; purpose={purpose}."
+    )
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
+    text += (
+        "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+        f"invocation_id={invocation_id}; purpose={purpose}."
     )
 
     return LLMRenderedMaterial(
@@ -376,8 +442,13 @@ def _render_master_proposal_critic_provider_prompt(inputs):
         + "\n\nFINAL CRITIC OUTPUT CONTRACT: return only the ballots JSON in the supplied "
         "proposal order; do not rank, repeat, or rewrite proposal claims. "
         "Output the JSON NOW without any preamble, thinking, or file inspection."
-        + "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
-        + f"invocation_id={inputs['invocation_id']}; purpose={purpose}."
+    )
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
+    text += (
+        "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
+        f"invocation_id={inputs['invocation_id']}; purpose={purpose}."
     )
 
     return LLMRenderedMaterial(
@@ -425,6 +496,9 @@ def _render_master_final_provider_prompt(inputs):
     master_context = str(inputs["master_context"])
     proposal_ensemble = str(inputs["proposal_ensemble"])
     text = master_prompt + "\n" + master_context
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
     invocation_id = str(inputs["invocation_id"] or "")
     if invocation_id:
         text += (
@@ -549,7 +623,13 @@ def _proposal_falsifier_primary(test_name: object) -> str | None:
 
 
 def _proposal_falsifier_mapping_text() -> str:
-    """Render the one machine mapping used by scouts, Master, and validators."""
+    """Render the compact machine mapping needed by proposal Scouts.
+
+    Aliases, derived quality checks, and final Worker prompt terms remain
+    system-owned validator/compiler data.  Repeating them in every independent
+    Scout prompt added thousands of characters without creating provider-owned
+    output fields.
+    """
 
     rows = {
         test_name: {
@@ -559,15 +639,6 @@ def _proposal_falsifier_mapping_text() -> str:
             ),
             "intervention_target": (
                 STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
-            ),
-            "diagnostic_target_aliases": list(
-                STATE_LEARNING_INTERVENTION_TARGET_ALIASES[
-                    STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
-                ]
-            ),
-            "required_primary_checks": list(STATE_LEARNING_PRIMARY_CHECKS[primary]),
-            "required_proposal_terms": list(
-                STATE_LEARNING_PRIMARY_PROMPT_TERMS[primary]
             ),
         }
         for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
@@ -637,12 +708,32 @@ def _proposal_mechanism_target_errors(
     def mask_literals(text: str, literals: tuple[str, ...] | list[str]) -> str:
         masked = text
         for literal in sorted(set(literals), key=len, reverse=True):
-            pattern = (
+            patterns = [(
                 r"(?<![a-z0-9_])"
                 + re.escape(literal.lower())
                 + r"(?![a-z0-9_])"
-            )
-            masked = re.sub(pattern, " ", masked, flags=re.IGNORECASE)
+            )]
+            parts = literal.lower().split(".")
+            if len(parts) >= 2 and all(
+                re.fullmatch(r"[a-z0-9_]+", part) for part in parts
+            ):
+                patterns.append(
+                    r"(?<![a-z0-9_])(?:context|decision_context)"
+                    + "".join(
+                        r"\s*\[\s*['\"]"
+                        + re.escape(part)
+                        + r"['\"]\s*\]"
+                        for part in parts
+                    )
+                    + r"(?![a-z0-9_])"
+                )
+            for pattern in patterns:
+                masked = re.sub(
+                    pattern,
+                    " ",
+                    masked,
+                    flags=re.IGNORECASE,
+                )
         return masked
 
     ambiguous_shared_leaves: list[str] = []
@@ -726,12 +817,50 @@ def _proposal_mechanism_target_errors(
     # in every bounded strategy proposal.  All other closed mechanism axes have
     # narrow aliases so a proposal cannot carry the correct typed label while
     # its executable prose actually varies terminal, range, or line state.
-    foreign_targets = sorted({
+    foreign_targets = {
         target
         for target, aliases in STATE_LEARNING_INTERVENTION_TARGET_ALIASES.items()
         if target not in {expected, "deadline"}
         and any(alias_appears(alias) for alias in aliases)
-    })
+    }
+
+    # ``opponent.samples.fold_to_raise`` shares a leaf with two independently
+    # governed decision inputs but is not itself a selectable primary target.
+    # It must still be treated as foreign executable state, including when a
+    # proposal claims it is unchanged.  Otherwise a valid action-profile label
+    # could smuggle an unreviewed sample-count intervention through a shared
+    # leaf that is absent from the selectable-target alias table.
+    def owner_appears(owner: str) -> bool:
+        patterns = [
+            r"(?<![a-z0-9_])"
+            + re.escape(owner.lower())
+            + r"(?![a-z0-9_])"
+        ]
+        parts = owner.lower().split(".")
+        if len(parts) >= 2 and all(
+            re.fullmatch(r"[a-z0-9_]+", part) for part in parts
+        ):
+            patterns.append(
+                r"(?<![a-z0-9_])(?:context|decision_context)"
+                + "".join(
+                    r"\s*\[\s*['\"]"
+                    + re.escape(part)
+                    + r"['\"]\s*\]"
+                    for part in parts
+                )
+                + r"(?![a-z0-9_])"
+            )
+        return any(
+            re.search(pattern, mechanism_text, flags=re.IGNORECASE) is not None
+            for pattern in patterns
+        )
+
+    for owners in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.values():
+        for owner in owners:
+            owner_target = owner.rsplit(".", 1)[0]
+            if owner_target != expected and owner_appears(owner):
+                foreign_targets.add(owner_target)
+    foreign_targets = sorted(foreign_targets)
     if foreign_targets:
         errors.append(
             "proposal_mechanism_foreign_targets_in_executable_claim:"
@@ -1240,7 +1369,15 @@ def _source_symbol_prompt_index(
             if not append_line(line):
                 break
         append_line("FULL VALIDATED EDGE INDEX:")
-    for caller in sorted(graph):
+    # The validator requires the chain's first symbol to be reachable from the
+    # candidate policy ABI.  Publishing unrelated national_bot/precompute/dead
+    # helper edges made them look admissible and consumed ~8k prompt chars.
+    # Every callee below is still a verified syntactic edge; only impossible
+    # starting subgraphs are omitted.
+    for caller in sorted(
+        reachable_depth,
+        key=lambda symbol: (reachable_depth[symbol], symbol),
+    ):
         callees = verified_edges[caller]
         if not callees:
             continue
@@ -3372,7 +3509,10 @@ async def _run_master_proposal_ensemble(
                         if prior_rejection.get("rejection_kind")
                         == "proposal_identity_collision"
                         else "schema"
-                    )
+                    ),
+                    "projection_hints": list(
+                        prior_rejection.get("projection_errors") or ()
+                    ),
                 }
         else:
             from system_strict_bootstrap import new_llm_invocation_id
@@ -3456,7 +3596,7 @@ async def _run_master_proposal_ensemble(
     proposals = []
     proposal_invocations: dict[str, dict] = {}
     seen_proposal_ids: set[str] = set()
-    proposal_exceptions = []
+    proposal_provider_errors: list[tuple[str, BaseException]] = []
     invalid_proposal_specs: list[tuple[str, str, dict]] = []
     accepted_proposal_directions: dict[str, str] = {}
     for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
@@ -3465,10 +3605,7 @@ async def _run_master_proposal_ensemble(
 
             if isinstance(result, StrictAuthorityError):
                 raise result
-            proposal_exceptions.append(result)
-            invalid_proposal_specs.append(
-                (direction, _directive, {"kind": "schema"})
-            )
+            proposal_provider_errors.append((direction, result))
             continue
         output = result.get("output", "") if isinstance(result, dict) else ""
         proposal = _validated_master_proposal(
@@ -3489,18 +3626,17 @@ async def _run_master_proposal_ensemble(
         )
         if proposal is None:
             repair = {"kind": "schema"}
-            if not strict_authority_enabled:
-                repair["projection_hints"] = (
-                    _master_proposal_projection_hints(
-                        output,
-                        source_graph=source_graph,
-                        snapshot_dir=snapshot_dir,
-                        national_policy_only=True,
-                        require_snapshot_evidence=require_snapshot_evidence,
-                        evidence_mode=evidence_mode,
-                    )
-                    or ["proposal_contract_invalid"]
+            repair["projection_hints"] = (
+                _master_proposal_projection_hints(
+                    output,
+                    source_graph=source_graph,
+                    snapshot_dir=snapshot_dir,
+                    national_policy_only=True,
+                    require_snapshot_evidence=require_snapshot_evidence,
+                    evidence_mode=evidence_mode,
                 )
+                or ["proposal_contract_invalid"]
+            )
             invalid_proposal_specs.append(
                 (direction, _directive, repair)
             )
@@ -3540,6 +3676,15 @@ async def _run_master_proposal_ensemble(
         seen_proposal_ids.add(proposal_id)
         accepted_proposal_directions[proposal_id] = direction
         proposals.append(proposal)
+    if proposal_provider_errors:
+        direction, error = proposal_provider_errors[0]
+        raise MasterInfrastructureError(
+            source_v,
+            next_v,
+            context_digest,
+            "proposal_scout:"
+            f"{direction}:{type(error).__name__}:{str(error)[:300]}",
+        ) from error
     if invalid_proposal_specs:
         retry_results = await gather_llm_fail_fast(
             *(
@@ -3547,6 +3692,7 @@ async def _run_master_proposal_ensemble(
                 for direction, directive, repair in invalid_proposal_specs
             ),
         )
+        retry_provider_errors: list[tuple[str, BaseException]] = []
         for (direction, _directive, _repair), result in zip(
             invalid_proposal_specs, retry_results
         ):
@@ -3557,7 +3703,7 @@ async def _run_master_proposal_ensemble(
 
                 if isinstance(result, StrictAuthorityError):
                     raise result
-                proposal_exceptions.append(result)
+                retry_provider_errors.append((direction, result))
                 continue
             output = result.get("output", "") if isinstance(result, dict) else ""
             proposal = _validated_master_proposal(
@@ -3602,15 +3748,16 @@ async def _run_master_proposal_ensemble(
             seen_proposal_ids.add(proposal_id)
             accepted_proposal_directions[proposal_id] = direction
             proposals.append(proposal)
+        if retry_provider_errors:
+            direction, error = retry_provider_errors[0]
+            raise MasterInfrastructureError(
+                source_v,
+                next_v,
+                context_digest,
+                "proposal_scout_repair:"
+                f"{direction}:{type(error).__name__}:{str(error)[:300]}",
+            ) from error
     if len(proposals) != len(_MASTER_PROPOSAL_DIRECTIONS):
-        if len(proposal_exceptions) == len(proposal_results) + len(
-            invalid_proposal_specs
-        ):
-            raise RuntimeError(
-                "all_proposal_scout_calls_failed:"
-                f"{type(proposal_exceptions[0]).__name__}:"
-                f"{str(proposal_exceptions[0])[:240]}"
-            ) from proposal_exceptions[0]
         return _proposal_packet_error(
             "three_distinct_schema_valid_scout_proposals_required:"
             f"got_{len(proposals)}",
@@ -3657,6 +3804,8 @@ async def _run_master_proposal_ensemble(
                         "strict_ballot_replay_role_invalid:"
                         f"{name}:{replay_role}"
                     )
+            elif strict_call.get("schema_retry_required"):
+                schema_retry = True
         else:
             from system_strict_bootstrap import new_llm_invocation_id
 
@@ -3739,6 +3888,7 @@ async def _run_master_proposal_ensemble(
     proposal_ids = {item["proposal_id"] for item in proposals}
     critiques = []
     invalid_critics = []
+    critic_provider_errors: list[tuple[str, BaseException]] = []
     critic_specs = (
         ("falsification", "Counterfactual quality, causal attribution, and evidence support."),
         ("scope", "Reachability, bounded implementation scope, and regression risk."),
@@ -3749,7 +3899,7 @@ async def _run_master_proposal_ensemble(
 
             if isinstance(result, StrictAuthorityError):
                 raise result
-            invalid_critics.append(spec)
+            critic_provider_errors.append((spec[0], result))
             continue
         output = result.get("output", "") if isinstance(result, dict) else ""
         critique_row = _validated_proposal_critique(output, proposal_ids)
@@ -3782,6 +3932,15 @@ async def _run_master_proposal_ensemble(
         else:
             invalid_critics.append(spec)
 
+    if critic_provider_errors:
+        critic_id, error = critic_provider_errors[0]
+        raise MasterInfrastructureError(
+            source_v,
+            next_v,
+            context_digest,
+            "proposal_critic:"
+            f"{critic_id}:{type(error).__name__}:{str(error)[:300]}",
+        ) from error
     if invalid_critics:
         retry_results = await gather_llm_fail_fast(
             *(
@@ -3789,7 +3948,8 @@ async def _run_master_proposal_ensemble(
                 for name, lens in invalid_critics
             ),
         )
-        for result in retry_results:
+        retry_critic_provider_errors: list[tuple[str, BaseException]] = []
+        for (critic_id, _lens), result in zip(invalid_critics, retry_results):
             if isinstance(result, LLMAvailabilityBlocked):
                 raise result
             if isinstance(result, BaseException):
@@ -3797,10 +3957,8 @@ async def _run_master_proposal_ensemble(
 
                 if isinstance(result, StrictAuthorityError):
                     raise result
-                raise RuntimeError(
-                    "proposal_critic_call_failed:"
-                    f"{type(result).__name__}:{str(result)[:240]}"
-                ) from result
+                retry_critic_provider_errors.append((critic_id, result))
+                continue
             output = result.get("output", "") if isinstance(result, dict) else ""
             critique_row = _validated_proposal_critique(output, proposal_ids)
             if critique_row is not None:
@@ -3829,6 +3987,15 @@ async def _run_master_proposal_ensemble(
                     )
                 )
                 critiques.append(critique_row)
+        if retry_critic_provider_errors:
+            critic_id, error = retry_critic_provider_errors[0]
+            raise MasterInfrastructureError(
+                source_v,
+                next_v,
+                context_digest,
+                "proposal_critic_repair:"
+                f"{critic_id}:{type(error).__name__}:{str(error)[:300]}",
+            ) from error
 
     if len(critiques) != 2:
         return _proposal_packet_error(
@@ -4244,20 +4411,15 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             6_000,
         )
     try:
-        from national_capability_contract import national_runtime_feedback_summary
+        from national_capability_contract import (
+            evaluate_national_capabilities,
+            national_runtime_feedback_summary,
+        )
+        runtime_capabilities = evaluate_national_capabilities(
+            get_bot_dir(planning_baseline_v)
+        )
         runtime_feedback = _trim_to_budget(
-            national_runtime_feedback_summary(
-                get_bot_dir(planning_baseline_v),
-                source_label=(
-                    f"{bot_name(planning_baseline_v)} prepared crossover baseline"
-                    if isinstance(prepared_baseline, dict)
-                    else f"{bot_name(planning_baseline_v)} prepared fresh strict control"
-                    if fresh_bootstrap
-                    else f"{bot_name(planning_baseline_v)} prepared singleton child from published {bot_name(source_v)}"
-                    if singleton_no_strength
-                    else bot_name(source_v)
-                ),
-            ),
+            national_runtime_feedback_summary(runtime_capabilities),
             4_000,
         )
     except Exception as exc:
@@ -4554,7 +4716,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         # them as retryable Master infrastructure failures.
         from strict_authority_workflow import StrictAuthorityError
 
-        if isinstance(exc, StrictAuthorityError):
+        if isinstance(exc, (StrictAuthorityError, MasterInfrastructureError)):
             raise
         raise MasterInfrastructureError(
             source_v,

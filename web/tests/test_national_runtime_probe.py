@@ -1,4 +1,5 @@
 import copy
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 import national_runtime_probe
 import national_runtime_probe_worker
 import runtime_architecture_policy
+import national_runtime_authority
 from output_schema import RuntimeContract
 from strategy_reference_pack import (
     reference_pack_ids,
@@ -187,6 +189,11 @@ def _worker_spec() -> dict:
 def test_scenario_bank_is_raw_delimiter_free_official_wire():
     for scenario in DECISION_SCENARIOS:
         assert "messages" in scenario
+        # The official TCP server obtains both team names before it begins the
+        # first hand.  The runtime uses that real protocol event to launch its
+        # isolated policy worker, so omitting it would turn a connection-start
+        # cost into a fabricated first-decision deadline failure.
+        assert scenario["messages"][0] == "name"
         assert "history" not in scenario
         assert "my_cards" not in scenario
         for message in scenario["messages"]:
@@ -214,6 +221,14 @@ def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
     )
     assert all(row["decision"]["kind"] in {"pass", "fold", "allin", "raise"} for row in rows)
     assert all("\n" not in row["wire"] and "\r" not in row["wire"] for row in rows)
+    assert all(
+        row["name_handshake"] == {
+            "wire": ("TypedProbeB",),
+            "worker_started": True,
+            "worker_generation": 1,
+        }
+        for row in rows
+    )
     assert result["line_reachability"]["dimensions"]["donk"]["ok"] is True
     assert result["line_reachability"]["dimensions"]["delayed_probe"]["ok"] is True
     assert result["line_reachability"]["dimensions"]["donk"][
@@ -246,6 +261,10 @@ def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
         for action in delayed_row["context"]["history"]["actions"]
     )
     memory = result["persistent_memory"]
+    assert memory["name_handshake"] == {
+        "wire": ("TypedProbeB",),
+        "worker_generation": 1,
+    }
     assert memory["terminal_response"]["fold"] == 1
     assert memory["terminal_response"]["call"] == 1
     assert memory["showdown_range"]["samples"] == 1
@@ -307,6 +326,79 @@ def test_worker_rejects_non_typed_refinement_output(tmp_path):
     assert result["failure_class"] == "candidate_contract"
     assert any(
         "candidate_policy_refinement:typed_intent_not_closed_mapping" in issue
+        for issue in result["candidate_issues"]
+    )
+
+
+def test_worker_rejects_baseline_evaluator_work_above_system_cap(tmp_path):
+    policy = (
+        "from precompute import evaluate_seven as rank\n\n"
+        + TYPED_POLICY.replace(
+            "def get_baseline_decision(context):\n",
+            "def get_baseline_decision(context):\n"
+            "    for _index in range(801):\n"
+            "        rank((0, 1, 2, 3, 4, 5, 6))\n",
+            1,
+        )
+    )
+    bot = _write_typed_bot(tmp_path / "bot", policy)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["failure_class"] == "candidate_contract"
+    assert any(
+        "baseline_evaluator_call_cap_exceeded:801>800" in issue
+        for issue in result["candidate_issues"]
+    )
+
+
+def test_worker_counts_direct_alternate_system_evaluator_at_baseline(tmp_path):
+    from national_capability_contract import BASELINE_EVALUATOR_CALL_CAP
+
+    assert (
+        national_runtime_probe_worker.BASELINE_EVALUATOR_CALL_CAP
+        == BASELINE_EVALUATOR_CALL_CAP
+        == 800
+    )
+    policy = (
+        "import precompute\n\n"
+        + TYPED_POLICY.replace(
+            "def get_baseline_decision(context):\n",
+            "def get_baseline_decision(context):\n"
+            "    for _index in range(801):\n"
+            "        precompute.best_hand_rank((0, 1, 2, 3, 4, 5, 6))\n",
+            1,
+        )
+    )
+    bot = _write_typed_bot(tmp_path / "bot", policy)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["failure_class"] == "candidate_contract"
+    assert any(
+        "baseline_evaluator_call_cap_exceeded:801>800" in issue
+        for issue in result["candidate_issues"]
+    )
+
+
+def test_worker_rejects_deadline_profile_specific_late_baseline(tmp_path):
+    policy = (
+        "import time\n\n"
+        + TYPED_POLICY.replace(
+            "def get_baseline_decision(context):\n",
+            "def get_baseline_decision(context):\n"
+            "    if context['deadline']['hard_budget_ms'] >= 2000:\n"
+            "        until = time.monotonic() + 0.225\n"
+            "        while time.monotonic() < until:\n"
+            "            pass\n",
+            1,
+        )
+    )
+    bot = _write_typed_bot(tmp_path / "bot", policy)
+    result = national_runtime_probe_worker.run(bot, _worker_spec())
+
+    assert result["failure_class"] == "candidate_contract"
+    assert any(
+        "budget_short:river_facing_large_bet:policy_baseline_deadline_missed"
+        in issue
         for issue in result["candidate_issues"]
     )
 
@@ -418,6 +510,26 @@ def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
     assert states["incremental_opponent_model"] is True
     assert states["terminal_response_adaptation"] is True
     assert states["showdown_range_adaptation"] is True
+    entrypoints = result["policy_entrypoints"]
+    assert entrypoints["ok"] is True
+    assert all(
+        row["baseline_work"]["evaluator_calls"]
+        <= row["baseline_work"]["evaluator_call_cap"]
+        for row in entrypoints["rows"]
+        if row["baseline_work"]["instrumented"]
+    )
+    transcript_rows = result["official_transcript_decisions"]
+    assert all(
+        isinstance(row["runtime"]["socket_fallback_ready_ms"], float)
+        and row["runtime"]["socket_fallback_ready_ms"] >= 0.0
+        for row in transcript_rows
+    )
+    assert all(
+        isinstance(row["runtime"]["baseline_published_ms"], float)
+        and row["runtime"]["baseline_published_ms"]
+        <= row["runtime"]["baseline_target_ms"] == 200.0
+        for row in transcript_rows
+    )
 
 
 def _fake_worker_result(spec: dict) -> dict:
@@ -434,6 +546,7 @@ def _fake_worker_result(spec: dict) -> dict:
         "probe_identity_digest": (
             national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST
         ),
+        **national_runtime_probe.runtime_probe_native_template_evidence(),
         "policy_abi": "decision_context_v1_typed_intent_v1",
         "spec_digest": spec["spec_digest"],
         "code_fingerprint": spec["code_fingerprint"],
@@ -454,6 +567,136 @@ def _fake_worker_result(spec: dict) -> dict:
             "long": {},
         },
     }
+
+
+def test_runtime_probe_identity_binds_exact_native_template_bytes(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    evidence = national_runtime_probe.runtime_probe_native_template_evidence()
+
+    assert {
+        "native_runtime_template_identity",
+        "native_runtime_template_digest",
+    }.issubset(spec)
+    assert {
+        key: spec[key]
+        for key in evidence
+    } == evidence
+    assert national_runtime_probe.runtime_probe_native_template_evidence_matches(
+        spec
+    )
+    assert (
+        national_runtime_probe.RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY["sha256"]
+        == hashlib.sha256(NATIVE_BOT_TEMPLATE.encode("utf-8")).hexdigest()
+    )
+    assert (
+        national_runtime_probe.RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY["artifacts"]
+        ["precompute.py"]["sha256"]
+        == hashlib.sha256(NATIVE_PRECOMPUTE_TEMPLATE.encode("utf-8")).hexdigest()
+    )
+
+    changed_identity = copy.deepcopy(
+        national_runtime_probe.RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY
+    )
+    changed_identity["artifacts"]["precompute.py"]["sha256"] = "0" * 64
+    changed_identity["artifacts"]["precompute.py"]["size"] += 1
+    changed_identity["combined_digest"] = national_runtime_authority._canonical_digest({
+        "schema_version": changed_identity["schema_version"],
+        "kind": changed_identity["kind"],
+        "artifacts": changed_identity["artifacts"],
+    })
+    changed_digest = national_runtime_probe._canonical_digest(changed_identity)
+    changed_probe_identity = national_runtime_probe._canonical_digest(
+        national_runtime_probe._runtime_probe_identity_payload(
+            changed_identity,
+            changed_digest,
+        )
+    )
+
+    assert changed_probe_identity != national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST
+
+
+def test_runtime_probe_template_hash_change_misses_cache_without_version_bump(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    baseline_spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    baseline_key = national_runtime_probe._cache_key(
+        baseline_spec,
+        timeout_sec=1.0,
+        repeats=2,
+    )
+    baseline_runtime_version = NATIONAL_DECISION_RUNTIME_VERSION
+    changed_identity = copy.deepcopy(
+        national_runtime_probe.RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY
+    )
+    changed_identity["artifacts"]["precompute.py"]["sha256"] = "f" * 64
+    changed_identity["artifacts"]["precompute.py"]["size"] += 1
+    changed_identity["combined_digest"] = national_runtime_authority._canonical_digest({
+        "schema_version": changed_identity["schema_version"],
+        "kind": changed_identity["kind"],
+        "artifacts": changed_identity["artifacts"],
+    })
+    changed_template_digest = national_runtime_probe._canonical_digest(
+        changed_identity
+    )
+    changed_probe_identity = national_runtime_probe._canonical_digest(
+        national_runtime_probe._runtime_probe_identity_payload(
+            changed_identity,
+            changed_template_digest,
+        )
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY",
+        changed_identity,
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "RUNTIME_PROBE_NATIVE_TEMPLATE_DIGEST",
+        changed_template_digest,
+    )
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "RUNTIME_PROBE_IDENTITY_DIGEST",
+        changed_probe_identity,
+    )
+
+    changed_spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    changed_key = national_runtime_probe._cache_key(
+        changed_spec,
+        timeout_sec=1.0,
+        repeats=2,
+    )
+    national_runtime_probe.clear_runtime_probe_cache()
+    national_runtime_probe._cache_put(baseline_key, {"ok": True})
+
+    assert NATIONAL_DECISION_RUNTIME_VERSION == baseline_runtime_version
+    assert changed_spec["code_fingerprint"] == baseline_spec["code_fingerprint"]
+    assert changed_key != baseline_key
+    assert national_runtime_probe._cache_get(changed_key) is None
+
+
+def test_runtime_probe_fails_closed_when_worker_omits_native_template_binding(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+
+    def run_once(_root, spec, _timeout):
+        result = _fake_worker_result(spec)
+        result.pop("native_runtime_template_identity")
+        return result
+
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(national_runtime_probe, "_run_once", run_once)
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert "runtime_probe_native_runtime_template_identity_mismatch" in observed[
+        "issues"
+    ]
 
 
 def test_orchestrator_requires_repeatability_and_caches_by_artifact(
@@ -572,6 +815,7 @@ def _passing_gate_probe() -> dict:
         "scenario_digest": national_runtime_probe.RUNTIME_PROBE_SCENARIO_DIGEST,
         "limits_digest": national_runtime_probe.RUNTIME_PROBE_LIMITS_DIGEST,
         "probe_identity_digest": national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST,
+        **national_runtime_probe.runtime_probe_native_template_evidence(),
         "managed_isolation_digest": "a" * 64,
         "ok": True,
         "failure_class": "none",

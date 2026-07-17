@@ -632,6 +632,7 @@ def _apply_typed_runtime_probe(
         RUNTIME_PROBE_ORCHESTRATOR_VERSION,
         RUNTIME_PROBE_SCENARIO_DIGEST,
         RUNTIME_PROBE_SCHEMA_VERSION,
+        runtime_probe_native_template_evidence,
         run_national_runtime_probe,
     )
 
@@ -655,6 +656,7 @@ def _apply_typed_runtime_probe(
                 "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
                 "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
                 "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+                **runtime_probe_native_template_evidence(),
                 "ok": False,
                 "failure_class": "probe_infra",
                 "issues": [
@@ -669,6 +671,7 @@ def _apply_typed_runtime_probe(
             "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
             "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
             "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+            **runtime_probe_native_template_evidence(),
             "ok": False,
             "failure_class": "candidate_contract",
             "issues": ["typed_runtime_probe_blocked_by_static_contract"],

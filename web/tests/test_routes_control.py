@@ -83,6 +83,68 @@ class TestEvolutionTaskOwnership:
         new_task._done = True
         state.stop_running()
 
+    def test_task_owner_listener_observes_replacement_without_polling(self, tmp_path):
+        """A browser invalidator receives every owner edge synchronously."""
+
+        from server.state import AppState
+
+        class FakeTask:
+            def __init__(self):
+                self._done = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return False
+
+        state = AppState(config_file=tmp_path / "app_config.json")
+        observed = []
+        state.add_task_snapshot_listener(observed.append)
+
+        owner_a = state.begin_runtime_owner()
+        task_a = FakeTask()
+        state.set_task(task_a, owner_id=owner_a)
+        task_a._done = True
+        state.stop_running()
+
+        owner_b = state.begin_runtime_owner()
+        task_b = FakeTask()
+        state.set_task(task_b, owner_id=owner_b)
+
+        assert [snapshot["owner_id"] for snapshot in observed] == [
+            owner_a,
+            owner_a,
+            None,
+            owner_b,
+            owner_b,
+        ]
+        assert [snapshot["lifecycle_revision"] for snapshot in observed] == [
+            1,
+            2,
+            3,
+            4,
+            5,
+        ]
+        assert observed[-1] == {
+            "present": True,
+            "done": False,
+            "cancelled": False,
+            "shutdown_requested": False,
+            "status_eligible": True,
+            "owner_id": owner_b,
+            "lifecycle_revision": 5,
+        }
+
+        # A late finally block from owner A cannot emit a rollback after B is
+        # live; the browser keeps B's lifecycle projection without polling.
+        observed_before_late_cleanup = list(observed)
+        state.clear_task_if(task_a, owner_id=owner_a)
+        assert observed == observed_before_late_cleanup
+
+        task_b._done = True
+        state.stop_running()
+
     def test_start_does_not_cancel_and_overlap_a_stale_live_owner(self):
         from server.state import app_state
 
@@ -120,6 +182,60 @@ class TestEvolutionTaskOwnership:
         state.set_shutdown_mgr(manager, owner_id=owner)
         assert state.task_snapshot()["owner_id"] == owner
         state.abort_runtime_owner(owner)
+
+    def test_direct_shutdown_manager_request_publishes_one_fenced_lifecycle_edge(
+        self,
+        tmp_path,
+    ):
+        """A direct manager stop invalidates current UI status exactly once."""
+
+        from shutdown_manager import ShutdownManager
+        from server.state import AppState
+
+        class FakeTask:
+            def __init__(self):
+                self._done = False
+
+            def done(self):
+                return self._done
+
+            def cancelled(self):
+                return False
+
+        state = AppState(config_file=tmp_path / "app_config.json")
+        observed = []
+        state.add_task_snapshot_listener(observed.append)
+        owner_a = state.begin_runtime_owner()
+        task_a = FakeTask()
+        state.set_task(task_a, owner_id=owner_a)
+        manager_a = ShutdownManager()
+        state.set_shutdown_mgr(manager_a, owner_id=owner_a)
+
+        before = state.task_snapshot()
+        assert before["status_eligible"] is True
+        assert manager_a.request_shutdown() is True
+        after = state.task_snapshot()
+        assert after["owner_id"] == owner_a
+        assert after["shutdown_requested"] is True
+        assert after["status_eligible"] is False
+        assert after["lifecycle_revision"] == before["lifecycle_revision"] + 1
+        assert observed[-1] == after
+        assert manager_a.request_shutdown() is False
+        assert state.task_snapshot()["lifecycle_revision"] == after["lifecycle_revision"]
+
+        # The old callback is identity-fenced: it cannot alter a successor.
+        task_a._done = True
+        state.stop_running()
+        owner_b = state.begin_runtime_owner()
+        task_b = FakeTask()
+        state.set_task(task_b, owner_id=owner_b)
+        manager_b = ShutdownManager()
+        state.set_shutdown_mgr(manager_b, owner_id=owner_b)
+        successor = state.task_snapshot()
+        state._on_shutdown_requested(manager_a, owner_a)
+        assert state.task_snapshot() == successor
+        task_b._done = True
+        state.stop_running()
 
     def test_llm_shutdown_manager_rejects_stale_owner_replace_and_clear(self):
         import llm_query

@@ -266,7 +266,14 @@ published strict-policy opponent.
   reliability contracts, not model choices. Never ask a Worker to bypass or
   tune them. The runtime may grant at most one absolute, checkpoint-bound
   native-match extension; no prompt, tool retry, or repeated heartbeat may
-  renew it. A timing-contract drift requires the tool-directed controlled
+  renew it. A strict baseline/refinement boundary requires a compact prior or
+  fixed deterministic 192/256/96 flop/turn/river sample schedule before
+  publication; full C(45,2) enumeration belongs only to deadline-checked
+  refinement. Static evaluator alias/deck-sweep rejection, the dynamic
+  800-call cap, and the real `name`-handshake worker-start evidence are part of
+  that same quality boundary. Any change to it is an evaluation-contract drift,
+  not an in-place candidate repair.
+  It requires the tool-directed controlled
   abandon/re-prepare path, never manual checkpoint/state cleanup.
 - Precommit regression fails → inject exact blocker and call `execute_workers`.
   Do NOT retry `run_precommit_eval` on unchanged code, and do NOT abandon before

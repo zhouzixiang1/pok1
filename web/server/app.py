@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,6 +27,100 @@ broadcaster = EventBroadcaster(buffer_size=500)
 web_ui = WebUI(broadcaster)
 _set_system_log_ui(web_ui)
 arena_manager = NationalArenaManager()
+
+
+def register_lifespan_runtime_owner(owner_id: str | None) -> None:
+    """Mark one owner as created by this FastAPI lifespan/control plane.
+
+    ``AppState`` is intentionally owner-agnostic so its fencing remains usable
+    in tests and standalone control code.  The web lifespan separately tracks
+    the owners it created, preventing shutdown from taking an unrelated
+    pre-existing in-process owner while still covering a later ``/start``.
+    """
+
+    if isinstance(owner_id, str) and owner_id:
+        app.state.evolution_lifespan_owned_owners.add(owner_id)
+
+
+def unregister_lifespan_runtime_owner(owner_id: str | None) -> None:
+    if isinstance(owner_id, str) and owner_id:
+        app.state.evolution_lifespan_owned_owners.discard(owner_id)
+
+
+def _publish_task_owner(snapshot: dict) -> None:
+    """Invalidate browser-only status text on every owner lifecycle edge.
+
+    This is intentionally a separate SSE event rather than a WebUI ``status``
+    phrase.  It carries no workflow evidence, but lets a connected browser
+    immediately reject a status stamped by a replaced owner instead of waiting
+    for its periodic control-health poll.  ``EventBroadcaster`` drops it until
+    the strict epoch authority is bound, and the route rechecks the snapshot at
+    delivery time before forwarding replay or queued rows.
+    """
+
+    owner_id = snapshot.get("owner_id")
+    owner_valid = isinstance(owner_id, str) and re.fullmatch(
+        r"[0-9a-f]{32}", owner_id
+    ) is not None
+    present = snapshot.get("present") is True
+    done = snapshot.get("done")
+    shutdown_requested = snapshot.get("shutdown_requested")
+    status_eligible = snapshot.get("status_eligible")
+    lifecycle_revision = snapshot.get("lifecycle_revision")
+    revision_valid = (
+        type(lifecycle_revision) is int and lifecycle_revision >= 0
+    )
+    if (
+        present
+        and isinstance(done, bool)
+        and isinstance(shutdown_requested, bool)
+        and isinstance(status_eligible, bool)
+        and owner_valid
+        and revision_valid
+        and (
+            status_eligible is False
+            or (done is False and shutdown_requested is False)
+        )
+    ):
+        payload = {
+            "present": True,
+            "done": done,
+            "shutdown_requested": shutdown_requested,
+            "status_eligible": status_eligible,
+            "owner_id": owner_id,
+            "lifecycle_revision": lifecycle_revision,
+        }
+    elif (
+        not present
+        and done is None
+        and isinstance(shutdown_requested, bool)
+        and status_eligible is False
+        and revision_valid
+    ):
+        payload = {
+            "present": False,
+            "done": None,
+            "shutdown_requested": shutdown_requested,
+            "status_eligible": False,
+            "owner_id": owner_id if owner_valid else None,
+            "lifecycle_revision": lifecycle_revision,
+        }
+    else:
+        # Do not invent a revision-zero task_owner row.  A browser with a
+        # later high-water would correctly reject it and could retain stale
+        # text.  This distinct typed invalidator means "no trustworthy task
+        # authority exists"; clients clear transient status without advancing
+        # their lifecycle counter, so a later legitimate same-revision owner
+        # projection can still recover.
+        broadcaster.broadcast(
+            "task_authority_lost",
+            {"reason": "task_snapshot_projection_invalid"},
+        )
+        return
+    broadcaster.broadcast("task_owner", payload)
+
+
+app_state.add_task_snapshot_listener(_publish_task_owner)
 
 from logging_config import configure_logging
 
@@ -99,11 +194,16 @@ async def lifespan(app: FastAPI):
         )
 
     # On shutdown: stop orchestrator + daemon in parallel for fast exit.
-    async def _stop_orchestrator():
-        """Cancel orchestrator task with reduced timeout."""
-        task = app_state.stop_running()
+    async def _stop_orchestrator(owner_id: str):
+        """Stop the current fenced owner, never the startup-time manager."""
+        # A control-plane start can bind a successor manager after this
+        # lifespan started.  Resolve through AppState immediately before the
+        # edge so the current owner receives graceful cancellation.
+        app_state.request_shutdown(owner_id=owner_id)
+        if app_state.runtime_owner_id() != owner_id:
+            return
+        task = app_state.stop_running(owner_id=owner_id)
         if task and not task.done():
-            shutdown_mgr.request_shutdown()
             try:
                 await asyncio.wait_for(task, timeout=10)
             except (asyncio.CancelledError, asyncio.TimeoutError):
@@ -256,6 +356,7 @@ async def lifespan(app: FastAPI):
                     daemon_pairs=config["daemon_pairs"],
                 ), owner_id=owner_id))
                 app_state.set_task(task, owner_id=owner_id)
+                register_lifespan_runtime_owner(owner_id)
                 orchestrator_owned = True
                 web_ui.log_history("🔥 Orchestrator started (LLM-driven mode)", "success")
             except BaseException:
@@ -275,11 +376,19 @@ async def lifespan(app: FastAPI):
                 raise
         yield
     finally:
-        if orchestrator_owned:
+        # ``AppState`` is process-local, so any live owner here was started by
+        # this server (including a later /api/control/start).  Do not rely on
+        # the initial auto-launch flag: it is stale after a control restart.
+        current_runtime_owner = app_state.runtime_owner_id()
+        runtime_owned_at_shutdown = bool(
+            current_runtime_owner
+            and current_runtime_owner in app.state.evolution_lifespan_owned_owners
+        )
+        if runtime_owned_at_shutdown:
             try:
                 await asyncio.wait_for(
                     asyncio.gather(
-                        _stop_orchestrator(),
+                        _stop_orchestrator(current_runtime_owner),
                         _stop_daemon_async(),
                         return_exceptions=True,
                     ),
@@ -287,15 +396,18 @@ async def lifespan(app: FastAPI):
                 )
             except (asyncio.CancelledError, asyncio.TimeoutError):
                 pass
+            finally:
+                unregister_lifespan_runtime_owner(current_runtime_owner)
         if arena_started:
             await arena_manager.shutdown()
         if view_only:
             web_ui.log_history("Dashboard stopped.", "info")
-        elif orchestrator_owned:
+        elif runtime_owned_at_shutdown:
             web_ui.log_history("Evolution stopped.", "info")
 
 
 app = FastAPI(title="Poker Evolution Unified API", version="1.0", lifespan=lifespan)
+app.state.evolution_lifespan_owned_owners = set()
 
 app.add_middleware(
     CORSMiddleware,

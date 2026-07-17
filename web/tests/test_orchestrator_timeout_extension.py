@@ -100,6 +100,33 @@ def _write_checkpoint(tmp_path, stage, timeout_extensions=0):
     return data
 
 
+def _verified_canonical_abandon_proof(
+    *,
+    workflow_run_id: str,
+    revision: int,
+    next_v: int = 143,
+    source_v: int = 142,
+    stage: str = "direction_audited",
+):
+    """Small in-memory stand-in for a proof already revalidated upstream."""
+
+    seed = max(1, int(revision))
+    return {
+        "transaction_id": f"{seed:064x}",
+        "abandon_receipt_digest": f"{seed + 1000:064x}",
+        "finalize_receipt_digest": f"{seed + 2000:064x}",
+        "checkpoint_identity": {
+            "digest": f"{seed + 3000:064x}",
+            "workflow_run_id": workflow_run_id,
+            "next_v": next_v,
+            "source_v": source_v,
+            "checkpoint_revision": revision,
+            "stage": stage,
+        },
+        "workflow_fences": {"worker": {}, "strict_authority": {}},
+    }
+
+
 class _FakeUI:
     """Minimal UI stub capturing log_history / update_cost / reset_gen_cost."""
 
@@ -638,6 +665,379 @@ def test_main_loop_recovery_blocked_signal_stops_without_successor_prepare(
     assert len(run_calls) == 1
     assert any(
         event[0] == "orchestrator.recovery_authority_blocked_stop"
+        for event in events
+    )
+
+
+def test_main_loop_stops_after_three_verified_canonical_abandons(
+    monkeypatch,
+):
+    import orchestrator
+    import rate_limiter
+
+    prepare_calls = []
+    run_calls = []
+    events = []
+
+    async def prepare(*_args, **_kwargs):
+        prepare_calls.append(True)
+        return SimpleNamespace(next_v=143, source_v=142)
+
+    async def run(**kwargs):
+        run_calls.append(True)
+        assert orchestrator._remember_verified_canonical_abandon(
+            kwargs["gen_ctx"],
+            _verified_canonical_abandon_proof(
+                workflow_run_id=(
+                    f"generation:143:provider-limit-{len(run_calls)}"
+                ),
+                revision=len(run_calls),
+            ),
+        )
+        return orchestrator.ORCH_GENERATION_ABANDONED_COST
+
+    async def no_watchdog(*_args, **_kwargs):
+        return None
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", prepare)
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", run)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", no_watchdog)
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(_FakeUI(), no_daemon=True)
+    )
+
+    assert outcome == orchestrator.ORCH_CONSECUTIVE_ABANDON_LIMIT_COST
+    assert len(prepare_calls) == 3
+    assert len(run_calls) == 3
+    handoffs = [
+        event for event in events
+        if event[0] == "orchestrator.generation_abandoned_handoff"
+    ]
+    assert [event[3]["consecutive_canonical_abandons"] for event in handoffs] == [1, 2]
+    assert all(len(event[3]["abandon_transaction_id"]) == 64 for event in handoffs)
+    assert all(len(event[3]["abandon_receipt_digest"]) == 64 for event in handoffs)
+    assert all(len(event[3]["finalize_receipt_digest"]) == 64 for event in handoffs)
+    stops = [
+        event for event in events
+        if event[0]
+        == "orchestrator.consecutive_canonical_abandon_limit_stop"
+    ]
+    assert len(stops) == 1
+    assert stops[0][3]["consecutive_canonical_abandons"] == 3
+    assert stops[0][3]["restart_required"] is True
+
+
+def test_main_loop_blocks_bare_abandon_sentinel_without_successor(
+    monkeypatch,
+):
+    """A numeric terminal sentinel alone can never authorize a new workflow."""
+
+    import orchestrator
+    import rate_limiter
+
+    prepare_calls = []
+    run_calls = []
+    events = []
+
+    async def prepare(*_args, **_kwargs):
+        prepare_calls.append(True)
+        return SimpleNamespace(next_v=143, source_v=142)
+
+    async def run(**_kwargs):
+        run_calls.append(True)
+        return orchestrator.ORCH_GENERATION_ABANDONED_COST
+
+    async def no_watchdog(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", prepare)
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", run)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", no_watchdog)
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(_FakeUI(), no_daemon=True)
+    )
+
+    assert outcome == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert len(prepare_calls) == 1
+    assert len(run_calls) == 1
+    assert not any(
+        event[0] == "orchestrator.generation_abandoned_handoff"
+        for event in events
+    )
+    assert any(
+        event[0] == "orchestrator.canonical_abandon_proof_blocked_stop"
+        for event in events
+    )
+
+
+def test_main_loop_blocks_mismatched_abandon_proof_without_successor(
+    monkeypatch,
+):
+    """A retained proof must still bind this exact target before scheduling."""
+
+    import orchestrator
+    import rate_limiter
+
+    prepare_calls = []
+
+    async def prepare(*_args, **_kwargs):
+        prepare_calls.append(True)
+        return SimpleNamespace(next_v=143, source_v=142)
+
+    async def run(**kwargs):
+        kwargs["gen_ctx"]._verified_canonical_abandon_proof = (
+            _verified_canonical_abandon_proof(
+                workflow_run_id="generation:143:wrong-parent",
+                revision=1,
+                source_v=141,
+            )
+        )
+        return orchestrator.ORCH_GENERATION_ABANDONED_COST
+
+    async def no_watchdog(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", prepare)
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", run)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", no_watchdog)
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(_FakeUI(), no_daemon=True)
+    )
+
+    assert outcome == orchestrator.ORCH_RECOVERY_BLOCKED_COST
+    assert len(prepare_calls) == 1
+
+
+def test_canonical_abandon_proof_requires_checkpoint_digest():
+    """A handoff proof cannot omit the digest of its schema-2 checkpoint."""
+
+    import orchestrator
+
+    context = SimpleNamespace(next_v=143, source_v=142)
+    proof = _verified_canonical_abandon_proof(
+        workflow_run_id="generation:143:digest-required",
+        revision=1,
+    )
+    proof["checkpoint_identity"].pop("digest")
+
+    assert (
+        orchestrator._remember_verified_canonical_abandon(context, proof)
+        is False
+    )
+    assert not hasattr(context, "_verified_canonical_abandon_proof")
+
+
+def test_deterministic_abandons_count_toward_same_limit(monkeypatch):
+    import orchestrator
+    import rate_limiter
+
+    def recovery(index):
+        return {
+            "action": "resume",
+            "checkpoint": {
+                "workflow_run_id": f"generation:143:workflow-test-{index}",
+                "checkpoint_revision": index,
+                "stage": "direction_audited",
+                "next_v": 143,
+                "source_v": 142,
+            },
+        }
+
+    recoveries = iter((recovery(2), recovery(3)))
+    events = []
+
+    async def advance(current, *_args, **_kwargs):
+        index = current["checkpoint"]["checkpoint_revision"]
+        return {
+            "routed": True,
+            "recovery": None,
+            "terminal_action": "generation_abandoned",
+            "outcome": {},
+            "terminal_proof": _verified_canonical_abandon_proof(
+                workflow_run_id=current["checkpoint"]["workflow_run_id"],
+                revision=index,
+            ),
+        }
+
+    async def no_watchdog(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: recovery(1))
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: next(recoveries),
+    )
+    monkeypatch.setattr(orchestrator, "_advance_deterministic_recovery", advance)
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", no_watchdog)
+    monkeypatch.setattr(
+        orchestrator,
+        "_prepare_or_fail",
+        lambda *_args, **_kwargs: pytest.fail("successor prepare must not run"),
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_one_cycle",
+        lambda **_kwargs: pytest.fail("provider cycle must not run"),
+    )
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(_FakeUI(), no_daemon=True)
+    )
+
+    assert outcome == orchestrator.ORCH_CONSECUTIVE_ABANDON_LIMIT_COST
+    assert len([
+        event for event in events
+        if event[0] == "orchestrator.generation_abandoned_handoff"
+    ]) == 2
+
+
+def test_successful_generation_cleanup_resets_canonical_abandon_streak(
+    monkeypatch,
+):
+    import orchestrator
+    import rate_limiter
+
+    costs = iter((
+        orchestrator.ORCH_GENERATION_ABANDONED_COST,
+        orchestrator.ORCH_GENERATION_ABANDONED_COST,
+        0.25,
+        orchestrator.ORCH_GENERATION_ABANDONED_COST,
+        orchestrator.ORCH_GENERATION_ABANDONED_COST,
+    ))
+    state = {"calls": 0, "done": False}
+    events = []
+
+    async def prepare(*_args, **_kwargs):
+        return SimpleNamespace(next_v=143, source_v=142)
+
+    async def run(**kwargs):
+        state["calls"] += 1
+        value = next(costs)
+        if value == orchestrator.ORCH_GENERATION_ABANDONED_COST:
+            assert orchestrator._remember_verified_canonical_abandon(
+                kwargs["gen_ctx"],
+                _verified_canonical_abandon_proof(
+                    workflow_run_id=(
+                        "generation:143:provider-reset-"
+                        f"{state['calls']}"
+                    ),
+                    revision=state["calls"],
+                ),
+            )
+        if state["calls"] == 5:
+            state["done"] = True
+        return value
+
+    async def no_watchdog(*_args, **_kwargs):
+        return None
+
+    async def cleanup(*_args, **_kwargs):
+        return True
+
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(*_args, **_kwargs):
+        await real_sleep(0)
+
+    class ShutdownAfterSequence:
+        @property
+        def is_shutting_down(self):
+            return state["done"]
+
+    monkeypatch.setattr(orchestrator, "_prepare_or_fail", prepare)
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", run)
+    monkeypatch.setattr(orchestrator, "_startup_recovery", lambda _ui: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(orchestrator, "_watchdog_coroutine", no_watchdog)
+    monkeypatch.setattr(
+        orchestrator,
+        "_run_post_generation_cleanup_with_timeout",
+        cleanup,
+    )
+    monkeypatch.setattr(asyncio, "sleep", fast_sleep)
+    monkeypatch.setattr(rate_limiter.rate_limiter, "is_blocked", lambda: False)
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+
+    outcome = asyncio.run(
+        orchestrator.orchestrator_loop(
+            _FakeUI(),
+            shutdown_mgr=ShutdownAfterSequence(),
+            no_daemon=True,
+        )
+    )
+
+    assert outcome == 0.0
+    handoff_counts = [
+        event[3]["consecutive_canonical_abandons"]
+        for event in events
+        if event[0] == "orchestrator.generation_abandoned_handoff"
+    ]
+    assert handoff_counts == [1, 2, 1, 2]
+    assert not any(
+        event[0] == "orchestrator.consecutive_canonical_abandon_limit_stop"
         for event in events
     )
 

@@ -23,7 +23,18 @@ import { OfficialCertificationProgress } from "../components/evolution/OfficialC
 import { useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 import { epochStreamAuthorityKey } from "../lib/epochStreamAuthority";
-import { controlTaskActive } from "../lib/controlRuntimeState";
+import {
+  type ActiveGenerationStatusIdentity,
+  type EvolutionStatusEvent,
+  type TransientStatusTask,
+  createTransientStatusTaskAuthorityState,
+  evolutionStatusMatchesActiveGeneration,
+  formatDegradedHealth,
+  isFreshEvolutionStatusEvent,
+  loseTransientStatusTaskAuthority,
+  observeTransientStatusTaskProjection,
+  shouldAcceptEvolutionStatus,
+} from "../lib/evolutionStreamController";
 
 type TabKey = "pipeline" | "metrics" | "history";
 
@@ -55,6 +66,22 @@ function shortRoleName(role: string): string {
 let _msgId = 0;
 const nextId = () => ++_msgId + Date.now();
 
+function transientStatusFallback(
+  activeGeneration: ActiveGenerationStatusIdentity | null | undefined,
+  task: TransientStatusTask | null | undefined,
+): string {
+  if (task?.present === true && task.done === false && task.shutdown_requested === true) {
+    return "正在安全停止，等待任务退出";
+  }
+  return activeGeneration
+    && task?.present === true
+    && task.done === false
+    && task.shutdown_requested === false
+    && task.status_eligible === true
+    ? "等待当前活动任务状态"
+    : "无可验证的当前活动任务状态";
+}
+
 export default function EvolutionMonitor() {
   const { status: epochStatus, health: controlHealth, loading: epochLoading, error: epochError, refresh: refreshControlStatus } = useControlStatus(5_000);
   const [messages, setMessages] = useState<ConvMsg[]>([]);
@@ -76,15 +103,35 @@ export default function EvolutionMonitor() {
   const [activeRole, setActiveRole] = useState<string>("");
   const [knownRoles, setKnownRoles] = useState<string[]>([]);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "disconnected" | "blocked">("connecting");
+  const [streamTaskOwner, setStreamTaskOwner] = useState<
+    TransientStatusTask | undefined
+  >(undefined);
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
   const thinkingId = useRef<number | null>(null);
   const activeRoleRef = useRef<string>(activeRole);
   const checkpointRequestSequence = useRef(0);
+  const acceptedStatusRef = useRef<EvolutionStatusEvent | null>(null);
+  const activeGenerationRef = useRef(epochStatus?.active_generation ?? null);
+  const streamTaskOwnerRef = useRef<TransientStatusTask | undefined>(undefined);
+  const taskAuthorityRef = useRef(createTransientStatusTaskAuthorityState());
+  // Both SSE and HTTP task projections pass the same monotonic fence before
+  // they become the current task.  HTTP never directly supplies display text.
+  const effectiveControlTask = streamTaskOwner ?? null;
+  const controlTaskRef = useRef<TransientStatusTask | null>(effectiveControlTask);
   activeRoleRef.current = activeRole;
+  activeGenerationRef.current = epochStatus?.active_generation ?? null;
+  controlTaskRef.current = effectiveControlTask;
   const streamAuthorityKey = epochStreamAuthorityKey(epochStatus);
   const epochReady = streamAuthorityKey !== null;
+  const taskActive = effectiveControlTask?.present === true
+    && effectiveControlTask.done === false
+    && effectiveControlTask.shutdown_requested === false
+    && effectiveControlTask.status_eligible === true;
+  const taskStopping = effectiveControlTask?.present === true
+    && effectiveControlTask.done === false
+    && effectiveControlTask.shutdown_requested === true;
 
   const clearEpochProjection = useCallback(() => {
     ++checkpointRequestSequence.current;
@@ -106,6 +153,11 @@ export default function EvolutionMonitor() {
     setKnownRoles([]);
     openToolId.current = null;
     thinkingId.current = null;
+    acceptedStatusRef.current = null;
+    streamTaskOwnerRef.current = undefined;
+    controlTaskRef.current = null;
+    taskAuthorityRef.current = createTransientStatusTaskAuthorityState();
+    setStreamTaskOwner(undefined);
   }, []);
 
   useLayoutEffect(() => {
@@ -153,6 +205,94 @@ export default function EvolutionMonitor() {
     thinkingId.current = null;
   }, []);
 
+  const acceptTransientStatus = useCallback((candidate: EvolutionStatusEvent): boolean => {
+    if (!isFreshEvolutionStatusEvent(candidate)) return false;
+    if (!shouldAcceptEvolutionStatus(
+      candidate,
+      activeGenerationRef.current,
+      controlTaskRef.current,
+      acceptedStatusRef.current,
+    )) {
+      return false;
+    }
+    acceptedStatusRef.current = candidate;
+    setStatus(candidate.msg);
+    setIsWorking(candidate.is_working);
+    return true;
+  }, []);
+
+  const invalidateAcceptedStatus = useCallback((task: TransientStatusTask | null) => {
+    if (evolutionStatusMatchesActiveGeneration(
+      acceptedStatusRef.current,
+      activeGenerationRef.current,
+      task,
+    )) return;
+    acceptedStatusRef.current = null;
+    setIsWorking(false);
+    setStatus(transientStatusFallback(activeGenerationRef.current, task));
+  }, []);
+
+  const loseTaskAuthority = useCallback(() => {
+    // Do not fabricate R+1 merely to clear a stale phrase.  The retained
+    // last-verified R permits an exact later task_owner replay to recover,
+    // while a recorded same-R conflict remains poisoned until R advances.
+    taskAuthorityRef.current = loseTransientStatusTaskAuthority(
+      taskAuthorityRef.current,
+    );
+    streamTaskOwnerRef.current = undefined;
+    controlTaskRef.current = null;
+    setStreamTaskOwner(undefined);
+    invalidateAcceptedStatus(null);
+  }, [invalidateAcceptedStatus]);
+
+  const observeTaskProjection = useCallback((candidate: unknown): boolean => {
+    const observed = observeTransientStatusTaskProjection(
+      taskAuthorityRef.current,
+      candidate,
+    );
+    taskAuthorityRef.current = observed.state;
+    if (!observed.accepted) {
+      if (observed.reason === "invalid" || observed.reason === "conflict") {
+        loseTaskAuthority();
+      }
+      return false;
+    }
+
+    const task = observed.state.current;
+    if (!task) {
+      // Defensive: an accepted state without a task is a local invariant
+      // violation, so do not display old status text.
+      loseTaskAuthority();
+      return false;
+    }
+    streamTaskOwnerRef.current = task;
+    controlTaskRef.current = task;
+    setStreamTaskOwner(task);
+    invalidateAcceptedStatus(task);
+    return true;
+  }, [invalidateAcceptedStatus, loseTaskAuthority]);
+
+  useEffect(() => {
+    const accepted = acceptedStatusRef.current;
+    if (evolutionStatusMatchesActiveGeneration(
+      accepted,
+      epochStatus?.active_generation,
+      effectiveControlTask,
+    )) return;
+    invalidateAcceptedStatus(effectiveControlTask);
+  }, [
+    epochStatus?.active_generation,
+    effectiveControlTask,
+    invalidateAcceptedStatus,
+  ]);
+
+  useEffect(() => {
+    // Polling health and the JSON state endpoint may move the lifecycle
+    // high-water or invalidate an accepted SSE phrase. They never provide
+    // display text: only an SSE `status` event can do that while connected.
+    observeTaskProjection(controlHealth?.task);
+  }, [controlHealth?.task, observeTaskProjection]);
+
   // ── SSE connection (unchanged from original) ──
 
   const connect = useEvolutionSSE({
@@ -177,10 +317,25 @@ export default function EvolutionMonitor() {
         });
       }
     },
-    onStatus: (msg, w) => {
+    onStatus: (statusEvent) => {
       if (!epochStatus?.epoch_initialized) return;
-      setStatus(msg);
-      setIsWorking(w);
+      acceptTransientStatus(statusEvent);
+    },
+    onTaskOwner: (task) => {
+      if (!epochStatus?.epoch_initialized) return;
+      // This is an ownership invalidation, not a workflow claim.  The shared
+      // high-water rejects stale HTTP/SSE projections and fails closed on
+      // same-revision disagreement.
+      observeTaskProjection(task);
+      void refreshControlStatus();
+    },
+    onTaskAuthorityLost: () => {
+      if (!epochStatus?.epoch_initialized) return;
+      // The backend explicitly could not bind a task projection.  This must
+      // clear process-local text even when the corresponding malformed/empty
+      // owner envelope never arrives in a normal typed handler.
+      loseTaskAuthority();
+      void refreshControlStatus();
     },
     onIO: (line: IOLine) => {
       if (!epochStatus?.epoch_initialized) return;
@@ -309,13 +464,31 @@ export default function EvolutionMonitor() {
     onConnect: () => {
       if (!epochStatus?.epoch_initialized) return;
       setStreamState("connected");
+      // A reconnect must never keep a prior Master/Worker phrase alive. A
+      // replay is accepted only when it carries the current checkpoint tuple.
+      acceptedStatusRef.current = null;
+      setStatus(transientStatusFallback(
+        activeGenerationRef.current,
+        controlTaskRef.current,
+      ));
+      setIsWorking(false);
       setRoleCosts([]); setMessages([]); setHistoryLines([]); setWorkers([]);
       setFilterRole(""); setActiveRole(""); setKnownRoles([]);
       openToolId.current = null; thinkingId.current = null;
     },
     onDisconnect: (reason) => {
       if (reason === "epoch_blocked") clearEpochProjection();
+      streamTaskOwnerRef.current = undefined;
+      controlTaskRef.current = null;
+      taskAuthorityRef.current = createTransientStatusTaskAuthorityState();
+      setStreamTaskOwner(undefined);
       setStreamState(reason === "epoch_blocked" ? "blocked" : "disconnected");
+      acceptedStatusRef.current = null;
+      setStatus(
+        reason === "epoch_blocked"
+          ? "等待 epoch 权威"
+          : "SSE 已断开；旧活动任务状态已清除",
+      );
       setIsWorking(false);
       const interruptedIds = new Set(
         [openToolId.current, thinkingId.current].filter((value): value is number => value != null),
@@ -350,8 +523,10 @@ export default function EvolutionMonitor() {
         && state.evaluation_epoch === "national_tcp_policy_v1"
         && state.stream_authority_digest === streamAuthorityKey
       ) {
-        setStatus(state.status);
-        setIsWorking(state.is_working);
+        // HTTP is an invalidation/high-water source only.  Never revive a
+        // process-local phrase from JSON while an SSE connection exists; only
+        // the `status` SSE event may render transient workflow text.
+        observeTaskProjection(state.transient_status_task);
         setGrand(state.grand_cost_total ?? 0);
         setGen(state.gen_cost_total ?? 0);
         setCostPolicy(state.generation_cost_policy ?? null);
@@ -389,7 +564,13 @@ export default function EvolutionMonitor() {
       clearInterval(failInterval);
       disconnect();
     };
-  }, [clearEpochProjection, connect, epochReady, streamAuthorityKey]);
+  }, [
+    clearEpochProjection,
+    connect,
+    epochReady,
+    observeTaskProjection,
+    streamAuthorityKey,
+  ]);
 
   useEffect(() => {
     if (autoScroll && ioRef.current) {
@@ -417,7 +598,6 @@ export default function EvolutionMonitor() {
     return messages.filter((m) => m.role === filterRole);
   }, [epochStatus?.epoch_initialized, messages, filterRole]);
 
-  const taskActive = controlTaskActive(controlHealth?.task);
   const runtimeHealthy = Boolean(
     epochStatus?.epoch_initialized
     && epochStatus.running
@@ -430,11 +610,17 @@ export default function EvolutionMonitor() {
     epochStatus,
     controlHealth,
   );
+  const degradedHealthDetail = controlHealth?.overall === "degraded"
+    && !taskStopping
+    ? formatDegradedHealth(controlHealth.issues, controlHealth.checked_at)
+    : null;
   const authoritativeWorking = Boolean(runtimeHealthy && streamState === "connected" && isWorking);
   const monitorState = !epochStatus
     ? { label: "控制权威不可用", variant: "error" as const }
     : !epochStatus.epoch_initialized
       ? { label: "等待 epoch 初始化", variant: "neutral" as const }
+      : taskStopping
+        ? { label: "正在安全停止，等待任务退出", variant: "warning" as const }
       : !epochStatus.running && taskActive
         ? { label: "running=false 但编排器任务仍活动", variant: "error" as const }
       : epochStatus.running && controlHealth?.overall === "degraded"
@@ -491,6 +677,15 @@ export default function EvolutionMonitor() {
           严格代次 <span className="font-semibold text-gray-900 dark:text-white">{epochStatus?.strict_generation_count ?? "—"}</span>
         </span>
       </div>
+
+      {degradedHealthDetail && (
+        <div
+          role="alert"
+          className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300"
+        >
+          <span className="font-semibold">健康检查异常：</span>{degradedHealthDetail}
+        </div>
+      )}
 
       <OfficialCertificationProgress status={epochStatus} className="mb-4" />
 

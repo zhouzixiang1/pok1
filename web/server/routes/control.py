@@ -1302,7 +1302,7 @@ async def _start_evolution_transaction() -> dict[str, str]:
         # Enter the cleanup boundary immediately after owner acquisition.  Even
         # imports, broadcaster maintenance, and config reads are fallible; none
         # may strand a running owner with no attached task.
-        from server.app import web_ui
+        from server.app import register_lifespan_runtime_owner, web_ui
 
         web_ui._broadcaster.clear()
         config = app_state.get_config()
@@ -1361,6 +1361,7 @@ async def _start_evolution_transaction() -> dict[str, str]:
             owner_id=owner_id,
         ))
         app_state.set_task(task, owner_id=owner_id)
+        register_lifespan_runtime_owner(owner_id)
     except BaseException:
         if task is not None:
             task.cancel()

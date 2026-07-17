@@ -81,12 +81,15 @@ def _write_basic(stage="prepared", **kwargs):
 
 
 def _passing_quality_gate():
+    from national_runtime_probe import runtime_probe_native_template_evidence
+
     return {
         "all_passed": True,
         "critical_scenarios_passed": True,
         "workflow_profile_id": "national_native",
         "national_execution_mode": "native_tcp",
         "national_native_contract_ok": True,
+        **runtime_probe_native_template_evidence(),
     }
 
 

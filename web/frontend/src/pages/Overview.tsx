@@ -15,7 +15,7 @@ import { PipelineStatus } from "../components/evolution/PipelineStatus";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { stabilityPresentation } from "../lib/stabilityView";
-import { controlTaskActive } from "../lib/controlRuntimeState";
+import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
 
@@ -233,12 +233,14 @@ export default function Overview() {
     && (daemon.status === "active" || daemon.status === "idle"),
   );
   const taskActive = controlTaskActive(controlHealth?.task);
+  const taskStopping = controlTaskStopping(controlHealth?.task);
   const orchestratorHealthy = Boolean(
     controlStatus?.running
     && controlHealth?.overall === "healthy"
-    && taskActive,
+    && taskActive
+    && !taskStopping,
   );
-  const orchestratorOrphan = Boolean(taskActive && !controlStatus?.running);
+  const orchestratorOrphan = Boolean(taskActive && !taskStopping && !controlStatus?.running);
   const pipelineBlocked = controlPipelineBlocked(controlHealth?.pipeline);
   const pipelineIssues = controlPipelineIssues(controlHealth?.pipeline);
   const schedulerOwnsPrepare = controlSchedulerOwnsPrepareBoundary(
@@ -457,8 +459,8 @@ export default function Overview() {
             <div className="mt-4 rounded-2xl border border-gray-200 bg-white p-4 dark:border-border-subtle dark:bg-surface-1">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
-                  <Badge variant={orchestratorHealthy ? "success" : controlStatus?.running || orchestratorOrphan ? "error" : "neutral"} size="sm" pulse={orchestratorHealthy}>
-                    {orchestratorHealthy ? "任务健康运行" : orchestratorOrphan ? "孤立任务仍活动" : controlStatus?.running ? "运行标志异常" : "已停止"}
+                  <Badge variant={orchestratorHealthy ? "success" : taskStopping ? "warning" : controlStatus?.running || orchestratorOrphan ? "error" : "neutral"} size="sm" pulse={orchestratorHealthy}>
+                    {orchestratorHealthy ? "任务健康运行" : taskStopping ? "正在安全停止，等待任务退出" : orchestratorOrphan ? "孤立任务仍活动" : controlStatus?.running ? "运行标志异常" : "已停止"}
                   </Badge>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
                     {controlStatus.active_generation

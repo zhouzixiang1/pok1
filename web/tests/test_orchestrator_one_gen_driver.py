@@ -25,6 +25,25 @@ def _recovery(stage, **kwargs):
     }
 
 
+def _verified_abandon_proof(checkpoint, *, seed="a"):
+    """Return the compact proof shape yielded by finalized schema-2 handoff."""
+
+    return {
+        "transaction_id": seed * 64,
+        "abandon_receipt_digest": "b" * 64,
+        "finalize_receipt_digest": "c" * 64,
+        "checkpoint_identity": {
+            "digest": "d" * 64,
+            "workflow_run_id": checkpoint["workflow_run_id"],
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "checkpoint_revision": checkpoint["checkpoint_revision"],
+            "stage": checkpoint["stage"],
+        },
+        "workflow_fences": {"worker": {}, "strict_authority": {}},
+    }
+
+
 def _patch_cli_shell(monkeypatch, tmp_path, orchestrator):
     """Remove unrelated process services around CLI boundary tests."""
     import epoch_authority
@@ -90,6 +109,9 @@ def test_one_gen_exit_codes_distinguish_success_and_terminal_controls():
     assert orchestrator._one_generation_exit_code(
         orchestrator.ORCH_ACCOUNTING_BLOCKED_COST
     ) == 6
+    assert orchestrator._one_generation_exit_code(
+        orchestrator.ORCH_CONSECUTIVE_ABANDON_LIMIT_COST
+    ) == 7
     assert orchestrator._one_generation_exit_code(
         orchestrator.ORCH_LLM_AVAILABILITY_BLOCKED_COST
     ) == 5
@@ -206,6 +228,7 @@ async def test_one_gen_cli_reuses_pre_ack_recovery_without_second_read(
         ("ORCH_OPERATOR_ACTION_REQUIRED_COST", 3),
         ("ORCH_RECOVERY_BLOCKED_COST", 4),
         ("ORCH_ACCOUNTING_BLOCKED_COST", 6),
+        ("ORCH_CONSECUTIVE_ABANDON_LIMIT_COST", 7),
     ],
 )
 async def test_continuous_cli_maps_typed_loop_terminal_outcome(
@@ -324,6 +347,7 @@ async def test_one_gen_active_workflow_abandon_never_prepares_successor(
 
     prepare_calls = []
     cleanup_calls = []
+    deactivated = []
 
     async def prepare(_shutdown, _ui):
         prepare_calls.append(True)
@@ -332,7 +356,18 @@ async def test_one_gen_active_workflow_abandon_never_prepares_successor(
     async def route(*_args, **_kwargs):
         return False
 
-    async def run_cycle(**_kwargs):
+    async def run_cycle(**kwargs):
+        context = kwargs["gen_ctx"]
+        assert orchestrator._remember_verified_canonical_abandon(
+            context,
+            _verified_abandon_proof({
+                "workflow_run_id": "generation:143:workflow-v23",
+                "checkpoint_revision": 1,
+                "stage": "direction_audited",
+                "next_v": context.next_v,
+                "source_v": context.source_v,
+            }),
+        )
         return orchestrator.ORCH_GENERATION_ABANDONED_COST
 
     monkeypatch.setattr(
@@ -343,6 +378,11 @@ async def test_one_gen_active_workflow_abandon_never_prepares_successor(
     monkeypatch.setattr("generation_scheduler.prepare_generation", prepare)
     monkeypatch.setattr(orchestrator, "_try_deterministic_checkpoint_route", route)
     monkeypatch.setattr(orchestrator, "_run_one_cycle", run_cycle)
+    monkeypatch.setattr(
+        orchestrator,
+        "deactivate_generation_cost_scope",
+        lambda: deactivated.append(True),
+    )
     monkeypatch.setattr(
         orchestrator,
         "_run_post_generation_cleanup_with_timeout",
@@ -359,6 +399,40 @@ async def test_one_gen_active_workflow_abandon_never_prepares_successor(
     assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
     assert prepare_calls == []
     assert cleanup_calls == []
+    assert deactivated == [True]
+
+
+@pytest.mark.asyncio
+async def test_one_gen_bare_abandon_sentinel_is_recovery_blocked(
+    monkeypatch,
+    tmp_path,
+):
+    """One-gen has no successor, but still must not trust a bare terminal cost."""
+
+    import orchestrator
+
+    async def run_cycle(**_kwargs):
+        return orchestrator.ORCH_GENERATION_ABANDONED_COST
+
+    monkeypatch.setattr(
+        orchestrator,
+        "_checkpoint_recovery_context",
+        lambda *_args, **_kwargs: _recovery("direction_audited"),
+    )
+    monkeypatch.setattr(orchestrator, "_run_one_cycle", run_cycle)
+    monkeypatch.setattr(
+        "generation_scheduler.prepare_generation",
+        lambda *_args, **_kwargs: pytest.fail("must not prepare"),
+    )
+
+    cost = await orchestrator._run_one_generation_cli(
+        log_file=tmp_path / "one-gen-bare-abandon.log",
+        max_turns=None,
+        shutdown_mgr=None,
+        cost_policy=None,
+    )
+
+    assert cost == orchestrator.ORCH_RECOVERY_BLOCKED_COST
 
 
 @pytest.mark.asyncio
@@ -679,6 +753,7 @@ async def test_one_gen_deterministic_abandon_requires_exact_terminal_proof(
     }
     recoveries = iter((recovery, None))
     validated = []
+    deactivated = []
 
     async def route(current, _ui=None, *, outcome=None, **_kwargs):
         outcome.update({"terminal_abandon_result": terminal})
@@ -686,7 +761,7 @@ async def test_one_gen_deterministic_abandon_requires_exact_terminal_proof(
 
     def validate(checkpoint, result):
         validated.append((checkpoint, result))
-        return {"ok": True}
+        return _verified_abandon_proof(checkpoint)
 
     monkeypatch.setattr(
         orchestrator,
@@ -699,6 +774,11 @@ async def test_one_gen_deterministic_abandon_requires_exact_terminal_proof(
         "validate_completed_abandon_handoff",
         validate,
     )
+    monkeypatch.setattr(
+        orchestrator,
+        "deactivate_generation_cost_scope",
+        lambda: deactivated.append(True),
+    )
 
     cost = await orchestrator._run_one_generation_cli(
         log_file=tmp_path / "one-gen-deterministic-abandon.log",
@@ -709,6 +789,7 @@ async def test_one_gen_deterministic_abandon_requires_exact_terminal_proof(
 
     assert cost == orchestrator.ORCH_GENERATION_ABANDONED_COST
     assert validated == [(recovery["checkpoint"], terminal)]
+    assert deactivated == [True]
 
 
 @pytest.mark.asyncio

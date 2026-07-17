@@ -43,6 +43,14 @@ For each parent pair:
   system-selected runtime focus. Flag a merge approach that would discard the
   native stream decoder, bounded match tracker, precompute consumer, or deadline
   fallback contract.
+- The current valid-board baseline is the fixed deterministic 192/256/96
+  flop/turn/river schedule (two direct evaluator calls per sample; dynamic cap
+  800). A compact prior is only an invalid/degraded-input fallback or
+  refinement start. Evaluator aliases and nested deck-pair sweeps are forbidden
+  from the baseline. Full `C(45,2)` opponent enumeration is a refinement-only
+  operation with a monotonic deadline; treating it as a baseline merge is a
+  hard conflict. The real `name` handshake starts the system-owned worker and
+  never waives the target decision clock.
 </compatibility_rules>
 
 <output_format>
@@ -55,7 +63,7 @@ Output exactly ONE JSON block:
   "conflict_areas": [
     "Both parents define calculate_pot_odds() differently — parent A's version is simpler and more reliable"
   ],
-  "suggested_merge_approach": "Keep policy.py from parent A as the base and port Parent B's exact river functions into that same file after reconciling their typed-intent signatures.",
+  "suggested_merge_approach": "Keep policy.py from parent A as the base and port Parent B's bounded river-refinement protocol only after preserving a publishable bounded baseline and reconciling typed-intent signatures.",
   "files_to_take_from_a": ["policy.py"],
   "files_to_take_from_b": ["policy.py"]
 }

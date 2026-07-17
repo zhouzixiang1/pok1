@@ -38,6 +38,7 @@ from official_certification import (
     run_certification,
     read_status,
     select_official_opponent,
+    spec_record,
     stable_official_opponent_selection,
     write_status,
 )
@@ -128,6 +129,7 @@ def _run_official_certificate_fixture(
         "job_id": "1" * 64,
         "request_digest": "2" * 64,
         "manager_sha256": "3" * 64,
+        "spec": spec_record(spec),
         "identity": identity,
         "opponent_selection": stable_selection,
         "source_v": None,
@@ -154,6 +156,83 @@ def _bot(path: Path, body: str = "def act():\n    return 0\n") -> Path:
     (path / "main.py").write_text(body, encoding="utf-8")
     (path / "national_bot.py").write_text("import socket\n# raise fold call check allin sock.recv _split_messages\n", encoding="utf-8")
     return path
+
+
+def _structural_quality_admission(candidate: Path) -> dict:
+    """Build a schema-valid current-epoch-shaped receipt for test-only flows."""
+
+    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
+    from national_runtime_authority import current_system_native_runtime_identity
+    from national_runtime_probe import runtime_probe_native_template_evidence
+
+    runtime_evidence = runtime_probe_native_template_evidence()
+
+    payload = {
+        "schema_version": 1,
+        "kind": "official-formal-quality-admission",
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": hash_path(candidate),
+        "checkpoint": {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "workflow_run_id": "pytest-certification-workflow",
+            "next_v": int(candidate.name.removeprefix("national_v") or 0),
+            "source_v": 142,
+        },
+        "quality_gate_digest": "1" * 64,
+        "capability_digest": "2" * 64,
+        "dynamic_probe_digest": "3" * 64,
+        "runtime_contract_ledger_digest": "4" * 64,
+        "runtime_probe_identity": {
+            "scenario_digest": "5" * 64,
+            "limits_digest": "6" * 64,
+            "probe_identity_digest": "7" * 64,
+            "managed_isolation_digest": "8" * 64,
+            **runtime_evidence,
+        },
+        "system_runtime_identity": current_system_native_runtime_identity(),
+        "system_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+    }
+    return {**payload, "admission_digest": canonical_digest(payload)}
+
+
+def test_test_runner_envelope_preserves_normal_full_quality_admission(
+    tmp_path,
+    monkeypatch,
+):
+    """The pytest-only runner must exercise the production envelope shape."""
+
+    import official_certification as certification
+
+    candidate = _bot(tmp_path / "national_v143")
+    opponent = _bot(tmp_path / "national_v142")
+    admission = _structural_quality_admission(candidate)
+    spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=admission,
+    )
+    captured: dict[str, object] = {}
+
+    def fake_impl(_spec, **kwargs):
+        captured.update(kwargs)
+        return {"status": "captured"}
+
+    monkeypatch.setattr(certification, "_run_certification_impl", fake_impl)
+
+    result = certification._run_certification_with_runner_for_test(
+        spec,
+        config=_config(tmp_path),
+        runner=lambda *_args, **_kwargs: {"report": {}},
+    )
+    envelope = captured["job_envelope"]
+
+    assert result == {"status": "captured"}
+    assert isinstance(envelope, dict)
+    assert envelope["candidate_path"] == str(candidate.resolve())
+    assert envelope["quality_admission"] == admission
+    assert envelope["quality_admission_digest"] == canonical_digest(admission)
+    assert envelope["quality_admission_required"] is True
 
 
 def _config(tmp_path: Path) -> OfficialPlatformConfig:
@@ -736,7 +815,12 @@ def test_retired_bootstrap_root_spec_cannot_resume_as_normal_full_job(tmp_path):
     candidate = _bot(tmp_path / "national_v143")
     opponent = _bot(tmp_path / "first_strict_control_v1")
     record = certification.spec_record(
-        build_spec("full", candidate, opponent=opponent)
+        build_spec(
+            "full",
+            candidate,
+            opponent=opponent,
+            quality_admission=_structural_quality_admission(candidate),
+        )
     )
     record["bootstrap_root_id"] = (
         "national-v141-official-full-v5-signed-ledger-root"
@@ -1498,7 +1582,12 @@ def test_certificate_cannot_be_reused_for_same_artifact_under_new_version(tmp_pa
     clone = tmp_path / "national_v144"
     opponent = _bot(tmp_path / "national_v142")
     cfg = _config(tmp_path)
-    spec = build_spec("full", candidate, opponent=opponent)
+    spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=_structural_quality_admission(candidate),
+    )
     result = _run_certification_with_runner_for_test(
         spec,
         config=cfg,
@@ -1522,7 +1611,12 @@ def test_malformed_nested_certificate_fails_closed_instead_of_raising(tmp_path, 
     opponent = _bot(tmp_path / "national_v142")
     cfg = _config(tmp_path)
     result = _run_certification_with_runner_for_test(
-        build_spec("full", candidate, opponent=opponent),
+        build_spec(
+            "full",
+            candidate,
+            opponent=opponent,
+            quality_admission=_structural_quality_admission(candidate),
+        ),
         config=cfg,
         runner=lambda *_args, **_kwargs: FakeResult(_full_report(tmp_path, candidate, opponent)),
         opponent_selection=_selection(candidate, opponent),
@@ -1547,7 +1641,12 @@ def test_bound_deterministic_failure_survives_rejected_test_only_pass(tmp_path, 
     candidate = _bot(tmp_path / "national_v143")
     opponent = _bot(tmp_path / "national_v142")
     cfg = _config(tmp_path)
-    full_spec = build_spec("full", candidate, opponent=opponent)
+    full_spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=_structural_quality_admission(candidate),
+    )
     selection = _selection(candidate, opponent)
     certified = _run_official_certificate_fixture(
         full_spec,
@@ -2592,7 +2691,12 @@ def test_full_certificate_rejects_grandfathered_opponent_receipt(tmp_path):
 
     candidate = _bot(tmp_path / "national_v143")
     opponent = _bot(tmp_path / "national_v142")
-    spec = build_spec("full", candidate, opponent=opponent)
+    spec = build_spec(
+        "full",
+        candidate,
+        opponent=opponent,
+        quality_admission=_structural_quality_admission(candidate),
+    )
     identity = certification_identity(spec)
     selection = _selection(candidate, opponent)
     receipt = selection["opponent"]["eligibility_receipt"]

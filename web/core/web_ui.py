@@ -17,7 +17,103 @@ from pathlib import Path
 from evolution_core import BaseUI, Glicko2Player
 
 _COSTS_FILE = Path(__file__).resolve().parent / "results" / "llm_costs.jsonl"
+_TASK_OWNER_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 log = logging.getLogger("pok.webui")
+
+
+def _empty_transient_status_identity(*, emitted_at: float | None = None) -> dict[str, Any]:
+    """Return the explicit fail-closed shape used by transient status events.
+
+    A process-local WebUI object survives more lifecycle edges than the durable
+    checkpoint it is describing.  ``None`` is therefore a meaningful identity:
+    callers may still record a local stopped/error message, but an SSE/browser
+    consumer must never mistake it for a current workflow status.
+    """
+
+    return {
+        "run_id": None,
+        "workflow_run_id": None,
+        "checkpoint_revision": None,
+        "stage": None,
+        "task_owner_id": None,
+        "task_lifecycle_revision": None,
+        "emitted_at": time.time() if emitted_at is None else emitted_at,
+    }
+
+
+def _active_generation_status_identity() -> dict[str, Any]:
+    """Read the one canonical checkpoint identity for a status publication.
+
+    Status text is deliberately not durable evidence.  Every publication is
+    stamped from ``strict_epoch_projection`` at emission time so a browser can
+    reject a message from a prior process, run, revision, or stage.  Any
+    authority/read-validation failure returns the explicit empty identity;
+    fabricating an identity from WebUI memory would reintroduce the stale-text
+    bug this boundary is intended to prevent.
+    """
+
+    identity = _empty_transient_status_identity()
+    try:
+        from epoch_authority import strict_epoch_projection
+
+        projection = strict_epoch_projection()
+    except Exception:
+        return identity
+    if not isinstance(projection, dict) or not projection.get("initialized"):
+        return identity
+    active = projection.get("active_generation")
+    if not isinstance(active, dict):
+        return identity
+
+    run_id = active.get("run_id")
+    workflow_run_id = active.get("workflow_run_id")
+    revision = active.get("checkpoint_revision")
+    stage = active.get("stage")
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or not isinstance(workflow_run_id, str)
+        or not workflow_run_id.strip()
+        or type(revision) is not int
+        or revision < 1
+        or not isinstance(stage, str)
+        or not stage.strip()
+    ):
+        return identity
+    # A checkpoint can stay unchanged while the live task is replaced after a
+    # retry or restart.  Bind human status to the current task owner at the
+    # publication boundary; missing ownership is deliberately non-authority.
+    try:
+        from server.state import app_state
+
+        task = app_state.task_snapshot()
+    except Exception:
+        return identity
+    owner_id = task.get("owner_id") if isinstance(task, dict) else None
+    lifecycle_revision = (
+        task.get("lifecycle_revision") if isinstance(task, dict) else None
+    )
+    if (
+        not isinstance(task, dict)
+        or task.get("present") is not True
+        or task.get("done") is not False
+        or task.get("shutdown_requested") is not False
+        or task.get("status_eligible") is not True
+        or not isinstance(owner_id, str)
+        or _TASK_OWNER_ID_RE.fullmatch(owner_id) is None
+        or type(lifecycle_revision) is not int
+        or lifecycle_revision < 0
+    ):
+        return identity
+    return {
+        "run_id": run_id,
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": revision,
+        "stage": stage,
+        "task_owner_id": owner_id,
+        "task_lifecycle_revision": lifecycle_revision,
+        "emitted_at": identity["emitted_at"],
+    }
 
 
 class EventBroadcaster:
@@ -203,6 +299,10 @@ class WebUI(BaseUI):
         self._state: dict[str, Any] = {
             "status": "Initializing...",
             "is_working": False,
+            # A plain status string has no authority.  The route and browser
+            # display it only when this exact transient identity still agrees
+            # with the canonical active checkpoint and live task owner.
+            "status_identity": _empty_transient_status_identity(),
             "header": "Evolution Framework",
             "metrics": {},
             "ratings": [],
@@ -258,11 +358,17 @@ class WebUI(BaseUI):
                 running. Distinct from AppState.running which is coarse-grained
                 orchestrator loop control.
         """
+        identity = _active_generation_status_identity()
         self._state["status"] = msg
         self._state["is_working"] = is_working
+        self._state["status_identity"] = identity
         work_icon = "..." if is_working else "OK"
         log.info("[STATUS] %s %s", work_icon, msg)
-        self._emit("status", {"msg": msg, "is_working": is_working})
+        self._emit("status", {
+            "msg": msg,
+            "is_working": is_working,
+            **identity,
+        })
 
     def log_io(self, msg, stream_type="default", role=""):
         if role:

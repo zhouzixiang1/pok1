@@ -4296,6 +4296,13 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # Scout/critic MASTER policy below and remains bounded by the same 900s total
     # ceiling.
     "MASTER_FINAL": (240.0, 240.0, 900.0),
+    # Proposal Scouts are Read-capable mechanism designers.  Live strict runs
+    # routinely complete between 155s and 236s after one or more bounded Read
+    # round-trips.  Keep the pre-output gate at 120s, but give an already
+    # productive Scout the full 240s silence budget rather than deriving the
+    # generic 132s mid-loop ceiling.  System/thinking telemetry remains
+    # nonproductive and the 900s total ceiling is unchanged.
+    "MASTER_PROPOSAL": (120.0, 240.0, 900.0),
     # Master is the highest leverage failure point: it plans, reads evidence,
     # and can otherwise burn the whole orchestrator cycle before any code exists.
     "MASTER": (120.0, 240.0, 900.0),
@@ -4325,6 +4332,12 @@ def _role_timeout_policy(role_name: str) -> dict:
     key = ""
     if re.fullmatch(r"MASTER(?:\s+\(TRY\s+\d+\))?", role):
         key = "MASTER_FINAL"
+    elif re.fullmatch(
+        r"MASTER PROPOSAL (?:MECHANISM|COUNTERFACTUAL|COMPUTE_MEMORY)"
+        r"(?: (?:SCHEMA|DISTINCTNESS) RETRY)?",
+        role,
+    ):
+        key = "MASTER_PROPOSAL"
     elif "MASTER" in role:
         key = "MASTER"
     elif "REVIEW" in role:
@@ -4342,9 +4355,11 @@ def _role_timeout_policy(role_name: str) -> dict:
         # Preserve existing operator overrides while giving the zero-tool final
         # compiler its own more-specific namespace.  MASTER_FINAL wins when
         # both are present; legacy MASTER remains a safe fallback.
-        if key == "MASTER_FINAL" and "POK_LLM_MASTER_FINAL_" in name:
+        if key in {"MASTER_FINAL", "MASTER_PROPOSAL"} and (
+            f"POK_LLM_{key}_" in name
+        ):
             names.append(name.replace(
-                "POK_LLM_MASTER_FINAL_", "POK_LLM_MASTER_", 1
+                f"POK_LLM_{key}_", "POK_LLM_MASTER_", 1
             ))
         for candidate in names:
             if candidate not in os.environ:
@@ -4376,8 +4391,10 @@ def _role_timeout_policy(role_name: str) -> dict:
     # restart. Default to ~55% of idle (clamped to [60, 180]s) so a stall is
     # caught well before the full idle ceiling while still tolerating legit
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
-    stall_default = 240.0 if key == "MASTER_FINAL" else 0.0
-    if idle > 0 and key != "MASTER_FINAL":
+    stall_default = (
+        240.0 if key in {"MASTER_FINAL", "MASTER_PROPOSAL"} else 0.0
+    )
+    if idle > 0 and key not in {"MASTER_FINAL", "MASTER_PROPOSAL"}:
         stall_default = max(60.0, min(180.0, idle * 0.55))
     stall = _env(prefix + "STALL_TIMEOUT", stall_default)
     return {
@@ -5951,6 +5968,35 @@ async def _perform_owned_provider_attempt_cleanup(
         return True
     _refresh_transport_exit_confirmation(attempt)
     confirmed = _resolve_provider_attempt_if_stopped(attempt)
+    cleanup_reasons = set(attempt.get("cleanup_reasons") or ())
+    pending_tasks = [
+        task
+        for task in attempt.get("pending_tasks") or ()
+        if isinstance(task, asyncio.Task) and not task.done()
+    ]
+    # A parent cancellation is not a provider failure once cleanup has proven
+    # that the exact child and every owned SDK task exited.  Preserve the
+    # original CancelledError so the existing shutdown/control path can classify
+    # it as a clean stop.  Every timeout reason, mixed reason, cleanup error, or
+    # unconfirmed exit remains fail-closed below.
+    if (
+        cleanup_reasons
+        == {"stream_next_parent_cancellation_unconfirmed"}
+        and confirmed
+        and not pending_tasks
+        and not cleanup_errors
+    ):
+        _emit_llm_event(
+            "pipeline.llm_role_provider_cleanup_completed_after_parent_cancel",
+            "info",
+            f"{role_name}: provider cleanup completed after parent cancellation",
+            role=role_name,
+            attempt_id=attempt.get("attempt_id"),
+            provider_exit_confirmed=True,
+            cleanup_reasons=sorted(cleanup_reasons),
+            **_role_log_metadata(log_file_path),
+        )
+        return True
     message = (
         "SDK provider stream required exceptional cleanup; "
         f"process_exit_confirmed={confirmed}; reasons="

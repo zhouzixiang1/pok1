@@ -103,6 +103,43 @@ def _projection(
     }
 
 
+def _structural_quality_admission(candidate: Path) -> dict:
+    """Build a schema-valid normal-full receipt for projection-only tests."""
+
+    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
+    from national_runtime_authority import current_system_native_runtime_identity
+    from national_runtime_probe import runtime_probe_native_template_evidence
+
+    runtime_evidence = runtime_probe_native_template_evidence()
+    next_v = int(candidate.name.removeprefix("national_v") or 0)
+    payload = {
+        "schema_version": 1,
+        "kind": "official-formal-quality-admission",
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": hash_path(candidate),
+        "checkpoint": {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "workflow_run_id": "pytest-certification-route-workflow",
+            "next_v": next_v,
+            "source_v": next_v - 1,
+        },
+        "quality_gate_digest": "1" * 64,
+        "capability_digest": "2" * 64,
+        "dynamic_probe_digest": "3" * 64,
+        "runtime_contract_ledger_digest": "4" * 64,
+        "runtime_probe_identity": {
+            "scenario_digest": "5" * 64,
+            "limits_digest": "6" * 64,
+            "probe_identity_digest": "7" * 64,
+            "managed_isolation_digest": "8" * 64,
+            **runtime_evidence,
+        },
+        "system_runtime_identity": current_system_native_runtime_identity(),
+        "system_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+    }
+    return {**payload, "admission_digest": canonical_digest(payload)}
+
+
 def _job_fixture(
     tmp_path: Path,
     monkeypatch,
@@ -141,7 +178,14 @@ def _job_fixture(
             "eligibility_receipt": eligibility_receipt,
         },
     }
-    spec = build_spec(mode, candidate, opponent=opponent)
+    spec = build_spec(
+        mode,
+        candidate,
+        opponent=opponent,
+        quality_admission=(
+            _structural_quality_admission(candidate) if mode == "full" else None
+        ),
+    )
     request = jobs._request_payload(
         spec,
         opponent_selection=selection,
@@ -1399,6 +1443,7 @@ def test_bootstrap_projection_ignores_old_v155_and_non_bootstrap_jobs(
         "full",
         stale,
         opponent=request["spec"]["opponent"],
+        quality_admission=_structural_quality_admission(stale),
     )
     stale_request = jobs._request_payload(
         stale_spec,

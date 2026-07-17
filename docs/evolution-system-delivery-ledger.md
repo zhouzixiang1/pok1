@@ -1892,7 +1892,7 @@ uses a six-entry preflop line-state vocabulary, but only `sb_open`,
 `sb_limp` and `bb_option` are line-state only. It combines exact
 commitment/call EV, a current-pressure-conditioned posterior, deterministic
 mixed bluffing, relative/shared-board hand strength, bounded flop/turn
-baseline rollout and exact river enumeration. `MAX_EQUITY_SAMPLES=32768`:
+baseline rollout and progressive exact river enumeration. `MAX_EQUITY_SAMPLES=32768`:
 bounded-weight worst-case effective sample size is about 16,614 and standard
 error is below 0.4 percentage point (sub-percent). The cap provides finite
 bounded termination after a bounded high-precision estimate instead of
@@ -2539,3 +2539,504 @@ compileall and `git diff --check`. These are source proofs only. Merge/push,
 old-HEAD v34 abandon, runtime fast-forward, post-sync diagnostics, daemon
 identity binding, v143/v144 publication, two-Bot rating and stability credit
 remain unclaimed; the counter is `0/10`.
+
+## 2026-07-17 — contract-35 Master Proposal liveness, proof-bound abandon safety, and stopped workflow-v38
+
+This section supersedes the contract-34 runtime handoff above. It records a
+source-side repair only; it does not claim a runtime resume, a Bot publication,
+or strength evidence.
+
+The v35–v37 audit found four apparent roughly-132-second Master Proposal
+“stalls” after real Scout `Read` round-trips and substantial thinking telemetry.
+They were caused by the generic Master mid-stream derived stall ceiling, not by
+an inability of the model to state a poker mechanism. One v36 no-substantive-
+activity 120-second timeout remains a valid first-activity failure and is not
+relaxed. Contract 35 gives only the three Proposal Scouts and their
+schema/distinctness retries their own bounded policy: 120-second first activity,
+240-second idle/stall and 900-second total; Critic and final Master retain their
+existing policies and the legacy `POK_LLM_MASTER_*` override remains a fallback.
+
+Workflow-v38 was stopped by explicit `/api/control/stop`, not a proposal
+verdict. The prior cleanup path could overwrite a confirmed parent cancellation
+with cleanup noise. It now preserves `CancelledError` only when the sole reason
+is parent cancellation, the exact child exit is confirmed, no owned task is
+pending, and cleanup reports no error. Any timeout, mixed reason, unconfirmed
+exit, pending task or cleanup error remains fail-closed.
+
+Three direct Master producer/consumer defects were repaired without weakening
+the strict schema:
+
+- `national_runtime_feedback_summary` had been called with a bot path and
+  unsupported `source_label`, inserting a real `TypeError` into every prompt.
+  The only path is now `evaluate_national_capabilities(bot_dir)` → capability
+  dictionary → `national_runtime_feedback_summary` → sealed prompt.
+- The Scout source index formerly rendered ABI-unreachable runtime/helper edges
+  (about 8,472 characters); it now renders only the policy-ABI-reachable graph
+  (measured 668 characters). The Scout mapping likewise drops validator-only
+  aliases/checks/terms (about 2,819 to 1,094 characters).
+- The shared leaf `fold_to_raise` now has three explicit owners:
+  `opponent.rates`, `opponent.samples`, and `opponent.terminal_response`.
+  Full bracket paths may supplement an exact required dot target; bare leaves,
+  continuations and foreign target mentions remain rejected, including in
+  `no`/`unchanged`/disclaimer prose. Repair guidance is bounded to four
+  canonical, observed errors.
+
+Completed deterministic-invalid output is the only input that may consume the
+single schema/distinctness repair. Scout/Critic SDK, transport or provider
+exceptions now retain already accepted siblings, then raise
+`MasterInfrastructureError`; they cannot be recorded as `SCHEMA RETRY` or
+consume a semantic budget.
+
+The continuous outer scheduler now counts only a finalized,
+`validate_completed_abandon_handoff` proof whose transaction, ledger/finalize
+digests and checkpoint identity bind the active target. A bare abandon sentinel,
+missing proof, proof/context mismatch or invalid checkpoint stops as recovery
+blocked and never prepares a successor. The first two verified canonical
+abandons for the same `(next_v, source_v)` emit an evidence-bound handoff; the
+third emits `orchestrator.consecutive_canonical_abandon_limit_stop`, exits with
+code 7 and prepares no fourth workflow. The process-local streak resets only
+after post-publication cleanup and durable accounting both reprove success.
+
+The stopped old runtime remains at
+`c63253c5ef41f6a41992dcca3d5488706a6e63a8`, with v38 tuple
+`(generation:143:workflow-v38, 143, 142, 4, direction_audited)`, checkpoint
+transaction digest
+`6f7da5bef18c03841cd0094cc75ba67d7cabd30efae439880089f72e20aba190`, raw
+checkpoint SHA-256
+`b5877d97de37b6cfb38c615442293771aeee1ccf6f7be53bef9d33fd867aef73`, strict
+five-file artifact digest
+`0ad1dd758ebc0b62f86f19bdc645abaeb5b7d48fee7513aa8a5c0c65a2721a17`, and
+full quarantine preimage digest
+`6bd0374559da9bac75f723bfebdc4da900935fd726ef0cf3f9254a2f96250559`. Its
+three `__pycache__` entries are ignored by strict artifact validation but are
+correctly preserved by the full quarantine preimage. Recovery diagnosis is
+`active=true`, `recoverable=true`, `issues=[]`; that proves old-code recovery
+only and does not authorize a cross-contract resume.
+
+Focused source evidence before the final full suite: Master/LLM aggregate
+`251 passed, 1 warning`; outer scheduler/control shard `124 passed, 1 warning`.
+The final commit must add full Web, Sever, frontend, compile and diff evidence
+below before claiming merge readiness. No source result here changes the live
+v143/v144/cycle/N-of-10 status, which remains absent/`0/10`.
+
+## 2026-07-17 — contract-36 strict river baseline publication repair
+
+The final source verification exposed a real, fail-closed policy-runtime
+defect rather than a flaky test or a weak model response. The system-owned
+strict-v1 river baseline synchronously invoked `_exact_weighted_river_equity`,
+which evaluates every `C(45,2)=990` remaining opponent hole pair in Python.
+The real worker/socket probe measured river baseline publication at 235 ms in
+one full run and repeated direct calls from about 195 to 416 ms; the independent
+target is 200 ms with only 300 ms refinement. The runtime starts its clock
+before worker initialization, so using a worker-local publication time would
+hide rather than solve a socket-owner deadline violation.
+
+`bootstrap_assets/strict_v1/policy.py` now uses the existing compact,
+posterior-aware `_refinement_prior_equity` for a river baseline and marks that
+posterior as already applied. The full same-evaluator, same-posterior weighted
+river enumeration remains in `iter_decisions`, where every batch obeys the
+monotonic refinement deadline. The old exact helper is retained as an offline
+audit reference but is structurally forbidden on the baseline path. This
+preserves the raw TCP ABI, typed intents, system-owned socket fallback and
+official protocol; it does not claim unchanged final strategy behavior.
+
+The source and prompt contract is version 36. `strategy_reference_pack.py` now
+describes compact/fixed bounded baseline work accurately, and the Master,
+Worker, Reviewer, Critic, Orchestrator and crossover prompt sources explicitly
+ban full river enumeration from the synchronous baseline. The updated manifest
+pins policy SHA-256
+`8c7ef2c8b128ebf53532be6d1cce7f8e530ffefa4390989872df92c4fa629780` and
+output-artifact SHA-256
+`85b5d438360b06cafcc2e199b59d72155ed7e3613af94600fd7163784c17a826`.
+
+Positive and negative regressions now prove: a monkeypatched exact helper
+cannot be reached by a river baseline; both public/dominated river controls
+finish the 990-hole refinement and fold; and the real checked-in runtime probe
+publishes all scenarios inside its target. The focused run is `2 passed, 1
+warning`; strict-policy aggregate is `111 passed`, Master/LLM aggregate is
+`228 passed`, scheduler/control aggregate is `202 passed`, and complete Web is
+`2971 passed, 20 skipped, 1 warning` in 181.29 seconds. Sever is `33 passed`;
+the 165-module frontend production build, source `py_compile`, manifest
+validation and `git diff --check` also pass. This source evidence grants no
+runtime, certificate, rating or strength claim.
+Because contract 36 changes the bootstrap/evaluation bytes, stopped
+`generation:143:workflow-v38` must be canonically abandoned against its
+recorded old-head identity before a fresh reprepare; `national_v143` must never
+be hand-edited. Stability remains `0/10`.
+
+## 2026-07-17 — Contract-37 bounded baseline, exact refinement, and formal name-handshake closure
+
+This section supersedes every Contract-36 statement that describes the compact
+river prior, its hashes, or its test totals as current. Those entries remain
+historical diagnosis evidence only. Contract 37 is source-side only: it claims
+no merged commit, runtime resume, candidate publication, certificate, rating,
+or strength result.
+
+`evaluation_contract.py` is version 37. The current strict-v1 manifest binds
+policy SHA-256
+`811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641`,
+prepared artifact
+`ccbe7d8b0fbbd47e337d95c715a3676e347de64a1cf483b09dfb647aefd8abe8`,
+output artifact
+`b86df2e70f756c8d9e76dc490c77da015b3c551bf2bce89d7c6ae9163f8dfa46`,
+and system national runtime
+`0f8aebc7d9c7d5dd0a5cfea0ac7b50b520a24f387c3eb6db8924e4661dc0d7eb`.
+These are review identities, not a published Bot identity.
+
+The synchronous policy baseline uses a fixed deterministic `192/256/96`
+flop/turn/river schedule. It may not enumerate the full opponent space.
+Complete `C(45,2)=990` river work is permitted only in deadline-checked
+`iter_decisions`; once complete, its exact frozen-posterior result is emitted
+without retaining a prior blend.
+
+The capability contract is schema 4 / detector v3. Static analysis rejects
+baseline-reachable combinations, callable aliases, oversized nested ranges,
+nested deck-pair sweeps, and system-evaluator aliases including closure capture.
+The runtime probe independently counts top-level `evaluate_seven` calls during
+the baseline and rejects work above 800. The probe identity is
+schema/orchestrator/worker/scenario `16/16/17/8`.
+
+Scenario v8 uses the real delimiter-free `name` handshake: it proves that the
+formal name wire is sent once and that the system-owned isolated policy worker
+is already started before the first decision. This is protocol-true startup,
+not a prewarm exemption. The probe records socket-fallback readiness and
+baseline-publication time against the 200 ms target; it does not substitute a
+worker-local timestamp.
+
+Focused current evidence is: runtime-probe plus capability hardening `47
+passed`; strict bootstrap plus capability hardening `55 passed`; Master/LLM
+contract shards `161 passed`; role/prompt/ownership shards `86 passed`; and
+`validate_blueprint_package()` returns `[]`. The full current Web suite,
+Sever, frontend, compile, diff, review, merge, and live runtime evidence remain
+pending. A CPU-saturated host is not a substitute for a clean timing-gate run.
+
+The stopped `generation:143:workflow-v38` remains governed by the exact
+old-runtime identity already recorded above. After Contract-37 source is fully
+verified and merged, it must be canonical-abandoned by exact CAS on its old
+HEAD, then the stopped runtime may fast-forward, run recovery diagnostics, and
+prepare one fresh v143 workflow. No v38 provider output, candidate byte, or
+checkpoint may replay. Stability remains `0/10`.
+
+## 2026-07-17 — Contract-38 live native-template admission, loaded-host timing, and launch-not-ready
+
+This entry supersedes the Contract-37 current-source identities, cache wording
+and `name`-readiness wording. It is a source-side ledger entry only: it does
+not claim a commit, merge, runtime restart, candidate publication, certificate,
+rating, immutable cycle, strength result, or observation credit.
+
+`evaluation_contract.py` is version 38. The capability contract is schema 5 /
+detector `national-policy-static-v4`; the probe identity is
+schema/orchestrator/worker/scenario `16/17/18/8`. The current strict-v1
+manifest binds policy
+`811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641`,
+prepared-policy bytes
+`28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816`,
+prepared artifact
+`ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278`,
+output artifact
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`,
+and system national runtime 10 /
+`ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366`.
+The separately governed first-strict control binds policy
+`d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4` and
+expected artifact
+`1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2`.
+
+The dynamic-cache boundary is intentionally byte-based. The probe emits a
+schema-2 composite system-runtime authority object for both
+`national_bot.py` and `precompute.py`: each file's exact SHA-256 and size plus
+a canonical `combined_digest`. Quality cache reuse, pipeline/review routing,
+precommit reuse and final commit admission require that same complete object.
+A missing, malformed or changed field — including a precompute-only change —
+is stale, not a compatibility fallback: quality refreshes, precommit does not
+reuse, and final admission rejects. Normal official full-v5 likewise rechecks
+current quality/probe/runtime/artifact identity before its job and immediately
+before the official EXE. The v143 first-strict control remains an explicit
+zero-strength empty-pool exception; it cannot be smuggled into normal v144+
+full-v5 admission.
+
+The strict baseline is fixed `192/256/96`, with all evaluator leaves counted
+against the 800-call cap. Full `C(45,2)=990` river work remains only bounded,
+deadline-checked refinement. The local 200 ms native quality target is stricter
+than, rather than a replacement for, the formal 250 ms policy deadline.
+
+The wire correction is deliberately narrow: the raw delimiter-free `name`
+event initiates the system worker launch before the first decision, but never
+claims that the worker has imported or is ready. One valid reply/launch attempt
+is recorded; duplicate, malformed or failed launch evidence fails native
+compliance. Unfinished launch time remains on the real first-decision
+socket-owner clock. No synthetic prewarm, worker-local timestamp or clean-host
+exception is admissible.
+
+The user-required real-load check left the independent LLL batch evaluator
+running. The checked-in bounded raw-wire probe passed three times in 11.39 s,
+11.49 s and 11.36 s; the relevant first-control/capability/runtime-probe shard
+then passed `74` tests in 26.78 s under that concurrent load. A focused normal
+manual-entry official-admission shard passed `335` tests, but a subsequent
+independent review found its automatic commit→job path omitted the frozen
+receipt. The superseding end-to-end official-admission shard (automatic commit,
+request, schema-5 envelope, job worker and harness) passed `187` tests. These
+are scoped source results, not a replacement for the complete
+Web/Sever/frontend/compile/diff gate and not a certificate or strength proof.
+The older frozen quality-cache evidence was `27` targeted regressions plus
+`157` quality/precommit/pipeline-chain regressions. It is superseded for P1 by
+the source-level schema-2 composite-identity closure. Its current source-freeze
+commands are intentionally non-additive: matrix/prompt/identity `75 passed`,
+authority/probe/quality/pipeline/precommit/capability `146 passed`, official
+admission/harness/job/CLI/sandbox `210 passed`, and post-full-suite fixture
+compatibility `37 passed`. The earlier `355` focused total is a precursor
+subset/overlap label, not a result to add to those commands. It remains
+source-only evidence; complete-suite, independent review, merge and live
+admission remain pending.
+
+Models may find an anomaly and offer a bounded falsifiable repair from the
+frozen evidence envelope. They may not waive a timing/protocol/identity gate,
+select a stale cache, restart a runtime, abandon a checkpoint, publish a Bot,
+or certify a result. Deterministic gate receipts and real native/official
+evidence are the admission authority.
+
+The runtime remains stopped at old HEAD
+`c63253c5ef41f6a41992dcca3d5488706a6e63a8`, with the exact v38 checkpoint
+identity already recorded above. After full source verification, review, commit
+and merge only, perform the governed exact-CAS abandon, validate the finalized
+handoff, fast-forward `.evolution_pok` only through merged `origin/main`, then
+rerun checkpoint/recovery/identity/blueprint/control/official diagnostics and
+reprepare fresh v143. No manual checkpoint/candidate deletion and no replay of
+v38 artifacts is allowed. v143, v144, the immutable two-Bot native rating
+cycle and the resettable ten-generation observation remain pending at `0/10`.
+
+## 2026-07-17 — Future canonical Bot research boundary (A1/A2/B)
+
+The three-Bot v5 research branch remains isolated and zero-authority. It may
+not modify `main`, `.evolution_pok`, the active epoch, a strict candidate,
+rating, H2H, certificate, tag, checkpoint, evidence snapshot, or prompt
+injection. Its code bytes, assets/weights, and measured strength are not
+eligible for copying or inheritance.
+
+If that research later reaches a valid terminal state, future-main must treat
+A1, A2 and B as three separate component-migration proposals rather than pick
+one candidate: A1 contributes range/PBS and value--strategy search behavior;
+A2 contributes linear-CFR blueprint/abstraction/off-tree-resolve behavior; B
+contributes street-level online solve, neural-CFV proposal, dynamic action,
+opponent posterior and match/tournament-control behavior. Each proposal must
+be reimplemented from behavior as a new strict five-file artifact, with any
+required data behind a system-owned content-bound asset path and a fresh
+identity/probe/gate contract. Each first produces zero-strength design evidence
+and then receives new native/official evaluation and certification. A combined
+canonical Bot is a further new five-file artifact and independently repeats
+those gates plus an immutable rating cycle. No research rating, certificate, or
+source provenance substitutes for that work.
+
+## 2026-07-17 — Contract-38 full-suite fixture closure and prompt/matrix P1 completion
+
+The schema-2 two-file identity was already enforced by the production
+authority/probe/quality/precommit/commit/formal-admission chain. A later
+cross-layer review found two non-production omissions and one defensive
+boundary: the final provider overlay did not tell roles that `national_bot.py`
+and `precompute.py` are one composite runtime identity; the executable quality
+matrix did not list that producer/consumer, its owners, or its precompute-drift
+tests; and the probe evidence returned only a shallow projection of nested
+`artifacts`. The overlay now explicitly binds SHA-256/size plus
+`combined_digest`, says precompute-only drift is stale, and forbids cache reuse,
+precommit reuse or certification. The matrix makes the same terms, owners,
+positive/negative regressions and fail-closed path executable. Probe evidence
+now deep-copies its identity so a receipt consumer cannot mutate the process
+authority.
+
+The first complete Web run correctly failed on 18 old test fixtures rather
+than weakening a production gate. Their synthetic quality and runtime records
+lacked the new composite identity, and their normal-full UI job fixture lacked
+the required structural quality admission. The repairs add current identity
+evidence to those fixtures and a schema-valid test-only admission; no
+production quality, precommit, commit, official-certification, or route gate
+was relaxed. The direct failing subset then passed `37` tests, and the complete
+`cd web && PYTHONDONTWRITEBYTECODE=1 <project-python> -m pytest -qq tests`
+command exited `0`.
+
+The frontend cross-language SSE contract initially found no bare `python` in
+the Codex app-server environment (and system `python3` lacked FastAPI). This
+is an environment precondition, not a stream-schema pass: using the project
+Python via `PYTHON=/home/zzx/anaconda3/envs/pytorch/bin/python` produced
+`20 passed`, zero ESLint errors/warnings, and a successful production build.
+The runbook now makes the required interpreter capability explicit. Sever
+passed `33`; the active Python py_compile check passed. These are source-only
+quality facts. The runtime remains stopped, no candidate/checkpoint/rating or
+certificate changed, and no observation credit exists.
+
+## 2026-07-17 — source-only P0 status-owner and P1 live-admission closure (unmerged)
+
+Two remaining cross-layer holes were repaired in the alignment worktree without
+touching `.evolution_pok`, a Web/runtime process, candidate state, rating,
+certificate, tag, or background evaluation. First, a checkpoint tuple alone
+could not distinguish task A from a replacement task B at the same revision and
+stage, leaving a short stale “Master planning” display path. `WebUI.set_status`
+now obtains the live UUID-shaped `AppState.task_snapshot().owner_id`; the
+status identity, `/state`, SSE replay filter, TypeScript validator/controller,
+and `EvolutionMonitor` all require exact owner equality. Missing, malformed,
+inactive, or replaced owners fail closed. The executable matrix now names every
+producer/consumer and tests the same-tuple A→B rejection.
+
+Second, normal full-v5 job requests previously had a structural admission at
+creation but could wait in the durable queue after their current checkpoint,
+quality, probe, runtime, or artifact evidence drifted. The job manager now
+calls `_live_normal_full_admission_issues` before a fresh request is persisted,
+before a queued/retry job can occupy the official queue, and directly before
+`Popen`; the formal harness retains its EXE-adjacent rebind. Fresh drift returns
+non-pending `quality_admission` without `request.json` or `state.json`; an
+already queued stale job is persisted terminal and cannot block a corrected
+request. The pytest-only full runner now includes `spec_record(spec)` in its
+job envelope so tests exercise the same quality-admission fields as production.
+
+Focused evidence at this point is `163 passed` for matrix/prompt/routes +
+official job + official certification, and frontend SSE is `20 passed`. This is source-only
+evidence and not a full-suite, merge, runtime recovery, official certificate,
+rating, or strength claim. Full Web/Sever/frontend build/compile/diff and an
+independent review remain required before the governed v38 abandon/reprepare
+sequence; stability remains `0/10`.
+
+## 2026-07-17 — source-only P1/P2 closure: immediate owner invalidation and quality classification
+
+The initial owner fence correctly rejected a status from owner A after owner B
+replaced it, but the page learned B only through its five-second control-health
+poll. `AppState` now emits a best-effort, lock-external task snapshot listener
+on every ownership transition. The app publishes only the minimal typed
+`{present, done, owner_id}` projection as `task_owner`; the SSE route supplies
+an initial projection on connect and rechecks each queued/ring lifecycle row
+against the live owner before delivery. The typed frontend controller validates
+that event, and `EvolutionMonitor` clears an accepted A status immediately on
+the B lifecycle projection. `/state` transient status is additionally checked
+by the frontend's same schema and 30-second/5-second-skew time window. A
+malformed, missing, stopped, replayed, or replacement-owner projection is a
+neutral display state, never a progress claim.
+
+The normal full-v5 admission rebind is now also performed after the certification
+worker claims its durable attempt and before it enters the certification runner.
+Live drift at this point terminates the job as `failed/quality_admission` with
+`failure_class=quality`; `tool_commit` preserves that class as
+`quality_admission_blocked` instead of turning it into an infrastructure retry.
+The executable matrix, role overlay, runbook and continuation prompt name all
+five rebind points (durable creation, queued/retry queue claim, pre-`Popen`,
+worker claim and harness EXE fence), producer/consumer ownership, the test-only
+normal-full envelope, and the new frontend authority boundary.
+
+Focused evidence after this closure is `245 passed` for control/evolution route,
+official job/certification/commit and alignment-matrix tests; frontend SSE has
+`20 passed`, ESLint is clean, and the production build succeeds. These are
+source-only checks. They do not start or modify `.evolution_pok`, the stopped
+v38 checkpoint, a candidate, an official job, a certificate, rating, tag, or
+stability evidence; the observation remains `0/10`. Full Web/Sever/compile/diff
+verification and independent review are still required before a commit, merge,
+or governed runtime recovery.
+
+## 2026-07-17 — source-only P2 closure: HTTP/SSE lifecycle ordering and commit retry boundary
+
+The owner lifecycle stream now carries a monotonic `lifecycle_revision` from
+`AppState`. The same revision is emitted in the minimal `task_owner` projection
+and returned by `/api/evolution/state` as `transient_status_task`. The page
+does not consume an HTTP transient phrase until its connected SSE stream has
+confirmed exactly that owner/revision; a later or already-observed replacement
+therefore rejects the old snapshot rather than briefly reviving it. The route,
+TypeScript schema and matcher all fail closed on a missing, malformed or
+stale-revision projection. This closes the independent-connection arrival-order
+edge without treating a UI event as workflow evidence.
+
+An end-to-end `commit_bot` regression now drives a terminal
+`quality_admission_blocked` result through the publication tool and proves that
+it records the controlled official-gate terminal state, never calls
+`_record_infrastructure_failure`, and never reaches Git publication. The matrix
+lists this as a quality-admission positive regression alongside the worker-claim
+live rebind. The current focused P2 shard is `167 passed`; it is source-only
+evidence and does not alter the stopped v38 runtime, candidate pool, ratings,
+certificate, tags or the `0/10` observation.
+
+## 2026-07-17 — unmerged P1 lifecycle authority and final-admission classification
+
+This entry supersedes the prior P2 wording that allowed a connected page to
+consume an HTTP transient phrase after an SSE owner/revision confirmation. That
+ordering still leaves a same-revision HTTP/SSE race capable of reviving old
+human text. In the current source contract, `/api/evolution/state` contributes
+only the sampled task lifecycle projection as a high-water/invalidation input.
+While an SSE stream is connected, a page accepts human transient status text
+only from a current SSE `status` event. An HTTP phrase never displays, revives,
+or replaces text. A lower lifecycle revision or an equal revision with a
+different projection is rejected; stream disconnect clears text rather than
+falling back to HTTP.
+
+The lifecycle projection is now explicit about shutdown:
+`{present, done, shutdown_requested, status_eligible, owner_id,
+lifecycle_revision}`. `ShutdownManager.request_shutdown()` and the signal path
+publish the first same-owner shutdown edge through `AppState`, advancing the
+monotonic revision. Thus a direct Stop request immediately invalidates a
+previous “Master planning” phrase and renders an explicit non-green stopping
+state while cleanup is pending. A stale manager/owner may not affect a
+replacement owner. This is UI liveness only; it creates no workflow, checkpoint
+or strength evidence.
+
+Normal full-v5 now also distinguishes the final EXE-adjacent structural
+admission outcome from infrastructure failure. A failed
+`build_formal_quality_admission` is a typed quality error that escapes the
+harness's generic infrastructure conversion. The durable job becomes terminal
+`failed/quality_admission`; `tool_commit` preserves
+`quality_admission_blocked`, clears the stale official job, keeps the pipeline
+at `official_certifying`, and routes only through deterministic quality refresh
+before a new official request. It never reserves/retries the old job as an
+infrastructure result, invokes EXE work after the failed admission, or reaches
+Git publication.
+
+The delivery contract was corrected at the same time: because the stopped v38
+checkpoint's active-stage evaluation contract changed, merge is followed by
+old-HEAD exact-CAS canonical abandon, finalized handoff/quarantine/cleared-
+checkpoint validation, and only then a stopped `.evolution_pok` fast-forward
+from merged `origin/main` plus recovery diagnostics. The checkpoint-free,
+no-contract-drift path is separately allowed to fast-forward first. No manual
+checkpoint or candidate deletion is authorized.
+
+This source batch also records the development discipline: every behavior, ABI,
+protocol, gate, prompt, data, lifecycle, or test-harness change updates the
+focused/full test workflow, fixtures, positive/negative anchors, and operator
+commands in the same batch. A skipped, weakened, or reclassified test requires
+a documented fail-closed replacement. Focused/full reruns for this P1 source
+batch are still required before a commit or runtime operation. Nothing in this
+entry starts, stops, synchronizes, or changes `.evolution_pok`, a candidate,
+rating, certificate, tag, official job, or the `0/10` observation.
+
+## 2026-07-17 — unmerged P1 hardening: marker-constrained quality resume and authority-loss recovery
+
+This entry narrows the prior quality-refresh description. `official_certifying`
+normally represents an attached official job and, including ordinary HEAD-drift
+resume, remains `commit_bot`-only. The dynamic `run_quality_gates` route exists
+only when the current checkpoint has the complete exact
+`gate_results.official_full` marker:
+`outcome=quality_admission_blocked`, `failure_class=quality`, and
+`quality_admission_refresh=true`. That exception preserves
+`requires_contract_unchanged` and the exact checkpoint
+revision/stage/workflow CAS. A missing, partial, conflicting, or
+infrastructure-class marker does not widen the route; it stays on the ordinary
+poll path. The exception is quality refresh only: it does not start Workers,
+retry the old EXE job, or reuse its result. A fresh quality/review/Critic/
+precommit chain must precede any new official request.
+
+The status-plane repair also closes the authority-loss edge. A FastAPI lifespan
+stops only an owner in its registered set, while both automatic launch and a
+later successful `/api/control/start` register their owner. At shutdown it
+resolves the current owner and shutdown manager through `AppState`, rather than
+using the manager captured when the lifespan began, so a later registered
+control-start owner receives graceful shutdown without a foreign owner gaining
+stop authority.
+
+When a task snapshot cannot be projected authoritatively, backend/SSE emits
+`task_authority_lost` instead of inventing a `task_owner` event or a synthetic
+`R+1` lifecycle revision. HTTP null/malformed projections and malformed SSE
+`status`/`task_owner` frames clear transient human text. They retain the last
+verified fence: a later exact valid projection at the same revision may restore
+authority, but a different projection at that same revision is a sticky
+conflict until a genuinely higher revision arrives. This is a display-authority
+fence only; it creates no checkpoint, workflow, certificate, rating, or
+strength evidence.
+
+The runbook, continuation prompt, AGENTS contract and executable matrix now
+record both conditions. Focused/full source tests, frontend tests, build,
+compile and diff checks for this newest P1 hardening remain required before a
+commit, merge, runtime synchronization, or launch. No `.evolution_pok` file,
+runtime process, candidate, official job, tag, certificate, rating, or `0/10`
+observation was changed by this documentation update.

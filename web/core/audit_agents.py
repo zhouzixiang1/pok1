@@ -443,6 +443,14 @@ def _render_crossover_compat_provider_prompt(inputs):
             inputs["architecture_context"], indent=2, ensure_ascii=False
         )[:8000],
     })
+    # This advisory crossover-audit renderer cannot alter a candidate or
+    # publish an effect by itself, but it still reasons about active strict
+    # policy bytes.  Bind the same current system-owned national runtime
+    # contract as every other provider-facing role so it cannot recommend an
+    # obsolete protocol/timing/ABI premise.
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
 
     return LLMRenderedMaterial(
         text=text,

@@ -8,8 +8,25 @@ from typing import Any
 from bot_artifact import canonical_digest
 
 
-JOB_ENVELOPE_SCHEMA_VERSION = 4
+JOB_ENVELOPE_SCHEMA_VERSION = 5
 JOB_ENVELOPE_KIND = "official-exe-durable-job-envelope"
+
+
+def _normal_full_quality_admission_required(spec: dict[str, Any]) -> bool:
+    """Use the spec-owned strict normal/full distinction, never a caller hint."""
+
+    try:
+        from official_certification import normal_full_quality_admission_required
+
+        return bool(normal_full_quality_admission_required(spec))
+    except Exception:
+        # A malformed/unknown request is not allowed to claim a normal full
+        # quality waiver.  The request validator will report the precise spec
+        # error; this conservative value still prevents an envelope from
+        # silently downgrading a strict full job.
+        return str(spec.get("mode") or "") == "full" and not spec.get(
+            "bootstrap_control_id"
+        )
 
 
 def build_job_envelope(
@@ -31,6 +48,22 @@ def build_job_envelope(
         and isinstance(selection.get("operator_bootstrap_authorization"), dict)
         else None
     )
+    spec = request.get("spec") if isinstance(request.get("spec"), dict) else {}
+    quality_admission = (
+        spec.get("quality_admission")
+        if isinstance(spec.get("quality_admission"), dict)
+        else None
+    )
+    quality_admission_required = _normal_full_quality_admission_required(spec)
+    if quality_admission_required:
+        from official_certification import normal_full_quality_admission_issues
+
+        admission_issues = normal_full_quality_admission_issues(spec)
+        if admission_issues:
+            raise ValueError(
+                "strict normal full official job requires a complete "
+                "quality admission: " + ", ".join(admission_issues)
+            )
     payload = {
         "schema_version": JOB_ENVELOPE_SCHEMA_VERSION,
         "kind": JOB_ENVELOPE_KIND,
@@ -57,7 +90,21 @@ def build_job_envelope(
             and selection.get("bootstrap_control_id")
             else None
         ),
+        "certification_mode": str(spec.get("mode") or ""),
+        "candidate_path": str(spec.get("candidate") or ""),
         "source_v": request.get("source_v"),
+        # Normal formal jobs carry the compact quality/capability/probe
+        # admission in the envelope as well as the identity-bound spec.  The
+        # field is optional at this generic schema layer because the explicit
+        # first-strict bootstrap has a separate operator authorization; the
+        # production harness enforces one of those two paths before EXE work.
+        "quality_admission": quality_admission,
+        "quality_admission_digest": (
+            canonical_digest(quality_admission)
+            if quality_admission is not None
+            else None
+        ),
+        "quality_admission_required": quality_admission_required,
         "suite_path_digest": canonical_digest({
             "suite_dir": str(Path(suite_dir).expanduser().resolve()),
         }),
@@ -123,6 +170,49 @@ def job_envelope_issues(
     )
     if envelope.get("bootstrap_control_id") != expected_bootstrap_control_id:
         issues.append("official_job_envelope_bootstrap_control_id_mismatch")
+    certification_mode = envelope.get("certification_mode")
+    candidate_path = envelope.get("candidate_path")
+    quality_admission_required = envelope.get("quality_admission_required")
+    try:
+        from official_certification import normal_full_quality_admission_required
+
+        expected_quality_admission_required = normal_full_quality_admission_required({
+            "mode": certification_mode,
+            "bootstrap_control_id": envelope.get("bootstrap_control_id"),
+            "candidate": candidate_path,
+        })
+    except Exception:
+        expected_quality_admission_required = (
+            certification_mode == "full"
+            and not envelope.get("bootstrap_control_id")
+        )
+    if type(quality_admission_required) is not bool:
+        issues.append("official_job_envelope_quality_admission_required_invalid")
+    elif quality_admission_required is not expected_quality_admission_required:
+        issues.append("official_job_envelope_quality_admission_required_mismatch")
+    quality_admission = envelope.get("quality_admission")
+    if quality_admission is not None and not isinstance(quality_admission, dict):
+        issues.append("official_job_envelope_quality_admission_invalid")
+        quality_admission = None
+    expected_quality_admission_digest = (
+        canonical_digest(quality_admission)
+        if quality_admission is not None
+        else None
+    )
+    if envelope.get("quality_admission_digest") != expected_quality_admission_digest:
+        issues.append("official_job_envelope_quality_admission_digest_mismatch")
+    if expected_quality_admission_required:
+        if not isinstance(candidate_path, str) or not candidate_path.strip():
+            issues.append("official_job_envelope_quality_admission_candidate_path_invalid")
+        else:
+            from official_platform_harness import formal_quality_admission_integrity_issues
+
+            issues.extend(
+                formal_quality_admission_integrity_issues(
+                    quality_admission,
+                    candidate=candidate_path,
+                )
+            )
     for key in (
         "job_id",
         "request_digest",

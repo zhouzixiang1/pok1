@@ -23,8 +23,8 @@ import stat
 from typing import Any, Iterable
 
 
-CAPABILITY_SCHEMA_VERSION = 3
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v2"
+CAPABILITY_SCHEMA_VERSION = 5
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v4"
 DECISION_CONTEXT_SCHEMA_VERSION = 1
 POLICY_ENTRYPOINTS = {
     "get_baseline_decision": ("context",),
@@ -173,6 +173,16 @@ _CONTEXT_DEEP_SCAN_CALLS = frozenset({
 })
 _HISTORY_SCAN_METHODS = frozenset({"copy", "items", "keys", "values"})
 _MAX_POLICY_LITERAL_ENTRIES = 4096
+# Cap top-level system evaluator invocations in the synchronous baseline.
+# The sandbox probe uses the same unit, so static and dynamic gates cannot
+# quietly diverge on an 800-call boundary.
+BASELINE_EVALUATOR_CALL_CAP = 800
+_SYSTEM_EVALUATOR_SYMBOLS = frozenset({
+    "precompute.evaluate_five",
+    "precompute.best_hand_rank",
+    "precompute.evaluate_seven",
+    "precompute.compare_hands",
+})
 _FORBIDDEN_REFLECTION_ATTRIBUTES = frozenset({
     "__builtins__",
     "__dict__",
@@ -297,6 +307,227 @@ def _function_map(tree: ast.Module | None) -> dict[str, ast.FunctionDef | ast.As
         for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+
+
+def _baseline_full_enumeration_locations(tree: ast.Module | None) -> list[str]:
+    """Find full-combination calls reachable from the synchronous baseline.
+
+    Full river enumeration is valid only in ``iter_decisions`` where every
+    batch rechecks its monotonic deadline.  This AST reachability guard follows
+    direct helper and callable-alias paths, rejects the concrete combinator
+    primitive and known oversized nested-range pair loops from
+    ``get_baseline_decision``, while allowing those operations in refinement.
+    A system-owned dynamic phase counter separately limits baseline evaluator
+    work; neither gate substitutes for the other.
+    """
+
+    functions = _function_map(tree)
+    baseline = functions.get("get_baseline_decision")
+    if baseline is None:
+        return []
+    callable_defs: dict[str, list[ast.FunctionDef | ast.AsyncFunctionDef]] = {}
+    # The candidate can hide an expensive helper in a nested function or a
+    # class method.  Attribute calls are ambiguous without execution, so keep
+    # all same-named definitions and inspect them conservatively.
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            callable_defs.setdefault(node.name, []).append(node)
+
+    symbol_aliases: dict[str, str] = {}
+    function_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                symbol_aliases[alias.asname or alias.name.split(".", 1)[0]] = (
+                    alias.name
+                )
+        elif isinstance(node, ast.ImportFrom):
+            module = str(node.module or "")
+            for alias in node.names:
+                if alias.name != "*":
+                    symbol_aliases[alias.asname or alias.name] = (
+                        f"{module}.{alias.name}" if module else alias.name
+                    )
+
+    # Resolve straight-line aliases such as
+    # ``combo = itertools.combinations`` before walking reachable code.
+    # Dynamic reflection is separately forbidden by this detector.
+    for _ in range(8):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            symbol = _qualified_symbol(node.value, symbol_aliases, {})
+            if not symbol:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in _assigned_names(target):
+                    if symbol_aliases.get(name) != symbol:
+                        symbol_aliases[name] = symbol
+                        changed = True
+        if not changed:
+            break
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            if not isinstance(value, ast.Name) or value.id not in callable_defs:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in _assigned_names(target):
+                    function_aliases[name] = value.id
+
+    deck_aliases: set[str] = set()
+
+    def is_deck_source(value: ast.AST) -> bool:
+        return bool(
+            isinstance(value, ast.Call)
+            and _qualified_symbol(value.func, symbol_aliases, {})
+            == "precompute.deck_without"
+        )
+
+    def is_deck_value(value: ast.AST) -> bool:
+        if isinstance(value, ast.Name):
+            return value.id in deck_aliases
+        if isinstance(value, ast.Subscript):
+            return is_deck_value(value.value)
+        if isinstance(value, ast.Starred):
+            return is_deck_value(value.value)
+        if isinstance(value, ast.Call):
+            return is_deck_source(value) or any(
+                is_deck_value(argument) for argument in value.args
+            )
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            return any(is_deck_value(item) for item in value.elts)
+        return False
+
+    for _ in range(8):
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            if not (is_deck_source(node.value) or is_deck_value(node.value)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                for name in _assigned_names(target):
+                    if name not in deck_aliases:
+                        deck_aliases.add(name)
+                        changed = True
+        if not changed:
+            break
+
+    def range_work_bound(node: ast.AST) -> int | None:
+        exact = _range_cardinality(node)
+        if exact is not None:
+            return exact
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "range"
+            and 2 <= len(node.args) <= 3
+            and not node.keywords
+        ):
+            return None
+        stop = _constant_int(node.args[1])
+        if stop is None:
+            return None
+        # An expression such as ``range(left + 1, 45)`` has no exact static
+        # cardinality, but 45 remains a sound finite upper bound for detecting
+        # a nested 45-card pair sweep.  This is intentionally conservative.
+        return max(0, abs(stop))
+
+    def nested_range_work(node: ast.For | ast.AsyncFor) -> int | None:
+        own_size = range_work_bound(node.iter)
+        if own_size is None:
+            return None
+        largest = own_size
+        for child in node.body:
+            if not isinstance(child, (ast.For, ast.AsyncFor)):
+                continue
+            child_size = nested_range_work(child)
+            if child_size is not None:
+                largest = max(largest, own_size * child_size)
+        return largest
+
+    reachable = {id(baseline)}
+    frontier = [baseline]
+    while frontier:
+        function = frontier.pop()
+        for call in ast.walk(function):
+            if not isinstance(call, ast.Call):
+                continue
+            if isinstance(call.func, ast.Name):
+                callee = function_aliases.get(call.func.id, call.func.id)
+            elif isinstance(call.func, ast.Attribute):
+                callee = call.func.attr
+            else:
+                continue
+            for candidate in callable_defs.get(callee) or ():
+                if id(candidate) not in reachable:
+                    reachable.add(id(candidate))
+                    frontier.append(candidate)
+
+    locations: list[str] = []
+    for function in sorted(
+        (
+            node
+            for nodes in callable_defs.values()
+            for node in nodes
+            if id(node) in reachable
+        ),
+        key=lambda node: (node.lineno, node.col_offset, node.name),
+    ):
+        for call in ast.walk(function):
+            if not isinstance(call, ast.Call):
+                continue
+            symbol = _qualified_symbol(call.func, symbol_aliases, {})
+            if symbol == "itertools.combinations" or symbol.endswith(
+                ".combinations"
+            ):
+                locations.append(
+                    f"policy.py:{call.lineno}:baseline_full_enumeration"
+                )
+        for loop in ast.walk(function):
+            if not isinstance(loop, (ast.For, ast.AsyncFor)):
+                continue
+            work = nested_range_work(loop)
+            if work is not None and work > BASELINE_EVALUATOR_CALL_CAP:
+                locations.append(
+                    f"policy.py:{loop.lineno}:baseline_full_enumeration"
+                )
+        for expression in ast.walk(function):
+            if not isinstance(
+                expression,
+                (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp),
+            ):
+                continue
+            sizes = [range_work_bound(item.iter) for item in expression.generators]
+            if sizes and all(size is not None for size in sizes):
+                work = 1
+                for size in sizes:
+                    work *= int(size)
+                if work > BASELINE_EVALUATOR_CALL_CAP:
+                    locations.append(
+                        f"policy.py:{expression.lineno}:baseline_full_enumeration"
+                    )
+        for outer in ast.walk(function):
+            if not isinstance(outer, (ast.For, ast.AsyncFor)) or not is_deck_value(
+                outer.iter
+            ):
+                continue
+            if any(
+                isinstance(inner, (ast.For, ast.AsyncFor))
+                and inner is not outer
+                and is_deck_value(inner.iter)
+                for inner in ast.walk(outer)
+            ):
+                locations.append(
+                    f"policy.py:{outer.lineno}:baseline_full_enumeration"
+                )
+    return list(dict.fromkeys(locations))
 
 
 def _signature_ok(node: ast.AST | None, expected: tuple[str, ...]) -> bool:
@@ -685,6 +916,8 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
             "large_literal_locations": [],
             "context_fields": set(),
             "history_scan_locations": [],
+            "baseline_full_enumeration_locations": [],
+            "evaluator_alias_locations": [],
         }
     string_constants: dict[str, str] = {}
     symbol_aliases: dict[str, str] = {}
@@ -699,6 +932,12 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
     large_literal_locations: list[str] = []
     context_fields: set[str] = set()
     history_scan_locations: list[str] = []
+    evaluator_alias_locations: list[str] = []
+    parent_by_id = {
+        id(child): parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -908,7 +1147,23 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
             imports.add(root)
             if root in _FORBIDDEN_IMPORT_ROOTS:
                 forbidden_imports.append(f"policy.py:{node.lineno}:{root}")
+            if root == "precompute":
+                for alias in node.names:
+                    symbol = f"precompute.{alias.name}"
+                    if symbol in _SYSTEM_EVALUATOR_SYMBOLS:
+                        evaluator_alias_locations.append(
+                            f"policy.py:{node.lineno}:evaluator_alias:{alias.name}"
+                        )
         elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            symbol = _qualified_symbol(
+                node.value,
+                symbol_aliases,
+                string_constants,
+            )
+            if symbol in _SYSTEM_EVALUATOR_SYMBOLS:
+                evaluator_alias_locations.append(
+                    f"policy.py:{node.lineno}:evaluator_alias"
+                )
             size = _constructed_size(node.value, size_aliases)
             if size is not None and size > _MAX_POLICY_LITERAL_ENTRIES:
                 large_literal_locations.append(
@@ -1093,6 +1348,33 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
                 if kind.value == "raise" and "raise_to" in literal_map:
                     raise_dict_locations.append(f"policy.py:{node.lineno}")
 
+    # A policy may call a system evaluator directly through the precompute
+    # module, but it may never retain one as a value.  Defaults, containers,
+    # closures, partials, class attributes and getattr all bypass post-import
+    # instrumentation if this boundary is not structural.  Checking the
+    # reference itself is more complete than attempting to enumerate Python
+    # value carriers.
+    for node in ast.walk(tree):
+        symbol = _qualified_symbol(node, symbol_aliases, string_constants)
+        if symbol not in _SYSTEM_EVALUATOR_SYMBOLS:
+            continue
+        parent = parent_by_id.get(id(node))
+        direct_module_call = (
+            isinstance(node, ast.Attribute)
+            and isinstance(parent, ast.Call)
+            and parent.func is node
+            and _qualified_symbol(
+                node.value,
+                symbol_aliases,
+                string_constants,
+            )
+            == "precompute"
+        )
+        if not direct_module_call:
+            evaluator_alias_locations.append(
+                f"policy.py:{getattr(node, 'lineno', 0)}:evaluator_alias"
+            )
+
     return {
         "imports": imports,
         "forbidden_imports": forbidden_imports,
@@ -1105,6 +1387,12 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
         "large_literal_locations": list(dict.fromkeys(large_literal_locations)),
         "context_fields": context_fields,
         "history_scan_locations": list(dict.fromkeys(history_scan_locations)),
+        "baseline_full_enumeration_locations": (
+            _baseline_full_enumeration_locations(tree)
+        ),
+        "evaluator_alias_locations": list(
+            dict.fromkeys(evaluator_alias_locations)
+        ),
     }
 
 
@@ -1202,6 +1490,10 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         "history_scan_locations"
     ]
     table_ok = not static["large_literal_locations"]
+    baseline_enumeration_ok = not static[
+        "baseline_full_enumeration_locations"
+    ]
+    baseline_evaluator_alias_ok = not static["evaluator_alias_locations"]
     context_used = bool("context" in static["loaded_names"])
     context_fields = set(static["context_fields"])
 
@@ -1248,14 +1540,46 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
         ),
         _check(
             "fast_policy_baseline",
-            baseline_ok and candidate_io_ok and table_ok,
-            guidance="Keep get_baseline_decision synchronous, I/O-free, and free of oversized construction.",
+            (
+                baseline_ok
+                and candidate_io_ok
+                and table_ok
+                and baseline_enumeration_ok
+                and baseline_evaluator_alias_ok
+            ),
+            guidance=(
+                "Keep get_baseline_decision synchronous, I/O-free, free of "
+                "oversized construction, and free of full opponent-hole "
+                "enumeration or system-evaluator aliases; place complete river "
+                "work only in deadline-checked iter_decisions."
+            ),
             summary=(
                 "bounded synchronous policy baseline"
-                if baseline_ok and candidate_io_ok and table_ok
-                else "baseline is missing, blocking, or performs forbidden work"
+                if (
+                    baseline_ok
+                    and candidate_io_ok
+                    and table_ok
+                    and baseline_enumeration_ok
+                    and baseline_evaluator_alias_ok
+                )
+                else (
+                    "baseline is missing, blocking, performs forbidden work, "
+                    "reaches full opponent enumeration, or aliases a system evaluator"
+                )
             ),
-            locations=["policy.py:get_baseline_decision"],
+            locations=[
+                "policy.py:get_baseline_decision",
+                *static["baseline_full_enumeration_locations"],
+                *static["evaluator_alias_locations"],
+            ],
+            details={
+                "baseline_full_enumeration_locations": static[
+                    "baseline_full_enumeration_locations"
+                ],
+                "evaluator_alias_locations": static[
+                    "evaluator_alias_locations"
+                ],
+            },
         ),
         _check(
             "policy_refinement_entrypoint",

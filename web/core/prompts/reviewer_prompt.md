@@ -148,7 +148,8 @@ You check ONLY these five areas:
    100% raise-on-line policies; one selected identity proves reachability, not
    mixing.
 
-   **Refinement evidence check** — Measure a socket-validated typed baseline strictly under 250 ms,
+   **Refinement evidence check** — Measure a socket-validated typed baseline against its authoritative
+   `deadline.baseline_target_ms` (200 ms in native precommit; strictly under 250 ms is the formal ceiling),
    then compare fixed-seed bounded budget tiers. Candidate `sample_count`,
    confidence, and `complete` are diagnostic only; require system-trusted
    iterator steps, CPU/elapsed time, true exhaustion/termination, and validated intent
@@ -165,6 +166,19 @@ You check ONLY these five areas:
    that it can shorten, bypass, alter the plan digest/engine progress heartbeat,
    turn a cap hit into a normal street closure, or convert that budget into a
    quality pass.
+
+   The current strict baseline must preserve its deterministic 192/256/96
+   flop/turn/river schedule, two direct evaluator calls per sample, and the
+   800 top-level evaluator-call dynamic cap unless the evaluation contract and
+   its positive/negative evidence explicitly change together. Reject a
+   baseline evaluator alias (including imported, closure, or default aliases),
+   `itertools.combinations`, or a nested deck-pair sweep. At river, reject any
+   synchronous baseline that exhausts all remaining opponent holes. A compact
+   prior is only invalid/degraded-input fallback or refinement initialization;
+   full `C(45,2)` enumeration must appear only in bounded, deadline-checked
+   refinement and must still prove a timely socket-visible baseline first. Also
+   verify that the actual `name` handshake starts the system-owned worker before
+   preflop without resetting the target decision clock.
 
    **Attribution check** — Exactly one strategy primary may be newly blocking:
    one work primitive, one opponent-profile dimension, or one line control.

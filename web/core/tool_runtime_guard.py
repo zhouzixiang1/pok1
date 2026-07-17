@@ -531,10 +531,10 @@ def _head_change_allowed_for_checkpoint_resume(
     except Exception:
         return False, {}
     stage = str(checkpoint.get("stage") or "")
-    allowed_tools = head_drift_allowed_tools(stage)
+    allowed_tools = head_drift_allowed_tools(stage, checkpoint=checkpoint)
     if tool_name not in allowed_tools:
         return False, {}
-    resume_policy = head_drift_resume_policy(stage) or {}
+    resume_policy = head_drift_resume_policy(stage, checkpoint=checkpoint) or {}
     current_branch = _branch_name(str(snapshot.get("branch") or ""))
     branch_alias_allowed = _branch_alias_allowed_for_tool(tool_name, snapshot)
     if current_branch != EVOLUTION_BRANCH and not branch_alias_allowed:

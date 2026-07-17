@@ -101,7 +101,11 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    binding、选中 reachable chain 上的真实 AST delta 和候选 typed check。该结果只证明有界
    mechanism/capability，不得声称自由文本 counterfactual 已执行或 Bot 已变强；强度只能由
    后续完整 native 70 手 W/L/D 样本证明。Master binding/schema 错误必须进入下一轮实际
-   rendered prompt，不能写入未消费的局部字符串。
+   rendered prompt，不能写入未消费的局部字符串。只有已完成但被确定性 projection 判为
+   无效的输出可消耗一次 schema/distinctness retry；SDK/transport failure 必须进入
+   `MasterInfrastructureError`，已确认 parent cancellation 是控制停机，二者都不得伪装为
+   schema retry。连续循环对同一 `(next_v, source_v)` 的第三次已验证 canonical abandon
+   必须停机并要求显式审查/重启，绝不准备第四个 workflow。
 9. UI 必须把 Critic 的 `approved` 解释为 advisory 调用完成，只用
    `advisory_approved` 显示建议方向；独立 checkpoint 只有在 schema-2、正整数 revision
    及 epoch/version/stage/run/workflow 全部与 active generation 相同时才可显示。
@@ -113,6 +117,11 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    都不是 clean absence。Start 必须精确匹配 active route、post-publication identity 或
    clean scheduler 三者之一。owner reservation 前后双采样同一 fence；未获 owner 的
    lifespan 不得改 live running/UI/ShutdownManager，全局 LLM manager 也必须 exact-owner CAS。
+   lifespan 只停止它已注册的 owner，但自动 launch 和成功的后续 `/api/control/start`
+   都必须注册；关闭时通过当前 `AppState` manager 而不是启动时缓存的 manager 覆盖这个
+   后续 owner。无权威 task snapshot 只能发 `task_authority_lost`，HTTP null/畸形或
+   SSE malformed 的 status/task_owner 都清 transient text，绝不伪造 `R+1`；保留最后
+   验证的 fence 后，后续完全相同的有效 R 投影可恢复，冲突的同 R 必须等真正更高 R。
    `--no-daemon` 且 PID 不存在是健康的 `not_applicable`，但 enabled-missing 或
    disabled-live daemon 仍必须 degraded。`daemon_pairs` 在持久配置、API、stability
    identity、进程 argv/owner、elo CLI、前端和 restart script 中必须统一为 1..8；一对是
@@ -138,6 +147,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
   管理 provider 会话；所有废弃/隔离都必须走 canonical transaction。
 - 变更必须更新 alignment matrix、delivery ledger 和本 continuation prompt 的实时
   handoff 段；这些文件仍不得进入策略提示词。
+- 行为、ABI、协议、门禁、提示词、数据、生命周期或 test-harness 的变更，必须在
+  同一批次同步更新 focused/full 测试流程、fixture、正反 regression anchor 与操作命令。
+  任何 skip、弱化或重分类都必须有记录在案的 fail-closed 替代门，不能把未测路径
+  写成通过。
 
 执行顺序：
 1. 验证当前分支/HEAD/dirty 状态和进程；安全清理仅限已合并且干净的工作分支，
@@ -150,9 +163,12 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    `compileall` 扫描）、git diff --check。
    host 缺少 Bubblewrap/NETLINK/Wine 时只能报告 probe_infra，不能算 Bot 失败或通过。
 4. commit/push task branch，在干净 integration worktree 合并并 push origin/main。
-5. 停止点 fast-forward .evolution_pok；合同变化时走 canonical abandon/re-prepare，
-   不手删 checkpoint。验证复杂 Claude SDK 多工具调用，再启动长期 web/orchestrator/
-   rating daemon。
+5. 若 runtime checkpoint-free 且 active-stage contract 未变化，才可在停止点仅经
+   `origin/main` fast-forward `.evolution_pok` 后诊断。若 checkpoint 存在且合同变化，
+   必须保持 runtime 在记录的旧 HEAD，先 exact-CAS canonical abandon，验证 finalized
+   handoff、quarantine 与 cleared checkpoint，再 fast-forward 并运行诊断；绝不手删
+   checkpoint/candidate。随后才验证复杂 Claude SDK 多工具调用并启动长期
+   web/orchestrator/rating daemon。
 6. v143 先核对 jobs API 的 digest-bound `ready_to_finalize`，再执行 acknowledged
    operator finalize；随后完成 v144 和首个 immutable rating cycle。核对
    certificate/tag/tree/source/cutoff/replay hash 和 official 零强度。
@@ -909,3 +925,338 @@ and consume only the returned task ID.
 No v143/v144 publication, certificate, rating row, immutable two-Bot cycle or
 N/10 observation exists at this handoff. Any repair, manual state cleanup or
 restart resets the observation count; current value is `0/10`.
+
+## Latest superseding handoff: contract 35 and stopped workflow-v38
+
+All earlier directions to resume workflow-v34 or treat v35–v38 provider output
+as reusable are historical. The source repair is detached and not yet in
+`origin/main`; the runtime must remain stopped on old HEAD
+`c63253c5ef41f6a41992dcca3d5488706a6e63a8` until the reviewed commit is merged.
+
+Before any runtime mutation, re-read the current checkpoint and require exactly:
+
+- workflow `generation:143:workflow-v38`;
+- `next_v=143`, `source_v=142`, `checkpoint_revision=4`,
+  `stage=direction_audited`;
+- transaction identity digest
+  `6f7da5bef18c03841cd0094cc75ba67d7cabd30efae439880089f72e20aba190`;
+- candidate quarantine preimage digest
+  `6bd0374559da9bac75f723bfebdc4da900935fd726ef0cf3f9254a2f96250559`.
+
+`national_v143` remains only an unpublished strict five-file candidate. It has
+no `.completed`, certificate, annotated completion tag, rating, strength
+sample or stability credit. Its incidental `__pycache__` files are excluded by
+the strict ABI validator but included in the canonical abandonment preimage;
+never delete them or the candidate manually.
+
+Contract 35 separates failures that had previously been confused: a completed
+deterministic-invalid Master output alone can receive the one schema/distinctness
+repair; provider/SDK/transport errors are `MasterInfrastructureError`; a parent
+cancellation is clean only after exact owned cleanup proof. Proposal Scouts use
+their bounded 120/240/240/900 timeout policy and receive only ABI-reachable
+source edges, typed capability feedback and targeted repair hints. They must
+still reject foreign targets even in disclaimers and bare shared leaves.
+
+The scheduler additionally requires an exact finalized canonical-abandon proof
+before it can prepare another workflow. It may hand off only two abandons for
+the same `(next_v, source_v)`; a third stops with exit 7 before successor
+prepare. A numeric sentinel, missing receipt, mismatched target or uncertain
+cleanup is recovery-blocked, not a reason to retry or advance.
+
+The mandatory recovery order is:
+
+1. commit, independently review, push and merge the contract-35 source;
+2. keep `.evolution_pok` stopped on old HEAD, exact-CAS canonical-abandon v38
+   using `_do_abandon_generation(reason="abandon_generation", **expected_abandon_identity(checkpoint))`;
+3. validate the returned finalized handoff, candidate quarantine and cleared
+   checkpoint; never use reconciliation `--execute` for this live v38 state;
+4. only then fetch tags and fast-forward the stopped runtime to `origin/main`;
+5. run read-only epoch reconciliation, evaluation identity validation, official
+   doctor, reset/blueprint/first-control validators and checkpoint recovery
+   diagnostics; require clean `fresh_bootstrap_ready`, v142→v143 and empty pool;
+6. restart through `pokctl.sh`, verify live Web/Orchestrator/rating ownership,
+   health/runtime evaluation identity, then let the scheduler prepare a fresh
+   v143 workflow.
+
+No v35/v36/v37/v38 provider effect may replay. Every repair, canonical abandon,
+runtime restart or manual state cleanup keeps stability at `0/10`; v143, v144,
+the immutable two-Bot native rating cycle and ten verified generations are all
+still unclaimed.
+
+## Latest superseding handoff: contract 36 river-baseline boundary
+
+Contract 36 is an additional source-side repair on top of the stopped v38
+handoff. The runtime remains stopped on old HEAD
+`c63253c5ef41f6a41992dcca3d5488706a6e63a8`; it must not resume v38 or edit
+`national_v143` in place. The only strict candidate is still unpublished and
+has no completion, certificate, rating, native strength or observation credit.
+
+The failed checked-in runtime probe was genuine: river baseline evaluation
+synchronously visited all `C(45,2)=990` opponent holes and repeatedly exceeded
+the 200 ms socket-owner target. Do not relax the target, pre-warm around the
+test, or accept a worker-side timestamp. Contract 36 makes the source-policy
+boundary explicit: `get_baseline_decision` uses a compact posterior-aware river
+prior and publishes a legal typed intent; `iter_decisions` retains the same
+weighted complete river enumeration under its monotonic refinement deadline.
+This is not a strength-equivalence claim. Post-reprepare native 70-hand and
+official evidence must decide the resulting policy quality.
+
+The exact new system identities are policy SHA-256
+`8c7ef2c8b128ebf53532be6d1cce7f8e530ffefa4390989872df92c4fa629780` and
+output artifact SHA-256
+`85b5d438360b06cafcc2e199b59d72155ed7e3613af94600fd7163784c17a826`.
+The strict-v1 manifest and evaluation contract version 36 bind both. The
+Master, Worker, Reviewer, Critic and Orchestrator prompt sources as well as the
+strategy reference now prohibit full river enumeration in the synchronous
+baseline and require it only in bounded refinement. Focused evidence is the
+structural no-exact-baseline regression plus the real checked-in runtime probe,
+`2 passed`; broader strict-policy/Master/scheduler aggregates are
+`111/228/202 passed`, complete Web is `2971 passed, 20 skipped, 1 warning` in
+181.29 seconds, Sever is `33 passed`, and `py_compile`, manifest validation,
+`git diff --check` and the 165-module frontend production build pass. These are
+source-only evidence, not Bot strength or publication.
+
+After the contract-36 source is committed, reviewed, merged and pushed, follow
+the already-recorded exact-CAS v38 canonical-abandon command against the
+unchanged old runtime identity, then fast-forward the stopped checkout, run all
+post-sync diagnostics, and let the scheduler create one fresh v143 workflow.
+No v38 provider output, candidate byte, checkpoint or historical task result
+may be reused. This transition resets the stability observation to `0/10`.
+
+## Latest superseding handoff: Contract 37 bounded baseline and name handshake
+
+All earlier “latest Contract-36” instructions, hashes, compact-river-prior
+descriptions, and full-suite totals are historical. Do not use them as the
+current source identity or as permission to resume v38.
+
+Current source identity is evaluation contract 37; policy
+`811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641`;
+prepared artifact
+`ccbe7d8b0fbbd47e337d95c715a3676e347de64a1cf483b09dfb647aefd8abe8`;
+output artifact
+`b86df2e70f756c8d9e76dc490c77da015b3c551bf2bce89d7c6ae9163f8dfa46`; and
+national runtime
+`0f8aebc7d9c7d5dd0a5cfea0ac7b50b520a24f387c3eb6db8924e4661dc0d7eb`.
+
+The baseline is fixed deterministic `192/256/96` flop/turn/river work. Full
+`C(45,2)` river enumeration is refinement-only, deadline-checked, and
+publishes its exact completed posterior without a prior blend. Static schema-4
+and dynamic 800-call gates reject enumeration/evaluator-alias bypasses. Probe
+scenario v8 sends the actual raw `name` handshake first and requires the
+system-owned worker to exist before the first decision; this is not a timing
+exemption or a synthetic prewarm.
+
+Focused source evidence is green, but full verification and merge are pending.
+Keep `.evolution_pok` stopped. The required order is: finish all source gates;
+commit/review/push/merge; exact-CAS canonical-abandon the recorded v38 identity
+on its old HEAD; validate the finalized handoff; fast-forward only through
+`origin/main`; run reconciliation, identity, official, blueprint/control and
+checkpoint diagnostics; then start through `pokctl.sh` and allow one fresh
+v143 prepare. No old provider result, candidate byte, checkpoint, or historical
+test total is reusable. Stability is `0/10`.
+
+## Latest superseding handoff: Contract 38 live-template admission and loaded-host timing
+
+All earlier “latest Contract-37” identity, cache, readiness, and clean-host
+wording is historical. It does not permit reuse of a v38 worker result, quality
+receipt, precommit receipt, official job, candidate byte, checkpoint, or test
+total.
+
+The live source identity is evaluation contract 38; capability schema 5 /
+`national-policy-static-v4`; probe schema/orchestrator/worker/scenario
+`16/17/18/8`; strict policy
+`811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641`;
+strict prepared-policy
+`28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816`;
+prepared/output artifact
+`ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278` /
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`; and
+national runtime 10 /
+`ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366`.
+The separate first-strict control binds policy
+`d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4` and
+expected artifact
+`1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2`.
+These are source-review identities only, not a published Bot identity.
+
+The policy baseline remains fixed deterministic `192/256/96`; full
+`C(45,2)=990` river work is refinement-only and deadline-checked. Static
+alias/value/deck-sweep gates and the 800-call dynamic limit apply to all
+top-level system evaluator leaves. The local 200 ms native quality target is
+stricter than, and does not replace, the formal 250 ms policy budget.
+
+The raw `name` wire is a one-time system-worker **launch initiation** event.
+It proves neither import completion nor a ready worker. Duplicate, malformed
+or failed launch evidence is a compliance failure, and unfinished startup is
+charged to the real first-decision socket-owner clock. Never manufacture a
+reply, prewarm around the test, or call launch evidence a readiness proof.
+
+The quality/probe/precommit/commit chain now carries a schema-2 **composite
+system runtime identity**: `national_bot.py` and `precompute.py`, each with
+its exact SHA-256 and size, plus a canonical `combined_digest`. Any missing,
+malformed, mismatched, or precompute-only-drifted cache evidence is stale:
+quality must refresh, precommit may not reuse it, and final commit admission
+rejects it. Normal official full-v5 rechecks current
+quality/probe/runtime/artifact identity both before creating the job and before
+invoking the official EXE. The v143 first-strict control is an explicit,
+zero-strength separate route and can never satisfy normal-v5 admission for
+v144 or later.
+
+Models may inspect frozen evidence, flag an anomaly and propose one falsifiable
+repair. They cannot approve a failure, choose a cache hit, restart a runtime,
+abandon a checkpoint, emit a certificate, or reclassify an infrastructure
+failure as semantic success. Deterministic validators, raw TCP/native receipts
+and the signed official chain decide those effects. Timing acceptance is run
+with unrelated evaluation load left running; do not pause it or relax a gate to
+obtain a clean-only result.
+
+An earlier manual-entry official-admission shard (`335 passed`) is historical:
+the automatic commit→job path was subsequently found to omit the frozen
+receipt. The superseding end-to-end official admission shard, including
+automatic commit, request, schema-5 envelope, job worker and harness rejection,
+is `187 passed`. The current source-freeze P1 evidence is recorded as exact
+commands rather than one additive count (the shards overlap): matrix/prompt/
+identity `75 passed`; authority/probe/quality/pipeline/precommit/capability
+`146 passed`; official admission/harness/job/CLI/sandbox `210 passed`; and the
+post-full-suite compatibility fixtures `37 passed`. The older `27` targeted,
+`157` chain, and `355` precursor counts are historical subsets, not the final
+evidence total.
+Repeated bounded raw-wire timing
+checks and a 74-test probe/capability/bootstrap/control shard ran under
+concurrent LLL evaluation load. Those are scoped source checks, not a full
+suite, merge, runtime, certificate, rating, or strength result. Finish the
+complete source gate and review before any runtime mutation.
+
+The required recovery sequence is unchanged and must be executed only after
+the Contract-38 source is committed, reviewed, pushed and merged:
+
+1. Keep `.evolution_pok` stopped at old HEAD
+   `c63253c5ef41f6a41992dcca3d5488706a6e63a8`; reread and exact-match
+   `generation:143:workflow-v38`, v143←v142, revision 4,
+   `direction_audited`, transaction digest
+   `6f7da5bef18c03841cd0094cc75ba67d7cabd30efae439880089f72e20aba190`, and
+   preimage digest
+   `6bd0374559da9bac75f723bfebdc4da900935fd726ef0cf3f9254a2f96250559`.
+2. Invoke only the governed exact-CAS canonical abandon using
+   `_do_abandon_generation(reason="abandon_generation",
+   **expected_abandon_identity(checkpoint))`; validate the finalized handoff,
+   candidate quarantine, cleared checkpoint, and no identity drift. Never
+   delete or edit the checkpoint/candidate manually.
+3. Only then fast-forward the stopped runtime through merged `origin/main`,
+   run recovery, epoch/reconciliation, evaluation-identity, blueprint,
+   first-control and official diagnostics, and require a fresh-bootstrap-safe
+   result.
+4. Start through the controlled launcher, verify Web/Orchestrator/rating
+   ownership and health, then let the scheduler create a fresh v143 workflow.
+   Complete v143 first-strict control publication, v144 normal 5+3×70
+   full-v5, the immutable two-Bot native rating cycle, and ten uninterrupted
+   verified generations.
+
+Every source repair, canonical abandon, manual state cleanup or runtime restart
+resets observation to `0/10`. It remains `0/10` now.
+
+## 下一主代理交接摘要（必须以当前工作树复核）
+
+这是给接续智能体的操作摘要，不是运行态完成声明。先执行
+`git status --short`、读取本节之后的最新 ledger 条目、核对
+`origin/main` 与 `.evolution_pok` HEAD；任何聊天记录、旧测试总数或
+目录名都不能替代这些事实。
+
+- **目标不变：** 完成可执行跨层对齐，安全恢复 strict v143，完成 v144、
+  两 Bot immutable native rating cycle，并从最后一次修复或重启起观察
+  连续 `10/10` 代。当前尚未发布任何 strict Bot，所有这些运行态目标仍为
+  pending，计数为 `0/10`。
+- **工作位置：** 唯一可编辑实现工作树是
+  `/home/zzx/project/pok/.codex_worktrees/national-protocol-evolution-alignment`
+  （此刻为未提交集成树，最初基线 `d4cb9151`）。运行 checkout
+  `/home/zzx/project/pok/.evolution_pok` 与 `origin/main` 仍是
+  `c63253c5ef41f6a41992dcca3d5488706a6e63a8`；不要改动
+  `pok-arena`、`three-bot-consolidation` 或运行 checkout 的候选/状态。
+- **已冻结的源级成果：** Contract-38 strict baseline、静态/动态 evaluator
+  cap、真实 raw TCP `name` launch-not-ready 门、前后端 transient-status
+  fence、五角色最终 renderer overlay、可执行 alignment matrix、手工与
+  automatic normal-full quality admission 都已进入当前工作树。代表性负载下
+  证据包括 Sever `33`、协议/quality/matrix `141`、official automatic
+  admission `187`、前端 `20`、状态链 `62`、提示词 `55`；它们都是 source
+  evidence，不是证书或强度。
+- **P1 已在当前 source tree 闭合、但尚未交付：** runtime cache identity 已由
+  单一 `national_bot.py` 升级为 schema-2 两文件组合身份：
+  `national_bot.py` 与 `precompute.py` 的 SHA-256/size 和
+  `combined_digest`。probe、quality、precommit、commit 与 formal admission
+  都必须对该对象 fail-closed；precompute-only drift 也必须刷新或拒绝。P1
+  shard 证据是 `75`、`146`、`210` 与 post-full-suite `37 passed`（测试集合
+  有重叠，禁止相加冒充强度）；完整 Web suite 已以 exit `0` 结束。仍须在
+  Sever/frontend/compile/diff 及独立审查中保持复核；它不是 merge、runtime
+  或认证证明。
+- **模型与门禁：** Master/Worker/Reviewer 可用模型提出单一可证伪变更，
+  Critic 仅 advisory；模型不能批准失败、制造缓存命中、重启服务、清理
+  checkpoint 或签发证书。Worker MCP 当前要先通过其自身健康/版本门，且
+  永远不得被扑克 runtime import/start/call。
+- **并发负载：** 用户明确要求保持后台对局/评测运行，把它视为实际比赛
+  主机负载。不要停止它、不要为了干净结果降低 200 ms/250 ms 或其他协议门；
+  最终 focused/full 验证都要在该负载下重新记录。
+- **完成源代码后的唯一恢复顺序：** 独立审查 → 完整测试/编译/diff → commit
+  → push/merge `origin/main` → 在旧 HEAD、停机的 runtime 上 exact-CAS
+  canonical abandon v38（绝不手删）→ 验证 handoff → fast-forward → recovery
+  diagnostics → fresh v143 re-prepare → controlled launch。任何本轮修复、
+  abandon、人工清理或重启都保持/重置 `0/10`。
+- **三 Bot 研究到未来 canonical 的边界：** A1（range/PBS/价值--策略搜索
+  闭环）、A2（线性 CFR 蓝图/抽象/off-tree resolve）、B（街级在线求解/神经
+  CFV/动态动作/对手后验/比赛控制）是三项独立、可审查的未来 component
+  migrations，不是三选一。当前 v5 研究线只可给出行为级结论，绝不迁移源码、
+  权重/资产、H2H、rating、experience、tag 或 certificate。future-main 必须让
+  每项重新物化为新的严格五文件产物、系统资产路径、identity/probe/gates 和
+  零强度设计证据，并重新走 native/official 评测与认证；最终组合 Bot 仍须是
+  另一个新 artifact 与新 immutable rating cycle。
+
+## 2026-07-17 — 最新未合并 P0/P1 交接：task owner 与 live official admission
+
+在任何恢复 runtime 前，接续代理必须保留本工作树刚完成的两项闭环。第一项是
+前端状态所有权：`WebUI.set_status` 只能在 canonical checkpoint 和 active
+`AppState.task_snapshot().owner_id`（32 位 UUID hex）同时有效时发布状态；SSE
+replay、`/api/evolution/state`、TypeScript schema/controller 和页面都必须精确
+比较 `task_owner_id` 与 `task_lifecycle_revision`。同一 checkpoint/revision/stage
+下的旧 owner A 不能显示为 replacement owner B 的 “Master planning”。缺失、非
+活动、stopping、格式错误或不相等一律清空 transient status；这不是对任务进度的
+推断。任务 owner 的每个生命周期边，包含直接
+`ShutdownManager.request_shutdown()`，必须通过最小 `{present, done,
+shutdown_requested, status_eligible, owner_id, lifecycle_revision}` SSE 事件立即使
+旧状态失效；revision 必须单调。route 重放前重新比对实时 owner/revision；`/state`
+返回的同采样 `transient_status_task` 只用于 lifecycle high-water/invalidation，
+不授予文本显示权。连接中的页面只接受当前 SSE `status` 事件的人类状态文本；HTTP
+snapshot 即使 owner/revision 相同也不能复活或覆盖文本。低 revision、相同 revision
+但投影冲突、shutdown/stopping、SSE 断开均清空文本，并显示中性或非绿色的
+“正在安全停止，等待清理”/degraded 状态，不能因 HTTP/SSE 反向到达或五秒轮询而
+显示 A。若 backend 无法形成权威 projection，必须发 `task_authority_lost` 而不是
+伪造 revision `R+1`；HTTP null/畸形与 SSE malformed `status`/`task_owner` 都只清
+文本、保留最后验证的 high-water。后续 exact valid 同 R 投影可以恢复 authority；同 R
+但不同字段的冲突保持 fail-closed，直到真实更高 revision。
+
+App lifespan 只停止其 registered-owner 集中的 owner；自动 launch 与后续成功的
+`/api/control/start` 必须都登记。lifecycle shutdown 读取当前 `AppState` 的 manager，
+不能使用 startup 时缓存的 manager，因此后启动的 registered owner 会被正常 graceful
+stop，而未登记/foreign owner 永远不被该 lifespan 停止。
+
+第二项是 normal full-v5 admission 的 live rebind：
+`official_certification_job._live_normal_full_admission_issues` 在新 request
+落盘前、queued/retry 取队列前、以及 `_spawn_worker` 的 `Popen` 前重算并比较
+current quality/probe/runtime/artifact admission；worker claim 后、进入 runner 前
+也必须重算，harness 继续在 EXE 前重算。任何这类 drift 必须记录为 terminal
+`quality_admission`。EXE-adjacent formal admission 失败必须以 typed quality failure
+穿透 generic infrastructure 捕获；`tool_commit` 不得降级成 infrastructure retry，
+只能在完整 marker `official_full.outcome=quality_admission_blocked`、
+`failure_class=quality` 与 `quality_admission_refresh=true` 同时存在时保持
+`official_certifying` 并路由回 deterministic quality refresh。普通
+`official_certifying`（包括普通 HEAD drift）只允许 `commit_bot`；此 exception 必须
+保持 contract-unchanged 与 exact revision+stage+workflow CAS，且不授权 Worker、旧 job
+retry 或 EXE。quality refresh 后才允许一个新的 official request。
+stale fresh 请求不得产生 `request.json`/`state.json`，stale queued job 必须写为
+terminal `failed/quality_admission`，不得占 worker 或 official EXE。v143 explicit
+bootstrap 不走 normal admission。pytest-only envelope 必须带 `spec_record(spec)`，
+从而保留 `quality_admission`、digest 和 required flag。
+
+相应矩阵、五角色 overlay、runbook 和 ledger 已记录；最新 focused 后端证据为
+`245 passed`，frontend SSE 为 `20 passed`、lint/build 通过。它们不是 full suite、merge、运行态、
+证书或 strength 证据；仍需在真实后台负载下完成 full Web/Sever/frontend build/
+compile/diff、独立审查、commit/push/merge，之后才执行 stopped v38 的 exact-CAS
+abandon、同步和 fresh v143 re-prepare。稳定计数仍为 `0/10`。

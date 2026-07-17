@@ -9,6 +9,15 @@ import {
 } from "../node_modules/.tmp/sse-tests/lib/dataStreamController.js";
 import {
   createEvolutionStreamController,
+  compareTransientStatusTaskProjection,
+  createTransientStatusTaskAuthorityState,
+  evolutionStatusMatchesActiveGeneration,
+  formatDegradedHealth,
+  isFreshEvolutionStatusEvent,
+  loseTransientStatusTaskAuthority,
+  observeTransientStatusTaskProjection,
+  shouldAcceptEvolutionStatus,
+  transientStatusTaskMatches,
   validateEvolutionStreamEvent,
 } from "../node_modules/.tmp/sse-tests/lib/evolutionStreamController.js";
 import {
@@ -568,6 +577,25 @@ function generationCostPolicy() {
   };
 }
 
+function evolutionStatus(
+  msg = "running",
+  isWorking = true,
+  overrides = {},
+) {
+  return {
+    msg,
+    is_working: isWorking,
+    run_id: "143#1",
+    workflow_run_id: "generation:143:workflow-v1",
+    checkpoint_revision: 7,
+    stage: "master_planning",
+    task_owner_id: "f".repeat(32),
+    task_lifecycle_revision: 7,
+    emitted_at: 100,
+    ...overrides,
+  };
+}
+
 function dataHarness() {
   const factory = new FakeEventSourceFactory();
   const scheduler = new FakeScheduler();
@@ -743,7 +771,8 @@ test("evolution adapter dispatches live handlers and preserves block/error causa
   const calls = [];
   let handlers = {
     onConnect: () => calls.push(["connect"]),
-    onStatus: (message, working) => calls.push(["status", message, working]),
+    onStatus: (status) => calls.push(["status", status.msg, status.is_working]),
+    onTaskOwner: (task) => calls.push(["owner", task.present, task.done, task.owner_id]),
     onPostPublicationHandoff: (data) => calls.push(["handoff", data.status, data.record_revision]),
     onEpochBlocked: (data) => calls.push(["blocked", data.epoch_state]),
     onDisconnect: (reason) => calls.push(["disconnect", reason]),
@@ -761,7 +790,15 @@ test("evolution adapter dispatches live handlers and preserves block/error causa
   assert.equal(first.url, `/api/evolution/stream?authority=${"1".repeat(64)}`);
 
   first.open();
-  first.emit("status", { msg: "running", is_working: true });
+  first.emit("status", evolutionStatus());
+  first.emit("task_owner", {
+    present: true,
+    done: false,
+    shutdown_requested: false,
+    status_eligible: true,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  });
   first.emit("post_publication_handoff", {
     schema_version: 1,
     authority: "post_publication_handoff_journal",
@@ -785,21 +822,22 @@ test("evolution adapter dispatches live handlers and preserves block/error causa
   assert.deepEqual(calls, [
     ["connect"],
     ["status", "running", true],
+    ["owner", true, false, "f".repeat(32)],
     ["handoff", "pending", 2],
   ]);
 
   handlers = {
     ...handlers,
-    onStatus: (message, working) => calls.push(["new-status", message, working]),
+    onStatus: (status) => calls.push(["new-status", status.msg, status.is_working]),
   };
-  first.emit("status", { msg: "new handler", is_working: false });
+  first.emit("status", evolutionStatus("new handler", false, { emitted_at: 101 }));
   first.error();
   first.error();
   assert.equal(scheduler.pendingIds().length, 1);
   scheduler.runNext();
   const second = factory.sources[1];
 
-  first.emit("status", { msg: "stale", is_working: true });
+  first.emit("status", evolutionStatus("stale", true, { emitted_at: 102 }));
   second.emit("epoch_blocked", {
     evaluation_epoch: "national_tcp_policy_v1",
     epoch_state: "reset_required",
@@ -812,6 +850,7 @@ test("evolution adapter dispatches live handlers and preserves block/error causa
   assert.deepEqual(calls, [
     ["connect"],
     ["status", "running", true],
+    ["owner", true, false, "f".repeat(32)],
     ["handoff", "pending", 2],
     ["new-status", "new handler", false],
     ["disconnect", "transport_error"],
@@ -872,6 +911,221 @@ test("same-authority handoff revision advances without fencing the evolution con
   stop();
 });
 
+test("transient evolution status rejects stale, inactive, and mismatched checkpoint identities", () => {
+  const active = {
+    run_id: "143#1",
+    workflow_run_id: "generation:143:workflow-v1",
+    checkpoint_revision: 7,
+    stage: "master_planning",
+  };
+  const activeTask = {
+    present: true,
+    done: false,
+    shutdown_requested: false,
+    status_eligible: true,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  };
+  const current = evolutionStatus("Master planning for v143", true, { emitted_at: 100 });
+
+  assert.equal(evolutionStatusMatchesActiveGeneration(current, active, activeTask), true);
+  assert.equal(shouldAcceptEvolutionStatus(current, active, activeTask, null), true);
+  assert.equal(
+    shouldAcceptEvolutionStatus(
+      evolutionStatus("old ring replay", true, { emitted_at: 99 }),
+      active,
+      activeTask,
+      current,
+    ),
+    false,
+  );
+  assert.equal(
+    shouldAcceptEvolutionStatus(
+      evolutionStatus("wrong revision", true, { checkpoint_revision: 6, emitted_at: 101 }),
+      active,
+      activeTask,
+      current,
+    ),
+    false,
+  );
+  assert.equal(
+    evolutionStatusMatchesActiveGeneration(current, active, {
+      ...activeTask,
+      done: true,
+      status_eligible: false,
+    }),
+    false,
+  );
+  assert.equal(
+    evolutionStatusMatchesActiveGeneration(current, { ...active, stage: "workers_running" }, activeTask),
+    false,
+  );
+  assert.equal(
+    evolutionStatusMatchesActiveGeneration(
+      current,
+      active,
+      { ...activeTask, owner_id: "e".repeat(32) },
+    ),
+    false,
+  );
+  assert.equal(isFreshEvolutionStatusEvent(current, 101), true);
+  assert.equal(isFreshEvolutionStatusEvent(current, 131), false);
+  assert.equal(isFreshEvolutionStatusEvent({ ...current, emitted_at: 107 }, 101), false);
+  assert.equal(
+    transientStatusTaskMatches(activeTask, { ...activeTask, lifecycle_revision: 8 }),
+    false,
+  );
+  assert.equal(transientStatusTaskMatches(activeTask, { ...activeTask }), true);
+  assert.equal(
+    evolutionStatusMatchesActiveGeneration(
+      current,
+      active,
+      { ...activeTask, shutdown_requested: true, status_eligible: false },
+    ),
+    false,
+  );
+  assert.equal(
+    evolutionStatusMatchesActiveGeneration(
+      current,
+      active,
+      { ...activeTask, status_eligible: false },
+    ),
+    false,
+  );
+  assert.equal(
+    evolutionStatusMatchesActiveGeneration(
+      { ...current, task_lifecycle_revision: 6 },
+      active,
+      activeTask,
+    ),
+    false,
+  );
+  assert.equal(
+    compareTransientStatusTaskProjection(
+      { ...activeTask, lifecycle_revision: 8 },
+      activeTask,
+    ),
+    "newer",
+  );
+  assert.equal(
+    compareTransientStatusTaskProjection(activeTask, { ...activeTask, lifecycle_revision: 8 }),
+    "older",
+  );
+  assert.equal(
+    compareTransientStatusTaskProjection(
+      { ...activeTask, shutdown_requested: true, status_eligible: false },
+      activeTask,
+    ),
+    "conflict",
+  );
+  assert.equal(compareTransientStatusTaskProjection(activeTask, { ...activeTask }), "same");
+});
+
+test("task projection authority clears malformed or absent HTTP/SSE input without inventing R+1", () => {
+  const activeTask = {
+    present: true,
+    done: false,
+    shutdown_requested: false,
+    status_eligible: true,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  };
+  let state = createTransientStatusTaskAuthorityState();
+
+  let observed = observeTransientStatusTaskProjection(state, activeTask);
+  assert.equal(observed.accepted, true);
+  state = observed.state;
+  assert.equal(state.trusted, true);
+  assert.equal(state.highWaterRevision, 7);
+
+  // `null` is the HTTP transient_status_task authority loss. It clears the
+  // current render owner but preserves R=7 rather than fabricating R=8.
+  observed = observeTransientStatusTaskProjection(state, null);
+  assert.equal(observed.accepted, false);
+  assert.equal(observed.reason, "invalid");
+  state = observed.state;
+  assert.equal(state.current, null);
+  assert.equal(state.trusted, false);
+  assert.equal(state.highWaterRevision, 7);
+
+  // A later exact valid SSE task_owner at the same revision restores trust.
+  observed = observeTransientStatusTaskProjection(state, activeTask);
+  assert.equal(observed.accepted, true);
+  state = observed.state;
+  assert.equal(state.trusted, true);
+  assert.deepEqual(state.current, activeTask);
+
+  // A same-R contradiction is sticky and cannot be repaired by another R=7
+  // event. Only a backend lifecycle advance can restore authority.
+  state = loseTransientStatusTaskAuthority(state);
+  observed = observeTransientStatusTaskProjection(state, {
+    ...activeTask,
+    owner_id: "e".repeat(32),
+  });
+  assert.equal(observed.accepted, false);
+  assert.equal(observed.reason, "conflict");
+  state = observed.state;
+  assert.equal(state.conflictRevision, 7);
+  observed = observeTransientStatusTaskProjection(state, activeTask);
+  assert.equal(observed.accepted, false);
+  assert.equal(observed.reason, "conflict");
+
+  observed = observeTransientStatusTaskProjection(state, {
+    ...activeTask,
+    owner_id: "e".repeat(32),
+    lifecycle_revision: 8,
+  });
+  assert.equal(observed.accepted, true);
+  assert.equal(observed.state.highWaterRevision, 8);
+  assert.equal(observed.state.conflictRevision, null);
+});
+
+test("evolution controller announces explicit and malformed task authority loss", () => {
+  const factory = new FakeEventSourceFactory();
+  const scheduler = new FakeScheduler();
+  const losses = [];
+  const controller = createEvolutionStreamController(
+    () => ({
+      onTaskAuthorityLost: ({ reason }) => losses.push(reason),
+    }),
+    "1".repeat(64),
+    { createSource: factory.create, scheduler },
+  );
+  const stop = controller.start();
+  const source = factory.sources[0];
+
+  source.emit("task_authority_lost", { reason: "task_snapshot_unavailable" });
+  source.emitRaw("status", "{");
+  source.emit("task_owner", {
+    present: true,
+    done: false,
+    shutdown_requested: false,
+    // status_eligible is intentionally absent, so this owner is malformed.
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  });
+  source.emit("task_authority_lost", { reason: "" });
+
+  assert.deepEqual(losses, [
+    "task_snapshot_unavailable",
+    "malformed_status",
+    "malformed_task_owner",
+    "malformed_task_authority_lost",
+  ]);
+  stop();
+});
+
+test("degraded health presentation exposes checked_at and all safe issues", () => {
+  assert.equal(
+    formatDegradedHealth(["daemon_dead", "pipeline_blocked", "daemon_dead"], 1),
+    "1970-01-01T00:00:01.000Z · daemon_dead；pipeline_blocked",
+  );
+  assert.equal(
+    formatDegradedHealth([], null),
+    "checked_at 不可用 · 后端未提供问题列表（按异常处理）",
+  );
+});
+
 test("all production stream events have rejecting minimal runtime schemas", () => {
   const validDataEvents = {
     ratings: [rating("national_v143", 1500)],
@@ -918,7 +1172,17 @@ test("all production stream events have rejecting minimal runtime schemas", () =
 
   const validEvolutionEvents = {
     history: { msg: "ok", status: "info", ts: 1 },
-    status: { msg: "running", is_working: true, ts: 1 },
+    status: evolutionStatus("running", true, { emitted_at: 1, ts: 1 }),
+    task_owner: {
+      present: true,
+      done: false,
+      shutdown_requested: false,
+      status_eligible: true,
+      owner_id: "f".repeat(32),
+      lifecycle_revision: 7,
+      ts: 1,
+    },
+    task_authority_lost: { reason: "task_snapshot_unavailable", ts: 1 },
     io: { msg: "line", stream_type: "claude", role: "Master", ts: 1 },
     clear_io: { ts: 1 },
     eval_table: { rows: [rating("national_v143", 1500)], ts: 1 },
@@ -960,7 +1224,64 @@ test("all production stream events have rejecting minimal runtime schemas", () =
     assert.equal(validateEvolutionStreamEvent(eventType, payload), true, eventType);
     assert.equal(validateEvolutionStreamEvent(eventType, null), false, `${eventType}:null`);
   }
+  assert.equal(validateEvolutionStreamEvent("task_owner", {
+    present: true,
+    done: true,
+    shutdown_requested: false,
+    status_eligible: false,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 8,
+  }), true);
   assert.equal(validateEvolutionStreamEvent("status", {}), false);
+  assert.equal(validateEvolutionStreamEvent("status", {
+    ...evolutionStatus(),
+    workflow_run_id: null,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("task_authority_lost", { reason: "" }), false);
+  assert.equal(validateEvolutionStreamEvent("task_authority_lost", { reason: null }), false);
+  assert.equal(validateEvolutionStreamEvent("task_owner", {
+    present: true,
+    done: null,
+    shutdown_requested: false,
+    status_eligible: false,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("task_owner", {
+    present: false,
+    done: false,
+    shutdown_requested: false,
+    status_eligible: false,
+    owner_id: null,
+    lifecycle_revision: 7,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("status", {
+    ...evolutionStatus(),
+    emitted_at: -1,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("status", {
+    ...evolutionStatus(),
+    task_owner_id: "not-an-owner",
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("status", {
+    ...evolutionStatus(),
+    task_lifecycle_revision: undefined,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("task_owner", {
+    present: true,
+    done: false,
+    shutdown_requested: false,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("task_owner", {
+    present: true,
+    done: false,
+    shutdown_requested: true,
+    status_eligible: true,
+    owner_id: "f".repeat(32),
+    lifecycle_revision: 7,
+  }), false);
   assert.equal(validateEvolutionStreamEvent("eval_table", { rows: {} }), false);
   const handoff = validEvolutionEvents.post_publication_handoff;
   assert.equal(validateEvolutionStreamEvent("post_publication_handoff", {

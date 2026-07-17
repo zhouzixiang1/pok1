@@ -421,6 +421,8 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
     assert "SYSTEM-DERIVED PER-PROPOSAL COMPILATION CONTRACTS" in rendered_prompt
     assert '"character_metric":"python_unicode_code_points"' in rendered_prompt
     assert '"max_provider_chars":' in rendered_prompt
+    assert "National TCP policy capability contract:" in rendered_prompt
+    assert "national_runtime_feedback_summary() got an unexpected" not in rendered_prompt
     assert captured_kwargs[0]["tools"] == []
     assert captured_kwargs[0].get("allowed_read_dirs") is None
     assert captured_kwargs[0].get("allowed_evidence_snapshot_dir") is None
@@ -1345,7 +1347,10 @@ async def test_master_fails_closed_after_structured_schema_errors(monkeypatch):
 async def test_master_transport_failure_is_not_an_invalid_plan(monkeypatch):
     import agent_master
 
-    async def unavailable(*_args, **_kwargs):
+    roles = []
+
+    async def unavailable(*args, **_kwargs):
+        roles.append(args[3])
         raise ConnectionError("sdk backend unavailable")
 
     monkeypatch.setattr(agent_master, "run_claude_query", unavailable)
@@ -1361,6 +1366,8 @@ async def test_master_transport_failure_is_not_an_invalid_plan(monkeypatch):
     assert caught.value.source_v == 143
     assert caught.value.next_v == 144
     assert len(caught.value.prompt_digest) == 64
+    assert roles == ["MASTER (Try 1)"]
+    assert not any("SCHEMA RETRY" in role for role in roles)
 
 
 @pytest.mark.asyncio

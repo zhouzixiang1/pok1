@@ -6,6 +6,8 @@ import pytest
 from core.pipeline_state import (
     TIMEOUT_ABANDONABLE_STAGES,
     generic_abandon_block as _generic_abandon_block,
+    head_drift_allowed_tools,
+    head_drift_resume_policy,
     literature_probe_receipt_binding,
     next_tool_for_checkpoint as _next_tool_for_checkpoint,
     route_policy as _route_policy,
@@ -20,6 +22,7 @@ from core.pipeline_infrastructure import (
     build_infrastructure_failure,
     infrastructure_attempt_key,
 )
+from core.national_runtime_probe import runtime_probe_native_template_evidence
 from core.tool_planning import (
     _critic_advisory_rework_refusal,
     _has_legacy_critic_repair_contract,
@@ -274,7 +277,7 @@ def test_schema_valid_critic_advice_routes_to_precommit_not_workers():
     assert refusal["next_tool"] == "run_precommit_eval"
 
 
-def test_incomplete_legacy_critic_record_retries_role_not_workers(monkeypatch):
+def test_incomplete_legacy_critic_record_refreshes_stale_quality_first(monkeypatch):
     monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
     checkpoint = {
         "stage": "reviewed",
@@ -300,10 +303,9 @@ def test_incomplete_legacy_critic_record_retries_role_not_workers(monkeypatch):
     }
 
     route = route_policy(checkpoint)
-    assert route["next_tool"] == "run_critic"
-    assert route["allowed_tools"] == ["run_critic"]
-    assert route["intent"] == "critic_retry"
-    assert "remains advisory" in route["directive"]
+    assert route["next_tool"] == "run_quality_gates"
+    assert route["allowed_tools"] == ["run_quality_gates"]
+    assert route["intent"] == "quality_profile_refresh"
 
 
 def test_critic_force_advanced_no_longer_bypasses_gate():
@@ -782,6 +784,7 @@ def test_verified_native_precommit_routes_to_commit_without_quality_contract_fla
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                **runtime_probe_native_template_evidence(),
             },
             "review": {"approved": True},
             "critic": {"approved": True},
@@ -790,6 +793,7 @@ def test_verified_native_precommit_routes_to_commit_without_quality_contract_fla
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "evaluation_protocol": "national_native_tcp",
+                **runtime_probe_native_template_evidence(),
             },
         },
     })
@@ -812,6 +816,7 @@ def test_verified_old_adapter_precommit_revalidates_under_native_profile(monkeyp
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                **runtime_probe_native_template_evidence(),
             },
             "review": {"approved": True},
             "critic": {"approved": True},
@@ -825,6 +830,88 @@ def test_verified_old_adapter_precommit_revalidates_under_native_profile(monkeyp
 
     assert route["next_tool"] == "run_precommit_eval"
     assert route["intent"] == "precommit_profile_refresh"
+
+
+def test_quality_admission_drift_routes_to_fresh_quality_without_exe_or_workers(
+    monkeypatch,
+):
+    """Formal-harness drift is system evidence refresh, not a worker repair."""
+
+    monkeypatch.setenv("POK_WORKFLOW_PROFILE", "national_native")
+    checkpoint = {
+        "stage": "official_certifying",
+        "next_v": 300,
+        "source_v": 299,
+        "gate_results": {
+            "official_full": {
+                "passed": False,
+                "outcome": "quality_admission_blocked",
+                "failure_class": "quality",
+                "quality_admission_refresh": True,
+                "repairable_by_workers": False,
+            },
+        },
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] == "run_quality_gates"
+    assert route["allowed_tools"] == ["run_quality_gates"]
+    assert route["intent"] == "quality_admission_refresh"
+    assert route["failure_class"] == "quality"
+    assert "run_quality_gates first" in route["directive"]
+
+    # The commit path clears any completed/failed formal job before recording
+    # this marker.  The quality tool accepts the route even with no attachment,
+    # rather than polling/retrying the old job.
+    refresh = _prepare_official_profile_refresh(checkpoint, "run_quality_gates")
+    assert refresh == {
+        "ok": True,
+        "needed": True,
+        "job_state": "missing_attachment",
+    }
+    refused = _prepare_official_profile_refresh(checkpoint, "commit_bot")
+    assert refused["ok"] is False
+    assert refused["needed"] is True
+    assert refused["route"]["next_tool"] == "run_quality_gates"
+
+
+def test_quality_admission_refresh_has_a_checkpoint_scoped_head_drift_policy():
+    """Only the exact terminal marker may replace an EXE poll after HEAD drift."""
+
+    checkpoint = {
+        "stage": "official_certifying",
+        "gate_results": {
+            "official_full": {
+                "outcome": "quality_admission_blocked",
+                "failure_class": "quality",
+                "quality_admission_refresh": True,
+            },
+        },
+    }
+
+    dynamic = head_drift_resume_policy(
+        "official_certifying",
+        checkpoint=checkpoint,
+    )
+    assert dynamic is not None
+    assert dynamic["allowed_tools"] == ("run_quality_gates",)
+    assert dynamic["resume_kind"] == "quality_admission_refresh"
+    assert dynamic["requires_contract_unchanged"] is True
+    assert head_drift_allowed_tools(
+        "official_certifying",
+        checkpoint=checkpoint,
+    ) == {"run_quality_gates"}
+
+    # The ordinary official-certifying stage still has an attached durable job
+    # and must not gain a broad quality-gate retry permission.
+    ordinary = head_drift_resume_policy("official_certifying", checkpoint={
+        "stage": "official_certifying",
+        "gate_results": {"official_full": {"outcome": "pending"}},
+    })
+    assert ordinary is not None
+    assert ordinary["allowed_tools"] == ("commit_bot",)
+    assert head_drift_allowed_tools("official_certifying") == {"commit_bot"}
 
 
 def test_official_certifying_profile_refresh_transitions_are_legal():

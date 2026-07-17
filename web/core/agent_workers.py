@@ -85,6 +85,9 @@ def _render_worker_provider_prompt(inputs):
         "parent_version": str(source_v),
         "candidate_path": candidate_path,
     })
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
 
     return LLMRenderedMaterial(
         text=text,

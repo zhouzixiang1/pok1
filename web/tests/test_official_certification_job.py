@@ -10,18 +10,368 @@ from official_certification import build_spec
 import official_certification_job as jobs
 
 
+_REAL_LIVE_NORMAL_FULL_ADMISSION_ISSUES = jobs._live_normal_full_admission_issues
+
+
+@pytest.fixture(autouse=True)
+def _unit_job_manager_uses_explicit_live_admission_stub(monkeypatch):
+    """Keep durable-state mechanics unit tests independent of live checkpoint IO."""
+
+    monkeypatch.setattr(
+        jobs,
+        "_live_normal_full_admission_issues",
+        lambda _request: [],
+    )
+
+
 def _bot(path: Path) -> Path:
     path.mkdir(parents=True)
     (path / "national_bot.py").write_text("# native\n", encoding="utf-8")
     return path
 
 
+def _structural_quality_admission(candidate: Path) -> dict:
+    """A schema-valid receipt for job-manager mechanics, not EXE authority."""
+
+    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
+    from national_runtime_authority import current_system_native_runtime_identity
+    from national_runtime_probe import runtime_probe_native_template_evidence
+
+    runtime_evidence = runtime_probe_native_template_evidence()
+
+    payload = {
+        "schema_version": 1,
+        "kind": "official-formal-quality-admission",
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": canonical_digest({"candidate": str(candidate.resolve())}),
+        "checkpoint": {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "workflow_run_id": "pytest-job-workflow",
+            "next_v": 200,
+            "source_v": 142,
+        },
+        "quality_gate_digest": "1" * 64,
+        "capability_digest": "2" * 64,
+        "dynamic_probe_digest": "3" * 64,
+        "runtime_contract_ledger_digest": "4" * 64,
+        "runtime_probe_identity": {
+            "scenario_digest": "5" * 64,
+            "limits_digest": "6" * 64,
+            "probe_identity_digest": "7" * 64,
+            "managed_isolation_digest": "8" * 64,
+            **runtime_evidence,
+        },
+        "system_runtime_identity": current_system_native_runtime_identity(),
+        "system_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+    }
+    return {**payload, "admission_digest": canonical_digest(payload)}
+
+
 def _spec(tmp_path: Path):
+    candidate = _bot(tmp_path / "bots" / "national_v200")
     return build_spec(
         "full",
-        _bot(tmp_path / "bots" / "national_v200"),
+        candidate,
         opponent=_bot(tmp_path / "bots" / "national_v142"),
+        quality_admission=_structural_quality_admission(candidate),
     )
+
+
+def test_strict_full_request_missing_admission_fails_before_worker_spawn(tmp_path):
+    spec = _spec(tmp_path)
+    request = jobs._request_payload(
+        spec,
+        opponent_selection=None,
+        source_v=142,
+    )
+    assert jobs._validate_request(request) == []
+
+    missing = {**request, "spec": dict(request["spec"])}
+    missing["spec"].pop("quality_admission")
+    unsigned = {
+        key: value
+        for key, value in missing.items()
+        if key not in {"request_digest", "job_id"}
+    }
+    missing["request_digest"] = canonical_digest(unsigned)
+    missing["job_id"] = canonical_digest(
+        {"request_digest": missing["request_digest"]}
+    )
+    issues = jobs._validate_request(missing)
+
+    assert any(
+        item.startswith("official_job_request_spec_invalid:ValueError:")
+        and "checkpoint-owned quality admission" in item
+        for item in issues
+    )
+
+
+def test_live_normal_full_admission_rebinds_current_receipt(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    request = jobs._request_payload(spec, opponent_selection=None, source_v=142)
+    import official_platform_harness
+
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "issues": [],
+            "admission": spec.quality_admission,
+        },
+    )
+    assert _REAL_LIVE_NORMAL_FULL_ADMISSION_ISSUES(request) == []
+
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "issues": [],
+            "admission": {"unexpected": "receipt"},
+        },
+    )
+    assert _REAL_LIVE_NORMAL_FULL_ADMISSION_ISSUES(request) == [
+        "official_job_quality_admission_live_invalid:"
+        "official_formal_quality_admission_current_drift"
+    ]
+
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_args, **_kwargs: {
+            "valid": False,
+            "issues": ["official_formal_quality_admission_current_drift"],
+        },
+    )
+
+    assert _REAL_LIVE_NORMAL_FULL_ADMISSION_ISSUES(request) == [
+        "official_job_quality_admission_live_invalid:"
+        "official_formal_quality_admission_current_drift"
+    ]
+
+
+def test_stale_live_admission_never_creates_or_spawns_fresh_job(tmp_path, monkeypatch):
+    root = tmp_path / "jobs"
+    monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(root))
+    monkeypatch.setattr(
+        jobs,
+        "_live_normal_full_admission_issues",
+        lambda _request: ["official_job_quality_admission_live_invalid:test_drift"],
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_spawn_worker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale admission must not spawn a worker")
+        ),
+    )
+    spec = _spec(tmp_path)
+    request = jobs._request_payload(spec, opponent_selection=None, source_v=142)
+
+    result = jobs.start_or_poll_job(spec, source_v=142)
+    directory = root / request["job_id"]
+
+    assert result["state"] == "failed"
+    assert result["phase"] == "quality_admission"
+    assert result["failure_class"] == "quality"
+    assert result["pending"] is False
+    assert result["issues"] == [
+        "official_job_quality_admission_live_invalid:test_drift"
+    ]
+    assert not (directory / "request.json").exists()
+    assert not (directory / "state.json").exists()
+
+
+def test_stale_queued_job_becomes_terminal_before_queue_or_spawn(tmp_path, monkeypatch):
+    root = tmp_path / "jobs"
+    monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(root))
+    spec = _spec(tmp_path)
+    request = jobs._request_payload(spec, opponent_selection=None, source_v=142)
+    directory = root / request["job_id"]
+    directory.mkdir(parents=True)
+    jobs._write_json(directory / "request.json", request)
+    jobs._write_json(directory / "state.json", {
+        "schema_version": jobs.JOB_SCHEMA_VERSION,
+        "manager_version": jobs.JOB_MANAGER_VERSION,
+        "job_id": request["job_id"],
+        "candidate": str(spec.candidate),
+        "request_digest": request["request_digest"],
+        "state": "queued",
+        "phase": "queued",
+        "attempt": 0,
+        "worker_restart_count": 0,
+        "max_attempts": 3,
+        "revision": 1,
+        "created_at_epoch": 1.0,
+    })
+    monkeypatch.setattr(
+        jobs,
+        "_live_normal_full_admission_issues",
+        lambda _request: ["official_job_quality_admission_live_invalid:test_drift"],
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_another_live_job",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("stale queued job must not reserve the queue")
+        ),
+    )
+    monkeypatch.setattr(
+        jobs,
+        "_spawn_worker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("stale queued job must not spawn a worker")
+        ),
+    )
+
+    result = jobs.start_or_poll_job(spec, source_v=142)
+    state = jobs._read_json(directory / "state.json")
+
+    assert result["state"] == "failed"
+    assert result["phase"] == "quality_admission"
+    assert result["failure_class"] == "quality"
+    assert state["state"] == "failed"
+    assert state["phase"] == "quality_admission"
+    assert state["failure_class"] == "quality"
+
+    monkeypatch.setattr(jobs, "_live_normal_full_admission_issues", lambda _request: [])
+    monkeypatch.setattr(
+        jobs,
+        "_spawn_worker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("quality admission failure must never retry as infrastructure")
+        ),
+    )
+    retried = jobs.start_or_poll_job(spec, source_v=142, retry_terminal=True)
+    assert retried["state"] == "failed"
+    assert retried["failure_class"] == "quality"
+
+
+def test_worker_claim_rebinds_live_admission_before_runner(tmp_path, monkeypatch):
+    """A checkpoint drift after manager spawn must remain a quality failure."""
+
+    root = tmp_path / "jobs"
+    monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(root))
+    spec = _spec(tmp_path)
+    request = jobs._request_payload(spec, opponent_selection=None, source_v=142)
+    directory = root / request["job_id"]
+    directory.mkdir(parents=True)
+    claim_token = "worker-live-admission-claim"
+    jobs._write_json(directory / "request.json", request)
+    jobs._write_json(directory / "state.json", {
+        "schema_version": jobs.JOB_SCHEMA_VERSION,
+        "manager_version": jobs.JOB_MANAGER_VERSION,
+        "job_id": request["job_id"],
+        "request_digest": request["request_digest"],
+        "state": "starting",
+        "phase": "worker_handshake",
+        "attempt": 1,
+        "attempt_nonce": "a" * 64,
+        "max_attempts": 3,
+        "pid": os.getpid(),
+        "pgid": os.getpgrp(),
+        "boot_id": jobs._boot_id(),
+        "claim_token": claim_token,
+        "pid_start_ticks": jobs._proc_start_ticks(os.getpid()),
+    })
+    monkeypatch.setattr(
+        jobs,
+        "_live_normal_full_admission_issues",
+        lambda _request: ["official_job_quality_admission_live_invalid:test_drift"],
+    )
+    import official_certification
+
+    monkeypatch.setattr(
+        official_certification,
+        "run_identity_bound_certification_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("worker must not invoke certification after live drift")
+        ),
+    )
+
+    assert jobs._worker_main(directory, claim_token) == 2
+    state = jobs._read_json(directory / "state.json")
+    assert state["state"] == "failed"
+    assert state["phase"] == "quality_admission"
+    assert state["failure_class"] == "quality"
+
+
+def test_worker_final_quality_admission_exception_has_no_result_or_retry(
+    tmp_path,
+    monkeypatch,
+):
+    """EXE-adjacent drift stays typed after the worker has already claimed.
+
+    The manager-side rebind is intentionally repeated immediately before the
+    formal harness launches an EXE round.  That latter error must not fall
+    into the generic worker exception path, write a synthetic result, or turn
+    into an infrastructure retry on a later poll.
+    """
+
+    root = tmp_path / "jobs"
+    monkeypatch.setenv("POK_OFFICIAL_JOB_DIR", str(root))
+    spec = _spec(tmp_path)
+    request = jobs._request_payload(spec, opponent_selection=None, source_v=142)
+    directory = root / request["job_id"]
+    directory.mkdir(parents=True)
+    claim_token = "worker-final-admission-claim"
+    jobs._write_json(directory / "request.json", request)
+    jobs._write_json(directory / "state.json", {
+        "schema_version": jobs.JOB_SCHEMA_VERSION,
+        "manager_version": jobs.JOB_MANAGER_VERSION,
+        "job_id": request["job_id"],
+        "request_digest": request["request_digest"],
+        "state": "starting",
+        "phase": "worker_handshake",
+        "attempt": 1,
+        "attempt_nonce": "b" * 64,
+        "max_attempts": 3,
+        "pid": os.getpid(),
+        "pgid": os.getpgrp(),
+        "boot_id": jobs._boot_id(),
+        "claim_token": claim_token,
+        "pid_start_ticks": jobs._proc_start_ticks(os.getpid()),
+    })
+
+    import official_certification
+    import official_platform_harness
+
+    monkeypatch.setattr(
+        official_certification,
+        "certification_identity",
+        lambda _spec: request["identity"],
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "run_identity_bound_certification_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            official_platform_harness.FormalQualityAdmissionError([
+                "official_formal_quality_admission_invalid:"
+                "official_formal_quality_admission_current_drift"
+            ])
+        ),
+    )
+
+    assert jobs._worker_main(directory, claim_token) == 2
+    state = jobs._read_json(directory / "state.json")
+    assert state["state"] == "failed"
+    assert state["phase"] == "quality_admission"
+    assert state["failure_class"] == "quality"
+    assert "official_formal_quality_admission_current_drift" in state["failure"]
+    assert not jobs._result_path(directory, 1).exists()
+
+    monkeypatch.setattr(
+        jobs,
+        "_spawn_worker",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("quality admission terminal state must not retry")
+        ),
+    )
+    polled = jobs.start_or_poll_job(spec, source_v=142, retry_terminal=True)
+    assert polled["state"] == "failed"
+    assert polled["phase"] == "quality_admission"
+    assert polled["failure_class"] == "quality"
 
 
 def _fake_spawn(directory, state, *, max_attempts, new_suite):

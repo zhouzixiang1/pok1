@@ -12,7 +12,7 @@
   "epoch": "national_tcp_policy_v1",
   "executor": "system_policy_bootstrap_v1",
   "files": {
-    "policy.py": "f7c6a14a0b6fdceb6f47016ba9f8048d3ce82d4baa9dfa1b88c3a74e2b24f956",
+    "policy.py": "811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641",
     "prepared_policy.py": "28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816"
   },
   "mode": "fresh_national_policy_bootstrap",
@@ -21,8 +21,8 @@
     "docs/official-terminal-settlement-oracle-2026-07-11.md": "ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9"
   },
   "official_policy_id": "official-full-v5",
-  "output_artifact_hash": "db439a8b92e737663951814d918ab16dfabef454c5559f87fee60ca76061d327",
-  "prepared_artifact_hash": "0ad1dd758ebc0b62f86f19bdc645abaeb5b7d48fee7513aa8a5c0c65a2721a17",
+  "output_artifact_hash": "39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4",
+  "prepared_artifact_hash": "ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278",
   "provenance": {
     "history_injected": false,
     "kind": "clean-room-lll-informed-strict-v143-bootstrap",
@@ -37,7 +37,7 @@
   "schema_version": 3,
   "system_runtime": {
     "decision_runtime_version": 10,
-    "national_bot_sha256": "0115c5844961011d920d012edbba30eb23171de0f5649f5b46e75a0e6bd94bef",
+    "national_bot_sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
     "precompute_sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
     "stream_decoder_version": 2
   },

@@ -25,15 +25,23 @@ from managed_bot_executor import (
 )
 from bot_namespace import STRICT_ARTIFACT_FILES
 from national_native import NATIONAL_DECISION_RUNTIME_VERSION
+from national_runtime_authority import (
+    current_system_native_runtime_identity,
+    system_native_runtime_identity_structure_issues,
+)
 from national_runtime_probe_scenarios import (
     RUNTIME_PROBE_SCENARIO_DIGEST,
     RUNTIME_PROBE_SCENARIO_VERSION,
 )
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 15
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 15
-RUNTIME_PROBE_WORKER_VERSION = 16
+RUNTIME_PROBE_SCHEMA_VERSION = 16
+# The probe cache is also a quality-evidence cache.  Its identity must change
+# when the system-owned wire client changes, even when the candidate's five
+# artifact files have not.  Otherwise a changed name/stream/decision path
+# could inherit a result that was exercised against an older native template.
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 17
+RUNTIME_PROBE_WORKER_VERSION = 18
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
@@ -59,6 +67,58 @@ def _trusted_file_digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _current_native_template_identity() -> dict[str, Any]:
+    """Return the exact system-owned runtime identity used by this process.
+
+    This deliberately uses the same authority as the static native-contract
+    gate.  The result binds both ``NATIVE_BOT_TEMPLATE`` and
+    ``NATIVE_PRECOMPUTE_TEMPLATE`` rather than a version label that either
+    decision-changing system template could forget to bump.
+    """
+
+    identity = current_system_native_runtime_identity()
+    if system_native_runtime_identity_structure_issues(identity):
+        raise RuntimeError("native_runtime_identity_invalid")
+    return dict(identity)
+
+
+RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY = _current_native_template_identity()
+RUNTIME_PROBE_NATIVE_TEMPLATE_DIGEST = _canonical_digest(
+    RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY
+)
+
+
+def runtime_probe_native_template_evidence() -> dict[str, Any]:
+    """Fields that a reusable quality/precommit receipt must carry.
+
+    Callers compare the canonical two-file system runtime object and its
+    digest.  A missing field, malformed value, or a change to either the raw
+    TCP entrypoint or system precompute is therefore stale rather than a
+    compatibility fallback.
+    """
+
+    return {
+        # Receipts are handed to independent quality/precommit/commit callers.
+        # Do not let a caller mutating its nested ``artifacts`` projection
+        # mutate this process's expected schema-2 authority in place.
+        "native_runtime_template_identity": copy.deepcopy(
+            RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY
+        ),
+        "native_runtime_template_digest": RUNTIME_PROBE_NATIVE_TEMPLATE_DIGEST,
+    }
+
+
+def runtime_probe_native_template_evidence_matches(
+    evidence: dict[str, Any] | None,
+) -> bool:
+    """Whether persisted evidence is for this exact loaded native template."""
+
+    return isinstance(evidence, dict) and all(
+        evidence.get(key) == value
+        for key, value in runtime_probe_native_template_evidence().items()
+    )
+
+
 def runtime_probe_limits() -> dict[str, Any]:
     executor_path = Path(__file__).with_name("managed_bot_executor.py")
     socket_path = Path(__file__).with_name("managed_bot_socket.py")
@@ -81,15 +141,33 @@ RUNTIME_PROBE_LIMITS_DIGEST = _canonical_digest(runtime_probe_limits())
 RUNTIME_PROBE_WORKER_DIGEST = _trusted_file_digest(
     Path(__file__).with_name("national_runtime_probe_worker.py")
 )
-RUNTIME_PROBE_IDENTITY_DIGEST = _canonical_digest({
-    "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
-    "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
-    "worker_version": RUNTIME_PROBE_WORKER_VERSION,
-    "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
-    "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
-    "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
-    "policy_abi": "decision_context_v1_typed_intent_v1",
-})
+
+
+def _runtime_probe_identity_payload(
+    native_template_identity: dict[str, Any],
+    native_template_digest: str,
+) -> dict[str, Any]:
+    """Return the complete immutable subject of the probe identity digest."""
+
+    return {
+        "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+        "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        "worker_version": RUNTIME_PROBE_WORKER_VERSION,
+        "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
+        "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+        "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+        "native_runtime_template_identity": native_template_identity,
+        "native_runtime_template_digest": native_template_digest,
+        "policy_abi": "decision_context_v1_typed_intent_v1",
+    }
+
+
+RUNTIME_PROBE_IDENTITY_DIGEST = _canonical_digest(
+    _runtime_probe_identity_payload(
+        RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY,
+        RUNTIME_PROBE_NATIVE_TEMPLATE_DIGEST,
+    )
+)
 
 
 def clear_runtime_probe_cache() -> None:
@@ -114,6 +192,7 @@ def build_runtime_probe_spec(bot_dir: str | Path) -> dict[str, Any]:
         "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
         "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
         "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+        **runtime_probe_native_template_evidence(),
         "policy_abi": "decision_context_v1_typed_intent_v1",
         "expected_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
         "max_import_ms": RUNTIME_PROBE_MAX_IMPORT_MS,
@@ -452,6 +531,12 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         "scenario_digest": result.get("scenario_digest"),
         "spec_digest": result.get("spec_digest"),
         "code_fingerprint": result.get("code_fingerprint"),
+        "native_runtime_template_identity": result.get(
+            "native_runtime_template_identity"
+        ),
+        "native_runtime_template_digest": result.get(
+            "native_runtime_template_digest"
+        ),
         "issues": result.get("issues") or [],
         "official_transcript_decisions": decisions,
         "line_reachability": result.get("line_reachability") or {},
@@ -474,6 +559,7 @@ def _identity_issues(result: dict[str, Any], spec: dict[str, Any]) -> list[str]:
         "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
         "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
         "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+        **runtime_probe_native_template_evidence(),
         "policy_abi": "decision_context_v1_typed_intent_v1",
         "spec_digest": spec["spec_digest"],
         "code_fingerprint": spec["code_fingerprint"],
@@ -537,6 +623,7 @@ def run_national_runtime_probe(
         "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
         "worker_digest": RUNTIME_PROBE_WORKER_DIGEST,
         "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+        **runtime_probe_native_template_evidence(),
         "policy_abi": "decision_context_v1_typed_intent_v1",
         "spec_digest": spec["spec_digest"],
         "code_fingerprint": before,
@@ -561,6 +648,8 @@ def run_national_runtime_probe(
 __all__ = [
     "RUNTIME_PROBE_IDENTITY_DIGEST",
     "RUNTIME_PROBE_LIMITS_DIGEST",
+    "RUNTIME_PROBE_NATIVE_TEMPLATE_DIGEST",
+    "RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY",
     "RUNTIME_PROBE_ORCHESTRATOR_VERSION",
     "RUNTIME_PROBE_SCHEMA_VERSION",
     "RUNTIME_PROBE_SCENARIO_DIGEST",
@@ -570,5 +659,7 @@ __all__ = [
     "build_runtime_probe_spec",
     "clear_runtime_probe_cache",
     "run_national_runtime_probe",
+    "runtime_probe_native_template_evidence",
+    "runtime_probe_native_template_evidence_matches",
     "runtime_probe_limits",
 ]

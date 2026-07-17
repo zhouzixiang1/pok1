@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from bot_artifact import canonical_digest
 from official_certification import STATUS_CERTIFIED, STATUS_INCONCLUSIVE
 
 
@@ -21,6 +22,166 @@ def _allow_tmp_candidate_publication_shape(monkeypatch) -> None:
     import bot_artifact
 
     monkeypatch.setattr(bot_artifact, "publication_shape_errors", lambda _path: [])
+
+
+def _structural_quality_admission(candidate: Path, *, next_v: int) -> dict:
+    from national_native import NATIONAL_DECISION_RUNTIME_VERSION
+    from national_runtime_authority import current_system_native_runtime_identity
+    from national_runtime_probe import runtime_probe_native_template_evidence
+
+    runtime_evidence = runtime_probe_native_template_evidence()
+    payload = {
+        "schema_version": 1,
+        "kind": "official-formal-quality-admission",
+        "candidate_path": str(candidate.resolve()),
+        "candidate_hash": "a" * 64,
+        "checkpoint": {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "workflow_run_id": "pytest-commit-workflow",
+            "next_v": next_v,
+            "source_v": next_v - 1,
+        },
+        "quality_gate_digest": "1" * 64,
+        "capability_digest": "2" * 64,
+        "dynamic_probe_digest": "3" * 64,
+        "runtime_contract_ledger_digest": "4" * 64,
+        "runtime_probe_identity": {
+            "scenario_digest": "5" * 64,
+            "limits_digest": "6" * 64,
+            "probe_identity_digest": "7" * 64,
+            "managed_isolation_digest": "8" * 64,
+            **runtime_evidence,
+        },
+        "system_runtime_identity": current_system_native_runtime_identity(),
+        "system_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+    }
+    return {**payload, "admission_digest": canonical_digest(payload)}
+
+
+def test_strict_normal_full_commit_binds_admission_before_job_and_blocks_missing(
+    tmp_path,
+    monkeypatch,
+):
+    import official_certification
+    import official_certification_job
+    import official_platform_harness
+    import tool_commit
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v144")
+    opponent = _native_bot(tmp_path / "bots" / "national_v143")
+    selection = {
+        "selected": True,
+        "opponent": {
+            "path": str(opponent),
+            "bot": opponent.name,
+            "reason": "official_certified",
+        },
+        "considered": [],
+    }
+    monkeypatch.setattr(official_certification, "read_status", lambda _candidate: {})
+    monkeypatch.setattr(
+        official_certification,
+        "official_full_certified",
+        lambda status, _candidate, **_kwargs: status.get("status") == STATUS_CERTIFIED,
+    )
+    monkeypatch.setattr(
+        official_certification,
+        "select_official_opponent",
+        lambda *_args, **_kwargs: selection,
+    )
+    monkeypatch.setattr(tool_commit, "get_active_bots", lambda: [str(opponent)])
+    monkeypatch.setattr(
+        official_certification_job,
+        "start_or_poll_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing admission must block before a durable job")
+        ),
+    )
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_args, **_kwargs: {
+            "valid": False,
+            "issues": ["official_formal_quality_gate_ledger_missing"],
+            "admission": None,
+        },
+    )
+
+    blocked = asyncio.run(
+        tool_commit._run_official_full_commit_gate(
+            144,
+            143,
+            candidate,
+            {"national_execution_mode": "native_tcp"},
+            {},
+        )
+    )
+    assert blocked["outcome"] == "quality_admission_blocked"
+    assert blocked["passed"] is False
+
+    admission = _structural_quality_admission(candidate, next_v=144)
+    seen = []
+    monkeypatch.setattr(
+        official_platform_harness,
+        "build_formal_quality_admission",
+        lambda *_args, **_kwargs: {"valid": True, "issues": [], "admission": admission},
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "start_or_poll_job",
+        lambda spec, **_kwargs: seen.append(spec) or {
+            "state": "completed",
+            "pending": False,
+            "job_id": "job-admission",
+            "status": {
+                "status": STATUS_CERTIFIED,
+                "mode": "full",
+                "issues": [],
+                "official_evidence_path": str(tmp_path / "evidence.json"),
+                "official_evidence_summary": {"classification": "pass", "blocking": False},
+            },
+        },
+    )
+    accepted = asyncio.run(
+        tool_commit._run_official_full_commit_gate(
+            144,
+            143,
+            candidate,
+            {"national_execution_mode": "native_tcp"},
+            {},
+        )
+    )
+    assert accepted["passed"] is True
+    assert len(seen) == 1
+    assert seen[0].quality_admission == admission
+
+    monkeypatch.setattr(
+        official_certification_job,
+        "start_or_poll_job",
+        lambda *_args, **_kwargs: {
+            "state": "failed",
+            "phase": "quality_admission",
+            "failure_class": "quality",
+            "pending": False,
+            "issues": ["official_job_quality_admission_live_invalid:test_drift"],
+        },
+    )
+    drifted = asyncio.run(
+        tool_commit._run_official_full_commit_gate(
+            144,
+            143,
+            candidate,
+            {"national_execution_mode": "native_tcp"},
+            {},
+            retry_terminal=True,
+        )
+    )
+    assert drifted["passed"] is False
+    assert drifted["outcome"] == "quality_admission_blocked"
+    assert drifted["failure_class"] == "quality"
+    assert drifted["issues"] == [
+        "official_job_quality_admission_live_invalid:test_drift"
+    ]
 
 
 def test_official_full_commit_gate_requires_full_spec(tmp_path, monkeypatch):
@@ -389,6 +550,8 @@ def test_official_full_gate_records_repairable_checkpoint_stage(monkeypatch, tmp
             "next_v": 134,
             "source_v": 120,
             "stage": "verified",
+            "checkpoint_revision": 7,
+            "workflow_run_id": "generation:134:official-gate-test",
             "master_plan": {"strategy": "crossover"},
             "gate_results": {"precommit_eval": {"passed": True}},
             "parent2_v": 117,
@@ -419,7 +582,13 @@ def test_official_full_gate_records_inconclusive_checkpoint_stage(monkeypatch, t
     stage = tool_commit._record_official_full_gate_checkpoint(
         134,
         120,
-        {"next_v": 134, "source_v": 120, "stage": "verified"},
+        {
+            "next_v": 134,
+            "source_v": 120,
+            "stage": "verified",
+            "checkpoint_revision": 7,
+            "workflow_run_id": "generation:134:official-gate-test",
+        },
         {
             "passed": False,
             "status": {"status": "official-inconclusive", "mode": "full"},
@@ -500,7 +669,13 @@ def test_mutable_evidence_summary_cannot_route_bot_repair(monkeypatch):
     stage = tool_commit._record_official_full_gate_checkpoint(
         134,
         120,
-        {"next_v": 134, "source_v": 120, "stage": "verified"},
+        {
+            "next_v": 134,
+            "source_v": 120,
+            "stage": "verified",
+            "checkpoint_revision": 7,
+            "workflow_run_id": "generation:134:official-gate-test",
+        },
         {
             "passed": False,
             "verdict": {
@@ -529,7 +704,13 @@ def test_official_terminal_checkpoint_reports_cas_failure(monkeypatch):
     stage = tool_commit._record_official_full_gate_checkpoint(
         134,
         120,
-        {"next_v": 134, "source_v": 120, "stage": "official_certifying"},
+        {
+            "next_v": 134,
+            "source_v": 120,
+            "stage": "official_certifying",
+            "checkpoint_revision": 7,
+            "workflow_run_id": "generation:134:official-gate-test",
+        },
         {
             "passed": False,
             "verdict": {"blocking": True, "classification": "protocol_violation"},
@@ -538,6 +719,34 @@ def test_official_terminal_checkpoint_reports_cas_failure(monkeypatch):
     )
 
     assert stage == ""
+
+
+def test_official_terminal_checkpoint_refuses_an_unbound_stale_snapshot(monkeypatch):
+    """A final gate result may not overwrite a checkpoint without its CAS tuple."""
+
+    import tool_commit
+
+    calls = []
+    monkeypatch.setattr(
+        tool_commit,
+        "write_pipeline_checkpoint",
+        lambda *_args, **_kwargs: calls.append(True) or True,
+    )
+
+    stage = tool_commit._record_official_full_gate_checkpoint(
+        134,
+        120,
+        {"next_v": 134, "source_v": 120, "stage": "official_certifying"},
+        {
+            "passed": False,
+            "outcome": "quality_admission_blocked",
+            "failure_class": "quality",
+            "quality_admission_refresh": True,
+        },
+    )
+
+    assert stage == ""
+    assert calls == []
 
 
 def test_official_full_pass_is_persisted_in_verified_gate_ledger(monkeypatch, tmp_path):
@@ -928,6 +1137,167 @@ def test_commit_bot_never_invokes_git_when_official_gate_fails(monkeypatch, tmp_
 
     assert payload["checkpoint_stage"] == "official_inconclusive"
     assert payload["official_full_gate"]["passed"] is False
+
+
+def test_commit_bot_keeps_quality_admission_failure_out_of_infrastructure_retry(
+    monkeypatch,
+    tmp_path,
+):
+    """Live quality drift is terminal evidence failure, never an infra retry."""
+
+    import tool_commit
+
+    candidate = _native_bot(tmp_path / "bots" / "national_v144")
+    _allow_tmp_candidate_publication_shape(monkeypatch)
+    checkpoint = {
+        "next_v": 144,
+        "source_v": 143,
+        "stage": "verified",
+        "reviewer_feedback": "keep reviewer-owned feedback",
+        "official_job": {"job_id": "stale-official-job"},
+    }
+    gate = {
+        "passed": False,
+        "pending": False,
+        "outcome": "quality_admission_blocked",
+        "failure_class": "quality",
+        "issues": ["official_job_quality_admission_live_invalid:test_drift"],
+    }
+    checkpoint_updates = []
+    infrastructure_calls = []
+    git_calls = []
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_commit, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_commit,
+        "_owned_infrastructure_failure",
+        lambda *_args: (None, None),
+    )
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def infrastructure_retry(*_args, **_kwargs):
+        infrastructure_calls.append(True)
+        raise AssertionError("quality admission must not record infrastructure retry")
+
+    monkeypatch.setattr(
+        tool_commit,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted,
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_record_infrastructure_failure",
+        infrastructure_retry,
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "validate_commit_gate_ledger",
+        lambda *_args, **_kwargs: {
+            "missing_gates": [],
+            "failed_gates": [],
+            "gate_results": {},
+            "checkpoint_stage": "verified",
+            "current_code_fingerprint": "candidate-hash",
+        },
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_run_official_full_commit_gate",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=gate),
+    )
+    monkeypatch.setattr(
+        tool_commit,
+        "_record_official_full_gate_checkpoint",
+        lambda *_args, **_kwargs: checkpoint_updates.append((_args, _kwargs))
+        or "official_certifying",
+    )
+    monkeypatch.setattr(tool_commit, "log_system_event", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tool_commit,
+        "ensure_bot_git_publication",
+        lambda *_args, **_kwargs: git_calls.append(True)
+        or (_ for _ in ()).throw(
+            AssertionError("quality admission failure must not publish Git")
+        ),
+    )
+
+    raw = asyncio.run(tool_commit.commit_bot.handler({
+        "version": 144,
+        "source_v": 143,
+        "strategy": "quality-drift-test",
+        "review_approved": True,
+    }))
+    payload = json.loads(raw["content"][0]["text"])
+
+    assert payload["checkpoint_stage"] == "official_certifying"
+    assert payload["official_full_gate"]["outcome"] == "quality_admission_blocked"
+    assert payload["official_full_gate"]["failure_class"] == "quality"
+    assert infrastructure_calls == []
+    assert len(checkpoint_updates) == 1
+    assert checkpoint_updates[0][1]["clear_official_job"] is True
+    assert git_calls == []
+
+
+def test_quality_admission_checkpoint_record_preserves_stage_and_reviewer_feedback(
+    monkeypatch,
+):
+    """A stale formal receipt returns to quality, never infra or worker repair."""
+
+    import tool_commit
+
+    checkpoint = {
+        "next_v": 144,
+        "source_v": 143,
+        "stage": "official_certifying",
+        "checkpoint_revision": 7,
+        "workflow_run_id": "generation:144:official-gate-test",
+        "reviewer_feedback": "reviewer evidence remains reviewer-owned",
+        "official_job": {"job_id": "old-formal-job"},
+        "gate_results": {"quality": {"all_passed": True}},
+    }
+    gate = {
+        "passed": False,
+        "pending": False,
+        "outcome": "quality_admission_blocked",
+        "failure_class": "quality",
+        "issues": ["official_job_quality_admission_live_invalid:test_drift"],
+    }
+    writes = []
+
+    def capture_checkpoint(*args, **kwargs):
+        writes.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(tool_commit, "write_pipeline_checkpoint", capture_checkpoint)
+
+    stage = tool_commit._record_official_full_gate_checkpoint(
+        144,
+        143,
+        checkpoint,
+        gate,
+        clear_official_job=True,
+    )
+
+    assert stage == "official_certifying"
+    assert len(writes) == 1
+    args, kwargs = writes[0]
+    assert args[:3] == (144, 143, "official_certifying")
+    assert kwargs["reviewer_feedback"] == checkpoint["reviewer_feedback"]
+    assert kwargs["clear_infra_failure"] is False
+    assert kwargs["clear_official_job"] is True
+    assert kwargs["expected_official_job_id"] == "old-formal-job"
+    assert kwargs["touch_stage_timestamp"] is True
+    assert kwargs["expected_checkpoint_revision"] == 7
+    assert kwargs["expected_checkpoint_stage"] == "official_certifying"
+    assert kwargs["expected_workflow_run_id"] == "generation:144:official-gate-test"
+    recorded = kwargs["gate_results"]["official_full"]
+    assert recorded["passed"] is False
+    assert recorded["failure_class"] == "quality"
+    assert recorded["quality_admission_refresh"] is True
+    assert recorded["repairable_by_workers"] is False
 
 
 def test_commit_bot_attaches_pending_official_job_without_git(monkeypatch, tmp_path):

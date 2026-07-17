@@ -124,12 +124,26 @@ Missing or malformed controls are neutral/fail-closed. Any plan that changes
 one of these paths must name its positive and negative real-runtime regression
 and a socket-visible typed-intent effect.
 
-`get_baseline_decision(decision_context)` must finish strictly under 250 ms.
-Optional `iter_decisions(decision_context, baseline, deadline)` performs
-bounded new work and checks `time.monotonic()` before every expensive unit.
-The system records trusted iterator steps/CPU/time; candidate-reported work is
-diagnostic only. External I/O, unbounded allocation/history scans, and
-candidate-controlled sanitization are forbidden.
+`deadline.baseline_target_ms` is authoritative: native precommit can set a
+200 ms target and every baseline must finish strictly under 250 ms, the formal
+ceiling. Optional
+`iter_decisions(decision_context, baseline, deadline)` performs bounded new
+work and checks `time.monotonic()` before every expensive unit. The system
+records trusted iterator steps/CPU/time; candidate-reported work is diagnostic
+only. External I/O, unbounded allocation/history scans, and candidate-controlled
+sanitization are forbidden.
+
+The current strict baseline uses fixed deterministic 192/256/96
+flop/turn/river samples, two direct `precompute.evaluate_seven` calls per
+sample, and no more than 800 top-level evaluator calls. A compact prior is
+only an invalid/degraded-input fallback or refinement starting point, not a
+valid-board replacement. Static quality rejects evaluator aliases (including
+imported, closure, and default aliases), combinations, and nested deck-pair
+sweeps from the baseline. Full `C(45,2)` remaining-opponent enumeration is
+admissible only as bounded, monotonic-deadline-checked refinement after a legal
+baseline has already been published. The actual official `name` handshake
+starts the system-owned policy worker before preflop; it does not relax a
+decision's wall-clock gate.
 
 The official send throttle (`POK_OFFICIAL_ACTION_DELAY`, default about 0.30 s)
 remains in `_send_wire_action`. Formal compliance requires `official-full-v5`.

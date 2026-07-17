@@ -857,6 +857,168 @@ def test_handshake_timeout_is_not_mislabeled_as_full_match_liveness(
     )
 
 
+def test_system_native_name_handshake_evidence_is_required_but_legacy_fixture_is_not(
+    tmp_path,
+):
+    entry = tmp_path / "strict-handshake" / "national_bot.py"
+    spec = national_native.NativeBotSpec(
+        label="national_v143",
+        path=entry.parent,
+        entry=entry,
+        artifact_hash="a" * 64,
+        entry_digest=hashlib.sha256(
+            national_native.NATIVE_BOT_TEMPLATE.encode("utf-8")
+        ).hexdigest(),
+    )
+    process_info = {"bot_log_supported": True}
+    valid = {
+        "name_handshake": {
+            "available": True,
+            "received_count": 1,
+            "sent_count": 1,
+            "worker_launch_started_count": 1,
+            "worker_launch_ok_count": 1,
+            "worker_launch_failed_count": 0,
+            "worker_generations": [1],
+            "malformed_count": 0,
+        }
+    }
+
+    assert national_native._system_native_name_handshake_issues(
+        spec.label, spec, process_info, valid
+    ) == []
+    assert national_native._system_native_name_handshake_issues(
+        spec.label, spec, process_info, {"name_handshake": {}}
+    ) == ["national_v143: native_name_handshake_missing"]
+
+    duplicate = copy.deepcopy(valid)
+    duplicate["name_handshake"].update({
+        "received_count": 2,
+        "worker_generations": [1, 1],
+    })
+    assert national_native._system_native_name_handshake_issues(
+        spec.label, spec, process_info, duplicate
+    ) == ["national_v143: native_name_handshake_repeated count=2"]
+
+    failed = copy.deepcopy(valid)
+    failed["name_handshake"].update({
+        "worker_launch_started_count": 0,
+        "worker_launch_ok_count": 0,
+        "worker_launch_failed_count": 1,
+        "worker_generations": [0],
+    })
+    assert national_native._system_native_name_handshake_issues(
+        spec.label, spec, process_info, failed
+    ) == ["national_v143: native_name_handshake_launch_failed"]
+
+    malformed = copy.deepcopy(valid)
+    malformed["name_handshake"]["malformed_count"] = 1
+    assert national_native._system_native_name_handshake_issues(
+        spec.label, spec, process_info, malformed
+    ) == ["national_v143: native_name_handshake_malformed"]
+
+    legacy = replace(spec, entry_digest="legacy-fixture")
+    assert national_native._system_native_name_handshake_issues(
+        legacy.label, legacy, process_info, {"name_handshake": {}}
+    ) == []
+    assert national_native._system_native_name_handshake_issues(
+        spec.label, spec, {"bot_log_supported": False}, {"name_handshake": {}}
+    ) == []
+
+
+def test_real_system_native_pair_records_one_valid_name_worker_handshake(
+    tmp_path, monkeypatch
+):
+    """The pair-quality path consumes the actual generated bot logs."""
+
+    monkeypatch.setattr(national_native, "ROOT", tmp_path)
+    bot_a = _strict_bot(tmp_path, 143)
+    bot_b = _strict_bot(tmp_path, 144, parents=(143,))
+    spec_a = national_native._prepare_native_spec("national_v143", bot_a)
+    spec_b = national_native._prepare_native_spec("national_v144", bot_b)
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=1,
+        requested_timeout_sec=None,
+    )
+
+    result = asyncio.run(national_native._run_tcp_server_with_processes(
+        spec_a,
+        spec_b,
+        hands=1,
+        timing_plan=timing_plan,
+        deck_seed_base=71_143,
+        bot_seed_base=171_143,
+    ))
+
+    assert result["passed_compliance"] is True, result["issues"]
+    for label in (spec_a.label, spec_b.label):
+        player = result["per_player"][label]
+        handshake = player["runtime_telemetry"]["bot_log"]["name_handshake"]
+        assert player["passed_compliance"] is True
+        assert handshake["received_count"] == 1
+        assert handshake["sent_count"] == 1
+        assert handshake["worker_launch_started_count"] == 1
+        assert handshake["worker_launch_failed_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_native_precommit_rejects_name_handshake_compliance_failure(
+    tmp_path, monkeypatch
+):
+    candidate = tmp_path / "national_v143"
+    opponent = tmp_path / "national_v144"
+    candidate.mkdir()
+    opponent.mkdir()
+
+    def resolve(token):
+        path = Path(token)
+        return path.name, path.absolute()
+
+    async def failed_match(*_args, **_kwargs):
+        return {
+            "net_chips_a": 7,
+            "hands_played": 70,
+            "passed_compliance": False,
+            "issues": ["national_v143: native_name_handshake_missing"],
+            "artifact_execution": {},
+        }
+
+    monkeypatch.setattr(national_native, "resolve_bot", resolve)
+    monkeypatch.setattr(
+        national_native,
+        "_acceptance_opponent_runtime_mode",
+        lambda *_args, **_kwargs: "strict_policy",
+    )
+    monkeypatch.setattr(national_native, "run_native_strength_pair", failed_match)
+    monkeypatch.setattr(
+        national_native,
+        "_artifact_execution_is_valid",
+        lambda *_args, **_kwargs: True,
+    )
+
+    result = await national_native.run_native_precommit(
+        candidate,
+        [{
+            "name": opponent.name,
+            "path": str(opponent),
+            "reason": "strict_parent",
+            "precommit_gate_admitted": True,
+            "strength_admitted": True,
+            "rating_eligible": True,
+        }],
+        hands=70,
+        matches_per_opponent=1,
+    )
+
+    assert result["passed"] is False
+    assert result["matchups"][0]["repeats"][0]["passed_compliance"] is False
+    assert result["matchups"][0]["repeats"][0]["sample_valid"] is False
+    assert any(
+        blocker["reason"] == "native_candidate_compliance"
+        for blocker in result["blockers"]
+    )
+
+
 def test_first_strict_runner_journals_liveness_budget_before_outer_idempotent_completion(
     tmp_path, monkeypatch
 ):

@@ -39,6 +39,17 @@ def test_control_is_a_direct_content_bound_policy_artifact():
     }
 
 
+def test_control_fails_closed_when_runtime_template_binding_drifts():
+    import first_strict_control as control
+
+    manifest = deepcopy(control.load_control_manifest())
+    manifest["runtime"]["national_bot_sha256"] = "0" * 64
+
+    assert "first_strict_control_national_runtime_hash_mismatch" in (
+        control.validate_control_package(manifest)
+    )
+
+
 def test_control_receipt_is_empty_pool_only_and_never_strength_authority():
     import first_strict_control as control
 

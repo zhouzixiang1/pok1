@@ -51,6 +51,17 @@ DEADLINE_TERMINATION_RE = re.compile(
     r"decision_id=(?P<decision_id>\d+)"
 )
 OPPONENT_TRACKER_PREFIX = "OPPONENT_TRACKER "
+NAME_HANDSHAKE_RE = re.compile(
+    r"\bNAME_HANDSHAKE "
+    r"count=(?P<count>\d+) "
+    r"worker_launch_started=(?P<started>True|False) "
+    r"worker_generation=(?P<generation>\d+) "
+    r"launch_ok=(?P<launch_ok>True|False)\s*$"
+)
+NAME_HANDSHAKE_SEND_RE = re.compile(
+    r"\bSEND name_handshake .*?\bcount=(?P<count>\d+) "
+    r"worker_generation=(?P<generation>\d+)\s*$"
+)
 
 
 def _optional_number(value: str, caster):
@@ -81,6 +92,26 @@ def _empty_refinement_summary() -> dict[str, Any]:
         "reported_sample_count_max": None,
         "reported_confidence_max": None,
         "candidate_reported_fields_authoritative": False,
+    }
+
+
+def _empty_name_handshake_summary() -> dict[str, Any]:
+    """Return only system-owned raw-TCP handshake observations.
+
+    The generated native entry logs this boundary before it sends the raw
+    team name.  It is intentionally separate from decision telemetry: policy
+    import/readiness is never a prerequisite for the official handshake.
+    """
+
+    return {
+        "available": False,
+        "received_count": 0,
+        "sent_count": 0,
+        "worker_launch_started_count": 0,
+        "worker_launch_ok_count": 0,
+        "worker_launch_failed_count": 0,
+        "worker_generations": [],
+        "malformed_count": 0,
     }
 
 
@@ -172,6 +203,7 @@ def empty_bot_log_summary() -> dict[str, Any]:
         "decision_latency": summarize_durations([], budget_sec=DECISION_BUDGET_SEC),
         "official_action_delay": summarize_durations([]),
         "refinement": _empty_refinement_summary(),
+        "name_handshake": _empty_name_handshake_summary(),
         "send_count": 0,
         "exception_count": 0,
         "opponent_tracker": {
@@ -192,7 +224,34 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
     pending: dict[str, Any] | None = None
     exceptions = 0
     opponent_tracker_snapshots: list[dict[str, Any]] = []
+    name_handshakes: list[dict[str, Any]] = []
+    name_handshake_sends: list[dict[str, int]] = []
+    name_handshake_malformed = 0
     for line in log_text.splitlines():
+        if "NAME_HANDSHAKE " in line:
+            handshake = NAME_HANDSHAKE_RE.search(line)
+            if handshake is None:
+                name_handshake_malformed += 1
+            else:
+                name_handshakes.append({
+                    "count": int(handshake.group("count")),
+                    "worker_launch_started": (
+                        handshake.group("started") == "True"
+                    ),
+                    "worker_generation": int(handshake.group("generation")),
+                    "launch_ok": handshake.group("launch_ok") == "True",
+                })
+            continue
+        if "SEND name_handshake" in line:
+            sent = NAME_HANDSHAKE_SEND_RE.search(line)
+            if sent is None:
+                name_handshake_malformed += 1
+            else:
+                name_handshake_sends.append({
+                    "count": int(sent.group("count")),
+                    "worker_generation": int(sent.group("generation")),
+                })
+            continue
         marker_index = line.find(OPPONENT_TRACKER_PREFIX)
         if marker_index >= 0:
             raw = line[marker_index + len(OPPONENT_TRACKER_PREFIX):].strip()
@@ -346,6 +405,32 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
         for row in refinements
         if isinstance(row.get("reported_confidence"), (int, float))
     ]
+    name_handshake = _empty_name_handshake_summary()
+    if name_handshakes or name_handshake_sends or name_handshake_malformed:
+        name_handshake.update({
+            "available": bool(name_handshakes),
+            "received_count": len(name_handshakes),
+            "sent_count": len(name_handshake_sends),
+            "worker_launch_started_count": sum(
+                1 for row in name_handshakes if row["worker_launch_started"]
+            ),
+            "worker_launch_ok_count": sum(
+                1 for row in name_handshakes if row["launch_ok"]
+            ),
+            "worker_launch_failed_count": sum(
+                1
+                for row in name_handshakes
+                if (
+                    not row["worker_launch_started"]
+                    or not row["launch_ok"]
+                    or row["worker_generation"] < 1
+                )
+            ),
+            "worker_generations": [
+                int(row["worker_generation"]) for row in name_handshakes
+            ],
+            "malformed_count": name_handshake_malformed,
+        })
     return {
         "schema_version": SCHEMA_VERSION,
         "source": "bot_log",
@@ -387,6 +472,7 @@ def parse_native_bot_log(log_text: str) -> dict[str, Any]:
             "reported_confidence_max": max(reported_confidences, default=None),
             "candidate_reported_fields_authoritative": False,
         },
+        "name_handshake": name_handshake,
         "send_count": len(sends),
         "exception_count": exceptions,
         "opponent_tracker": {
@@ -489,6 +575,14 @@ def empty_runtime_telemetry() -> dict[str, Any]:
             **_empty_refinement_summary(),
             "trusted_cpu": merge_latency_summaries([]),
         },
+        "name_handshake": {
+            "evidence_matches": 0,
+            "received_count": 0,
+            "sent_count": 0,
+            "worker_launch_started_count": 0,
+            "worker_launch_failed_count": 0,
+            "malformed_count": 0,
+        },
         "matches_with_bot_log": 0,
         "trace_decision_count": 0,
         "exception_count": 0,
@@ -525,6 +619,10 @@ def merge_runtime_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
             )),
             (int, float),
         )
+    ]
+    name_handshake_rows = [
+        ((row.get("bot_log") or {}).get("name_handshake") or {})
+        for row in rows
     ]
     merged.update({
         "server_action_latency": merge_latency_summaries([
@@ -573,6 +671,31 @@ def merge_runtime_telemetry(rows: list[dict[str, Any]]) -> dict[str, Any]:
                 default=None,
             ),
             "candidate_reported_fields_authoritative": False,
+        },
+        "name_handshake": {
+            "evidence_matches": sum(
+                1 for item in name_handshake_rows if item.get("available") is True
+            ),
+            "received_count": sum(
+                int(item.get("received_count", 0) or 0)
+                for item in name_handshake_rows
+            ),
+            "sent_count": sum(
+                int(item.get("sent_count", 0) or 0)
+                for item in name_handshake_rows
+            ),
+            "worker_launch_started_count": sum(
+                int(item.get("worker_launch_started_count", 0) or 0)
+                for item in name_handshake_rows
+            ),
+            "worker_launch_failed_count": sum(
+                int(item.get("worker_launch_failed_count", 0) or 0)
+                for item in name_handshake_rows
+            ),
+            "malformed_count": sum(
+                int(item.get("malformed_count", 0) or 0)
+                for item in name_handshake_rows
+            ),
         },
         "matches_with_bot_log": sum(
             1 for row in rows if bool(row.get("bot_log_supported"))

@@ -159,6 +159,129 @@ async def test_pending_after_timeout_terminates_exact_transport_and_never_retrie
 
 
 @pytest.mark.asyncio
+async def test_confirmed_parent_cancel_preserves_cancelled_error(monkeypatch):
+    import llm_query
+
+    release = asyncio.Event()
+    transport = _OwnedTransport(release)
+    query = _ResistantQuery(release)
+    events = []
+
+    monkeypatch.setattr(
+        llm_query,
+        "_role_timeout_policy",
+        lambda _role: {
+            "policy_key": "TEST",
+            "first_activity_timeout": 60,
+            "idle_timeout": 60,
+            "stall_timeout": 60,
+            "total_timeout": 120,
+        },
+    )
+    monkeypatch.setattr(
+        llm_query,
+        "_new_owned_sdk_transport",
+        lambda _prompt, _options: transport,
+    )
+    monkeypatch.setattr(llm_query, "claude_query", lambda **_kwargs: query)
+    monkeypatch.setenv("POK_LLM_NEXT_CANCEL_GRACE", "0")
+    monkeypatch.setattr(
+        llm_query,
+        "_emit_llm_event",
+        lambda category, severity, message, **fields: events.append(
+            (category, severity, message, fields)
+        ),
+    )
+
+    owner = asyncio.create_task(
+        llm_query._run_stream_with_signature_retry(
+            "prompt",
+            ClaudeAgentOptions(),
+            "/tmp/llm-parent-cancel.log",
+            _UI(),
+            "MASTER PROPOSAL mechanism",
+        )
+    )
+    for _ in range(100):
+        if query.running:
+            break
+        await asyncio.sleep(0)
+    assert query.running is True
+    owner.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    assert transport.close_calls == 1
+    assert transport._owned_process.returncode == -15
+    assert query.running is False
+    assert query.closed is True
+    assert any(
+        event[0]
+        == "pipeline.llm_role_provider_cleanup_completed_after_parent_cancel"
+        for event in events
+    )
+    assert not any(
+        event[0] == "pipeline.llm_role_provider_cleanup_failure"
+        for event in events
+    )
+    with llm_query._PROVIDER_CLEANUP_LOCK:
+        assert llm_query._UNRESOLVED_PROVIDER_ATTEMPTS == {}
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_parent_cancel_remains_cleanup_failure(monkeypatch):
+    import llm_query
+
+    release = asyncio.Event()
+    transport = _UnprovenExitTransport(release)
+    query = _ResistantQuery(release)
+
+    monkeypatch.setattr(
+        llm_query,
+        "_role_timeout_policy",
+        lambda _role: {
+            "policy_key": "TEST",
+            "first_activity_timeout": 60,
+            "idle_timeout": 60,
+            "stall_timeout": 60,
+            "total_timeout": 120,
+        },
+    )
+    monkeypatch.setattr(
+        llm_query,
+        "_new_owned_sdk_transport",
+        lambda _prompt, _options: transport,
+    )
+    monkeypatch.setattr(llm_query, "claude_query", lambda **_kwargs: query)
+    monkeypatch.setenv("POK_LLM_NEXT_CANCEL_GRACE", "0")
+
+    owner = asyncio.create_task(
+        llm_query._run_stream_with_signature_retry(
+            "prompt",
+            ClaudeAgentOptions(),
+            "/tmp/llm-parent-cancel-unproven.log",
+            _UI(),
+            "MASTER PROPOSAL mechanism",
+        )
+    )
+    for _ in range(100):
+        if query.running:
+            break
+        await asyncio.sleep(0)
+    owner.cancel()
+
+    with pytest.raises(llm_query.LLMProviderCleanupError) as exc:
+        await owner
+    assert exc.value.provider_exit_confirmed is False
+    with pytest.raises(llm_query.LLMProviderCleanupBlocked):
+        llm_query._assert_no_unresolved_provider_attempts()
+
+    transport._owned_process.returncode = -9
+    llm_query._assert_no_unresolved_provider_attempts()
+
+
+@pytest.mark.asyncio
 async def test_unconfirmed_owned_transport_exit_blocks_fresh_provider_dispatch(
     monkeypatch,
 ):

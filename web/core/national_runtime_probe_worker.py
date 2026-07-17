@@ -35,9 +35,16 @@ from national_runtime_probe_scenarios import (
 )
 
 
-PROBE_WORKER_VERSION = 16
+PROBE_WORKER_VERSION = 18
 PHASE_PATH = Path("/output/phase.txt")
 MAX_CAPTURE_CHARS = 64 * 1024
+BASELINE_EVALUATOR_CALL_CAP = 800
+BASELINE_EVALUATOR_LEAVES = (
+    "evaluate_five",
+    "best_hand_rank",
+    "evaluate_seven",
+    "compare_hands",
+)
 EXPECTED_CONTEXT_FIELDS = frozenset({
     "schema_version",
     "runtime_version",
@@ -92,15 +99,24 @@ class CappedTextIO(io.TextIOBase):
 
 
 class MemorySocket:
-    """Capture system-owned outbound actions without changing framing."""
+    """Capture the formal name handshake and system-owned action wire."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, expected_name: str | None = None) -> None:
+        self.expected_name = expected_name
+        self.handshake_names: list[str] = []
         self.sent: list[str] = []
 
     def sendall(self, payload: bytes) -> None:
         text = payload.decode("ascii", errors="strict")
         if "\r" in text or "\n" in text:
             raise ValueError("official_wire_action_contains_delimiter")
+        if (
+            self.expected_name is not None
+            and not self.handshake_names
+            and text == self.expected_name
+        ):
+            self.handshake_names.append(text)
+            return
         if not CANONICAL_ACTION_RE.fullmatch(text):
             raise ValueError(f"official_wire_action_not_canonical:{text!r}")
         self.sent.append(text)
@@ -394,7 +410,10 @@ def _runtime_metric_summary(metrics: dict[str, Any]) -> dict[str, Any]:
         "runtime_version": metrics.get("runtime_version"),
         "worker_seed": metrics.get("worker_seed"),
         "socket_fallback_decision": metrics.get("socket_fallback_decision"),
+        "socket_fallback_ready_ms": metrics.get("socket_fallback_ready_ms"),
         "baseline_published": metrics.get("baseline_published_ms") is not None,
+        "baseline_published_ms": metrics.get("baseline_published_ms"),
+        "baseline_target_ms": metrics.get("baseline_target_ms"),
         "baseline_target_met": bool(metrics.get("baseline_target_met")),
         "policy_baseline_decision": metrics.get("policy_baseline_decision"),
         "refinement_messages": int(metrics.get("refinement_messages") or 0),
@@ -435,10 +454,11 @@ def _drive_scenario(
         if not attribute.startswith("_") or not hasattr(bot, attribute):
             raise ValueError(f"unsupported_runtime_limit:{attribute}")
         setattr(bot, attribute, value)
-    sock = MemorySocket()
+    sock = MemorySocket(expected_name=bot.name)
     scripted = [copy.deepcopy(item) for item in scenario.get("setup_intents") or ()]
     contexts: list[dict[str, Any]] = []
     target_decisions: list[dict[str, Any]] = []
+    name_handshake: dict[str, Any] | None = None
     original_build = bot._build_decision_context
     original_decide = bot._policy_decision
 
@@ -465,12 +485,21 @@ def _drive_scenario(
     bot._build_decision_context = capture_context
     bot._policy_decision = typed_decision
     try:
-        for message in scenario.get("messages") or ():
+        for index, message in enumerate(scenario.get("messages") or ()):
             if "\r" in message or "\n" in message:
                 raise ValueError(
                     f"scenario_contains_delimiter:{scenario.get('id')}:{message!r}"
                 )
             bot.handle(message, sock)
+            if index == 0:
+                name_handshake = {
+                    "wire": tuple(sock.handshake_names),
+                    "worker_started": bool(
+                        bot._strategy_process is not None
+                        and bot._strategy_connection is not None
+                    ),
+                    "worker_generation": int(bot._strategy_worker_generation),
+                }
         if scripted:
             raise AssertionError(
                 f"unused_setup_intents:{scenario.get('id')}:{len(scripted)}"
@@ -482,6 +511,14 @@ def _drive_scenario(
             )
         if not sock.sent:
             raise AssertionError(f"target_wire_missing:{scenario.get('id')}")
+        if name_handshake is None:
+            raise AssertionError(f"name_handshake_missing:{scenario.get('id')}")
+        if name_handshake["wire"] != (bot.name,):
+            raise AssertionError(f"name_handshake_wire_invalid:{scenario.get('id')}")
+        if not name_handshake["worker_started"]:
+            raise AssertionError(
+                f"name_handshake_worker_not_started:{scenario.get('id')}"
+            )
         context = contexts[0]
         decision = target_decisions[0]
         system_issues = _validate_context(scenario, context)
@@ -514,6 +551,7 @@ def _drive_scenario(
             "decision": legal_decision,
             "wire": sock.sent[-1],
             "setup_wire": sock.sent[:-1],
+            "name_handshake": name_handshake,
             "runtime": _runtime_metric_summary(metrics),
         }
     finally:
@@ -733,7 +771,7 @@ def _probe_persistent_memory(
     expected_runtime_version: int,
 ) -> dict[str, Any]:
     _native, bot = _new_native_bot(imports)
-    sock = MemorySocket()
+    sock = MemorySocket(expected_name=bot.name)
     scripted = iter((
         {"kind": "raise", "raise_to": 300},
         {"kind": "raise", "raise_to": 300},
@@ -751,6 +789,7 @@ def _probe_persistent_memory(
     bot._policy_decision = typed_setup_decision
     try:
         messages = (
+            "name",
             "preflop|SMALLBLIND|<0,12><1,12>",
             "fold",
             "earnChips 150",
@@ -776,6 +815,14 @@ def _probe_persistent_memory(
         terminal = snapshot.get("terminal_response") or {}
         showdown = snapshot.get("showdown_range") or {}
         issues = []
+        if sock.handshake_names != [bot.name]:
+            issues.append("typed_memory_name_handshake_missing_or_invalid")
+        if (
+            bot._strategy_worker_generation != 1
+            or bot._strategy_process is None
+            or bot._strategy_connection is None
+        ):
+            issues.append("typed_memory_name_handshake_worker_not_started")
         if int(snapshot.get("hands_completed") or 0) != 2:
             issues.append("typed_memory_completed_hand_count_mismatch")
         if int(terminal.get("samples") or 0) < 2:
@@ -801,6 +848,10 @@ def _probe_persistent_memory(
                 "samples": int(showdown.get("samples") or 0),
                 "selection_scope": showdown.get("selection_scope"),
                 "selection_bias_guard": showdown.get("selection_bias_guard"),
+            },
+            "name_handshake": {
+                "wire": tuple(sock.handshake_names),
+                "worker_generation": int(bot._strategy_worker_generation),
             },
             "context_digest": _canonical_digest(_stable_context(context)),
         }
@@ -890,17 +941,116 @@ def _direct_baseline(
     context: dict[str, Any],
     *,
     timeout_sec: float = 0.5,
-) -> Any:
+) -> tuple[Any, dict[str, Any]]:
+    """Run baseline with a system-owned evaluator-work phase counter.
+
+    The timing target catches late publication, while this counter makes a
+    full 990-hole river sweep fail deterministically even on an unusually fast
+    machine.  The aggregate cap permits the strict policy's largest fixed
+    256-sample turn baseline (two seven-card evaluations per sample plus
+    its small structural checks) but not a full river opponent enumeration.
+    The dynamic phase wraps every public system evaluator leaf; nested calls
+    count once at the outermost policy boundary. Static capability gates reject
+    evaluator aliases/value capture and nested deck-pair sweeps. Refinement is
+    intentionally not instrumented here because it has its own deadline and
+    may complete the finite river set.
+    """
+
     def alarm(_signum, _frame):
         raise TimeoutError("typed_policy_baseline_timeout")
 
+    work = {
+        "evaluator_calls": 0,
+        "evaluator_call_cap": BASELINE_EVALUATOR_CALL_CAP,
+        "evaluator_calls_by_name": {},
+        "instrumented": False,
+        "_evaluator_depth": 0,
+    }
+    precompute = sys.modules.get("precompute")
+    originals = {
+        name: getattr(precompute, name, None)
+        for name in BASELINE_EVALUATOR_LEAVES
+        if callable(getattr(precompute, name, None))
+    }
+    patched_policy_globals: list[tuple[str, Any]] = []
+    patched_defaults: list[tuple[Any, tuple[Any, ...] | None, dict[str, Any] | None]] = []
+    if originals:
+        work["instrumented"] = True
+
+        def counted_evaluator(name, original):
+            def wrapped(*args, **kwargs):
+                outermost = work["_evaluator_depth"] == 0
+                if outermost:
+                    work["evaluator_calls"] += 1
+                    work["evaluator_calls_by_name"][name] = (
+                        int(work["evaluator_calls_by_name"].get(name) or 0) + 1
+                    )
+                work["_evaluator_depth"] += 1
+                try:
+                    return original(*args, **kwargs)
+                finally:
+                    work["_evaluator_depth"] -= 1
+
+            return wrapped
+
+        replacements = [
+            (name, original, counted_evaluator(name, original))
+            for name, original in originals.items()
+        ]
+        for name, _original, replacement in replacements:
+            setattr(precompute, name, replacement)
+
+        def replacement_for(value):
+            for _name, original, replacement in replacements:
+                if value is original:
+                    return replacement
+            return None
+
+        # ``from precompute import evaluate_seven as rank`` binds a policy
+        # global before the phase begins. Replace every exact original object
+        # in policy globals and function defaults, then restore it afterward.
+        for name, value in tuple(vars(policy).items()):
+            replacement = replacement_for(value)
+            if replacement is not None:
+                patched_policy_globals.append((name, value))
+                setattr(policy, name, replacement)
+            if not callable(value):
+                continue
+            defaults = getattr(value, "__defaults__", None)
+            keywords = getattr(value, "__kwdefaults__", None)
+            changed_defaults = (
+                tuple(replacement_for(item) or item for item in defaults)
+                if defaults
+                else defaults
+            )
+            changed_keywords = (
+                {
+                    key: replacement_for(item) or item
+                    for key, item in keywords.items()
+                }
+                if keywords
+                else keywords
+            )
+            if changed_defaults != defaults or changed_keywords != keywords:
+                patched_defaults.append((value, defaults, keywords))
+                value.__defaults__ = changed_defaults
+                value.__kwdefaults__ = changed_keywords
     previous = signal.signal(signal.SIGALRM, alarm)
     signal.setitimer(signal.ITIMER_REAL, timeout_sec)
     try:
-        return policy.get_baseline_decision(copy.deepcopy(context))
+        result = policy.get_baseline_decision(copy.deepcopy(context))
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, previous)
+        for name, original in originals.items():
+            setattr(precompute, name, original)
+        for name, original in patched_policy_globals:
+            setattr(policy, name, original)
+        for function, defaults, keywords in patched_defaults:
+            function.__defaults__ = defaults
+            function.__kwdefaults__ = keywords
+    work.pop("_evaluator_depth", None)
+    return result, work
 
 
 def _validate_refinement_item(
@@ -985,14 +1135,35 @@ def _probe_policy_entrypoints(
     for row in rows:
         scenario_id = str(row["id"])
         context = row["context"]
+        baseline_work = {
+            "evaluator_calls": None,
+            "evaluator_call_cap": BASELINE_EVALUATOR_CALL_CAP,
+            "evaluator_calls_by_name": {},
+            "instrumented": False,
+        }
         try:
-            raw = _direct_baseline(policy, context)
+            raw, baseline_work = _direct_baseline(policy, context)
             decision, issue = _validate_typed_intent(raw, context)
         except BaseException as exc:
             decision = None
             issue = f"{type(exc).__name__}:{str(exc)[:160]}"
+        work_issue = None
+        if (
+            baseline_work.get("instrumented") is True
+            and int(baseline_work.get("evaluator_calls") or 0)
+            > BASELINE_EVALUATOR_CALL_CAP
+        ):
+            work_issue = (
+                "baseline_evaluator_call_cap_exceeded:"
+                f"{baseline_work['evaluator_calls']}>"
+                f"{BASELINE_EVALUATOR_CALL_CAP}"
+            )
         if issue:
             issues.append(f"{scenario_id}:candidate_policy_baseline:{issue}")
+        if work_issue:
+            issues.append(
+                f"{scenario_id}:candidate_policy_baseline:{work_issue}"
+            )
         refinement_decisions: list[dict[str, Any]] = []
         refinement_issues: list[str] = []
         if decision is not None:
@@ -1009,8 +1180,13 @@ def _probe_policy_entrypoints(
             "scenario": scenario_id,
             "decision": decision,
             "refinement_decisions": refinement_decisions,
-            "ok": issue is None and not refinement_issues,
-            "issue": issue or (refinement_issues[0] if refinement_issues else None),
+            "baseline_work": baseline_work,
+            "ok": issue is None and work_issue is None and not refinement_issues,
+            "issue": (
+                issue
+                or work_issue
+                or (refinement_issues[0] if refinement_issues else None)
+            ),
         })
     return {"ok": not issues, "issues": issues, "rows": observations}
 
@@ -1283,6 +1459,7 @@ def _probe_budget_scaled_refinement(
     }
     observations: dict[str, Any] = {}
     system_issues: list[str] = []
+    candidate_issues: list[str] = []
     for label, budget in strata.items():
         row = _drive_scenario(
             imports,
@@ -1299,6 +1476,10 @@ def _probe_budget_scaled_refinement(
         )
         system_issues.extend(
             f"budget_{label}:{issue}" for issue in row.get("system_issues") or []
+        )
+        candidate_issues.extend(
+            f"budget_{label}:{issue}"
+            for issue in row.get("candidate_issues") or []
         )
         runtime = row.get("runtime") or {}
         observations[label] = {
@@ -1360,6 +1541,15 @@ def _probe_budget_scaled_refinement(
         )
     if not changes_action:
         capability_issues.append("refinement_never_changes_sanitized_decision")
+    for label, observation in observations.items():
+        if not observation["baseline_published"]:
+            candidate_issues.append(
+                f"budget_{label}:policy_baseline_not_published"
+            )
+        elif not observation["baseline_target_met"]:
+            candidate_issues.append(
+                f"budget_{label}:policy_baseline_deadline_missed"
+            )
     return {
         "probe_kind": "trusted_multifidelity_2s_vs_8s",
         "scenario": scenario["id"],
@@ -1372,9 +1562,10 @@ def _probe_budget_scaled_refinement(
         "scaled_or_exhausted": scaled_or_exhausted,
         "changes_sanitized_decision": changes_action,
         "candidate_reported_metadata_is_non_authoritative": True,
-        "ok": not system_issues and not capability_issues,
+        "ok": not system_issues and not candidate_issues and not capability_issues,
         "active": bool(long["refinement_messages"] or long["trusted_steps"]),
         "system_issues": system_issues,
+        "candidate_issues": candidate_issues,
         "capability_issues": capability_issues,
     }
 
@@ -1476,6 +1667,7 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         *(policy_entrypoints.get("issues") or []),
         *(counterfactuals.get("candidate_issues") or []),
         *(match_control_consumer.get("candidate_issues") or []),
+        *(budget_scaled_refinement.get("candidate_issues") or []),
     ]
     for module_name, diagnostic in imports.diagnostics.items():
         if diagnostic.get("stdout"):
@@ -1500,6 +1692,12 @@ def run(root: Path, spec: dict[str, Any]) -> dict[str, Any]:
         "limits_digest": spec.get("limits_digest"),
         "worker_digest": spec.get("worker_digest"),
         "probe_identity_digest": spec.get("probe_identity_digest"),
+        "native_runtime_template_identity": spec.get(
+            "native_runtime_template_identity"
+        ),
+        "native_runtime_template_digest": spec.get(
+            "native_runtime_template_digest"
+        ),
         "policy_abi": spec.get("policy_abi"),
         "spec_digest": spec.get("spec_digest"),
         "code_fingerprint": spec.get("code_fingerprint"),
@@ -1549,6 +1747,12 @@ def main() -> int:
             "limits_digest": spec.get("limits_digest"),
             "worker_digest": spec.get("worker_digest"),
             "probe_identity_digest": spec.get("probe_identity_digest"),
+            "native_runtime_template_identity": spec.get(
+                "native_runtime_template_identity"
+            ),
+            "native_runtime_template_digest": spec.get(
+                "native_runtime_template_digest"
+            ),
             "policy_abi": spec.get("policy_abi"),
             "spec_digest": spec.get("spec_digest"),
             "code_fingerprint": spec.get("code_fingerprint"),

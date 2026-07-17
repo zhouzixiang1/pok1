@@ -18,18 +18,43 @@ def _certificate(_path: Path) -> dict[str, object]:
 
 
 def test_system_runtime_identity_accepts_only_exact_current_bytes(tmp_path):
-    from national_runtime_authority import current_system_native_runtime_errors
+    from national_runtime_authority import (
+        current_system_native_runtime_errors,
+        current_system_native_runtime_identity,
+        system_native_runtime_identity_structure_issues,
+    )
     from system_strict_bootstrap import materialize_fresh_candidate
 
     bot = tmp_path / "national_v143"
     materialize_fresh_candidate(bot, final_policy=True)
     assert current_system_native_runtime_errors(bot) == []
+    identity = current_system_native_runtime_identity()
+    assert system_native_runtime_identity_structure_issues(identity) == []
+    assert set(identity["artifacts"]) == {"national_bot.py", "precompute.py"}
+    assert identity["combined_digest"]
 
     entry = bot / "national_bot.py"
     entry.write_bytes(entry.read_bytes() + b"\n# candidate edit\n")
     errors = current_system_native_runtime_errors(bot)
     assert len(errors) == 1
     assert errors[0].startswith("system_owned_native_runtime_identity_mismatch:")
+
+
+def test_system_runtime_identity_rejects_precompute_only_drift(tmp_path):
+    from national_runtime_authority import current_system_native_runtime_errors
+    from system_strict_bootstrap import materialize_fresh_candidate
+
+    bot = tmp_path / "national_v143"
+    materialize_fresh_candidate(bot, final_policy=True)
+    precompute = bot / "precompute.py"
+    precompute.write_bytes(precompute.read_bytes() + b"\n# precompute drift\n")
+
+    errors = current_system_native_runtime_errors(bot)
+
+    assert len(errors) == 1
+    assert errors[0].startswith(
+        "system_owned_native_runtime_identity_mismatch:precompute.py:"
+    )
 
 
 def test_strict_discovery_has_no_pre_policy_or_quarantine_path(tmp_path):

@@ -13,13 +13,14 @@ import hashlib
 import json
 
 
-RUNTIME_PROBE_SCENARIO_VERSION = 7
+RUNTIME_PROBE_SCENARIO_VERSION = 8
 
 
 DECISION_SCENARIOS = (
     {
         "id": "preflop_sb_premium",
         "messages": (
+            "name",
             "preflop|SMALLBLIND|<0,12><1,12>",
         ),
         "setup_intents": (),
@@ -33,6 +34,7 @@ DECISION_SCENARIOS = (
     {
         "id": "preflop_bb_facing_raise",
         "messages": (
+            "name",
             "preflop|BIGBLIND|<0,11><1,9>",
             "raise 300",
         ),
@@ -47,6 +49,7 @@ DECISION_SCENARIOS = (
     {
         "id": "flop_top_pair_facing_bet",
         "messages": (
+            "name",
             "preflop|SMALLBLIND|<0,12><1,8>",
             "call",
             "flop|<1,12><2,6><3,3>",
@@ -66,6 +69,7 @@ DECISION_SCENARIOS = (
         "id": "flop_donk_vs_opponent_pfr",
         "mixing_class": "structural_air_no_hole_draw",
         "messages": (
+            "name",
             # This fixed Q9/A43 identity has no hole-backed draw and lands in
             # the policy's deterministic 10% structural-air mix.  It proves a
             # donk can reach wire without reviving a 100% air-bluff pattern.
@@ -90,6 +94,7 @@ DECISION_SCENARIOS = (
     {
         "id": "flop_donk_control_hero_pfr",
         "messages": (
+            "name",
             "preflop|BIGBLIND|<2,7><0,10>",
             "call",
             "call",
@@ -113,6 +118,7 @@ DECISION_SCENARIOS = (
         "id": "flop_donk_mixed_check_identity",
         "mixing_class": "structural_air_no_hole_draw",
         "messages": (
+            "name",
             "preflop|BIGBLIND|<0,11><1,10>",
             "raise 300",
             "flop|<2,8><3,5><0,2>",
@@ -134,6 +140,7 @@ DECISION_SCENARIOS = (
     {
         "id": "turn_responding_to_check",
         "messages": (
+            "name",
             "preflop|SMALLBLIND|<0,12><1,7>",
             "call",
             "flop|<1,12><2,6><3,3>",
@@ -157,6 +164,7 @@ DECISION_SCENARIOS = (
     {
         "id": "river_facing_large_bet",
         "messages": (
+            "name",
             "preflop|SMALLBLIND|<0,9><1,5>",
             "call",
             "flop|<1,12><2,6><3,3>",
@@ -182,6 +190,7 @@ DECISION_SCENARIOS = (
         "id": "turn_delayed_probe_vs_opponent_pfr",
         "mixing_class": "structural_air_no_hole_draw",
         "messages": (
+            "name",
             # QJ on T764 has no hole-backed four-card straight or flush draw;
             # this fixed identity is selected by the bounded structural mix.
             "preflop|BIGBLIND|<0,9><0,10>",
@@ -212,6 +221,7 @@ DECISION_SCENARIOS = (
     {
         "id": "turn_delayed_probe_control_hero_pfr",
         "messages": (
+            "name",
             "preflop|BIGBLIND|<0,9><0,10>",
             "call",
             "call",
@@ -241,6 +251,7 @@ DECISION_SCENARIOS = (
         "id": "turn_delayed_probe_mixed_check_identity",
         "mixing_class": "structural_air_no_hole_draw",
         "messages": (
+            "name",
             "preflop|BIGBLIND|<0,11><1,10>",
             "raise 300",
             "flop|<2,8><3,5><0,2>",

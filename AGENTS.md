@@ -272,6 +272,18 @@ artifact has a complete manifest/hash. Worker writes are lease-isolated,
 snapshotted, and atomic. Publication cross-checks working bytes, staged Git
 blobs, and immutable tag tree.
 
+`official_certifying` normally means one attached official job and, including
+ordinary HEAD-drift recovery, permits only `commit_bot` polling. The sole
+dynamic exception is a checkpoint whose `gate_results.official_full` contains
+the complete exact marker
+`outcome=quality_admission_blocked`, `failure_class=quality`, and
+`quality_admission_refresh=true`. Only that marker may route to
+`run_quality_gates`; it keeps the evaluation contract unchanged and persists
+the transition through the exact checkpoint revision, stage, and workflow CAS.
+Missing, partial, conflicting, or infrastructure-class markers remain the
+normal `commit_bot` path. The exception never authorizes Workers, an EXE retry,
+or reuse of the previous official job.
+
 The first-strict authority journal freezes one checkpoint revision for all six
 Master slots at the first durable provider effect. Later checkpoint metadata or
 infrastructure-overlay revisions may only move forward; accepted slots replay,
@@ -441,6 +453,18 @@ live foreign owner. Owner reservation double-samples one fence digest; AppState
 and the global LLM shutdown manager are both owner-CAS fenced, and an unowned or
 failed lifespan may not alter the live owner's running/UI/manager state.
 
+An app lifespan stops only a runtime owner it registered, but registration is
+performed for both lifespan launch and a later successful `/api/control/start`.
+At shutdown it resolves the current fenced owner and shutdown manager through
+`AppState`, rather than retaining a startup-time manager, so a later registered
+control-start owner receives its own graceful stop. A task projection with no
+authority is emitted as typed `task_authority_lost`, never a fabricated
+`task_owner` row or synthetic `R+1` lifecycle revision. HTTP null/malformed
+task projections and malformed SSE `status`/`task_owner` data clear transient
+text. They retain the last verified fence: a later exact valid projection at the
+same revision may restore authority, while a contradictory same-revision
+projection remains blocked until a genuinely newer revision arrives.
+
 Native precommit cancellation is attempt-local and monotonic. The exact token
 is passed into the real 70-hand loop, checked before every opponent/repeat and
 after each complete match/journal, and permanently set on timeout/cancellation.
@@ -572,6 +596,12 @@ The archived v141 signed-ledger chain is validation history and is not executabl
   otherwise.
 - Test in proportion to risk: compile touched Python, run focused tests, then
   the relevant native protocol/evolution shards.
+- When a change affects behavior, an ABI/protocol, gate, prompt contract, data
+  schema, lifecycle, test harness, or expected failure mode, update the
+  necessary focused/full test process, fixtures, regression anchors, and
+  operator test commands in the same change. Never preserve a green result by
+  skipping, weakening, or reclassifying the affected test without an explicit
+  fail-closed replacement and documented reason.
 - `web/main.py` is a web launcher, not a TUI or mode-switching CLI.
 - Generated frontend output is ignored; do not treat it as source.
 - The highest numbered bot directory is not completion proof. Require current

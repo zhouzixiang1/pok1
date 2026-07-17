@@ -172,6 +172,70 @@ class CertificationSpec:
     # The normal formal path deliberately leaves this unset.  The only legal
     # value identifies the current system-owned first-strict control.
     bootstrap_control_id: str | None = None
+    # Normal manual full-v5 jobs carry a compact, content-bound admission from
+    # the current checkpoint-owned dynamic quality/capability/probe ledger.
+    # It is deliberately absent for the explicit v143 first-strict control,
+    # whose separate operator authorization is the sole admissibility path.
+    quality_admission: dict[str, Any] | None = None
+
+
+def normal_full_quality_admission_required(
+    spec: CertificationSpec | dict[str, Any],
+) -> bool:
+    """Whether a strict normal full-v5 job must bind a quality admission.
+
+    The pre-strict namespace remains readable as historical certificate data,
+    but it is not an executable source of current certification authority.
+    Every current strict normal full job (v143+) must carry the exact
+    checkpoint-owned receipt.  The explicit v143 bootstrap is intentionally
+    the only branch that takes the separate operator authorization path.
+    """
+
+    if isinstance(spec, CertificationSpec):
+        mode = spec.mode
+        bootstrap_control_id = spec.bootstrap_control_id
+        candidate = spec.candidate
+    elif isinstance(spec, dict):
+        mode = str(spec.get("mode") or "")
+        bootstrap_control_id = spec.get("bootstrap_control_id")
+        candidate = str(spec.get("candidate") or "")
+    else:
+        return False
+    if mode != "full" or bootstrap_control_id is not None:
+        return False
+    try:
+        version = parse_bot_version(Path(str(candidate)).name)
+    except (TypeError, ValueError):
+        version = None
+    return bool(
+        version is not None and int(version) >= FIRST_STRICT_POLICY_VERSION
+    )
+
+
+def normal_full_quality_admission_issues(
+    spec: CertificationSpec | dict[str, Any],
+) -> list[str]:
+    """Return structural receipt errors for a strict normal full-v5 spec.
+
+    This is deliberately a structural boundary only.  The job worker and
+    harness immediately recompute the live checkpoint-owned receipt and reject
+    any drift before the official EXE is touched.
+    """
+
+    if not normal_full_quality_admission_required(spec):
+        return []
+    if isinstance(spec, CertificationSpec):
+        admission = spec.quality_admission
+        candidate = spec.candidate
+    else:
+        admission = spec.get("quality_admission") if isinstance(spec, dict) else None
+        candidate = str(spec.get("candidate") or "") if isinstance(spec, dict) else ""
+    from official_platform_harness import formal_quality_admission_integrity_issues
+
+    return formal_quality_admission_integrity_issues(
+        admission,
+        candidate=candidate,
+    )
 
 
 def spec_record(spec: CertificationSpec) -> dict[str, Any]:
@@ -181,8 +245,9 @@ def spec_record(spec: CertificationSpec) -> dict[str, Any]:
     an explicit first-strict control authorization is identity-bearing.
     """
     record = asdict(spec)
-    if record.get("bootstrap_control_id") is None:
-        record.pop("bootstrap_control_id", None)
+    for optional_key in ("bootstrap_control_id", "quality_admission"):
+        if record.get(optional_key) is None:
+            record.pop(optional_key, None)
     return record
 
 
@@ -390,6 +455,7 @@ def build_spec(
     round_timeout_sec: float | None = None,
     no_progress_timeout_sec: float | None = None,
     bootstrap_control_id: str | None = None,
+    quality_admission: dict[str, Any] | None = None,
 ) -> CertificationSpec:
     defaults = _mode_defaults(mode)
     requested = {
@@ -434,6 +500,11 @@ def build_spec(
             if bootstrap_control_id is not None
             else None
         ),
+        quality_admission=(
+            dict(quality_admission)
+            if isinstance(quality_admission, dict)
+            else None
+        ),
     )
     validate_spec(spec)
     return spec
@@ -471,6 +542,13 @@ def validate_spec(spec: CertificationSpec) -> None:
                 f"full certification must use {FULL_POLICY_ID} with "
                 "5 self + 3 opponent rounds of 70 hands"
             )
+    admission_issues = normal_full_quality_admission_issues(spec)
+    if admission_issues:
+        raise ValueError(
+            "strict normal full certification requires a complete "
+            "checkpoint-owned quality admission: "
+            + ", ".join(admission_issues)
+        )
 
 
 def _config_fingerprint(config: OfficialPlatformConfig) -> dict[str, Any]:
@@ -1946,6 +2024,11 @@ def _spec_from_mapping(data: dict[str, Any]) -> CertificationSpec:
             if data.get("bootstrap_control_id") is not None
             else None
         ),
+        quality_admission=(
+            dict(data.get("quality_admission"))
+            if isinstance(data.get("quality_admission"), dict)
+            else None
+        ),
     )
     validate_spec(spec)
     return spec
@@ -3166,6 +3249,7 @@ def resolve_managed_certification_spec(
         round_timeout_sec=spec.round_timeout_sec,
         no_progress_timeout_sec=spec.no_progress_timeout_sec,
         bootstrap_control_id=spec.bootstrap_control_id,
+        quality_admission=spec.quality_admission,
     )
     return resolved, selection
 
@@ -3843,6 +3927,11 @@ def run_identity_bound_certification_job(
         raise RuntimeError(
             "official_job_envelope_invalid: " + ", ".join(envelope_issues)
         )
+    if normal_full_quality_admission_required(spec):
+        if job_envelope.get("quality_admission") != spec.quality_admission:
+            raise RuntimeError(
+                "official_job_quality_admission_spec_envelope_mismatch"
+            )
     resolved_spec, live_selection = resolve_managed_certification_spec(
         spec,
         exact_opponent_only=True,
@@ -3940,6 +4029,7 @@ def _run_certification_with_runner_for_test(
             "job_id": "1" * 64,
             "request_digest": "2" * 64,
             "manager_sha256": "3" * 64,
+            "spec": spec_record(spec),
             "identity": identity,
             "opponent_selection": stable_official_opponent_selection(opponent_selection),
             "source_v": None,

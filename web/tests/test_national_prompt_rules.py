@@ -193,7 +193,10 @@ def test_prompts_require_national_runtime_architecture_contracts():
     assert "same constants and literal types used" in master_prompt
     assert "system-owned, read-only pure import-time data" in worker_prompt
     assert "task's injected typed strategy-reference card" in worker_prompt
-    assert "persistent," in worker_prompt and "worker owns policy imports" in worker_prompt
+    assert "persistent," in worker_prompt
+    assert "launch-initiated proof, never a proof" in worker_prompt
+    assert "first decision wall-clock begins" in worker_prompt
+    assert "worker owns policy imports before the server begins preflop" not in worker_prompt
     assert "# Runtime Contract" in worker_prompt
     assert "Runtime architecture check" in reviewer_prompt
     assert "incremental" in reviewer_prompt
@@ -542,7 +545,56 @@ def test_active_prompts_use_call_to_pass_after_postflop_check():
 
     assert "second postflop pass after a check is wire `call`" in master
     assert "after the first postflop action a pass is `call`" in worker_normalized
+
+
+def test_executable_crossover_prompt_preserves_bounded_river_baseline_contract():
+    crossover = _prompt("crossover_prompt.md")
+
+    assert "deadline.baseline_target_ms" in crossover
+    assert "native precommit can set this to 200 ms" in crossover
+    assert "formal upper bound remains 250 ms" in crossover
+    assert "fixed\n   deterministic 192/256/96 flop/turn/river schedule" in crossover
+    assert "800 top-level evaluator-call cap" in crossover
+    assert "evaluator aliases, `itertools.combinations`, a nested deck-pair" in crossover
+    assert "full `C(45,2)` remaining-opponent enumeration" in crossover
+    assert "only in `iter_decisions`" in crossover
+    assert "check `time.monotonic()` before\n   every expensive unit" in crossover
+    assert "real `name` handshake starts the system-owned" in crossover
     assert "after a postflop check the second pass is call, not check" in crossover
+
+
+def test_cross_role_prompts_and_reference_packet_bind_current_baseline_contract():
+    prompts = {
+        "master": _prompt("master_prompt.md"),
+        "worker": _native_worker_prompt(),
+        "reviewer": _prompt("reviewer_prompt.md"),
+        "critic": _prompt("critic_prompt.md"),
+        "orchestrator": _prompt("orchestrator.md"),
+        "crossover_writer": _prompt("crossover_prompt.md"),
+        "crossover_auditor": _prompt("crossover_compatibility.md"),
+    }
+    for role, prompt in prompts.items():
+        assert "192/256/96" in prompt, role
+        assert "C(45,2)" in prompt, role
+        assert "800" in prompt, role
+        assert "evaluator alias" in prompt.lower(), role
+        assert "name" in prompt.lower(), role
+
+    from strategy_reference_pack import get_reference_card
+
+    reference = get_reference_card("equity_ev_anytime_v1")
+    assert reference is not None
+    reference_text = "\n".join((
+        reference.purpose,
+        reference.bounded_work,
+        reference.table_boundary,
+    ))
+    for token in ("192/256/96", "C(45,2)", "dynamic cap 800", "evaluator alias"):
+        assert token in reference_text
+
+    stages = (ROOT / "docs" / "llm-stages.md").read_text(encoding="utf-8")
+    for token in ("192/256/96", "C(45,2)", "800", "name` handshake"):
+        assert token in stages
 
 
 def test_all_roles_treat_native_timing_and_liveness_as_system_not_strategy():

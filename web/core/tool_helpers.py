@@ -287,7 +287,11 @@ def _prepare_official_profile_refresh(checkpoint, tool_name):
     from pipeline_state import route_policy
 
     route = route_policy(checkpoint)
-    if route.get("intent") not in {"quality_profile_refresh", "precommit_profile_refresh"}:
+    if route.get("intent") not in {
+        "quality_profile_refresh",
+        "quality_admission_refresh",
+        "precommit_profile_refresh",
+    }:
         return {"ok": True, "needed": False}
     if route.get("next_tool") != tool_name:
         return {
@@ -539,6 +543,24 @@ def _active_workflow_profile_info():
     )
 
 
+def _native_runtime_evidence_current(gate):
+    """Require reusable native quality evidence to name the exact template.
+
+    Native-policy quality is not merely candidate-byte evidence: its generated
+    ``national_bot.py`` is system-owned and can change independently.  Missing
+    or mismatched template evidence is stale, including historical receipts
+    written before this binding existed.
+    """
+
+    try:
+        from national_runtime_probe import (
+            runtime_probe_native_template_evidence_matches,
+        )
+    except Exception:
+        return False
+    return runtime_probe_native_template_evidence_matches(gate)
+
+
 def _gate_matches_active_workflow(checkpoint, gate):
     """Reject cached gate results produced under another workflow profile.
 
@@ -565,6 +587,7 @@ def _gate_matches_active_workflow(checkpoint, gate):
         return (
             gate_execution_mode == "native_tcp"
             and gate.get("national_native_contract_ok") is True
+            and _native_runtime_evidence_current(gate)
         )
     if gate_execution_mode and gate_execution_mode != active_execution_mode:
         return False

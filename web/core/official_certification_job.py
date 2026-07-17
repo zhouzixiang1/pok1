@@ -49,6 +49,14 @@ class OfficialBootstrapAuthorizationError(RuntimeError):
         super().__init__("; ".join(self.issues[:8]))
 
 
+class OfficialQualityAdmissionError(RuntimeError):
+    """A normal full job no longer matches current quality/probe evidence."""
+
+    def __init__(self, issues: list[str]):
+        self.issues = list(issues)
+        super().__init__("; ".join(self.issues[:8]))
+
+
 def job_root() -> Path:
     from official_certification import certification_root
 
@@ -147,6 +155,19 @@ def _validate_request(payload: dict[str, Any]) -> list[str]:
         issues.append("official_job_request_digest_mismatch")
     if payload.get("job_id") != canonical_digest({"request_digest": payload.get("request_digest")}):
         issues.append("official_job_identity_mismatch")
+    # Reject a parked/hand-written normal full request before it can acquire a
+    # worker process.  The worker repeats this through ``_spec_from_mapping``;
+    # keeping the request-side check makes a missing admission fail before any
+    # durable job transitions to starting.
+    try:
+        from official_certification import _spec_from_mapping
+
+        _spec_from_mapping(payload.get("spec") or {})
+    except Exception as exc:
+        issues.append(
+            "official_job_request_spec_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        )
     return issues
 
 
@@ -182,6 +203,63 @@ def _bootstrap_authorization_issues(request: dict[str, Any]) -> list[str]:
             validation.get("issues")
             or [validation.get("reason") or "official_bootstrap_authorization_invalid"]
         )
+    ]
+
+
+def _live_normal_full_admission_issues(request: dict[str, Any]) -> list[str]:
+    """Rebind a strict normal/full request to its current quality evidence.
+
+    Structural validation proves that a receipt is well formed.  It does not
+    prove that the checkpoint, candidate bytes, runtime identity, and probe
+    which produced it are still current.  This manager-side check prevents a
+    stale normal-full request from becoming a durable queued job or launching
+    a worker; the official harness repeats it immediately before EXE work.
+    """
+
+    try:
+        from official_certification import (
+            _spec_from_mapping,
+            normal_full_quality_admission_required,
+        )
+
+        spec = _spec_from_mapping(request.get("spec") or {})
+    except Exception as exc:
+        return [
+            "official_job_quality_admission_spec_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        ]
+    if not normal_full_quality_admission_required(spec):
+        return []
+    try:
+        from official_platform_harness import build_formal_quality_admission
+
+        report = build_formal_quality_admission(
+            spec.candidate,
+            expected_admission=spec.quality_admission,
+        )
+    except Exception as exc:
+        return [
+            "official_job_quality_admission_live_validation_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        ]
+    if isinstance(report, dict) and report.get("valid") is True:
+        if report.get("admission") == spec.quality_admission:
+            return []
+        return [
+            "official_job_quality_admission_live_invalid:"
+            "official_formal_quality_admission_current_drift"
+        ]
+    reported = report.get("issues") if isinstance(report, dict) else None
+    details = [
+        str(item)
+        for item in (reported if isinstance(reported, list) else [])
+        if str(item).strip()
+    ]
+    if not details:
+        details = ["official_formal_quality_admission_live_validation_invalid"]
+    return [
+        f"official_job_quality_admission_live_invalid:{item}"
+        for item in list(dict.fromkeys(details))[:12]
     ]
 
 
@@ -473,6 +551,9 @@ def _spawn_worker(directory: Path, state: dict[str, Any], *, max_attempts: int, 
     bootstrap_issues = _bootstrap_authorization_issues(request)
     if bootstrap_issues:
         raise OfficialBootstrapAuthorizationError(bootstrap_issues)
+    quality_issues = _live_normal_full_admission_issues(request)
+    if quality_issues:
+        raise OfficialQualityAdmissionError(quality_issues)
     attempt = int(state.get("attempt", 0) or 0) + (1 if new_suite else 0)
     attempt = max(1, attempt)
     attempt_nonce = (
@@ -541,6 +622,14 @@ def _public_state(directory: Path, state: dict[str, Any]) -> dict[str, Any]:
     payload = dict(state)
     payload["job_dir"] = str(directory)
     payload["pending"] = state.get("state") in PENDING_STATES
+    if state.get("state") == "failed":
+        phase = str(state.get("phase") or "")
+        if phase == "quality_admission":
+            payload["failure_class"] = "quality"
+        elif phase == "bootstrap_authorization":
+            payload["failure_class"] = "authorization"
+        else:
+            payload["failure_class"] = "infrastructure"
     if state.get("state") == "completed":
         result = _result_payload(directory, state)
         payload["status"] = (result or {}).get("status")
@@ -611,27 +700,62 @@ def start_or_poll_job(
     """Ensure one identity-bound job and reconcile it without blocking on EXE work."""
     request = _request_payload(spec, opponent_selection=opponent_selection, source_v=source_v)
     directory = job_root() / request["job_id"]
+    request_issues = _validate_request(request)
+    if request_issues:
+        return {
+            "state": "failed",
+            "phase": "request_validation",
+            "pending": False,
+            "failure_class": "infrastructure",
+            "issues": request_issues,
+            "job_id": request["job_id"],
+            "job_dir": str(directory),
+        }
+    # Avoid even creating a job directory for a fresh stale request.  Existing
+    # request records are handled under the job lock below so completed history
+    # remains readable and stale queued work can be terminally recorded.
+    if not (directory / "request.json").is_file():
+        initial_quality_issues = _live_normal_full_admission_issues(request)
+    else:
+        initial_quality_issues = []
+    if initial_quality_issues:
+        # Do not create an identity-bound request/state for an admission that
+        # has already drifted.  The index lock itself is shared infrastructure,
+        # not a job admission record.
+        return {
+            "state": "failed",
+            "phase": "quality_admission",
+            "pending": False,
+            "failure_class": "quality",
+            "issues": initial_quality_issues,
+            "job_id": request["job_id"],
+            "job_dir": str(directory),
+        }
     stale_state: dict[str, Any] | None = None
     with _index_lock():
         with _job_lock(directory):
             request_path = directory / "request.json"
             existing_request = _read_json(request_path)
             if existing_request is None:
+                # Recheck immediately before durable request creation: the
+                # checkpoint can advance after the optimistic preflight above.
+                quality_issues = _live_normal_full_admission_issues(request)
+                if quality_issues:
+                    return {
+                        "state": "failed",
+                        "phase": "quality_admission",
+                        "pending": False,
+                        "failure_class": "quality",
+                        "issues": quality_issues,
+                        "job_id": request["job_id"],
+                        "job_dir": str(directory),
+                    }
                 _write_json(request_path, request)
             elif existing_request != request:
                 return {
                     "state": "failed",
                     "failure_class": "infrastructure",
                     "issues": ["official_job_request_identity_collision"],
-                    "job_id": request["job_id"],
-                    "job_dir": str(directory),
-                }
-            request_issues = _validate_request(request)
-            if request_issues:
-                return {
-                    "state": "failed",
-                    "failure_class": "infrastructure",
-                    "issues": request_issues,
                     "job_id": request["job_id"],
                     "job_dir": str(directory),
                 }
@@ -697,6 +821,16 @@ def start_or_poll_job(
                 )
                 _write_json(directory / "state.json", state)
             else:
+                if state.get("state") == "failed":
+                    existing_failure_class = _public_state(directory, state).get(
+                        "failure_class",
+                        "infrastructure",
+                    )
+                    if (
+                        existing_failure_class != "infrastructure"
+                        or not retry_terminal
+                    ):
+                        return _public_state(directory, state)
                 bootstrap_issues = _bootstrap_authorization_issues(request)
                 if bootstrap_issues:
                     state = _bump_state(
@@ -710,6 +844,21 @@ def start_or_poll_job(
                         **_public_state(directory, state),
                         "failure_class": "authorization",
                         "issues": bootstrap_issues,
+                    }
+                quality_issues = _live_normal_full_admission_issues(request)
+                if quality_issues:
+                    state = _bump_state(
+                        state,
+                        state="failed",
+                        phase="quality_admission",
+                        failure_class="quality",
+                        failure="; ".join(quality_issues[:8]),
+                    )
+                    _write_json(directory / "state.json", state)
+                    return {
+                        **_public_state(directory, state),
+                        "failure_class": "quality",
+                        "issues": quality_issues,
                     }
                 if state.get("state") in TERMINAL_STATES and retry_terminal:
                     if int(state.get("attempt", 0) or 0) >= int(max_attempts):
@@ -725,8 +874,6 @@ def start_or_poll_job(
                         phase="retry_queued",
                         worker_restart_count=0,
                     )
-                elif state.get("state") == "failed" and not retry_terminal:
-                    return {**_public_state(directory, state), "failure_class": "infrastructure"}
                 elif state.get("state") == "created":
                     state = _bump_state(state, state="queued", phase="queued")
                 if _another_live_job(request["job_id"]):
@@ -767,6 +914,20 @@ def start_or_poll_job(
                     return {
                         **_public_state(directory, state),
                         "failure_class": "authorization",
+                        "issues": exc.issues,
+                    }
+                except OfficialQualityAdmissionError as exc:
+                    state = _bump_state(
+                        state,
+                        state="failed",
+                        phase="quality_admission",
+                        failure_class="quality",
+                        failure=str(exc),
+                    )
+                    _write_json(directory / "state.json", state)
+                    return {
+                        **_public_state(directory, state),
+                        "failure_class": "quality",
                         "issues": exc.issues,
                     }
                 _write_json(directory / "state.json", state)
@@ -825,6 +986,20 @@ def start_or_poll_job(
                     return {
                         **_public_state(directory, state),
                         "failure_class": "authorization",
+                        "issues": exc.issues,
+                    }
+                except OfficialQualityAdmissionError as exc:
+                    state = _bump_state(
+                        state,
+                        state="failed",
+                        phase="quality_admission",
+                        failure_class="quality",
+                        failure=str(exc),
+                    )
+                    _write_json(directory / "state.json", state)
+                    return {
+                        **_public_state(directory, state),
+                        "failure_class": "quality",
                         "issues": exc.issues,
                     }
                 _write_json(directory / "state.json", state)
@@ -1022,12 +1197,28 @@ def _worker_main(directory: Path, claim_token: str) -> int:
         certification_identity,
         run_identity_bound_certification_job,
     )
+    from official_platform_harness import FormalQualityAdmissionError
 
     spec = _spec_from_mapping(request.get("spec") or {})
     if certification_identity(spec) != request.get("identity"):
         raise RuntimeError("official_job_runtime_identity_changed")
     state, attempt = _claim_worker(directory, claim_token)
     pid = os.getpid()
+    quality_issues = _live_normal_full_admission_issues(request)
+    if quality_issues:
+        _update_worker_state(
+            directory,
+            pid,
+            attempt,
+            claim_token,
+            state="failed",
+            phase="quality_admission",
+            failure_class="quality",
+            heartbeat_at_epoch=time.time(),
+            failure="; ".join(quality_issues[:8]),
+            progress=_scan_progress(directory, request, attempt),
+        )
+        return 2
     os.environ["POK_OFFICIAL_JOB_PROCESS_GROUP"] = "1"
     stopped = threading.Event()
 
@@ -1099,6 +1290,20 @@ def _worker_main(directory: Path, claim_token: str) -> int:
         return 0
     except OfficialJobCancelled:
         return 130
+    except FormalQualityAdmissionError as exc:
+        _update_worker_state(
+            directory,
+            pid,
+            attempt,
+            claim_token,
+            state="failed",
+            phase="quality_admission",
+            failure_class="quality",
+            heartbeat_at_epoch=time.time(),
+            failure="; ".join(exc.issues[:12]),
+            progress=_scan_progress(directory, request, attempt),
+        )
+        return 2
     except BaseException as exc:
         _update_worker_state(
             directory,

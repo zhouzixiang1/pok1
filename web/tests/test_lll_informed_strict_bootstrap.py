@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import importlib.util
+import itertools
 from pathlib import Path
 import sys
 import time
@@ -425,8 +426,43 @@ def test_public_quads_are_shared_not_private_nut_authority(modules):
     assert policy.get_baseline_decision(context)["kind"] != "raise"
 
 
-def test_exact_river_baseline_prevents_public_board_overcalls(modules):
-    _precompute, policy = modules
+def _exact_river_equity_from_frozen_posterior(policy, precompute, context):
+    """Independently derive the bounded policy's completed river posterior."""
+
+    cards = context["cards"]
+    hole = policy._card_ids(cards["hole"])
+    board = policy._card_ids(cards["board"])
+    hero_rank = precompute.evaluate_seven((*hole, *board))
+    posterior = policy._opponent_posterior(context)
+    points = 0.0
+    total = 0.0
+    for opponent_hole in itertools.combinations(
+        precompute.deck_without((*hole, *board)),
+        2,
+    ):
+        opponent_rank = precompute.evaluate_seven((*opponent_hole, *board))
+        point = (
+            1.0 if hero_rank > opponent_rank
+            else 0.5 if hero_rank == opponent_rank
+            else 0.0
+        )
+        weight = policy._opponent_sample_weight(
+            posterior,
+            opponent_hole,
+            board,
+        )
+        points += weight * point
+        total += weight
+    return points / total
+
+
+def test_bounded_river_baseline_defers_full_enumeration_to_refinement(
+    modules,
+    monkeypatch,
+):
+    """A river baseline keeps defensive signal without visiting all 990 holes."""
+
+    precompute, policy = modules
     two_pair_board = [
         _card(12, 0), _card(12, 1), _card(11, 2), _card(11, 3), _card(0, 0),
     ]
@@ -435,12 +471,29 @@ def test_exact_river_baseline_prevents_public_board_overcalls(modules):
         hole=[_card(1, 1), _card(1, 2)],
         board=two_pair_board,
     )
+
+    draw_counts = []
+    evaluation_calls = []
+    original_draw = precompute.deterministic_draw
+    original_evaluate = precompute.evaluate_seven
+
+    def counted_draw(deck, count, state):
+        draw_counts.append(count)
+        return original_draw(deck, count, state)
+
+    def counted_evaluate(cards):
+        evaluation_calls.append(tuple(cards))
+        return original_evaluate(cards)
+
+    monkeypatch.setattr(precompute, "deterministic_draw", counted_draw)
+    monkeypatch.setattr(precompute, "evaluate_seven", counted_evaluate)
     started = time.perf_counter()
-    crushed_equity = policy._baseline_equity(crushed)
+    crushed_baseline = policy.get_baseline_decision(crushed)
     elapsed = time.perf_counter() - started
-    assert crushed_equity <= 0.02
-    assert elapsed < 0.25
-    assert policy.get_baseline_decision(crushed) == {"kind": "fold"}
+    assert elapsed < 0.10
+    assert draw_counts == [2] * policy.BASELINE_RIVER_SAMPLES
+    assert len(evaluation_calls) == 2 * policy.BASELINE_RIVER_SAMPLES
+    assert crushed_baseline == {"kind": "fold"}
 
     straight_board = [
         _card(0, 0), _card(1, 1), _card(2, 2), _card(3, 3), _card(4, 0),
@@ -456,9 +509,50 @@ def test_exact_river_baseline_prevents_public_board_overcalls(modules):
         "to_call": 900,
     })
     shared["legal"]["min_raise_to"] = 1800
-    shared_equity = policy._baseline_equity(shared)
-    assert 0.35 < shared_equity < 0.47
-    assert policy.get_baseline_decision(shared) == {"kind": "fold"}
+    draw_counts.clear()
+    evaluation_calls.clear()
+    shared_baseline = policy.get_baseline_decision(shared)
+    assert draw_counts == [2] * policy.BASELINE_RIVER_SAMPLES
+    assert len(evaluation_calls) == 2 * policy.BASELINE_RIVER_SAMPLES
+    assert shared_baseline == {"kind": "fold"}
+
+    # The full river posterior is still consumed before a normal refinement
+    # deadline.  Public-board / dominated spots must end as folds after the
+    # fixed C(45, 2) enumeration, not by blocking the baseline publication.
+    for context, baseline in (
+        (crushed, crushed_baseline),
+        (shared, shared_baseline),
+    ):
+        exact_equity = _exact_river_equity_from_frozen_posterior(
+            policy,
+            precompute,
+            context,
+        )
+        decisions = []
+        original_decision = policy._decision_from_equity
+
+        def capture_decision(*args, **kwargs):
+            decisions.append((args[1], args[2], args[3]))
+            return original_decision(*args, **kwargs)
+
+        monkeypatch.setattr(policy, "_decision_from_equity", capture_decision)
+        rows = list(policy.iter_decisions(
+            context,
+            baseline,
+            time.monotonic() + 3.0,
+        ))
+        monkeypatch.setattr(policy, "_decision_from_equity", original_decision)
+        assert rows
+        assert rows[-1]["complete"] is True
+        assert rows[-1]["sample_count"] == 990
+        assert decisions[-1][0] == pytest.approx(exact_equity)
+        assert decisions[-1][1:] == (1.0, 990)
+        assert rows[-1]["decision"] == original_decision(
+            context,
+            exact_equity,
+            confidence=1.0,
+            samples=990,
+        ) == {"kind": "fold"}
 
 
 def test_bounded_turn_baseline_handles_public_two_pair_and_quads(modules):

@@ -68,6 +68,13 @@ def _render_critic_provider_prompt(inputs):
             "If ANY previous issue remains unresolved, do NOT raise the score above the previous score.\n"
             "If improvements were made that address ALL feedback points, raise the score accordingly.\n"
         )
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += (
+        "\n\n" + current_strict_runtime_prompt_overlay()
+        + "\n\nYou remain advisory: report a violation for deterministic gates "
+        "to decide; never certify, accept, reject, or schedule a repair yourself."
+    )
     invocation_id = str(inputs["invocation_id"] or "")
     if invocation_id:
         text += (
@@ -174,6 +181,9 @@ def _render_crossover_provider_prompt(inputs):
         "are unavailable.\n"
         + str(inputs["retry_feedback"])
     )
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
 
     return LLMRenderedMaterial(
         text=text,

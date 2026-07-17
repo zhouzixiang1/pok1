@@ -30,6 +30,7 @@ from typing import Any, Callable
 from bot_artifact import canonical_digest, hash_path
 from bot_namespace import (
     ROLE_CANDIDATE,
+    parse_bot_version,
     policy_identity_document_errors,
     resolve_national_bot_spec,
 )
@@ -94,6 +95,450 @@ THP_FOOTER_RE = re.compile(
     r"\[([^\]]+)\]\[([^\]]+)\]\}"
 )
 TERMINAL_COMPLETION_SCHEMA_VERSION = 1
+FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 1
+FORMAL_QUALITY_ADMISSION_KIND = "official-formal-quality-admission"
+
+
+class FormalQualityAdmissionError(RuntimeError):
+    """The EXE-adjacent normal-full admission no longer matches live evidence.
+
+    This is deliberately distinct from platform/infrastructure failure.  A
+    durable official job catches it and records a quality-admission terminal
+    state before any official round or certificate evidence can be produced.
+    """
+
+    def __init__(self, issues: list[str]):
+        self.issues = [str(issue) for issue in issues if str(issue)]
+        super().__init__("; ".join(self.issues[:12]))
+
+
+def _valid_sha256(value: Any) -> bool:
+    text = str(value or "")
+    return len(text) == 64 and all(character in "0123456789abcdef" for character in text.lower())
+
+
+def formal_quality_admission_integrity_issues(
+    admission: Any,
+    *,
+    candidate: str | Path | None = None,
+) -> list[str]:
+    """Validate the compact admission receipt carried by a formal job.
+
+    This intentionally verifies the receipt independently of the durable job
+    envelope.  The envelope binds the bytes; this helper makes a missing,
+    hand-written, or malformed quality admission fail before an EXE launch.
+    """
+
+    if not isinstance(admission, dict):
+        return ["official_formal_quality_admission_missing"]
+    issues: list[str] = []
+    if admission.get("schema_version") != FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION:
+        issues.append("official_formal_quality_admission_schema_mismatch")
+    if admission.get("kind") != FORMAL_QUALITY_ADMISSION_KIND:
+        issues.append("official_formal_quality_admission_kind_mismatch")
+    payload = {
+        key: value
+        for key, value in admission.items()
+        if key != "admission_digest"
+    }
+    if admission.get("admission_digest") != canonical_digest(payload):
+        issues.append("official_formal_quality_admission_digest_mismatch")
+    candidate_path = admission.get("candidate_path")
+    if not isinstance(candidate_path, str) or not candidate_path.strip():
+        issues.append("official_formal_quality_admission_candidate_path_invalid")
+    elif candidate is not None:
+        try:
+            expected_candidate_path = str(Path(candidate).expanduser().resolve())
+        except (OSError, RuntimeError, TypeError, ValueError):
+            expected_candidate_path = ""
+        if candidate_path != expected_candidate_path:
+            issues.append("official_formal_quality_admission_candidate_path_mismatch")
+    for key in (
+        "candidate_hash",
+        "quality_gate_digest",
+        "capability_digest",
+        "dynamic_probe_digest",
+        "runtime_contract_ledger_digest",
+    ):
+        if not _valid_sha256(admission.get(key)):
+            issues.append(f"official_formal_quality_admission_{key}_invalid")
+    runtime = admission.get("system_runtime_identity")
+    try:
+        from national_runtime_authority import (
+            system_native_runtime_identity_structure_issues,
+        )
+
+        runtime_identity_issues = system_native_runtime_identity_structure_issues(
+            runtime
+        )
+    except Exception as exc:
+        runtime_identity_issues = [
+            "runtime_identity_validation_error:" + type(exc).__name__
+        ]
+    if runtime_identity_issues:
+        issues.extend(
+            "official_formal_quality_admission_system_runtime_identity_invalid:"
+            + str(item)
+            for item in runtime_identity_issues[:8]
+        )
+    decision_runtime_version = admission.get("system_decision_runtime_version")
+    if type(decision_runtime_version) is not int or decision_runtime_version < 1:
+        issues.append("official_formal_quality_admission_system_runtime_version_invalid")
+    probe = admission.get("runtime_probe_identity")
+    if not isinstance(probe, dict):
+        issues.append("official_formal_quality_admission_runtime_probe_identity_invalid")
+    elif not all(_valid_sha256(probe.get(key)) for key in (
+        "scenario_digest",
+        "limits_digest",
+        "probe_identity_digest",
+        "managed_isolation_digest",
+        "native_runtime_template_digest",
+    )):
+        issues.append("official_formal_quality_admission_runtime_probe_digest_invalid")
+    native_template = (
+        probe.get("native_runtime_template_identity")
+        if isinstance(probe, dict)
+        else None
+    )
+    try:
+        native_template_issues = system_native_runtime_identity_structure_issues(
+            native_template
+        )
+    except Exception as exc:
+        native_template_issues = [
+            "native_template_validation_error:" + type(exc).__name__
+        ]
+    if native_template_issues:
+        issues.extend(
+            "official_formal_quality_admission_native_template_identity_invalid:"
+            + str(item)
+            for item in native_template_issues[:8]
+        )
+    elif isinstance(native_template, dict):
+        if probe.get("native_runtime_template_digest") != canonical_digest(
+            native_template
+        ):
+            issues.append(
+                "official_formal_quality_admission_native_template_digest_mismatch"
+            )
+        if isinstance(runtime, dict) and native_template != runtime:
+            issues.append(
+                "official_formal_quality_admission_runtime_probe_template_mismatch"
+            )
+    checkpoint = admission.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        issues.append("official_formal_quality_admission_checkpoint_invalid")
+    else:
+        try:
+            valid_version = int(checkpoint.get("next_v") or 0) >= 1
+        except (TypeError, ValueError):
+            valid_version = False
+        if not valid_version or not str(checkpoint.get("workflow_run_id") or "").strip():
+            issues.append("official_formal_quality_admission_checkpoint_identity_invalid")
+    return list(dict.fromkeys(issues))
+
+
+def build_formal_quality_admission(
+    candidate: str | Path,
+    *,
+    checkpoint: dict[str, Any] | None = None,
+    repo_root: str | Path | None = None,
+    expected_admission: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Bind one normal formal run to current successful dynamic gate evidence.
+
+    ``official_certify.py full`` is an operator-facing, manual entrypoint.  It
+    must not be able to certify bytes that merely resemble a candidate which
+    passed quality earlier.  This reads the current checkpoint-owned quality
+    receipt, rechecks the active native runtime and dynamic probe identities,
+    and emits a small digest-bound receipt.  The formal harness repeats this
+    check immediately before it touches the official EXE.
+
+    The v143 first-strict path is deliberately not routed through this helper:
+    it has a distinct, one-time operator authorization and its own
+    system-bootstrap receipts.  Callers must keep that control-id branch
+    explicit rather than treating it as a missing normal-quality receipt.
+    """
+
+    root = Path(repo_root or ROOT).expanduser().resolve()
+    requested = Path(candidate).expanduser().resolve()
+    issues: list[str] = []
+    if checkpoint is None:
+        try:
+            from evolution_infra import read_pipeline_checkpoint
+
+            checkpoint = read_pipeline_checkpoint()
+        except Exception as exc:
+            return {
+                "valid": False,
+                "issues": [
+                    "official_formal_quality_checkpoint_read_error:"
+                    f"{type(exc).__name__}:{str(exc)[:180]}"
+                ],
+                "admission": None,
+            }
+    if not isinstance(checkpoint, dict):
+        return {
+            "valid": False,
+            "issues": ["official_formal_quality_ledger_missing"],
+            "admission": None,
+        }
+
+    try:
+        version = parse_bot_version(requested.name)
+    except Exception:
+        version = None
+    try:
+        next_v = int(checkpoint.get("next_v") or 0)
+    except (TypeError, ValueError):
+        next_v = 0
+    expected_candidate = (root / "bots" / f"national_v{next_v}").resolve()
+    if version is None or next_v < 1 or version != next_v:
+        issues.append("official_formal_quality_checkpoint_candidate_version_mismatch")
+    if requested != expected_candidate:
+        issues.append("official_formal_quality_checkpoint_candidate_path_mismatch")
+    workflow_run_id = str(checkpoint.get("workflow_run_id") or "").strip()
+    if not workflow_run_id:
+        issues.append("official_formal_quality_checkpoint_workflow_run_id_missing")
+
+    gates = checkpoint.get("gate_results")
+    quality = gates.get("quality") if isinstance(gates, dict) else None
+    if not isinstance(quality, dict):
+        issues.append("official_formal_quality_gate_ledger_missing")
+        quality = {}
+
+    try:
+        candidate_hash = hash_path(requested)
+    except Exception as exc:
+        candidate_hash = ""
+        issues.append(
+            "official_formal_quality_candidate_hash_unavailable:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        )
+    if not _valid_sha256(candidate_hash):
+        issues.append("official_formal_quality_candidate_hash_invalid")
+    if quality.get("code_fingerprint") != candidate_hash:
+        issues.append("official_formal_quality_candidate_hash_mismatch")
+
+    for key in (
+        "all_passed",
+        "critical_scenarios_passed",
+        "national_native_contract_ok",
+        "national_capability_contract_ok",
+        "runtime_contract_identity_ok",
+    ):
+        if quality.get(key) is not True:
+            issues.append(f"official_formal_quality_gate_not_passed:{key}")
+    infrastructure = quality.get("quality_infrastructure")
+    if not isinstance(infrastructure, dict) or infrastructure.get("active") is not False:
+        issues.append("official_formal_quality_infrastructure_not_clear")
+
+    try:
+        from national_capability_contract import NATIONAL_CAPABILITY_DETECTOR_VERSION
+        from national_native import NATIONAL_DECISION_RUNTIME_VERSION
+        from national_runtime_authority import (
+            current_system_native_runtime_errors,
+            current_system_native_runtime_identity,
+        )
+        from national_runtime_probe import (
+            RUNTIME_PROBE_IDENTITY_DIGEST,
+            RUNTIME_PROBE_LIMITS_DIGEST,
+            RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+            RUNTIME_PROBE_SCENARIO_DIGEST,
+            RUNTIME_PROBE_SCHEMA_VERSION,
+            runtime_probe_native_template_evidence,
+            runtime_probe_native_template_evidence_matches,
+        )
+        from runtime_architecture_policy import (
+            ACTIVE_EPOCH,
+            RUNTIME_ARCHITECTURE_POLICY_VERSION,
+            runtime_contract_ledger_digest,
+            validate_runtime_contract_ledger,
+        )
+        from workflow_profiles import get_workflow_profile
+    except Exception as exc:
+        return {
+            "valid": False,
+            "issues": list(dict.fromkeys([
+                *issues,
+                "official_formal_quality_runtime_identity_unavailable:"
+                f"{type(exc).__name__}:{str(exc)[:180]}",
+            ])),
+            "admission": None,
+        }
+
+    profile = get_workflow_profile()
+    expected_profile_id = str(getattr(profile, "profile_id", "") or "")
+    expected_execution_mode = str(
+        getattr(profile, "national_execution_mode", "") or ""
+    )
+    if expected_execution_mode != "native_tcp":
+        issues.append("official_formal_quality_active_execution_mode_not_native_tcp")
+    if checkpoint.get("evaluation_epoch") != ACTIVE_EPOCH:
+        issues.append("official_formal_quality_checkpoint_epoch_mismatch")
+    if str(quality.get("workflow_profile_id") or "") != expected_profile_id:
+        issues.append("official_formal_quality_workflow_profile_identity_mismatch")
+    if str(quality.get("national_execution_mode") or "") != expected_execution_mode:
+        issues.append("official_formal_quality_execution_mode_identity_mismatch")
+    checkpoint_profile_id = str(checkpoint.get("workflow_profile_id") or "")
+    if checkpoint_profile_id and checkpoint_profile_id != expected_profile_id:
+        issues.append("official_formal_quality_checkpoint_profile_identity_mismatch")
+    checkpoint_execution_mode = str(checkpoint.get("national_execution_mode") or "")
+    if checkpoint_execution_mode and checkpoint_execution_mode != expected_execution_mode:
+        issues.append("official_formal_quality_checkpoint_execution_mode_identity_mismatch")
+
+    capability = quality.get("national_capability_contract")
+    if not isinstance(capability, dict):
+        issues.append("official_formal_quality_capability_ledger_missing")
+        capability = {}
+    if (
+        capability.get("ok") is not True
+        or capability.get("conclusive") is not True
+        or capability.get("detector_version") != NATIONAL_CAPABILITY_DETECTOR_VERSION
+        or capability.get("epoch") != ACTIVE_EPOCH
+    ):
+        issues.append("official_formal_quality_capability_not_current_and_passed")
+
+    checkpoint_ledger = checkpoint.get("runtime_contract_ledger")
+    master_plan = checkpoint.get("master_plan")
+    plan_ledger = (
+        master_plan.get("runtime_contract_ledger")
+        if isinstance(master_plan, dict)
+        else None
+    )
+    ledger_errors = [
+        *(f"checkpoint:{item}" for item in validate_runtime_contract_ledger(checkpoint_ledger)),
+        *(f"master_plan:{item}" for item in validate_runtime_contract_ledger(plan_ledger)),
+    ]
+    checkpoint_ledger_digest = runtime_contract_ledger_digest(checkpoint_ledger)
+    plan_ledger_digest = runtime_contract_ledger_digest(plan_ledger)
+    if not checkpoint_ledger_digest or checkpoint_ledger_digest != plan_ledger_digest:
+        ledger_errors.append("checkpoint_master_plan_ledger_digest_mismatch")
+    if ledger_errors:
+        issues.extend(
+            f"official_formal_quality_runtime_contract_ledger_invalid:{item}"
+            for item in ledger_errors[:12]
+        )
+
+    probe = capability.get("dynamic_runtime_probe")
+    if not isinstance(probe, dict):
+        issues.append("official_formal_quality_dynamic_probe_missing")
+        probe = {}
+    required_probe_truths = {
+        "ok": True,
+        "repeatability_ok": True,
+        "evidence_integrity_ok": True,
+    }
+    for key, value in required_probe_truths.items():
+        if probe.get(key) is not value:
+            issues.append(f"official_formal_quality_dynamic_probe_not_passed:{key}")
+    if probe.get("failure_class") != "none":
+        issues.append("official_formal_quality_dynamic_probe_failure_class")
+    native_template_evidence = runtime_probe_native_template_evidence()
+    if not runtime_probe_native_template_evidence_matches(probe):
+        issues.append("official_formal_quality_dynamic_probe_native_template_mismatch")
+    expected_probe_identity = {
+        "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+        "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+        "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+        "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+        "runtime_contract_ledger_digest": checkpoint_ledger_digest,
+        "code_fingerprint": candidate_hash,
+        **native_template_evidence,
+    }
+    for key, value in expected_probe_identity.items():
+        if probe.get(key) != value:
+            issues.append(f"official_formal_quality_dynamic_probe_identity_mismatch:{key}")
+    managed_isolation_digest = str(probe.get("managed_isolation_digest") or "")
+    if not _valid_sha256(managed_isolation_digest):
+        issues.append("official_formal_quality_dynamic_probe_managed_isolation_invalid")
+    quality_probe_identity = {
+        "runtime_probe_schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+        "runtime_probe_orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        "runtime_probe_scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+        "runtime_probe_limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+        "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+        "runtime_probe_managed_isolation_digest": managed_isolation_digest,
+        "runtime_contract_ledger_digest": checkpoint_ledger_digest,
+        **native_template_evidence,
+    }
+    for key, value in quality_probe_identity.items():
+        if quality.get(key) != value:
+            issues.append(f"official_formal_quality_gate_probe_identity_mismatch:{key}")
+
+    runtime_errors = current_system_native_runtime_errors(requested)
+    if runtime_errors:
+        issues.extend(
+            f"official_formal_quality_system_runtime_invalid:{item}"
+            for item in runtime_errors[:8]
+        )
+    system_runtime_identity = current_system_native_runtime_identity()
+    if int(NATIONAL_DECISION_RUNTIME_VERSION) < 1:
+        issues.append("official_formal_quality_system_runtime_version_invalid")
+    transition = quality.get("national_architecture_transition")
+    if not isinstance(transition, dict) or (
+        transition.get("ok") is not True
+        or transition.get("conclusive") is not True
+        or transition.get("policy_version") != RUNTIME_ARCHITECTURE_POLICY_VERSION
+        or transition.get("detector_version") != NATIONAL_CAPABILITY_DETECTOR_VERSION
+        or transition.get("epoch") != ACTIVE_EPOCH
+    ):
+        issues.append("official_formal_quality_architecture_transition_not_current_and_passed")
+
+    if issues:
+        return {
+            "valid": False,
+            "issues": list(dict.fromkeys(issues)),
+            "admission": None,
+        }
+
+    payload = {
+        "schema_version": FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION,
+        "kind": FORMAL_QUALITY_ADMISSION_KIND,
+        "candidate_path": str(requested),
+        "candidate_hash": candidate_hash,
+        "checkpoint": {
+            "evaluation_epoch": str(checkpoint.get("evaluation_epoch") or ""),
+            "workflow_run_id": workflow_run_id,
+            "next_v": next_v,
+            "source_v": checkpoint.get("source_v"),
+        },
+        "quality_gate_digest": canonical_digest(quality),
+        "capability_digest": canonical_digest(capability),
+        "dynamic_probe_digest": canonical_digest(probe),
+        "runtime_contract_ledger_digest": checkpoint_ledger_digest,
+        "runtime_probe_identity": {
+            "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+            "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+            "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+            "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+            "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+            "managed_isolation_digest": managed_isolation_digest,
+            **native_template_evidence,
+        },
+        "system_runtime_identity": system_runtime_identity,
+        "system_decision_runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+    }
+    admission = {**payload, "admission_digest": canonical_digest(payload)}
+    if expected_admission is not None:
+        expected_issues = formal_quality_admission_integrity_issues(
+            expected_admission,
+            candidate=requested,
+        )
+        if expected_issues:
+            return {
+                "valid": False,
+                "issues": expected_issues,
+                "admission": admission,
+            }
+        if expected_admission != admission:
+            return {
+                "valid": False,
+                "issues": ["official_formal_quality_admission_current_drift"],
+                "admission": admission,
+            }
+    return {"valid": True, "issues": [], "admission": admission}
 
 
 @dataclass(frozen=True)
@@ -2284,6 +2729,77 @@ def run_official_acceptance_sync(
         if formal_requested and not formal_job:
             raise RuntimeError("formal official job cannot replace the production round runner")
         if formal_job:
+            # Normal full-v5 work is only admissible when the exact candidate
+            # still matches a current, successful checkpoint-owned dynamic
+            # quality/capability/probe receipt.  A first-strict control has a
+            # separate, explicit authorization path and is intentionally not
+            # treated as an omitted normal quality receipt.
+            bootstrap_control_id = str(
+                job_envelope.get("bootstrap_control_id") or ""
+            ).strip()
+            if bootstrap_control_id:
+                # This is not a generic exemption from the normal admission
+                # receipt.  Only the one system-owned v143 control, with its
+                # current operator authorization revalidated here, may take
+                # the separate path.
+                from first_strict_control import CONTROL_ID
+                from official_bootstrap import (
+                    validate_operator_bootstrap_authorized_selection,
+                )
+
+                selection = job_envelope.get("opponent_selection")
+                if bootstrap_control_id != CONTROL_ID or not isinstance(selection, dict):
+                    raise RuntimeError(
+                        "official_formal_bootstrap_authorization_invalid:"
+                        "bootstrap_control_or_selection_missing"
+                    )
+                bootstrap_validation = validate_operator_bootstrap_authorized_selection(
+                    selection,
+                    bootstrap_control_id,
+                    candidate_path,
+                )
+                if bootstrap_validation.get("valid") is not True:
+                    raise RuntimeError(
+                        "official_formal_bootstrap_authorization_invalid:"
+                        + ";".join(
+                            str(item)
+                            for item in (
+                                bootstrap_validation.get("issues")
+                                or [bootstrap_validation.get("reason")]
+                            )[:12]
+                        )
+                    )
+            else:
+                expected_admission = (
+                    job_envelope.get("quality_admission")
+                    if isinstance(job_envelope, dict)
+                    else None
+                )
+                admission_integrity_issues = formal_quality_admission_integrity_issues(
+                    expected_admission,
+                    candidate=candidate_path,
+                )
+                if admission_integrity_issues:
+                    raise FormalQualityAdmissionError(
+                        [
+                            "official_formal_quality_admission_invalid:"
+                            + issue
+                            for issue in admission_integrity_issues[:12]
+                        ]
+                    )
+                quality_admission = build_formal_quality_admission(
+                    candidate_path,
+                    expected_admission=expected_admission,
+                )
+                if quality_admission.get("valid") is not True:
+                    raise FormalQualityAdmissionError(
+                        [
+                            "official_formal_quality_admission_invalid:"
+                            + str(item)
+                            for item in (quality_admission.get("issues") or [])[:12]
+                            if str(item)
+                        ]
+                    )
             formal_execution = validate_execution_profile(
                 cfg.exe_path,
                 probe_sandbox=True,
@@ -2435,6 +2951,11 @@ def run_official_acceptance_sync(
                 )
                 if not receipt.get("passed"):
                     issues.extend(f"opponent_{index}: {issue}" for issue in receipt.get("issues", []) or ["failed"])
+    except FormalQualityAdmissionError:
+        # The job manager owns the durable failure classification.  Do not
+        # turn live quality/probe/runtime/artifact drift into an ordinary
+        # suite exception, an EXE infrastructure retry, or official evidence.
+        raise
     except Exception as exc:
         issues.append(f"official_acceptance_suite_exception: {type(exc).__name__}: {str(exc)[:500]}")
 

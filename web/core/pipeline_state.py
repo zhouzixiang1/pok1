@@ -1312,8 +1312,61 @@ HEAD_DRIFT_RESUME_POLICY = {
 }
 
 
-def head_drift_resume_policy(stage: str | None) -> dict | None:
+def _quality_admission_refresh_head_drift_policy(
+    checkpoint: object,
+    *,
+    stage: str | None,
+) -> dict | None:
+    """Return the one dynamic resume route for final quality-admission drift.
+
+    ``official_certifying`` normally means an attached EXE job and may only
+    be polled through ``commit_bot``.  A terminal final-admission failure is
+    different: it has no result to poll and must re-enter the ordinary quality
+    gate before review/precommit/a new job.  Keep that exception keyed to the
+    complete checkpoint marker rather than widening the stage policy for every
+    official job.
+    """
+
+    if stage != "official_certifying" or not isinstance(checkpoint, dict):
+        return None
+    gate_results = checkpoint.get("gate_results")
+    official_full = (
+        gate_results.get("official_full")
+        if isinstance(gate_results, dict)
+        else None
+    )
+    if not isinstance(official_full, dict):
+        return None
+    if not (
+        official_full.get("outcome") == "quality_admission_blocked"
+        and official_full.get("failure_class") == "quality"
+        and official_full.get("quality_admission_refresh") is True
+    ):
+        return None
+    base = dict(HEAD_DRIFT_RESUME_POLICY["official_certifying"])
+    base.update(
+        {
+            "allowed_tools": ("run_quality_gates",),
+            "resume_kind": "quality_admission_refresh",
+            "warning_suffix": "quality_admission_refresh",
+        }
+    )
+    return base
+
+
+def head_drift_resume_policy(
+    stage: str | None,
+    *,
+    checkpoint: object | None = None,
+) -> dict | None:
     """Return the authoritative HEAD-drift recovery policy for a stage."""
+
+    dynamic = _quality_admission_refresh_head_drift_policy(
+        checkpoint,
+        stage=stage,
+    )
+    if dynamic is not None:
+        return dynamic
     policy = HEAD_DRIFT_RESUME_POLICY.get(stage)
     return dict(policy) if policy else None
 
@@ -1322,8 +1375,12 @@ def head_drift_resume_stages() -> set[str]:
     return set(HEAD_DRIFT_RESUME_POLICY)
 
 
-def head_drift_allowed_tools(stage: str | None) -> set[str]:
-    policy = head_drift_resume_policy(stage)
+def head_drift_allowed_tools(
+    stage: str | None,
+    *,
+    checkpoint: object | None = None,
+) -> set[str]:
+    policy = head_drift_resume_policy(stage, checkpoint=checkpoint)
     if not policy:
         return set()
     return set(policy.get("allowed_tools") or ())
@@ -1509,6 +1566,23 @@ def _active_workflow_profile_info() -> tuple[str, str]:
     )
 
 
+def _native_runtime_evidence_current(gate: dict | None) -> bool:
+    """Reject a native quality/precommit receipt from another template.
+
+    A system-owned raw TCP template edit changes the evaluated executable even
+    if candidate policy bytes are unchanged.  Historical receipts without the
+    explicit template identity are deliberately not grandfathered.
+    """
+
+    try:
+        from national_runtime_probe import (
+            runtime_probe_native_template_evidence_matches,
+        )
+    except Exception:
+        return False
+    return runtime_probe_native_template_evidence_matches(gate)
+
+
 def _gate_matches_active_workflow(gate: dict | None, *, require_native_contract: bool = False) -> bool:
     active_profile_id, active_execution_mode = _active_workflow_profile_info()
     if not active_profile_id:
@@ -1528,7 +1602,10 @@ def _gate_matches_active_workflow(gate: dict | None, *, require_native_contract:
     if (
         require_native_contract
         and active_execution_mode == "native_tcp"
-        and gate.get("national_native_contract_ok") is not True
+        and (
+            gate.get("national_native_contract_ok") is not True
+            or not _native_runtime_evidence_current(gate)
+        )
     ):
         return False
     return True
@@ -1545,7 +1622,15 @@ def _quality_gate_matches_active_workflow(gate_results: dict) -> bool:
 
 def _precommit_gate_matches_active_workflow(gate_results: dict) -> bool:
     precommit = (gate_results or {}).get("precommit_eval") or {}
-    return precommit.get("passed") is True and _gate_matches_active_workflow(precommit)
+    _profile_id, execution_mode = _active_workflow_profile_info()
+    return (
+        precommit.get("passed") is True
+        and _gate_matches_active_workflow(precommit)
+        and (
+            execution_mode != "native_tcp"
+            or _native_runtime_evidence_current(precommit)
+        )
+    )
 
 
 def _critic_gate_passed(gate_results: dict) -> bool:
@@ -1842,6 +1927,18 @@ def route_policy(checkpoint: dict | None) -> dict:
         intent = "system_bootstrap_abandon"
         failure_class = "system_bootstrap_regression"
     elif (
+        stage == "official_certifying"
+        and isinstance(gate_results.get("official_full"), dict)
+        and gate_results["official_full"].get("outcome")
+        == "quality_admission_blocked"
+        and gate_results["official_full"].get("failure_class") == "quality"
+        and gate_results["official_full"].get("quality_admission_refresh") is True
+    ):
+        next_tool = "run_quality_gates"
+        intent = "quality_admission_refresh"
+        failure_class = "quality"
+        profile_refresh_needed = True
+    elif (
         stage in {"quality_passed", "reviewed", "critic_checked", "precommit_failed", "verified", "official_certifying", "official_failed"}
         and "quality" in gate_results
         and not _quality_gate_matches_active_workflow(gate_results)
@@ -1954,7 +2051,7 @@ def route_policy(checkpoint: dict | None) -> dict:
             "operator-only finalize-first-strict command may publish it; the complete signed "
             "certificate and completed bootstrap authorization remain mandatory."
         )
-    elif stage == "official_certifying":
+    elif stage == "official_certifying" and intent != "quality_admission_refresh":
         directive = (
             "Official EXE 5+3x70 certification is running as a durable job. "
             "Call commit_bot only to poll the attached job; do not edit bot code or start another EXE suite."
@@ -1994,7 +2091,13 @@ def route_policy(checkpoint: dict | None) -> dict:
         directive = "Master plan is saved. Call execute_workers with the saved tasks."
     elif profile_refresh_needed and next_tool == "run_quality_gates":
         directive = (
-            "Cached quality gate was produced under a different workflow profile "
+            "Official full certification detected live quality-admission drift. "
+            "Do not poll/retry commit_bot, start an EXE suite, or send this "
+            "system evidence drift to Workers. Call run_quality_gates first; "
+            "only its fresh result may re-enter review, Critic, precommit and "
+            "a new official job."
+            if intent == "quality_admission_refresh"
+            else "Cached quality gate was produced under a different workflow profile "
             "or national execution mode. Call run_quality_gates to revalidate "
             "the current candidate under the active workflow."
         )

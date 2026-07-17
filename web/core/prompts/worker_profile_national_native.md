@@ -65,10 +65,22 @@ def iter_decisions(decision_context, baseline, deadline):
     yield candidate
 ```
 
-Both entrypoint functions are mandatory. The baseline must finish strictly
-under 250 ms; refinement yields are optional, bounded, and
+Both entrypoint functions are mandatory. `deadline.baseline_target_ms` is the
+authoritative per-decision target (native precommit can set it to 200 ms; 250
+ms remains the formal ceiling); refinement yields are optional, bounded, and
 monotonic-deadline-aware. The iterator checks `time.monotonic()` before every
 expensive unit and yields only after new work.
+
+The current checked-in strict policy uses a fixed deterministic 192/256/96
+flop/turn/river baseline schedule, with two direct
+`precompute.evaluate_seven` evaluations per sample (at most 512 on a valid
+board). A compact prior is only an invalid/degraded-input fallback or a
+refinement starting point; do not replace valid-board baseline sampling with
+one. The static gate rejects evaluator aliases (including imported, closure,
+or default aliases), `itertools.combinations`, and nested deck-pair sweeps in
+the baseline. The dynamic gate rejects more than 800 top-level evaluator calls.
+Full `C(45,2)` river enumeration belongs only to bounded,
+deadline-checked `iter_decisions` batches after a legal baseline is published.
 
 A decision is a strict primitive mapping:
 
@@ -120,10 +132,13 @@ not a reconstructed compatibility path.
 </policy_abi>
 
 <runtime_architecture>
-- The socket-owning process never executes candidate policy. A persistent,
-  killable, non-daemon worker owns policy imports and any declared fixed CPU
-  pool. A missed deadline terminates the complete process group/tree before a
-  clean worker is started.
+- The socket-owning process never executes candidate policy. The official
+  `name` handshake is a real system-owned protocol boundary: it replies with
+  the team name after initiating a persistent, killable, non-daemon worker
+  launch. That wire evidence is a launch-initiated proof, never a proof that
+  policy import or worker readiness completed. Candidate code must not move,
+  duplicate, or claim this startup path; the first decision wall-clock begins
+  at the decision and includes any unfinished policy import. A missed deadline terminates the complete process group/tree before a clean worker is started.
 - The socket owner has an immediately available typed fallback: fold while
   facing a positive amount, otherwise pass. Formal timing uses a 55 s hard
   deadline and 54 s refinement budget; local native strength uses a 2.0 s

@@ -61,12 +61,18 @@ HEAD_DRIFT_PRE_MASTER_STAGES = {"prepared", "direction_audited"}
 HEAD_DRIFT_RESUME_STAGES = head_drift_resume_stages()
 
 
-def _resume_policy(stage: str | None) -> dict[str, Any] | None:
-    return head_drift_resume_policy(stage)
+def _resume_policy(
+    stage: str | None,
+    checkpoint: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    return head_drift_resume_policy(stage, checkpoint=checkpoint)
 
 
-def _resume_warning(stage: str | None) -> str:
-    policy = _resume_policy(stage) or {}
+def _resume_warning(
+    stage: str | None,
+    checkpoint: dict[str, Any] | None = None,
+) -> str:
+    policy = _resume_policy(stage, checkpoint) or {}
     suffix = str(policy.get("warning_suffix") or "checkpoint")
     return f"repo_baseline_head_mismatch_{suffix}_resume"
 
@@ -99,8 +105,13 @@ def _snapshot_for_recovery(root: Path) -> dict[str, Any]:
         return git_worktree_snapshot(root)
 
 
-def _target_available_for_resume(root: Path, stage: str | None, next_v: int | None) -> bool:
-    policy = _resume_policy(stage)
+def _target_available_for_resume(
+    root: Path,
+    stage: str | None,
+    next_v: int | None,
+    checkpoint: dict[str, Any] | None = None,
+) -> bool:
+    policy = _resume_policy(stage, checkpoint)
     if policy and not policy.get("requires_target", True):
         return True
     if next_v is None:
@@ -116,9 +127,10 @@ def _current_branch_alias_resume_allowed(
     baseline_head: str,
     target_available: bool,
     blocking_entries: list[str],
+    checkpoint: dict[str, Any] | None = None,
 ) -> bool:
     """Allow recovery on a temporary branch name when files are unchanged."""
-    policy = _resume_policy(stage)
+    policy = _resume_policy(stage, checkpoint)
     return bool(
         policy
         and policy.get("branch_alias_allowed", True)
@@ -145,7 +157,7 @@ def _current_branch_unrelated_head_resume_allowed(
     blocking_entries: list[str],
 ) -> tuple[bool, dict[str, Any]]:
     """Allow checkpoint recovery on a temporary branch with unrelated HEAD drift."""
-    policy = _resume_policy(stage)
+    policy = _resume_policy(stage, checkpoint)
     if not (
         policy
         and policy.get("branch_alias_allowed", True)
@@ -220,13 +232,14 @@ def _baseline_branch_alias_resume_allowed(
     target_available: bool,
     blocking_entries: list[str],
     current_branch_alias_allowed: bool,
+    checkpoint: dict[str, Any] | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     if not (baseline_branch and current_branch and baseline_branch != current_branch):
         return False, {}
     if current_branch_alias_allowed:
         return True, {"baseline_branch_alias_reason": "current_branch_alias_same_head"}
     if not (
-        _resume_policy(stage)
+        _resume_policy(stage, checkpoint)
         and current_branch == EVOLUTION_BRANCH
         and baseline_branch != EVOLUTION_BRANCH
         and target_available
@@ -339,7 +352,12 @@ def checkpoint_recovery_diagnostics(
     baseline_branch = branch_name(str(baseline.get("branch") or ""))
     current_head = str(snapshot.get("head") or "")
     baseline_head = str(baseline.get("head") or "")
-    target_available = _target_available_for_resume(root, stage, next_v)
+    target_available = _target_available_for_resume(
+        root,
+        stage,
+        next_v,
+        checkpoint,
+    )
 
     repo_diag = {
         "current_branch": current_branch,
@@ -386,6 +404,7 @@ def checkpoint_recovery_diagnostics(
         baseline_head=baseline_head,
         target_available=target_available,
         blocking_entries=blocking_entries,
+        checkpoint=checkpoint,
     )
     if current_branch_alias_allowed:
         warnings.append("repo_current_branch_alias_resume")
@@ -419,6 +438,7 @@ def checkpoint_recovery_diagnostics(
         target_available=target_available,
         blocking_entries=blocking_entries,
         current_branch_alias_allowed=current_branch_alias_allowed,
+        checkpoint=checkpoint,
     )
     if baseline_branch_alias_allowed:
         warnings.append("repo_baseline_branch_alias_resume")
@@ -461,7 +481,7 @@ def checkpoint_recovery_diagnostics(
             repo_diag["baseline_head_contract_paths"] = contract_diag.get("head_contract_paths", [])[:40]
             repo_diag["baseline_head_external_paths"] = contract_diag.get("head_external_paths", [])[:40]
         target_dir = root / bot_relpath(next_v) if next_v is not None else None
-        policy = _resume_policy(stage) or {}
+        policy = _resume_policy(stage, checkpoint) or {}
         requires_contract_unchanged = bool(policy.get("requires_contract_unchanged", True))
         branch_compatible = (
             current_branch == EVOLUTION_BRANCH
@@ -481,7 +501,7 @@ def checkpoint_recovery_diagnostics(
             )
         )
         if can_resume:
-            warnings.append(_resume_warning(stage))
+            warnings.append(_resume_warning(stage, checkpoint))
             repo_diag["baseline_head_mismatch_allowed"] = True
             repo_diag["head_drift_resume_kind"] = policy.get("resume_kind", "checkpoint")
             repo_diag["head_drift_allowed_tools"] = list(policy.get("allowed_tools") or [])

@@ -178,6 +178,7 @@ STATE_LEARNING_INTERVENTION_TARGET_ALIASES = {
 STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS = {
     "fold_to_raise": (
         "opponent.rates.fold_to_raise",
+        "opponent.samples.fold_to_raise",
         "opponent.terminal_response.fold_to_raise",
     ),
 }

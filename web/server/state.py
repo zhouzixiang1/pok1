@@ -6,7 +6,7 @@ import os
 import threading
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from shutdown_manager import ShutdownManager
@@ -52,6 +52,8 @@ class AppState:
         self.decisions: list = []
         self._evolution_task: asyncio.Task | None = None
         self._runtime_owner_id: str | None = None
+        self._task_lifecycle_revision = 0
+        self._task_snapshot_listeners: list[Callable[[dict], None]] = []
         self._shutdown_mgr: "ShutdownManager | None" = None
         self._shutdown_owner_id: str | None = None
         self._load_config()
@@ -158,6 +160,7 @@ class AppState:
 
     def set_running(self, running: bool):
         with self._lock:
+            before = self._task_snapshot_locked()
             self.running = bool(running)
             if running:
                 if self._runtime_owner_id is None:
@@ -167,6 +170,9 @@ class AppState:
                 self._runtime_owner_id = None
                 self._shutdown_mgr = None
                 self._shutdown_owner_id = None
+            after, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(after)
 
     def begin_runtime_owner(self) -> str | None:
         """Reserve the sole orchestrator owner without replacing live work."""
@@ -175,6 +181,7 @@ class AppState:
             task = self._evolution_task
             if self.running or (task is not None and not task.done()):
                 return None
+            before = self._task_snapshot_locked()
             if task is not None and task.done():
                 self._evolution_task = None
             owner_id = uuid.uuid4().hex
@@ -182,7 +189,10 @@ class AppState:
             self._shutdown_mgr = None
             self._shutdown_owner_id = None
             self.running = True
-            return owner_id
+            snapshot, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(snapshot)
+        return owner_id
 
     def runtime_owner_id(self) -> str | None:
         with self._lock:
@@ -197,7 +207,7 @@ class AppState:
         self.set_running(False)
         return True
 
-    def stop_running(self):
+    def stop_running(self, *, owner_id: str | None = None):
         """Mark stopped and return the owner task without clearing it early.
 
         A cancelled task may take time to finish its cleanup.  Keeping the
@@ -206,6 +216,9 @@ class AppState:
         mutating a later owner.
         """
         with self._lock:
+            if owner_id is not None and self._runtime_owner_id != owner_id:
+                return None
+            before = self._task_snapshot_locked()
             self.running = False
             task = self._evolution_task
             if task is None or task.done():
@@ -213,7 +226,10 @@ class AppState:
                 self._runtime_owner_id = None
                 self._shutdown_mgr = None
                 self._shutdown_owner_id = None
-            return task
+            after, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(after)
+        return task
 
     def _load_config(self):
         try:
@@ -327,6 +343,7 @@ class AppState:
         owner_id: str | None = None,
     ) -> str:
         with self._lock:
+            before = self._task_snapshot_locked()
             if owner_id is None:
                 owner_id = self._runtime_owner_id or uuid.uuid4().hex
             if (
@@ -342,7 +359,10 @@ class AppState:
                 raise RuntimeError("evolution task ownership conflict")
             self._runtime_owner_id = owner_id
             self._evolution_task = task
-            return owner_id
+            after, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(after)
+        return owner_id
 
     def clear_task_if(
         self,
@@ -351,6 +371,7 @@ class AppState:
         owner_id: str | None = None,
     ) -> None:
         with self._lock:
+            before = self._task_snapshot_locked()
             if (
                 task is not None
                 and (
@@ -369,6 +390,9 @@ class AppState:
                 if owner_id is None or self._shutdown_owner_id == owner_id:
                     self._shutdown_mgr = None
                     self._shutdown_owner_id = None
+            after, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(after)
 
     def abort_runtime_owner(self, owner_id: str | None) -> bool:
         """Release a reservation only when no live task was attached."""
@@ -379,34 +403,82 @@ class AppState:
             task = self._evolution_task
             if task is not None and not task.done():
                 return False
+            before = self._task_snapshot_locked()
             self.running = False
             self._evolution_task = None
             self._runtime_owner_id = None
             self._shutdown_mgr = None
             self._shutdown_owner_id = None
-            return True
+            snapshot, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(snapshot)
+        return True
+
+    def add_task_snapshot_listener(self, listener: Callable[[dict], None]) -> None:
+        """Register a best-effort observer for live task ownership changes."""
+
+        with self._lock:
+            self._task_snapshot_listeners.append(listener)
+
+    def _notify_task_snapshot(self, snapshot: dict) -> None:
+        """Notify outside the state lock so observers cannot block ownership CAS."""
+
+        with self._lock:
+            listeners = tuple(self._task_snapshot_listeners)
+        for listener in listeners:
+            try:
+                listener(dict(snapshot))
+            except Exception:
+                # Status delivery is advisory only; it must not alter the
+                # task-owner transition or make a running task unsafe.
+                continue
+
+    def _advance_task_lifecycle_locked(self, before: dict) -> tuple[dict, bool]:
+        """Advance the monotonic owner epoch only for visible lifecycle changes."""
+
+        after = self._task_snapshot_locked()
+        if after == before:
+            return after, False
+        self._task_lifecycle_revision += 1
+        return self._task_snapshot_locked(), True
+
+    def _task_snapshot_locked(self) -> dict:
+        task = self._evolution_task
+        shutdown_requested = bool(
+            self._shutdown_mgr
+            and self._shutdown_owner_id == self._runtime_owner_id
+            and self._shutdown_mgr.is_shutting_down
+        )
+        if task is None:
+            return {
+                "present": False,
+                "done": None,
+                "cancelled": None,
+                "shutdown_requested": shutdown_requested,
+                "status_eligible": False,
+                "owner_id": self._runtime_owner_id,
+                "lifecycle_revision": self._task_lifecycle_revision,
+            }
+        done = bool(task.done())
+        cancelled = getattr(task, "cancelled", False)
+        cancelled_value = (
+            bool(cancelled()) if callable(cancelled) else bool(cancelled)
+        ) if done else False
+        return {
+            "present": True,
+            "done": done,
+            "cancelled": cancelled_value,
+            "shutdown_requested": shutdown_requested,
+            "status_eligible": bool(
+                self.running and not done and not shutdown_requested
+            ),
+            "owner_id": self._runtime_owner_id,
+            "lifecycle_revision": self._task_lifecycle_revision,
+        }
 
     def task_snapshot(self) -> dict:
         with self._lock:
-            task = self._evolution_task
-            shutdown_requested = bool(
-                self._shutdown_mgr and self._shutdown_mgr.is_shutting_down
-            )
-            if task is None:
-                return {
-                    "present": False,
-                    "done": None,
-                    "cancelled": None,
-                    "shutdown_requested": shutdown_requested,
-                    "owner_id": self._runtime_owner_id,
-                }
-            return {
-                "present": True,
-                "done": task.done(),
-                "cancelled": task.cancelled() if task.done() else False,
-                "shutdown_requested": shutdown_requested,
-                "owner_id": self._runtime_owner_id,
-            }
+            return self._task_snapshot_locked()
 
     def cancel_task(self):
         with self._lock:
@@ -419,6 +491,8 @@ class AppState:
         *,
         owner_id: str | None = None,
     ):
+        snapshot = None
+        changed = False
         with self._lock:
             # Shutdown is an owner-scoped capability.  An unowned lifespan or
             # late startup attempt must never replace the manager used by an
@@ -430,13 +504,55 @@ class AppState:
                 or not self.running
             ):
                 raise RuntimeError("shutdown manager owner fencing conflict")
+            if self._shutdown_mgr is not None and self._shutdown_mgr is not mgr:
+                raise RuntimeError("shutdown manager replacement conflict")
+            before = self._task_snapshot_locked()
             self._shutdown_mgr = mgr
             self._shutdown_owner_id = owner_id
+            listener = getattr(mgr, "add_shutdown_listener", None)
+            if callable(listener):
+                listener(
+                    lambda: self._on_shutdown_requested(
+                        mgr,
+                        owner_id,
+                    )
+                )
+            # A signal can race manager construction/binding.  If it has
+            # already arrived, the new visible shutdown state still receives a
+            # monotonic revision even though no listener can replay the edge.
+            snapshot, changed = self._advance_task_lifecycle_locked(before)
+        if changed:
+            self._notify_task_snapshot(snapshot)
 
-    def request_shutdown(self):
+    def _on_shutdown_requested(
+        self,
+        mgr: "ShutdownManager",
+        owner_id: str,
+    ) -> None:
+        """Publish a fenced same-owner shutdown lifecycle edge exactly once."""
+
         with self._lock:
-            if self._shutdown_mgr:
-                self._shutdown_mgr.request_shutdown()
+            if (
+                self._shutdown_mgr is not mgr
+                or self._shutdown_owner_id != owner_id
+                or self._runtime_owner_id != owner_id
+            ):
+                return
+            # ShutdownManager invokes listeners only on its first request.
+            # The manager state has already changed, so increment directly
+            # rather than comparing two post-edge snapshots.
+            self._task_lifecycle_revision += 1
+            snapshot = self._task_snapshot_locked()
+        self._notify_task_snapshot(snapshot)
+
+    def request_shutdown(self, *, owner_id: str | None = None) -> bool:
+        with self._lock:
+            if owner_id is not None and self._runtime_owner_id != owner_id:
+                return False
+            mgr = self._shutdown_mgr
+        if mgr:
+            return bool(mgr.request_shutdown())
+        return False
 
     def add_decision(self, tool_name: str, result_summary: str):
         import time

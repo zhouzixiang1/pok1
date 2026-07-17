@@ -240,6 +240,65 @@ def _contract_payload(provider_prompt):
     return before, json.loads(payload_text), final_rules
 
 
+_CURRENT_STRICT_ALIGNMENT_ROLE_IDS = frozenset({
+    "master_proposal",
+    "master_proposal_critic",
+    "master_final",
+    "worker",
+    "lead_code_reviewer",
+    "strategy_critic",
+    "crossover",
+    "crossover_compatibility",
+})
+
+
+def _assert_current_strict_alignment_in_final_provider_prompt(
+    provider_prompt,
+    *,
+    role_id,
+):
+    """Check the sealed provider prefix, not a template file in isolation."""
+
+    normalized = " ".join(str(provider_prompt).lower().split())
+    required = (
+        "192/256/96 flop/turn/river sampling",
+        "800 top-level evaluator-call cap",
+        "imported, closure, default, or value aliases",
+        "`itertools.combinations`",
+        "nested deck-pair sweeps",
+        "full `c(45,2)` remaining-opponent enumeration is refinement-only",
+        "`name` handshake has launch initiated before preflop",
+        "it is not readiness proof",
+        "the first decision clock includes unfinished policy import",
+        "never claim ready",
+        "200 ms baseline target",
+        "250 ms formal ceiling",
+        "schema-2 composite runtime identity",
+        "`national_bot.py` and `precompute.py`",
+        "`combined_digest`",
+        "precompute-only drift is stale",
+        "refresh quality; do not reuse precommit or certify",
+        "before becoming a durable job",
+        "a stale admission",
+        "exact live task owner",
+        "archive/legacy source, ratings, replays, lessons, experience, and mutable live result files are quarantined",
+        "historical_memory_authority\": \"zero",
+        "archive/legacy content",
+    )
+    for token in required:
+        assert token in normalized, (role_id, token)
+
+    # These are retired prompt-era values, not merely words that happen to be
+    # rejected by a template.  If one reappears in the actual dispatch bytes,
+    # a provider could be instructed with an obsolete runtime contract.
+    for retired in (
+        "contract36",
+        "compact-river-prior",
+        "ready-before-preflop",
+    ):
+        assert retired not in normalized, (role_id, retired)
+
+
 def test_all_subagent_roles_reach_provider_with_independent_receipts(monkeypatch, tmp_path):
     import llm_availability_store
     import llm_query
@@ -309,9 +368,86 @@ def test_all_subagent_roles_reach_provider_with_independent_receipts(monkeypatch
         assert options.tools == list(tools)
         assert options.mcp_servers == {}
         assert options.model == "sonnet"
+        if role_id in _CURRENT_STRICT_ALIGNMENT_ROLE_IDS:
+            _assert_current_strict_alignment_in_final_provider_prompt(
+                provider_prompt,
+                role_id=role_id,
+            )
 
     starts = [fields for kind, fields in events if kind == "pipeline.llm_role_start"]
     assert [item["role_contract_id"] for item in starts] == [row[1] for row in CASES]
+
+
+def test_orchestrator_final_descriptor_binds_current_strict_alignment_overlay():
+    """The Orchestrator bypasses run_claude_query but binds the same final suffix."""
+
+    import llm_query
+    import orchestrator
+    from tools import evolution_server
+
+    rendered = llm_query.render_llm_prompt(
+        "Orchestrator",
+        producer=orchestrator._render_orchestrator_provider_prompt,
+        renderer_inputs={
+            "context": "CHECKPOINT-BOUND, TYPED CONTEXT ONLY",
+            "dry_run": False,
+        },
+        mcp_servers={"evolution": evolution_server},
+    )
+    descriptor, contract = llm_query.bind_llm_role_provider_prompt(
+        rendered,
+        "Orchestrator",
+        tools=[],
+        provider_path="orchestrator_sdk",
+        mcp_servers={"evolution": evolution_server},
+        model="sonnet",
+    )
+
+    assert contract.role_id == "orchestrator"
+    _assert_current_strict_alignment_in_final_provider_prompt(
+        descriptor,
+        role_id="orchestrator",
+    )
+
+
+def test_current_alignment_renderers_reject_unbound_archive_history_input():
+    """Archive material has no free-form renderer ingress, even before dispatch."""
+
+    import llm_query
+
+    for role, role_id, _tools, module_name, producer_name, *_rest in CASES:
+        if role_id not in _CURRENT_STRICT_ALIGNMENT_ROLE_IDS:
+            continue
+        inputs = dict(_renderer_inputs(role_id, "SAFE_TYPED_INPUT"))
+        inputs["archive_history"] = "ARCHIVE_HISTORY_POISON"
+        producer = getattr(importlib.import_module(module_name), producer_name)
+        with pytest.raises(
+            llm_query.LLMRoleContractError,
+            match="production renderer failed",
+        ):
+            llm_query.render_llm_prompt(
+                role,
+                producer=producer,
+                renderer_inputs=inputs,
+            )
+
+    import orchestrator
+    from tools import evolution_server
+
+    with pytest.raises(
+        llm_query.LLMRoleContractError,
+        match="production renderer failed",
+    ):
+        llm_query.render_llm_prompt(
+            "Orchestrator",
+            producer=orchestrator._render_orchestrator_provider_prompt,
+            renderer_inputs={
+                "context": "SAFE_TYPED_CONTEXT",
+                "dry_run": False,
+                "archive_history": "ARCHIVE_HISTORY_POISON",
+            },
+            mcp_servers={"evolution": evolution_server},
+        )
 
 
 def _combined_rendered(text="prompt"):

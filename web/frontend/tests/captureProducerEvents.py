@@ -30,10 +30,12 @@ def _drain(queue) -> dict[str, object]:
 
 
 def _evolution_payloads(temp_root: Path) -> dict[str, object]:
+    import epoch_authority
     import event_bus
     import web_ui as web_ui_module
     from logging_config import SSEHandler
     from orchestrator_cost_policy import GenerationCostPolicy, GenerationCostScope
+    from server.state import app_state
     from system_log import set_ui
     from web_ui import EventBroadcaster, WebUI
 
@@ -44,6 +46,30 @@ def _evolution_payloads(temp_root: Path) -> dict[str, object]:
     _, queue = broadcaster.add_client("a" * 64)
     ui = WebUI(broadcaster)
     set_ui(ui)
+
+    # The production status schema is intentionally accepted only when the
+    # producer can bind it to one canonical active checkpoint.  This capture
+    # exercises the positive path rather than treating an inactive WebUI
+    # process-local message as a valid browser event.
+    epoch_authority.strict_epoch_projection = lambda: {
+        "evaluation_epoch": "national_tcp_policy_v1",
+        "state": "fresh_bootstrap_ready",
+        "initialized": True,
+        "active_generation": {
+            "run_id": "143#1",
+            "workflow_run_id": "generation:143:producer",
+            "checkpoint_revision": 7,
+            "stage": "master_planning",
+        },
+    }
+    app_state.task_snapshot = lambda: {
+        "present": True,
+        "done": False,
+        "shutdown_requested": False,
+        "status_eligible": True,
+        "owner_id": "e" * 32,
+        "lifecycle_revision": 7,
+    }
 
     ui.log_history("producer history", "success")
     ui.set_status("producer status", True)

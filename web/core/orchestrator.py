@@ -90,7 +90,77 @@ ORCH_RECOVERY_BLOCKED_COST = -99994.0
 ORCH_GENERATION_ABANDONED_COST = -99993.0
 ORCH_OPERATOR_ACTION_REQUIRED_COST = -99992.0
 ORCH_ACCOUNTING_BLOCKED_COST = -99991.0
+ORCH_CONSECUTIVE_ABANDON_LIMIT_COST = -99990.0
+MAX_CONSECUTIVE_CANONICAL_ABANDONS = 3
 _STARTUP_RECOVERY_UNSET = object()
+
+
+def _canonical_abandon_proof_identity(proof):
+    """Return the exact identity carried by a previously re-proven abandon.
+
+    A bare ``ORCH_GENERATION_ABANDONED_COST`` is deliberately not authority to
+    prepare another workflow.  The producer path must have run
+    ``validate_completed_abandon_handoff`` and carry its compact proof forward
+    to the outer-loop handoff.  Keep the structural check local as a second
+    boundary before a scheduler decision or a UI event consumes the proof.
+    """
+
+    if not isinstance(proof, dict):
+        return None
+
+    def digest(value):
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value)
+        )
+
+    identity = proof.get("checkpoint_identity")
+    if (
+        not digest(proof.get("transaction_id"))
+        or not digest(proof.get("abandon_receipt_digest"))
+        or not digest(proof.get("finalize_receipt_digest"))
+        or not isinstance(identity, dict)
+        or not digest(identity.get("digest"))
+        or not isinstance(identity.get("workflow_run_id"), str)
+        or not identity["workflow_run_id"].strip()
+        or type(identity.get("next_v")) is not int
+        or type(identity.get("source_v")) is not int
+        or type(identity.get("checkpoint_revision")) is not int
+        or identity["checkpoint_revision"] < 1
+        or not isinstance(identity.get("stage"), str)
+        or not identity["stage"].strip()
+    ):
+        return None
+    return dict(identity)
+
+
+def _remember_verified_canonical_abandon(gen_ctx, proof) -> bool:
+    """Bind an already-validated terminal proof to this in-memory cycle only."""
+
+    identity = _canonical_abandon_proof_identity(proof)
+    if identity is None or gen_ctx is None:
+        return False
+    if (
+        getattr(gen_ctx, "next_v", None) != identity["next_v"]
+        or getattr(gen_ctx, "source_v", None) != identity["source_v"]
+    ):
+        return False
+    # Serialize before retaining it so an SDK/result object cannot mutate the
+    # event proof after the strict handoff validator returned.
+    try:
+        retained = json.loads(json.dumps(proof, sort_keys=True))
+    except (TypeError, ValueError):
+        return False
+    setattr(gen_ctx, "_verified_canonical_abandon_proof", retained)
+    return True
+
+
+def _remembered_canonical_abandon_proof(gen_ctx):
+    """Read only a complete proof remembered by this exact generation cycle."""
+
+    proof = getattr(gen_ctx, "_verified_canonical_abandon_proof", None)
+    return proof if _canonical_abandon_proof_identity(proof) is not None else None
 
 # Infra-only blocker reasons used by the timed_out handler to distinguish
 # scheduler/daemon failures from real bot regressions.
@@ -476,6 +546,9 @@ def _render_orchestrator_provider_prompt(inputs):
             "the status already supplied in the context; live rating, H2H, match "
             "history, and bot-stat query tools are intentionally unavailable."
         )
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    prompt += "\n\n" + current_strict_runtime_prompt_overlay()
     return LLMRenderedMaterial(
         text=prompt,
         evidence_kind="checkpoint_context_projection",
@@ -3197,10 +3270,21 @@ async def _run_one_cycle(
                                     validate_completed_abandon_handoff,
                                 )
 
-                                validate_completed_abandon_handoff(
+                                terminal_proof = validate_completed_abandon_handoff(
                                     ckpt,
                                     terminal_result,
                                 )
+                                if (
+                                    gen_ctx is not None
+                                    and not _remember_verified_canonical_abandon(
+                                        gen_ctx,
+                                        terminal_proof,
+                                    )
+                                ):
+                                    raise RuntimeError(
+                                        "cycle_timeout_master_abandon_proof_"
+                                        "context_mismatch"
+                                    )
                                 return ORCH_GENERATION_ABANDONED_COST
                             except Exception as _ae:
                                 log.error(
@@ -3458,6 +3542,18 @@ async def _run_one_cycle(
             if e.handoff.get("recovery_blocked") is True:
                 return ORCH_RECOVERY_BLOCKED_COST
             if e.handoff.get("scheduler_handoff_required") is True:
+                if (
+                    gen_ctx is not None
+                    and not _remember_verified_canonical_abandon(
+                        gen_ctx,
+                        e.handoff.get("terminal_proof"),
+                    )
+                ):
+                    log.error(
+                        "Canonical terminal handoff lacked an exact proof "
+                        "bound to the active generation context."
+                    )
+                    return ORCH_RECOVERY_BLOCKED_COST
                 return ORCH_GENERATION_ABANDONED_COST
             if e.handoff.get("operator_action_required") is True:
                 return ORCH_OPERATOR_ACTION_REQUIRED_COST
@@ -4354,6 +4450,7 @@ async def _advance_deterministic_recovery(
     )
     action = classified.get("action")
     terminal_action = action
+    terminal_proof = None
     if action == "publication_handoff_completed":
         cleanup_ctx = gen_ctx or _generation_context_from_checkpoint(
             (recovery or {}).get("checkpoint") or {},
@@ -4382,22 +4479,23 @@ async def _advance_deterministic_recovery(
             }
             terminal_action = "post_generation_cleanup_failed"
     elif action == "generation_abandoned":
+        terminal_proof = classified.get("terminal_proof")
         try:
             log_system_event(
                 "orchestrator.deterministic_generation_abandoned",
                 "warn",
                 "Deterministic route reached a verified abandon boundary",
-                classified.get("terminal_proof") or {},
+                terminal_proof or {},
             )
         except Exception:
             pass
-        deactivate_generation_cost_scope()
         classified = None
     return {
         "routed": True,
         "recovery": classified,
         "outcome": outcome,
         "terminal_action": terminal_action,
+        "terminal_proof": terminal_proof,
     }
 
 
@@ -5103,6 +5201,251 @@ async def orchestrator_loop(
         else _watchdog_coroutine(ui, shutdown_mgr, check_interval=60)
     )
     terminal_outcome = 0.0
+    consecutive_canonical_abandons = 0
+    canonical_abandon_target = None
+
+    def _reset_canonical_abandon_streak():
+        nonlocal consecutive_canonical_abandons, canonical_abandon_target
+        consecutive_canonical_abandons = 0
+        canonical_abandon_target = None
+
+    def _record_verified_canonical_abandon(
+        *,
+        checkpoint=None,
+        terminal_proof=None,
+        source="provider_cycle",
+        gen_ctx=None,
+    ):
+        """Record one terminal abandon and stop repeated same-target churn."""
+
+        nonlocal consecutive_canonical_abandons
+        nonlocal canonical_abandon_target
+        nonlocal terminal_outcome
+
+        checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+        terminal_proof = (
+            terminal_proof if isinstance(terminal_proof, dict) else {}
+        )
+        proof_identity = _canonical_abandon_proof_identity(terminal_proof)
+        if proof_identity is None:
+            terminal_outcome = ORCH_RECOVERY_BLOCKED_COST
+            msg = (
+                "Refusing successor preparation because a canonical-abandon "
+                "sentinel arrived without an exact finalized transaction, "
+                "ledger, and checkpoint proof."
+            )
+            if ui:
+                ui.log_history(msg, "error")
+                ui.set_status(
+                    "Stopped: canonical abandon proof unavailable",
+                    is_working=False,
+                )
+            log.error(msg)
+            log_system_event(
+                "orchestrator.canonical_abandon_proof_blocked_stop",
+                "error",
+                msg,
+                {
+                    "source": source,
+                    "gen_count": gen_count,
+                    "checkpoint_present": bool(checkpoint),
+                    "gen_ctx_next_v": getattr(gen_ctx, "next_v", None),
+                    "gen_ctx_source_v": getattr(gen_ctx, "source_v", None),
+                },
+            )
+            return True
+
+        next_v = proof_identity["next_v"]
+        source_v = proof_identity["source_v"]
+        workflow_run_id = proof_identity["workflow_run_id"]
+        checkpoint_matches_proof = (
+            not checkpoint
+            or (
+                checkpoint.get("workflow_run_id") == workflow_run_id
+                and checkpoint.get("next_v") == next_v
+                and checkpoint.get("source_v") == source_v
+                and type(checkpoint.get("checkpoint_revision")) is int
+                and checkpoint["checkpoint_revision"]
+                <= proof_identity["checkpoint_revision"]
+            )
+        )
+        context_matches_proof = (
+            gen_ctx is None
+            or (
+                getattr(gen_ctx, "next_v", None) == next_v
+                and getattr(gen_ctx, "source_v", None) == source_v
+            )
+        )
+        if (
+            not checkpoint_matches_proof
+            or not context_matches_proof
+            or (not checkpoint and gen_ctx is None)
+        ):
+            terminal_outcome = ORCH_RECOVERY_BLOCKED_COST
+            msg = (
+                "Refusing successor preparation because canonical-abandon "
+                "proof identity disagrees with the active checkpoint or "
+                "generation context."
+            )
+            if ui:
+                ui.log_history(msg, "error")
+                ui.set_status(
+                    "Stopped: canonical abandon identity mismatch",
+                    is_working=False,
+                )
+            log.error(msg)
+            log_system_event(
+                "orchestrator.canonical_abandon_proof_blocked_stop",
+                "error",
+                msg,
+                {
+                    "source": source,
+                    "gen_count": gen_count,
+                    "proof_identity": proof_identity,
+                    "checkpoint": {
+                        key: checkpoint.get(key)
+                        for key in (
+                            "workflow_run_id",
+                            "next_v",
+                            "source_v",
+                            "checkpoint_revision",
+                        )
+                    },
+                    "gen_ctx_next_v": getattr(gen_ctx, "next_v", None),
+                    "gen_ctx_source_v": getattr(gen_ctx, "source_v", None),
+                },
+            )
+            return True
+
+        target = (next_v, source_v)
+        if canonical_abandon_target == target:
+            consecutive_canonical_abandons += 1
+        else:
+            canonical_abandon_target = target
+            consecutive_canonical_abandons = 1
+        payload = {
+            "gen_count": gen_count,
+            "source": source,
+            "next_v": next_v,
+            "source_v": source_v,
+            "workflow_run_id": workflow_run_id,
+            "checkpoint_revision": proof_identity["checkpoint_revision"],
+            "checkpoint_stage": proof_identity["stage"],
+            "consecutive_canonical_abandons": (
+                consecutive_canonical_abandons
+            ),
+            "limit": MAX_CONSECUTIVE_CANONICAL_ABANDONS,
+            "remaining": max(
+                0,
+                MAX_CONSECUTIVE_CANONICAL_ABANDONS
+                - consecutive_canonical_abandons,
+            ),
+        }
+        payload.update({
+            "abandon_receipt_digest": terminal_proof[
+                "abandon_receipt_digest"
+            ],
+            "abandon_transaction_id": terminal_proof["transaction_id"],
+            "finalize_receipt_digest": terminal_proof[
+                "finalize_receipt_digest"
+            ],
+        })
+        deactivate_generation_cost_scope()
+        if (
+            consecutive_canonical_abandons
+            >= MAX_CONSECUTIVE_CANONICAL_ABANDONS
+        ):
+            terminal_outcome = ORCH_CONSECUTIVE_ABANDON_LIMIT_COST
+            payload["restart_required"] = True
+            msg = (
+                "Evolution stopped after "
+                f"{consecutive_canonical_abandons} verified canonical "
+                f"abandons for the same target v{next_v}; no successor "
+                "workflow was prepared. Inspect the shared contract and "
+                "explicitly restart after correction or review."
+            )
+            if ui:
+                ui.log_history(msg, "error")
+                ui.set_status(
+                    "Stopped: consecutive canonical abandon limit",
+                    is_working=False,
+                )
+            log.error(msg)
+            log_system_event(
+                "orchestrator.consecutive_canonical_abandon_limit_stop",
+                "error",
+                msg,
+                payload,
+            )
+            return True
+        msg = (
+            "Generation reached a verified canonical abandon boundary "
+            f"({consecutive_canonical_abandons}/"
+            f"{MAX_CONSECUTIVE_CANONICAL_ABANDONS} for target v{next_v}); "
+            "the continuous outer scheduler may prepare one fresh successor "
+            "workflow."
+        )
+        if ui:
+            ui.log_history(msg, "warn")
+        log.warning(msg)
+        log_system_event(
+            "orchestrator.generation_abandoned_handoff",
+            "warn",
+            msg,
+            payload,
+        )
+        return False
+
+    def _publication_accounting_allows_successor():
+        """Reset the abandon streak only after durable accounting re-proves."""
+
+        nonlocal terminal_outcome
+        try:
+            cost_status = generation_cost_status()
+        except Exception as exc:
+            cost_status = {
+                "active": True,
+                "accounting_ok": False,
+                "accounting_errors": [
+                    "generation_cost_status_unavailable:"
+                    f"{type(exc).__name__}"
+                ],
+            }
+        if (
+            cost_status.get("active") is True
+            and cost_status.get("accounting_ok") is not True
+        ):
+            terminal_outcome = ORCH_ACCOUNTING_BLOCKED_COST
+            msg = (
+                "Post-publication cleanup completed, but durable generation-"
+                "cost accounting is invalid; refusing to prepare a successor "
+                "workflow."
+            )
+            if ui:
+                ui.log_history(msg, "error")
+                ui.set_status(
+                    "Stopped: generation accounting invalid",
+                    is_working=False,
+                )
+            log.error(
+                "%s Errors: %s",
+                msg,
+                cost_status.get("accounting_errors"),
+            )
+            log_system_event(
+                "orchestrator.accounting_blocked_stop",
+                "error",
+                msg,
+                {
+                    "accounting_errors": cost_status.get(
+                        "accounting_errors"
+                    ),
+                    "generation_id": cost_status.get("generation_id"),
+                },
+            )
+            return False
+        _reset_canonical_abandon_streak()
+        return True
 
     try:
         while True:
@@ -5209,55 +5552,24 @@ async def orchestrator_loop(
                     **route_log_kwargs,
                 )
                 if advanced["routed"]:
+                    if advanced["terminal_action"] == "generation_abandoned":
+                        stopped = _record_verified_canonical_abandon(
+                            checkpoint=(recovery or {}).get("checkpoint"),
+                            terminal_proof=(
+                                advanced.get("terminal_proof") or {}
+                            ),
+                            source="deterministic_recovery",
+                        )
+                        recovery = advanced["recovery"]
+                        if stopped:
+                            break
+                        await asyncio.sleep(0)
+                        continue
                     if (
                         advanced["terminal_action"]
                         == "publication_handoff_completed"
                     ):
-                        try:
-                            cost_status = generation_cost_status()
-                        except Exception as exc:
-                            cost_status = {
-                                "active": True,
-                                "accounting_ok": False,
-                                "accounting_errors": [
-                                    "generation_cost_status_unavailable:"
-                                    f"{type(exc).__name__}"
-                                ],
-                            }
-                        if (
-                            cost_status.get("active") is True
-                            and cost_status.get("accounting_ok") is not True
-                        ):
-                            terminal_outcome = ORCH_ACCOUNTING_BLOCKED_COST
-                            msg = (
-                                "Post-publication cleanup completed, but durable "
-                                "generation-cost accounting is invalid; refusing "
-                                "to prepare a successor workflow."
-                            )
-                            if ui:
-                                ui.log_history(msg, "error")
-                                ui.set_status(
-                                    "Stopped: generation accounting invalid",
-                                    is_working=False,
-                                )
-                            log.error(
-                                "%s Errors: %s",
-                                msg,
-                                cost_status.get("accounting_errors"),
-                            )
-                            log_system_event(
-                                "orchestrator.accounting_blocked_stop",
-                                "error",
-                                msg,
-                                {
-                                    "accounting_errors": cost_status.get(
-                                        "accounting_errors"
-                                    ),
-                                    "generation_id": cost_status.get(
-                                        "generation_id"
-                                    ),
-                                },
-                            )
+                        if not _publication_accounting_allows_successor():
                             break
                     recovery = advanced["recovery"]
                     await asyncio.sleep(1)
@@ -5331,6 +5643,28 @@ async def orchestrator_loop(
                         gen_count=gen_count,
                     )
                     if advanced["routed"]:
+                        if advanced["terminal_action"] == "generation_abandoned":
+                            stopped = _record_verified_canonical_abandon(
+                                checkpoint=(
+                                    selected_recovery.get("checkpoint") or {}
+                                ),
+                                terminal_proof=(
+                                    advanced.get("terminal_proof") or {}
+                                ),
+                                source="selected_deterministic_recovery",
+                                gen_ctx=gen_ctx,
+                            )
+                            recovery = advanced["recovery"]
+                            if stopped:
+                                break
+                            await asyncio.sleep(0)
+                            continue
+                        if (
+                            advanced["terminal_action"]
+                            == "publication_handoff_completed"
+                            and not _publication_accounting_allows_successor()
+                        ):
+                            break
                         recovery = advanced["recovery"]
                         await asyncio.sleep(1)
                         continue
@@ -5397,22 +5731,16 @@ async def orchestrator_loop(
                 continue
 
             if cost == ORCH_GENERATION_ABANDONED_COST:
-                msg = (
-                    "Generation reached a verified canonical abandon boundary; "
-                    "the continuous outer scheduler may prepare one fresh "
-                    "successor workflow on its next iteration."
-                )
-                if ui:
-                    ui.log_history(msg, "warn")
-                log.warning(msg)
-                log_system_event(
-                    "orchestrator.generation_abandoned_handoff",
-                    "warn",
-                    msg,
-                    {"gen_count": gen_count},
+                stopped = _record_verified_canonical_abandon(
+                    source="provider_cycle",
+                    gen_ctx=gen_ctx,
+                    terminal_proof=(
+                        _remembered_canonical_abandon_proof(gen_ctx) or {}
+                    ),
                 )
                 recovery = None
-                deactivate_generation_cost_scope()
+                if stopped:
+                    break
                 await asyncio.sleep(0)
                 continue
 
@@ -5486,6 +5814,31 @@ async def orchestrator_loop(
                             gen_count=gen_count,
                         )
                         if advanced["routed"]:
+                            if (
+                                advanced["terminal_action"]
+                                == "generation_abandoned"
+                            ):
+                                stopped = _record_verified_canonical_abandon(
+                                    checkpoint=(recovery or {}).get(
+                                        "checkpoint"
+                                    ),
+                                    terminal_proof=(
+                                        advanced.get("terminal_proof") or {}
+                                    ),
+                                    source="actionable_deterministic_recovery",
+                                    gen_ctx=gen_ctx,
+                                )
+                                recovery = advanced["recovery"]
+                                if stopped:
+                                    break
+                                await asyncio.sleep(0)
+                                continue
+                            if (
+                                advanced["terminal_action"]
+                                == "publication_handoff_completed"
+                                and not _publication_accounting_allows_successor()
+                            ):
+                                break
                             recovery = advanced["recovery"]
                             await asyncio.sleep(1)
                         else:
@@ -5582,6 +5935,7 @@ async def orchestrator_loop(
                 # Reset per-generation cost tracker for next cycle
                 if ui:
                     ui.reset_gen_cost()
+                _reset_canonical_abandon_streak()
                 deactivate_generation_cost_scope()
 
             # Auth error fast-fail (also catches 429 via negative cost from _stream_response)
@@ -5925,6 +6279,16 @@ async def _run_one_generation_cli_impl(
         if advanced["routed"]:
             recovery = advanced["recovery"]
             if advanced["terminal_action"] == "generation_abandoned":
+                if not _remember_verified_canonical_abandon(
+                    gen_ctx,
+                    advanced.get("terminal_proof"),
+                ):
+                    log.error(
+                        "One-gen deterministic abandon lacked a proof bound "
+                        "to its active generation context."
+                    )
+                    return ORCH_RECOVERY_BLOCKED_COST
+                deactivate_generation_cost_scope()
                 return ORCH_GENERATION_ABANDONED_COST
             if advanced["terminal_action"] == "publication_handoff_completed":
                 cost_status = generation_cost_status()
@@ -5957,9 +6321,17 @@ async def _run_one_generation_cli_impl(
             shutdown_mgr=shutdown_mgr,
             _cost_policy=cost_policy,
         )
+        if cost == ORCH_GENERATION_ABANDONED_COST:
+            if _remembered_canonical_abandon_proof(gen_ctx) is None:
+                log.error(
+                    "One-gen provider abandon lacked a proof bound to its "
+                    "active generation context."
+                )
+                return ORCH_RECOVERY_BLOCKED_COST
+            deactivate_generation_cost_scope()
+            return cost
         if cost in {
             ORCH_RECOVERY_BLOCKED_COST,
-            ORCH_GENERATION_ABANDONED_COST,
             ORCH_OPERATOR_ACTION_REQUIRED_COST,
             ORCH_ACCOUNTING_BLOCKED_COST,
             ORCH_OPERATOR_COST_LIMIT_COST,
@@ -6061,6 +6433,8 @@ def _one_generation_exit_code(cost) -> int:
         return 4
     if cost == ORCH_ACCOUNTING_BLOCKED_COST:
         return 6
+    if cost == ORCH_CONSECUTIVE_ABANDON_LIMIT_COST:
+        return 7
     return 5
 
 
@@ -6074,6 +6448,7 @@ def _continuous_exit_code(outcome) -> int:
         ORCH_OPERATOR_ACTION_REQUIRED_COST,
         ORCH_RECOVERY_BLOCKED_COST,
         ORCH_ACCOUNTING_BLOCKED_COST,
+        ORCH_CONSECUTIVE_ABANDON_LIMIT_COST,
         ORCH_OPERATOR_COST_LIMIT_COST,
         ORCH_LLM_AVAILABILITY_BLOCKED_COST,
     }:

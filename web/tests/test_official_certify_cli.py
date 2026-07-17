@@ -67,6 +67,15 @@ def test_cli_fails_without_eligible_opponent(monkeypatch, capsys):
         "reason": "no_official_eligible_opponent",
         "considered": [],
     })
+    monkeypatch.setattr(
+        module,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: {
+            "valid": True,
+            "issues": [],
+            "admission": {"admission_digest": "a" * 64},
+        },
+    )
 
     exit_code = module.main(["full", "bots/national_v143"])
 
@@ -249,6 +258,15 @@ def test_cli_returns_nonzero_for_terminal_job_infrastructure_failure(monkeypatch
         },
     })
     monkeypatch.setattr(module, "build_spec", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        module,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: {
+            "valid": True,
+            "issues": [],
+            "admission": {"admission_digest": "a" * 64},
+        },
+    )
     monkeypatch.setattr(module, "start_or_poll_job", lambda *_a, **_k: {
         "state": "failed",
         "pending": False,
@@ -256,6 +274,81 @@ def test_cli_returns_nonzero_for_terminal_job_infrastructure_failure(monkeypatch
     })
 
     assert module.main(["full", "bots/national_v143"]) == 2
+
+
+def test_cli_full_blocks_before_selection_when_dynamic_quality_admission_is_invalid(
+    monkeypatch, capsys
+):
+    module = _module()
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: {
+            "valid": False,
+            "issues": ["official_formal_quality_gate_ledger_missing"],
+            "admission": None,
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "select_official_opponent",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("selection must not start without a current quality admission")
+        ),
+    )
+
+    exit_code = module.main(["full", "bots/national_v144"])
+
+    assert exit_code == 2
+    output = capsys.readouterr().out
+    assert "formal-quality-admission-blocked" in output
+    assert "official_formal_quality_gate_ledger_missing" in output
+
+
+def test_cli_full_binds_quality_admission_into_durable_spec(monkeypatch):
+    module = _module()
+    admission = {"admission_digest": "b" * 64, "candidate_hash": "c" * 64}
+    seen = {}
+    monkeypatch.setattr(
+        module,
+        "ledger_integrity",
+        lambda: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+    )
+    monkeypatch.setattr(
+        module,
+        "build_formal_quality_admission",
+        lambda *_a, **_k: {"valid": True, "issues": [], "admission": admission},
+    )
+    monkeypatch.setattr(
+        module,
+        "select_official_opponent",
+        lambda *_a, **_k: {
+            "selected": True,
+            "candidate": "bots/national_v144",
+            "opponent": {"path": "bots/national_v143", "eligible": True},
+        },
+    )
+    monkeypatch.setattr(
+        module,
+        "build_spec",
+        lambda mode, candidate, **kwargs: seen.update(
+            {"mode": mode, "candidate": candidate, **kwargs}
+        ) or object(),
+    )
+    monkeypatch.setattr(
+        module,
+        "start_or_poll_job",
+        lambda *_a, **_k: {"state": "failed", "pending": False},
+    )
+
+    assert module.main(["full", "bots/national_v144"]) == 2
+    assert seen["mode"] == "full"
+    assert seen["quality_admission"] == admission
 
 
 def test_cli_first_strict_requires_explicit_one_time_acknowledgement(monkeypatch, capsys):

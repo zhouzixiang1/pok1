@@ -30,7 +30,12 @@ checkpoint, result, log, or certificate files are never copied by hand.
 6. Run:
    - `python -m pytest sever/tests -q`;
    - `cd web && python -m pytest tests -q`;
-   - `cd web/frontend && npm test && npm run lint && npm run build`;
+   - `cd web/frontend && PYTHON=/path/to/project-python npm test && npm run lint && npm run build`.
+     The cross-language SSE producer test imports the live Web producers, so
+     `PYTHON` must be an interpreter that imports the project Web dependencies
+     (for example `fastapi`); an app-server shell with no `python`, or a bare
+     `python3` without those dependencies, is an environment failure and not a
+     valid frontend result;
    - enumerate active Python with `rg --files sever web scripts -g '*.py'
      -g '!**/archive/**' -g '!web/core/results/**'`, then pass those exact
      files to `python -m py_compile` (never scan runtime results or archive);
@@ -38,10 +43,132 @@ checkpoint, result, log, or certificate files are never copied by hand.
 7. Run host capability/official doctor checks separately. `probe_infra` is
    neither a bot failure nor a pass.
 8. Commit, push, and merge to `origin/main`.
-9. At a stopped safe point, fast-forward `.evolution_pok` from `origin/main`.
-10. Run canonical checkpoint recovery diagnostics. If the active-stage
-    evaluation contract changed, use the governed abandon/re-prepare route;
-    never delete checkpoint files.
+9. If the stopped runtime is checkpoint-free and its active-stage evaluation
+   contract did **not** change, fast-forward `.evolution_pok` only from merged
+   `origin/main`, then run canonical checkpoint recovery diagnostics.
+10. If an active checkpoint's evaluation contract changed, do **not**
+    fast-forward first. Keep `.evolution_pok` on its recorded old HEAD, run the
+    exact-CAS governed abandon for that checkpoint, and validate the finalized
+    handoff, quarantine and cleared-checkpoint proof. Only then fast-forward
+    through merged `origin/main` and run the diagnostics. Never delete or edit
+    a checkpoint/candidate to make this path appear clean.
+
+## Current Contract-38 source freeze gate
+
+Before the stopped-runtime reconciliation route is used, require the **live
+source** Contract 38 identities, not any older Contract-37 text or cached
+receipt:
+
+- strict-v1 policy `811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641`,
+  prepared-policy bytes `28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816`,
+  prepared artifact `ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278`,
+  and output artifact `39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`;
+- system national runtime 10 / `ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366`
+  and system precompute
+  `8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627`;
+- first-strict control policy
+  `d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4`
+  and expected five-file artifact
+  `1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2`;
+- capability schema 5 / detector `national-policy-static-v4`, and probe
+  schema/orchestrator/worker/scenario `16/17/18/8`.
+
+The fixed `192/256/96` baseline, full river refinement only, and 800-call
+cap are hard gates.  The 200 ms native quality target is a stricter local
+admission target; it does not replace the formal 250 ms policy budget.  The
+raw `name` wire proves only that system-owned worker **launch is initiated**;
+it never proves an import-complete/ready worker, and the first decision retains
+its true socket-owner clock.  Quality, precommit reuse and final commit
+admission must bind the same schema-2 composite system runtime identity:
+`national_bot.py` **and** `precompute.py`, each with exact SHA-256 and size,
+plus their canonical `combined_digest`. A missing, malformed, stale, or
+precompute-only drifted identity fails closed; it may not reuse a cache or enter
+precommit, commit, or formal official admission.
+
+For normal strict full-v5 certification, structural admission is insufficient:
+the job manager recomputes the current quality/probe/runtime/artifact admission
+before a fresh request becomes durable, before a queued/retry job takes the
+official queue, and immediately before worker spawn. The claimed worker repeats
+the check before entering the runner, and the harness repeats it before EXE
+work. A stale fresh receipt creates neither request nor state; a stale queued
+or claimed-worker receipt becomes a terminal `quality_admission` failure and
+may not reserve a worker or be reclassified as infrastructure retry by commit.
+The explicit v143 bootstrap remains separate. At `official_certifying`, an
+ordinary resume — including ordinary HEAD drift — remains `commit_bot` only.
+The one dynamic route to `run_quality_gates` requires the complete exact
+checkpoint marker `official_full={outcome: quality_admission_blocked,
+failure_class: quality, quality_admission_refresh: true}`. It preserves the
+unchanged evaluation contract and exact checkpoint revision/stage/workflow CAS;
+a missing, partial, conflicting, or infrastructure-class marker remains on the
+ordinary poll route. The exception neither authorizes Worker rework nor an EXE
+retry, and it cannot reuse the old official job.
+
+Transient frontend status is also non-authoritative. It must carry the exact
+canonical checkpoint tuple **and** the live `AppState` task-owner token and
+monotonic lifecycle revision from emission through SSE replay, `/state`, the
+typed controller, and the page. Every task-owner lifecycle edge — including a
+direct `ShutdownManager.request_shutdown()` edge — emits the minimal
+`{present, done, shutdown_requested, status_eligible, owner_id,
+lifecycle_revision}` SSE invalidation projection. Replay is rechecked against
+the live owner and its revision, so replacement or shutdown clears the prior
+phrase without waiting for the five-second control-health poll. `/state` may
+return the same sampled `transient_status_task` projection, but it is only a
+lifecycle high-water/invalidation input. While connected, the page accepts
+human status text only from a current SSE `status` event; an HTTP phrase can
+never revive or replace text, even if its owner/revision matches. Lower
+revisions and equal-revision conflicts are rejected; a disconnected stream
+clears transient text. Missing, replaced, stopping, malformed, stale-revision,
+or mismatched owners are dropped; the page shows a neutral or explicit
+non-green stopping/degraded state rather than a prior “Master planning” phrase.
+When the backend cannot form a trustworthy task projection, it emits typed
+`task_authority_lost`, not a synthetic revision-zero or `R+1` owner event.
+HTTP null/malformed task data and malformed SSE `status`/`task_owner` frames
+clear transient text without advancing the lifecycle fence. The last verified
+projection remains available only to compare a later event: an exact valid
+same-`R` projection may restore authority, while a conflicting same-`R`
+projection stays rejected until the backend emits a genuinely newer revision.
+
+Models may identify a symptom or propose a falsifiable repair from frozen
+evidence, but only the deterministic gates and native receipts decide
+admission.  Run timing and protocol tests with representative concurrent host
+load; do not stop unrelated evaluation jobs or relax a gate to manufacture a
+clean-only pass. A behavior, ABI, protocol, gate, prompt, data, lifecycle, or
+test-harness change must update its focused and full test workflow, fixtures,
+positive/negative regression anchors, and operator commands in the same change
+batch. A skipped, weakened, or reclassified test needs a documented
+fail-closed replacement; it is not a green shortcut. Focused tests are
+insufficient to start or sync the runtime. Complete the full source gate set,
+manifest validation, review, commit, push and merge first. Then
+canonical-abandon the recorded stopped v38 checkpoint on its old HEAD by exact
+CAS, validate handoff/quarantine/checkpoint clearance, fast-forward only
+through merged `origin/main`, rerun all diagnostics, and start via the
+controlled launcher. Never hand-edit v143 or reuse v38 output.
+
+## Future research-to-canonical migration boundary
+
+The isolated A1/A2/B research line is not an active candidate pool and its
+source bytes, weights/assets, H2H, ratings, experience, tags, or certificates
+have zero authority in `national_tcp_policy_v1`. Its only admissible future
+input is an independently reviewed, behavior-level proposal after the research
+schedule has reached a valid terminal state.
+
+Future-main design must evaluate all three components independently rather than
+selecting one research bot:
+
+- **A1:** range/PBS plus value--strategy search closed loop;
+- **A2:** linear-CFR blueprint, abstraction, and off-tree resolve;
+- **B:** street-level online solving, neural-CFV proposal, dynamic action
+  control, opponent posterior, and match/tournament control.
+
+Each component is a separate, auditable migration proposal. It must be
+reimplemented from behavior rather than copied, materialized as a new strict
+five-file artifact, place any necessary data behind a system-owned immutable
+asset path, bind its own runtime identity/probes/gates, and first produce only
+zero-strength design evidence. Each then needs new native and official
+evaluation/certification. A later combined canonical Bot is itself another new
+five-file artifact with fresh identity, probes, gates, official certification,
+and immutable rating cycle; it inherits neither research evidence nor any
+component's certificate by implication.
 
 ## Stopped-runtime epoch reconciliation
 
@@ -54,9 +181,14 @@ validate. A lone, lightweight or wrong-commit ref is an interrupted or invalid
 effect and never allocates a label.
 
 The pre-authority runtime ledger in the stopped `.evolution_pok` checkout has
-zero allocation, strength and prompt authority. After this infrastructure is
-merged to `origin/main`, the runtime is stopped, and its clean tracked `main`
-is fast-forwarded to that commit, first run the read-only plan:
+zero allocation, strength and prompt authority. The following generic
+reconciliation CLI applies only after a checkpoint-free/no-active-contract-
+drift runtime is synchronized. It is **not** the transition for the recorded
+active v38 checkpoint: after the infrastructure is merged, v38 remains on its
+old HEAD for the exact-CAS abandon and finalized handoff/quarantine/checkpoint-
+clear validation described above; only then may that stopped checkout
+fast-forward. Once the runtime is current and checkpoint-free, first run the
+read-only plan:
 
 ```bash
 python scripts/reconcile_national_policy_epoch.py \
@@ -171,6 +303,15 @@ an explicit `tool_use_id`, `parent_tool_use_id`, or only when exactly one use is
 pending the bounded sole-pending association. Unknown, reused, swapped-owner,
 multi-pending, unsettled, EOF-pending, and read-only-owner results all block.
 
+Provider outcome classification is intentionally narrower than a generic retry:
+only a completed result rejected by deterministic schema/projection validation
+may take its single schema or distinctness repair. SDK, transport and provider
+exceptions are Master infrastructure failures; a confirmed parent cancellation
+is a control stop only when the exact child exit, all owned tasks and cleanup
+are proven. Every other cleanup condition remains a fail-closed infrastructure
+failure. Thus timeout/cleanup telemetry can never be rewritten as a semantic
+proposal rejection.
+
 When no stream-owned checkpoint ever existed and no post-publication handoff is
 active, the provider must end its stream. It has no MCP tool authorized to
 allocate a generation. The outer scheduler alone calls the non-MCP
@@ -192,8 +333,15 @@ stream. It may execute multiple fresh provider streams and deterministic routes
 for that workflow, then stops with a distinct outcome: successful publication
 and verified cleanup (exit 0), canonical abandon (2), operator action required
 (3), recovery blocked (4), generic startup/control failure (5), or accounting
-blocked (6). It never allocates the successor after abandon, and a failed or
-timed-out post-publication cleanup is recovery blocked rather than success.
+blocked (6), or the same-target consecutive canonical-abandon safety limit
+(7). A continuous run may prepare a successor after only the first two
+canonical abandons for the same exact `(next_v, source_v)`; every counted
+abandon must carry the finalized transaction/ledger/checkpoint proof. The third
+verified abandon stops before successor prepare. The process-local streak resets
+only after successful publication cleanup and durable accounting reproof; an
+explicit process restart begins a new observation but is not historical success.
+A failed or timed-out post-publication cleanup is recovery blocked rather than
+success.
 
 The Web control plane consumes the same boundary. Checkpoint revalidation or
 `checkpoint_recovery_diagnostics(...).recoverable=false` makes health
@@ -234,6 +382,11 @@ one launch fence before and after atomic ownership. Every setup exception,
 including cancellation-class exceptions, releases only that unattached owner.
 Unowned/failed lifespans cannot change a live owner's running/UI state or its
 AppState/process-wide LLM shutdown manager; both managers use exact owner CAS.
+The lifespan stops only an owner in its registered-owner set, but both an
+automatic lifespan launch and a later successful `/api/control/start` register
+their owner. Shutdown resolves the current manager through `AppState` rather
+than a startup-time captured manager, so the later registered owner is covered
+without granting an unregistered/foreign owner stop authority.
 
 `run_archivist` executes or resumes these eight ordered journal steps for the
 same version, source, workflow, checkpoint digest, publication id, commit,

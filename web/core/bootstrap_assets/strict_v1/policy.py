@@ -30,7 +30,8 @@ INITIAL_BATCH_SIZE = 32
 MAX_BATCH_SIZE = 512
 DEADLINE_GUARD_SECONDS = 0.002
 BASELINE_FLOP_SAMPLES = 192
-BASELINE_TURN_SAMPLES = 384
+BASELINE_TURN_SAMPLES = 256
+BASELINE_RIVER_SAMPLES = 96
 
 
 def _number(value, default=0.0):
@@ -733,42 +734,19 @@ def _draw_bonus(hole, board):
     return min(0.12, bonus)
 
 
-def _exact_weighted_river_equity(context, hole, board):
-    """Exhaust the fixed 990-combo river space inside the baseline budget."""
-
-    known = (*hole, *board)
-    if len(hole) != 2 or len(board) != 5 or len(set(known)) != 7:
-        return None
-    hero_rank = precompute.evaluate_seven(known)
-    posterior = _opponent_posterior(context)
-    weighted_points = 0.0
-    weight_total = 0.0
-    for opponent_hole in itertools.combinations(precompute.deck_without(known), 2):
-        opponent_rank = precompute.evaluate_seven((*opponent_hole, *board))
-        point = (
-            1.0 if hero_rank > opponent_rank
-            else 0.5 if hero_rank == opponent_rank
-            else 0.0
-        )
-        weight = _opponent_sample_weight(posterior, opponent_hole, board)
-        weighted_points += weight * point
-        weight_total += weight
-    if weight_total <= 0.0:
-        return None
-    return _bounded(weighted_points / weight_total, 0.0, 1.0, 0.5)
-
-
 def _bounded_postflop_baseline_equity(context, hole, board):
-    """Run a fixed deterministic flop/turn sample below the 250 ms baseline."""
+    """Run a fixed deterministic postflop sample below the baseline target."""
 
-    if len(hole) != 2 or len(board) not in {3, 4}:
+    if len(hole) != 2 or len(board) not in {3, 4, 5}:
         return None
     known = (*hole, *board)
     if len(set(known)) != len(known):
         return None
-    sample_count = (
-        BASELINE_TURN_SAMPLES if len(board) == 4 else BASELINE_FLOP_SAMPLES
-    )
+    sample_count = {
+        3: BASELINE_FLOP_SAMPLES,
+        4: BASELINE_TURN_SAMPLES,
+        5: BASELINE_RIVER_SAMPLES,
+    }[len(board)]
     deck = precompute.deck_without(known)
     board_needed = 5 - len(board)
     state = _simulation_seed(context, known) ^ 0xBA5E11E
@@ -843,10 +821,6 @@ def _baseline_equity(context):
     posterior_applied = False
     if not board:
         value = precompute.preflop_equity(hole[0], hole[1])
-    elif len(board) == 5:
-        exact = _exact_weighted_river_equity(context, hole, board)
-        value = 0.35 if exact is None else exact
-        posterior_applied = exact is not None
     else:
         sampled = _bounded_postflop_baseline_equity(context, hole, board)
         if sampled is not None:
@@ -1551,10 +1525,17 @@ def iter_decisions(context, baseline, deadline):
             break
         estimate = weighted_points / max(1e-9, weight_total)
         effective_samples = weight_total * weight_total / max(1e-9, weight_square_total)
-        confidence = effective_samples / (effective_samples + 192.0)
-        blended_equity = (
-            (1.0 - confidence) * baseline_equity + confidence * estimate
-        )
+        if river_exhausted:
+            # Once every legal opponent hole has been evaluated under the
+            # frozen posterior, this is no longer a sample estimate.  Publish
+            # the exact posterior result rather than retaining a prior blend.
+            confidence = 1.0
+            blended_equity = estimate
+        else:
+            confidence = effective_samples / (effective_samples + 192.0)
+            blended_equity = (
+                (1.0 - confidence) * baseline_equity + confidence * estimate
+            )
         decision, score_margin = _decision_from_equity(
             context,
             _bounded(blended_equity, 0.0, 1.0),

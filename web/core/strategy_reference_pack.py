@@ -30,6 +30,58 @@ UNAVAILABLE_PRIMARY_INNOVATIONS = {
 }
 
 
+def current_strict_runtime_prompt_overlay() -> str:
+    """Return the source-owned current runtime contract for provider prompts.
+
+    Prompt templates are role-specific and intentionally contain different
+    amounts of strategy detail.  This compact overlay is injected by every
+    decision-changing or reviewing role renderer so the final provider-visible
+    material has one unambiguous current baseline, timing, launch, and evidence
+    boundary.  It is policy guidance only: deterministic runtime and quality
+    gates remain the enforcement authority.
+    """
+
+    return (
+        "# SYSTEM-OWNED CURRENT STRICT RUNTIME ALIGNMENT\n"
+        "- On a valid board, the synchronous baseline is fixed deterministic "
+        "192/256/96 flop/turn/river sampling, with two direct "
+        "`precompute.evaluate_seven` calls per sample. The dynamic quality "
+        "gate fail-closes above its 800 top-level evaluator-call cap.\n"
+        "- The baseline uses the direct system evaluator only. Imported, "
+        "closure, default, or value aliases; `itertools.combinations`; and "
+        "nested deck-pair sweeps are rejected from that path. Full `C(45,2)` "
+        "remaining-opponent enumeration is refinement-only: bounded, checked "
+        "against a monotonic deadline, and permitted only after a legal baseline "
+        "has been published.\n"
+        "- The official `name` handshake has launch initiated before preflop and "
+        "starts the system-owned worker. It is not readiness proof: the first "
+        "decision clock includes unfinished policy import; never claim ready, "
+        "reset that clock, or waive its gate.\n"
+        "- Native TCP precommit uses a 200 ms baseline target. The 250 ms formal "
+        "ceiling remains independently binding; neither timing boundary is a "
+        "candidate strategy knob.\n"
+        "- Quality, precommit, commit, and formal certificate admission bind one "
+        "schema-2 composite runtime identity for system-owned `national_bot.py` "
+        "and `precompute.py`: exact SHA-256/size for both plus `combined_digest`. "
+        "Missing, malformed, mismatched, or precompute-only drift is stale and "
+        "fails closed: refresh quality; do not reuse precommit or certify.\n"
+        "- A normal full certification request must rebind its current admission before becoming "
+        "a durable job, before queued/retry queue claim, pre-Popen worker spawn, worker claim, "
+        "and EXE work. A stale admission is not an operator or model judgment call, is a "
+        "quality failure rather than infrastructure retry, and never authorizes a worker.\n"
+        "- Transient UI status is an authority-gated, non-authoritative display projection: "
+        "it must bind the exact live task owner and monotonic task lifecycle revision as well "
+        "as the checkpoint identity. A replaced, missing, stale-revision, or mismatched task "
+        "owner is dropped rather than shown as current work.\n"
+        "- Evidence and history are limited to the role's typed, content-bound, "
+        "current-generation inputs. Archive/legacy source, ratings, replays, "
+        "lessons, experience, and mutable live result files are quarantined and "
+        "cannot be prompt authority.\n"
+        "- Deterministic protocol, runtime, and quality gates enforce these facts; "
+        "a prompt role may report them but cannot relax them."
+    )
+
+
 @dataclass(frozen=True)
 class StrategyReferenceCard:
     """One bounded, implementation-ready strategy recipe.
@@ -121,8 +173,10 @@ _CARDS: tuple[StrategyReferenceCard, ...] = (
             "perform more trusted work and change at least one final socket-validated intent."
         ),
         bounded_work=(
-            "The baseline is legal before refinement; each refinement iterator has a "
-            "finite cap, monotonic deadline check, and system-observed work count."
+            "The current valid-board baseline is fixed deterministic 192/256/96 "
+            "flop/turn/river sampling with two direct evaluator calls per sample; "
+            "each refinement iterator has a finite cap, monotonic deadline check, "
+            "and system-observed work count."
         ),
         table_boundary=(
             "precompute.py is system-owned and read-only.  policy.py may consume only "
@@ -144,9 +198,11 @@ _CARDS: tuple[StrategyReferenceCard, ...] = (
         title="Anytime equity-to-EV refinement",
         primary_innovations=("sample_counted_candidate_batch",),
         purpose=(
-            "Start with the 169-class/precomputed made-hand prior, then use the exact "
-            "five/seven-card evaluator in deterministic finite batches to compare call, "
-            "fold, raise and jam EV under the real monotonic deadline."
+            "Use the 169-class fact preflop and the current fixed deterministic "
+            "192/256/96 postflop baseline schedule; use a compact made-hand prior "
+            "only for invalid/degraded fallback or refinement initialization. Then use "
+            "the exact five/seven-card evaluator in deterministic finite batches to "
+            "compare call, fold, raise and jam EV under the real monotonic deadline."
         ),
         required_decision_context_fields=(
             "cards.hole",
@@ -195,12 +251,19 @@ _CARDS: tuple[StrategyReferenceCard, ...] = (
             "value must change at least one final typed/wire intent."
         ),
         bounded_work=(
-            "Baseline does no simulation. Each batch and total sample count are capped, "
-            "with an inner absolute-monotonic deadline guard and latest-safe publication."
+            "Baseline publishes the current fixed 192/256/96 flop/turn/river schedule "
+            "(two direct evaluator calls per sample, dynamic cap 800), never a full "
+            "river enumeration. A compact prior is only invalid/degraded fallback or "
+            "refinement initialization. Each refinement batch and total sample count are "
+            "capped, with an inner absolute-monotonic deadline guard and latest-safe "
+            "publication. Full C(45,2) work is refinement-only."
         ),
         table_boundary=(
-            "Consume only system-owned precompute.py evaluator, 169-class prior, deck "
-            "and combination helpers; candidate code performs no file I/O or table build."
+            "Consume only direct system-owned precompute.py evaluator, 169-class prior, "
+            "and deterministic draw facts; no imported/closure/default evaluator alias, "
+            "no baseline combinations, and no nested deck-pair sweep. Combination helpers "
+            "are permitted only in deadline-checked refinement. Candidate code performs "
+            "no file I/O or table build."
         ),
         forbidden_axes=(
             "wall-clock-relative deadline guesses",

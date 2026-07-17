@@ -25,6 +25,8 @@ export interface GenerationCostPolicyState {
 export type EvolutionEventType =
   | "history"
   | "status"
+  | "task_owner"
+  | "task_authority_lost"
   | "io"
   | "clear_io"
   | "eval_table"
@@ -46,9 +48,199 @@ export interface IOLine {
   role?: string;
 }
 
+/**
+ * Process-local WebUI status is not checkpoint evidence.  A browser may show
+ * it only while this exact identity is still the canonical active generation.
+ */
+export interface EvolutionStatusIdentity {
+  run_id: string;
+  workflow_run_id: string;
+  checkpoint_revision: number;
+  stage: string;
+  task_owner_id: string;
+  /**
+   * Monotonic task-lifecycle fence.  A checkpoint tuple alone is not enough:
+   * an owner can enter shutdown without the checkpoint changing.
+   */
+  task_lifecycle_revision: number;
+}
+
+export interface EvolutionStatusEvent extends EvolutionStatusIdentity {
+  msg: string;
+  is_working: boolean;
+  emitted_at: number;
+}
+
+/** Explicit backend notice that no task projection can currently be verified. */
+export interface TaskAuthorityLostEvent {
+  reason: string;
+}
+
+export interface ActiveGenerationStatusIdentity {
+  run_id: string;
+  workflow_run_id: string | null;
+  checkpoint_revision: number;
+  stage: string;
+}
+
+export interface TransientStatusTask {
+  present: boolean;
+  done: boolean | null;
+  shutdown_requested: boolean;
+  /** True only while the backend permits process-local status text to render. */
+  status_eligible: boolean;
+  owner_id: string | null;
+  lifecycle_revision: number;
+}
+
+/**
+ * The browser must treat a malformed or missing task projection as an
+ * authority loss, rather than trying to infer whether a prior task is still
+ * live.  `lastVerified` is deliberately retained across that loss: an exact
+ * same-revision owner can restore authority, while a contradictory owner at
+ * that revision remains fail-closed until the backend advances the fence.
+ */
+export interface TransientStatusTaskAuthorityState {
+  current: TransientStatusTask | null;
+  lastVerified: TransientStatusTask | null;
+  highWaterRevision: number | null;
+  conflictRevision: number | null;
+  trusted: boolean;
+}
+
+export type TransientStatusTaskObservation = {
+  state: TransientStatusTaskAuthorityState;
+  accepted: boolean;
+  reason: "accepted" | "invalid" | "stale" | "conflict";
+};
+
+export function createTransientStatusTaskAuthorityState(): TransientStatusTaskAuthorityState {
+  return {
+    current: null,
+    lastVerified: null,
+    highWaterRevision: null,
+    conflictRevision: null,
+    trusted: false,
+  };
+}
+
+/** Clear render authority without inventing a newer lifecycle revision. */
+export function loseTransientStatusTaskAuthority(
+  state: TransientStatusTaskAuthorityState,
+): TransientStatusTaskAuthorityState {
+  return {
+    ...state,
+    current: null,
+    trusted: false,
+  };
+}
+
+const isTaskOwnerId = (value: unknown): value is string => (
+  typeof value === "string" && /^[0-9a-f]{32}$/.test(value)
+);
+
+export function evolutionStatusMatchesActiveGeneration(
+  status: EvolutionStatusEvent | null | undefined,
+  activeGeneration: ActiveGenerationStatusIdentity | null | undefined,
+  task: TransientStatusTask | null | undefined,
+): boolean {
+  return Boolean(
+    status
+    && activeGeneration
+    && task?.present === true
+    && task.done === false
+    && task.shutdown_requested === false
+    && task.status_eligible === true
+    && isTaskOwnerId(task.owner_id)
+    && status.task_owner_id === task.owner_id
+    && status.task_lifecycle_revision === task.lifecycle_revision
+    && status.run_id === activeGeneration.run_id
+    && status.workflow_run_id === activeGeneration.workflow_run_id
+    && status.checkpoint_revision === activeGeneration.checkpoint_revision
+    && status.stage === activeGeneration.stage,
+  );
+}
+
+/** Exact lifecycle identity for ordering HTTP snapshots against SSE ownership. */
+export function transientStatusTaskMatches(
+  left: TransientStatusTask | null | undefined,
+  right: TransientStatusTask | null | undefined,
+): boolean {
+  return Boolean(
+    left
+    && right
+    && left.present === right.present
+    && left.done === right.done
+    && left.shutdown_requested === right.shutdown_requested
+    && left.status_eligible === right.status_eligible
+    && left.owner_id === right.owner_id
+    && left.lifecycle_revision === right.lifecycle_revision,
+  );
+}
+
+/**
+ * Compare task ownership projections without trusting arrival order.  Same
+ * lifecycle revisions must describe exactly the same projection; a conflict
+ * is deliberately not resolved by whichever HTTP/SSE message arrived last.
+ */
+export function compareTransientStatusTaskProjection(
+  candidate: TransientStatusTask,
+  previous: TransientStatusTask | null | undefined,
+): "newer" | "same" | "older" | "conflict" {
+  if (!previous) return "newer";
+  if (candidate.lifecycle_revision > previous.lifecycle_revision) return "newer";
+  if (candidate.lifecycle_revision < previous.lifecycle_revision) return "older";
+  return transientStatusTaskMatches(candidate, previous) ? "same" : "conflict";
+}
+
+/** Reject an out-of-order same-generation replay without trusting text order. */
+export function shouldAcceptEvolutionStatus(
+  candidate: EvolutionStatusEvent,
+  activeGeneration: ActiveGenerationStatusIdentity | null | undefined,
+  task: TransientStatusTask | null | undefined,
+  previous: EvolutionStatusEvent | null | undefined,
+): boolean {
+  if (!evolutionStatusMatchesActiveGeneration(candidate, activeGeneration, task)) {
+    return false;
+  }
+  if (!previous) return true;
+  const sameIdentity = (
+    previous.run_id === candidate.run_id
+    && previous.workflow_run_id === candidate.workflow_run_id
+    && previous.checkpoint_revision === candidate.checkpoint_revision
+    && previous.stage === candidate.stage
+    && previous.task_owner_id === candidate.task_owner_id
+    && previous.task_lifecycle_revision === candidate.task_lifecycle_revision
+  );
+  return !sameIdentity || candidate.emitted_at > previous.emitted_at;
+}
+
+/** A degraded projection must expose both its observation time and reasons. */
+export function formatDegradedHealth(
+  issues: unknown,
+  checkedAt: unknown,
+): string {
+  const safeIssues = Array.isArray(issues)
+    ? [...new Set(issues.filter((issue): issue is string => (
+      typeof issue === "string" && issue.length > 0
+    )))]
+    : [];
+  let checkedAtText = "checked_at 不可用";
+  if (typeof checkedAt === "number" && Number.isFinite(checkedAt)) {
+    const observed = new Date(checkedAt * 1000);
+    if (Number.isFinite(observed.getTime())) checkedAtText = observed.toISOString();
+  }
+  const issueText = safeIssues.length > 0
+    ? safeIssues.join("；")
+    : "后端未提供问题列表（按异常处理）";
+  return `${checkedAtText} · ${issueText}`;
+}
+
 export type EvolutionHandlers = {
   onHistory?: (msg: string, status: string) => void;
-  onStatus?: (msg: string, isWorking: boolean) => void;
+  onStatus?: (status: EvolutionStatusEvent) => void;
+  onTaskOwner?: (task: TransientStatusTask) => void;
+  onTaskAuthorityLost?: (event: TaskAuthorityLostEvent) => void;
   onIO?: (line: IOLine) => void;
   onClearIO?: () => void;
   onEvalTable?: (rows: BotRating[]) => void;
@@ -107,6 +299,8 @@ export type EvolutionHandlers = {
 const EVOLUTION_EVENTS: readonly EvolutionEventType[] = [
   "history",
   "status",
+  "task_owner",
+  "task_authority_lost",
   "io",
   "clear_io",
   "eval_table",
@@ -153,6 +347,93 @@ const isStringArray = (value: unknown): value is string[] => (
 const isHexDigest = (value: unknown): value is string => (
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
 );
+export const isTransientStatusTask = (value: unknown): value is TransientStatusTask => (
+  isObject(value)
+  && typeof value.present === "boolean"
+  && (value.done === null || typeof value.done === "boolean")
+  && typeof value.shutdown_requested === "boolean"
+  && typeof value.status_eligible === "boolean"
+  && (value.owner_id === null || isTaskOwnerId(value.owner_id))
+  && isInteger(value.lifecycle_revision)
+  && value.lifecycle_revision >= 0
+  && (value.present === false || (
+    typeof value.done === "boolean" && isTaskOwnerId(value.owner_id)
+  ))
+  && (value.present === true || value.done === null)
+  && (value.status_eligible === false || (
+    value.present === true
+    && value.done === false
+    && value.shutdown_requested === false
+    && isTaskOwnerId(value.owner_id)
+  ))
+);
+
+/**
+ * Advance a task-owner projection using its lifecycle fence, not arrival
+ * order.  Invalid/missing input revokes render authority but keeps the last
+ * verified fence intact so an exact same-revision SSE owner can recover.  A
+ * contradictory same-revision owner is deliberately sticky until a newer
+ * lifecycle revision arrives.
+ */
+export function observeTransientStatusTaskProjection(
+  previous: TransientStatusTaskAuthorityState,
+  candidate: unknown,
+): TransientStatusTaskObservation {
+  if (!isTransientStatusTask(candidate)) {
+    return {
+      state: loseTransientStatusTaskAuthority(previous),
+      accepted: false,
+      reason: "invalid",
+    };
+  }
+
+  if (
+    previous.highWaterRevision !== null
+    && candidate.lifecycle_revision < previous.highWaterRevision
+  ) {
+    return { state: previous, accepted: false, reason: "stale" };
+  }
+  if (
+    previous.highWaterRevision !== null
+    && candidate.lifecycle_revision === previous.highWaterRevision
+    && previous.conflictRevision === previous.highWaterRevision
+  ) {
+    return { state: previous, accepted: false, reason: "conflict" };
+  }
+
+  const comparisonBase = previous.current ?? previous.lastVerified;
+  const order = comparisonBase
+    ? compareTransientStatusTaskProjection(candidate, comparisonBase)
+    : "newer";
+  if (order === "older") {
+    return { state: previous, accepted: false, reason: "stale" };
+  }
+  if (order === "conflict") {
+    return {
+      state: {
+        ...previous,
+        current: null,
+        highWaterRevision: candidate.lifecycle_revision,
+        conflictRevision: candidate.lifecycle_revision,
+        trusted: false,
+      },
+      accepted: false,
+      reason: "conflict",
+    };
+  }
+
+  return {
+    state: {
+      current: candidate,
+      lastVerified: candidate,
+      highWaterRevision: candidate.lifecycle_revision,
+      conflictRevision: null,
+      trusted: true,
+    },
+    accepted: true,
+    reason: "accepted",
+  };
+}
 const isBotRating = (value: unknown): value is BotRating => (
   isObject(value)
   && typeof value.name === "string"
@@ -270,13 +551,53 @@ const isPostPublicationHandoff = (value: unknown): boolean => {
     && value.issues.length === 0;
 };
 
+export const isEvolutionStatusEvent = (value: unknown): value is EvolutionStatusEvent => (
+  isObject(value)
+  && typeof value.msg === "string"
+  && typeof value.is_working === "boolean"
+  && typeof value.run_id === "string"
+  && value.run_id.length > 0
+  && typeof value.workflow_run_id === "string"
+  && value.workflow_run_id.length > 0
+  && isInteger(value.checkpoint_revision)
+  && value.checkpoint_revision > 0
+  && typeof value.stage === "string"
+  && value.stage.length > 0
+  && isTaskOwnerId(value.task_owner_id)
+  && isInteger(value.task_lifecycle_revision)
+  && value.task_lifecycle_revision >= 0
+  && isNumber(value.emitted_at)
+  && value.emitted_at >= 0
+);
+
+export const isTaskAuthorityLostEvent = (value: unknown): value is TaskAuthorityLostEvent => (
+  isObject(value)
+  && typeof value.reason === "string"
+  && value.reason.trim().length > 0
+);
+
+/** Match the server's short transient-status replay window for JSON snapshots. */
+export function isFreshEvolutionStatusEvent(
+  value: unknown,
+  observedAt: number = Date.now() / 1000,
+): value is EvolutionStatusEvent {
+  return isEvolutionStatusEvent(value)
+    && isNumber(observedAt)
+    && value.emitted_at <= observedAt + 5
+    && observedAt - value.emitted_at <= 30;
+}
+
 export function validateEvolutionStreamEvent(eventType: string, value: unknown): boolean {
   if (!isObject(value)) return false;
   switch (eventType as EvolutionEventType) {
     case "history":
       return typeof value.msg === "string" && typeof value.status === "string";
     case "status":
-      return typeof value.msg === "string" && typeof value.is_working === "boolean";
+      return isEvolutionStatusEvent(value);
+    case "task_owner":
+      return isTransientStatusTask(value);
+    case "task_authority_lost":
+      return isTaskAuthorityLostEvent(value);
     case "io":
       return typeof value.msg === "string"
         && typeof value.stream_type === "string"
@@ -358,7 +679,13 @@ export function createEvolutionStreamController(
           handlers.onHistory?.(data.msg as string, data.status as string);
           break;
         case "status":
-          handlers.onStatus?.(data.msg as string, data.is_working as boolean);
+          handlers.onStatus?.(data as unknown as EvolutionStatusEvent);
+          break;
+        case "task_owner":
+          handlers.onTaskOwner?.(data as unknown as TransientStatusTask);
+          break;
+        case "task_authority_lost":
+          handlers.onTaskAuthorityLost?.(data as unknown as TaskAuthorityLostEvent);
           break;
         case "io":
           handlers.onIO?.({
@@ -406,6 +733,20 @@ export function createEvolutionStreamController(
             data as unknown as Parameters<NonNullable<EvolutionHandlers["onPostPublicationHandoff"]>>[0],
           );
           break;
+      }
+    },
+    onMalformed: (eventType) => {
+      // A bad task/status envelope is itself a loss of authority.  Do not
+      // retain the prior Master/Worker phrase merely because the malformed
+      // event never reached the normal typed dispatch path.
+      if (
+        eventType === "status"
+        || eventType === "task_owner"
+        || eventType === "task_authority_lost"
+      ) {
+        getHandlers().onTaskAuthorityLost?.({
+          reason: `malformed_${eventType}`,
+        });
       }
     },
     onTransportError: () => getHandlers().onDisconnect?.("transport_error"),

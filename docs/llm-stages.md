@@ -37,6 +37,30 @@ hand/street identity, authoritative betting and stack values, semantic history,
 line flags, legal actions, opponent evidence, and a monotonic deadline. It does
 not reconstruct state from a parallel request history.
 
+The baseline is a publication boundary, not a place for uninterruptible exact
+work. The current strict policy uses fixed deterministic 192/256/96
+flop/turn/river samples with two direct seven-card evaluations per sample; a
+compact prior is only invalid/degraded-input fallback or refinement
+initialization, not a valid-board shortcut. Static gates reject evaluator
+aliases, baseline combinations, and nested deck-pair sweeps; the dynamic gate
+rejects more than 800 top-level evaluator calls. Full `C(45,2)` river work is
+allowed only in `iter_decisions`, in bounded batches that recheck the monotonic
+refinement deadline. A late or missing baseline fails the runtime probe; it is
+never excused by a worker-local timestamp or an artificial wait. The actual
+official `name` handshake initiates the system-owned policy-worker launch
+before preflop.  That wire proof is deliberately **not** an import-complete or
+ready claim: if the launch is malformed, repeated, or cannot be initiated, the
+native compliance path fails closed; if startup remains unfinished, the first
+decision still spends its real socket-owner wall-clock budget.
+
+Models may surface a bounded diagnosis or propose a falsifiable mechanism from
+the frozen evidence envelope, but no model output can turn a timing, protocol,
+artifact, cache-identity, quality, precommit, or certificate failure into a
+pass.  Deterministic validators and real native evidence decide admission.
+Timing regressions are exercised under representative concurrent host load;
+the control plane must not stop unrelated evaluation work or relax the target
+to manufacture a clean-only pass.
+
 Historical JSON bots, adapters, local subprocess engines, RL experiments, and
 their analyses live under `archive/`. They are not executable dependencies,
 prompt evidence, parents, rating opponents, or gate inputs.
@@ -45,6 +69,11 @@ prompt evidence, parents, rating opponents, or gate inputs.
 
 ```text
 official EXE / local national server
+              |
+        `name` handshake
+              |
+ system-owned name reply + policy-worker launch initiation
+          (not a ready/import-complete claim)
               |
         raw TCP byte stream
               |
@@ -139,7 +168,12 @@ contract. They do not own:
 
 Schema validation, content digests, capability checks, sandbox execution, and
 replayable workflow journals enforce those boundaries. A model failure pauses
-or retries a stage; it never converts missing evidence into a pass.
+or retries a stage; it never converts missing evidence into a pass. A schema
+retry is reserved for a completed output that deterministic projection rejects.
+SDK/transport/provider failure is infrastructure, while a parent cancellation
+is a clean control stop only after the owned process exit and all owned tasks
+are confirmed; unconfirmed or mixed cleanup remains fail-closed. Neither class
+may be relabelled as a schema defect to consume a semantic retry budget.
 
 ## Crash and retry behavior
 

@@ -887,6 +887,15 @@ async def _run_national_precommit_backend(
 
     if getattr(workflow_profile, "national_execution_mode", None) != "native_tcp":
         raise RuntimeError("precommit supports only national native_tcp evaluation")
+    try:
+        from national_runtime_probe import runtime_probe_native_template_evidence
+
+        native_template_evidence = runtime_probe_native_template_evidence()
+    except Exception as exc:
+        raise RuntimeError(
+            "precommit native runtime identity unavailable:"
+            f"{type(exc).__name__}:{str(exc)[:200]}"
+        ) from exc
     native_tcp_mode = True
     system_control_plan = any(
         str(item.get("authority") or "") == "system_first_strict_control"
@@ -1328,6 +1337,7 @@ async def _run_national_precommit_backend(
         "workflow_profile_id": workflow_profile.profile_id,
         "evaluation_protocol": execution_protocol,
         "national_execution_mode": "native_tcp",
+        **native_template_evidence,
         "hands_per_match": national_hands,
         "matches_per_opponent": national_matches,
         "expected_net_chips_samples": expected_gate_samples,
@@ -1776,6 +1786,25 @@ async def run_precommit_eval(args):
     evaluation_protocol = "national"
     national_evaluation = True
     candidate_entry = candidate_dir / "national_bot.py"
+    try:
+        from national_runtime_probe import (
+            runtime_probe_native_template_evidence,
+            runtime_probe_native_template_evidence_matches,
+        )
+
+        native_template_evidence = runtime_probe_native_template_evidence()
+    except Exception as exc:
+        # Never replace a missing current system runtime identity with a
+        # best-effort cache hit.  Retry only after the operator restores the
+        # checked-in native runtime authority.
+        return _json_tool_result({
+            "error": "native_runtime_identity_unavailable",
+            "version": v,
+            "source_v": source_v,
+            "passed": False,
+            "failure_class": "infrastructure",
+            "details": f"{type(exc).__name__}: {str(exc)[:200]}",
+        })
 
     # Idempotency guard: skip if precommit eval already passed for the same code snapshot
     # under the same workflow profile and national execution mode.
@@ -1899,6 +1928,7 @@ async def run_precommit_eval(args):
             and cached_fingerprint == code_fingerprint
             and cache_profile_matches
             and contract_matches
+            and runtime_probe_native_template_evidence_matches(precommit_gate)
         ):
             precommit_gate["idempotent_cache"] = True
             precommit_gate["directive"] = (
@@ -1920,6 +1950,14 @@ async def run_precommit_eval(args):
                     "active_workflow_profile_id": workflow_profile.profile_id,
                     "cached_execution_mode": cached_execution_mode,
                     "active_execution_mode": expected_execution_mode,
+                    "cached_native_runtime_template_digest": precommit_gate.get(
+                        "native_runtime_template_digest"
+                    ),
+                    "active_native_runtime_template_digest": (
+                        native_template_evidence[
+                            "native_runtime_template_digest"
+                        ]
+                    ),
                     "precommit_plan_issues": stored_plan_issues,
                     "cached_contract_digest": precommit_gate.get("precommit_eval_contract_digest"),
                     "active_contract_digest": (

@@ -129,6 +129,9 @@ def _render_reviewer_provider_prompt(inputs):
         }
     for placeholder, value in prompt_fields.items():
         text = text.replace(placeholder, value)
+    from strategy_reference_pack import current_strict_runtime_prompt_overlay
+
+    text += "\n\n" + current_strict_runtime_prompt_overlay()
     invocation_id = str(inputs["invocation_id"] or "")
     if strict_bootstrap:
         if not invocation_id:
@@ -1610,6 +1613,7 @@ async def run_quality_gates(args):
                     RUNTIME_PROBE_ORCHESTRATOR_VERSION,
                     RUNTIME_PROBE_SCENARIO_DIGEST,
                     RUNTIME_PROBE_SCHEMA_VERSION,
+                    runtime_probe_native_template_evidence,
                 )
                 from runtime_architecture_policy import RUNTIME_ARCHITECTURE_POLICY_VERSION
             except Exception:
@@ -1641,6 +1645,7 @@ async def run_quality_gates(args):
                 "runtime_probe_limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
                 "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
                 "runtime_contract_ledger_digest": runtime_contract_ledger_digest,
+                **runtime_probe_native_template_evidence(),
             }
             cached_dynamic_probe = (
                 (gate.get("national_capability_contract") or {}).get(
@@ -2631,6 +2636,12 @@ async def run_quality_gates(args):
         "runtime_probe_identity_digest": (
             national_capability_contract.get("dynamic_runtime_probe") or {}
         ).get("probe_identity_digest"),
+        "native_runtime_template_identity": (
+            national_capability_contract.get("dynamic_runtime_probe") or {}
+        ).get("native_runtime_template_identity"),
+        "native_runtime_template_digest": (
+            national_capability_contract.get("dynamic_runtime_probe") or {}
+        ).get("native_runtime_template_digest"),
         "runtime_probe_managed_isolation_digest": (
             national_capability_contract.get("dynamic_runtime_probe") or {}
         ).get("managed_isolation_digest"),
@@ -2827,6 +2838,12 @@ async def run_quality_gates(args):
         "runtime_probe_scenario_digest": result["runtime_probe_scenario_digest"],
         "runtime_probe_limits_digest": result["runtime_probe_limits_digest"],
         "runtime_probe_identity_digest": result["runtime_probe_identity_digest"],
+        "native_runtime_template_identity": result[
+            "native_runtime_template_identity"
+        ],
+        "native_runtime_template_digest": result[
+            "native_runtime_template_digest"
+        ],
         "runtime_probe_managed_isolation_digest": result[
             "runtime_probe_managed_isolation_digest"
         ],

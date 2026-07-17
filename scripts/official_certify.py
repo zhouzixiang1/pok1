@@ -36,7 +36,10 @@ from official_bootstrap import (  # noqa: E402
 )
 from official_certification_job import job_snapshot, reconcile_jobs, start_or_poll_job  # noqa: E402
 from official_certificate_signing import signing_environment_report  # noqa: E402
-from official_platform_harness import check_environment  # noqa: E402
+from official_platform_harness import (  # noqa: E402
+    build_formal_quality_admission,
+    check_environment,
+)
 from official_verdict_ledger import (  # noqa: E402
     initialize_verdict_ledger,
     ledger_head_path,
@@ -390,6 +393,24 @@ def main(argv: list[str] | None = None) -> int:
             }, ensure_ascii=False, indent=2))
             return 2
 
+    quality_admission = None
+    if args.cmd == "full":
+        # Normal manual full-v5 certification is not a substitute for the
+        # checkpoint-owned native quality path.  Bind its exact candidate
+        # bytes and current dynamic capability/probe ledger before selecting
+        # an opponent or creating a durable official-EXE job.  The v143-only
+        # explicit bootstrap has a distinct control authorization below.
+        quality_admission_report = build_formal_quality_admission(args.candidate)
+        if quality_admission_report.get("valid") is not True:
+            print(json.dumps({
+                "status": "formal-quality-admission-blocked",
+                "reason": "current_dynamic_quality_capability_probe_ledger_invalid",
+                "candidate": args.candidate,
+                "quality_admission": quality_admission_report,
+            }, ensure_ascii=False, indent=2))
+            return 2
+        quality_admission = quality_admission_report["admission"]
+
     if args.cmd == "bootstrap-first-strict":
         selection = select_first_strict_control(
             args.control_id,
@@ -430,6 +451,7 @@ def main(argv: list[str] | None = None) -> int:
         bootstrap_control_id=(
             args.control_id if args.cmd == "bootstrap-first-strict" else None
         ),
+        quality_admission=quality_admission,
     )
     payload = start_or_poll_job(
         spec,

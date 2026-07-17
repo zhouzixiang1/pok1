@@ -16,6 +16,7 @@ Usage:
 import asyncio
 import logging
 import signal
+from collections.abc import Callable
 
 log = logging.getLogger("pok.shutdown")
 
@@ -24,15 +25,36 @@ class ShutdownManager:
     def __init__(self, grace_period: float = 15.0):
         self._event = asyncio.Event()
         self._grace_period = grace_period
+        # These callbacks are deliberately edge-triggered and advisory.  The
+        # shutdown event is set before they run, so UI/control-plane observers
+        # can never veto or delay a real shutdown.
+        self._shutdown_listeners: list[Callable[[], None]] = []
 
     @property
     def is_shutting_down(self) -> bool:
         return self._event.is_set()
 
+    def add_shutdown_listener(self, listener: Callable[[], None]) -> None:
+        """Observe the first shutdown edge without owning shutdown itself."""
+
+        if not callable(listener):
+            raise TypeError("shutdown listener must be callable")
+        self._shutdown_listeners.append(listener)
+
     def request_shutdown(self):
         """Programmatically trigger shutdown (e.g. from web UI stop button)."""
-        if not self._event.is_set():
-            self._event.set()
+        if self._event.is_set():
+            return False
+        self._event.set()
+        for listener in tuple(self._shutdown_listeners):
+            try:
+                listener()
+            except Exception:
+                # The process is already stopping.  An observer failure must
+                # not hide that fact from the actual shutdown owner or stop
+                # other observers from receiving the edge.
+                log.exception("Shutdown lifecycle listener failed")
+        return True
 
     def install_signal_handlers(self, loop: asyncio.AbstractEventLoop):
         """Install SIGINT/SIGTERM/SIGHUP handlers on the event loop.
@@ -57,7 +79,7 @@ class ShutdownManager:
             signal.signal(sig, signal.SIG_DFL)
             return
         log.warning("Received %s, initiating graceful shutdown...", sig.name)
-        self._event.set()
+        self.request_shutdown()
 
     async def wait_for_shutdown(self):
         await self._event.wait()

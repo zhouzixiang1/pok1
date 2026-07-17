@@ -719,6 +719,7 @@ def validate_commit_gate_ledger(
                         RUNTIME_PROBE_ORCHESTRATOR_VERSION,
                         RUNTIME_PROBE_SCENARIO_DIGEST,
                         RUNTIME_PROBE_SCHEMA_VERSION,
+                        runtime_probe_native_template_evidence,
                     )
                     from runtime_architecture_policy import (
                         runtime_contract_ledger_digest,
@@ -752,6 +753,7 @@ def validate_commit_gate_ledger(
                         "runtime_probe_scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
                         "runtime_probe_limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
                         "runtime_probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+                        **runtime_probe_native_template_evidence(),
                     }
                     quality_probe = (
                         (quality.get("national_capability_contract") or {}).get(
@@ -846,10 +848,24 @@ def validate_commit_gate_ledger(
                 })
             if expected_execution_mode == "native_tcp":
                 try:
+                    from national_runtime_probe import (
+                        runtime_probe_native_template_evidence_matches,
+                    )
                     from precommit_eval_contract import (
                         validate_evaluation_contract,
                         validate_precommit_plan,
                     )
+
+                    if not runtime_probe_native_template_evidence_matches(
+                        precommit
+                    ):
+                        failed_gates.append({
+                            "gate": "precommit_native_runtime_identity",
+                            "reason": (
+                                "precommit evidence does not bind the exact "
+                                "current system-owned native TCP template"
+                            ),
+                        })
 
                     precommit_plan = (
                         (ckpt.get("audit_context") or {}).get("precommit_eval_plan")
@@ -1225,12 +1241,41 @@ def _record_official_full_gate_checkpoint(
     clear_official_job: bool = False,
 ) -> str:
     """Persist a non-reentrant official-full outcome and return the new stage."""
+    # This terminal record is a side effect of one exact official-job read.
+    # Never use a best-effort stage write here: a concurrently attached fresh
+    # job or a newer checkpoint must win rather than being replaced by stale
+    # quality-admission evidence.
+    if (
+        not isinstance(ckpt, dict)
+        or ckpt.get("next_v") != v
+        or ckpt.get("source_v") != source_v
+        or type(ckpt.get("checkpoint_revision")) is not int
+        or ckpt.get("checkpoint_revision") < 1
+        or not isinstance(ckpt.get("stage"), str)
+        or not ckpt.get("stage")
+        or not isinstance(ckpt.get("workflow_run_id"), str)
+        or not ckpt.get("workflow_run_id")
+    ):
+        return ""
+    quality_admission_blocked = bool(
+        official_full_gate.get("outcome") == "quality_admission_blocked"
+        and official_full_gate.get("failure_class") == "quality"
+    )
     bot_blocker = _official_gate_is_bot_blocker(official_full_gate)
-    stage = "official_failed" if bot_blocker else "official_inconclusive"
+    # A live admission drift is not a platform/evidence gap and not a bot-side
+    # EXE finding.  Keep the existing certification stage so the only legal
+    # continuation is a fresh quality gate; its normal evidence chain then
+    # drives review, critic, precommit and a brand-new official job.
+    stage = (
+        "official_certifying"
+        if quality_admission_blocked
+        else "official_failed" if bot_blocker else "official_inconclusive"
+    )
     gate_payload = {
         **official_full_gate,
         "passed": False,
-        "repairable_by_workers": bot_blocker,
+        "repairable_by_workers": bot_blocker and not quality_admission_blocked,
+        "quality_admission_refresh": quality_admission_blocked,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     recorded = write_pipeline_checkpoint(
@@ -1238,7 +1283,14 @@ def _record_official_full_gate_checkpoint(
         source_v,
         stage,
         master_plan=(ckpt or {}).get("master_plan"),
-        reviewer_feedback=_official_gate_feedback(official_full_gate),
+        # A quality receipt drift is system-owned admission evidence, not
+        # worker repair feedback.  Injecting it into the reviewer field would
+        # create a false historical lesson for later model prompts.
+        reviewer_feedback=(
+            (ckpt or {}).get("reviewer_feedback", "")
+            if quality_admission_blocked
+            else _official_gate_feedback(official_full_gate)
+        ),
         generation_attempt=(ckpt or {}).get("generation_attempt", 0),
         gate_results={"official_full": gate_payload},
         worker_failure_count=(ckpt or {}).get("worker_failure_count", 0),
@@ -1263,6 +1315,10 @@ def _record_official_full_gate_checkpoint(
             if clear_official_job
             else None
         ),
+        touch_stage_timestamp=quality_admission_blocked,
+        expected_checkpoint_revision=ckpt["checkpoint_revision"],
+        expected_checkpoint_stage=ckpt["stage"],
+        expected_workflow_run_id=ckpt["workflow_run_id"],
     )
     return stage if recorded else ""
 
@@ -1534,7 +1590,42 @@ async def _run_official_full_commit_gate(
     opponent = opponent_selection["opponent"]
     opponent_path = opponent["path"]
 
-    spec = build_spec("full", bot_dir, opponent=opponent_path)
+    quality_admission = None
+    if v >= FIRST_STRICT_POLICY_VERSION:
+        # The automatic normal full-v5 path must bind the exact
+        # checkpoint-owned quality/capability/probe receipt *before* allocating
+        # a durable official job.  The worker/harness will recompute and
+        # compare the same receipt immediately before EXE work; no later live
+        # regeneration can fill a missing field in this identity-bearing spec.
+        from official_platform_harness import build_formal_quality_admission
+
+        quality_admission_report = build_formal_quality_admission(
+            bot_dir,
+            checkpoint=ckpt,
+            repo_root=PROJECT_ROOT,
+        )
+        if quality_admission_report.get("valid") is not True:
+            return {
+                "passed": False,
+                "outcome": "quality_admission_blocked",
+                "failure_class": "quality",
+                "error": (
+                    "OFFICIAL FULL CERTIFICATION BLOCKED: current checkpoint-owned "
+                    "quality admission is invalid."
+                ),
+                "version": v,
+                "source_v": source_v,
+                "opponent_selection": opponent_selection,
+                "quality_admission": quality_admission_report,
+                "issues": list(quality_admission_report.get("issues") or []),
+            }
+        quality_admission = quality_admission_report["admission"]
+    spec = build_spec(
+        "full",
+        bot_dir,
+        opponent=opponent_path,
+        quality_admission=quality_admission,
+    )
     job = await run_blocking_isolated(
         start_or_poll_job,
         spec,
@@ -1556,11 +1647,22 @@ async def _run_official_full_commit_gate(
             "issues": [],
         }
     if job.get("state") != "completed" or not isinstance(job.get("status"), dict):
+        failure_class = str(job.get("failure_class") or "infrastructure")
+        quality_blocked = failure_class == "quality"
         return {
             "passed": False,
             "pending": False,
-            "outcome": "infrastructure_failure",
-            "failure_class": "infrastructure",
+            "outcome": (
+                "quality_admission_blocked"
+                if quality_blocked
+                else "infrastructure_failure"
+            ),
+            "failure_class": failure_class,
+            "error": (
+                "OFFICIAL FULL CERTIFICATION BLOCKED: live quality admission drifted."
+                if quality_blocked
+                else None
+            ),
             "version": v,
             "source_v": source_v,
             "spec": spec_record(spec),

@@ -268,6 +268,241 @@ def get_baseline_decision(context):
     )
 
 
+@pytest.mark.parametrize(
+    "helper",
+    [
+        '''\
+def exhaustive_river_equity():
+    return sum(1 for _pair in itertools.combinations(range(45), 2))
+''',
+        '''\
+combo = itertools.combinations
+
+def exhaustive_river_equity():
+    return sum(1 for _pair in combo(range(45), 2))
+''',
+        '''\
+def exhaustive_river_equity():
+    total = 0
+    for left in range(45):
+        for right in range(left + 1, 45):
+            total += left + right
+    return total
+''',
+    ],
+)
+def test_static_contract_blocks_full_enumeration_reachable_from_baseline(
+    tmp_path,
+    helper,
+):
+    policy = '''\
+import itertools
+
+''' + helper + '''\
+def get_baseline_decision(context):
+    exhaustive_river_equity()
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    baseline = _check(result, "fast_policy_baseline")
+    assert baseline["passed"] is False
+    assert any(
+        location.endswith(":baseline_full_enumeration")
+        for location in baseline["evidence"]["locations"]
+    )
+
+
+def test_static_contract_allows_full_combinations_only_in_refinement(tmp_path):
+    policy = '''\
+import itertools
+
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+
+def iter_decisions(context, baseline, deadline):
+    for _pair in itertools.combinations(range(45), 2):
+        if deadline < 0:
+            return
+        yield baseline
+        return
+'''
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    assert _check(result, "fast_policy_baseline")["passed"] is True
+
+
+@pytest.mark.parametrize(
+    "prefix,helper",
+    [
+        (
+            "from precompute import evaluate_seven as rank\n\n",
+            "    rank = rank\n",
+        ),
+        (
+            "import precompute\n\n",
+            "    rank = precompute.best_hand_rank\n",
+        ),
+    ],
+)
+def test_static_contract_blocks_system_evaluator_aliases(
+    tmp_path,
+    prefix,
+    helper,
+):
+    policy = prefix + '''\
+def get_baseline_decision(context):
+''' + helper + '''\
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    baseline = _check(result, "fast_policy_baseline")
+    assert baseline["passed"] is False
+    assert any(
+        "evaluator_alias" in location
+        for location in baseline["evidence"]["locations"]
+    )
+
+
+def test_static_contract_blocks_evaluator_alias_captured_by_helper_closure(tmp_path):
+    policy = '''\
+import precompute
+
+def make_ranker():
+    rank = precompute.evaluate_seven
+    def rank_hole(cards):
+        return rank(cards)
+    return rank_hole
+
+rank_hole = make_ranker()
+
+def get_baseline_decision(context):
+    rank_hole((0, 1, 2, 3, 4, 5, 6))
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    baseline = _check(result, "fast_policy_baseline")
+    assert baseline["passed"] is False
+    assert any(
+        "evaluator_alias" in location
+        for location in baseline["evidence"]["locations"]
+    )
+
+
+@pytest.mark.parametrize(
+    "carrier,invoke",
+    [
+        (
+            "EVALUATORS = [precompute.evaluate_seven]\n",
+            "EVALUATORS[0]((0, 1, 2, 3, 4, 5, 6))",
+        ),
+        (
+            "def rank(cards, evaluator=precompute.evaluate_seven):\n"
+            "    return evaluator(cards)\n",
+            "rank((0, 1, 2, 3, 4, 5, 6))",
+        ),
+        (
+            "class Evaluators:\n"
+            "    rank = staticmethod(precompute.evaluate_seven)\n",
+            "Evaluators.rank((0, 1, 2, 3, 4, 5, 6))",
+        ),
+    ],
+)
+def test_static_contract_blocks_evaluator_value_carriers(
+    tmp_path,
+    carrier,
+    invoke,
+):
+    policy = "import precompute\n\n" + carrier + (
+        "def get_baseline_decision(context):\n"
+        f"    {invoke}\n"
+        "    legal = context[\"legal\"]\n"
+        "    betting = context[\"betting\"]\n"
+        "    opponent = context[\"opponent\"]\n"
+        "    return {\"kind\": \"pass\"} if \"pass\" in legal[\"policy_kinds\"] else {\"kind\": \"fold\"}\n"
+    ) + POLICY_FOOTER
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    baseline = _check(result, "fast_policy_baseline")
+    assert baseline["passed"] is False
+    assert any(
+        "evaluator_alias" in location
+        for location in baseline["evidence"]["locations"]
+    )
+
+
+def test_static_contract_blocks_nested_deck_pair_sweep_from_baseline(tmp_path):
+    policy = '''\
+import precompute
+
+def exhaustive_river_equity():
+    deck = precompute.deck_without(())
+    total = 0
+    for left in deck:
+        for right in deck:
+            total += left + right
+    return total
+
+def get_baseline_decision(context):
+    exhaustive_river_equity()
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    baseline = _check(result, "fast_policy_baseline")
+    assert baseline["passed"] is False
+    assert any(
+        location.endswith(":baseline_full_enumeration")
+        for location in baseline["evidence"]["locations"]
+    )
+
+
+def test_static_contract_blocks_direct_deck_pair_sweep_in_class_helper(tmp_path):
+    policy = '''\
+import precompute
+
+class Sweep:
+    def run(self):
+        total = 0
+        for left in precompute.deck_without(()):
+            for right in precompute.deck_without(()):
+                total += left + right
+        return total
+
+def get_baseline_decision(context):
+    Sweep().run()
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"} if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+
+    baseline = _check(result, "fast_policy_baseline")
+    assert baseline["passed"] is False
+    assert any(
+        location.endswith(":baseline_full_enumeration")
+        for location in baseline["evidence"]["locations"]
+    )
+
+
 def test_opponent_causal_use_is_a_required_base_abi_check(tmp_path):
     policy = '''\
 def get_baseline_decision(context):

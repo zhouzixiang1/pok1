@@ -85,7 +85,20 @@ system-injected paths.
    added to the current street contribution.
 7. Do not add timeout-rescue loops that send unsolicited `call` or `check`; generated bots may only send one legal action while the platform is waiting for the current decision.
 8. Preserve full national legality from `sever/国赛平台/`: first preflop raise-to >= 200; first postflop raise-to >= 100; re-raise >=2x previous raise-to (exact `prev * 2` is legal; `prev * 2 + 1` is optional conservative headroom); postflop first action cannot be call; postflop after any first action, check is illegal; after a postflop check the second pass is call, not check; preflop BB cannot call after SB limps/calls; after all-in the opponent can only call or fold; consecutive all-ins are illegal.
-9. Preserve file-size gate compliance. `policy.py` has a 2000-line base
+9. Preserve the baseline/refinement split from both parents: the synchronous
+   `get_baseline_decision` must publish within the system-provided
+   `deadline.baseline_target_ms` (native precommit can set this to 200 ms and
+   the formal upper bound remains 250 ms). Preserve the current fixed
+   deterministic 192/256/96 flop/turn/river schedule (two direct evaluator
+   calls per sample and an 800 top-level evaluator-call cap). A compact prior
+   is only an invalid/degraded-input fallback or refinement start. Never copy
+   or introduce evaluator aliases, `itertools.combinations`, a nested deck-pair
+   sweep, or full `C(45,2)` remaining-opponent enumeration into the baseline.
+   That finite work belongs only in `iter_decisions` after a legal baseline has
+   been published, in bounded batches that check `time.monotonic()` before
+   every expensive unit. The real `name` handshake starts the system-owned
+   worker before preflop; it does not waive the target decision clock.
+10. Preserve file-size gate compliance. `policy.py` has a 2000-line base
     limit and a 2500-line hard cap. If Parent A/source is already over the base limit, the child may match or shrink that file but
     must not grow beyond Parent A/source line count; the 15% growth budget does
     not apply to already-oversized parents. Verify sizable file changes with

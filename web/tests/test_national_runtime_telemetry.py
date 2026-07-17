@@ -110,3 +110,47 @@ def test_opponent_tracker_uses_last_valid_snapshot_and_ignores_malformed_rows():
     assert tracker["available"] is True
     assert tracker["snapshot_count"] == 2
     assert tracker["latest"] == final
+
+
+def test_name_handshake_telemetry_is_machine_parseable_and_fail_closed_ready():
+    report = parse_native_bot_log(
+        "\n".join((
+            "[12:00:00] NAME_HANDSHAKE count=1 worker_launch_started=True "
+            "worker_generation=1 launch_ok=True",
+            "[12:00:00] SEND name_handshake name='Strict' count=1 "
+            "worker_generation=1",
+        ))
+    )
+
+    assert report["name_handshake"] == {
+        "available": True,
+        "received_count": 1,
+        "sent_count": 1,
+        "worker_launch_started_count": 1,
+        "worker_launch_ok_count": 1,
+        "worker_launch_failed_count": 0,
+        "worker_generations": [1],
+        "malformed_count": 0,
+    }
+
+
+def test_name_handshake_telemetry_preserves_duplicate_failed_and_malformed_evidence():
+    report = parse_native_bot_log(
+        "\n".join((
+            "NAME_HANDSHAKE count=1 worker_launch_started=True "
+            "worker_generation=1 launch_ok=True",
+            "NAME_HANDSHAKE count=2 worker_launch_started=False "
+            "worker_generation=1 launch_ok=False",
+            "SEND name_handshake name='Strict' count=1 worker_generation=1",
+            "NAME_HANDSHAKE incomplete",
+        ))
+    )
+
+    handshake = report["name_handshake"]
+    assert handshake["received_count"] == 2
+    assert handshake["sent_count"] == 1
+    assert handshake["worker_launch_started_count"] == 1
+    assert handshake["worker_launch_ok_count"] == 1
+    assert handshake["worker_launch_failed_count"] == 1
+    assert handshake["worker_generations"] == [1, 1]
+    assert handshake["malformed_count"] == 1

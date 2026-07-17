@@ -2,10 +2,247 @@
 
 import asyncio
 import json
+import math
+import re
+import time
 
 from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/api", tags=["evolution"])
+
+# WebUI status text is intentionally transient rather than checkpoint evidence.
+# A long-lived process can retain a previous Master/Worker message after its
+# checkpoint or owner task moved.  Keep the window short enough that a
+# reconnect never turns an old ring-buffer row into a current workflow claim.
+_TRANSIENT_STATUS_MAX_AGE_SEC = 30.0
+_TRANSIENT_STATUS_FUTURE_SKEW_SEC = 5.0
+_TASK_OWNER_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _task_is_active(task: object) -> bool:
+    return bool(
+        isinstance(task, dict)
+        and task.get("present") is True
+        and task.get("done") is False
+        and task.get("shutdown_requested") is False
+        and task.get("status_eligible") is True
+    )
+
+
+def _active_task_owner_id(task: object) -> str | None:
+    """Return the exact active task owner, or no authority on any mismatch."""
+
+    if not _task_is_active(task) or not isinstance(task, dict):
+        return None
+    owner_id = task.get("owner_id")
+    if not isinstance(owner_id, str) or _TASK_OWNER_ID_RE.fullmatch(owner_id) is None:
+        return None
+    return owner_id
+
+
+def _task_owner_projection(task: object) -> dict | None:
+    """Return the typed task-owner lifecycle projection used by SSE.
+
+    Status phrases may only be accepted while this projection identifies the
+    same live owner.  A reservation (``present=False`` with a valid owner) is
+    still useful: it immediately invalidates the prior task's status before a
+    replacement coroutine is attached.  Any malformed state fails closed.
+    """
+
+    if not isinstance(task, dict):
+        return None
+    present = task.get("present")
+    done = task.get("done")
+    shutdown_requested = task.get("shutdown_requested")
+    status_eligible = task.get("status_eligible")
+    owner_id = task.get("owner_id")
+    lifecycle_revision = task.get("lifecycle_revision")
+    if (
+        type(present) is not bool
+        or (done is not None and type(done) is not bool)
+        or type(shutdown_requested) is not bool
+        or type(status_eligible) is not bool
+    ):
+        return None
+    if type(lifecycle_revision) is not int or lifecycle_revision < 0:
+        return None
+    if owner_id is not None and (
+        not isinstance(owner_id, str)
+        or _TASK_OWNER_ID_RE.fullmatch(owner_id) is None
+    ):
+        return None
+    if present is True and (type(done) is not bool or owner_id is None):
+        return None
+    if present is False and done is not None:
+        return None
+    # Only a live, non-stopping task may be eligible to own human status.
+    # Project the boolean even for invalidating lifecycle rows so a browser
+    # does not infer eligibility from an omitted field during an SSE/HTTP race.
+    if status_eligible and not (
+        present is True and done is False and shutdown_requested is False
+    ):
+        return None
+    return {
+        "present": present,
+        "done": done,
+        "shutdown_requested": shutdown_requested,
+        "status_eligible": status_eligible,
+        "owner_id": owner_id,
+        "lifecycle_revision": lifecycle_revision,
+    }
+
+
+def _task_owner_event_is_current(event: object) -> bool:
+    """Drop stale lifecycle rows from the process ring before browser delivery."""
+
+    if not isinstance(event, dict) or event.get("event") != "task_owner":
+        return True
+    raw = event.get("data")
+    if not isinstance(raw, str):
+        return False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    projection = _task_owner_projection(payload)
+    return projection is not None and projection == _task_owner_projection(
+        _live_task_snapshot()
+    )
+
+
+def _active_generation_identity(epoch: object) -> dict | None:
+    """Return only the exact identity eligible to own transient status text."""
+
+    if not isinstance(epoch, dict) or epoch.get("initialized") is not True:
+        return None
+    active = epoch.get("active_generation")
+    if not isinstance(active, dict):
+        return None
+    run_id = active.get("run_id")
+    workflow_run_id = active.get("workflow_run_id")
+    revision = active.get("checkpoint_revision")
+    stage = active.get("stage")
+    if (
+        not isinstance(run_id, str)
+        or not run_id.strip()
+        or not isinstance(workflow_run_id, str)
+        or not workflow_run_id.strip()
+        or type(revision) is not int
+        or revision < 1
+        or not isinstance(stage, str)
+        or not stage.strip()
+    ):
+        return None
+    return {
+        "run_id": run_id,
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": revision,
+        "stage": stage,
+    }
+
+
+def _current_transient_status(
+    payload: object,
+    epoch: object,
+    *,
+    task: object | None = None,
+    now: float | None = None,
+) -> dict | None:
+    """Validate a WebUI status against canonical generation + live task.
+
+    This boundary is used both by the JSON snapshot and SSE delivery.  It is
+    deliberately strict: partial identity, stale timestamp, a stopped task,
+    or any revision/stage mismatch suppresses the human text instead of
+    allowing a stale "Master planning" claim to flash in a new generation.
+    """
+
+    if not isinstance(payload, dict):
+        return None
+    msg = payload.get("msg", payload.get("status"))
+    is_working = payload.get("is_working")
+    run_id = payload.get("run_id")
+    workflow_run_id = payload.get("workflow_run_id")
+    revision = payload.get("checkpoint_revision")
+    stage = payload.get("stage")
+    task_owner_id = payload.get("task_owner_id")
+    task_lifecycle_revision = payload.get("task_lifecycle_revision")
+    emitted_at = payload.get("emitted_at")
+    expected = _active_generation_identity(epoch)
+    live_owner_id = _active_task_owner_id(task)
+    live_lifecycle_revision = (
+        task.get("lifecycle_revision") if isinstance(task, dict) else None
+    )
+    if (
+        not isinstance(msg, str)
+        or not isinstance(is_working, bool)
+        or expected is None
+        or live_owner_id is None
+        or run_id != expected["run_id"]
+        or workflow_run_id != expected["workflow_run_id"]
+        or type(revision) is not int
+        or revision != expected["checkpoint_revision"]
+        or stage != expected["stage"]
+        or task_owner_id != live_owner_id
+        or type(task_lifecycle_revision) is not int
+        or task_lifecycle_revision != live_lifecycle_revision
+        or isinstance(emitted_at, bool)
+    ):
+        return None
+    try:
+        emitted = float(emitted_at)
+        observed_now = time.time() if now is None else float(now)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if (
+        not math.isfinite(emitted)
+        or not math.isfinite(observed_now)
+        or emitted < 0.0
+        or emitted > observed_now + _TRANSIENT_STATUS_FUTURE_SKEW_SEC
+        or observed_now - emitted > _TRANSIENT_STATUS_MAX_AGE_SEC
+    ):
+        return None
+    return {
+        "msg": msg,
+        "is_working": is_working,
+        "run_id": run_id,
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": revision,
+        "stage": stage,
+        "task_owner_id": task_owner_id,
+        "task_lifecycle_revision": task_lifecycle_revision,
+        "emitted_at": emitted,
+    }
+
+
+def _live_task_snapshot() -> dict | None:
+    """Read task ownership lazily so a status failure cannot affect runtime."""
+
+    try:
+        from server.state import app_state
+
+        snapshot = app_state.task_snapshot()
+    except Exception:
+        return None
+    return snapshot if isinstance(snapshot, dict) else None
+
+
+def _status_event_is_current(event: object, epoch: object) -> bool:
+    """Filter replay/live SSE status rows before a browser can consume them."""
+
+    if not isinstance(event, dict) or event.get("event") != "status":
+        return True
+    raw = event.get("data")
+    if not isinstance(raw, str):
+        return False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return _current_transient_status(
+        payload,
+        epoch,
+        task=_live_task_snapshot(),
+    ) is not None
 
 
 def _epoch_projection() -> dict:
@@ -176,6 +413,23 @@ async def evolution_stream(request: Request):
                     "stream_authority_digest": connection_authority_digest,
                 }),
             }
+            # The owner transition is an immediate invalidation channel for
+            # non-authoritative WebUI text.  It is deliberately emitted even
+            # before any status replay so a reconnect cannot retain a previous
+            # owner's phrase until the 5-second control-health poll arrives.
+            initial_task_projection = _task_owner_projection(_live_task_snapshot())
+            if initial_task_projection is None:
+                yield {
+                    "event": "task_authority_lost",
+                    "data": json.dumps({
+                        "reason": "task_snapshot_projection_invalid",
+                    }),
+                }
+            else:
+                yield {
+                    "event": "task_owner",
+                    "data": json.dumps(initial_task_projection),
+                }
             last_handoff_digest = connection_handoff["projection_digest"]
             while True:
                 # Cooperative disconnect check: closes the half-open/proxy
@@ -231,6 +485,14 @@ async def evolution_stream(request: Request):
                             "data": json.dumps(_epoch_metadata(delivery_epoch)),
                         }
                         break
+                    # Ring-buffer replay and a delayed queue delivery are both
+                    # capable of carrying an otherwise well-formed status from
+                    # an old checkpoint revision.  Do not forward it merely
+                    # because the broader epoch digest still matches.
+                    if not _status_event_is_current(event, delivery_epoch):
+                        continue
+                    if not _task_owner_event_is_current(event):
+                        continue
                     yield event
                 except asyncio.TimeoutError:
                     # sse-starlette sends its own ping every 15s; no need
@@ -287,6 +549,8 @@ async def evolution_state():
             "gen_cost_total": 0.0,
             "generation_cost_identity": None,
             "generation_cost_policy": None,
+            "transient_status": None,
+            "transient_status_task": None,
             "post_publication_handoff": handoff,
         })
         return state
@@ -304,6 +568,33 @@ async def evolution_state():
         checkpoint.get("checkpoint_revision") if checkpoint else None
     )
     state["post_publication_handoff"] = handoff
+    status_task = _live_task_snapshot()
+    state["transient_status_task"] = _task_owner_projection(status_task)
+    transient_status = _current_transient_status(
+        {
+            "msg": state.get("status"),
+            "is_working": state.get("is_working"),
+            **(
+                state.get("status_identity")
+                if isinstance(state.get("status_identity"), dict)
+                else {}
+            ),
+        },
+        epoch,
+        task=status_task,
+    )
+    state["transient_status"] = transient_status
+    if transient_status is None:
+        # Do not project a process-memory phrase as current work.  The UI has
+        # separate canonical task/health indicators and will display this
+        # neutral text only until a newly stamped current status arrives.
+        state["status"] = (
+            "等待当前活动任务状态"
+            if _task_is_active(status_task)
+            and _active_generation_identity(epoch) is not None
+            else "无可验证的当前活动任务状态"
+        )
+        state["is_working"] = False
     if checkpoint is None and handoff.get("status") != "none":
         state["pipeline_stage"] = "post_publication_handoff"
     return state

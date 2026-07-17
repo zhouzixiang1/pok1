@@ -285,6 +285,24 @@ def test_preferred_current_chains_exclude_unreachable_policy_helpers():
     assert "policy.py:get_baseline_decision" in preferred
     assert "policy.py:_live" in preferred
     assert "policy.py:_dead_sorted_first" not in preferred
+    assert "policy.py:_dead_sorted_first" not in prompt
+
+
+def test_full_source_index_excludes_non_abi_reachable_runtime_edges():
+    import agent_master
+
+    graph = {
+        "policy.py:get_baseline_decision": {"_live"},
+        "policy.py:iter_decisions": set(),
+        "policy.py:_live": set(),
+        "national_bot.py:run_client": {"_send_action"},
+        "national_bot.py:_send_action": set(),
+    }
+
+    prompt = agent_master._source_symbol_prompt_index(graph)
+
+    assert "policy.py:get_baseline_decision -> policy.py:_live" in prompt
+    assert "national_bot.py:run_client" not in prompt
 
 
 def test_preferred_anchors_prioritize_decision_mechanism_over_many_utilities():
@@ -562,9 +580,8 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "Use Read only inside the prepared target bots/national_v143/" in scope
     assert "Never use a future edge" in scope
     assert "A blocked Read grants no evidence" in scope
-    assert "Copy one two-symbol SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHOR" in prompt
-    assert "every chain symbol must also be present in source_symbols" in prompt
-    assert "Every adjacent reachable_chain edge must exist in the current" in prompt
+    assert "Copy one complete two-symbol PREFERRED CURRENT ENTRY ANCHOR" in prompt
+    assert "Every reachable_chain entry must also appear in source_symbols" in prompt
     assert "proposal_reachable_chain_edge_not_current" in prompt
     assert (
         "mechanism_target = row.mechanism_target = row.intervention_target = "
@@ -573,9 +590,11 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "mechanism_target is NEVER the state_learning_primary label" in prompt
     assert '"mechanism_target":"opponent.rates"' in prompt
     assert "context['opponent']['rates'] does not replace" in prompt
-    assert "opponent.rates.fold_to_raise belongs to the action-profile target" in prompt
+    assert "opponent.rates.fold_to_raise is an action-profile field" in prompt
+    assert "opponent.samples.fold_to_raise is its sample-count field" in prompt
+    assert "foreign closed owner for every selectable primary" in prompt
     assert (
-        "opponent.terminal_response.fold_to_raise belongs to the "
+        "opponent.terminal_response.fold_to_raise is a distinct "
         "terminal-response target"
     ) in prompt
     assert (
@@ -583,6 +602,13 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         in prompt
     )
     assert "Never append identifier characters to an owner-qualified target literal" in prompt
+    assert "A foreign target remains forbidden when mentioned only to deny" in prompt
+    mapping = agent_master._proposal_falsifier_mapping_text()
+    assert len(mapping) < 1800
+    assert '"mechanism_target":"opponent.rates"' in mapping
+    assert '"state_learning_primary":"action_profile"' in mapping
+    assert "diagnostic_target_aliases" not in mapping
+    assert "required_primary_checks" not in mapping
 
     normal = agent_master._render_master_proposal_provider_prompt({
         "planning_context": "Frozen snapshot path is evidence data only.",
@@ -618,6 +644,24 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "invocation_id": "3" * 32,
     }).text
     assert "proposal_field_invalid:16" in many_hints
+
+
+def test_schema_repair_guidance_is_targeted_and_negation_safe():
+    import agent_master
+
+    guidance = agent_master._proposal_schema_repair_guidance(
+        (
+            "proposal_mechanism_foreign_targets_in_executable_claim:"
+            "opponent.showdown_range",
+            "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise",
+        ),
+        require_snapshot_evidence=False,
+    )
+
+    assert "leave opponent.showdown_range unchanged" in guidance
+    assert "all other decision_context fields are byte-identical" in guidance
+    assert "Never emit bare fold_to_raise" in guidance
+    assert len(guidance.splitlines()) == 2
 
 
 @pytest.mark.parametrize(
@@ -984,6 +1028,48 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
         if role == "MASTER PROPOSAL mechanism SCHEMA RETRY"
     )
     assert "proposal_required_text_invalid:measurement" in mechanism_retry_prompt
+    assert "Common failure modes to fix" not in mechanism_retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_scout_transport_failure_never_becomes_schema_retry(
+    monkeypatch, tmp_path
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    _write_strength_snapshot(snapshot_dir)
+    roles = []
+
+    async def fake_query(_prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        roles.append(role_name)
+        if role_name == "MASTER PROPOSAL mechanism":
+            raise ConnectionError("provider transport unavailable")
+        direction = next(
+            name
+            for name in ("counterfactual", "compute_memory")
+            if name in role_name
+        )
+        return _proposal(direction, snapshot=True), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+
+    with pytest.raises(agent_master.MasterInfrastructureError) as caught:
+        await agent_master._run_master_proposal_ensemble(
+            "frozen planning context",
+            source_v=143,
+            next_v=149,
+            ui=_UI(),
+            log_dir=tmp_path,
+            allowed_evidence_snapshot_dir=str(snapshot_dir),
+        )
+
+    assert "proposal_scout:mechanism:ConnectionError" in caught.value.issue
+    assert len(roles) == 3
+    assert not any("SCHEMA RETRY" in role for role in roles)
 
 
 @pytest.mark.asyncio
@@ -1389,12 +1475,12 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         "singleton_no_strength": False,
     }
 
-    first = json.loads(await agent_master._run_master_proposal_ensemble(
-        strict_checkpoint=checkpoint,
-        **kwargs,
-    ))
-    assert first["valid"] is False
-    assert first["reason"].endswith("got_2")
+    with pytest.raises(agent_master.MasterInfrastructureError) as first:
+        await agent_master._run_master_proposal_ensemble(
+            strict_checkpoint=checkpoint,
+            **kwargs,
+        )
+    assert "proposal_scout:compute_memory:RuntimeError" in first.value.issue
     accepted_before = [
         event.payload["slot"]
         for event in store.events(authority.authority_run_id(
@@ -1406,6 +1492,14 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         "proposal:counterfactual",
         "proposal:mechanism",
     ]
+    rejected_before = [
+        event.payload["slot"]
+        for event in store.events(authority.authority_run_id(
+            checkpoint["workflow_run_id"]
+        ))
+        if event.event_type == authority.REJECTED_EVENT
+    ]
+    assert rejected_before == []
 
     provider_count_before_retry = len(provider_slots)
     advanced_checkpoint = {
@@ -1421,7 +1515,10 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
     retry_provider_slots = provider_slots[provider_count_before_retry:]
     assert "proposal:mechanism" not in retry_provider_slots
     assert "proposal:counterfactual" not in retry_provider_slots
-    assert retry_provider_slots.count("proposal:compute_memory") == 1
+    # The failed transport effect did not consume the schema budget.  The base
+    # role first produces a deterministic rejection, then exactly one real
+    # schema repair succeeds in the same resumed ensemble.
+    assert retry_provider_slots.count("proposal:compute_memory") == 2
     assert retry_provider_slots.count("ballot:falsification") == 1
     assert retry_provider_slots.count("ballot:scope") == 1
     assert len({path for _invocation_id, path in provider_logs}) == len({
@@ -2024,6 +2121,102 @@ def test_shared_fold_to_raise_leaf_is_bound_by_full_opponent_namespace(tmp_path)
             evidence_mode="fresh_strict_control_no_strength",
         )
     )
+
+    payload["expected_diff"] = (
+        "The paired opponent.rates decision reads the complete "
+        "context['opponent']['rates']['fold_to_raise'] field and changes only "
+        "under that owner-qualified action-profile intervention."
+    )
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is not None
+
+    payload["expected_diff"] = (
+        "The paired opponent.rates decision holds "
+        "opponent.samples.fold_to_raise byte-identical and changes only under "
+        "the owner-qualified action-profile intervention."
+    )
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+    assert (
+        "proposal_mechanism_foreign_targets_in_executable_claim:opponent.samples"
+        in agent_master._master_proposal_projection_hints(
+            json.dumps(payload),
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+            evidence_mode="fresh_strict_control_no_strength",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "foreign_disclaimer",
+    (
+        "No opponent.showdown_range field changes.",
+        "Do not change opponent.showdown_range.",
+        "Leave opponent.showdown_range unchanged.",
+        "Proceed without opponent.showdown_range changes.",
+    ),
+)
+def test_foreign_target_disclaimer_still_fails_closed(
+    tmp_path, foreign_disclaimer
+):
+    import agent_master
+
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.rates",
+        "structural_change": (
+            "Route only opponent.rates through the bounded consumer. "
+            + foreign_disclaimer
+        ),
+        "expected_diff": (
+            "The paired intent changes only through opponent.rates. "
+            + foreign_disclaimer
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": "opponent.rates",
+        "control": "Hold opponent.rates at its paired-state prior.",
+        "intervention": (
+            "Change only opponent.rates in the paired context. "
+            + foreign_disclaimer
+        ),
+        "expected_observation": (
+            "The paired typed intent changes only under the action-profile intervention."
+        ),
+    }
+
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    assert (
+        "proposal_mechanism_foreign_targets_in_executable_claim:"
+        "opponent.showdown_range"
+    ) in errors
 
 
 @pytest.mark.parametrize(

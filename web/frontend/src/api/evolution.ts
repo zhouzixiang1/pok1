@@ -4,7 +4,9 @@ import type { PostPublicationHandoffStatus } from "./control";
 import { createEvolutionStreamController } from "../lib/evolutionStreamController";
 import type {
   EvolutionHandlers,
+  EvolutionStatusEvent,
   GenerationCostPolicyState,
+  TransientStatusTask,
 } from "../lib/evolutionStreamController";
 
 export type {
@@ -36,6 +38,8 @@ export interface EvolutionState {
   gen_cost_total: number;
   generation_cost_identity?: string | null;
   generation_cost_policy?: GenerationCostPolicyState | null;
+  transient_status: EvolutionStatusEvent | null;
+  transient_status_task: TransientStatusTask | null;
 }
 
 const BASE = "/api";

@@ -117,6 +117,16 @@ or malformed fields must stay neutral. Penalize any change that silently
 removes a producer, consumer, positive/negative regression, or socket-visible
 effect even if its isolated equity helper looks plausible.
 
+The baseline itself must remain publishable under its strict time budget. The
+current 192/256/96 flop/turn/river schedule is fixed deterministic bounded
+work; a compact prior is only invalid/degraded-input fallback or refinement
+initialization. Full `C(45,2)` river enumeration belongs only to bounded,
+deadline-checked refinement. Flag a proposal that moves it onto the synchronous
+path, hides evaluator aliases/deck-pair sweeps, or treats the real system-owned
+`name`-handshake worker start as a waiver of the decision clock. The quality
+gate, not this advisory Critic, proves the static aliases/deck and dynamic
+800-call boundary.
+
 **Strategic Soundness Checklist**
 - **P1 — Pot-odds discipline**: Does the bot compare call cost to pot odds (or at least approximate them) rather than calling arbitrarily?
 - **P2 — EQR grounding**: Is Equity Realization (EQR)—the share of raw equity

@@ -14,7 +14,7 @@
     "source_artifact_inherited": false,
     "strength_admitted": false
   },
-  "expected_artifact_hash": "b37cd019fe6b635a119950adb5f7ecf10ddceeafacfbed6b4c3a0955064516e2",
+  "expected_artifact_hash": "1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2",
   "files": {
     "policy.py": "d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4"
   },
@@ -29,7 +29,7 @@
   "policy": "deterministic_passive_typed_pass_v1",
   "runtime": {
     "decision_runtime_version": 10,
-    "national_bot_sha256": "0115c5844961011d920d012edbba30eb23171de0f5649f5b46e75a0e6bd94bef",
+    "national_bot_sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
     "precompute_sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
     "stream_decoder_version": 2
   },

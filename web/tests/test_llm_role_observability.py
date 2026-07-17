@@ -1071,10 +1071,10 @@ def test_system_bookkeeping_cannot_refresh_mid_loop_stall_or_parent_progress(
                 },
             )
 
-    monkeypatch.setenv("POK_LLM_MASTER_FIRST_ACTIVITY_TIMEOUT", "1")
-    monkeypatch.setenv("POK_LLM_MASTER_IDLE_TIMEOUT", "1")
-    monkeypatch.setenv("POK_LLM_MASTER_STALL_TIMEOUT", "0.04")
-    monkeypatch.setenv("POK_LLM_MASTER_TOTAL_TIMEOUT", "2")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_FIRST_ACTIVITY_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT", "0.04")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT", "2")
     monkeypatch.setattr(llm_query, "_LLM_PROGRESS_INTERVAL_SEC", 0.001)
     monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
     monkeypatch.setattr(
@@ -1106,6 +1106,58 @@ def test_system_bookkeeping_cannot_refresh_mid_loop_stall_or_parent_progress(
         if event[0] == "pipeline.llm_role_stall_timeout"
     )
     assert timeout[3]["system_messages_seen"] > 0
+
+
+def test_master_proposal_can_finish_after_old_derived_stall_boundary(
+    monkeypatch, tmp_path
+):
+    async def fake_stream():
+        yield AssistantMessage(
+            content=[ToolUseBlock(id="read-1", name="Read", input={"file_path": "policy.py"})],
+            model="sonnet",
+        )
+        yield UserMessage(
+            content=[ToolResultBlock(tool_use_id="read-1", content="ok")]
+        )
+        # The former derived policy would stop at 0.11s (0.2 * 0.55).
+        # Thinking telemetry remains nonproductive, but the role-specific 0.2s
+        # Scout ceiling permits this measured slow-reasoning interval.
+        for index in range(14):
+            await asyncio.sleep(0.01)
+            yield SystemMessage(
+                subtype="thinking_tokens",
+                data={"estimated_tokens": index + 1},
+            )
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=150,
+            duration_api_ms=150,
+            is_error=False,
+            num_turns=2,
+            session_id="proposal-slow-success",
+            total_cost_usd=0.01,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            result="done",
+        )
+
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_FIRST_ACTIVITY_TIMEOUT", "1")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT", "0.2")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT", "0.2")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT", "1")
+    monkeypatch.setattr(llm_query, "_LLM_SILENCE_WARN_SEC", 999)
+
+    texts, cost, usage = asyncio.run(
+        llm_query._process_stream(
+            fake_stream(),
+            str(tmp_path / "master_proposal_slow_success.txt"),
+            _DummyUI(),
+            "MASTER PROPOSAL mechanism",
+        )
+    )
+
+    assert texts == []
+    assert cost == 0.01
+    assert usage == {"input_tokens": 1, "output_tokens": 1}
 
 
 def test_process_stream_mid_loop_stall_cuts_at_stall_timeout(monkeypatch, tmp_path):
@@ -1200,9 +1252,32 @@ def test_final_master_has_independent_bounded_silence_policy(monkeypatch):
         "stall_timeout": 240.0,
         "total_timeout": 900.0,
     }
-    assert proposal_policy["policy_key"] == "MASTER"
-    assert proposal_policy["stall_timeout"] == 132.0
-    assert proposal_policy["stall_timeout"] < proposal_policy["idle_timeout"]
+    assert proposal_policy == {
+        "policy_key": "MASTER_PROPOSAL",
+        "first_activity_timeout": 120.0,
+        "idle_timeout": 240.0,
+        "stall_timeout": 240.0,
+        "total_timeout": 900.0,
+    }
+
+
+def test_master_proposal_timeout_override_precedence_and_legacy_fallback(
+    monkeypatch,
+):
+    monkeypatch.setenv("POK_LLM_MASTER_STALL_TIMEOUT", "17")
+    monkeypatch.setenv("POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT", "31")
+    assert llm_query._role_timeout_policy(
+        "MASTER PROPOSAL compute_memory SCHEMA RETRY"
+    )["stall_timeout"] == 31.0
+
+    monkeypatch.delenv("POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT", raising=False)
+    assert llm_query._role_timeout_policy(
+        "MASTER PROPOSAL compute_memory DISTINCTNESS RETRY"
+    )["stall_timeout"] == 17.0
+
+    assert llm_query._role_timeout_policy(
+        "MASTER PROPOSAL CRITIC scope"
+    )["policy_key"] == "MASTER"
 
 
 def test_final_master_timeout_override_precedence_and_legacy_fallback(

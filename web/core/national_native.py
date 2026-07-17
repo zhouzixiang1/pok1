@@ -1972,9 +1972,10 @@ class NativeNationalBot:
         self._last_platform_message_at = 0.0
         self._reset_match()
         self._mp_context = _decision_process_context()
-        self._strategy_process = None
-        self._strategy_connection = None
+        self._strategy_process = self._strategy_connection = None
         self._strategy_worker_generation = 0
+        # Raw name starts the persistent worker but never waits for readiness.
+        self._name_handshake_count = 0
         try:
             self._strategy_base_seed = int(os.environ["POK_NATIVE_BOT_SEED"])
         except (KeyError, TypeError, ValueError):
@@ -2636,6 +2637,10 @@ class NativeNationalBot:
             "socket_fallback_decision": dict(baseline),
             "socket_fallback_ready_ms": round((time.monotonic() - started) * 1000.0, 3),
             "baseline_published_ms": None,
+            "baseline_target_ms": round(
+                self._decision_baseline_target_sec * 1000.0,
+                3,
+            ),
             "baseline_target_met": False,
             "policy_baseline_decision": None,
             "refinement_messages": 0,
@@ -3094,15 +3099,17 @@ class NativeNationalBot:
     def handle(self, line: str, sock: socket.socket) -> None:
         self._last_platform_message_at = time.perf_counter()
         if line.startswith("name"):
+            self._name_handshake_count += 1
+            handshake_count, generation_before = self._name_handshake_count, self._strategy_worker_generation
+            launch_ok = self._ensure_strategy_worker(); generation = self._strategy_worker_generation
+            launch_started = launch_ok and generation > generation_before
+            _log(f"NAME_HANDSHAKE count={handshake_count} worker_launch_started={launch_started} worker_generation={generation} launch_ok={launch_ok}")
+            if handshake_count != 1 or not launch_started: return
             sock.sendall(self.name.encode("utf-8"))
-            _log(f"SEND name_handshake name={self.name!r}")
-            self._ensure_strategy_worker()
+            _log(f"SEND name_handshake name={self.name!r} count={handshake_count} worker_generation={generation}")
             return
         if line.startswith("preflop"):
-            # Normal hands settle before the next preflop token.  Keep this
-            # boundary defensive and idempotent so an already relayed/repaired
-            # closer is never duplicated, while no prior-hand state is cleared
-            # before a boundary-proven omitted call/check has been recorded.
+            # Infer only a boundary-proven omitted closer before clearing state.
             self._infer_suppressed_terminal_opponent_action("hand_start")
             parts = line.split("|", 2)
             blind = parts[1]
@@ -3657,6 +3664,69 @@ class NativeBotSpec:
             "epoch_receipt_digest": self.epoch_receipt_digest,
         }
         return {**payload, "identity_digest": canonical_digest(payload)}
+
+
+def _system_native_name_handshake_issues(
+    label: str,
+    spec: NativeBotSpec,
+    process_info: dict[str, Any],
+    bot_log_summary: dict[str, Any],
+) -> list[str]:
+    """Return fail-closed raw-name launch issues for the checked-in runtime.
+
+    Legacy/non-strict fixtures intentionally do not carry a system-owned
+    log contract.  Only an entry whose bound digest is exactly this runtime
+    template *and* whose managed launch supplied a decision log is required
+    to emit the name/worker evidence below.
+    """
+
+    expected_entry_digest = hashlib.sha256(
+        NATIVE_BOT_TEMPLATE.encode("utf-8")
+    ).hexdigest()
+    if (
+        spec.entry_digest != expected_entry_digest
+        or process_info.get("bot_log_supported") is not True
+    ):
+        return []
+    handshake = bot_log_summary.get("name_handshake")
+    if not isinstance(handshake, dict):
+        return [f"{label}: native_name_handshake_missing"]
+
+    def count(field: str) -> int:
+        value = handshake.get(field)
+        return value if isinstance(value, int) and not isinstance(value, bool) else -1
+
+    issues: list[str] = []
+    received = count("received_count")
+    malformed = count("malformed_count")
+    if malformed > 0:
+        issues.append(f"{label}: native_name_handshake_malformed")
+    if handshake.get("available") is not True or received <= 0:
+        issues.append(f"{label}: native_name_handshake_missing")
+        return issues
+    if received != 1:
+        issues.append(
+            f"{label}: native_name_handshake_repeated count={received}"
+        )
+        return issues
+    if count("sent_count") != 1:
+        issues.append(f"{label}: native_name_handshake_missing_raw_reply")
+    generations = handshake.get("worker_generations")
+    generation_valid = (
+        isinstance(generations, list)
+        and len(generations) == 1
+        and isinstance(generations[0], int)
+        and not isinstance(generations[0], bool)
+        and generations[0] >= 1
+    )
+    if (
+        count("worker_launch_started_count") != 1
+        or count("worker_launch_ok_count") != 1
+        or count("worker_launch_failed_count") != 0
+        or not generation_valid
+    ):
+        issues.append(f"{label}: native_name_handshake_launch_failed")
+    return issues
 
 
 def _artifact_execution_is_valid(
@@ -4891,6 +4961,14 @@ async def _execute_tcp_server_with_processes(
             },
         }
         player_issues = []
+        player_issues.extend(
+            _system_native_name_handshake_issues(
+                label,
+                spec,
+                proc_info,
+                bot_log_summary,
+            )
+        )
         if illegal[idx]:
             player_issues.append(f"{label}: illegal_actions={illegal[idx]}")
         if timeouts[idx]:

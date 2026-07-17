@@ -7,6 +7,7 @@ import pytest
 import precommit_eval_contract as contract
 import tool_eval
 import national_native
+import national_runtime_probe
 
 
 def _tool_payload(result):
@@ -89,6 +90,7 @@ def _infra_timeout_checkpoint(
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
                 "code_fingerprint": artifact_fingerprint,
+                **national_runtime_probe.runtime_probe_native_template_evidence(),
             },
             "review": {
                 **gate_identity,
@@ -972,6 +974,7 @@ async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                **national_runtime_probe.runtime_probe_native_template_evidence(),
             },
             "review": {
                 "approved": True,

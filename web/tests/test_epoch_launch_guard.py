@@ -454,6 +454,72 @@ def test_web_lifespan_honors_shared_operator_recovery_launch_barrier(monkeypatch
     asyncio.run(exercise())
 
 
+def test_web_lifespan_stops_a_later_control_registered_owner(monkeypatch):
+    """Lifespan shutdown resolves the current control-start manager, not A."""
+
+    import daemon_management
+    import epoch_authority
+    import server.app as app_module
+    from shutdown_manager import ShutdownManager
+    from server.state import app_state, run_evolution_task
+
+    async def noop(*_args, **_kwargs):
+        return None
+
+    daemon_stops = []
+    app_state.stop_running()
+    app_module.app.state.evolution_lifespan_owned_owners.clear()
+    monkeypatch.setenv("POK_WEB_VIEW_ONLY", "1")
+    monkeypatch.setattr(
+        epoch_authority,
+        "require_policy_epoch_initialized",
+        lambda _operation: _state("strict_published", initialized=True),
+    )
+    monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
+    monkeypatch.setattr(app_module.arena_manager, "startup", noop)
+    monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
+    monkeypatch.setattr(
+        daemon_management,
+        "stop_daemon",
+        lambda: daemon_stops.append("stopped"),
+    )
+
+    async def exercise():
+        worker_finished = asyncio.Event()
+        manager_b = ShutdownManager()
+        task = None
+        async with app_module.lifespan(app_module.app):
+            owner_b = app_state.begin_runtime_owner()
+            assert owner_b is not None
+
+            async def wait_for_current_manager():
+                await manager_b.wait_for_shutdown()
+                worker_finished.set()
+
+            app_state.set_shutdown_mgr(manager_b, owner_id=owner_b)
+            task = asyncio.create_task(
+                run_evolution_task(
+                    wait_for_current_manager(),
+                    owner_id=owner_b,
+                )
+            )
+            app_state.set_task(task, owner_id=owner_b)
+            app_module.register_lifespan_runtime_owner(owner_b)
+            assert manager_b.is_shutting_down is False
+        assert task is not None
+        await asyncio.wait_for(task, timeout=1)
+        assert worker_finished.is_set()
+        assert manager_b.is_shutting_down is True
+        assert app_state.runtime_owner_id() is None
+
+    try:
+        asyncio.run(exercise())
+        assert daemon_stops == ["stopped"]
+    finally:
+        app_module.app.state.evolution_lifespan_owned_owners.clear()
+        app_state.stop_running()
+
+
 @pytest.mark.parametrize("denial_mode", ("already_owned", "barrier", "epoch"))
 def test_web_lifespan_denial_does_not_mutate_existing_runtime_owner(
     monkeypatch,

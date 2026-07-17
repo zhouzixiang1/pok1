@@ -2609,6 +2609,94 @@ def test_runtime_guard_allows_quality_after_workers_done_head_drift(monkeypatch)
     assert payload["current_head"] == "new456"
 
 
+def test_runtime_guard_allows_only_quality_refresh_after_final_admission_head_drift(
+    monkeypatch,
+):
+    """The terminal marker replaces EXE polling with one fresh quality gate."""
+
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_unrelated_head_drift_allowed",
+        lambda **_kwargs: (False, {}),
+    )
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "official_certifying",
+        gate_results={
+            "official_full": {
+                "outcome": "quality_admission_blocked",
+                "failure_class": "quality",
+                "quality_admission_refresh": True,
+            },
+        },
+        repo_baseline={
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "official_certifying",
+        },
+    ))
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is True
+    assert payload["head_drift_resume_allowed"] is True
+    assert payload["resume_kind"] == "quality_admission_refresh"
+    assert payload["allowed_tools"] == ["run_quality_gates"]
+
+
+def test_runtime_guard_rejects_quality_gate_for_ordinary_official_job_head_drift(
+    monkeypatch,
+):
+    """An attached ordinary EXE job cannot gain the refresh exception."""
+
+    import tool_runtime_guard
+
+    monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
+    snapshots = iter([
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+        {"ok": True, "branch": "main...origin/main", "head": "new456", "entries": ["?? bots/national_v300/"]},
+    ])
+    monkeypatch.setattr(tool_runtime_guard, "git_worktree_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(tool_runtime_guard, "get_last_snapshot", lambda: None)
+    monkeypatch.setattr(
+        tool_runtime_guard,
+        "_unrelated_head_drift_allowed",
+        lambda **_kwargs: (False, {}),
+    )
+    monkeypatch.setattr(tool_runtime_guard, "read_pipeline_checkpoint", lambda: _strict_checkpoint(
+        300,
+        299,
+        "official_certifying",
+        gate_results={"official_full": {"outcome": "pending"}},
+        repo_baseline={
+            "head": "old123",
+            "branch": "main...origin/main",
+            "captured_stage": "official_certifying",
+        },
+    ))
+
+    ok, payload = tool_runtime_guard.ensure_runtime_git_guard(
+        "run_quality_gates",
+        {"version": 300, "source_v": 299},
+    )
+
+    assert ok is False
+    assert payload["reason"] == "head_changed_during_generation"
+
+
 def test_runtime_guard_allows_review_after_post_quality_head_drift(monkeypatch):
     import tool_runtime_guard
 
@@ -2668,6 +2756,7 @@ def test_runtime_guard_blocks_unscheduled_workers_after_quality_passed_head_drif
 
 def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
     import tool_runtime_guard
+    from national_runtime_probe import runtime_probe_native_template_evidence
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
@@ -2687,11 +2776,13 @@ def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                **runtime_probe_native_template_evidence(),
             },
             "precommit_eval": {
                 "passed": True,
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
+                **runtime_probe_native_template_evidence(),
             },
         },
         repo_baseline={"head": "old123", "branch": "main...origin/main", "captured_stage": "quality_passed"},
@@ -3715,6 +3806,42 @@ def test_checkpoint_recovery_diagnostics_allows_post_quality_head_mismatch(tmp_p
     assert "repo_baseline_head_mismatch" not in diag["issues"]
     assert "repo_baseline_head_mismatch_post_quality_resume" in diag["warnings"]
     assert diag["repo"]["baseline_head_mismatch_allowed"] is True
+
+
+def test_checkpoint_recovery_diagnostics_routes_final_admission_drift_to_quality(
+    tmp_path,
+):
+    """Recovery diagnostics expose the same dynamic route as runtime guard."""
+
+    import pipeline_recovery
+
+    _strict_artifact(tmp_path / "bots" / "national_v269", 269)
+    checkpoint = _strict_checkpoint(
+        269,
+        237,
+        "official_certifying",
+        gate_results={
+            "official_full": {
+                "outcome": "quality_admission_blocked",
+                "failure_class": "quality",
+                "quality_admission_refresh": True,
+            },
+        },
+        repo_baseline={"branch": "main", "head": "old123"},
+    )
+    snapshot = {"ok": True, "branch": "main...origin/main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch_quality_admission_refresh_resume" in diag["warnings"]
+    assert diag["repo"]["head_drift_resume_kind"] == "quality_admission_refresh"
+    assert diag["repo"]["head_drift_allowed_tools"] == ["run_quality_gates"]
+    assert diag["repo"]["head_drift_requires_contract_unchanged"] is True
 
 
 def test_checkpoint_recovery_diagnostics_allows_verified_head_mismatch(tmp_path):

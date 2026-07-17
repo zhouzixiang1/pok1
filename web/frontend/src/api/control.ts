@@ -198,7 +198,10 @@ export interface ControlTaskHealth {
   done: boolean | null;
   cancelled: boolean | null;
   shutdown_requested: boolean;
-  owner_id?: string | null;
+  /** Only an exact live, non-stopping owner may publish transient status. */
+  status_eligible: boolean;
+  owner_id: string | null;
+  lifecycle_revision: number;
 }
 
 export interface ControlDaemonHealth {
