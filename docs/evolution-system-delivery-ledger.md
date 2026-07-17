@@ -3312,3 +3312,36 @@ Its focused checkout/override regressions and shell syntax check are required
 before this repair is committed, synchronized, and used to launch fresh v143.
 No v143 candidate, certificate, tag, rating row or strength sample has been
 created by this failed launch attempt.
+
+## 2026-07-18 — source-pending stability-health prefetch repair
+
+The repaired launcher then started a fresh `v143` workflow on runtime
+`5a6cf7ef`; the Web, Orchestrator and daemon are live, the daemon is correctly
+idle until two strict Bots publish, and the initial Master sequence is producing
+new provider evidence. During that live run, the dashboard health endpoint was
+observed to report a short `degraded` interval even though the owner, checkpoint
+and daemon were all healthy. The exact cause is a cache lifecycle gap, not a
+protocol or model failure: `stability_observation_cached_projection()` returned
+the last fresh value until its 30-second TTL elapsed, then the *first* later
+status/health read returned fail-closed `stale` while it launched a refresh.
+With no browser, or an interval longer than the TTL, that made a healthy system
+look persistently degraded.
+
+The pending source repair preserves the hard rule rather than relabeling stale
+as healthy. It adds a bounded pre-expiry, single-flight verifier request and a
+task owned by `orchestrator_loop`; while the existing value is still within its
+TTL, the task refreshes it ahead of expiry. A late, failed, cancelled or
+authority-drifted verifier still reaches the original TTL and projects zero
+count/`degraded`. The alignment matrix now records the lifecycle owner,
+dynamic cache gate, producer/consumer path and both the prefetch positive and
+expiry negative regressions. Focused evidence is stability/matrix `44 passed`,
+plus epoch/control `104 passed`; the complete current Web suite then passed
+`3087 passed, 20 skipped, 1 warning` in 170.70 seconds, alongside modified
+module compile and diff checks.
+
+This repair is intentionally not copied into the active checkout. It must be
+committed, reviewed and merged only after the active `workflow-v43` reaches a
+canonical safe boundary; a source sync/restart before then would reset the
+observation and invalidate the running evaluation contract. Current stability
+remains `0/10`, and no health display can be treated as Bot, certificate,
+rating or strength evidence.

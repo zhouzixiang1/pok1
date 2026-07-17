@@ -627,14 +627,14 @@ This block is generated from `web/core/national_alignment_matrix.py` (schema 6) 
 ### `stability_ten_generation_observation` — current / runtime_pending
 
 - Authority/source: `AGENTS.md::stability`; `web/core/post_publication_handoff.py::complete_post_publication_handoff`
-- Production owner: `web/core/post_publication_handoff.py::plan_handoff_step`; `web/core/post_publication_handoff.py::complete_handoff_step`; `web/core/stability_observation.py::stability_observation_projection`
-- Dynamic gate: `web/core/stability_observation.py::record_published_generation`; `web/core/stability_observation.py::stability_observation_projection`
+- Production owner: `web/core/post_publication_handoff.py::plan_handoff_step`; `web/core/post_publication_handoff.py::complete_handoff_step`; `web/core/stability_observation.py::stability_observation_projection`; `web/core/orchestrator.py::_stability_projection_maintenance_coroutine`
+- Dynamic gate: `web/core/stability_observation.py::record_published_generation`; `web/core/stability_observation.py::stability_observation_projection`; `web/core/stability_observation.py::stability_observation_cached_projection`; `web/core/orchestrator.py::_stability_projection_maintenance_tick`
 - Prompt renderer/template: Master=`web/core/agent_master.py::_render_master_final_provider_prompt` → `web/core/prompts/master_prompt.md`; Worker=`web/core/agent_workers.py::_render_worker_provider_prompt` → `web/core/prompts/worker_prompt.md`, `web/core/prompts/worker_profile_national_native.md`; Reviewer=`web/core/tool_gates.py::_render_reviewer_provider_prompt` → `web/core/prompts/reviewer_prompt.md`; Critic=`web/core/agent_review.py::_render_critic_provider_prompt` → `web/core/prompts/critic_prompt.md`; Orchestrator=`web/core/orchestrator.py::_render_orchestrator_provider_prompt` → `web/core/prompts/orchestrator.md`
 - Prompt statement: All five rendered roles must treat current-generation quality evidence as the only input to the N/10 observation; they cannot carry a stability claim across a restart, cleanup, or identity drift.
-- Producer → consumer: each post-publication exact main/tag/certificate/native-cycle proof → durable stability observation → frontend projection → N/10 only for consecutive verified generations
-- Positive regression: `web/tests/test_stability_observation.py::test_ten_consecutive_publications_complete_and_duplicate_is_idempotent`
-- Negative regression: `web/tests/test_stability_observation.py::test_process_restart_resets_existing_streak`; `web/tests/test_stability_observation.py::test_identity_drift_replay_persists_reset_without_recounting_duplicate`
-- Fail-closed: A repair, manual cleanup, restart, branch/head/certificate/cycle identity drift, or missing proof resets/hides the count; it can never be hand-carried forward.
+- Producer → consumer: each post-publication exact main/tag/certificate/native-cycle proof → durable stability observation → lifecycle-owned pre-expiry single-flight verification → frontend projection → N/10 only for consecutive verified generations
+- Positive regression: `web/tests/test_stability_observation.py::test_ten_consecutive_publications_complete_and_duplicate_is_idempotent`; `web/tests/test_stability_observation.py::test_cached_projection_prefetch_keeps_current_value_fresh_until_reverified`; `web/tests/test_stability_observation.py::test_orchestrator_stability_maintenance_is_lifecycle_bound`
+- Negative regression: `web/tests/test_stability_observation.py::test_process_restart_resets_existing_streak`; `web/tests/test_stability_observation.py::test_identity_drift_replay_persists_reset_without_recounting_duplicate`; `web/tests/test_stability_observation.py::test_cached_projection_expires_to_zero_before_background_refresh`
+- Fail-closed: A repair, manual cleanup, restart, branch/head/certificate/cycle identity drift, or missing proof resets/hides the count; a prefetch may reuse only an unexpired verified value, and a late/failed verifier still expires to zero.
 
 ### `provider_canonical_abandon_handoff` — current / source_contract
 

@@ -52,6 +52,11 @@ except Exception:
 _MAX_RESET_HISTORY = 20
 STABILITY_VERIFICATION_TTL_SEC = 30.0
 STABILITY_VERIFICATION_RETRY_SEC = 5.0
+# A running orchestrator refreshes before the last verified result expires.
+# The public health projection nevertheless becomes stale at the exact TTL if
+# a verifier cannot finish, so this is availability maintenance, never a
+# relaxation of the delivery observation contract.
+STABILITY_VERIFICATION_PREFETCH_LEAD_SEC = 10.0
 MAX_DAEMON_PAIRS = 8
 
 _RUNTIME_CONFIG_LOCK = threading.RLock()
@@ -1115,6 +1120,7 @@ def invalidate_stability_projection_cache() -> None:
 def stability_observation_cached_projection(
     *,
     expected_epoch_authority_digest: str | None = None,
+    prefetch_lead_sec: float = 0.0,
 ) -> dict[str, Any]:
     """Return immediately and coalesce expensive remote verification.
 
@@ -1149,6 +1155,21 @@ def stability_observation_cached_projection(
             authority=None,
         )
 
+    try:
+        prefetch_lead = float(prefetch_lead_sec)
+    except (TypeError, ValueError) as exc:
+        raise StabilityObservationError(
+            "stability_verification_prefetch_lead_invalid"
+        ) from exc
+    if not math.isfinite(prefetch_lead) or prefetch_lead < 0:
+        raise StabilityObservationError(
+            "stability_verification_prefetch_lead_invalid"
+        )
+    # Never make the prefetch window longer than the verified lifetime.  The
+    # cap keeps an accidental caller value from turning each reader into a
+    # verifier launch loop.
+    prefetch_lead = min(prefetch_lead, STABILITY_VERIFICATION_TTL_SEC)
+
     now = _now()
     launch = False
     generation = 0
@@ -1167,13 +1188,27 @@ def stability_observation_cached_projection(
         checked_at = _PROJECTION_CACHE_CHECKED_AT
         fresh_until = _PROJECTION_CACHE_FRESH_UNTIL
         error = _PROJECTION_CACHE_ERROR
-        if (
+        fresh = (
             value is not None
             and isinstance(fresh_until, (int, float))
             and math.isfinite(float(fresh_until))
             and now < float(fresh_until)
-        ):
-            return _verification_fail_closed_projection(
+        )
+        if fresh:
+            # A lifecycle-owned maintainer may ask for a second verifier
+            # shortly before expiry.  Keep returning the still-bound fresh
+            # projection while the single-flight worker runs; if it fails or
+            # stalls, the original TTL remains the exact fail-closed boundary.
+            if (
+                prefetch_lead > 0
+                and now >= float(fresh_until) - prefetch_lead
+                and not _PROJECTION_CACHE_INFLIGHT
+                and now >= _PROJECTION_CACHE_RETRY_AFTER
+            ):
+                _PROJECTION_CACHE_INFLIGHT = True
+                launch = True
+                generation = _PROJECTION_CACHE_GENERATION
+            result = _verification_fail_closed_projection(
                 value,
                 state="fresh",
                 checked_at=checked_at,
@@ -1181,8 +1216,7 @@ def stability_observation_cached_projection(
                 error=None,
                 authority=authority,
             )
-
-        if (
+        elif (
             not _PROJECTION_CACHE_INFLIGHT
             and now >= _PROJECTION_CACHE_RETRY_AFTER
         ):
@@ -1190,7 +1224,9 @@ def stability_observation_cached_projection(
             launch = True
             generation = _PROJECTION_CACHE_GENERATION
 
-        if value is not None:
+        if fresh:
+            pass
+        elif value is not None:
             result = _verification_fail_closed_projection(
                 value,
                 state="stale",

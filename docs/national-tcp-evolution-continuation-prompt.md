@@ -1421,3 +1421,31 @@ candidate 时只通过 Git fast-forward 同步 `.evolution_pok`，重跑 recover
 official diagnostics，随后 fresh v143 prepare/start。`.evolution_pok` 当前停止、HEAD 同为
 `855861bf`，其已有的 `national_arena/storage_owner.lock` 不得手删。v143/v144/rating/N=10
 均仍未产生，观察计数保持 **0/10**。
+
+## 最新运行接续 — `5a6cf7ef` 上的 active workflow-v43
+
+This section supersedes the stopped-`855861bf` restart wording above. The
+runtime checkout was safely fast-forwarded to
+`5a6cf7ef67c959bbe5d91dcc1dd869736728719e` after a stopped-state recovery
+diagnostic (`active=false/recoverable=true/issues=[]`), explicit evaluator
+identity archive/initialize, and a green official doctor. It is now running
+one fresh `generation:143:workflow-v43` from `v142`; Web, Orchestrator and the
+12-worker/5-pair native daemon are live. The daemon is correctly waiting for
+the first two published strict Bots and supplies no strength evidence yet.
+
+Do not stop, restart, re-submit, edit, copy, or delete this active checkpoint.
+The three Master proposals and both critics completed; a first final-Master
+proposal exceeded the worker-prompt budget and was rejected by the strict
+binding gate, then the same sealed proposal entered its governed schema repair.
+The second final Master was accepted. Treat this as live progress, not a Bot,
+certificate, tag, rating, official result, or stability credit. Follow the
+current checkpoint and canonical transactions only.
+
+The first `health` request after a 30-second verification-cache expiry can
+briefly return `degraded` while a background verifier refreshes; a follow-up
+projection becomes `healthy`. This does not permit calling stale healthy. A
+source-only pre-expiry single-flight maintenance repair is prepared with
+stability/matrix regressions, but **must not be synchronized or restart v43**.
+Commit/review it in the alignment worktree, wait for v43's canonical terminal
+safe boundary, then use the normal stopped-checkout git/diagnostic/restart path.
+Any such sync or restart keeps observation at `0/10`.

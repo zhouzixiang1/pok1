@@ -980,10 +980,22 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/post_publication_handoff.py", "plan_handoff_step"),
             _ref("web/core/post_publication_handoff.py", "complete_handoff_step"),
             _ref("web/core/stability_observation.py", "stability_observation_projection"),
+            _ref(
+                "web/core/orchestrator.py",
+                "_stability_projection_maintenance_coroutine",
+            ),
         ),
         dynamic_gates=(
             _ref("web/core/stability_observation.py", "record_published_generation"),
             _ref("web/core/stability_observation.py", "stability_observation_projection"),
+            _ref(
+                "web/core/stability_observation.py",
+                "stability_observation_cached_projection",
+            ),
+            _ref(
+                "web/core/orchestrator.py",
+                "_stability_projection_maintenance_tick",
+            ),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
@@ -994,21 +1006,29 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         prompt_required_terms=("current-generation", "quality"),
         producer_consumer=(
             "each post-publication exact main/tag/certificate/native-cycle proof → durable "
-            "stability observation → frontend projection → N/10 only for consecutive verified generations"
+            "stability observation → lifecycle-owned pre-expiry single-flight verification → "
+            "frontend projection → N/10 only for consecutive verified generations"
         ),
         positive_tests=(
             "web/tests/test_stability_observation.py::"
             "test_ten_consecutive_publications_complete_and_duplicate_is_idempotent",
+            "web/tests/test_stability_observation.py::"
+            "test_cached_projection_prefetch_keeps_current_value_fresh_until_reverified",
+            "web/tests/test_stability_observation.py::"
+            "test_orchestrator_stability_maintenance_is_lifecycle_bound",
         ),
         negative_tests=(
             "web/tests/test_stability_observation.py::"
             "test_process_restart_resets_existing_streak",
             "web/tests/test_stability_observation.py::"
             "test_identity_drift_replay_persists_reset_without_recounting_duplicate",
+            "web/tests/test_stability_observation.py::"
+            "test_cached_projection_expires_to_zero_before_background_refresh",
         ),
         fail_closed=(
             "A repair, manual cleanup, restart, branch/head/certificate/cycle identity drift, "
-            "or missing proof resets/hides the count; it can never be hand-carried forward."
+            "or missing proof resets/hides the count; a prefetch may reuse only an unexpired "
+            "verified value, and a late/failed verifier still expires to zero."
         ),
     ),
     MatrixRow(

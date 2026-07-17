@@ -1,3 +1,4 @@
+import asyncio
 import json
 import threading
 import time
@@ -404,6 +405,107 @@ def test_cached_projection_expires_to_zero_before_background_refresh(monkeypatch
     assert stale["count"] == 0
     assert stale["continuity_valid"] is False
     assert stale["complete"] is False
+
+
+def test_cached_projection_prefetch_keeps_current_value_fresh_until_reverified(
+    monkeypatch,
+):
+    import stability_observation as observation
+
+    observation.invalidate_stability_projection_cache()
+    clock = [1000.0]
+    calls = []
+    monkeypatch.setattr(observation, "_now", lambda: clock[0])
+
+    def projection():
+        calls.append(clock[0])
+        return _projection_fixture(count=len(calls))
+
+    monkeypatch.setattr(observation, "stability_observation_projection", projection)
+    assert observation.stability_observation_cached_projection()["verification"][
+        "state"
+    ] == "pending"
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        first = observation.stability_observation_cached_projection()
+        if first["verification"]["state"] == "fresh":
+            break
+        time.sleep(0.01)
+    assert first["verification"]["state"] == "fresh"
+    old_deadline = first["verification"]["fresh_until"]
+    assert old_deadline == 1000.0 + observation.STABILITY_VERIFICATION_TTL_SEC
+
+    clock[0] = old_deadline - observation.STABILITY_VERIFICATION_PREFETCH_LEAD_SEC + 1
+    prefetch = observation.stability_observation_cached_projection(
+        prefetch_lead_sec=observation.STABILITY_VERIFICATION_PREFETCH_LEAD_SEC,
+    )
+    assert prefetch["verification"]["state"] == "fresh"
+    assert prefetch["count"] == 1
+
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        refreshed = observation.stability_observation_cached_projection(
+            prefetch_lead_sec=observation.STABILITY_VERIFICATION_PREFETCH_LEAD_SEC,
+        )
+        if refreshed["count"] == 2:
+            break
+        time.sleep(0.01)
+    assert refreshed["verification"]["state"] == "fresh"
+    assert refreshed["verification"]["fresh_until"] > old_deadline
+    assert calls == [1000.0, clock[0]]
+
+    # Repeated prefetch readers use the same single-flight result rather than
+    # opening another verifier before the next lead window.
+    observation.stability_observation_cached_projection(
+        prefetch_lead_sec=observation.STABILITY_VERIFICATION_PREFETCH_LEAD_SEC,
+    )
+    assert calls == [1000.0, clock[0]]
+    clock[0] = old_deadline + 0.1
+    assert observation.stability_observation_cached_projection()["verification"][
+        "state"
+    ] == "fresh"
+
+
+def test_orchestrator_stability_maintenance_is_lifecycle_bound(monkeypatch):
+    import orchestrator
+    from shutdown_manager import ShutdownManager
+
+    calls = []
+
+    async def fake_blocking(function, /, *args, **kwargs):
+        calls.append((function, args, kwargs))
+        return function(*args)
+
+    monkeypatch.setattr(orchestrator, "run_blocking_isolated", fake_blocking)
+    monkeypatch.setattr(
+        orchestrator,
+        "_stability_projection_maintenance_tick",
+        lambda: None,
+    )
+
+    async def exercise():
+        shutdown = ShutdownManager()
+        task = asyncio.create_task(
+            orchestrator._stability_projection_maintenance_coroutine(
+                shutdown,
+                check_interval=60,
+            )
+        )
+        deadline = time.monotonic() + 1
+        while not calls and time.monotonic() < deadline:
+            await asyncio.sleep(0.001)
+        assert calls
+        shutdown.request_shutdown()
+        await asyncio.wait_for(task, timeout=1)
+
+    asyncio.run(exercise())
+    assert calls == [
+        (
+            orchestrator._stability_projection_maintenance_tick,
+            (),
+            {"thread_name_prefix": "stability-observation-maintenance"},
+        )
+    ]
 
 
 def test_cached_projection_reports_background_failure_without_raising(monkeypatch):

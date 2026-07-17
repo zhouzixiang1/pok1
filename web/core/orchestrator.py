@@ -514,6 +514,9 @@ ORCH_NATIVE_MATCH_PROGRESS_MAX_AGE_SEC = 90.0
 ORCH_NATIVE_MATCH_REPROOF_INTERVAL_SEC = 5.0
 POST_GENERATION_CLEANUP_TIMEOUT = int(os.environ.get("POK_POST_GENERATION_CLEANUP_TIMEOUT", "900"))
 RUNTIME_BRANCH_GUARD_INTERVAL = float(os.environ.get("POK_RUNTIME_BRANCH_GUARD_INTERVAL", "5"))
+STABILITY_OBSERVATION_MAINTENANCE_INTERVAL = float(
+    os.environ.get("POK_STABILITY_OBSERVATION_MAINTENANCE_INTERVAL", "5")
+)
 
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
 
@@ -5191,6 +5194,64 @@ async def _runtime_branch_guard_coroutine(
             log.debug("Runtime branch guard check error (non-fatal): %s", e)
 
 
+def _stability_projection_maintenance_tick() -> None:
+    """Request a proactive, still-fail-closed stability-cache refresh.
+
+    The cache owns the remote verifier's single-flight lease.  This tick only
+    supplies the current epoch authority and asks it to prefetch before its
+    existing verified result expires; it never writes observation state or
+    treats a pending/stale result as healthy.
+    """
+
+    from epoch_authority import epoch_stream_authority_digest, strict_epoch_projection
+    from stability_observation import (
+        STABILITY_VERIFICATION_PREFETCH_LEAD_SEC,
+        stability_observation_cached_projection,
+    )
+
+    authority_digest = epoch_stream_authority_digest(strict_epoch_projection())
+    if not isinstance(authority_digest, str) or len(authority_digest) != 64:
+        raise RuntimeError("stability_maintenance_epoch_authority_unavailable")
+    stability_observation_cached_projection(
+        expected_epoch_authority_digest=authority_digest,
+        prefetch_lead_sec=STABILITY_VERIFICATION_PREFETCH_LEAD_SEC,
+    )
+
+
+async def _stability_projection_maintenance_coroutine(
+    shutdown_mgr,
+    *,
+    check_interval: float = STABILITY_OBSERVATION_MAINTENANCE_INTERVAL,
+) -> None:
+    """Keep the health cache verified without relying on browser polling."""
+
+    interval = max(0.1, float(check_interval))
+    while True:
+        if shutdown_mgr and shutdown_mgr.is_shutting_down:
+            return
+        try:
+            await run_blocking_isolated(
+                _stability_projection_maintenance_tick,
+                thread_name_prefix="stability-observation-maintenance",
+            )
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            # Health remains fail-closed at the existing TTL boundary.  Do not
+            # turn a maintenance diagnostic into an unbounded UI/event flood.
+            log.debug("Stability maintenance refresh failed: %s", exc)
+        if shutdown_mgr:
+            try:
+                await asyncio.wait_for(
+                    shutdown_mgr.wait_for_shutdown(),
+                    timeout=interval,
+                )
+            except asyncio.TimeoutError:
+                continue
+            return
+        await asyncio.sleep(interval)
+
+
 def _startup_recovery(ui=None):
     """Use the one strict checkpoint/handoff reader at process startup."""
 
@@ -5380,6 +5441,7 @@ async def orchestrator_loop(
     os.environ["POK_RUNTIME_EXPECTED_BRANCH"] = EVOLUTION_BRANCH
     _expected_runtime_head = _set_runtime_expected_head(_expected_runtime_head)
     _branch_guard_task = None
+    _stability_maintenance_task = None
     _runtime_hard_stop_event = asyncio.Event()
     if not recovery_stops_launch and _runtime_branch_guard_enabled():
         _branch_guard_task = asyncio.create_task(
@@ -5403,6 +5465,11 @@ async def orchestrator_loop(
                 "current_head": _runtime_identity.get("head", ""),
                 "check_interval": RUNTIME_BRANCH_GUARD_INTERVAL,
             },
+        )
+    if not recovery_stops_launch:
+        _stability_maintenance_task = asyncio.create_task(
+            _stability_projection_maintenance_coroutine(shutdown_mgr),
+            name="stability-observation-maintenance",
         )
 
     # Start daemon only after recovery authority permits the workflow.
@@ -6321,6 +6388,15 @@ async def orchestrator_loop(
             _branch_guard_task.cancel()
             try:
                 await _branch_guard_task
+            except asyncio.CancelledError:
+                pass
+        if (
+            _stability_maintenance_task is not None
+            and not _stability_maintenance_task.done()
+        ):
+            _stability_maintenance_task.cancel()
+            try:
+                await _stability_maintenance_task
             except asyncio.CancelledError:
                 pass
         if not _watchdog_task.done():
