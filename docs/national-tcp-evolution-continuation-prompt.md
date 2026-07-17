@@ -813,3 +813,99 @@ and official doctor is green on managed-executor profile v7. No checkpoint
 exists, so contract 33 requires a fresh prepare rather than abandon or replay.
 All poker processes are intentionally stopped; the next task begins at step 4
 with stability `0/10`.
+
+## Latest superseding handoff: contract 34 and fenced workflow-v34
+
+All earlier wording that says the next runtime is a clean prepare with no
+checkpoint is historical. The reviewed source series is now `19db5485` →
+`a5f6f8fe` → `c3c00ae5` → `2cc426eb`, based on
+`origin/main=7e90f1e9`; documentation is the next commit. Evaluation contract 34
+repairs the Master target namespace and error-packet contract. It is not yet in
+`origin/main`, so no runtime mutation is authorized from this source state.
+
+The stopped autonomous checkout remains on tracked-clean `main` at `7e90f1e9`.
+Poker Web, Orchestrator and rating daemon have no live process. Its active,
+recoverable checkpoint is exact:
+
+- workflow `generation:143:workflow-v34`;
+- v143←v142, stage `direction_audited`, revision 4;
+- checkpoint digest
+  `fa631900c029ef7e2dd6979c64254e42211e037a646e2ef366710d7433dece66`;
+- prepared artifact
+  `0ad1dd758ebc0b62f86f19bdc645abaeb5b7d48fee7513aa8a5c0c65a2721a17`;
+- candidate transaction manifest
+  `f70128c977f8784c53e5301ae154d95aaf3afdb467f66db5282d2b9869d5f5e2`.
+
+The candidate is strict five-file unpublished state only: no `.completed`,
+certificate, tag, rating or stability credit. v34's three provider effects are
+exhausted after the controlled stop cancelled their streams; this is shutdown
+cleanup, not a proposal verdict. Never resume, delete or move v34 manually.
+
+Contract 34 requires the exact typed equalities `mechanism_target =
+mapping.mechanism_target = mapping.intervention_target =
+falsifier.intervention_target` and `falsifier.state_learning_primary =
+mapping.state_learning_primary`. Each executable field must carry
+the exact bounded target literal. `opponent.rates.fold_to_raise` and
+`opponent.terminal_response.fold_to_raise` have different owners; bare
+underscore/hyphen/space/compact leaves, lookalike identifiers, owner/foreign
+concatenation and long foreign-alias suffixes fail closed at both Scout
+admission and packet-v5 replay. Historical v32/v33 outputs are diagnosis only:
+owner-qualified outputs may revalidate, but any ambiguous bare-leaf output
+remains rejected and cannot be rewritten or replayed. Invalid error packets
+return their primary reason without success-packet cascade errors.
+
+Current source evidence is Master-focused `99 passed`, expanded
+Master/strict/evidence `217 passed`, full Web `2952 passed, 20 skipped, 1
+dependency warning` in 147.38 seconds, Sever `33 passed`, frontend production
+build (165 modules), compileall and diff check. Independent adversarial review
+found no remaining P0/P1/P2 in this repair.
+
+The exact resume order is mandatory:
+
+1. commit these three active documents, independently inspect the clean
+   detached series, and integrate it into `origin/main` without creating a new
+   long-lived ref;
+2. keep `.evolution_pok` on old HEAD `7e90f1e9`; re-read the checkpoint and
+   require exact tuple
+   `("generation:143:workflow-v34",143,142,4,"direction_audited")`;
+3. invoke only `_do_abandon_generation(reason="abandon_generation", **
+   expected_abandon_identity(checkpoint))`, then require
+   `validate_completed_abandon_handoff`; the expected preimage transaction is
+   `ac02c50c25b9239322b72b710159ba30f33c7e88a66c5fb960a7bbe11754f21c`;
+4. require canonical proof of `abandoned=true`, `cleared_checkpoint=true`,
+   workflow fencing, removed `national_v143`, and matching claim/receipt; any
+   identity drift stops the operation;
+5. only then fetch tags and `git pull --ff-only --tags` to the new
+   `origin/main`;
+6. run epoch reconciliation in the required quarantine selector, evaluation
+   identity validation, official doctor, checkpoint recovery diagnostics,
+   epoch/reset/blueprint/first-control validation; require no checkpoint,
+   `active=false/recoverable=true/issues=[]`, `fresh_bootstrap_ready`, v142→v143
+   and an empty strict pool;
+7. restart through `pokctl.sh`, then require new Web/Orchestrator/rating PIDs,
+   `/api/control/health overall=healthy`, bound rating runtime profile and a
+   cycle identity equal to the live evaluation manifest;
+8. allow the scheduler to allocate only a fresh workflow (expected v35), then
+   continue v143 first-strict publication, v144 normal full-v5, immutable
+   two-Bot rating and the resettable ten-generation observation.
+
+The evaluation identity mismatch that caused the earlier frontend health
+failure has been handled only through an explicit empty-state archive at
+`web/core/results/archive/evaluation_identity/20260717_084012`. The live
+pre-daemon identity is instance `d31950778dbd425cbed217b539121a13`, base
+`78cac3e7e7d21fbcdddc520674d37f73f5e0ee97558650858443b0c523682982`,
+manifest `4f433f912817f3218860ae9b6a26bd96f5fbfef18b961700df81483433be333b`
+and `runtime_profile=null`. Do not claim it is runtime-bound until restart
+readback proves that fact; do not rotate again unless the final main actually
+changes a semantic evaluation file and the validator requests controlled
+archive/initialize.
+
+Worker MCP remains a Codex-only operator helper. Installed recovery evidence
+and repository contract `a5f6f8fe` grant it no poker runtime/evidence authority.
+A pending separate Worker MCP list/history fix is not part of this poker
+checkpoint transition; until delivered, every new objective must fresh submit
+and consume only the returned task ID.
+
+No v143/v144 publication, certificate, rating row, immutable two-Bot cycle or
+N/10 observation exists at this handoff. Any repair, manual state cleanup or
+restart resets the observation count; current value is `0/10`.

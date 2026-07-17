@@ -2432,3 +2432,110 @@ but no live checkpoint exists, so there is nothing to abandon or replay. The
 next authorized transition is a fresh v143 prepare (workflow attempt allocated
 by the live scheduler), not workflow-v31 replay. All poker processes remain
 stopped and stability remains `0/10`.
+
+## 2026-07-17 — contract-34 Master namespace repair, controlled rating rotation, and fenced workflow-v34
+
+Fresh v143 workflows v32 and v33 proved that the remaining Master blocker was
+a producer/consumer contract defect, not evidence that the configured model
+could not propose a poker mechanism. Workflow-v32 produced two admissible
+Scouts and was canonically abandoned after the mechanism retry exhausted;
+workflow-v33 produced one admissible Scout after all initial Scouts confused
+the state-learning primary label `action_profile` with the executable target
+`opponent.rates`. Their primary packet errors were respectively
+`three_distinct_schema_valid_scout_proposals_required:got_2` and `got_1`.
+Secondary evidence-mode/critic/count diagnostics were error-packet cascade
+noise, not additional root causes.
+
+The old lexical contract also assigned the flat leaf `fold_to_raise` only to
+terminal response. Production `decision_context.opponent.rates` has its own
+`fold_to_raise`, so legitimate owner-qualified action-profile prose could be
+misclassified. A first repair exposed the correct typed mapping and error
+arithmetic, then independent adversarial review found three further boundaries:
+bare shared leaves, target lookalike identifiers, and owner/foreign aliases
+glued to a qualified path. Contract 34 now binds:
+
+- `mechanism_target = mapping.mechanism_target =
+  mapping.intervention_target = falsifier.intervention_target`;
+- `falsifier.state_learning_primary = mapping.state_learning_primary`;
+- one exact bounded target literal in `structural_change`, `expected_diff` and
+  `falsifier.intervention`;
+- distinct owners for `opponent.rates.fold_to_raise` and
+  `opponent.terminal_response.fold_to_raise`;
+- fail-closed rejection of bare underscore/hyphen/space/compact shared-leaf
+  spellings, identifier lookalikes, qualified-path continuations, and foreign
+  root/compact suffix continuations.
+
+Expected owner-qualified paths are masked before foreign-alias classification,
+so legitimate terminal-response phrases such as `fold_to_raise rate` and
+`river_overcall rate` no longer become false action-profile positives. Short
+unrelated words such as `donkey` and longer prefix-overlap such as
+`interactionprofile` remain negative controls. The same validator runs at
+Scout admission and immutable packet-v5 replay. Invalid packets return their
+primary rejection without fabricating success-packet evidence-mode or critic
+errors. Scout and retry prompts state the exact equalities, owner rules, bare
+spellings and identifier-continuation ban.
+
+Historical v32/v33 outputs were replayed only for diagnosis. Under the final
+contract 34, v32 counterfactual/compute and v33 compute remain structurally
+admissible, while outputs containing a bare shared leaf remain rejected; the
+v33 mechanism also lacks the exact `opponent.rates` literal in
+`expected_diff`. No old result is silently rewritten or replayed. The durable
+v32 abandon receipt is
+`e3638ef0b08618f2db14d273c967defe2b0b44a5e3d5cae94e0bd4ddd6068f71`;
+v33 is
+`8ace3c6763fdcf585af9d5231478ea83a7a3bde03a3411f58083f73e37d8b7a2`.
+
+The subsequently prepared `generation:143:workflow-v34` remains on the old
+runtime HEAD `7e90f1e9`. Its three provider streams were interrupted during the
+controlled 08:45 stop and exhausted with
+`stream_next_parent_cancellation_unconfirmed`; that is shutdown cleanup, not a
+semantic proposal verdict. The checkpoint is still recoverable and exact:
+v143←v142, `direction_audited`, revision 4, digest
+`fa631900c029ef7e2dd6979c64254e42211e037a646e2ef366710d7433dece66`.
+The prepared five-file artifact is
+`0ad1dd758ebc0b62f86f19bdc645abaeb5b7d48fee7513aa8a5c0c65a2721a17`
+with transaction manifest
+`f70128c977f8784c53e5301ae154d95aaf3afdb467f66db5282d2b9869d5f5e2`.
+It has no `.completed`, certificate, tag, rating or strength authority. Because
+contract 34 changes this active stage, v34 must be exact-CAS canonically
+abandoned on the old HEAD after source merge and before runtime pull. The
+preimage predicts transaction
+`ac02c50c25b9239322b72b710159ba30f33c7e88a66c5fb960a7bbe11754f21c`;
+any changed identity stops the transition.
+
+The former frontend health failure was traced to a real semantic evaluation
+identity mismatch. The old empty identity/cycle was explicitly archived at
+`web/core/results/archive/evaluation_identity/20260717_084012`; it contains no
+admitted match or strength row. The new pre-daemon identity has instance
+`d31950778dbd425cbed217b539121a13`, base digest
+`78cac3e7e7d21fbcdddc520674d37f73f5e0ee97558650858443b0c523682982`
+and manifest digest
+`4f433f912817f3218860ae9b6a26bd96f5fbfef18b961700df81483433be333b`.
+Its `runtime_profile` is deliberately null until the rating daemon restarts;
+there is no live cycle/rating payload. Thus controlled archive/initialization
+is proven, but runtime binding and frontend health are not yet claimed.
+
+The Codex-only Worker MCP was separately installed from Worker tree
+`2ade21159d12b551dcab46f0ee75b309125d7a2c` as reproducible wheel SHA-256
+`4788ea4c39d9de4e8aa200efc2255a756e2da36d86f8edf3ce05e78198e08af8`.
+Operator verification reported exact six-tool discovery, 15 healthy components
+and a real restart-recovery task
+`2d01047b-b6ff-4a94-9056-b9757f21ca3d` succeeding on attempt 2 with zero diff.
+Repository contract commit `a5f6f8fe` documents and requires that Codex-only
+boundary; active poker runtime contains no Worker MCP import/start/call path.
+A later discovered list/history
+usability defect is not yet delivered: every new objective must still fresh
+submit and consume only its returned task ID; no historical terminal result is
+authority for current work.
+
+The reviewed source sequence is `19db5485` (contract-34 mapping), `a5f6f8fe`
+(Codex-only MCP boundary), `c3c00ae5` (detached test-runtime isolation), and
+`2cc426eb` (namespace/alias hardening), based on `origin/main=7e90f1e9`.
+Independent adversarial review found no remaining P0/P1/P2. Current evidence is
+Master-focused `99 passed`, expanded Master/strict/evidence `217 passed`, full
+Web `2952 passed, 20 skipped, 1 dependency warning` in 147.38 seconds, Sever
+`33 passed`, frontend TypeScript/Vite production build with 165 modules,
+compileall and `git diff --check`. These are source proofs only. Merge/push,
+old-HEAD v34 abandon, runtime fast-forward, post-sync diagnostics, daemon
+identity binding, v143/v144 publication, two-Bot rating and stability credit
+remain unclaimed; the counter is `0/10`.
