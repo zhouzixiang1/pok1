@@ -392,6 +392,25 @@ def isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(evolution_infra, "LLM_COSTS_FILE", results_dir / "llm_costs.jsonl")
     monkeypatch.setattr(evolution_infra, "RATING_HISTORY_FILE", results_dir / "rating_history.jsonl")
     import stability_observation
+    real_stability_git = stability_observation._git
+
+    def isolated_stability_git(*args):
+        """Give isolated runtime state a stable attached-branch identity.
+
+        Production deliberately rejects a detached runtime checkout.  Test
+        worktrees, however, are commonly detached from ``origin/main`` and the
+        autouse fixture must not let that operator checkout detail make control
+        route tests fail before they exercise their intended behavior.  Keep
+        the real HEAD/object lookups and synthesize only the attached branch;
+        dedicated stability tests replace ``_git`` again when covering branch
+        rejection and drift.
+        """
+
+        if args == ("rev-parse", "--abbrev-ref", "HEAD"):
+            return "main"
+        return real_stability_git(*args)
+
+    monkeypatch.setattr(stability_observation, "_git", isolated_stability_git)
     monkeypatch.setattr(
         stability_observation,
         "STATE_FILE",
