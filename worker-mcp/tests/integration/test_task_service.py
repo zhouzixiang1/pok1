@@ -18,6 +18,7 @@ from worker_mcp.agent_executor import (
 from worker_mcp.persistence import IdempotencyConflict
 from worker_mcp.schemas import (
     ExecutionProfile,
+    ListTasksRequest,
     TaskEnvelope,
     TaskStatus,
     TaskType,
@@ -82,6 +83,27 @@ async def test_read_task_async_success_and_strict_idempotency(worker_config, git
                     update={"context": "different execution evidence"}
                 )
             )
+    finally:
+        await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_terminal_history_requires_explicit_list_opt_in(worker_config, git_repo):
+    service = TaskService(worker_config, executor=MockAgentExecutor())
+    await service.start()
+    try:
+        submitted = await service.submit(
+            request(git_repo, key="service-list-history-0001")
+        )
+        assert (await wait_terminal(service, submitted.task_id)).status is TaskStatus.SUCCEEDED
+
+        assert service.list(ListTasksRequest()).tasks == []
+        history = service.list(ListTasksRequest(include_terminal=True)).tasks
+        assert [item.task_id for item in history] == [submitted.task_id]
+        explicit = service.list(
+            ListTasksRequest(status=TaskStatus.SUCCEEDED)
+        ).tasks
+        assert [item.task_id for item in explicit] == [submitted.task_id]
     finally:
         await service.stop()
 

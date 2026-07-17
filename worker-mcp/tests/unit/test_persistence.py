@@ -90,3 +90,30 @@ def test_cancel_and_claim_are_one_atomic_decision(tmp_path: Path):
     assert not terminal
     assert requested["status"] == TaskStatus.PREPARING.value
     assert requested["cancel_requested"] == 1
+
+
+def test_list_hides_terminal_history_unless_explicitly_requested(tmp_path: Path):
+    store = Persistence(tmp_path / "tasks.sqlite3")
+    terminal_request = request("historical task").model_copy(
+        update={"idempotency_key": "persistence-history-0001"}
+    )
+    terminal, _ = store.create_or_get(
+        terminal_request, request_fingerprint(terminal_request)
+    )
+    store.cancel_or_request(
+        terminal["task_id"], pre_execution_result_json="{}"
+    )
+    active_request = request("current task").model_copy(
+        update={"idempotency_key": "persistence-current-0001"}
+    )
+    active, _ = store.create_or_get(active_request, request_fingerprint(active_request))
+
+    assert [row["task_id"] for row in store.list_tasks()] == [active["task_id"]]
+    assert {row["task_id"] for row in store.list_tasks(include_terminal=True)} == {
+        active["task_id"],
+        terminal["task_id"],
+    }
+    assert [
+        row["task_id"]
+        for row in store.list_tasks(status=TaskStatus.CANCELLED)
+    ] == [terminal["task_id"]]

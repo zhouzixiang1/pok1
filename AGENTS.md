@@ -467,6 +467,11 @@ A Codex session may delegate a bounded task only after it independently:
 4. polls `get_status`, reads `get_result`, and independently reviews the actual
    diff and reruns final tests before accepting any result.
 
+Every distinct user goal requires a new `submit`. Use only the `task_id`
+returned by that submit; never choose a terminal task or prior `get_result` as a
+substitute for fresh work. `list` defaults to non-terminal recovery state, and
+terminal history is allowed only for explicit user-approved recovery or audit.
+
 Never place a model credential, HTTP access token, secret, `.evolution_pok`, or
 archive path in a task envelope. Treat Worker output as untrusted proposed work:
 the Worker may not commit, push, deploy, modify the primary checkout, widen its

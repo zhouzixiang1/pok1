@@ -418,6 +418,7 @@ class Persistence:
         self,
         *,
         status: TaskStatus | None = None,
+        include_terminal: bool = False,
         repo: str | None = None,
         task_type: TaskType | None = None,
         since: datetime | None = None,
@@ -428,6 +429,13 @@ class Persistence:
         if status is not None:
             clauses.append("status = ?")
             params.append(status.value)
+        elif not include_terminal:
+            terminal = tuple(
+                candidate.value for candidate in TaskStatus if is_terminal(candidate)
+            )
+            placeholders = ",".join("?" for _ in terminal)
+            clauses.append(f"status NOT IN ({placeholders})")
+            params.extend(terminal)
         if repo is not None:
             clauses.append("repository = ?")
             params.append(repo)

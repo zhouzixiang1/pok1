@@ -1,6 +1,6 @@
 import pytest
 
-from worker_mcp.server import StaticTokenVerifier, build_server
+from worker_mcp.server import SERVER_INSTRUCTIONS, StaticTokenVerifier, build_server
 
 
 def test_server_exposes_exactly_six_tools_with_input_and_output_schema(worker_config):
@@ -20,6 +20,14 @@ def test_server_exposes_exactly_six_tools_with_input_and_output_schema(worker_co
 
     healthcheck = server._tool_manager.get_tool("healthcheck")
     assert healthcheck.parameters.get("properties", {}) == {}
+
+    list_tool = server._tool_manager.get_tool("list")
+    assert list_tool.parameters["properties"]["include_terminal"]["default"] is False
+    assert "never as current-task evidence" in list_tool.description
+    assert "Every distinct user request must call submit" in SERVER_INSTRUCTIONS
+    assert "Never reuse a historical result" in server._tool_manager.get_tool(
+        "get_result"
+    ).description
 
 
 def test_sdk_server_has_no_model_or_provider_arguments(worker_config):

@@ -198,6 +198,7 @@ class CancelResponse(StrictModel):
 
 class ListTasksRequest(StrictModel):
     status: TaskStatus | None = None
+    include_terminal: bool = False
     repo: str | None = None
     task_type: TaskType | None = None
     since: datetime | None = None

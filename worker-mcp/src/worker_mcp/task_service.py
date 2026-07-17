@@ -275,6 +275,7 @@ class TaskService:
             repo = str(self.worktrees.canonical_repo(filters.repo))
         rows = self.persistence.list_tasks(
             status=filters.status,
+            include_terminal=filters.include_terminal,
             repo=repo,
             task_type=filters.task_type,
             since=filters.since,

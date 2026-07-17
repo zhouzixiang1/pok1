@@ -140,6 +140,12 @@ Read evidence; a write task needs a bounded, independently measured Git diff.
 Model-reported findings and checks remain advisory. Codex must inspect the
 actual worktree/diff and run final tests before accepting any write result.
 
+Every distinct user goal starts with a new `submit`. Use only the `task_id`
+returned by that submit for its status and result; never select an older task as
+a substitute. `list` returns only non-terminal recovery state by default.
+Terminal history requires an explicit terminal `status` or
+`include_terminal=true` and is reserved for user-approved recovery or audit.
+
 ## Tests
 
 ```bash
