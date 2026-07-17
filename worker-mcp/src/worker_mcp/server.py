@@ -39,13 +39,15 @@ from .task_service import TaskService
 
 
 SERVER_INSTRUCTIONS = (
-    "Every distinct user request must call submit and then use only the task_id returned "
-    "by that submit for get_status and get_result. Never select list history or a prior "
-    "get_result as a substitute for fresh work. list defaults to non-terminal recovery "
-    "state; terminal history is operator-only when explicitly requested. Codex remains "
-    "the planner and final reviewer. Every task requires an exact base commit and "
-    "explicit allowed paths. Workers never commit, push, deploy, access the web, or "
-    "modify the primary checkout. Inspect returned diffs and rerun final tests."
+    "Each new user goal or independent work unit must call submit exactly once. "
+    "Follow-up get_status and get_result calls for that same work unit must reuse the "
+    "task_id returned by its submit; do not submit again on each follow-up turn. Never "
+    "select list history or a prior get_result as a substitute for fresh work. list "
+    "defaults to non-terminal recovery state; terminal history is allowed only when the "
+    "user explicitly requests recovery or audit. Codex remains the planner and final "
+    "reviewer. Every task requires an exact base commit and explicit allowed paths. "
+    "Workers never commit, push, deploy, access the web, or modify the primary checkout. "
+    "Inspect returned diffs and rerun final tests."
 )
 HTTP_SCOPE = "worker-mcp"
 
@@ -243,8 +245,9 @@ def build_server(
         name="get_result",
         description=(
             "Return the schema-validated result and independently measured Git diff "
-            "only for the task_id returned by this request's submit, or for an exact "
-            "user-approved recovery. Never reuse a historical result for a new goal."
+            "for the task_id created for the current user goal or independent work unit, "
+            "or for an exact user-approved recovery. Follow-up turns reuse that same "
+            "task_id. Never reuse a historical result for a new goal."
         ),
         annotations=read_annotations,
         structured_output=True,

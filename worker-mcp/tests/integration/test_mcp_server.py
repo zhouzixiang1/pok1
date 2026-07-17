@@ -24,10 +24,13 @@ def test_server_exposes_exactly_six_tools_with_input_and_output_schema(worker_co
     list_tool = server._tool_manager.get_tool("list")
     assert list_tool.parameters["properties"]["include_terminal"]["default"] is False
     assert "never as current-task evidence" in list_tool.description
-    assert "Every distinct user request must call submit" in SERVER_INSTRUCTIONS
-    assert "Never reuse a historical result" in server._tool_manager.get_tool(
-        "get_result"
-    ).description
+    assert "Each new user goal or independent work unit" in SERVER_INSTRUCTIONS
+    assert "do not submit again on each follow-up turn" in SERVER_INSTRUCTIONS
+    assert "Every distinct user request" not in SERVER_INSTRUCTIONS
+    result_description = server._tool_manager.get_tool("get_result").description
+    assert "Follow-up turns reuse that same task_id" in result_description
+    assert "Never reuse a historical result" in result_description
+    assert "this request's submit" not in result_description
 
 
 def test_sdk_server_has_no_model_or_provider_arguments(worker_config):

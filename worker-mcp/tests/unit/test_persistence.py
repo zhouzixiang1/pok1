@@ -94,26 +94,44 @@ def test_cancel_and_claim_are_one_atomic_decision(tmp_path: Path):
 
 def test_list_hides_terminal_history_unless_explicitly_requested(tmp_path: Path):
     store = Persistence(tmp_path / "tasks.sqlite3")
-    terminal_request = request("historical task").model_copy(
-        update={"idempotency_key": "persistence-history-0001"}
-    )
-    terminal, _ = store.create_or_get(
-        terminal_request, request_fingerprint(terminal_request)
-    )
-    store.cancel_or_request(
-        terminal["task_id"], pre_execution_result_json="{}"
-    )
     active_request = request("current task").model_copy(
         update={"idempotency_key": "persistence-current-0001"}
     )
     active, _ = store.create_or_get(active_request, request_fingerprint(active_request))
+    terminals = []
+    for index in range(3):
+        terminal_request = request(f"historical task {index}").model_copy(
+            update={"idempotency_key": f"persistence-history-000{index + 1}"}
+        )
+        terminal, _ = store.create_or_get(
+            terminal_request, request_fingerprint(terminal_request)
+        )
+        store.cancel_or_request(
+            terminal["task_id"], pre_execution_result_json="{}"
+        )
+        terminals.append(terminal)
 
-    assert [row["task_id"] for row in store.list_tasks()] == [active["task_id"]]
-    assert {row["task_id"] for row in store.list_tasks(include_terminal=True)} == {
-        active["task_id"],
-        terminal["task_id"],
-    }
+    # Make the ordering contract explicit: the one active row is older than
+    # enough newer terminal rows to fill the requested limit before filtering.
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE tasks SET created_at = ? WHERE task_id = ?",
+            ("2026-01-01T00:00:00+00:00", active["task_id"]),
+        )
+        for index, terminal in enumerate(terminals, start=1):
+            connection.execute(
+                "UPDATE tasks SET created_at = ? WHERE task_id = ?",
+                (f"2026-01-01T00:00:0{index}+00:00", terminal["task_id"]),
+            )
+
+    assert [row["task_id"] for row in store.list_tasks(limit=1)] == [
+        active["task_id"]
+    ]
     assert [
         row["task_id"]
-        for row in store.list_tasks(status=TaskStatus.CANCELLED)
-    ] == [terminal["task_id"]]
+        for row in store.list_tasks(include_terminal=True, limit=1)
+    ] == [terminals[-1]["task_id"]]
+    assert [
+        row["task_id"]
+        for row in store.list_tasks(status=TaskStatus.CANCELLED, limit=2)
+    ] == [terminals[-1]["task_id"], terminals[-2]["task_id"]]
