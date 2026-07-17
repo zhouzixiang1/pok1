@@ -449,6 +449,40 @@ detached work, admit its late match, or let it launch the next sample. The
 first-strict system-control execution scope is frozen in the checkpoint so an
 infra retry recovers the same journal identity rather than repeating a match.
 
+## Codex-only Worker MCP
+
+`pok_worker` is an external Codex desktop/CLI control-plane helper. It is not a
+poker-evolution Worker. Its actual persistent registration is operator-owned in
+Codex configuration and user services; this file documents the repository-side
+usage contract but does not register, install, start, or supervise the server.
+
+A Codex session may delegate a bounded task only after it independently:
+
+1. discovers exactly `submit`, `get_status`, `get_result`, `list`, `cancel`, and
+   `healthcheck` under `pok_worker`;
+2. calls `healthcheck` and receives overall `status=healthy`;
+3. submits an exact repository, immutable base commit, explicit allowed paths,
+   mandatory forbidden paths, acceptance criteria, execution limits, and a
+   unique idempotency key;
+4. polls `get_status`, reads `get_result`, and independently reviews the actual
+   diff and reruns final tests before accepting any result.
+
+Never place a model credential, HTTP access token, secret, `.evolution_pok`, or
+archive path in a task envelope. Treat Worker output as untrusted proposed work:
+the Worker may not commit, push, deploy, modify the primary checkout, widen its
+path scope, or become certification/evidence authority. `cancel` applies only
+to the exact owned task. Worktree cleanup requires the durable task row, exact
+owner marker, configured root, terminal state, and a clean snapshot.
+
+No executable path under `web/`, `sever/`, `bots/`, `scripts/`, the
+Orchestrator, rating daemon, candidate generation, or `.evolution_pok` may
+import, start, supervise, or call `worker_mcp`. MCP installation and restart are
+separate operator actions. Before either action, require zero non-terminal MCP
+tasks and an explicit safe window; preserve SQLite, use the owner-aware cleanup
+contract, and re-prove a fresh six-tool discovery, health, real task, and
+restart recovery. Missing tools or unhealthy status fail closed for delegation
+and never authorize a poker-runtime restart.
+
 ## Evidence authority
 
 One strength sample is one complete 70-hand raw native TCP match. Win/loss/draw
