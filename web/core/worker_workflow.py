@@ -1434,13 +1434,18 @@ class WorkerWorkflow:
     def abandon(self, reason: str) -> dict[str, Any]:
         state = self.state()
         if state["status"] != "abandoned":
+            # Persist and bind the same bounded value.  Otherwise an oversized
+            # caller reason is truncated in the event payload but hashed in
+            # the causation id, leaving future recovery unable to reprove its
+            # own terminal journal without retaining the unbounded input.
+            bounded_reason = str(reason)[:1000]
             self.store.terminal_transition(
                 self.run_id,
                 event_type="WorkerAbandoned",
-                payload={"reason": str(reason)[:1000]},
+                payload={"reason": bounded_reason},
                 causation_id=(
                     f"worker-abandoned:{self.run_id}:"
-                    f"cycle-{state.get('cycle', 0)}:{content_digest(reason)}"
+                    f"cycle-{state.get('cycle', 0)}:{content_digest(bounded_reason)}"
                 ),
                 expected_version=int(state["last_seq"]),
                 status="abandoned",

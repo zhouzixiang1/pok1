@@ -437,7 +437,7 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
 
     from strict_authority_workflow import DEFINITION_VERSION, authority_run_id
     from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
-    from workflow_kernel import KERNEL_SCHEMA_VERSION, canonical_json
+    from workflow_kernel import KERNEL_SCHEMA_VERSION, canonical_json, content_digest
 
     workflow_run_id = str(claim["checkpoint"]["workflow_run_id"])
     strict_run_id = authority_run_id(workflow_run_id)
@@ -468,7 +468,16 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
         isolation_level=None,
     )
     connection.row_factory = sqlite3.Row
-    expected_reason = str(claim["abandon_reason"])[:1000]
+    # The recorded claim carries the outer control-plane reason.  A Worker can
+    # already be terminal before the outer actor fences the generation (for
+    # example when the deterministic bootstrap executor rejects its own fixed
+    # output).  In that case its journal intentionally retains the bounded
+    # inner execution reason while the strict-authority child is fenced with
+    # the outer reason.  Do not conflate the two identities: doing so makes a
+    # correctly quarantined terminal generation impossible to re-prove after a
+    # process restart.
+    claim_outer_reason = str(claim["abandon_reason"])
+    outer_reason = claim_outer_reason[:1000]
     try:
         connection.execute("PRAGMA query_only=ON")
         user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
@@ -478,10 +487,28 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
             raise RuntimeError("completed_abandon_workflow_foreign_key_invalid")
         connection.execute("BEGIN")
 
+        def bounded_terminal_reason(
+            payload: dict,
+            *,
+            event_type: str,
+        ) -> str:
+            reason = payload.get("reason")
+            if (
+                not isinstance(reason, str)
+                or not reason
+                or len(reason) > 1000
+            ):
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_reason_invalid"
+                )
+            return reason
+
         def terminal_projection(
             run_id: str,
             event_type: str,
             expected_definition_version: int,
+            *,
+            require_outer_reason: bool,
         ) -> dict:
             instance = connection.execute(
                 "SELECT definition_version, stream_version, status, fence_epoch "
@@ -494,7 +521,7 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
                 )
             history = connection.execute(
                 "SELECT seq, event_type, schema_version, payload, "
-                "payload_digest FROM workflow_events "
+                "payload_digest, causation_id FROM workflow_events "
                 "WHERE run_id = ? ORDER BY seq",
                 (run_id,),
             ).fetchall()
@@ -542,11 +569,47 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
                 or instance["status"] != "abandoned"
                 or int(instance["fence_epoch"]) < 1
                 or int(event["seq"]) != stream_version
-                or payload.get("reason") != expected_reason
             ):
                 raise RuntimeError(
                     f"completed_abandon_{event_type}_terminal_invalid"
                 )
+            terminal_reason = bounded_terminal_reason(
+                payload,
+                event_type=event_type,
+            )
+            if require_outer_reason and terminal_reason != outer_reason:
+                raise RuntimeError(
+                    f"completed_abandon_{event_type}_outer_reason_mismatch"
+                )
+            if event_type == "WorkerAbandoned":
+                # WorkerAbandoned stores its own bounded execution reason in
+                # the causal id.  This binds a pre-existing inner failure
+                # without pretending it is the later outer abandon reason.
+                causation_id = event["causation_id"]
+                prefix = f"worker-abandoned:{run_id}:cycle-"
+                # The normal outer-abandon path hashes the untruncated claim
+                # reason while storing its first 1000 characters in the
+                # Worker event.  A pre-existing Worker failure instead hashes
+                # its own emitted reason.  Accept only either exact, provable
+                # construction; an unrelated truncated reason remains
+                # unbound and fails closed.
+                causal_subjects = [terminal_reason]
+                if (
+                    terminal_reason == outer_reason
+                    and claim_outer_reason != terminal_reason
+                ):
+                    causal_subjects.append(claim_outer_reason)
+                cycle_text = ""
+                if isinstance(causation_id, str) and causation_id.startswith(prefix):
+                    for subject in causal_subjects:
+                        suffix = f":{content_digest(subject)}"
+                        if causation_id.endswith(suffix):
+                            cycle_text = causation_id[len(prefix):-len(suffix)]
+                            break
+                if not cycle_text.isascii() or not cycle_text.isdecimal():
+                    raise RuntimeError(
+                        "completed_abandon_WorkerAbandoned_reason_unbound"
+                    )
             if event_type == "StrictAuthorityAbandoned" and (
                 payload.get("workflow_run_id") != workflow_run_id
             ):
@@ -567,17 +630,20 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
                 "stream_version": int(instance["stream_version"]),
                 "fence_epoch": int(instance["fence_epoch"]),
                 "terminal_event": event_type,
+                "terminal_reason": terminal_reason,
             }
 
         main = terminal_projection(
             workflow_run_id,
             "WorkerAbandoned",
             WORKER_WORKFLOW_DEFINITION_VERSION,
+            require_outer_reason=False,
         )
         strict = terminal_projection(
             strict_run_id,
             "StrictAuthorityAbandoned",
             DEFINITION_VERSION,
+            require_outer_reason=True,
         )
         connection.rollback()
     finally:

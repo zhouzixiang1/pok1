@@ -1099,7 +1099,13 @@ class TestDoAbandonGeneration:
         assert not candidate.exists()
 
 
-def _schema2_claim_fixture(tmp_path, monkeypatch, *, checkpoint=None):
+def _schema2_claim_fixture(
+    tmp_path,
+    monkeypatch,
+    *,
+    checkpoint=None,
+    reason="abandon_generation",
+):
     import evolution_core
     import evolution_infra
 
@@ -1113,7 +1119,10 @@ def _schema2_claim_fixture(tmp_path, monkeypatch, *, checkpoint=None):
     monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
     monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
     monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
-    claim, _candidate_path, transaction_dir = _persist_schema2_claim(checkpoint)
+    claim, _candidate_path, transaction_dir = _persist_schema2_claim(
+        checkpoint,
+        reason=reason,
+    )
     return checkpoint, state_file, candidate, claim, transaction_dir
 
 
@@ -1540,6 +1549,242 @@ def test_completed_abandon_handoff_reproves_exact_live_terminal_result(
         match="completed_abandon_terminal_paths_still_live",
     ):
         tbm.validate_completed_abandon_handoff(checkpoint, result)
+
+
+def _completed_split_reason_abandon(tmp_path, monkeypatch):
+    """Build the v48 shape without changing any durable historical receipt.
+
+    The Worker has already recorded its bounded executor failure when the
+    outer actor later records ``worker_terminal_abandon`` and fences strict
+    authority.  This is a normal schema-2 claim shape, not a compatibility
+    rewrite of the claim or ledger.
+    """
+
+    from worker_workflow import WorkerWorkflow
+
+    outer_reason = "worker_terminal_abandon"
+    inner_reason = "system_strict_bootstrap_execution_failed"
+    checkpoint, state_file, candidate, claim, transaction_dir = (
+        _schema2_claim_fixture(
+            tmp_path,
+            monkeypatch,
+            reason=outer_reason,
+        )
+    )
+    workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+    workflow.abandon(inner_reason)
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(
+        reason=outer_reason,
+        _bypass_rate_limit=True,
+        **tbm.expected_abandon_identity(checkpoint),
+    ))
+    assert result["abandoned"] is True, result
+    return {
+        "checkpoint": checkpoint,
+        "candidate": candidate,
+        "claim": claim,
+        "transaction_dir": transaction_dir,
+        "result": result,
+        "inner_reason": inner_reason,
+        "outer_reason": outer_reason,
+    }
+
+
+def _rewrite_terminal_payload(database, run_id, event_type, payload):
+    import hashlib
+    import sqlite3
+
+    from workflow_kernel import canonical_json
+
+    raw = canonical_json(payload)
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE workflow_events SET payload = ?, payload_digest = ? "
+            "WHERE run_id = ? AND event_type = ?",
+            (
+                raw,
+                hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+                run_id,
+                event_type,
+            ),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_completed_abandon_handoff_reproves_schema2_split_worker_reason(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_split_reason_abandon(tmp_path, monkeypatch)
+
+    proof = tbm.validate_completed_abandon_handoff(
+        state["checkpoint"],
+        state["result"],
+    )
+
+    assert state["claim"]["schema_version"] == 2
+    assert proof["workflow_fences"]["worker"]["terminal_reason"] == (
+        state["inner_reason"]
+    )
+    assert proof["workflow_fences"]["strict_authority"]["terminal_reason"] == (
+        state["outer_reason"]
+    )
+    assert not state["candidate"].exists()
+    assert (state["transaction_dir"] / "receipt.json").is_file()
+
+
+def test_completed_abandon_handoff_rejects_missing_worker_inner_reason(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_split_reason_abandon(tmp_path, monkeypatch)
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    _rewrite_terminal_payload(
+        database,
+        state["checkpoint"]["workflow_run_id"],
+        "WorkerAbandoned",
+        {},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_WorkerAbandoned_reason_invalid",
+    ):
+        tbm.validate_completed_abandon_handoff(
+            state["checkpoint"],
+            state["result"],
+        )
+
+
+def test_completed_abandon_handoff_rejects_mismatched_outer_reason(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_split_reason_abandon(tmp_path, monkeypatch)
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    _rewrite_terminal_payload(
+        database,
+        strict_authority.authority_run_id(
+            state["checkpoint"]["workflow_run_id"]
+        ),
+        "StrictAuthorityAbandoned",
+        {
+            "reason": "other_outer_reason",
+            "workflow_run_id": state["checkpoint"]["workflow_run_id"],
+        },
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_StrictAuthorityAbandoned_outer_reason_mismatch",
+    ):
+        tbm.validate_completed_abandon_handoff(
+            state["checkpoint"],
+            state["result"],
+        )
+
+
+def test_completed_abandon_handoff_rejects_unbound_worker_inner_reason(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_split_reason_abandon(tmp_path, monkeypatch)
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    _rewrite_terminal_payload(
+        database,
+        state["checkpoint"]["workflow_run_id"],
+        "WorkerAbandoned",
+        {"reason": "worker_harness_failure"},
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_WorkerAbandoned_reason_unbound",
+    ):
+        tbm.validate_completed_abandon_handoff(
+            state["checkpoint"],
+            state["result"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("outer_length", "legacy_causation"),
+    ((999, False), (1000, False), (1001, True), (4096, True)),
+)
+def test_completed_abandon_handoff_reproves_boundary_outer_reason(
+    tmp_path,
+    monkeypatch,
+    outer_length,
+    legacy_causation,
+):
+    """Accept the exact old/new causation constructions and nothing broader."""
+
+    from worker_workflow import WorkerWorkflow
+    from workflow_kernel import content_digest
+
+    outer_prefix = "worker_terminal_abandon:"
+    outer_reason = outer_prefix + "x" * (outer_length - len(outer_prefix))
+    checkpoint, state_file, _candidate, _claim, _transaction_dir = (
+        _schema2_claim_fixture(
+            tmp_path,
+            monkeypatch,
+            reason=outer_reason,
+        )
+    )
+    workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+    workflow.abandon(outer_reason)
+    terminal = workflow.store.events(workflow.run_id)[-1]
+    bounded_reason = outer_reason[:1000]
+    assert terminal.payload == {"reason": bounded_reason}
+    assert terminal.causation_id.endswith(f":{content_digest(bounded_reason)}")
+
+    if legacy_causation:
+        # Before the producer repair, the payload was bounded but the
+        # causation id used the unbounded outer argument.  Model that exact
+        # immutable schema-2 history without changing a real receipt.
+        import sqlite3
+
+        database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+        connection = sqlite3.connect(database)
+        try:
+            connection.execute(
+                "UPDATE workflow_events SET causation_id = ? "
+                "WHERE run_id = ? AND event_type = 'WorkerAbandoned'",
+                (
+                    f"worker-abandoned:{workflow.run_id}:cycle-0:"
+                    f"{content_digest(outer_reason)}",
+                    workflow.run_id,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(
+        reason=outer_reason,
+        _bypass_rate_limit=True,
+        **tbm.expected_abandon_identity(checkpoint),
+    ))
+
+    proof = tbm.validate_completed_abandon_handoff(checkpoint, result)
+    assert proof["workflow_fences"]["worker"]["terminal_reason"] == bounded_reason
+    assert proof["workflow_fences"]["strict_authority"]["terminal_reason"] == (
+        bounded_reason
+    )
 
 
 def test_completed_abandon_handoff_allows_monotonic_terminal_revision(
