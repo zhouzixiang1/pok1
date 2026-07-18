@@ -281,6 +281,11 @@ def test_fixed_first_strict_dual_verdict_routes_exact_terminal_abandon(
         "_llm_gate_infrastructure_identity",
         lambda **_kwargs: ("reviewer", {}),
     )
+    monkeypatch.setattr(
+        tool_gates,
+        "_strict_review_infrastructure_harness_identity",
+        lambda _call: "a" * 64,
+    )
     monkeypatch.setattr(tool_gates, "run_claude_query", query)
     monkeypatch.setattr(tool_gates, "write_pipeline_checkpoint", write)
     monkeypatch.setattr(
