@@ -46,6 +46,7 @@ import {
   criticAdvisoryComplete,
   criticAdvisoryVerdict,
   pipelineCheckpointIdentityIssues,
+  reviewerRetryPending,
 } from "../node_modules/.tmp/sse-tests/lib/pipelinePresentation.js";
 import {
   expectPipelineCheckpoint,
@@ -78,6 +79,31 @@ test("Critic presentation uses the advisory verdict, not execution completion", 
   assert.equal(criticAdvisoryVerdict(negativeAdvice), "建议保留意见");
   assert.equal(criticAdvisoryVerdict({ ...negativeAdvice, advisory_approved: true }), "建议支持");
   assert.equal(criticAdvisoryVerdict({ ...negativeAdvice, advisory_approved: undefined }), "建议结论不可用");
+});
+
+test("Reviewer retry presentation requires the current Quality-bound first rejection", () => {
+  const checkpoint = {
+    stage: "quality_passed",
+    gate_results: { quality: { code_fingerprint: "a".repeat(64) } },
+    review_attempt_journal: [{
+      attempt: 1,
+      approved: false,
+      candidate_artifact_hash: "a".repeat(64),
+    }],
+  };
+  assert.equal(reviewerRetryPending(checkpoint), true);
+  assert.equal(reviewerRetryPending({
+    ...checkpoint,
+    review_attempt_journal: [{
+      ...checkpoint.review_attempt_journal[0],
+      candidate_artifact_hash: "b".repeat(64),
+    }],
+  }), false);
+  assert.equal(reviewerRetryPending({ ...checkpoint, stage: "repair_planned" }), false);
+  assert.equal(reviewerRetryPending({
+    ...checkpoint,
+    review_attempt_journal: [{ ...checkpoint.review_attempt_journal[0], attempt: 2 }],
+  }), false);
 });
 
 test("checkpoint API and presentation reject a stale same-stage revision", () => {
@@ -119,6 +145,37 @@ test("checkpoint API and presentation reject a stale same-stage revision", () =>
   );
   assert.throws(
     () => expectPipelineCheckpoint({ ...checkpoint, checkpoint_revision: undefined }),
+    /pipeline checkpoint is structurally incomplete/,
+  );
+  const reviewAttempt = {
+    schema_version: 1,
+    kind: "pipeline-review-verdict-attempt-v1",
+    workflow_run_id: "workflow-v1",
+    attempt: 1,
+    authority_slot: "review",
+    approved: false,
+    input_checkpoint_revision: 7,
+    cycle_digest: "a".repeat(64),
+    candidate_artifact_hash: "b".repeat(64),
+    quality_gate_digest: "c".repeat(64),
+    receipt_digest: "d".repeat(64),
+  };
+  assert.ok(expectPipelineCheckpoint({
+    ...checkpoint,
+    review_attempt_journal: [reviewAttempt],
+  }));
+  assert.throws(
+    () => expectPipelineCheckpoint({
+      ...checkpoint,
+      review_attempt_journal: [{ ...reviewAttempt, authority_slot: "critic" }],
+    }),
+    /pipeline checkpoint is structurally incomplete/,
+  );
+  assert.throws(
+    () => expectPipelineCheckpoint({
+      ...checkpoint,
+      review_attempt_journal: [{ ...reviewAttempt, workflow_run_id: "old" }],
+    }),
     /pipeline checkpoint is structurally incomplete/,
   );
 });

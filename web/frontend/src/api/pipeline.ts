@@ -10,6 +10,32 @@ const isPositiveInteger = (value: unknown): value is number => (
   typeof value === "number" && Number.isSafeInteger(value) && value > 0
 );
 
+const isDigest = (value: unknown): value is string => (
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
+);
+
+const validReviewAttemptJournal = (
+  value: unknown,
+  workflowRunId: unknown,
+): boolean => {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((row) => (
+    isObject(row)
+    && row.schema_version === 1
+    && row.kind === "pipeline-review-verdict-attempt-v1"
+    && row.workflow_run_id === workflowRunId
+    && (row.attempt === 1 || row.attempt === 2)
+    && row.authority_slot === (row.attempt === 1 ? "review" : "review:retry")
+    && typeof row.approved === "boolean"
+    && isPositiveInteger(row.input_checkpoint_revision)
+    && isDigest(row.cycle_digest)
+    && isDigest(row.candidate_artifact_hash)
+    && isDigest(row.quality_gate_digest)
+    && isDigest(row.receipt_digest)
+  ));
+};
+
 /**
  * Fail closed at the independent checkpoint-API boundary.
  *
@@ -35,6 +61,10 @@ export function expectPipelineCheckpoint(value: unknown): PipelineCheckpoint | n
     || value.workflow_run_id.trim().length === 0
     || typeof value.run_id !== "string"
     || value.run_id.trim().length === 0
+    || !validReviewAttemptJournal(
+      value.review_attempt_journal,
+      value.workflow_run_id,
+    )
   ) {
     throw new Error("pipeline checkpoint is structurally incomplete");
   }

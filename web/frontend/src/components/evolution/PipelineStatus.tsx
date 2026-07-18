@@ -16,6 +16,7 @@ import {
   criticAdvisoryComplete,
   criticAdvisoryVerdict,
   pipelineCheckpointIdentityIssues,
+  reviewerRetryPending,
 } from "../../lib/pipelinePresentation";
 import { CheckIcon, CrossIcon } from "./icons";
 
@@ -226,6 +227,11 @@ export function PipelineStatus({
     : [];
   const planProjectionInvalid = checkpoint.master_plan != null && !Array.isArray(checkpoint.master_plan.tasks);
   const repairActive = checkpoint.stage === "repair_planned" || checkpoint.stage === "rework_running";
+  const reviewAttempts = checkpoint.review_attempt_journal ?? [];
+  const latestReviewAttempt = reviewAttempts.length > 0
+    ? reviewAttempts[reviewAttempts.length - 1]
+    : undefined;
+  const reviewRetryIsPending = reviewerRetryPending(checkpoint);
 
   return (
     <div className="p-3">
@@ -245,6 +251,14 @@ export function PipelineStatus({
           {repairActive && (
             <div className="rounded border border-warning-300 bg-warning-50 p-2 text-[10px] text-warning-700 dark:border-warning-800 dark:bg-warning-950/20 dark:text-warning-300">
               当前字节正在修复。此前 quality/review/Critic/precommit 结果只描述修复前字节，不显示为当前代码已完成。
+            </div>
+          )}
+          {reviewRetryIsPending && latestReviewAttempt && (
+            <div className="rounded border border-amber-300 bg-amber-50 p-2 text-[10px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/20 dark:text-amber-300">
+              Reviewer 第 1 次独立判定已拒绝；候选仍停留在 quality_passed，状态机将只重试 Reviewer 第 2 次。Master、Worker 与 70-hand Quality 不会重跑。
+              <p className="mt-1 text-gray-500 dark:text-gray-400">
+                attempt receipt {latestReviewAttempt.receipt_digest.slice(0, 12)} · candidate {latestReviewAttempt.candidate_artifact_hash.slice(0, 12)}
+              </p>
             </div>
           )}
           {checkpoint.direction_audit?.repetition_detected && (

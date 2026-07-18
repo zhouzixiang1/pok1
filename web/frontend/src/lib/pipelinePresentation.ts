@@ -17,6 +17,17 @@ export function criticAdvisoryVerdict(gate: PipelineGateResult): string {
   return "建议结论不可用";
 }
 
+export function reviewerRetryPending(checkpoint: PipelineCheckpoint): boolean {
+  const attempts = checkpoint.review_attempt_journal ?? [];
+  const latest = attempts.length > 0 ? attempts[attempts.length - 1] : undefined;
+  const qualityHash = checkpoint.gate_results?.quality?.code_fingerprint;
+  return checkpoint.stage === "quality_passed"
+    && latest?.attempt === 1
+    && latest.approved === false
+    && typeof qualityHash === "string"
+    && latest.candidate_artifact_hash === qualityHash;
+}
+
 /** Exact fields shared by the independent checkpoint and paired control view. */
 export function pipelineCheckpointIdentityIssues(
   checkpoint: PipelineCheckpoint,

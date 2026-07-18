@@ -452,6 +452,10 @@ export interface PipelineCheckpoint {
   stage: string;
   master_plan?: MasterPlanProjection | null;
   reviewer_feedback?: string;
+  /** Append-only, content-bound Reviewer verdicts. Infrastructure/schema
+   * failures never appear here and therefore never consume the two-verdict
+   * budget for one immutable artifact/Quality cycle. */
+  review_attempt_journal?: PipelineReviewAttempt[];
   generation_attempt?: number;
   gate_results?: Record<string, PipelineGateResult>;
   direction_audit?: DirectionAudit;
@@ -460,6 +464,20 @@ export interface PipelineCheckpoint {
   timestamp?: string;
   audit_context?: Record<string, unknown>;
   last_stage_change_ts?: number;
+}
+
+export interface PipelineReviewAttempt {
+  schema_version: 1;
+  kind: "pipeline-review-verdict-attempt-v1";
+  workflow_run_id: string;
+  attempt: 1 | 2;
+  cycle_digest: string;
+  authority_slot: "review" | "review:retry";
+  approved: boolean;
+  input_checkpoint_revision: number;
+  candidate_artifact_hash: string;
+  quality_gate_digest: string;
+  receipt_digest: string;
 }
 
 export interface WorkerFailure {
