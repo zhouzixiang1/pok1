@@ -1301,10 +1301,10 @@ async def test_shared_leaf_scout_repair_restores_exactly_three_distinct_proposal
 
 
 @pytest.mark.asyncio
-async def test_shared_leaf_scout_non_json_repair_exhausts_fail_closed(
+async def test_shared_leaf_scout_v54_prose_prefixed_json_exhausts_fail_closed(
     monkeypatch, tmp_path
 ):
-    """A v54-style prose retry remains invalid and never buys attempt three."""
+    """The exact v54 output shape remains invalid and never buys attempt three."""
 
     import agent_master
 
@@ -1313,6 +1313,15 @@ async def test_shared_leaf_scout_non_json_repair_exhausts_fail_closed(
     _write_source(source_dir)
     snapshot_dir.mkdir()
     roles = []
+    valid_suffix = _action_profile_proposal("mechanism")
+    prose_prefix = (
+        "The Scout acknowledged the deterministic schema repair but emitted "
+        "analysis before its otherwise complete object. "
+        + ("x" * 930)
+    )[:930]
+    assert len(prose_prefix) == 930
+    assert not set("{}[]").intersection(prose_prefix)
+    assert json.loads(valid_suffix)["mechanism_target"] == "opponent.rates"
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
         roles.append(role_name)
@@ -1326,7 +1335,7 @@ async def test_shared_leaf_scout_non_json_repair_exhausts_fail_closed(
                 "The only executable root for this frozen proposal is "
                 "opponent.rates"
             ) in prompt
-            return "I acknowledge the correction but did not emit JSON.", 0.0, {}
+            return prose_prefix + valid_suffix, 0.0, {}
         direction = next(
             name
             for name in ("counterfactual", "compute_memory")
