@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -553,6 +554,13 @@ def _fake_worker_result(spec: dict) -> dict:
         "ok": True,
         "failure_class": "none",
         "issues": [],
+        "process_returncode": 0,
+        "managed_isolation": {
+            "policy_sha256": "a" * 64,
+            "bpf_sha256": "b" * 64,
+            "bpf_size": 1,
+            "namespaces": ["user", "net"],
+        },
         "official_transcript_decisions": [],
         "line_reachability": {"ok": True, "issues": [], "dimensions": {}},
         "persistent_memory": {"ok": True, "issues": []},
@@ -567,6 +575,360 @@ def _fake_worker_result(spec: dict) -> dict:
             "long": {},
         },
     }
+
+
+def _semantic_repeat_result(spec: dict, *, refinement_active: bool) -> dict:
+    result = _fake_worker_result(spec)
+    result["official_transcript_decisions"] = [{
+        "id": "river_facing_large_bet",
+        "ok": True,
+        "issues": [],
+        "context": {"private_test_only": "context-secret"},
+        "context_digest": "c" * 64,
+        "decision": {"kind": "pass"},
+        "wire": "call",
+        "setup_wire": ["TypedProbeB"],
+        "runtime": {
+            "runtime_version": NATIONAL_DECISION_RUNTIME_VERSION,
+            "socket_fallback_decision": {"kind": "pass"},
+            "baseline_published": True,
+            "baseline_target_met": True,
+            "policy_baseline_decision": {"kind": "pass"},
+            "timed_out": False,
+            "worker_terminated": False,
+            "completed": True,
+            "refinement_messages": 1 if refinement_active else 0,
+            "trusted_refinement_steps": 1 if refinement_active else 0,
+            "trusted_refinement_cpu_ms": 1.0,
+            "trusted_refinement_elapsed_ms": 1.0,
+            "refinement_iterator_exhausted": False,
+        },
+    }]
+    result["policy_entrypoints"] = {
+        "ok": True,
+        "issues": [],
+        "rows": [{
+            "scenario": "river_facing_large_bet",
+            "decision": {"kind": "pass"},
+            "refinement_decisions": [{"kind": "fold"}],
+            "baseline_work": {
+                "instrumented": True,
+                "evaluator_calls": 3,
+                "evaluator_call_cap": 800,
+                "evaluator_calls_by_name": {"evaluate_seven": 3},
+            },
+            "ok": True,
+            "issue": None,
+        }],
+    }
+    result["budget_scaled_refinement"] = {
+        "probe_kind": "trusted_multifidelity_2s_vs_8s",
+        "scenario": "river_facing_large_bet",
+        "ok": True,
+        "active": refinement_active,
+        "system_issues": [],
+        "candidate_issues": [],
+        "capability_issues": [],
+        "worker_seed_equal": True,
+        "bounded_work": True,
+        "scaled_or_exhausted": True,
+        "changes_sanitized_decision": True,
+        "short": {
+            "iterator_exhausted": False,
+            "action_changes": 1,
+            "refinement_messages": 1 if refinement_active else 0,
+            "trusted_refinement_steps": 1 if refinement_active else 0,
+            "trusted_cpu_ms": 1.0,
+            "trusted_elapsed_ms": 1.0,
+            "baseline_published": True,
+            "baseline_target_met": True,
+            "worker_seed": 20260710,
+            "decision": {"kind": "pass"},
+            "wire": "call",
+        },
+        "long": {
+            "iterator_exhausted": True,
+            "action_changes": 2,
+            "refinement_messages": 2 if refinement_active else 0,
+            "trusted_refinement_steps": 2 if refinement_active else 0,
+            "trusted_cpu_ms": 2.0,
+            "trusted_elapsed_ms": 2.0,
+            "baseline_published": True,
+            "baseline_target_met": True,
+            "worker_seed": 20260710,
+            "decision": {"kind": "fold"},
+            "wire": "fold",
+        },
+    }
+    return result
+
+
+def test_repeatability_omits_active_refinement_trace_and_action_variance(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    runs = [
+        _semantic_repeat_result(
+            national_runtime_probe.build_runtime_probe_spec(bot),
+            refinement_active=True,
+        ),
+        _semantic_repeat_result(
+            national_runtime_probe.build_runtime_probe_spec(bot),
+            refinement_active=True,
+        ),
+    ]
+    second = runs[1]
+    second["worker_stdout"] = "stdout-secret"
+    second["worker_stderr"] = "stderr-secret"
+    row = second["official_transcript_decisions"][0]
+    row["context"] = {"private_test_only": "different-context-secret"}
+    row["decision"] = {"kind": "fold"}
+    row["wire"] = "fold"
+    row["runtime"].update({
+        "refinement_messages": 37,
+        "trusted_refinement_steps": 37,
+        "trusted_refinement_cpu_ms": 987.654,
+        "trusted_refinement_elapsed_ms": 765.432,
+        "refinement_iterator_exhausted": True,
+    })
+    second["policy_entrypoints"]["rows"][0]["refinement_decisions"] = [
+        {"kind": "allin"},
+        {"kind": "fold"},
+    ]
+    second["budget_scaled_refinement"]["short"].update({
+        "iterator_exhausted": True,
+        "action_changes": 11,
+        "refinement_messages": 19,
+        "trusted_refinement_steps": 19,
+        "trusted_cpu_ms": 200.0,
+        "trusted_elapsed_ms": 300.0,
+        "decision": {"kind": "fold"},
+        "wire": "fold",
+    })
+    second["budget_scaled_refinement"]["long"].update({
+        "iterator_exhausted": False,
+        "action_changes": 99,
+        "refinement_messages": 99,
+        "trusted_refinement_steps": 99,
+        "trusted_cpu_ms": 900.0,
+        "trusted_elapsed_ms": 999.0,
+        "decision": {"kind": "allin"},
+        "wire": "allin",
+    })
+
+    def run_once(_root, _spec, _timeout):
+        return copy.deepcopy(runs.pop(0))
+
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(national_runtime_probe, "_run_once", run_once)
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is True
+    assert observed["repeatability_ok"] is True
+    evidence = observed["repeatability"]
+    assert evidence["differing_path_count"] == 0
+    assert evidence["view_digest_count"] == 2
+    serialized = json.dumps(evidence, sort_keys=True)
+    for secret in (
+        "stdout-secret",
+        "stderr-secret",
+        "context-secret",
+        "different-context-secret",
+    ):
+        assert secret not in serialized
+
+
+def test_repeatability_rejects_baseline_final_action_divergence_with_pointer(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    runs = [
+        _semantic_repeat_result(spec, refinement_active=False),
+        _semantic_repeat_result(spec, refinement_active=False),
+    ]
+    runs[1]["official_transcript_decisions"][0].update({
+        "decision": {"kind": "fold"},
+        "wire": "fold",
+    })
+
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert "runtime_probe_non_repeatable" in observed["issues"]
+    pointers = {
+        (item["repeat"], item["json_pointer"])
+        for item in observed["repeatability"]["differing_paths"]
+    }
+    assert (2, "/official_transcript_decisions/0/wire") in pointers
+    assert (2, "/official_transcript_decisions/0/decision/kind") in pointers
+
+
+def test_repeatability_compares_inactive_capability_wire_paths(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    for result in (first, second):
+        result["policy_counterfactuals"] = {
+            "ok": True,
+            "issues": [],
+            "system_issues": [],
+            "candidate_issues": [],
+            "dimensions": {
+                "action_profile": {
+                    "scenario": "flop_donk_vs_opponent_pfr",
+                    "left_profile": "aggressive",
+                    "right_profile": "passive",
+                    "left_decision": {"kind": "raise", "raise_to": 300},
+                    "right_decision": {"kind": "raise", "raise_to": 400},
+                    "left_wire": "raise 300",
+                    "right_wire": "raise 400",
+                    "negative_left_decision": {"kind": "raise", "raise_to": 350},
+                    "negative_right_decision": {"kind": "raise", "raise_to": 350},
+                    "negative_left_wire": "raise 350",
+                    "negative_right_wire": "raise 350",
+                    "changed": True,
+                    "positive_wire_effect": True,
+                    "negative_control_stable": True,
+                    "negative_control_kind": "authority_weight_removed",
+                    "causal_passed": True,
+                    "socket_validated": True,
+                }
+            },
+        }
+    second["policy_counterfactuals"]["dimensions"]["action_profile"][
+        "left_wire"
+    ] = "raise 301"
+
+    evidence = national_runtime_probe._repeatability_evidence([
+        national_runtime_probe._repeatability_view(first),
+        national_runtime_probe._repeatability_view(second),
+    ])
+
+    assert evidence["differing_path_count"] >= 1
+    assert {
+        (item["repeat"], item["json_pointer"])
+        for item in evidence["differing_paths"]
+    } >= {
+        (2, "/policy_counterfactuals/dimensions/action_profile/left_wire")
+    }
+
+
+def test_repeatability_aggregates_second_repeat_failure_and_identity_isolation(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    second.update({
+        "ok": False,
+        "failure_class": "candidate_contract",
+        "issues": ["candidate_policy_baseline:typed_intent_kind_invalid"],
+        "worker_digest": "f" * 64,
+    })
+    second["managed_isolation"] = {}
+    runs = [first, second]
+
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert "candidate_policy_baseline:typed_intent_kind_invalid:repeat=2" in (
+        observed["issues"]
+    )
+    assert "runtime_probe_repeat_not_ok:repeat=2" in observed["issues"]
+    assert (
+        "runtime_probe_repeat_failure_class:candidate_contract:repeat=2"
+        in observed["issues"]
+    )
+    assert "runtime_probe_worker_digest_mismatch:repeat=2" in observed["issues"]
+    assert (
+        "runtime_probe_repeat_managed_isolation_missing:repeat=2"
+        in observed["issues"]
+    )
+    pointers = {
+        (item["repeat"], item["json_pointer"])
+        for item in observed["repeatability"]["differing_paths"]
+    }
+    assert (2, "/identity/worker_digest") in pointers
+    assert (2, "/managed_isolation/policy_sha256") in pointers
+
+
+def test_repeatability_evidence_is_bounded_when_many_views_differ(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    reference = national_runtime_probe._repeatability_view(
+        _semantic_repeat_result(spec, refinement_active=False)
+    )
+    views = [reference]
+    for index in range(
+        national_runtime_probe.RUNTIME_PROBE_MAX_REPEAT_VIEW_DIGESTS + 3
+    ):
+        changed = copy.deepcopy(reference)
+        changed["identity"]["code_fingerprint"] = f"{index:064x}"
+        views.append(changed)
+
+    evidence = national_runtime_probe._repeatability_evidence(views)
+
+    assert len(evidence["view_digests"]) == (
+        national_runtime_probe.RUNTIME_PROBE_MAX_REPEAT_VIEW_DIGESTS
+    )
+    assert evidence["view_digests_truncated"] is True
+    assert len(evidence["differing_paths"]) <= (
+        national_runtime_probe.RUNTIME_PROBE_MAX_REPEAT_DIFF_PATHS
+    )
+    assert evidence["differing_path_count"] >= len(evidence["differing_paths"])
+
+
+def test_repeatability_identity_change_misses_legacy_cache_entry(tmp_path):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    identity_payload = national_runtime_probe._runtime_probe_identity_payload(
+        national_runtime_probe.RUNTIME_PROBE_NATIVE_TEMPLATE_IDENTITY,
+        national_runtime_probe.RUNTIME_PROBE_NATIVE_TEMPLATE_DIGEST,
+    )
+    legacy_payload = copy.deepcopy(identity_payload)
+    legacy_payload.pop("repeatability")
+    legacy_identity = national_runtime_probe._canonical_digest(legacy_payload)
+    legacy_spec = copy.deepcopy(spec)
+    legacy_spec["probe_identity_digest"] = legacy_identity
+    legacy_spec["spec_digest"] = national_runtime_probe._canonical_digest(
+        legacy_spec
+    )
+    legacy_key = national_runtime_probe._canonical_digest({
+        "probe_identity_digest": legacy_identity,
+        "spec_digest": legacy_spec["spec_digest"],
+        "timeout_sec": 1.0,
+        "repeats": 2,
+    })
+    current_key = national_runtime_probe._cache_key(
+        spec,
+        timeout_sec=1.0,
+        repeats=2,
+    )
+
+    national_runtime_probe.clear_runtime_probe_cache()
+    national_runtime_probe._cache_put(legacy_key, {"ok": True})
+
+    assert legacy_identity != national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST
+    assert legacy_key != current_key
+    assert national_runtime_probe._cache_get(current_key) is None
 
 
 def test_runtime_probe_identity_binds_exact_native_template_bytes(tmp_path):
@@ -694,9 +1056,10 @@ def test_runtime_probe_fails_closed_when_worker_omits_native_template_binding(
     observed = national_runtime_probe.run_national_runtime_probe(bot)
 
     assert observed["ok"] is False
-    assert "runtime_probe_native_runtime_template_identity_mismatch" in observed[
-        "issues"
-    ]
+    assert (
+        "runtime_probe_native_runtime_template_identity_mismatch:repeat=1"
+        in observed["issues"]
+    )
 
 
 def test_orchestrator_requires_repeatability_and_caches_by_artifact(
@@ -745,7 +1108,7 @@ def test_orchestrator_fails_closed_when_worker_identity_is_missing(
     observed = national_runtime_probe.run_national_runtime_probe(bot)
 
     assert observed["ok"] is False
-    assert "runtime_probe_worker_digest_mismatch" in observed["issues"]
+    assert "runtime_probe_worker_digest_mismatch:repeat=1" in observed["issues"]
 
 
 def test_active_probe_sources_contain_no_retired_wrapper_calls():
