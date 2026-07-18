@@ -1929,6 +1929,14 @@ async def run_precommit_eval(args):
             and cache_profile_matches
             and contract_matches
             and runtime_probe_native_template_evidence_matches(precommit_gate)
+            # A historical precommit result is only reusable while the whole
+            # gate chain remains reusable.  In particular, the quality gate
+            # owns the runtime-probe repeatability receipt; checking just the
+            # precommit's native-template projection would otherwise allow a
+            # direct caller to bypass a now-missing or malformed receipt.
+            and _quality_gate_ok(_precommit_ckpt)
+            and _review_gate_ok(_precommit_ckpt)
+            and _critic_gate_ok(_precommit_ckpt)
         ):
             precommit_gate["idempotent_cache"] = True
             precommit_gate["directive"] = (

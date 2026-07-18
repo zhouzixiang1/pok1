@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 10
+MATRIX_SCHEMA_VERSION = 11
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -127,6 +127,10 @@ _QUALITY_RUNTIME_IDENTITY_RULE_ID = "quality_native_precommit_certification"
 _QUALITY_RUNTIME_IDENTITY_REQUIRED_OWNER_SYMBOLS = (
     "web/core/national_runtime_authority.py::current_system_native_runtime_identity",
     "web/core/national_runtime_probe.py::runtime_probe_native_template_evidence",
+    "web/core/national_runtime_probe.py::"
+    "validate_runtime_probe_repeatability_evidence",
+    "web/core/tool_helpers.py::_quality_gate_ok",
+    "web/core/system_strict_bootstrap.py::_quality_repeatability_errors",
     "web/core/official_certification_job.py::_live_normal_full_admission_issues",
 )
 _QUALITY_RUNTIME_IDENTITY_REQUIRED_POSITIVE_TESTS = (
@@ -140,6 +144,8 @@ _QUALITY_RUNTIME_IDENTITY_REQUIRED_POSITIVE_TESTS = (
     "test_test_runner_envelope_preserves_normal_full_quality_admission",
     "web/tests/test_official_commit_gate.py::"
     "test_commit_bot_keeps_quality_admission_failure_out_of_infrastructure_retry",
+    "web/tests/test_national_runtime_probe.py::"
+    "test_repeatability_allows_only_active_nonbudget_row_action_variation",
 )
 _QUALITY_RUNTIME_IDENTITY_REQUIRED_NEGATIVE_TESTS = (
     "web/tests/test_national_runtime_authority.py::"
@@ -150,6 +156,16 @@ _QUALITY_RUNTIME_IDENTITY_REQUIRED_NEGATIVE_TESTS = (
     "test_stale_live_admission_never_creates_or_spawns_fresh_job",
     "web/tests/test_official_certification_job.py::"
     "test_stale_queued_job_becomes_terminal_before_queue_or_spawn",
+    "web/tests/test_national_runtime_probe.py::"
+    "test_repeatability_rejects_missing_required_activity_section",
+    "web/tests/test_native_runtime_quality_identity.py::"
+    "test_native_quality_reuse_rejects_tampered_repeatability_receipt",
+    "web/tests/test_official_platform_harness.py::"
+    "test_formal_quality_admission_rejects_missing_repeatability_receipt",
+    "web/tests/test_system_control_contract.py::"
+    "test_v143_bootstrap_requires_structural_dynamic_repeatability_receipt",
+    "web/tests/test_precommit_eval_contract.py::"
+    "test_verified_precommit_cache_rejects_missing_runtime_repeatability_receipt",
 )
 _QUALITY_RUNTIME_IDENTITY_REQUIRED_TERMS = (
     "composite runtime identity",
@@ -157,6 +173,9 @@ _QUALITY_RUNTIME_IDENTITY_REQUIRED_TERMS = (
     "combined_digest",
     "durable job",
     "stale admission",
+    "repeatability receipt",
+    "per-scenario transcript",
+    "fenced writer",
 )
 
 
@@ -596,6 +615,14 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/core/national_runtime_probe.py",
                 "runtime_probe_native_template_evidence",
             ),
+            _ref(
+                "web/core/national_runtime_probe.py",
+                "validate_runtime_probe_repeatability_evidence",
+            ),
+            _ref(
+                "web/core/runtime_architecture_policy.py",
+                "_apply_typed_runtime_probe",
+            ),
             _ref("web/core/tool_gates.py", "run_quality_gates"),
             _ref("web/core/tool_eval.py", "run_precommit_eval"),
             _ref("web/core/precommit_eval_contract.py", "validate_precommit_plan"),
@@ -613,13 +640,24 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/pipeline_state.py", "route_policy"),
             _ref("web/core/pipeline_state.py", "head_drift_resume_policy"),
             _ref("web/core/tool_helpers.py", "_prepare_official_profile_refresh"),
+            _ref("web/core/tool_helpers.py", "_quality_gate_ok"),
+            _ref(
+                "web/core/system_strict_bootstrap.py",
+                "_quality_repeatability_errors",
+            ),
         ),
         dynamic_gates=(
             _ref(
                 "web/core/national_runtime_probe.py",
                 "runtime_probe_native_template_evidence_matches",
             ),
+            _ref(
+                "web/core/national_runtime_probe.py",
+                "validate_runtime_probe_repeatability_evidence",
+            ),
             _ref("web/core/tool_gates.py", "run_quality_gates"),
+            _ref("web/core/tool_helpers.py", "_native_runtime_evidence_current"),
+            _ref("web/core/tool_helpers.py", "_quality_gate_ok"),
             _ref("web/core/tool_eval.py", "run_precommit_eval"),
             _ref("web/core/tool_commit.py", "_run_official_full_commit_gate"),
             _ref(
@@ -644,7 +682,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "stale admission before a durable job; final formal admission failure remains "
             "a deterministic quality outcome, never an infrastructure retry. Ordinary "
             "official-certifying HEAD drift remains a commit poll; only the complete "
-            "quality-admission marker may refresh deterministic quality."
+            "quality-admission marker may refresh deterministic quality. A repeatability "
+            "receipt is a system-produced, fenced writer proof: every persisted per-scenario "
+            "transcript, typed intent, canonical wire, runtime row, isolation digest, and "
+            "redacted repeated-view digest must validate before any role can reuse quality."
         ),
         prompt_required_terms=(
             "quality",
@@ -654,7 +695,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         producer_consumer=(
             "system-owned national_bot.py + precompute.py bytes → schema-2 composite "
-            "runtime identity → runtime probe/quality ledger → frozen native precommit "
+            "runtime identity → two isolated runtime-probe executions → bounded redacted "
+            "repeatability receipt (per-scenario transcript/action/wire/runtime, isolation, "
+            "and matching view digests) → fresh quality/cache/recovery/v143 bootstrap/formal "
+            "admission validators → runtime probe/quality ledger → frozen native precommit "
             "plan/result → live normal-full admission rebind before durable creation, "
             "queued/retry queue claim, pre-Popen spawn, worker claim, and harness EXE work "
             "→ typed quality-admission terminal → exact official_full quality marker + "
@@ -681,7 +725,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_strict_normal_full_refuses_missing_or_tampered_admission_before_worker",
         ),
         fail_closed=(
-            "Any quality, plan, opponent, certificate, stale admission, or composite runtime "
+            "Any quality, plan, opponent, certificate, stale admission, malformed/missing "
+            "repeatability receipt, transcript/action/wire/runtime-row omission, digest divergence, "
+            "or composite runtime "
             "identity drift — including precompute-only drift — blocks cache reuse, precommit, "
             "durable job creation/worker spawn, commit/push/tag, and leaves the candidate non-published; "
             "a final formal-admission failure stays quality-gated and cannot become an infrastructure retry. "

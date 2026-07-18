@@ -959,6 +959,123 @@ def test_plan_digest_detects_seed_schedule_tampering(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_verified_precommit_cache_rejects_missing_runtime_repeatability_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    """A direct precommit caller cannot reuse a stale quality receipt.
+
+    The normal scheduler refreshes quality before it routes to precommit, but
+    ``run_precommit_eval`` is also an externally callable tool.  Its verified
+    cache must independently re-check the quality/review/critic chain so a
+    malformed dynamic runtime-probe repeatability receipt cannot turn into an
+    ``ALREADY PASSED`` response.
+    """
+
+    candidate = tmp_path / "national_v9"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("# native\n", encoding="utf-8")
+    broken_probe = passing_runtime_probe()
+    broken_probe.pop("repeatability")
+    template_evidence = national_runtime_probe.runtime_probe_native_template_evidence()
+    fingerprint = "a" * 64
+    checkpoint = {
+        "next_v": 9,
+        "source_v": 8,
+        "stage": "verified",
+        "workflow_profile_id": "national_native",
+        "audit_context": {"precommit_eval_plan": {"plan_digest": "frozen"}},
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "national_native_contract_ok": True,
+                "code_fingerprint": fingerprint,
+                "national_capability_contract": {
+                    "dynamic_runtime_probe": broken_probe,
+                },
+                **template_evidence,
+            },
+            "review": {
+                "approved": True,
+                "llm_invoked": True,
+                "reviewer_llm_executed": True,
+                "schema_valid": True,
+            },
+            "critic": {
+                "approved": True,
+                "llm_invoked": True,
+                "critic_llm_executed": True,
+                "schema_valid": True,
+            },
+            "precommit_eval": {
+                "passed": True,
+                "code_fingerprint": fingerprint,
+                "workflow_profile_id": "national_native",
+                "national_execution_mode": "native_tcp",
+                "precommit_eval_contract": {"contract_digest": "frozen"},
+                **template_evidence,
+            },
+        },
+    }
+    profile = SimpleNamespace(
+        profile_id="national_native",
+        evaluation_protocol="national",
+        national_execution_mode="native_tcp",
+    )
+    backend_calls = []
+
+    monkeypatch.setattr(tool_eval, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_eval, "get_workflow_profile", lambda: profile)
+    monkeypatch.setattr(tool_eval, "_matching_checkpoint", lambda *_: checkpoint)
+    monkeypatch.setattr(
+        tool_eval,
+        "_prepare_official_profile_refresh",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        "tool_helpers._active_workflow_profile_info",
+        lambda: ("national_native", "native_tcp"),
+    )
+    monkeypatch.setattr(
+        "tool_gates._bot_code_fingerprint",
+        lambda _path: fingerprint,
+    )
+    monkeypatch.setattr(tool_eval, "validate_precommit_plan", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        tool_eval,
+        "build_evaluation_contract",
+        lambda *_a, **_k: {"contract_digest": "frozen"},
+    )
+    monkeypatch.setattr(
+        tool_eval,
+        "validate_evaluation_contract",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(tool_eval, "append_candidate_event", None)
+    monkeypatch.setattr(tool_eval, "candidate_observability_identity", None)
+
+    async def backend(**_kwargs):
+        backend_calls.append(True)
+        pytest.fail("stale quality evidence reached precommit backend")
+
+    monkeypatch.setattr(tool_eval, "_run_national_precommit_backend", backend)
+
+    result = await tool_eval.run_precommit_eval.handler(
+        {"version": 9, "source_v": 8}
+    )
+    payload = _tool_payload(result)
+
+    assert payload["error"].startswith(
+        "STATE BLOCKED: run_precommit_eval requires passing quality/reviewer"
+    )
+    assert payload.get("idempotent_cache") is not True
+    assert backend_calls == []
+
+
+@pytest.mark.asyncio
 async def test_tool_reuses_frozen_opponents_when_live_selection_changes(tmp_path, monkeypatch):
     bots = tmp_path / "bots"
     for version in (9, 8, 5, 4):

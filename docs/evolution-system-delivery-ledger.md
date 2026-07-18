@@ -3588,3 +3588,76 @@ compaction coverage, and negative strict/bootstrap externalization checks. The
 bounded retry count and fail-closed rejection policy are unchanged. This source
 repair must be reviewed, merged, and followed by the normal stopped runtime
 sync/recovery diagnostics; it does not reinterpret or revive v51.
+
+## 2026-07-18 — v49–v51 strict quality evidence closure (source pending merge)
+
+`workflow-v49` and `workflow-v50` each reached a real Worker-produced strict
+candidate and native 70-hand acceptance, but their typed runtime quality gate
+correctly failed with `runtime_probe_non_repeatable`. They created no published
+Bot, certificate, tag, rating row, H2H evidence, or strength sample. The old
+probe compared a full deadline-dependent refinement trace, including a final
+refined action that may change under ordinary host contention even though every
+run independently satisfies fallback, legality, isolation, and deadline
+contracts. The old receipt retained only run one, so it could not diagnose the
+second run without leaking raw candidate/source/runtime material. Neither
+historical attempt is retroactively approved.
+
+The replacement runtime-probe contract is schema 18 / worker 19 / repeatability
+schema 3. It compares a bounded redacted semantic view: deadline-variable
+actions are omitted only for the exact row that system metrics prove consumed
+refinement; every non-active official, line, counterfactual, and match-control
+row retains its typed intent and canonical wire. Each successful receipt must
+carry exact official scenario IDs, complete clean line/counter/match row sets,
+typed/canonical action and runtime fields, canonical managed-isolation digest,
+two-or-more bounded redacted view digests, zero differences, and equal retained
+successful digests. The receipt explicitly records only digest/JSON-pointer
+metadata—never candidate source, raw context, stdout/stderr, or a raw repeat
+view. This is structural integrity under the existing fenced-writer trust
+boundary; it does not claim to defend against an actor that replaces every
+checkpoint field and digest together.
+
+The same shared validator is invoked at fresh quality production, quality-cache
+reuse, precommit/recovery reuse, commit ledger validation, v143 system bootstrap,
+formal normal-full admission, and its durable-job rebind. Missing, malformed,
+stale, diverging, incomplete, or forged-shaped evidence therefore causes a
+fresh quality run or a hard pre-publication block; it cannot be converted into
+an infrastructure retry, certificate, commit, or bootstrap approval. The
+formal admission schema advances to v2 and binds the redacted repeatability
+receipt digest plus its current schema/contract.
+
+The verified/archived direct-precommit cache additionally re-runs the current
+quality, review, and Critic predicates before returning `ALREADY PASSED`; a
+matching precommit template alone is not authority to reuse stale quality.
+The regression deliberately removes the dynamic probe repeatability receipt
+and proves the direct tool returns `STATE BLOCKED` without reaching the native
+precommit backend.
+
+`workflow-v51` then exposed an independent Master authority mismatch. Try 1
+honestly exceeded the selected provider budget (4,445 provider characters
+against 3,765, for a 680-character combined overflow). Try 2 passed the visible
+12,000-character selected-contract budget but its 10,017-character bound prompt
+was silently externalized by a hidden 10,000-character compiler default. Strict
+replay consequently rejected a different authority shape with
+`strict_authority_master_final_projection_mismatch`, and the canonical outer
+transaction `316ffd7211d7c9ec44ed6e38766eebc9ca11661d99cab4a8e40754b4e188ec44`
+recorded `worker_terminal_abandon`. The scheduler stopped after its bounded
+third canonical abandon; that transaction, not a hand-edited checkpoint, is the
+only terminal evidence to reprove after a future source sync.
+
+The paired source repair makes 12,000 the only default strict Master compiler
+ceiling, normalizes provider text with the same trailing-Unicode-whitespace rule
+used by binding, exposes the selected `EMISSION_CAPS` row as the sole
+model-owned cap, and rejects any strict task-brief/compaction form before a
+checkpoint or bootstrap receipt. Generic lower-cap compaction remains explicit
+and non-strict. Every rendered role now states that a repeatability receipt,
+per-scenario transcript, and fenced-writer provenance are system evidence, not
+model-replaceable evidence.
+
+Source evidence before this ledger update: Master/compiler focused `282 passed`,
+strict/bootstrap/tool-planning/matrix `165 passed`; repeatability/fresh-formal
+focused `90 passed`; pipeline/precommit/governance/official/v143 `424 passed`;
+independent full Web runs passed `3167 passed, 20 skipped, 1 warning` on the
+combined source. The post-documentation matrix/prompt/full-suite and independent
+pre-merge review remain required before push/merge. This entry does not authorize
+runtime sync, reproof, restart, v143 publication, or any strength claim; all
+remain at **0/10**.

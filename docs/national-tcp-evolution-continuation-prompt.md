@@ -1598,3 +1598,65 @@ current-contract v143 is prepared. Follow its actual Master → Worker → quali
 → review → advisory Critic → native TCP precommit path. Only a successful
 explicit operator first-strict bootstrap can create v143; nothing in this
 handoff is Bot, certification, rating, official, or strength evidence.
+
+## Latest superseding handoff — v49/v50/v51 are terminal; P1 source is ready for final merge review
+
+All earlier instructions to restart a generic current-contract `v143` after the
+P1 source merge are superseded by the user's literal initial-product route:
+`v143=A1`, `v144=A2`, `v145=B`. The runtime remains at
+`71673a18de42f20fc21d7d5f79a7e9cb826343db`; its Orchestrator stopped after
+the third schema-2 canonical abandon, Web/idle rating infrastructure may still
+listen, and there is no active checkpoint, candidate, published Bot, certificate,
+tag, rating/H2H, or 70-hand strength sample. Stability remains **0/10**.
+
+The exact final v51 terminal transaction is
+`316ffd7211d7c9ec44ed6e38766eebc9ca11661d99cab4a8e40754b4e188ec44`, with
+abandon receipt `6d22582c97ba92d6c5e805bdd1462d116842ba877d978bff681f77cf72fe8c22`
+and finalize receipt
+`e85398272b1d871dd9de71fe7fdbd334c42965a869c1fa52ea926f00bdbe2db0`.
+`v49`/`v50` failed only the former over-strict dynamic repeatability gate after
+real Worker/native acceptance; they are not retroactively green or strength
+evidence. `v51` accepted a visible 12k Master contract but then hit a hidden
+10k compiler compaction and correctly abandoned before a Worker candidate.
+
+The current source integration chain is `71673a18 → dc6bd38b → fb6120fc →
+2243468a` (detached alignment worktree). It is still unpushed/unmerged. The
+two P1 repairs are coupled:
+
+1. strict Master planning has exactly one default 12,000-character authority
+   form; selected binding and final emission use the same Unicode `rstrip()`
+   normalization; strict plans cannot use compiler task-brief compaction;
+2. runtime probe schema 18 / worker 19 / repeatability schema 3 keeps only a
+   bounded redacted semantic receipt, but requires complete official scenarios,
+   per-scenario typed intent/canonical wire/runtime rows, clean nested evidence,
+   canonical managed-isolation binding, and matching repeated view digests.
+   The same validator gates fresh quality, cache/recovery/precommit reuse,
+   commit, v143 bootstrap, formal admission, and durable official rebind.
+
+Every rendered Master/Worker/Reviewer/Critic/Orchestrator prompt now says that
+the repeatability receipt, per-scenario transcript, and fenced writer provenance
+are system evidence rather than model-replaceable evidence. The executable
+matrix is schema 11 and the delivery ledger records the v49-v51 causes. Before
+merging, rerun matrix/prompt tests after rendering the human document, full Web,
+Sever, relevant frontend checks, compile/diff checks, and independent review.
+
+Do **not** synchronize or restart `.evolution_pok` merely because these P1
+repairs merge. The user requires actual first three products, not a generic
+baseline relabeled afterward. The research line
+`codex/three-bot-consolidation@5b02663908251f6c6c1ee5f7cdc4840508598d31` is
+docs-only input: research code, assets, receipts, seeds, v5 H2H and strength
+never enter main/runtime. Its binding schedule is R0 (non-Bot system asset ABI
+v2) → `v143=A1` clean-room bootstrap → `v144=A2` normal 5+3 → first immutable
+v143/v144 rating snapshot → `v145=B` using that snapshot's actual parent.
+
+R0 must add a system-owned external asset store/manifest+receipt v2, no-follow
+resolver, broker-held query-only facade, launch parity across managed/native/
+probe/precommit/official paths, binding/worker-load receipts and causal influence
+gates. Current manifest v1 and the fixed `strict_v1` bootstrap cannot produce
+A1 merely through a prompt: `v143=A1` also requires a fresh reviewed system
+bootstrap blueprint, hash/receipt/probe binding and asset providers
+`policy_logits` plus `value_lookup`. Implement R0 and the digest-bound initial
+three generation-directive contract as a separate reviewed main change after
+P1; only then use the stopped-checkout Git sync, v51 terminal reproof, recovery
+diagnostics and a fresh `v143=A1` start. Any source sync/restart continues to
+reset observation to **0/10**.

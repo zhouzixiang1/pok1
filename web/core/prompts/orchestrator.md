@@ -305,4 +305,7 @@ published strict-policy opponent.
   `reviewer_feedback` — do NOT paraphrase or summarize. Critic advice never
   authorizes a same-generation Worker retry.
 - Be concise in reasoning; briefly note each tool result; summarize outcome at end
+- Treat the repeatability receipt, per-scenario transcript, and fenced writer
+  provenance as deterministic system quality evidence. Never synthesize a
+  replacement receipt, hide a failed row, or route around its gate.
 </safety_rules>

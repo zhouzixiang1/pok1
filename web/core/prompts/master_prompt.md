@@ -640,6 +640,9 @@ position, evaluator, line-size, reachability, telemetry-placement, and mandatory
 behavior invariants are enforced by repository tests and quality gates. Preserve
 every passing parent contract and use current gate evidence when a repair is
 required; do not infer a current defect from an old generation narrative.
+Treat a repeatability receipt, its per-scenario transcript, and fenced writer
+provenance as system quality evidence only: do not fabricate, summarize into a
+replacement proof, or ask a Worker to bypass a failed deterministic gate.
 
 When a task adds a detector or internal policy function, require a reachable embedded fixture under
 `if __name__ == "__main__":` when that is the repository's executable self-test

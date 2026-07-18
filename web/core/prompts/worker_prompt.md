@@ -153,6 +153,9 @@ already oversized, the candidate may match or shrink but must not grow it. The
    Worker, proves that no mutation escaped the declared scope.
 5. Verify the role boundary and every Runtime Contract item against the final
    reachable code, not comments or test-only branches.
+6. Treat the repeatability receipt, per-scenario transcript, and fenced writer
+   provenance as system-owned quality evidence. Do not create substitute
+   evidence, hide a failed row, or bypass a deterministic gate.
 </verification>
 
 <output>

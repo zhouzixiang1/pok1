@@ -233,6 +233,9 @@ Before producing your JSON, list:
 3. For each change, check: does it match the assigned role?
 4. Count lines in each changed file to verify size limits.
 5. Check for dead code: unused imports, unreachable blocks, commented-out sections.
+6. Treat the repeatability receipt, per-scenario transcript, and fenced writer
+   provenance as deterministic system evidence; reject any attempt to replace,
+   hide, or waive a failed quality row.
 </analysis>
 
 <output_format>

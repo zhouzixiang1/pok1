@@ -176,6 +176,9 @@ supplied evidence envelope is complete; do not open unrelated summaries.
 Critic output is checkpoint-bound advisory evidence for this candidate only. A
 low score does not schedule worker rework and is not injected into later
 generations. Native-TCP precommit is the final statistical strategy gate.
+Treat the repeatability receipt, per-scenario transcript, and fenced writer
+provenance as deterministic system quality evidence; advisory feedback cannot
+replace, hide, or waive a failed quality row.
 </scoring>
 
 <good_feedback_examples>
