@@ -1767,12 +1767,12 @@ def test_exact_eight_slots_are_distinct_and_stage_ordered(authority):
     assert len({item["invocation_id"] for item in receipts}) == 8
 
 
-def test_master_receipt_replay_allows_only_the_bound_review_suffix(
+def test_gate_receipt_replay_allows_only_the_ordered_bound_suffix(
     authority,
     monkeypatch,
     tmp_path,
 ):
-    """Regression for workflow-v53/v55's approved Review receipt failure."""
+    """Regression for v53/v55 and post-Critic historical Review replay."""
 
     module, store = authority
     import system_strict_bootstrap as bootstrap
@@ -1829,8 +1829,10 @@ def test_master_receipt_replay_allows_only_the_bound_review_suffix(
         lambda *_args, **_kwargs: [],
     )
 
-    candidate = tmp_path / "national_v143"
-    candidate.mkdir()
+    runtime_root = tmp_path / "runtime"
+    candidate = runtime_root / "bots" / "national_v143"
+    candidate.mkdir(parents=True)
+    monkeypatch.setattr(bootstrap, "PROJECT_ROOT", runtime_root)
     original_subject = bootstrap._master_subject(
         master_checkpoint,
         plan,
@@ -1848,7 +1850,7 @@ def test_master_receipt_replay_allows_only_the_bound_review_suffix(
     review_checkpoint["audit_context"][
         "system_strict_bootstrap"
     ] = master_receipt
-    review_call, review_result, _receipt = _call(
+    review_call, review_result, review_authority_receipt = _call(
         module,
         review_checkpoint,
         "review",
@@ -1863,6 +1865,13 @@ def test_master_receipt_replay_allows_only_the_bound_review_suffix(
     review_evidence = _bind_call_evidence(module, store, review_call)
     expected_results["review"] = review_result
     expected_contexts["review"] = {"slot": "review", "suffix": "one"}
+    monkeypatch.setattr(
+        module,
+        "gate_call_context",
+        lambda _checkpoint, *, gate_name, candidate_dir: deepcopy(
+            expected_contexts[gate_name]
+        ),
+    )
 
     with pytest.raises(
         module.StrictAuthorityError,
@@ -1900,17 +1909,88 @@ def test_master_receipt_replay_allows_only_the_bound_review_suffix(
     )
     assert review_summary["required_slots"][-1] == "review"
 
+    import bot_artifact
+
+    expected_output = bootstrap.load_blueprint_manifest()[
+        "output_artifact_hash"
+    ]
+    monkeypatch.setattr(
+        bot_artifact,
+        "hash_path",
+        lambda _candidate: expected_output,
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_quality_repeatability_errors",
+        lambda _quality: [],
+    )
+    durable_worker = {
+        "envelope_digest": "2" * 64,
+        "effect_id": "strict-worker-" + "3" * 64,
+        "lease_epoch": 1,
+    }
+    worker_receipt = bootstrap._receipt({
+        "schema_version": 1,
+        "kind": bootstrap.SYSTEM_WORKER_RECEIPT_KIND,
+        "master_receipt_digest": master_receipt["receipt_digest"],
+        "output_artifact_hash": expected_output,
+        "envelope_digest": durable_worker["envelope_digest"],
+        "effect_id": durable_worker["effect_id"],
+        "lease_epoch": durable_worker["lease_epoch"],
+        "changed_files": sorted(bootstrap._WORKER_CHANGED_FILES),
+    })
+    quality_gate = {
+        "all_passed": True,
+        "critical_scenarios_passed": True,
+        "code_fingerprint": expected_output,
+    }
+    review_checkpoint["audit_context"].update({
+        "system_strict_bootstrap_worker": worker_receipt,
+        "durable_worker_output": durable_worker,
+    })
+    review_gate = {
+        "version": 143,
+        "source_v": 142,
+        "passed": True,
+        "approved": True,
+        "llm_invoked": True,
+        "reviewer_llm_executed": True,
+        "schema_valid": True,
+        "llm_role_result": review_result,
+        "llm_authority_receipt": review_authority_receipt,
+        "llm_execution_evidence": review_evidence,
+    }
+    review_checkpoint["gate_results"] = {
+        "quality": quality_gate,
+        "review": review_gate,
+    }
+    review_gate["system_verifier_receipt"] = (
+        bootstrap.build_system_gate_receipt(
+            review_checkpoint,
+            gate_name="review",
+            candidate_dir=candidate,
+            llm_gate=review_gate,
+        )
+    )
+    assert bootstrap.validate_system_gate_receipt(
+        review_checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    ) == []
+
     critic_checkpoint = deepcopy(review_checkpoint)
     critic_checkpoint.update({
         "stage": "reviewed",
         "checkpoint_revision": 30,
     })
-    critic_call, _critic_result, _receipt = _call(
+    critic_call, critic_result, critic_authority_receipt = _call(
         module,
         critic_checkpoint,
         "critic",
     )
-    _bind_call_evidence(module, store, critic_call)
+    critic_evidence = _bind_call_evidence(module, store, critic_call)
+    expected_results["critic"] = critic_result
+    expected_contexts["critic"] = {"slot": "critic", "suffix": "one"}
     extra_errors = bootstrap.validate_master_receipt(
         critic_checkpoint,
         candidate_dir=candidate,
@@ -1931,6 +2011,121 @@ def test_master_receipt_replay_allows_only_the_bound_review_suffix(
     assert any(
         "system_bootstrap_master_later_slot_set_invalid" in error
         for error in wrong_slot_errors
+    )
+
+    critic_gate = {
+        "version": 143,
+        "source_v": 142,
+        "passed": True,
+        "approved": True,
+        "llm_invoked": True,
+        "critic_llm_executed": True,
+        "schema_valid": True,
+        "llm_role_result": critic_result,
+        "llm_authority_receipt": critic_authority_receipt,
+        "llm_execution_evidence": critic_evidence,
+    }
+    critic_checkpoint["gate_results"]["critic"] = critic_gate
+    critic_gate["system_verifier_receipt"] = (
+        bootstrap.build_system_gate_receipt(
+            critic_checkpoint,
+            gate_name="critic",
+            candidate_dir=candidate,
+            llm_gate=critic_gate,
+        )
+    )
+
+    # A stored Review receipt remains byte-identical after its sole ordered
+    # successor is accepted, while the Critic receipt owns the exact full set.
+    assert bootstrap.validate_system_gate_receipt(
+        critic_checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    ) == []
+    assert bootstrap.validate_system_gate_receipt(
+        critic_checkpoint,
+        gate_name="critic",
+        candidate_dir=candidate,
+    ) == []
+
+    import tool_commit
+    import tool_eval
+    import tool_helpers
+
+    monkeypatch.setattr(
+        bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        tool_helpers,
+        "_gate_matches_active_workflow",
+        lambda _checkpoint, _gate: True,
+    )
+    assert tool_helpers._review_gate_ok(critic_checkpoint) is True
+    assert tool_helpers._critic_gate_ok(critic_checkpoint) is True
+    assert all((
+        tool_eval._quality_gate_ok(critic_checkpoint),
+        tool_eval._review_gate_ok(critic_checkpoint),
+        tool_eval._critic_gate_ok(critic_checkpoint),
+    ))
+    assert all((
+        tool_commit._review_gate_ok(critic_checkpoint),
+        tool_commit._critic_gate_ok(critic_checkpoint),
+    ))
+
+    # Current Review construction is still exact: a Critic that somehow
+    # appears before that construction is never accepted as historical suffix.
+    with pytest.raises(
+        bootstrap.SystemStrictBootstrapError,
+        match="strict_authority_unexpected_accepted_slots:critic",
+    ):
+        bootstrap.build_system_gate_receipt(
+            critic_checkpoint,
+            gate_name="review",
+            candidate_dir=candidate,
+            llm_gate=review_gate,
+        )
+
+    critic_accepted = [
+        event
+        for event in store.events(critic_call["run_id"])
+        if event.event_type == module.ACCEPTED_EVENT
+        and event.payload.get("slot") == "critic"
+    ]
+    assert len(critic_accepted) == 1
+    store.append_event(
+        critic_call["run_id"],
+        module.ACCEPTED_EVENT,
+        deepcopy(critic_accepted[0].payload),
+        causation_id="pytest-duplicate-critic-accepted",
+    )
+    duplicate_errors = bootstrap.validate_system_gate_receipt(
+        critic_checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+    assert "strict_authority_critic_accepted_count:2" in ";".join(
+        duplicate_errors
+    )
+    assert tool_helpers._review_gate_ok(critic_checkpoint) is False
+    assert tool_helpers._critic_gate_ok(critic_checkpoint) is False
+
+    wrong_suffix = deepcopy(critic_accepted[0].payload)
+    wrong_suffix["slot"] = "postcommit"
+    store.append_event(
+        critic_call["run_id"],
+        module.ACCEPTED_EVENT,
+        wrong_suffix,
+        causation_id="pytest-wrong-authority-suffix",
+    )
+    wrong_suffix_errors = bootstrap.validate_system_gate_receipt(
+        critic_checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+    assert "strict_authority_unexpected_slot:postcommit" in ";".join(
+        wrong_suffix_errors
     )
 
 

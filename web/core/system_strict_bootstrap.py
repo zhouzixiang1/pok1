@@ -1684,17 +1684,24 @@ def _system_gate_subject(
 ) -> tuple[dict[str, Any], list[str]]:
     errors = validate_embedded_system_gate(llm_gate, gate_name=gate_name)
     candidate = Path(candidate_dir)
-    # Re-open the historical Master receipt with only the gate suffix that the
-    # current gate is about to require exactly via ``authority_summary``.
+    historical_later_slots = (
+        ("critic",)
+        if not require_exact_authority and gate_name == "review"
+        else ()
+    )
+    gate_prefix = (
+        ("review", "critic")
+        if gate_name == "critic" or historical_later_slots
+        else ("review",)
+    )
+    # Current receipt construction owns an exact gate prefix.  Historical
+    # receipt validation may see only its one ordered successor, which remains
+    # fully validated below but cannot rewrite the earlier receipt subject.
     errors.extend(validate_master_receipt(
         checkpoint,
         candidate_dir=candidate,
         require_prepared_content=False,
-        permitted_later_accepted_slots=(
-            ("review",)
-            if gate_name == "review"
-            else ("review", "critic")
-        ),
+        permitted_later_accepted_slots=gate_prefix,
     ))
     audit = checkpoint.get("audit_context") or {}
     master = audit.get("system_strict_bootstrap") or {}
@@ -1746,7 +1753,8 @@ def _system_gate_subject(
                 gate_name: gate_call_context(checkpoint, gate_name=gate_name, candidate_dir=candidate),
             },
             expected_invocation_evidence=expected_gate_evidence,
-            require_no_other_accepted=require_exact_authority,
+            require_no_other_accepted=True,
+            permitted_other_accepted_slots=historical_later_slots,
         )
     except Exception as exc:
         errors.append(f"system_bootstrap_gate_authority_invalid:{type(exc).__name__}:{str(exc)[:300]}")
