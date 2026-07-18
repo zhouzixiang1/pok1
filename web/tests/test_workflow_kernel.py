@@ -31,6 +31,18 @@ def test_store_uses_wal_full_sync_and_foreign_keys(tmp_path):
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
 
 
+def test_concurrent_first_open_serializes_schema_and_wal_initialization(tmp_path):
+    path = tmp_path / "concurrent-first-open.sqlite3"
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        stores = list(executor.map(lambda _index: WorkflowStore(path), range(32)))
+
+    assert {store.path for store in stores} == {path}
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+
+
 def test_short_lived_store_connections_do_not_leak_file_descriptors(tmp_path):
     store = _store(tmp_path)
     fd_dir = "/proc/self/fd"

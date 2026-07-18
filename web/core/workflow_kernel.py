@@ -123,7 +123,52 @@ class WorkflowStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.lock_dir = self.path.parent / "workflow_locks"
         self.lock_dir.mkdir(parents=True, exist_ok=True)
-        self._initialize(deadline_monotonic=deadline_monotonic)
+        # SQLite can reject concurrent first-open ``PRAGMA journal_mode=WAL``
+        # calls with ``database is locked`` before its busy handler has a
+        # chance to serialize them.  Every command lock is acquired after a
+        # store exists, so a first-use begin/abandon race otherwise fails
+        # outside the workflow fence.  Serialize schema/WAL initialization
+        # across processes with a database-scoped file lock; normal commands
+        # retain their narrower run-scoped locks below.
+        with self._initialization_lock(deadline_monotonic=deadline_monotonic):
+            self._initialize(deadline_monotonic=deadline_monotonic)
+
+    @contextmanager
+    def _initialization_lock(self, *, deadline_monotonic: float | None = None):
+        safe = hashlib.sha256(
+            str(self.path.resolve()).encode("utf-8")
+        ).hexdigest()
+        lock_path = self.lock_dir / f"{safe}.initialize.lock"
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        acquired = False
+        try:
+            if deadline_monotonic is None:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                acquired = True
+            else:
+                while True:
+                    try:
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        acquired = True
+                        break
+                    except BlockingIOError:
+                        remaining = self._remaining_deadline_seconds(
+                            deadline_monotonic,
+                            operation="store_initialization_lock",
+                        )
+                        assert remaining is not None
+                        time.sleep(min(0.01, remaining))
+            self._remaining_deadline_seconds(
+                deadline_monotonic,
+                operation="store_initialization_lock",
+            )
+            yield
+        finally:
+            try:
+                if acquired:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
 
     @staticmethod
     def _remaining_deadline_seconds(

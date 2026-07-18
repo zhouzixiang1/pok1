@@ -699,6 +699,94 @@ def test_control_authority_abandon_creates_exact_pre_effect_tombstone(
         _begin(scope, timing_plan, claim_now=time.time())
 
 
+def test_begin_and_abandon_share_instance_creation_lock_and_abandon_wins(
+    tmp_path,
+    monkeypatch,
+):
+    """There is no no-instance -> running lease race across the terminal fence."""
+
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+    execution, _consumed = _minimal_completion_authority(monkeypatch)
+    local = threading.local()
+    original_lock = WorkflowStore.command_lock
+    original_ensure = WorkflowStore.ensure_instance
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def observed_lock(store, run_id, **kwargs):
+        with original_lock(store, run_id, **kwargs):
+            local.inside_command_lock = True
+            try:
+                yield
+            finally:
+                local.inside_command_lock = False
+
+    def guarded_ensure(store, *args, **kwargs):
+        assert getattr(local, "inside_command_lock", False) is True
+        return original_ensure(store, *args, **kwargs)
+
+    monkeypatch.setattr(WorkflowStore, "command_lock", observed_lock)
+    monkeypatch.setattr(WorkflowStore, "ensure_instance", guarded_ensure)
+    start = threading.Barrier(2)
+    results = {}
+    errors = {}
+
+    def begin():
+        start.wait()
+        try:
+            results["begin"] = _begin(
+                scope,
+                timing_plan,
+                claim_now=time.time(),
+            )
+        except Exception as exc:  # abandon may create the tombstone first
+            errors["begin"] = exc
+
+    def abandon():
+        start.wait()
+        try:
+            results["abandon"] = journal.abandon_control_execution(
+                scope,
+                reason="concurrent_operator_abandon",
+            )
+        except Exception as exc:
+            errors["abandon"] = exc
+
+    threads = [threading.Thread(target=begin), threading.Thread(target=abandon)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+        assert not thread.is_alive()
+
+    assert "abandon" not in errors
+    assert results["abandon"]["outcome"] == "abandoned"
+    instance = journal._store().instance(journal._authority_run_id(scope))
+    assert instance["status"] == "abandoned"
+    assert instance["fence_epoch"] == 1
+    assert results["abandon"]["effects"]["nonterminal"] == []
+    if "begin" in results:
+        with pytest.raises(
+            journal.FirstStrictExecutionJournalError,
+            match="first_strict_execution_stale_completion",
+        ):
+            journal.complete_control_execution(
+                results["begin"],
+                execution=execution,
+            )
+    else:
+        assert isinstance(
+            errors.get("begin"),
+            journal.FirstStrictExecutionJournalError,
+        )
+
+
 def test_pending_payload_rejects_scope_or_ticket_tampering(tmp_path, monkeypatch):
     """Only a canonical live-lease payload may suppress failure/abandon paths."""
 

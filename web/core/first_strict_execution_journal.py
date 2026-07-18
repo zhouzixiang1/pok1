@@ -1369,10 +1369,6 @@ def begin_control_execution(
         )
     store = _store()
     authority_run_id = _authority_run_id(normalized_scope)
-    store.ensure_instance(
-        authority_run_id,
-        definition_version=EXECUTION_DEFINITION_VERSION,
-    )
     effect_id = f"{authority_run_id}:repeat-{int(repeat)}"
     match_identity = {
         "scope": normalized_scope,
@@ -1403,6 +1399,11 @@ def begin_control_execution(
         )
     with store.command_lock(authority_run_id, blocking=True):
         instance = store.instance(authority_run_id)
+        if not instance:
+            instance = store.ensure_instance(
+                authority_run_id,
+                definition_version=EXECUTION_DEFINITION_VERSION,
+            )
         instance_status = str(instance.get("status") or "")
         if instance_status == "succeeded":
             # A crash may occur after the eight-sample authority becomes
