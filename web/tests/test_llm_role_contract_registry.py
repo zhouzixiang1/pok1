@@ -449,6 +449,48 @@ def test_all_subagent_roles_reach_provider_with_independent_receipts(monkeypatch
     assert [item["role_contract_id"] for item in starts] == [row[1] for row in CASES]
 
 
+def test_master_proposal_schema_repair_emission_gate_is_last_provider_instruction():
+    """The v54 repair instruction must survive the final role-contract suffix."""
+
+    import agent_master
+    import llm_query
+
+    role = "MASTER PROPOSAL mechanism SCHEMA RETRY"
+    inputs = dict(_renderer_inputs("master_proposal", "strict repair context"))
+    inputs.update({
+        "repair_kind": "schema",
+        "projection_hints": [
+            "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise"
+        ],
+        "allowed_primaries": ["action_profile"],
+    })
+    rendered = llm_query.render_llm_prompt(
+        role,
+        producer=agent_master._render_master_proposal_provider_prompt,
+        renderer_inputs=inputs,
+    )
+    provider_prompt, contract = llm_query.bind_llm_role_provider_prompt(
+        rendered,
+        role,
+        tools=["Read"],
+        allowed_read_dirs=[
+            ROOT / "bots/national_v143",
+            ROOT / "bots/national_v145",
+        ],
+        model="sonnet",
+    )
+
+    assert contract.role_id == "master_proposal"
+    assert provider_prompt.count(
+        "# SYSTEM-OWNED MASTER PROPOSAL EMISSION GATE (LAST)"
+    ) == 1
+    assert "This is the sole repair attempt (attempt 2 of 2)." in provider_prompt
+    assert "one raw JSON object" in provider_prompt
+    assert provider_prompt.rstrip().endswith(
+        "A malformed or duplicate object is rejected and does not create another attempt."
+    )
+
+
 def test_orchestrator_final_descriptor_binds_current_strict_alignment_overlay():
     """The Orchestrator bypasses run_claude_query but binds the same final suffix."""
 

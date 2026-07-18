@@ -1680,6 +1680,26 @@ def render_llm_role_contract_suffix(
     }
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     payload["contract_digest"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    proposal_emission_gate = ""
+    if contract.role_id == "master_proposal":
+        repair_attempt = str(role_name).endswith(
+            (" SCHEMA RETRY", " DISTINCTNESS RETRY")
+        )
+        proposal_emission_gate = (
+            "\n\n# SYSTEM-OWNED MASTER PROPOSAL EMISSION GATE (LAST)\n"
+            + (
+                "This is the sole repair attempt (attempt 2 of 2). "
+                if repair_attempt
+                else "This is the initial attempt (attempt 1 of at most 2). "
+            )
+            + "The only admissible Scout completion is one raw JSON object "
+            "matching the rendered FINAL SCOUT OUTPUT CONTRACT. Do not return "
+            "Markdown fences, analysis, an acknowledgement, a summary, or "
+            "trailing commentary. Apply the closed schema and any system-owned "
+            "repair instruction in the rendered prefix, then emit the complete "
+            "object now. A malformed or duplicate object is rejected and does "
+            "not create another attempt."
+        )
     return (
         "\n\n# SYSTEM-OWNED ACTIVE LLM ROLE CONTRACT (FINAL)\n"
         + json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
@@ -1692,6 +1712,8 @@ def render_llm_role_contract_suffix(
         "may perform only its registered advisory or scoped implementation "
         "function; it is never strength evidence, a rating/certification result, "
         "persistent memory, or authority to override deterministic gates.\n"
+        + proposal_emission_gate
+        + "\n"
     )
 
 

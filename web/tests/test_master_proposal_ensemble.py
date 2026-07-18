@@ -94,6 +94,51 @@ def _proposal(
     return "```json\n" + json.dumps(payload) + "\n```"
 
 
+def _action_profile_proposal(
+    direction: str,
+    *,
+    bare_shared_leaf: bool = False,
+) -> str:
+    """Return a fresh-control proposal on the v54 shared-leaf axis."""
+
+    payload = json.loads(
+        _proposal(direction, fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    label = direction.replace("_", " ")
+    payload.update({
+        "mechanism_target": "opponent.rates",
+        "structural_change": (
+            f"{label} routes only opponent.rates.fold_to_raise through the "
+            "bounded live decision consumer."
+        ),
+        "expected_diff": (
+            f"{label} changes the paired typed intent only when "
+            "opponent.rates.fold_to_raise changes."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": "opponent.rates",
+        "control": (
+            "Hold opponent.rates at its bounded prior for the identical paired state."
+        ),
+        "intervention": (
+            "Change only opponent.rates.fold_to_raise in the paired decision context."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under the action-profile intervention."
+        ),
+    }
+    if bare_shared_leaf:
+        payload["structural_change"] += (
+            " The fold-to-raise tendency is the explanatory poker phrase."
+        )
+    return json.dumps(payload)
+
+
 def _critic_output(
     agent_master,
     proposal_ids,
@@ -1193,6 +1238,124 @@ async def test_ensemble_repairs_one_scout_and_critic_schema_failure(
     assert "precise rejection in its immutable audit record" in mechanism_retry_prompt
     assert "proposal_required_text_invalid:measurement" not in mechanism_retry_prompt
     assert "Common failure modes to fix" not in mechanism_retry_prompt
+
+
+@pytest.mark.asyncio
+async def test_shared_leaf_scout_repair_restores_exactly_three_distinct_proposals(
+    monkeypatch, tmp_path
+):
+    """Reproduce v54's first rejection, then prove the one repair can recover."""
+
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    roles = []
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        roles.append(role_name)
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"', prompt
+            )))
+            return _critic_output(agent_master, ids), 0.0, {}
+        if role_name == "MASTER PROPOSAL mechanism SCHEMA RETRY":
+            assert (
+                "The only executable root for this frozen proposal is "
+                "opponent.rates"
+            ) in prompt
+        direction = next(
+            name
+            for name in ("mechanism", "counterfactual", "compute_memory")
+            if name in role_name
+        )
+        if role_name == "MASTER PROPOSAL mechanism":
+            return _action_profile_proposal(
+                direction,
+                bare_shared_leaf=True,
+            ), 0.0, {}
+        return _action_profile_proposal(direction), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "frozen action-profile architecture policy",
+        source_v=142,
+        next_v=143,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+        baseline_v=143,
+        protocol_bootstrap_prepared_only=True,
+        allowed_primaries=("action_profile",),
+    ))
+
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert len(set(packet["allowed_proposal_ids"])) == 3
+    assert roles.count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 1
+    assert len(roles) == 6
+
+
+@pytest.mark.asyncio
+async def test_shared_leaf_scout_non_json_repair_exhausts_fail_closed(
+    monkeypatch, tmp_path
+):
+    """A v54-style prose retry remains invalid and never buys attempt three."""
+
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    snapshot_dir = tmp_path / "snapshot"
+    _write_source(source_dir)
+    snapshot_dir.mkdir()
+    roles = []
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
+        roles.append(role_name)
+        if role_name == "MASTER PROPOSAL mechanism":
+            return _action_profile_proposal(
+                "mechanism",
+                bare_shared_leaf=True,
+            ), 0.0, {}
+        if role_name == "MASTER PROPOSAL mechanism SCHEMA RETRY":
+            assert (
+                "The only executable root for this frozen proposal is "
+                "opponent.rates"
+            ) in prompt
+            return "I acknowledge the correction but did not emit JSON.", 0.0, {}
+        direction = next(
+            name
+            for name in ("counterfactual", "compute_memory")
+            if name in role_name
+        )
+        return _action_profile_proposal(direction), 0.0, {}
+
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: source_dir)
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        "frozen action-profile architecture policy",
+        source_v=142,
+        next_v=143,
+        ui=_UI(),
+        log_dir=tmp_path,
+        allowed_evidence_snapshot_dir=str(snapshot_dir),
+        baseline_v=143,
+        protocol_bootstrap_prepared_only=True,
+        allowed_primaries=("action_profile",),
+    ))
+
+    assert packet["valid"] is False
+    assert packet["reason"] == (
+        "three_distinct_schema_valid_scout_proposals_required:got_2"
+    )
+    assert roles.count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 1
+    assert len(roles) == 4
+    assert not any("CRITIC" in role for role in roles)
 
 
 @pytest.mark.asyncio
