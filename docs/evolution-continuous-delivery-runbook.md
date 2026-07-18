@@ -46,12 +46,20 @@ checkpoint, result, log, or certificate files are never copied by hand.
 9. If the stopped runtime is checkpoint-free and its active-stage evaluation
    contract did **not** change, fast-forward `.evolution_pok` only from merged
    `origin/main`, then run canonical checkpoint recovery diagnostics.
-10. If an active checkpoint's evaluation contract changed, do **not**
-    fast-forward first. Keep `.evolution_pok` on its recorded old HEAD, run the
-    exact-CAS governed abandon for that checkpoint, and validate the finalized
-    handoff, quarantine and cleared-checkpoint proof. Only then fast-forward
-    through merged `origin/main` and run the diagnostics. Never delete or edit
-    a checkpoint/candidate to make this path appear clean.
+10. If an active checkpoint's evaluation contract changed, do **not** resume it
+    under new source. Normally keep `.evolution_pok` on its recorded old HEAD,
+    run the old contract's exact-CAS governed abandon, validate the finalized
+    handoff/quarantine/cleared-checkpoint proof, and only then fast-forward.
+    The sole exception is a reviewed, source-owned terminal migrator that does
+    not exist on the old HEAD and has already matched an immutable/online-backup
+    projection of that exact stopped checkpoint. For that exception, prove all
+    autonomous processes stopped, fast-forward only to the exact reviewed main
+    SHA, start no Web/orchestrator/daemon/provider process, and immediately run
+    the migrator dry-run followed by its explicitly acknowledged exact-CAS
+    terminal action. A failed dry-run or execute leaves the runtime stopped on
+    the migrated source for diagnosis; it never falls through to normal
+    recovery. Never delete, copy back, or edit a checkpoint/candidate to make
+    either path appear clean.
 
 ## Current Contract-38 source freeze gate
 
@@ -238,7 +246,11 @@ digest remain bound. An approval, a missing/extra key, or any changed focus,
 plan, quality or candidate identity is not migratable.
 
 Run this only while the autonomous checkout is stopped and still owns the
-recorded v52 checkpoint. First inspect without mutation:
+recorded v52 checkpoint. Because this command is the reviewed terminal migrator
+that is absent from v52's old HEAD, apply the exception in infrastructure step
+10: after the independent immutable-copy match, fast-forward the stopped
+checkout to the exact reviewed main SHA, start no runtime process, and first
+inspect without mutation:
 
 ```bash
 python scripts/reconcile_terminal_gate.py
@@ -258,9 +270,11 @@ The execute path accepts and binds the already completed effect, dispatches no
 model, creates a typed `review_rejected` outcome and enters the ordinary
 exact-CAS canonical abandon/quarantine/checkpoint-clear transaction. Preserve
 the output in the delivery ledger, then run recovery diagnostics before a
-fresh v143 workflow. At this source freeze the runtime dry-run and execute are
-still pending; no v52 result is accepted as a Bot, certificate, rating or
-strength sample by this documentation.
+fresh v143 workflow. If inspection or execute fails, do not start the runtime
+and do not restore state by copying the independent test projection back. At
+this source freeze the runtime source sync, dry-run and execute are still
+pending; no v52 result is accepted as a Bot, certificate, rating or strength
+sample by this documentation.
 
 ### Reviewer semantic modes and quality handoff
 

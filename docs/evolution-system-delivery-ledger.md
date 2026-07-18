@@ -3762,11 +3762,14 @@ the required final full Web/Sever/frontend/compile/diff gate after the legacy
 five-to-six bridge and these docs are combined, nor for independent review.
 
 The operational order remains fail-closed: finish the bridge and full source
-gate; review; merge/push `origin/main`; while the autonomous checkout remains
-stopped, run the reconciliation CLI in dry-run and require exact v52 identities
-plus `provider_dispatch_required=false`; execute only with
-`--acknowledge-completed-review-rejection`; prove canonical quarantine and
-checkpoint clearance; then fast-forward the runtime, rebuild/verify frontend
-static identity, and run recovery/evaluation/official diagnostics before a
-fresh v143 workflow. At this ledger point none of those runtime actions has
-occurred and the stable observation remains **0/10**.
+gate; review; merge/push `origin/main`; prove the autonomous checkout and all
+provider/evolution processes stopped; because the reviewed migrator is absent
+from v52's old HEAD, fast-forward only its source to the exact reviewed main
+SHA without starting any process; run the reconciliation CLI in dry-run and
+require exact v52 identities plus `provider_dispatch_required=false`; execute
+only with `--acknowledge-completed-review-rejection`; prove canonical
+quarantine and checkpoint clearance; then rebuild/verify frontend static
+identity and run recovery/evaluation/official diagnostics before a fresh v143
+workflow. A failed inspect/execute remains stopped and is never repaired by
+copying the independent test state back. At this ledger point none of those
+runtime actions has occurred and the stable observation remains **0/10**.
