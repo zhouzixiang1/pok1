@@ -883,6 +883,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/frontend/scripts/static-build-receipt.mjs",
                 "verifyReceipt",
             ),
+            _ref("web/main.py", "verify_frontend_static_receipt"),
             _ref("pokctl.sh", "frontend_static_receipt_valid"),
             _ref("scripts/pok_restart_observe.sh"),
         ),
@@ -897,6 +898,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/frontend/scripts/static-build-receipt.mjs",
                 "verifyReceipt",
             ),
+            _ref("web/main.py", "verify_frontend_static_receipt"),
             _ref("pokctl.sh", "cmd_verify_frontend_static"),
         ),
         prompts=_CORE_PROMPTS,
@@ -935,6 +937,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_frontend_liveness_fails_closed_on_sse_and_daemon_health",
             "web/tests/test_restart_observe_script.py::"
             "test_restart_refuses_stale_no_build_receipt_before_stop",
+            "web/tests/test_web_launcher_config.py::"
+            "test_valid_no_build_receipt_reaches_uvicorn_only_after_preflight",
         ),
         negative_tests=(
             "web/tests/test_routes_evolution.py::TestEvolutionState::"
@@ -949,11 +953,14 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authority",
             "tests/test_pokctl_checkout_scope.py::"
             "test_pokctl_restart_refuses_stale_no_build_receipt_before_stop",
+            "web/tests/test_web_launcher_config.py::"
+            "test_no_build_launcher_refuses_receipt_failure_before_server_import",
         ),
         fail_closed=(
             "Stale, replaced-owner, shutdown, lower-revision, equal-revision-conflicting, torn, or "
             "unverified/expired status identity is dropped; HTTP cannot revive a phrase. A stale/malformed "
-            "static receipt refuses --no-build before stopping the service. Null/malformed HTTP or "
+            "static receipt refuses --no-build before importing the app, starting Uvicorn, or stopping/"
+            "restarting the owned service. Null/malformed HTTP or "
             "SSE clears text through task_authority_lost without fabricating R+1, while an exact later same-R "
             "projection may recover and a conflicting same-R projection remains blocked until a newer revision."
         ),

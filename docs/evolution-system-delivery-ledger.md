@@ -4133,3 +4133,21 @@ closure does not claim to repair that infra-claim transition, publish v143, or
 carry the old candidate's 70-hand result to the new artifact.  A reviewed
 atomic infra-claim consumption repair and controlled abandon/re-prepare remain
 required before restart, and that restart resets observation to **0/10**.
+## 2026-07-18 — direct `--no-build` frontend receipt closure (source pending merge)
+
+The status-authority matrix already required a source-bound static receipt for
+`--no-build`, but only `pokctl.sh` and the restart observer enforced it.  The
+documented direct launcher `python web/main.py --no-build` could therefore
+serve a stale dashboard bundle even though backend status identity had been
+repaired.  `web/main.py` now verifies the existing static output, Node, and the
+shared `static-build-receipt.mjs --verify` contract before importing the Web
+application, starting Uvicorn, or invoking the daemon lifecycle. Missing,
+stale, malformed, or unverifiable output exits fail-closed; a normal build
+remains responsible for producing the receipt.
+
+Focused launcher tests cover shared-verifier success, missing output, verifier
+failure, rejection before server/Uvicorn import, valid `--no-build`, and the
+normal build path. The matrix records the direct launcher as a production owner
+and dynamic gate. This source-only repair has no runtime, candidate,
+certificate, rating, or strength effect and remains pending review/merge/safe
+runtime synchronization.

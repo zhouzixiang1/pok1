@@ -26,7 +26,10 @@ rather than silently validating a substitute producer graph.
 `web/frontend/dist/` and copies the generated application to
 `web/server/static/`. Both locations are generated outputs. The production
 launcher is `python web/main.py`; on a fresh checkout, run it once without
-`--no-build`.
+`--no-build`. A direct `python web/main.py --no-build` launch is allowed only
+when the existing static bundle has a valid source-bound static-build receipt:
+the launcher verifies it before importing the Web app or starting Uvicorn, and
+refuses a missing or stale bundle rather than serving an old dashboard.
 
 The application uses React, TypeScript, Tailwind CSS, ApexCharts, and
 `react-router` v7. The package name retains historical template provenance,
