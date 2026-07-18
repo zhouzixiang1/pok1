@@ -117,6 +117,70 @@ def _review_semantic_contract(master_plan, quality_gate):
         raise ValueError("Reviewer selected capability errors are invalid")
 
     invalid = []
+    architecture_transition = quality_gate.get(
+        "national_architecture_transition"
+    )
+    capability_contract = quality_gate.get("national_capability_contract")
+    if not isinstance(architecture_transition, dict):
+        architecture_transition = {}
+        invalid.append("architecture_transition_missing")
+    if not isinstance(capability_contract, dict):
+        capability_contract = {}
+        invalid.append("capability_contract_missing")
+    selected_checks = architecture_transition.get("selected_dynamic_checks")
+    selected_failures = architecture_transition.get(
+        "selected_dynamic_failures"
+    )
+    if not isinstance(selected_checks, list) or any(
+        not isinstance(item, str) for item in selected_checks
+    ):
+        selected_checks = []
+        invalid.append("selected_dynamic_checks_invalid")
+    if not isinstance(selected_failures, list) or any(
+        not isinstance(item, str) for item in selected_failures
+    ):
+        selected_failures = []
+        invalid.append("selected_dynamic_failures_invalid")
+    transition_checks = (
+        ((architecture_transition.get("candidate_capabilities") or {}).get(
+            "checks_by_id"
+        ) or {})
+        if isinstance(architecture_transition.get("candidate_capabilities"), dict)
+        else {}
+    )
+    actual_check_row = (
+        transition_checks.get(check_id)
+        if isinstance(transition_checks, dict)
+        else None
+    )
+    capability_checks = capability_contract.get("checks_by_id")
+    capability_check_row = (
+        capability_checks.get(check_id)
+        if isinstance(capability_checks, dict)
+        else None
+    )
+    if not isinstance(actual_check_row, dict):
+        invalid.append("selected_capability_actual_check_missing")
+        actual_check_row = {}
+    else:
+        from bot_artifact import canonical_digest
+
+        if canonical_digest(actual_check_row) != check_evidence_digest:
+            invalid.append("selected_capability_actual_check_digest_mismatch")
+        if actual_check_row.get("check_id") != check_id:
+            invalid.append("selected_capability_actual_check_id_mismatch")
+        if actual_check_row.get("passed") is not True:
+            invalid.append("selected_capability_actual_check_not_passed")
+    if check_id not in selected_checks:
+        invalid.append("selected_capability_not_in_selected_dynamic_checks")
+    if check_id in selected_failures:
+        invalid.append("selected_capability_in_selected_dynamic_failures")
+    if architecture_transition.get("ok") is not True:
+        invalid.append("architecture_transition_not_ok")
+    if capability_contract.get("ok") is not True:
+        invalid.append("capability_contract_not_ok")
+    if capability_check_row != actual_check_row:
+        invalid.append("capability_contract_check_projection_mismatch")
     if quality_gate.get("all_passed") is not True:
         invalid.append("quality_not_all_passed")
     if quality_gate.get("critical_scenarios_passed") is not True:
@@ -164,6 +228,10 @@ def _review_semantic_contract(master_plan, quality_gate):
         "reachable_symbol_diff_ok": True,
         "changed_reachable_symbols": list(changed_symbols),
         "reachable_symbol_diff_digest": reachable_digest,
+        "actual_check_row": json.loads(json.dumps(actual_check_row)),
+        "selected_dynamic_checks": list(selected_checks),
+        "selected_dynamic_failures": list(selected_failures),
+        "capability_contract_projection_equal": True,
     }
     subject = {
         "schema_version": 1,

@@ -27,15 +27,40 @@ def _inputs(*, execution_mode: str):
         "proposal_binding": binding,
         "tasks": [{"worker_id": "W1", "target_files": ["policy.py"]}],
     }
+    actual_check_row = {
+        "check_id": "typed-capability-check",
+        "passed": True,
+        "required": False,
+        "guidance": "typed capability evidence",
+        "evidence": {"dynamic_passed": True},
+    }
+    from bot_artifact import canonical_digest
+
     quality = {
         "all_passed": True,
         "critical_scenarios_passed": True,
         "selected_proposal_quality_ok": True,
+        "national_architecture_transition": {
+            "ok": True,
+            "selected_dynamic_checks": ["typed-capability-check"],
+            "selected_dynamic_failures": [],
+            "candidate_capabilities": {
+                "checks_by_id": {
+                    "typed-capability-check": actual_check_row,
+                },
+            },
+        },
+        "national_capability_contract": {
+            "ok": True,
+            "checks_by_id": {
+                "typed-capability-check": deepcopy(actual_check_row),
+            },
+        },
         "selected_proposal_quality_evidence": {
             "required": True,
             "ok": True,
             "check_id": "typed-capability-check",
-            "check_evidence_digest": "b" * 64,
+            "check_evidence_digest": canonical_digest(actual_check_row),
             "proposal_contract_digest": "a" * 64,
             "evidence_scope": _EVIDENCE_SCOPE,
             "reachable_symbol_diff_required": strategy,
@@ -151,6 +176,86 @@ def test_review_semantic_contract_fails_closed_on_quality_or_mode_drift():
     unknown_plan["proposal_binding"]["execution_mode"] = "prose-decides-mode"
     with pytest.raises(ValueError, match="execution mode is not recognized"):
         tool_gates._review_semantic_contract(unknown_plan, quality)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_error"),
+    [
+        (
+            "missing_row",
+            "selected_capability_actual_check_missing",
+        ),
+        (
+            "failed_row",
+            "selected_capability_actual_check_not_passed",
+        ),
+        (
+            "tampered_row",
+            "selected_capability_actual_check_digest_mismatch",
+        ),
+        (
+            "selected_set_drift",
+            "selected_capability_not_in_selected_dynamic_checks",
+        ),
+        (
+            "failure_set_drift",
+            "selected_capability_in_selected_dynamic_failures",
+        ),
+    ],
+)
+def test_review_semantics_revalidate_actual_dynamic_check_row(
+    mutation,
+    expected_error,
+):
+    import tool_gates
+
+    inputs, quality = _inputs(
+        execution_mode="fixed_blueprint_capability_audit"
+    )
+    drifted = deepcopy(quality)
+    transition = drifted["national_architecture_transition"]
+    checks = transition["candidate_capabilities"]["checks_by_id"]
+    check_id = "typed-capability-check"
+    if mutation == "missing_row":
+        checks.pop(check_id)
+    elif mutation == "failed_row":
+        checks[check_id]["passed"] = False
+    elif mutation == "tampered_row":
+        checks[check_id]["guidance"] = "tampered after quality digest"
+    elif mutation == "selected_set_drift":
+        transition["selected_dynamic_checks"] = []
+    elif mutation == "failure_set_drift":
+        transition["selected_dynamic_failures"] = [check_id]
+    else:  # pragma: no cover - parametrization is closed above
+        raise AssertionError(mutation)
+
+    with pytest.raises(ValueError, match=expected_error):
+        tool_gates._review_semantic_contract(
+            inputs["master_plan"],
+            drifted,
+        )
+
+
+def test_review_semantics_cross_check_capability_contract_projection():
+    import tool_gates
+
+    inputs, quality = _inputs(
+        execution_mode="fixed_blueprint_capability_audit"
+    )
+    mismatch = deepcopy(quality)
+    mismatch["national_capability_contract"]["checks_by_id"][
+        "typed-capability-check"
+    ]["guidance"] = "different projection"
+    with pytest.raises(
+        ValueError,
+        match="capability_contract_check_projection_mismatch",
+    ):
+        tool_gates._review_semantic_contract(inputs["master_plan"], mismatch)
+
+    not_ok = deepcopy(quality)
+    not_ok["national_capability_contract"]["ok"] = False
+    with pytest.raises(ValueError, match="capability_contract_not_ok"):
+        tool_gates._review_semantic_contract(inputs["master_plan"], not_ok)
 
 
 def test_quality_checkpoint_projection_persists_exact_selected_evidence():

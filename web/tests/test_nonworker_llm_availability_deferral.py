@@ -542,22 +542,45 @@ def test_master_plan_audit_availability_is_attempt_neutral(
 
 def _gate_tool_fixture(tmp_path, monkeypatch, *, stage):
     import tool_gates
+    from bot_artifact import canonical_digest
 
     source_v, next_v = 147, 148
     source = tmp_path / f"national_v{source_v}"
     candidate = tmp_path / f"national_v{next_v}"
     _write_strict_bot(source, policy_value=1)
     _write_strict_bot(candidate, policy_value=2)
+    capability_row = {
+        "check_id": "availability-typed-check",
+        "passed": True,
+        "required": False,
+        "evidence": {"dynamic_passed": True},
+    }
     gate_results = {
         "quality": {
             "all_passed": True,
             "critical_scenarios_passed": True,
             "selected_proposal_quality_ok": True,
+            "national_architecture_transition": {
+                "ok": True,
+                "selected_dynamic_checks": ["availability-typed-check"],
+                "selected_dynamic_failures": [],
+                "candidate_capabilities": {
+                    "checks_by_id": {
+                        "availability-typed-check": capability_row,
+                    },
+                },
+            },
+            "national_capability_contract": {
+                "ok": True,
+                "checks_by_id": {
+                    "availability-typed-check": capability_row,
+                },
+            },
             "selected_proposal_quality_evidence": {
                 "required": True,
                 "ok": True,
                 "check_id": "availability-typed-check",
-                "check_evidence_digest": "b" * 64,
+                "check_evidence_digest": canonical_digest(capability_row),
                 "proposal_contract_digest": "a" * 64,
                 "evidence_scope": (
                     "reachable_symbol_delta_plus_typed_capability_only;"

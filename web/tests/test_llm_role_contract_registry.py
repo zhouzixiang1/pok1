@@ -121,6 +121,70 @@ EXPECTED_PROVENANCE_FIELDS = {
 }
 
 
+def _lead_reviewer_inputs(marker):
+    import tool_gates
+    from bot_artifact import canonical_digest
+
+    binding = {
+        "execution_mode": "fixed_blueprint_capability_audit",
+        "selected_proposal_id": "proposal-a",
+        "contract_digest": "1" * 64,
+        "falsifier": {"test_name": "typed-capability-check"},
+    }
+    plan = {"analysis": marker, "proposal_binding": binding}
+    check_row = {
+        "check_id": "typed-capability-check",
+        "passed": True,
+        "required": False,
+        "evidence": {"dynamic_passed": True},
+    }
+    quality = {
+        "all_passed": True,
+        "critical_scenarios_passed": True,
+        "selected_proposal_quality_ok": True,
+        "national_architecture_transition": {
+            "ok": True,
+            "selected_dynamic_checks": ["typed-capability-check"],
+            "selected_dynamic_failures": [],
+            "candidate_capabilities": {
+                "checks_by_id": {"typed-capability-check": check_row},
+            },
+        },
+        "national_capability_contract": {
+            "ok": True,
+            "checks_by_id": {"typed-capability-check": check_row},
+        },
+        "selected_proposal_quality_evidence": {
+            "required": True,
+            "ok": True,
+            "check_id": "typed-capability-check",
+            "check_evidence_digest": canonical_digest(check_row),
+            "proposal_contract_digest": "1" * 64,
+            "evidence_scope": (
+                "reachable_symbol_delta_plus_typed_capability_only;"
+                "not_full_counterfactual_or_strength_proof"
+            ),
+            "reachable_symbol_diff_required": False,
+            "reachable_symbol_diff_ok": True,
+            "changed_reachable_symbols": [],
+            "reachable_symbol_diff_digest": "",
+            "errors": [],
+        },
+    }
+    return {
+        "master_plan": plan,
+        "source_v": 143,
+        "next_v": 145,
+        "strict_bootstrap": False,
+        "invocation_id": "",
+        "focus_areas": [],
+        "review_semantic_contract": tool_gates._review_semantic_contract(
+            plan,
+            quality,
+        ),
+    }
+
+
 def _renderer_inputs(role_id, marker):
     combined_values = {
         "bot_name": marker,
@@ -163,53 +227,7 @@ def _renderer_inputs(role_id, marker):
         },
         "worker": {"task": {"target_files": ["policy.py"]}, "next_v": 145, "source_v": 143, "candidate_path": str(ROOT / "web/core/results/workflow/artifacts/workspaces" / ("a" * 64)), "allowed_files": ["policy.py"], "reviewer_feedback": marker, "attempt_note": "", "retry_guidance": "", "role": "logic"},
         "debug_agent": {"error_output": marker, "changed_diff": "+change", "target_file": "policy.py", "next_v": 145, "candidate_path": str(ROOT / "web/core/results/workflow/artifacts/workspaces" / ("a" * 64))},
-        "lead_code_reviewer": {
-            "master_plan": {
-                "analysis": marker,
-                "proposal_binding": {
-                    "execution_mode": "fixed_blueprint_capability_audit",
-                    "selected_proposal_id": "proposal-a",
-                    "contract_digest": "1" * 64,
-                    "falsifier": {"test_name": "typed-capability-check"},
-                },
-            },
-            "source_v": 143,
-            "next_v": 145,
-            "strict_bootstrap": False,
-            "invocation_id": "",
-            "focus_areas": [],
-            "review_semantic_contract": __import__("tool_gates")._review_semantic_contract(
-                {
-                    "proposal_binding": {
-                        "execution_mode": "fixed_blueprint_capability_audit",
-                        "selected_proposal_id": "proposal-a",
-                        "contract_digest": "1" * 64,
-                        "falsifier": {"test_name": "typed-capability-check"},
-                    },
-                },
-                {
-                    "all_passed": True,
-                    "critical_scenarios_passed": True,
-                    "selected_proposal_quality_ok": True,
-                    "selected_proposal_quality_evidence": {
-                        "required": True,
-                        "ok": True,
-                        "check_id": "typed-capability-check",
-                        "check_evidence_digest": "2" * 64,
-                        "proposal_contract_digest": "1" * 64,
-                        "evidence_scope": (
-                            "reachable_symbol_delta_plus_typed_capability_only;"
-                            "not_full_counterfactual_or_strength_proof"
-                        ),
-                        "reachable_symbol_diff_required": False,
-                        "reachable_symbol_diff_ok": True,
-                        "changed_reachable_symbols": [],
-                        "reachable_symbol_diff_digest": "",
-                        "errors": [],
-                    },
-                },
-            ),
-        },
+        "lead_code_reviewer": _lead_reviewer_inputs(marker),
         "strategy_critic": {"source_v": 143, "next_v": 145, "master_plan": marker, "code_evidence": {"lineage_contract": "lineage", "evaluation_steps": "steps", "prompt_section": "diff"}, "h2h_snapshot_contract": "snapshot", "previous_critic": None, "invocation_id": ""},
         "crossover_compatibility": {"parent_a_v": 143, "parent_b_v": 144, "parent_a_code": {"policy.py": marker}, "parent_b_code": {"policy.py": "b"}, "parent_a_rating": "unknown", "parent_b_rating": "unknown", "h2h_context": "unknown", "architecture_context": {}, "parent_snapshot_receipt": {"receipt_digest": "d" * 64}},
         "crossover": {"parent_a_v": 143, "parent_b_v": 144, "target_v": 145, "parent_artifacts": ["b" * 64, "c" * 64], "compatibility_receipt": {"compatible": True}, "capability_context": {}, "h2h_snapshot_contract": marker, "architecture_policy": {}, "frozen_parent_a_dir": str(ROOT / "web/core/results/workflow/artifacts" / ("b" * 64)), "frozen_parent_b_dir": str(ROOT / "web/core/results/workflow/artifacts" / ("c" * 64)), "retry_feedback": ""},

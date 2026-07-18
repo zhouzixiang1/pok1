@@ -741,6 +741,14 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
         "contract_digest": "d" * 64,
         "falsifier": {"test_name": "action-profile-check"},
     }
+    capability_row = {
+        "check_id": "action-profile-check",
+        "passed": True,
+        "required": False,
+        "evidence": {"dynamic_passed": True},
+    }
+    from bot_artifact import canonical_digest
+
     checkpoint = {
         "source_v": 142,
         "next_v": 143,
@@ -752,11 +760,27 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
             "all_passed": True,
             "critical_scenarios_passed": True,
             "selected_proposal_quality_ok": True,
+            "national_architecture_transition": {
+                "ok": True,
+                "selected_dynamic_checks": ["action-profile-check"],
+                "selected_dynamic_failures": [],
+                "candidate_capabilities": {
+                    "checks_by_id": {
+                        "action-profile-check": capability_row,
+                    },
+                },
+            },
+            "national_capability_contract": {
+                "ok": True,
+                "checks_by_id": {
+                    "action-profile-check": capability_row,
+                },
+            },
             "selected_proposal_quality_evidence": {
                 "required": True,
                 "ok": True,
                 "check_id": "action-profile-check",
-                "check_evidence_digest": "e" * 64,
+                "check_evidence_digest": canonical_digest(capability_row),
                 "proposal_contract_digest": "d" * 64,
                 "evidence_scope": (
                     "reachable_symbol_delta_plus_typed_capability_only;"
@@ -840,9 +864,16 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
         candidate_dir=candidate,
     ) != context
     changed_quality = deepcopy(checkpoint)
+    changed_quality_row = changed_quality["gate_results"]["quality"][
+        "national_architecture_transition"
+    ]["candidate_capabilities"]["checks_by_id"]["action-profile-check"]
+    changed_quality_row["evidence"]["dynamic_variant"] = "changed"
+    changed_quality["gate_results"]["quality"][
+        "national_capability_contract"
+    ]["checks_by_id"]["action-profile-check"] = deepcopy(changed_quality_row)
     changed_quality["gate_results"]["quality"][
         "selected_proposal_quality_evidence"
-    ]["check_evidence_digest"] = "f" * 64
+    ]["check_evidence_digest"] = canonical_digest(changed_quality_row)
     assert authority.gate_call_context(
         changed_quality,
         gate_name="review",
