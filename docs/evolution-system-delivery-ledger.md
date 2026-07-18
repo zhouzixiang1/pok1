@@ -3467,3 +3467,80 @@ before merge. Only then may the stopped runtime fast-forward from `origin/main`,
 run recovery/evaluation/official diagnostics, and begin a new v143 attempt.
 That fresh attempt begins at **0/10** and must earn its own candidate,
 bootstrap-control certificate, tag, and later 70-hand evidence.
+
+## 2026-07-18 — v47/v48 deterministic control-plane closure (source pending merge)
+
+`workflow-v47` and `workflow-v48` are both canonical pre-publication abandons.
+They produced no `.completed` artifact, official certificate, annotated tag,
+rating/H2H row, or 70-hand strength sample. The runtime records the reset as
+`generation_abandoned`, so stability remains **0/10**. The archived/quarantined
+candidate bytes and schema-2 receipts are historical failure evidence only; no
+file is copied, edited, replayed as a plan, or treated as a Bot delivery.
+
+Four independent deterministic defects were found and repaired in source:
+
+- v47's accepted strict final result was checked against a replay that
+  pre-bound system terms *before* the production compiler, changing compiler
+  provenance and temporary context-path metadata. The verifier now sends the
+  normalized accepted result through exactly one production-equivalent compiler
+  pass, derives a separate comparison-only bound context, and rebases both the
+  task-brief path and `compiled_chars` before exact comparison.
+- v48's Worker had not changed policy behavior when the static capability gate
+  rejected a legal public-state input enum `opponent_action == "check"` as if
+  it were a candidate wire output. Capability schema 8 / detector v7 now
+  follows bare action strings only through `get_baseline_decision` or
+  `iter_decisions` output flow: direct/alias/conditional/branch return and
+  yield paths, plus a bounded scalar subset of module-local helper outputs,
+  literal `.format`, tuple/list subscript and `+=` aliases. A recursive or
+  depth-exhausted helper that reaches an output is explicitly unresolved and
+  fails closed; dynamic/attribute/nested helper forms remain unknown to the
+  static pass and must still fail in the runtime typed-intent sanitizer/probe.
+  Typed helper output and public input enums remain valid. This is a contract
+  identity change, so the stopped v48 checkout must re-prepare rather than
+  reuse any old capability evidence. Reference-pack v6 gives all five rendered
+  roles the same input-vs-output wording: public `call`/`check` facts may be
+  read, but a policy may never return a bare wire string or integer.
+- v48's Worker first recorded its inner deterministic execution failure,
+  `system_strict_bootstrap_execution_failed`; the outer canonical abandon then
+  recorded `worker_terminal_abandon`. The old handoff verifier incorrectly
+  required both journals to equal the outer reason and blocked recovery. The
+  repaired verifier binds the StrictAuthority journal to the outer claim and
+  the Worker journal to its own bounded, causation-bound terminal reason. New
+  Worker events hash the same bounded reason that they persist; old schema-2
+  999/1000/1001/4096-character outer-reason records retain read-only
+  compatibility, while unknown old oversized split inner reasons fail closed.
+- A completed v48 transaction correctly clears its checkpoint, so the active
+  claim validator intentionally rejects its old `edbfcbfd` source identity
+  after a source fast-forward. `reprove_historical_completed_abandon` is a
+  separate read-only terminal-evidence route: it requires the exact immutable
+  claim/final receipt/tip ledger, fenced Worker and strict journals, finalized
+  quarantine/absence, no live checkpoint or reconciliation claim, no
+  publication, and an old recorded main commit that is an ancestor of a clean
+  runtime `main` exactly equal to fetched `origin/main`. Its result explicitly
+  has `prepare_authorized=false` and `next_tool=null`; it neither reconstructs
+  a checkpoint/provider result nor grants scheduler authority. This makes the
+  old v48 terminal auditable across a source upgrade without hand-editing
+  runtime state.
+
+The UI/launcher closure in the same batch gives every accepted transient
+Master/Worker status a 30-second authority expiry and requires a source-bound
+static-build receipt before `--no-build` can stop/restart the service. Thus an
+old browser bundle cannot persist a stale “Master planning” phrase, and a stale
+frontend bundle is refused before downtime.
+
+Final source integration evidence: the combined Master/matrix/prompt/recovery
+shard passed **114**, the bounded capability/native/bootstrap shard passed
+**104**, and complete Web ran **3150 passed, 20 skipped, 1 warning** in
+172.04 seconds. `sever/tests` ran **33 passed**. Frontend ran **23/23**, lint,
+and a production build with a source-bound receipt; the root launcher config
+shard previously passed **2**. Modified active Python compiled and `git diff
+--check` passed. These results supersede earlier aggregate totals in this
+ledger, which remain historical baselines only. Independent read-only review
+approved the P1 chain: v48 lineage, 999/1000/1001/4096 causation boundaries,
+strict causation binding, and historical source/fence/ledger/candidate failure
+paths are covered. The static detector remains deliberately bounded (for
+example it does not evaluate arbitrary joins or string multiplication), so the
+runtime typed-intent validator/fallback remains the final safety boundary.
+Then the stopped runtime may fast-forward from `origin/main`, rebuild its
+static bundle/receipt, re-run recovery/evaluation/official diagnostics, and
+launch a fresh v143.

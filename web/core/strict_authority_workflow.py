@@ -3306,32 +3306,43 @@ def validate_master_final_projection(
             int(source_v),
             int(next_v),
         )
-        precompiled, _policy_abi = bind_system_owned_policy_abi(
+        # The production compiler owns both policy-ABI and Worker-contract
+        # binding.  It must receive the normalized accepted role result exactly
+        # once: pre-binding its input would change the compiler receipt
+        # (``bound``/``bound_tasks``) and make an otherwise byte-identical plan
+        # fail replay.
+        #
+        # ``compile_master_plan`` writes its context from the intermediate,
+        # bound prompt, however.  Derive that *comparison-only* source through
+        # the same pure binders without feeding it back into the compiler.  This
+        # makes the context-content check follow production while preserving the
+        # compiler's one-pass provenance.
+        context_source, expected_policy_binding = bind_system_owned_policy_abi(
             replay_plan
         )
-        precompiled, _contract = bind_system_owned_worker_contract_terms(
-            precompiled
+        context_source, expected_contract_binding = (
+            bind_system_owned_worker_contract_terms(context_source)
         )
-        if any(_contract.get(key) for key in (
-            "invalid_contract_tasks",
-            "invalid_prompt_tasks",
-            "overflow_tasks",
-        )):
-            projection_errors.append(
-                "strict_authority_master_projection_contract_binding_invalid"
-            )
 
         with tempfile.TemporaryDirectory(prefix="pok-strict-master-replay-") as raw:
             replay_root = Path(raw).resolve()
             replay_target = replay_root / "candidate"
             replay_target.mkdir(parents=True, exist_ok=True)
             replayed, compiler = compile_master_plan(
-                precompiled,
+                replay_plan,
                 next_v=int(next_v),
                 target_dir=replay_target,
                 project_root=replay_root,
             )
             replay_contract = compiler.get("contract_binding") or {}
+            if _json_value(compiler.get("policy_abi_binding") or {}) != _json_value(
+                expected_policy_binding
+            ) or _json_value(replay_contract) != _json_value(
+                expected_contract_binding
+            ):
+                projection_errors.append(
+                    "strict_authority_master_projection_compiler_binding_mismatch"
+                )
             if any(replay_contract.get(key) for key in (
                 "invalid_contract_tasks",
                 "invalid_prompt_tasks",
@@ -3346,9 +3357,9 @@ def validate_master_final_projection(
                     "strict_authority_master_projection_context_trimmed"
                 )
 
-            precompiled_tasks = {
+            context_source_tasks = {
                 str(task.get("worker_id", index + 1)): task
-                for index, task in enumerate(precompiled.get("tasks") or [])
+                for index, task in enumerate(context_source.get("tasks") or [])
                 if isinstance(task, dict)
             }
             replayed_tasks = {
@@ -3359,7 +3370,7 @@ def validate_master_final_projection(
             for row in compiled_rows:
                 worker_key = str(row.get("worker_id"))
                 generated_brief = str(row.get("brief_file") or "")
-                source_task = precompiled_tasks.get(worker_key)
+                source_task = context_source_tasks.get(worker_key)
                 compiled_task = replayed_tasks.get(worker_key)
                 if (
                     not generated_brief
@@ -3412,6 +3423,11 @@ def validate_master_final_projection(
                     1,
                 )
                 row["brief_file"] = actual_brief
+                # This path substitution changes the compiled prompt length
+                # whenever the real candidate path differs from the temporary
+                # replay root.  Keep the compiler receipt self-consistent so
+                # the exact replayed plan can be content-compared below.
+                row["compiled_chars"] = len(compiled_task["worker_prompt"])
 
             # ``plan_compiler`` stores the same compiler payload, but do not
             # depend on object aliasing after a future refactor.

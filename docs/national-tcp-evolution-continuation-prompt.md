@@ -1541,3 +1541,60 @@ Master→Worker→quality→review→advisory Critic→native TCP precommit, the
 for the explicit operator-only first-strict bootstrap. No v143 certificate,
 tag, rating, v144 5+3, or N/10 increment may be reported until its respective
 hard gate completes.
+
+## Latest superseding handoff — v47/v48 are terminal; source P1 repairs await final integration verification
+
+Supersede all wording that describes any v44–v48 workflow as active. The Web
+service may still be listening, but `/api/control/health` reports the
+Orchestrator stopped, there is no provider/Worker process, and the strict epoch
+has no published Bot, certificate, tag, rating, H2H, or native strength sample.
+`workflow-v47` and `workflow-v48` are schema-2 canonical abandons; never delete
+or rewrite their checkpoint, quarantine, journal, or receipt by hand. Stability
+is **0/10**, with the latest reset reason `worker_terminal_abandon`.
+
+Four independently reviewed source repair groups are staged in the alignment branch:
+
+1. strict final-Master replay now runs the normalized accepted role result
+   through one production-equivalent compiler invocation, using a separate
+   comparison-only binding for task-context validation and rebasing both
+   temporary path and `compiled_chars` metadata;
+2. capability schema 8 / detector v7 distinguishes a public input literal such
+   as `opponent_action == "check"` from a bare action value returned by a policy
+   entrypoint. It follows bounded module-local helper return/yield, literal
+   `.format`, tuple/list subscript and `+=` string aliases in addition to
+   direct/alias/conditional/branch paths. Recursive/depth-exhausted helpers at
+   output fail closed; dynamic forms remain runtime-sanitizer/probe territory;
+   typed `{"kind":"check"}` remains invalid;
+3. canonical abandon recovery distinguishes strict outer reason from an
+   already-terminal Worker's causation-bound inner reason. New Worker events
+   bind the same bounded reason in payload and causation, and existing schema-2
+   outer reason lengths 999/1000/1001/4096 remain read-only compatible.
+4. after a source fast-forward, a completed checkpoint-free v48 abandon is
+   reproved only through `scripts/reprove_completed_abandon.py` using its exact
+   immutable transaction. It requires clean fetched `main` descendant lineage,
+   terminal receipts/tip ledger/fenced journals and no live state or published
+   candidate; the returned result is terminal evidence only
+   (`prepare_authorized=false`, `next_tool=null`), never a checkpoint rewrite,
+   provider replay or prepare authorization.
+
+Reference-pack v6 injects the matching contract into every rendered role:
+`call`/`check` can be observed public state, but policy output is only a typed
+intent and never a bare wire string or integer.
+
+The same delivery makes frontend transient status expire after 30 seconds and
+requires a source-bound static build receipt before `--no-build` may stop or
+restart Web. A restart therefore requires `cd web/frontend && npm run build`
+in the exact target checkout before the preflighted restart helper; never bypass
+the receipt or use a stale static bundle.
+
+Required next sequence: complete the combined integration tests and generated
+matrix/document checks; commit, push alignment, and fast-forward `origin/main`;
+stop the currently idle runtime through `pokctl.sh`, Git fast-forward it only
+from that merged main SHA, build the frontend receipt, and run checkpoint
+recovery/evaluation identity/official doctor diagnostics. From `.evolution_pok`,
+run `python scripts/reprove_completed_abandon.py 6320ac2f4ebe24cd7964cfd10fa7f5b5f4712c361016cc0ec3808e2f73584b33`;
+it must return terminal-only proof before a fresh
+current-contract v143 is prepared. Follow its actual Master → Worker → quality
+→ review → advisory Critic → native TCP precommit path. Only a successful
+explicit operator first-strict bootstrap can create v143; nothing in this
+handoff is Bot, certification, rating, official, or strength evidence.

@@ -5,6 +5,7 @@ import pytest
 import tool_planning
 from output_schema import CrossoverCompatibilityResult, WorkerTask
 from strategy_reference_pack import (
+    current_strict_runtime_prompt_overlay,
     get_reference_card,
     reference_pack_ids,
     validate_reference_task,
@@ -55,6 +56,16 @@ def test_strategy_cards_use_current_context_and_policy_only():
             worker_prompt=prompt,
         )
         assert any("requires exactly ['policy.py']" in error for error in errors)
+
+
+def test_current_overlay_distinguishes_public_action_input_from_policy_output():
+    overlay = current_strict_runtime_prompt_overlay()
+
+    assert (
+        "`call` and `check` may occur only as reducer-provided public-state input"
+        in overlay
+    )
+    assert "never return a bare wire string or integer" in overlay
 
 
 def test_worker_schema_rejects_every_non_policy_write_target():

@@ -20,7 +20,7 @@ import json
 from typing import Any
 
 
-REFERENCE_PACK_VERSION = "national-tcp-policy-reference-pack-v5"
+REFERENCE_PACK_VERSION = "national-tcp-policy-reference-pack-v6"
 UNAVAILABLE_PRIMARY_INNOVATIONS = {
     "bounded_precompute_lookup": (
         "system precompute is admitted only as a read-only consumer dependency, "
@@ -47,6 +47,9 @@ def current_strict_runtime_prompt_overlay() -> str:
         "192/256/96 flop/turn/river sampling, with two direct "
         "`precompute.evaluate_seven` calls per sample. The dynamic quality "
         "gate fail-closes above its 800 top-level evaluator-call cap.\n"
+        "- `call` and `check` may occur only as reducer-provided public-state input. "
+        "Candidate policy returns a typed intent object (`pass`, `fold`, `allin`, "
+        "or `raise` with `raise_to`); never return a bare wire string or integer.\n"
         "- The baseline uses the direct system evaluator only. Imported, "
         "closure, default, or value aliases; `itertools.combinations`; and "
         "nested deck-pair sweeps are rejected from that path. Full `C(45,2)` "

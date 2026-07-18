@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 7
+MATRIX_SCHEMA_VERSION = 10
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -392,9 +392,17 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         prompt_statement=(
             "All five rendered roles must keep the typed decision_context ABI, the fixed "
             "192/256/96 baseline, and the 200 ms / 250 ms timing boundary system-owned; "
-            "they may propose policy changes but cannot weaken fallback or deadlines."
+            "they may propose policy changes but cannot weaken fallback or deadlines. "
+            "A public-state string such as opponent check is input, never candidate wire ownership; "
+            "only a typed intent may leave a policy entrypoint, never a bare wire string."
         ),
-        prompt_required_terms=("typed", "192/256/96", "200 ms", "250 ms"),
+        prompt_required_terms=(
+            "typed",
+            "192/256/96",
+            "200 ms",
+            "250 ms",
+            "wire string",
+        ),
         producer_consumer=(
             "authoritative public state/legal/deadline → schema-v1 decision_context "
             "→ typed policy intent → system fallback/sanitizer → sole raw socket send"
@@ -404,15 +412,27 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire",
             "web/tests/test_national_capability_hardening.py::"
             "test_checked_in_strict_policy_passes_hardened_static_decision_guards",
+            "web/tests/test_national_capability_hardening.py::"
+            "test_typed_intent_distinguishes_public_check_input_from_check_output_kind",
+            "web/tests/test_national_capability_hardening.py::"
+            "test_typed_intent_allows_typed_helper_output",
         ),
         negative_tests=(
             "web/tests/test_national_runtime_probe.py::test_worker_rejects_non_typed_policy_output",
             "web/tests/test_national_runtime_probe.py::"
             "test_worker_rejects_deadline_profile_specific_late_baseline",
+            "web/tests/test_national_capability_hardening.py::"
+            "test_typed_intent_rejects_bare_action_return_and_simple_alias",
+            "web/tests/test_national_capability_hardening.py::"
+            "test_typed_intent_rejects_bare_action_refinement_yields",
+            "web/tests/test_national_capability_hardening.py::"
+            "test_typed_intent_rejects_bounded_obfuscated_bare_action_outputs",
+            "web/tests/test_national_capability_hardening.py::"
+            "test_typed_intent_rejects_helper_yield_and_unresolved_helper_cycle",
         ),
         fail_closed=(
-            "A bad, late, or missing policy result is ignored; the precomputed legal "
-            "fallback is sent and the timed worker process group is terminated."
+            "A bare action return, invalid kind, bad, late, or missing policy result is ignored; "
+            "the precomputed legal fallback is sent and the timed worker process group is terminated."
         ),
     ),
     MatrixRow(
@@ -812,6 +832,12 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "loseTransientStatusTaskAuthority",
             ),
             _ref("web/frontend/src/pages/EvolutionMonitor.tsx", "acceptTransientStatus"),
+            _ref(
+                "web/frontend/scripts/static-build-receipt.mjs",
+                "verifyReceipt",
+            ),
+            _ref("pokctl.sh", "frontend_static_receipt_valid"),
+            _ref("scripts/pok_restart_observe.sh"),
         ),
         dynamic_gates=(
             _ref("web/server/routes/evolution.py", "_current_transient_status"),
@@ -820,6 +846,11 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/server/routes/evolution.py", "_task_owner_projection"),
             _ref("web/server/routes/evolution.py", "evolution_state"),
             _ref("web/server/routes/evolution.py", "evolution_stream"),
+            _ref(
+                "web/frontend/scripts/static-build-receipt.mjs",
+                "verifyReceipt",
+            ),
+            _ref("pokctl.sh", "cmd_verify_frontend_static"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
@@ -840,8 +871,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "revision + shutdown eligibility → registered lifespan/current-AppState shutdown manager + "
             "WebUI status/SSE task_owner lifecycle high-water and invalidation → valid task_owner or "
             "task_authority_lost → route replay/state owner gate → typed frontend controller/page "
-            "owner-revision conflict gate (same revision can recover only when exact) → connected SSE "
-            "status text only, with HTTP task projection limited to invalidation → health/status presentation"
+            "owner-revision conflict gate (same revision can recover only when exact) + bounded transient "
+            "status expiry → connected SSE status text only, with HTTP task projection limited to invalidation "
+            "→ source-fingerprint-bound static receipt before --no-build launch/restart → health/status presentation"
         ),
         positive_tests=(
             "web/tests/test_routes_evolution.py::TestEvolutionState::"
@@ -854,6 +886,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_task_owner_broadcast_is_minimal_typed_invalidation",
             "web/tests/test_frontend_contract_closure.py::"
             "test_frontend_liveness_fails_closed_on_sse_and_daemon_health",
+            "web/tests/test_restart_observe_script.py::"
+            "test_restart_refuses_stale_no_build_receipt_before_stop",
         ),
         negative_tests=(
             "web/tests/test_routes_evolution.py::TestEvolutionState::"
@@ -866,10 +900,13 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_task_owner_event_replay_rejects_replaced_owner",
             "web/tests/test_frontend_contract_closure.py::"
             "test_frontend_drops_stream_and_cycle_state_instead_of_merging_stale_authority",
+            "tests/test_pokctl_checkout_scope.py::"
+            "test_pokctl_restart_refuses_stale_no_build_receipt_before_stop",
         ),
         fail_closed=(
             "Stale, replaced-owner, shutdown, lower-revision, equal-revision-conflicting, torn, or "
-            "unverified status identity is dropped; HTTP cannot revive a phrase. Null/malformed HTTP or "
+            "unverified/expired status identity is dropped; HTTP cannot revive a phrase. A stale/malformed "
+            "static receipt refuses --no-build before stopping the service. Null/malformed HTTP or "
             "SSE clears text through task_authority_lost without fabricating R+1, while an exact later same-R "
             "projection may recover and a conflicting same-R projection remains blocked until a newer revision."
         ),
@@ -1108,6 +1145,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "web/core/tool_bot_management.py",
                 "validate_completed_abandon_handoff",
             ),
+            _ref(
+                "web/core/tool_bot_management.py",
+                "reprove_historical_completed_abandon",
+            ),
         ),
         production_owners=(
             _ref("web/core/tool_runtime_guard.py", "tool"),
@@ -1118,6 +1159,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref(
                 "web/core/llm_query.py",
                 "cache_verified_provider_terminal_abandon",
+            ),
+            _ref(
+                "web/core/tool_bot_management.py",
+                "reprove_historical_completed_abandon",
             ),
             _ref("web/core/orchestrator.py", "_run_one_cycle"),
             _ref(
@@ -1131,6 +1176,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "validate_completed_abandon_handoff",
             ),
             _ref(
+                "web/core/tool_bot_management.py",
+                "reprove_historical_completed_abandon",
+            ),
+            _ref(
                 "web/core/llm_query.py",
                 "cache_verified_provider_terminal_abandon",
             ),
@@ -1142,7 +1191,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "gate: only a routed owner may return a complete proof bound to one explicit "
             "ToolUse id, owner, arguments, and same provider attempt. A handler-before-stream "
             "provisional proof is unconsumable until one exact registration binds it. A missing "
-            "checkpoint, historical receipt, or unbound cache cannot authorize a successor."
+            "checkpoint, historical receipt, or unbound cache cannot authorize a successor. "
+            "The operator-only historical reproof reads a finalized terminal transaction only; "
+            "it never reconstructs a provider result, checkpoint, or prepare authority."
         ),
         prompt_required_terms=(
             "canonical abandon",
@@ -1152,8 +1203,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         producer_consumer=(
             "guarded routed owner + immutable pre-call checkpoint → complete schema-2 result "
             "→ same-attempt provisional record (unconsumable) or exact ToolUse "
-            "id/owner/arguments registration → unique binding → second handoff reproof → "
-            "outer scheduler terminal boundary"
+            "id/owner/arguments registration → unique binding → outer strict reason plus bounded "
+            "causation-bound Worker inner reason → same-attempt handoff reproof or "
+            "read-only finalized-transaction lineage reproof → outer scheduler terminal boundary"
         ),
         positive_tests=(
             "web/tests/test_orchestrator_timeout_extension.py::"
@@ -1166,6 +1218,12 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_guarded_terminal_owner_records_registered_id_and_arguments",
             "web/tests/test_orchestrator_timeout_extension.py::"
             "test_handler_before_user_tool_use_binds_and_recovers_terminal_handoff",
+            "web/tests/test_abandon_helper.py::"
+            "test_completed_abandon_handoff_reproves_schema2_split_worker_reason",
+            "web/tests/test_abandon_helper.py::"
+            "test_historical_completed_abandon_reproof_allows_clean_main_descendant",
+            "web/tests/test_abandon_helper.py::"
+            "test_historical_completed_abandon_reproof_accepts_bounded_reason_compatibility",
         ),
         negative_tests=(
             "web/tests/test_orchestrator_timeout_extension.py::"
@@ -1178,11 +1236,25 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_provisional_terminal_cache_rejects_wrong_args_and_settled_history",
             "web/tests/test_orchestrator_timeout_extension.py::"
             "test_user_message_side_channel_fallback_result_is_ignored",
+            "web/tests/test_abandon_helper.py::"
+            "test_completed_abandon_handoff_rejects_missing_worker_inner_reason",
+            "web/tests/test_abandon_helper.py::"
+            "test_completed_abandon_handoff_rejects_mismatched_outer_reason",
+            "web/tests/test_abandon_helper.py::"
+            "test_completed_abandon_handoff_rejects_unbound_worker_inner_reason",
+            "web/tests/test_abandon_helper.py::"
+            "test_historical_completed_abandon_reproof_rejects_untrusted_current_source",
+            "web/tests/test_abandon_helper.py::"
+            "test_historical_completed_abandon_reproof_rejects_live_or_unfinalized_paths",
+            "web/tests/test_abandon_helper.py::"
+            "test_historical_completed_abandon_reproof_rejects_tampered_journal",
         ),
         fail_closed=(
             "Missing, duplicate, unregistered or still-provisional, cross-attempt, owner-mismatched, "
-            "argument-mismatched, settled-history, proof-mismatched, or SDK/cache-mismatched terminal "
-            "material is recovery-blocked; it never prepares a successor."
+            "argument-mismatched, settled-history, proof-mismatched, outer-reason-mismatched, missing or "
+            "unbound Worker-inner-reason, SDK/cache-mismatched terminal material, non-main/non-descendant "
+            "source, live state, advanced ledger, tampered fence, or resurrected candidate is recovery-blocked; "
+            "historical reproof returns terminal evidence only and never prepares a successor."
         ),
     ),
     MatrixRow(
@@ -1280,7 +1352,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         producer_consumer=(
             "frozen architecture mapping + source graph → rendered Scout contract → validated proposal "
             "packet → selected ID plus system-rebound metadata and digest-bound final emission guard → "
-            "strict final projection → compiled Worker prompt → quality/review/native precommit"
+            "one production-equivalent compiler pass plus comparison-only bound-context replay → compiled "
+            "Worker prompt → quality/review/native precommit"
         ),
         positive_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
@@ -1291,6 +1364,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_master_final_emission_guard_binds_each_selected_prompt_budget",
             "web/tests/test_master_success_return.py::"
             "test_strict_projection_binds_duplicate_selected_metadata",
+            "web/tests/test_master_success_return.py::"
+            "test_strict_master_replay_recompiles_once_and_rebases_context_metadata",
         ),
         negative_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
@@ -1302,8 +1377,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         fail_closed=(
             "Any ambiguous leaf, foreign or unknown target, malformed fresh measurement, unallowed "
-            "proposal ID, metadata drift after rebinding, missing guard provenance, or hard-budget "
-            "overflow blocks Worker dispatch and may only canonically abandon at the permitted "
+            "proposal ID, metadata drift after rebinding, compiler-binding/context-path provenance drift, "
+            "missing guard provenance, or hard-budget overflow blocks Worker dispatch and may only canonically abandon at the permitted "
             "pre-Worker stage."
         ),
     ),
@@ -1387,9 +1462,7 @@ def _validate_ref(
         if ref.symbol not in source:
             errors.append(f"{prefix}:missing_symbol")
         elif require_symbol:
-            if path.suffix != ".py":
-                errors.append(f"{prefix}:symbol_not_callable_python")
-            else:
+            if path.suffix == ".py":
                 try:
                     tree = ast.parse(source, filename=str(path))
                 except SyntaxError:
@@ -1402,6 +1475,21 @@ def _validate_ref(
                     }
                     if ref.symbol not in callable_names:
                         errors.append(f"{prefix}:missing_symbol")
+            elif path.suffix in {".js", ".mjs"}:
+                if not re.search(
+                    rf"(?:async\s+)?function\s+{re.escape(ref.symbol)}\s*\(",
+                    source,
+                ):
+                    errors.append(f"{prefix}:missing_symbol")
+            elif path.suffix == ".sh":
+                if not re.search(
+                    rf"^\s*(?:function\s+)?{re.escape(ref.symbol)}\s*\(\)\s*\{{",
+                    source,
+                    re.MULTILINE,
+                ):
+                    errors.append(f"{prefix}:missing_symbol")
+            else:
+                errors.append(f"{prefix}:symbol_not_callable_source")
     return errors
 
 

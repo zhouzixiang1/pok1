@@ -345,6 +345,27 @@ def test_matrix_fails_closed_when_an_owner_path_or_symbol_drifts():
     assert any(error.endswith(":missing_symbol") for error in symbol_errors)
 
 
+def test_matrix_accepts_checked_frontend_and_shell_dynamic_gate_symbols():
+    js_errors = matrix._validate_ref(
+        matrix.SourceRef(
+            "web/frontend/scripts/static-build-receipt.mjs",
+            "verifyReceipt",
+        ),
+        row_id="frontend_authoritative_status",
+        field="dynamic_gate",
+        require_symbol=True,
+    )
+    shell_errors = matrix._validate_ref(
+        matrix.SourceRef("pokctl.sh", "cmd_verify_frontend_static"),
+        row_id="frontend_authoritative_status",
+        field="dynamic_gate",
+        require_symbol=True,
+    )
+
+    assert js_errors == []
+    assert shell_errors == []
+
+
 def test_current_row_rejects_archive_reference_but_superseded_history_is_explicit():
     row = _current_row()
     current_archive = replace(

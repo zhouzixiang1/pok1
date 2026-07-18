@@ -604,6 +604,115 @@ def test_strict_projection_binds_duplicate_selected_metadata(tmp_path):
     assert projected["measurement_plan"] == selected["measurement"]
 
 
+def test_strict_master_replay_recompiles_once_and_rebases_context_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    """Replay the same compiler pass without leaking its temporary path.
+
+    A strict final result is accepted before the production compiler injects
+    system-owned terms and externalizes an oversized Worker prompt.  The
+    receipt verifier must replay that *one* compiler pass, not bind the terms
+    once and then compile again: the latter changes ``contract_binding``
+    provenance.  The production and temporary candidate roots intentionally
+    have different relative task-context path lengths, which also proves that
+    ``compiled_chars`` is rebased together with the prompt path.
+    """
+
+    import agent_master
+    import plan_compiler
+    import strict_authority_workflow as strict
+    from runtime_architecture_policy import attach_runtime_contract_ledger
+    from tool_planning import _normalize_master_plan_paths
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "strict_replay_invocations",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    provider_plan = json.loads(json.dumps(VALID_PLAN))
+    provider_plan.update({
+        "selected_proposal_id": selected["proposal_id"],
+        "targeted_failure": selected["targeted_failure"],
+        "measurement_plan": selected["measurement"],
+    })
+    provider_budget = agent_master._selected_proposal_compilation_contract(
+        selected
+    )["max_provider_chars"]
+    base_prompt = provider_plan["tasks"][0]["worker_prompt"]
+    provider_plan["tasks"][0]["worker_prompt"] = (
+        base_prompt
+        + "\n"
+        + "x" * (provider_budget - len(base_prompt) - 1)
+    )
+    architecture_policy = {"schema_version": 1}
+    accepted_final, errors = agent_master._project_strict_final_master_result(
+        json.dumps(provider_plan),
+        proposal_packet=packet,
+        architecture_policy=architecture_policy,
+    )
+    assert errors == []
+    assert accepted_final is not None
+    assert len(accepted_final["tasks"][0]["worker_prompt"]) > (
+        plan_compiler.HARD_WORKER_PROMPT_CHARS
+    )
+
+    project_root = tmp_path / "operator"
+    candidate_dir = project_root / "bots" / "national_v143"
+    candidate_dir.mkdir(parents=True)
+    production_input, _normalization = _normalize_master_plan_paths(
+        {**accepted_final, "architecture_policy": architecture_policy},
+        142,
+        143,
+    )
+    assert isinstance(production_input, dict)
+    production_plan, compiler = plan_compiler.compile_master_plan(
+        production_input,
+        next_v=143,
+        target_dir=candidate_dir,
+        project_root=project_root,
+    )
+    assert compiler["compiled"] is True, json.dumps(compiler, sort_keys=True)
+    assert compiler["contract_binding"]["bound"] is True
+    production_plan = attach_runtime_contract_ledger(
+        production_plan,
+        replace=True,
+    )
+
+    accepted_event = type("AcceptedEvent", (), {
+        "payload": {
+            "slot": "master:final",
+            "role_result": accepted_final,
+            "role_result_digest": strict.content_digest(accepted_final),
+        },
+    })()
+    monkeypatch.setattr(
+        strict,
+        "validate_receipts",
+        lambda *_args, **_kwargs: ({"master:final": {"receipt_digest": "r"}}, []),
+    )
+    monkeypatch.setattr(strict, "expected_master_role_results", lambda _plan: {})
+    monkeypatch.setattr(strict, "expected_master_contexts", lambda _plan: {})
+    monkeypatch.setattr(
+        strict,
+        "expected_master_invocation_evidence",
+        lambda _plan: {},
+    )
+    monkeypatch.setattr(strict, "_accepted_events", lambda _checkpoint: ([accepted_event], []))
+
+    proof, replay_errors = strict.validate_master_final_projection(
+        {"source_v": 142, "next_v": 143},
+        production_plan,
+        candidate_dir=candidate_dir,
+        project_root=project_root,
+    )
+
+    assert replay_errors == []
+    assert proof["compiled_plan_digest"] == strict.content_digest(production_plan)
+
+
 def test_strict_projection_rejects_all_provider_reserved_markers(tmp_path):
     import agent_master
     import plan_compiler
