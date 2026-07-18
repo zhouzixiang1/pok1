@@ -66,6 +66,7 @@ def _fence_first_strict_control_execution(
     checkpoint: dict,
     *,
     reason: str,
+    preserved_success: dict | None = None,
 ) -> dict:
     """Terminalize only the journal authority frozen by this checkpoint."""
 
@@ -85,6 +86,12 @@ def _fence_first_strict_control_execution(
     )
     scope_present = _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY in audit_context
     precommit_attempt = checkpoint.get("precommit_attempt")
+    if preserved_success is not None and not (
+        declares_control and scope_present
+    ):
+        raise RuntimeError(
+            "first_strict_execution_preserved_authority_not_declared"
+        )
     if not declares_control and not scope_present:
         return {
             "present": False,
@@ -136,10 +143,27 @@ def _fence_first_strict_control_execution(
         )
         if scope_error or normalized_scope is None:
             raise RuntimeError(scope_error or "scope normalization failed")
-        receipt = abandon_control_execution(
-            normalized_scope,
-            reason=reason,
-        )
+        if preserved_success is not None:
+            from bootstrap_contract_recovery import (
+                validate_first_strict_execution_success,
+            )
+
+            success = validate_first_strict_execution_success(
+                preserved_success
+            )
+            if success.get("scope") != normalized_scope:
+                raise RuntimeError(
+                    "first_strict_execution_preserved_scope_mismatch"
+                )
+            return {
+                "present": True,
+                "abandoned": False,
+                "scope": normalized_scope,
+                "expected_receipts": success["expected_receipts"],
+                "terminal_receipt": success["terminal_receipt"],
+                "proof_digest": success["proof_digest"],
+            }
+        receipt = abandon_control_execution(normalized_scope, reason=reason)
     except Exception as exc:
         raise RuntimeError(
             "first_strict_execution_fence_invalid:"
@@ -472,11 +496,27 @@ def _assert_safe_existing_transaction_chain(transaction_dir: Path) -> None:
         os.close(descriptor)
 
 
+def _validate_external_bootstrap_contract_abandon_proof(
+    claim: dict,
+) -> dict | None:
+    """Reopen the private external preimage indirectly bound by schema 2."""
+
+    from bootstrap_contract_recovery import (
+        validate_canonical_abandon_external_binding,
+    )
+
+    return validate_canonical_abandon_external_binding(
+        PROJECT_ROOT,
+        claim,
+    )
+
+
 def _validate_active_abandon_claim(claim: dict) -> dict:
     """Reopen all live authority; never trust a merely re-signed sidecar."""
 
     validate_abandon_claim_structure(claim)
     _validate_claim_first_strict_execution_fence(claim)
+    _validate_external_bootstrap_contract_abandon_proof(claim)
     checkpoint_identity = claim["checkpoint"]
     version = int(checkpoint_identity["next_v"])
     current_git = _current_abandon_git_state(version)
@@ -1221,6 +1261,7 @@ def reprove_historical_completed_abandon(transaction_id: str) -> dict:
     claim = _read_json_regular(transaction_dir / "claim.json")
     validate_abandon_claim_structure(claim)
     _validate_claim_first_strict_execution_fence(claim)
+    _validate_external_bootstrap_contract_abandon_proof(claim)
     if claim.get("transaction_id") != transaction_id:
         raise RuntimeError(
             "historical_completed_abandon_transaction_identity_mismatch"
@@ -2708,6 +2749,15 @@ async def _do_abandon_generation(
                     _fence_first_strict_control_execution(
                         latest,
                         reason=reason,
+                        preserved_success=(
+                            latest_bootstrap_authority.get(
+                                "first_strict_execution_success"
+                            )
+                            if isinstance(
+                                latest_bootstrap_authority, dict
+                            )
+                            else None
+                        ),
                     )
                 )
                 workflow.abandon(
@@ -2872,6 +2922,7 @@ async def _do_abandon_generation(
                     first_strict_execution_fence
                     if isinstance(first_strict_execution_fence, dict)
                     and first_strict_execution_fence.get("present") is True
+                    and first_strict_execution_fence.get("abandoned") is True
                     else None
                 ),
                 clear_pipeline_state=clear_pipeline_checkpoint,

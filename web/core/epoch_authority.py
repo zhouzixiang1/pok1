@@ -1095,6 +1095,14 @@ def _validate_schema2_active_claim_state(
     """Read-only live recovery validation used by the canonical epoch view."""
 
     validate_abandon_claim_structure(claim)
+    from bootstrap_contract_recovery import (
+        validate_canonical_abandon_external_binding,
+    )
+
+    validate_canonical_abandon_external_binding(
+        Path(infra.PROJECT_ROOT),
+        claim,
+    )
     version = int(claim["checkpoint"]["next_v"])
     current_git_state = {
         "head": infra._git("rev-parse", "HEAD"),

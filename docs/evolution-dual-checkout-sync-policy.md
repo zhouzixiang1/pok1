@@ -126,11 +126,19 @@ Review the complete claim and repeat the same command with
 `--execute --acknowledge-runtime-checkout --claim-digest <dry-run-digest>`.
 It writes an immutable no-follow `O_EXCL`/fsync external claim, then calls the
 existing workflow/strict-authority fence, candidate quarantine, abandon-ledger
-and checkpoint-CAS transaction. A crash retry reopens the same claim and
-canonical finalize receipt; it never deletes state directly. Fresh v143 job
-discovery excludes the old job only while that claim, terminal result, signed
-inconclusive ledger row, canonical abandon receipt and quarantined candidate
-still validate.
+and checkpoint-CAS transaction. Claim schema 2 also freezes the exact
+first-strict execution scope, all eight execution references and its succeeded
+terminal receipt. The private migration path reopens that proof and preserves
+the immutable succeeded journal; it does not attempt to relabel completed
+precommit work as abandoned. Ordinary/public abandon still rejects a succeeded
+first-strict authority. The canonical schema-2 transaction binds the external
+claim digest in its reason, and active, checkpoint-cleared and historical
+reopeners all require the external preimage and revalidate the journal proof.
+A missing old-schema claim, seven-of-eight receipt set or terminal drift fails
+closed. A crash retry reopens the same claim and canonical finalize receipt; it
+never deletes state directly. Fresh v143 job discovery excludes the old job
+only while that claim, terminal result, signed inconclusive ledger row,
+canonical abandon receipt and quarantined candidate still validate.
 
 Before restarting after an evaluator-identity migration, establish the rating
 identity and the independent official-verdict authority in this order:

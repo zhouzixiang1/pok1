@@ -25,6 +25,45 @@ JOB_ID = "5" * 64
 WORKFLOW = "generation:143:workflow-v62"
 
 
+def _execution_scope():
+    return {
+        "workflow_run_id": WORKFLOW,
+        "checkpoint_revision": 13,
+        "candidate_version": 143,
+        "candidate_label": "national_v143",
+        "candidate_artifact_hash": CANDIDATE_HASH,
+        "control_id": "first_strict_control_v1",
+        "control_artifact_hash": "a" * 64,
+        "control_receipt_digest": "b" * 64,
+        "precommit_plan_digest": "c" * 64,
+        "evaluation_contract_digest": "d" * 64,
+        "native_match_timing_plan_digest": "e" * 64,
+        "precommit_attempt": 1,
+    }
+
+
+def _execution_receipts():
+    return [{"repeat": repeat} for repeat in range(1, 9)]
+
+
+def _execution_terminal():
+    scope = _execution_scope()
+    return {
+        "outcome": "succeeded",
+        "scope_digest": canonical_digest(scope),
+        "receipt_digest": "f" * 64,
+    }
+
+
+def _execution_success_proof():
+    payload = {
+        "scope": _execution_scope(),
+        "expected_receipts": _execution_receipts(),
+        "terminal_receipt": _execution_terminal(),
+    }
+    return {**payload, "proof_digest": canonical_digest(payload)}
+
+
 def _checkpoint():
     parked_payload = {
         "schema_version": 1,
@@ -46,7 +85,33 @@ def _checkpoint():
         "checkpoint_revision": 22,
         "publication_intent": None,
         "official_job": None,
-        "audit_context": {"official_bootstrap_request": parked},
+        "precommit_attempt": 1,
+        "audit_context": {
+            "official_bootstrap_request": parked,
+            "first_strict_control_execution_scope": _execution_scope(),
+            "precommit_eval_plan": {
+                "opponents": [{
+                    "authority": "system_first_strict_control",
+                }]
+            },
+        },
+        "gate_results": {
+            "precommit_eval": {
+                "passed": True,
+                "control_execution_scope": _execution_scope(),
+                "first_strict_execution_terminal_receipt": (
+                    _execution_terminal()
+                ),
+                "national": {
+                    "matchups": [{
+                        "repeats": [
+                            {"execution_receipt": receipt}
+                            for receipt in _execution_receipts()
+                        ]
+                    }]
+                },
+            }
+        },
         "repo_baseline": {
             "head": OLD_HEAD[:12],
             "evaluation_contract": {
@@ -294,6 +359,13 @@ def _configure_claim(monkeypatch, root: Path):
         "_git_absence",
         lambda *_args, **_kwargs: True,
     )
+    monkeypatch.setattr(
+        recovery,
+        "_read_succeeded_first_strict_execution",
+        lambda _scope, *, expected_receipts, expected_terminal_receipt: (
+            expected_terminal_receipt
+        ),
+    )
     monkeypatch.setattr(recovery, "_contract_hash_at_head", lambda *_a: OLD_HASH)
     monkeypatch.setattr(
         recovery,
@@ -411,9 +483,33 @@ def test_build_claim_binds_exact_parked_contract_and_terminal_job(tmp_path, monk
     ]
     assert claim["terminal_job"]["rounds_completed"] == 0
     assert claim["terminal_job"]["control_consumption"]["successful_count"] == 0
+    assert claim["schema_version"] == 2
+    assert claim["first_strict_execution_success"] == (
+        _execution_success_proof()
+    )
     assert claim["claim_digest"] == canonical_digest({
         key: value for key, value in claim.items() if key != "claim_digest"
     })
+
+
+def test_build_claim_rejects_seven_of_eight_first_strict_receipts(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    checkpoint = _checkpoint()
+    checkpoint["gate_results"]["precommit_eval"]["national"][
+        "matchups"
+    ][0]["repeats"].pop()
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError) as exc:
+        _build(root, checkpoint)
+
+    assert (
+        "bootstrap_contract_first_strict_success_checkpoint_invalid"
+        in exc.value.issues
+    )
 
 
 @pytest.mark.parametrize(
@@ -473,6 +569,345 @@ def test_publish_and_reload_external_claim_is_idempotent_and_content_bound(
     first.write_text(json.dumps(tampered), encoding="utf-8")
     with pytest.raises(recovery.BootstrapContractRecoveryError):
         recovery.load_claim(root, claim["claim_digest"])
+
+
+def test_external_claim_reopens_success_journal_and_old_schema_is_inert(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    (root / "web" / "core" / "results").mkdir(parents=True)
+    claim = _build(root)
+    recovery.publish_claim(root, claim)
+
+    monkeypatch.setattr(
+        recovery,
+        "_read_succeeded_first_strict_execution",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RuntimeError("terminal drift")
+        ),
+    )
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="first_strict_success_unverifiable",
+    ):
+        recovery.load_claim(root, claim["claim_digest"])
+
+    old = json.loads(json.dumps(claim))
+    old["schema_version"] = 1
+    old.pop("first_strict_execution_success")
+    old["claim_digest"] = canonical_digest({
+        key: value for key, value in old.items() if key != "claim_digest"
+    })
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="bootstrap_contract_claim_invalid",
+    ):
+        recovery.publish_claim(root, old)
+
+
+@pytest.mark.parametrize("field", ("workflow_run_id", "candidate_artifact_hash"))
+def test_external_claim_rejects_resigned_success_crossbinding(
+    tmp_path,
+    monkeypatch,
+    field,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    claim = _build(root)
+    forged = json.loads(json.dumps(claim))
+    proof = forged["first_strict_execution_success"]
+    proof["scope"][field] = (
+        "generation:143:workflow-spliced"
+        if field == "workflow_run_id"
+        else "0" * 64
+    )
+    proof["terminal_receipt"]["scope_digest"] = canonical_digest(
+        proof["scope"]
+    )
+    proof["proof_digest"] = canonical_digest({
+        key: proof[key]
+        for key in ("scope", "expected_receipts", "terminal_receipt")
+    })
+    forged["claim_digest"] = canonical_digest({
+        key: value for key, value in forged.items()
+        if key != "claim_digest"
+    })
+
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="claim_crossbinding_invalid",
+    ):
+        recovery.publish_claim(root, forged)
+
+
+def test_private_fence_preserves_exact_success_but_generic_path_still_rejects(
+    tmp_path,
+    monkeypatch,
+):
+    import first_strict_execution_journal as journal
+    import precommit_eval_contract
+    import tool_bot_management as management
+    import tool_eval
+    import tool_gates
+
+    checkpoint = _checkpoint()
+    monkeypatch.setattr(
+        recovery,
+        "_read_succeeded_first_strict_execution",
+        lambda _scope, *, expected_receipts, expected_terminal_receipt: (
+            expected_terminal_receipt
+        ),
+    )
+    monkeypatch.setattr(management, "get_bot_dir", lambda _v: tmp_path)
+    monkeypatch.setattr(
+        tool_gates,
+        "_bot_code_fingerprint",
+        lambda _path: CANDIDATE_HASH,
+    )
+    monkeypatch.setattr(
+        precommit_eval_contract,
+        "opponents_from_plan",
+        lambda _plan: [],
+    )
+    monkeypatch.setattr(
+        precommit_eval_contract,
+        "build_evaluation_contract",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        tool_eval,
+        "_validate_first_strict_control_execution_scope",
+        lambda *_a, **_k: (_execution_scope(), None),
+    )
+    called = {"abandon": 0}
+
+    def reject_abandon(*_a, **_k):
+        called["abandon"] += 1
+        raise journal.FirstStrictExecutionJournalError(
+            "first_strict_execution_abandon_terminal_conflict"
+        )
+
+    monkeypatch.setattr(journal, "abandon_control_execution", reject_abandon)
+
+    preserved = management._fence_first_strict_control_execution(
+        checkpoint,
+        reason="official_bootstrap_contract_change:" + "a" * 64,
+        preserved_success=_execution_success_proof(),
+    )
+    assert preserved["abandoned"] is False
+    assert preserved["terminal_receipt"]["outcome"] == "succeeded"
+    assert called["abandon"] == 0
+
+    with pytest.raises(RuntimeError, match="abandon_terminal_conflict"):
+        management._fence_first_strict_control_execution(
+            checkpoint,
+            reason="abandon_generation",
+        )
+    assert called["abandon"] == 1
+
+
+def test_canonical_reason_reopens_external_proof_and_crossbinds_checkpoint(
+    tmp_path,
+    monkeypatch,
+):
+    import tool_bot_management as management
+
+    digest = "a" * 64
+    old = {
+        "digest": "b" * 64,
+        "workflow_run_id": WORKFLOW,
+        "checkpoint_revision": 22,
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+    }
+    source = tmp_path / "bots" / "national_v143"
+    source.mkdir(parents=True)
+    for name in recovery._STRICT_FILES:
+        (source / name).write_text("x", encoding="utf-8")
+    artifact_hash = __import__("bot_artifact").hash_path(source)
+    monkeypatch.setattr(management, "PROJECT_ROOT", tmp_path)
+    external = {
+        "old_checkpoint": old,
+        "git_contract_migration": {"current_head": NEW_HEAD},
+        "candidate": {
+            "path": "bots/national_v143",
+            "artifact_hash": artifact_hash,
+        },
+    }
+    monkeypatch.setattr(recovery, "load_claim", lambda *_a: external)
+    canonical = {
+        "schema_version": 2,
+        "abandon_reason": recovery.abandon_reason(digest),
+        "checkpoint": dict(old),
+        "git_head": NEW_HEAD,
+        "git_state": {"head": NEW_HEAD},
+        "candidate": {"path": "bots/national_v143", "present": True},
+        "transaction_id": "c" * 64,
+    }
+
+    assert (
+        management._validate_external_bootstrap_contract_abandon_proof(
+            canonical
+        )
+        == external
+    )
+    canonical["checkpoint"]["digest"] = "c" * 64
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="canonical_crossbinding_invalid",
+    ):
+        management._validate_external_bootstrap_contract_abandon_proof(
+            canonical
+        )
+    monkeypatch.setattr(
+        recovery,
+        "load_claim",
+        lambda *_a: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    with pytest.raises(FileNotFoundError):
+        management._validate_external_bootstrap_contract_abandon_proof({
+            "schema_version": 2,
+            "abandon_reason": recovery.abandon_reason(digest),
+            "checkpoint": dict(old),
+            "git_head": NEW_HEAD,
+            "git_state": {"head": NEW_HEAD},
+            "candidate": {
+                "path": "bots/national_v143",
+                "present": True,
+            },
+            "transaction_id": "c" * 64,
+        })
+
+
+@pytest.mark.parametrize(
+    ("mutation"),
+    (
+        lambda claim: claim.update(git_head=OLD_HEAD),
+        lambda claim: claim["git_state"].update(head=OLD_HEAD),
+        lambda claim: claim["candidate"].update(path="bots/national_v144"),
+    ),
+)
+def test_canonical_external_binding_rejects_head_or_path_splice(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    digest = "a" * 64
+    old = {
+        "digest": "b" * 64,
+        "workflow_run_id": WORKFLOW,
+        "checkpoint_revision": 22,
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+    }
+    source = tmp_path / "bots" / "national_v143"
+    source.mkdir(parents=True)
+    for name in recovery._STRICT_FILES:
+        (source / name).write_text("x", encoding="utf-8")
+    artifact_hash = __import__("bot_artifact").hash_path(source)
+    monkeypatch.setattr(recovery, "load_claim", lambda *_a: {
+        "old_checkpoint": old,
+        "git_contract_migration": {"current_head": NEW_HEAD},
+        "candidate": {
+            "path": "bots/national_v143",
+            "artifact_hash": artifact_hash,
+        },
+    })
+    canonical = {
+        "schema_version": 2,
+        "abandon_reason": recovery.abandon_reason(digest),
+        "checkpoint": dict(old),
+        "git_head": NEW_HEAD,
+        "git_state": {"head": NEW_HEAD},
+        "candidate": {"path": "bots/national_v143", "present": True},
+        "transaction_id": "c" * 64,
+    }
+    mutation(canonical)
+
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="canonical_crossbinding_invalid",
+    ):
+        recovery.validate_canonical_abandon_external_binding(
+            tmp_path,
+            canonical,
+        )
+
+
+def test_canonical_external_binding_rehashes_source_and_quarantine(
+    tmp_path,
+    monkeypatch,
+):
+    digest = "a" * 64
+    transaction_id = "c" * 64
+    source = tmp_path / "bots" / "national_v143"
+    source.mkdir(parents=True)
+    for name in recovery._STRICT_FILES:
+        (source / name).write_text("x", encoding="utf-8")
+    artifact_hash = __import__("bot_artifact").hash_path(source)
+    old = {
+        "digest": "b" * 64,
+        "workflow_run_id": WORKFLOW,
+        "checkpoint_revision": 22,
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+    }
+    external = {
+        "old_checkpoint": old,
+        "git_contract_migration": {"current_head": NEW_HEAD},
+        "candidate": {
+            "path": "bots/national_v143",
+            "artifact_hash": artifact_hash,
+        },
+    }
+    monkeypatch.setattr(recovery, "load_claim", lambda *_a: external)
+    canonical = {
+        "schema_version": 2,
+        "abandon_reason": recovery.abandon_reason(digest),
+        "checkpoint": old,
+        "git_head": NEW_HEAD,
+        "git_state": {"head": NEW_HEAD},
+        "candidate": {"path": "bots/national_v143", "present": True},
+        "transaction_id": transaction_id,
+    }
+
+    assert recovery.validate_canonical_abandon_external_binding(
+        tmp_path, canonical
+    ) == external
+    (source / "policy.py").write_text("drift", encoding="utf-8")
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="candidate_hash_mismatch",
+    ):
+        recovery.validate_canonical_abandon_external_binding(
+            tmp_path, canonical
+        )
+
+    (source / "policy.py").write_text("x", encoding="utf-8")
+    quarantine = (
+        tmp_path
+        / "web/core/results/policy_epoch_abandon_transactions"
+        / transaction_id
+        / "candidate"
+    )
+    quarantine.parent.mkdir(parents=True)
+    source.rename(quarantine)
+    assert recovery.validate_canonical_abandon_external_binding(
+        tmp_path, canonical
+    ) == external
+    (quarantine / "policy.py").write_text("drift", encoding="utf-8")
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="candidate_hash_mismatch",
+    ):
+        recovery.validate_canonical_abandon_external_binding(
+            tmp_path, canonical
+        )
 
 
 def test_claim_directory_symlink_fails_closed(tmp_path, monkeypatch):
@@ -617,6 +1052,95 @@ def test_historical_job_requires_unique_finalized_claim_and_transaction(
         current_workflow_run_id=WORKFLOW,
         job_directory=job,
     )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        None,
+        lambda canonical: canonical.update(git_head=OLD_HEAD),
+        lambda canonical: canonical["checkpoint"].update(next_v=144),
+        lambda canonical: canonical["checkpoint"].update(source_v=141),
+        lambda canonical: canonical["checkpoint"].update(stage="verified"),
+        lambda canonical: canonical["candidate"].update(
+            path="bots/national_v144"
+        ),
+        lambda canonical: canonical.update(transaction_id="d" * 64),
+    ),
+)
+def test_finalized_bootstrap_scanner_uses_full_external_crossbinding(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    import epoch_authority
+    import evolution_infra
+
+    root = tmp_path / ".evolution_pok"
+    transaction_id = "c" * 64
+    directory = (
+        root
+        / "web/core/results/policy_epoch_abandon_transactions"
+        / transaction_id
+    )
+    quarantine = directory / "candidate"
+    quarantine.mkdir(parents=True)
+    for name in recovery._STRICT_FILES:
+        (quarantine / name).write_text("x", encoding="utf-8")
+    artifact_hash = __import__("bot_artifact").hash_path(quarantine)
+    old = {
+        "digest": "b" * 64,
+        "workflow_run_id": WORKFLOW,
+        "checkpoint_revision": 22,
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "official_bootstrap_required",
+    }
+    external = {
+        "claim_digest": "a" * 64,
+        "old_checkpoint": old,
+        "git_contract_migration": {"current_head": NEW_HEAD},
+        "candidate": {
+            "path": "bots/national_v143",
+            "artifact_hash": artifact_hash,
+        },
+    }
+    canonical = {
+        "schema_version": 2,
+        "abandon_reason": recovery.abandon_reason(
+            external["claim_digest"]
+        ),
+        "checkpoint": dict(old),
+        "git_head": NEW_HEAD,
+        "git_state": {"head": NEW_HEAD},
+        "candidate": {"path": "bots/national_v143", "present": True},
+        "transaction_id": transaction_id,
+    }
+    if mutation is not None:
+        mutation(canonical)
+    (directory / "claim.json").write_text(
+        json.dumps(canonical), encoding="utf-8"
+    )
+    (directory / "receipt.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(recovery, "load_claim", lambda *_a: external)
+    monkeypatch.setattr(
+        evolution_infra,
+        "load_abandoned_version_receipts",
+        lambda **_k: [],
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "validate_abandon_finalize_receipt",
+        lambda _claim, receipt, _rows: receipt,
+    )
+
+    observed = recovery._finalized_canonical_abandon(root, external)
+
+    if mutation is None:
+        assert observed is not None
+        assert observed["transaction_id"] == transaction_id
+    else:
+        assert observed is None
 
 
 def test_operator_cli_replays_completed_claim_after_checkpoint_clear(

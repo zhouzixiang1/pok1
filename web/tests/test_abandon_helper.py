@@ -1235,6 +1235,245 @@ def test_schema3_first_strict_fence_survives_checkpoint_clear_and_revalidates(
         validate_abandon_claim_structure(forged)
 
 
+def test_private_bootstrap_abandon_preserves_real_succeeded_first_strict_journal(
+    tmp_path,
+    monkeypatch,
+):
+    """Reproduce the live 8/8 terminal conflict through the real abandon owner."""
+
+    import evolution_core
+    import evolution_infra
+    import first_strict_execution_journal as execution_journal
+    import national_native
+    import precommit_eval_contract
+    import tool_eval
+    import tool_gates
+    import bootstrap_contract_recovery as bootstrap_recovery
+    from bot_artifact import canonical_digest, hash_path
+    from tests.test_checkpoint_epoch_recovery import (
+        _policy_epoch_reset_receipt,
+        _write_reset_authority,
+    )
+
+    runtime_root = tmp_path / ".evolution_pok"
+    reset_receipt = _write_reset_authority(
+        runtime_root,
+        _policy_epoch_reset_receipt(),
+    )
+    results_dir = runtime_root / "web" / "core" / "results"
+    monkeypatch.setattr(tbm, "PROJECT_ROOT", runtime_root)
+    monkeypatch.setattr(tbm, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(evolution_infra, "PROJECT_ROOT", runtime_root)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
+    monkeypatch.setattr(
+        evolution_infra,
+        "ABANDONED_VERSIONS_FILE",
+        results_dir / "abandoned_versions.jsonl",
+    )
+    candidate = _strict_artifact(runtime_root / "bots/national_v143", 143)
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=(
+            national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC
+        ),
+    )
+    workflow_run_id = "generation:143:workflow-v62"
+    scope = {
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": 13,
+        "candidate_version": 143,
+        "candidate_label": "national_v143",
+        "candidate_artifact_hash": hash_path(candidate),
+        "control_id": "first_strict_control_v1",
+        "control_artifact_hash": "b" * 64,
+        "control_receipt_digest": "c" * 64,
+        "precommit_plan_digest": "d" * 64,
+        "evaluation_contract_digest": "e" * 64,
+        "native_match_timing_plan_digest": timing_plan.digest(),
+        "precommit_attempt": 1,
+    }
+    precommit_plan = {
+        "opponents": [{"authority": "system_first_strict_control"}],
+    }
+    from system_strict_bootstrap import build_fresh_bootstrap_receipt
+
+    protocol_bootstrap = build_fresh_bootstrap_receipt(
+        active_bots=(),
+        epoch_reset_receipt_digest=reset_receipt["receipt_digest"],
+    )
+    checkpoint = _strict_checkpoint(
+        143,
+        142,
+        "official_bootstrap_required",
+        workflow_run_id=workflow_run_id,
+        checkpoint_revision=22,
+        precommit_attempt=1,
+        publication_intent=None,
+        official_job=None,
+        audit_context={
+            "protocol_bootstrap": protocol_bootstrap,
+            "first_strict_control_execution_scope": scope,
+            "precommit_eval_plan": precommit_plan,
+        },
+    )
+    state_file = results_dir / "pipeline_state.json"
+    state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    current = {"checkpoint": checkpoint}
+    monkeypatch.setattr(
+        tbm,
+        "read_pipeline_checkpoint",
+        lambda: current["checkpoint"],
+    )
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tbm, "log_system_event", lambda *_a, **_k: None)
+
+    monkeypatch.setattr(
+        execution_journal,
+        "CONTROL_EXECUTION_ROOT",
+        tmp_path / "first_strict_execution",
+    )
+    monkeypatch.setattr(
+        national_native,
+        "_validate_first_strict_runner_execution_seal",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        national_native,
+        "_consume_first_strict_runner_execution_seal",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        execution_journal,
+        "_terminal_execution_issues",
+        lambda *_a, **_k: ([], {"terminal": True}),
+    )
+    receipts = []
+    for repeat in range(1, 9):
+        deck = 91_000 + (repeat - 1) * 1_000
+        ticket = execution_journal.begin_control_execution(
+            scope=scope,
+            repeat=repeat,
+            deck_seed_base=deck,
+            bot_seed_base=deck + 1_000_000_000,
+            timing_plan=timing_plan,
+            claim_now=__import__("time").time(),
+        )
+        receipts.append(execution_journal.complete_control_execution(
+            ticket,
+            execution={"complete_70_hand_match": True, "repeat": repeat},
+        ))
+    terminal = execution_journal.succeed_control_execution(
+        scope,
+        expected_receipts=receipts,
+    )
+    proof_payload = {
+        "scope": scope,
+        "expected_receipts": receipts,
+        "terminal_receipt": terminal,
+    }
+    success_proof = {
+        **proof_payload,
+        "proof_digest": canonical_digest(proof_payload),
+    }
+    external = {"first_strict_execution_success": success_proof}
+    authority_run_id = execution_journal._authority_run_id(scope)
+    store = execution_journal._store()
+    before = {
+        "instance": store.instance(authority_run_id),
+        "events": [dict(event.__dict__) for event in store.events(authority_run_id)],
+        "effects": store.effects_for_run(authority_run_id),
+        "terminal": terminal,
+    }
+
+    monkeypatch.setattr(
+        precommit_eval_contract,
+        "opponents_from_plan",
+        lambda _plan: [],
+    )
+    monkeypatch.setattr(
+        precommit_eval_contract,
+        "build_evaluation_contract",
+        lambda *_a, **_k: {},
+    )
+    monkeypatch.setattr(
+        tool_eval,
+        "_validate_first_strict_control_execution_scope",
+        lambda *_a, **_k: (scope, None),
+    )
+    monkeypatch.setattr(
+        tool_gates,
+        "_bot_code_fingerprint",
+        lambda _path: scope["candidate_artifact_hash"],
+    )
+    monkeypatch.setattr(
+        tbm,
+        "_bootstrap_contract_change_abandon_authority",
+        lambda *_a, **_k: external,
+    )
+
+    def reopen_external(_claim):
+        bootstrap_recovery.validate_first_strict_execution_success(
+            success_proof
+        )
+        return external
+
+    monkeypatch.setattr(
+        tbm,
+        "_validate_external_bootstrap_contract_abandon_proof",
+        reopen_external,
+    )
+
+    def clear(**_expected):
+        current["checkpoint"] = None
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    reason = "official_bootstrap_contract_change:" + "a" * 64
+    result = _run(tbm._do_abandon_generation(
+        reason=reason,
+        _bypass_rate_limit=True,
+        expected_workflow_run_id=workflow_run_id,
+        expected_next_v=143,
+        expected_source_v=142,
+        expected_checkpoint_revision=22,
+        expected_checkpoint_stage="official_bootstrap_required",
+        _operator_bootstrap_contract_change_claim_digest="a" * 64,
+    ))
+
+    assert result["abandoned"] is True, result
+    assert result["first_strict_execution_fence"]["abandoned"] is False
+    assert result["first_strict_execution_fence"]["proof_digest"] == (
+        success_proof["proof_digest"]
+    )
+    transaction = (
+        tbm.RESULTS_DIR
+        / "policy_epoch_abandon_transactions"
+        / result["abandon_transaction_id"]
+    )
+    canonical = json.loads(
+        (transaction / "claim.json").read_text(encoding="utf-8")
+    )
+    assert canonical["schema_version"] == 2
+    assert "first_strict_execution_fence" not in canonical
+    assert (transaction / "receipt.json").is_file()
+    assert (transaction / "candidate").is_dir()
+    assert not candidate.exists()
+    assert not state_file.exists()
+    after = {
+        "instance": store.instance(authority_run_id),
+        "events": [dict(event.__dict__) for event in store.events(authority_run_id)],
+        "effects": store.effects_for_run(authority_run_id),
+        "terminal": execution_journal.read_succeeded_control_execution(
+            scope,
+            expected_receipts=receipts,
+            expected_terminal_receipt=terminal,
+        ),
+    }
+    assert after == before
+
 def test_schema2_resigned_forgery_extra_key_and_path_traversal_fail_closed(
     tmp_path,
     monkeypatch,
@@ -1326,6 +1565,30 @@ def test_schema2_active_claim_rejects_old_head_and_hardlinked_preimage(
     assert state_file.exists() and candidate.exists()
 
 
+def test_active_claim_reopener_requires_external_bootstrap_preimage(
+    tmp_path,
+    monkeypatch,
+):
+    _checkpoint, state_file, candidate, _claim, _transaction_dir = (
+        _schema2_claim_fixture(tmp_path, monkeypatch)
+    )
+    monkeypatch.setattr(
+        tbm,
+        "_validate_external_bootstrap_contract_abandon_proof",
+        lambda _claim: (_ for _ in ()).throw(
+            RuntimeError("external bootstrap proof missing")
+        ),
+    )
+
+    result = _run(tbm._do_abandon_generation(reason="abandon_generation"))
+
+    assert result["abandoned"] is False
+    assert result["action"] == "operator_reconcile"
+    assert "external bootstrap proof missing" in result["error"]
+    assert state_file.exists()
+    assert candidate.exists()
+
+
 def test_epoch_status_revalidates_schema2_live_git_and_filesystem_state(
     tmp_path,
     monkeypatch,
@@ -1371,6 +1634,28 @@ def test_epoch_status_revalidates_schema2_live_git_and_filesystem_state(
     assert old_head["claimed"] is True
     assert old_head["valid"] is False
     assert any("active_git_state_changed" in issue for issue in old_head["issues"])
+
+    import bootstrap_contract_recovery as bootstrap_recovery
+
+    monkeypatch.setattr(
+        bootstrap_recovery,
+        "validate_canonical_abandon_external_binding",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            RuntimeError("external bootstrap journal drift")
+        ),
+    )
+    external_drift = epoch_authority._runtime_reconciliation_claim_status(
+        live,
+        results_dir=tbm.RESULTS_DIR,
+        bots_dir=candidate.parent,
+        infra=fake_infra("a" * 40),
+    )
+    assert external_drift["claimed"] is True
+    assert external_drift["valid"] is False
+    assert any(
+        "external bootstrap journal drift" in issue
+        for issue in external_drift["issues"]
+    )
 
 
 def test_schema2_checkpoint_clear_never_adopts_reappearing_source_candidate(
@@ -2035,6 +2320,25 @@ def test_historical_completed_abandon_reproof_allows_clean_main_descendant(
     )
     assert not state["state_file"].exists()
     assert not state["candidate"].exists()
+
+
+def test_historical_completed_abandon_reproof_requires_external_preimage(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        tbm,
+        "_validate_external_bootstrap_contract_abandon_proof",
+        lambda _claim: (_ for _ in ()).throw(
+            RuntimeError("historical external proof missing")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="historical external proof missing"):
+        tbm.reprove_historical_completed_abandon(
+            state["claim"]["transaction_id"]
+        )
 
 
 def test_historical_head_ancestry_accepts_actual_v48_recorded_main_lineage():

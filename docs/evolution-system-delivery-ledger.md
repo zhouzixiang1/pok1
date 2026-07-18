@@ -4403,9 +4403,19 @@ request/state/result/evidence digests, the signed non-authoritative row above,
 consumption 0/1, and absence of any active job, certificate, tag, `.completed`,
 tracked candidate or published strict pool. Execution requires the reviewed
 claim digest, persists it with no-follow `O_EXCL`/fsync semantics, and lets the
-canonical schema-3 workflow/first-control fence and quarantine/finalize
-transaction own every mutation. The old checkpoint is never rewritten under
-the new contract, and ordinary MCP abandon remains blocked.
+canonical workflow/strict-authority fence and schema-2 quarantine/finalize
+transaction own every mutation. The external schema-2 claim additionally
+freezes the checkpoint-bound first-strict scope, eight execution references
+and succeeded terminal receipt. That journal was already terminal after the
+eight native precommit matches, so the private owner revalidates and preserves
+the successful terminal instead of trying to rewrite it as abandoned. The
+canonical reason binds the external claim digest; active, checkpoint-clear
+crash and historical reopeners require its preimage and dynamically revalidate
+the succeeded journal. Generic abandon retains the old succeeded-to-abandoned
+conflict and therefore gains no new bypass. The earlier schema-1 external claim
+without this proof is inert and a fresh dry-run digest is required. The old
+checkpoint is never rewritten under the new contract, and ordinary MCP abandon
+remains blocked.
 
 Because a fresh workflow reuses `bots/national_v143`, HTTP job discovery also
 reopens the finalized migration proof before treating the old job as

@@ -33,9 +33,10 @@ from bot_namespace import (
 )
 
 
-CLAIM_SCHEMA_VERSION = 1
+CLAIM_SCHEMA_VERSION = 2
 CLAIM_KIND = "official-bootstrap-contract-change-abandon-claim"
 CLAIM_DIRNAME = "official_bootstrap_contract_change_abandon"
+ABANDON_REASON_PREFIX = "official_bootstrap_contract_change:"
 PARKED_EVALUATION_CONTRACT_VERSION = 40
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -46,12 +47,167 @@ _STRICT_FILES = frozenset({
     "national_runtime_manifest.json",
     "policy_epoch_receipt.json",
 })
+_CLAIM_FIELDS = frozenset({
+    "schema_version",
+    "kind",
+    "evaluation_epoch",
+    "old_checkpoint",
+    "git_contract_migration",
+    "candidate",
+    "parked_request_digest",
+    "terminal_job",
+    "first_strict_execution_success",
+    "disposition",
+    "claim_digest",
+})
+_FIRST_STRICT_SUCCESS_FIELDS = frozenset({
+    "scope",
+    "expected_receipts",
+    "terminal_receipt",
+    "proof_digest",
+})
 
 
 class BootstrapContractRecoveryError(RuntimeError):
     def __init__(self, issues: list[str]):
         self.issues = list(dict.fromkeys(str(item) for item in issues if str(item)))
         super().__init__("; ".join(self.issues[:12]))
+
+
+def _read_succeeded_first_strict_execution(
+    scope: Any,
+    *,
+    expected_receipts: Any,
+    expected_terminal_receipt: Any,
+) -> dict[str, Any]:
+    """Keep the journal dependency lazy for the operator-only owner."""
+
+    from first_strict_execution_journal import (
+        read_succeeded_control_execution,
+    )
+
+    return read_succeeded_control_execution(
+        scope,
+        expected_receipts=expected_receipts,
+        expected_terminal_receipt=expected_terminal_receipt,
+    )
+
+
+def validate_first_strict_execution_success(
+    proof: Any,
+) -> dict[str, Any]:
+    """Reopen the immutable eight-sample authority frozen by a claim."""
+
+    issues: list[str] = []
+    if not isinstance(proof, dict) or set(proof) != _FIRST_STRICT_SUCCESS_FIELDS:
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_first_strict_success_fields_invalid"
+        ])
+    scope = proof.get("scope")
+    expected_receipts = proof.get("expected_receipts")
+    terminal_receipt = proof.get("terminal_receipt")
+    payload = {
+        "scope": scope,
+        "expected_receipts": expected_receipts,
+        "terminal_receipt": terminal_receipt,
+    }
+    if (
+        not isinstance(scope, dict)
+        or not isinstance(expected_receipts, list)
+        or len(expected_receipts) != 8
+        or any(not isinstance(item, dict) for item in expected_receipts)
+        or not isinstance(terminal_receipt, dict)
+        or terminal_receipt.get("outcome") != "succeeded"
+        or terminal_receipt.get("scope_digest") != canonical_digest(scope)
+        or proof.get("proof_digest") != canonical_digest(payload)
+    ):
+        issues.append("bootstrap_contract_first_strict_success_shape_invalid")
+    if not issues:
+        try:
+            observed = _read_succeeded_first_strict_execution(
+                scope,
+                expected_receipts=expected_receipts,
+                expected_terminal_receipt=terminal_receipt,
+            )
+            if observed != terminal_receipt:
+                issues.append(
+                    "bootstrap_contract_first_strict_success_terminal_changed"
+                )
+        except Exception as exc:
+            issues.append(
+                "bootstrap_contract_first_strict_success_unverifiable:"
+                f"{type(exc).__name__}"
+            )
+    if issues:
+        raise BootstrapContractRecoveryError(issues)
+    return proof
+
+
+def _first_strict_execution_success_from_checkpoint(
+    checkpoint: dict[str, Any],
+) -> dict[str, Any]:
+    """Extract and revalidate the exact successful precommit journal proof."""
+
+    audit_context = checkpoint.get("audit_context")
+    audit_context = audit_context if isinstance(audit_context, dict) else {}
+    gate_results = checkpoint.get("gate_results")
+    gate_results = gate_results if isinstance(gate_results, dict) else {}
+    precommit = gate_results.get("precommit_eval")
+    precommit = precommit if isinstance(precommit, dict) else {}
+    national = precommit.get("national")
+    national = national if isinstance(national, dict) else {}
+    scope = precommit.get("control_execution_scope")
+    audit_scope = audit_context.get("first_strict_control_execution_scope")
+    matchups = national.get("matchups")
+    matchups_valid = (
+        isinstance(matchups, list)
+        and bool(matchups)
+        and all(
+            isinstance(matchup, dict)
+            and isinstance(matchup.get("repeats"), list)
+            and all(
+                isinstance(repeat, dict)
+                for repeat in matchup.get("repeats")
+            )
+            for matchup in matchups
+        )
+    )
+    receipts = (
+        [
+            repeat.get("execution_receipt")
+            for matchup in (matchups or [])
+            for repeat in (matchup.get("repeats") or [])
+        ]
+        if matchups_valid
+        else []
+    )
+    terminal = precommit.get("first_strict_execution_terminal_receipt")
+    if (
+        precommit.get("passed") is not True
+        or not matchups_valid
+        or not isinstance(scope, dict)
+        or scope != audit_scope
+        or scope.get("workflow_run_id") != checkpoint.get("workflow_run_id")
+        or scope.get("candidate_version") != checkpoint.get("next_v")
+        or type(scope.get("checkpoint_revision")) is not int
+        or int(scope["checkpoint_revision"])
+        > int(checkpoint.get("checkpoint_revision") or 0)
+        or len(receipts) != 8
+        or any(not isinstance(item, dict) for item in receipts)
+        or not isinstance(terminal, dict)
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_first_strict_success_checkpoint_invalid"
+        ])
+    payload = {
+        "scope": scope,
+        "expected_receipts": receipts,
+        "terminal_receipt": terminal,
+    }
+    return validate_first_strict_execution_success({
+        **payload,
+        "proof_digest": canonical_digest(payload),
+    })
 
 
 def _bootstrap_contract_chain_issues(
@@ -742,6 +898,13 @@ def build_claim(
             issues.append("bootstrap_contract_first_strict_pool_not_empty")
     except Exception as exc:
         issues.append(f"bootstrap_contract_pool_authority_unavailable:{type(exc).__name__}")
+    try:
+        first_strict_execution_success = (
+            _first_strict_execution_success_from_checkpoint(checkpoint)
+        )
+    except BootstrapContractRecoveryError as exc:
+        issues.extend(exc.issues)
+        first_strict_execution_success = {}
     if issues:
         raise BootstrapContractRecoveryError(issues)
     payload = {
@@ -767,6 +930,7 @@ def build_claim(
         "candidate": candidate_facts,
         "parked_request_digest": parked["request_digest"],
         "terminal_job": job_facts,
+        "first_strict_execution_success": first_strict_execution_success,
         "disposition": "canonical_abandon_and_quarantine_without_evidence_migration",
     }
     return {**payload, "claim_digest": canonical_digest(payload)}
@@ -948,12 +1112,163 @@ def _claim_directory_fd(root: str | Path, *, create: bool) -> Iterator[tuple[Pat
         os.close(descriptor)
 
 
+def _validate_claim_envelope(
+    claim: Any,
+    expected_digest: str,
+) -> dict[str, Any]:
+    """Validate the external envelope and dynamically reopen its journal proof."""
+
+    if (
+        not isinstance(claim, dict)
+        or set(claim) != _CLAIM_FIELDS
+        or claim.get("schema_version") != CLAIM_SCHEMA_VERSION
+        or claim.get("kind") != CLAIM_KIND
+        or claim.get("evaluation_epoch") != EVALUATION_EPOCH
+        or claim.get("claim_digest") != expected_digest
+        or canonical_digest({
+            key: value for key, value in claim.items()
+            if key != "claim_digest"
+        }) != expected_digest
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_claim_invalid"
+        ])
+    success = validate_first_strict_execution_success(
+        claim.get("first_strict_execution_success")
+    )
+    scope = success["scope"]
+    old = claim.get("old_checkpoint")
+    candidate = claim.get("candidate")
+    migration = claim.get("git_contract_migration")
+    if (
+        not isinstance(old, dict)
+        or set(old) != {
+            "digest",
+            "workflow_run_id",
+            "next_v",
+            "source_v",
+            "stage",
+            "checkpoint_revision",
+        }
+        or not isinstance(candidate, dict)
+        or set(candidate) != {"path", "artifact_hash", "files"}
+        or not isinstance(migration, dict)
+        or set(migration) != {
+            "baseline_head",
+            "baseline_contract_hash",
+            "current_head",
+            "current_contract_hash",
+            "changed_paths",
+            "contract_paths",
+        }
+        or old.get("next_v") != FIRST_STRICT_POLICY_VERSION
+        or old.get("source_v") != ARCHIVED_VERSION_HIGH_WATER
+        or old.get("stage") != "official_bootstrap_required"
+        or not _HEX64.fullmatch(str(old.get("digest") or ""))
+        or not isinstance(old.get("workflow_run_id"), str)
+        or not old.get("workflow_run_id")
+        or type(old.get("checkpoint_revision")) is not int
+        or int(old["checkpoint_revision"]) < 1
+        or scope.get("workflow_run_id") != old.get("workflow_run_id")
+        or scope.get("candidate_version") != old.get("next_v")
+        or scope.get("candidate_label") != bot_name(old.get("next_v"))
+        or type(scope.get("checkpoint_revision")) is not int
+        or not 1 <= int(scope["checkpoint_revision"]) <= int(
+            old["checkpoint_revision"]
+        )
+        or candidate.get("path") != f"bots/{bot_name(old.get('next_v'))}"
+        or candidate.get("artifact_hash")
+        != scope.get("candidate_artifact_hash")
+        or candidate.get("files") != sorted(_STRICT_FILES)
+        or not _HEX40.fullmatch(str(migration.get("current_head") or ""))
+        or claim.get("disposition")
+        != "canonical_abandon_and_quarantine_without_evidence_migration"
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_claim_crossbinding_invalid"
+        ])
+    return claim
+
+
+def validate_canonical_abandon_external_binding(
+    root: str | Path,
+    canonical_claim: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Reopen a private claim indirectly bound by a canonical schema-2 reason."""
+
+    reason = str(canonical_claim.get("abandon_reason") or "")
+    if not reason.startswith(ABANDON_REASON_PREFIX):
+        return None
+    claim_digest = reason.removeprefix(ABANDON_REASON_PREFIX)
+    if not _HEX64.fullmatch(claim_digest):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_canonical_reason_digest_invalid"
+        ])
+    external = load_claim(root, claim_digest)
+    old = external["old_checkpoint"]
+    checkpoint = canonical_claim.get("checkpoint") or {}
+    migration = external["git_contract_migration"]
+    git_state = canonical_claim.get("git_state") or {}
+    candidate = canonical_claim.get("candidate") or {}
+    transaction_id = str(canonical_claim.get("transaction_id") or "")
+    if (
+        canonical_claim.get("schema_version") != 2
+        or abandon_reason(claim_digest) != reason
+        or checkpoint.get("digest") != old.get("digest")
+        or checkpoint.get("workflow_run_id") != old.get("workflow_run_id")
+        or checkpoint.get("checkpoint_revision")
+        != old.get("checkpoint_revision")
+        or checkpoint.get("next_v") != old.get("next_v")
+        or checkpoint.get("source_v") != old.get("source_v")
+        or checkpoint.get("stage") != old.get("stage")
+        or migration.get("current_head") != canonical_claim.get("git_head")
+        or migration.get("current_head") != git_state.get("head")
+        or (external.get("candidate") or {}).get("path")
+        != candidate.get("path")
+        or candidate.get("present") is not True
+        or not _HEX64.fullmatch(transaction_id)
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_canonical_crossbinding_invalid"
+        ])
+    source = Path(root) / str(candidate["path"])
+    quarantine = (
+        Path(root)
+        / "web"
+        / "core"
+        / "results"
+        / "policy_epoch_abandon_transactions"
+        / transaction_id
+        / "candidate"
+    )
+    observed = (
+        quarantine
+        if os.path.lexists(quarantine)
+        else source
+        if os.path.lexists(source)
+        else None
+    )
+    try:
+        observed_hash = hash_path(observed) if observed is not None else None
+    except Exception as exc:
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_canonical_candidate_unverifiable:"
+            f"{type(exc).__name__}"
+        ]) from exc
+    if observed_hash != (external.get("candidate") or {}).get(
+        "artifact_hash"
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_canonical_candidate_hash_mismatch"
+        ])
+    return external
+
+
 def publish_claim(root: str | Path, claim: dict[str, Any]) -> Path:
     """Durably publish one immutable external authority receipt."""
 
     digest = str(claim.get("claim_digest") or "")
-    if digest != canonical_digest({key: value for key, value in claim.items() if key != "claim_digest"}):
-        raise BootstrapContractRecoveryError(["bootstrap_contract_claim_digest_mismatch"])
+    _validate_claim_envelope(claim, digest)
     path = claim_path(root, digest)
     raw = (json.dumps(claim, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode()
     with _claim_directory_fd(root, create=True) as (_directory, directory_fd):
@@ -997,15 +1312,7 @@ def load_claim(root: str | Path, claim_digest: str) -> dict[str, Any]:
         raise BootstrapContractRecoveryError([
             f"bootstrap_contract_claim_path_unsafe:{type(exc).__name__}"
         ]) from exc
-    if (
-        not isinstance(claim, dict)
-        or claim.get("schema_version") != CLAIM_SCHEMA_VERSION
-        or claim.get("kind") != CLAIM_KIND
-        or claim.get("claim_digest") != claim_digest
-        or canonical_digest({key: value for key, value in claim.items() if key != "claim_digest"}) != claim_digest
-    ):
-        raise BootstrapContractRecoveryError(["bootstrap_contract_claim_invalid"])
-    return claim
+    return _validate_claim_envelope(claim, claim_digest)
 
 
 def validate_claim_for_checkpoint(
@@ -1141,6 +1448,13 @@ def _finalized_canonical_abandon(
                 and checkpoint.get("checkpoint_revision")
                 == expected_checkpoint.get("checkpoint_revision")
             ):
+                if directory.name != canonical_claim.get("transaction_id"):
+                    continue
+                if validate_canonical_abandon_external_binding(
+                    root,
+                    canonical_claim,
+                ) != claim:
+                    continue
                 validate_abandon_finalize_receipt(canonical_claim, receipt, rows)
                 matches.append((canonical_claim, receipt, directory))
         if len(matches) != 1:
