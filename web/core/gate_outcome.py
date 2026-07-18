@@ -26,20 +26,58 @@ TERMINAL_STAGE_BY_GATE = {
     "critic": "critic_rejected",
 }
 
-_REASON_CODES = frozenset({
-    "quality_gate_rejected",
-    "quality_receipt_invalid",
-    "review_rejected",
-    "review_receipt_invalid",
-    "review_authority_invalid",
-    "critic_receipt_invalid",
-    "critic_authority_invalid",
+_TERMINAL_SEMANTICS_BY_GATE = {
+    "quality": frozenset({
+        ("quality_gate_rejected", "quality_gate"),
+        ("quality_receipt_invalid", "control_plane"),
+    }),
+    "review": frozenset({
+        ("review_rejected", "strategy_review"),
+        ("review_receipt_invalid", "control_plane"),
+        ("review_authority_invalid", "control_plane"),
+    }),
+    "critic": frozenset({
+        ("critic_receipt_invalid", "control_plane"),
+        ("critic_authority_invalid", "control_plane"),
+    }),
+}
+_REASON_CODES = frozenset(
+    reason_code
+    for allowed in _TERMINAL_SEMANTICS_BY_GATE.values()
+    for reason_code, _failure_class in allowed
+)
+_FAILURE_CLASSES = frozenset(
+    failure_class
+    for allowed in _TERMINAL_SEMANTICS_BY_GATE.values()
+    for _reason_code, failure_class in allowed
+)
+_OUTCOME_SUBJECT_KEYS = frozenset({
+    "schema_version",
+    "kind",
+    "disposition",
+    "gate_name",
+    "terminal_stage",
+    "reason_code",
+    "failure_class",
+    "workflow_run_id",
+    "next_v",
+    "source_v",
+    "parent2_v",
+    "evaluation_epoch",
+    "epoch_binding_digest",
+    "input_checkpoint_stage",
+    "input_checkpoint_revision",
+    "projected_checkpoint_revision",
+    "candidate_artifact_hash",
+    "master_plan_digest",
+    "audit_context_digest",
+    "prerequisite_gate_digests",
+    "gate_payload_digest",
+    "role_result_digest",
+    "llm_authority_receipt_digest",
+    "llm_execution_evidence_digest",
 })
-_FAILURE_CLASSES = frozenset({
-    "quality_gate",
-    "strategy_review",
-    "control_plane",
-})
+_OUTCOME_KEYS = _OUTCOME_SUBJECT_KEYS | {"receipt_digest"}
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -69,6 +107,15 @@ def _candidate_hash(candidate_dir: str | Path) -> str:
     from bot_artifact import hash_path
 
     return hash_path(Path(candidate_dir))
+
+
+def _terminal_semantics_valid(
+    gate_name: Any,
+    reason_code: Any,
+    failure_class: Any,
+) -> bool:
+    allowed = _TERMINAL_SEMANTICS_BY_GATE.get(gate_name)
+    return allowed is not None and (reason_code, failure_class) in allowed
 
 
 def _dependencies(checkpoint: dict[str, Any], gate_name: str) -> dict[str, str]:
@@ -104,10 +151,25 @@ def build_terminal_gate_outcome(
         errors.append("terminal_outcome_gate_invalid")
     if not isinstance(gate_payload, dict) or not gate_payload:
         errors.append("terminal_outcome_gate_payload_invalid")
-    if reason_code not in _REASON_CODES:
+    reason_known = isinstance(reason_code, str) and reason_code in _REASON_CODES
+    failure_known = (
+        isinstance(failure_class, str) and failure_class in _FAILURE_CLASSES
+    )
+    if not reason_known:
         errors.append("terminal_outcome_reason_code_invalid")
-    if failure_class not in _FAILURE_CLASSES:
+    if not failure_known:
         errors.append("terminal_outcome_failure_class_invalid")
+    if (
+        gate_name in TERMINAL_STAGE_BY_GATE
+        and reason_known
+        and failure_known
+        and not _terminal_semantics_valid(
+            gate_name,
+            reason_code,
+            failure_class,
+        )
+    ):
+        errors.append("terminal_outcome_gate_semantics_invalid")
     workflow_run_id = str(
         checkpoint.get("workflow_run_id") or checkpoint.get("run_id") or ""
     )
@@ -183,6 +245,8 @@ def build_terminal_gate_outcome(
         raise TerminalGateOutcomeError(
             "terminal_outcome_candidate_artifact_hash_invalid"
         )
+    if frozenset(subject) != _OUTCOME_SUBJECT_KEYS:  # pragma: no cover
+        raise TerminalGateOutcomeError("terminal_outcome_schema_keys_invalid")
     return {**subject, "receipt_digest": content_digest(subject)}
 
 
@@ -204,6 +268,8 @@ def validate_terminal_gate_outcome(
     errors: list[str] = []
     gate_name = str(outcome.get("gate_name") or "")
     terminal_stage = TERMINAL_STAGE_BY_GATE.get(gate_name)
+    if frozenset(outcome) != _OUTCOME_KEYS:
+        errors.append("terminal_outcome_schema_keys_invalid")
     if outcome.get("schema_version") != TERMINAL_GATE_OUTCOME_SCHEMA_VERSION:
         errors.append("terminal_outcome_schema_version_invalid")
     if outcome.get("kind") != TERMINAL_GATE_OUTCOME_KIND:
@@ -214,10 +280,27 @@ def validate_terminal_gate_outcome(
         errors.append("terminal_outcome_stage_binding_invalid")
     if checkpoint.get("stage") != terminal_stage:
         errors.append("terminal_outcome_checkpoint_stage_mismatch")
-    if outcome.get("reason_code") not in _REASON_CODES:
+    reason_code = outcome.get("reason_code")
+    failure_class = outcome.get("failure_class")
+    reason_known = isinstance(reason_code, str) and reason_code in _REASON_CODES
+    failure_known = (
+        isinstance(failure_class, str) and failure_class in _FAILURE_CLASSES
+    )
+    if not reason_known:
         errors.append("terminal_outcome_reason_code_invalid")
-    if outcome.get("failure_class") not in _FAILURE_CLASSES:
+    if not failure_known:
         errors.append("terminal_outcome_failure_class_invalid")
+    if (
+        gate_name in TERMINAL_STAGE_BY_GATE
+        and reason_known
+        and failure_known
+        and not _terminal_semantics_valid(
+            gate_name,
+            reason_code,
+            failure_class,
+        )
+    ):
+        errors.append("terminal_outcome_gate_semantics_invalid")
     workflow = str(
         checkpoint.get("workflow_run_id") or checkpoint.get("run_id") or ""
     )
