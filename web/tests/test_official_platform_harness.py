@@ -1493,6 +1493,81 @@ def test_formal_bootstrap_cross_binds_envelope_hashes_before_exe(
     )
 
 
+def test_formal_bootstrap_rejects_valid_flag_without_authorized_selection(
+    tmp_path, monkeypatch
+):
+    import first_strict_control
+    import official_bootstrap
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    control = tmp_path / "system-controls" / "control"
+    control.mkdir(parents=True)
+    forged_selection = {
+        "selected": True,
+        "candidate_binding": {"candidate_hash": "a" * 64},
+        "opponent": {
+            "path": str(control),
+            "artifact_hash": "b" * 64,
+        },
+    }
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        harness,
+        "_validate_active_diagnostic_bot",
+        lambda path: Path(path).resolve(),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_operator_bootstrap_authorized_selection",
+        lambda *_args, **_kwargs: {"valid": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_materialized_control",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("missing authorized selection reached byte validation")
+        ),
+    )
+    monkeypatch.setattr(
+        harness,
+        "validate_execution_profile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing authorized selection reached EXE preflight")
+        ),
+    )
+    monkeypatch.setattr(
+        harness,
+        "seal_bot_artifact",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("missing authorized selection reached sealing")
+        ),
+    )
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=control,
+        self_play_rounds=0,
+        opponent_rounds=1,
+        target_hands=70,
+        round_runner=harness._PRODUCTION_ROUND_RUNNER,
+        job_envelope={
+            "bootstrap_control_id": first_strict_control.CONTROL_ID,
+            "opponent_selection": forged_selection,
+            "candidate_hash": "a" * 64,
+            "opponent_hash": "b" * 64,
+        },
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is False
+    assert any(
+        "official_formal_bootstrap_authorization_invalid:"
+        "authorized_selection_missing" in issue
+        for issue in result.issues
+    )
+
+
 def test_formal_bootstrap_keeps_authorized_hash_across_profile_preflight(
     tmp_path, monkeypatch
 ):

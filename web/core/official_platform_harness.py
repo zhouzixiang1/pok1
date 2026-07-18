@@ -2868,7 +2868,10 @@ def run_official_acceptance_sync(
                     )
                 authorized_selection = bootstrap_validation.get("selection")
                 if not isinstance(authorized_selection, dict):
-                    authorized_selection = selection
+                    raise RuntimeError(
+                        "official_formal_bootstrap_authorization_invalid:"
+                        "authorized_selection_missing"
+                    )
                 authorized_candidate = authorized_selection.get(
                     "candidate_binding"
                 )

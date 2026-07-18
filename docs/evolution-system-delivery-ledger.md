@@ -4368,7 +4368,7 @@ byte drift all fail closed before the EXE.  The exception grants no normal
 official-opponent, rating or strength authority to the system control.
 The completed inconclusive attempt result digest is
 `d34ef471a6e7ff7b0be09043b67c6801b09d284db28ec174a2d2bb01beaf94f9`.
-Focused verification is 53 harness tests plus 333 official/bootstrap/control
+Focused verification is 54 harness tests plus 333 official/bootstrap/control
 tests, all passing.  Complete Web verification is `3441 passed, 20 skipped`
 with the existing dependency warning; compileall and `git diff --check` are
 green.  Because the harness is an always-critical evaluation-contract input,
