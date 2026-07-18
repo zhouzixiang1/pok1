@@ -276,6 +276,29 @@ this source freeze the runtime source sync, dry-run and execute are still
 pending; no v52 result is accepted as a Bot, certificate, rating or strength
 sample by this documentation.
 
+The command is crash-safe across that one projection boundary. Before the
+typed outcome exists, dry-run reports
+`reconcilable_terminal_review_rejection` and acknowledged execute follows the
+accept/bind-once path above. If a crash leaves the exact v52 checkpoint at
+`review_rejected` revision 9, dry-run instead reports
+`reconcilable_terminal_review_abandon`. That second state must bind the
+`operator_reconciled_completed_effect=true`, `approved=false`, content-bound
+`terminal_rejection_only` migration, exact candidate and terminal-outcome
+digests, `provider_dispatch_required=false` semantics, and the sole
+`terminal_gate_abandon` route. Acknowledged execute then calls only the existing
+canonical abandon transaction with the exact workflow/version/revision/stage
+and outcome digest; it does not re-accept the role result, re-bind invocation
+evidence, render a prompt, or dispatch a provider. Any different stage, gate,
+reason, failure class, candidate, migration/provider flag, digest, or route is
+an operator-reconciliation failure and leaves the stopped state untouched.
+The already-written v52 gate predates a persisted
+`provider_dispatch_required` member, so only its exact producer key set is
+accepted; adding even a Boolean `false` member is drift for this one-time
+migrator. Its `false` semantics come from the recovered accepted/bound effect,
+the rejection-only migration and the resume implementation having no dispatch
+path, and are projected in dry-run/execute output. They are not inferred from a
+new editable checkpoint flag.
+
 ### Reviewer semantic modes and quality handoff
 
 Reviewer receives one closed `review_semantic_contract`. A fixed system

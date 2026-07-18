@@ -23,8 +23,8 @@ def main() -> int:
     )
     args = parser.parse_args()
     from terminal_gate_reconcile import (
-        inspect_completed_review_rejection,
-        reconcile_completed_review_rejection,
+        inspect_terminal_gate_reconciliation,
+        reconcile_terminal_gate,
     )
 
     if args.execute:
@@ -33,15 +33,21 @@ def main() -> int:
                 "--execute requires "
                 "--acknowledge-completed-review-rejection"
             )
-        payload = asyncio.run(reconcile_completed_review_rejection())
+        payload = asyncio.run(reconcile_terminal_gate())
     else:
-        inspected = inspect_completed_review_rejection()
+        inspected = inspect_terminal_gate_reconciliation()
         payload = {
             key: value
             for key, value in inspected.items()
-            if key not in {"checkpoint", "call", "role_result"}
+            if key not in {
+                "checkpoint",
+                "call",
+                "gate",
+                "outcome",
+                "role_result",
+                "route",
+            }
         }
-        payload["status"] = "reconcilable_terminal_review_rejection"
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0 if (not args.execute or payload.get("abandoned") is True) else 2
 
