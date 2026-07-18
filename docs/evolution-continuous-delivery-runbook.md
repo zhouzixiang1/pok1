@@ -128,6 +128,52 @@ projection remains available only to compare a later event: an exact valid
 same-`R` projection may restore authority, while a conflicting same-`R`
 projection stays rejected until the backend emits a genuinely newer revision.
 
+### Dashboard authority shapes and operator semantics
+
+The dashboard consumes three intentionally different checkpoint projections.
+They are not interchangeable and must never be merged by matching only a stage
+name or version:
+
+| Source | Authoritative shape | Browser use |
+| --- | --- | --- |
+| `GET /api/pipeline/checkpoint` | the complete independent schema-2 strict checkpoint, or `null` | pipeline details after cross-binding its identity to control health |
+| `GET /api/control/health` → `pipeline` | live-revalidated recovery, route, scheduler and post-publication handoff launch boundary | Start authorization and deterministic next-step display |
+| `GET /api/evolution/state` | only a stage/revision summary plus transient display state | initial observation; never launch or checkpoint authority |
+
+During post-publication handoff, `health.pipeline.checkpoint_revision` is the
+handoff journal's `record_revision`, not a strict checkpoint revision. The
+`authority=post_publication_handoff_journal`, projection/identity digests and
+`owner_scope` must all agree before the browser may present the Archivist route.
+Outside handoff, the browser pairs the raw checkpoint with
+`active_generation` across `next_v`, both parents (`source_v`, `parent2_v`),
+stage, run/workflow IDs and checkpoint revision.
+
+`timed_out` and `infra_timed_out` are real recovery-only checkpoint leases.
+They deliberately remain outside the ordered `STAGE_ORDER`: the dashboard
+renders an explicit lease banner and the sole canonical recovery tool
+(`abandon_generation` or `run_precommit_eval`) rather than calling the stage
+unknown or painting invented milestone progress.
+
+Daemon fields also have two scopes:
+
+- control status/config `daemon_enabled` is persisted configuration intent;
+- `/api/daemon/status` and the ratings data stream use `daemon_enabled` for
+  effective live availability and expose the persisted intent separately as
+  `daemon_configured`.
+
+Operator views must present both values and must not infer a live process from
+configuration alone. Compatibility fields such as `total_games`,
+`generation_count`, `current_v` and `next_v` remain emitted for old clients;
+they are not strength, generation or version authority. Use complete 70-hand
+sample/cycle identities, `strict_generation_count`, paired completion/high-water
+tags and the strict epoch projection instead.
+
+The certification cancel endpoint remains an API-only operator/recovery
+surface. The Dashboard intentionally exposes no cancel control. In particular,
+the one-time bootstrap projection is read-only with `cancel_allowed=false` and
+its cancel route returns 404. Do not add a UI cancel button or treat endpoint
+presence as candidate-controlled authority.
+
 Models may identify a symptom or propose a falsifiable repair from frozen
 evidence, but only the deterministic gates and native receipts decide
 admission.  Run timing and protocol tests with representative concurrent host

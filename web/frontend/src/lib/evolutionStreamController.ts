@@ -556,10 +556,14 @@ const isPostPublicationHandoff = (value: unknown): boolean => {
     || !isStringArray(value.issues)
     || !isHexDigest(value.projection_digest)
     || !isHexDigest(value.stream_authority_digest)
+    || !["none", "current_process", "foreign_process"].includes(
+      String(value.owner_scope ?? ""),
+    )
   ) return false;
   if (value.status === "none") {
     return value.state === null
       && value.blocked === false
+      && value.owner_scope === "none"
       && [
         value.version,
         value.source_v,
@@ -574,12 +578,20 @@ const isPostPublicationHandoff = (value: unknown): boolean => {
   if (value.status === "blocked") {
     return value.state === "blocked"
       && value.blocked === true
+      && value.owner_scope === "none"
       && value.next_tool === null
       && value.issues.length > 0;
   }
   if (value.status !== "pending" && value.status !== "running") return false;
   return value.state === value.status
     && value.blocked === false
+    && (
+      (value.status === "pending" && value.owner_scope === "none")
+      || (
+        value.status === "running"
+        && ["current_process", "foreign_process"].includes(String(value.owner_scope))
+      )
+    )
     && isInteger(value.version)
     && value.version >= 143
     && isInteger(value.source_v)

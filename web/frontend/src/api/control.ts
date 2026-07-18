@@ -34,6 +34,7 @@ export type IgnoredCheckpointReason =
 export interface ActiveGeneration {
   next_v: number;
   source_v: number | null;
+  parent2_v: number | null;
   stage: string;
   run_id: string;
   workflow_run_id: string | null;
@@ -238,6 +239,8 @@ export interface ControlPipelineHealth {
   authority?: "strict_epoch_projection" | "post_publication_handoff_journal";
   error?: string;
   issues?: string[];
+  identity_changed?: boolean;
+  identity_mismatches?: string[];
   ignored_checkpoint?: IgnoredCheckpoint | null;
   handoff_identity_digest?: string | null;
   handoff_projection_digest?: string | null;
@@ -291,6 +294,7 @@ export function controlPipelineIssues(
   const issues = [
     ...(pipeline.issues ?? []),
     ...(pipeline.recovery?.issues ?? []),
+    ...(pipeline.identity_mismatches ?? []).map((field) => `identity_mismatch:${field}`),
     ...(pipeline.error ? [pipeline.error] : []),
   ];
   return [...new Set(issues.filter((issue) => typeof issue === "string" && issue.length > 0))];
@@ -310,84 +314,138 @@ export function controlStartBlocked(
   status: ControlStatus | null | undefined,
   health: ControlHealth | null | undefined,
 ): boolean {
-  const taskActive = Boolean(health?.task.present && health.task.done === false);
-  const baseBlocked = Boolean(
-    !status
-    || !health
-    || !status.epoch_initialized
-    || status.running
-    || taskActive
-    || status.operator_action
-    || controlPipelineBlocked(health.pipeline),
-  );
-  if (baseBlocked || !status || !health) return true;
-  return !controlLaunchBoundaryAllowed(status, health);
+  return controlStartBlockedReason(status, health) !== null;
 }
 
-/** Mirror the backend's three mutually-exclusive launch boundaries. */
-export function controlLaunchBoundaryAllowed(
+/**
+ * Explain why the read-only health projection cannot authorize a launch.
+ * These strings intentionally name the exact failed projection fields so a
+ * disabled Start button is diagnosable without attempting the mutation.
+ */
+export function controlStartBlockedReason(
+  status: ControlStatus | null | undefined,
+  health: ControlHealth | null | undefined,
+): string | null {
+  if (!status) return "控制状态权威不可用，暂不能启动";
+  if (!health) return "控制健康权威不可用，暂不能启动";
+  if (!status.epoch_initialized) return "完成操作员一次性 epoch reset 后才能启动";
+  if (status.running) return "编排器已在运行";
+  const taskActive = Boolean(health?.task.present && health.task.done === false);
+  if (taskActive) return "编排器任务仍持有运行权威";
+  if (status.operator_action) return `当前需要操作员动作：${status.operator_action}`;
+  if (controlPipelineBlocked(health.pipeline)) {
+    const issues = controlPipelineIssues(health.pipeline);
+    return `流水线恢复已阻断：${issues.join("、") || "请检查权威诊断"}`;
+  }
+  const boundaryIssues = controlLaunchBoundaryIssues(status, health);
+  if (boundaryIssues.length > 0) {
+    return `启动边界未由 health.pipeline 证明：${boundaryIssues.join("、")}`;
+  }
+  return null;
+}
+
+/** Mirror and diagnose the backend's three mutually-exclusive launch boundaries. */
+export function controlLaunchBoundaryIssues(
   status: ControlStatus,
   health: ControlHealth,
-): boolean {
+): string[] {
   const pipeline = health.pipeline;
   const route = pipeline.route;
   const active = status.active_generation;
   const handoff = status.post_publication_handoff;
+  const issues: string[] = [];
+  const requireField = (ok: boolean, issue: string) => {
+    if (!ok) issues.push(issue);
+  };
 
   if (active) {
-    return Boolean(
-      pipeline.exists === true
-      && pipeline.authority === "strict_epoch_projection"
-      && route
-      && pipeline.next_v === active.next_v
-      && pipeline.source_v === active.source_v
-      && pipeline.stage === active.stage
-      && pipeline.run_id === active.run_id
-      && pipeline.workflow_run_id === active.workflow_run_id
-      && pipeline.checkpoint_revision === active.checkpoint_revision
-      && route.stage === active.stage
-      && route.next_v === active.next_v
-      && route.source_v === active.source_v
-      && Array.isArray(route.allowed_tools)
-      && (route.next_tool === null || route.allowed_tools.includes(route.next_tool))
+    requireField(pipeline.exists === true, "active.pipeline.exists");
+    requireField(pipeline.authority === "strict_epoch_projection", "active.pipeline.authority");
+    requireField(Boolean(route), "active.route");
+    requireField(pipeline.next_v === active.next_v, "active.next_v");
+    requireField(pipeline.source_v === active.source_v, "active.source_v");
+    requireField(pipeline.stage === active.stage, "active.stage");
+    requireField(pipeline.run_id === active.run_id, "active.run_id");
+    requireField(pipeline.workflow_run_id === active.workflow_run_id, "active.workflow_run_id");
+    requireField(
+      pipeline.checkpoint_revision === active.checkpoint_revision,
+      "active.checkpoint_revision",
     );
+    if (route) {
+      const allowedTools = Array.isArray(route.allowed_tools) ? route.allowed_tools : [];
+      requireField(route.stage === active.stage, "active.route.stage");
+      requireField(route.next_v === active.next_v, "active.route.next_v");
+      requireField(route.source_v === active.source_v, "active.route.source_v");
+      requireField(route.parent2_v === active.parent2_v, "active.route.parent2_v");
+      requireField(Array.isArray(route.allowed_tools), "active.route.allowed_tools");
+      requireField(
+        route.next_tool === null || allowedTools.includes(route.next_tool),
+        "active.route.next_tool",
+      );
+    }
+    return [...new Set(issues)];
   }
 
-  if (!handoff) return false;
+  if (!handoff) return ["post_publication_handoff.missing"];
   if (handoff.status !== "none") {
-    return Boolean(
-      handoff.status !== "blocked"
-      && handoff.blocked !== true
-      && pipeline.exists === true
-      && pipeline.authority === "post_publication_handoff_journal"
-      && pipeline.handoff_projection_digest === handoff.projection_digest
-      && pipeline.handoff_identity_digest === handoff.identity_digest
-      && pipeline.handoff_owner_scope === handoff.owner_scope
-      && route
-      && route.stage === "post_publication_handoff"
-      && route.next_v === handoff.version
-      && route.source_v === handoff.source_v
-      && route.parent2_v == null
-      && route.next_tool === "run_archivist"
-      && Array.isArray(route.allowed_tools)
-      && route.allowed_tools.length === 1
-      && route.allowed_tools[0] === "run_archivist"
-      && route.intent === "post_publication_handoff"
+    requireField(handoff.status !== "blocked", "handoff.status");
+    requireField(handoff.blocked !== true, "handoff.blocked");
+    requireField(pipeline.exists === true, "handoff.pipeline.exists");
+    requireField(
+      pipeline.authority === "post_publication_handoff_journal",
+      "handoff.pipeline.authority",
     );
+    requireField(
+      pipeline.handoff_projection_digest === handoff.projection_digest,
+      "handoff.projection_digest",
+    );
+    requireField(
+      pipeline.handoff_identity_digest === handoff.identity_digest,
+      "handoff.identity_digest",
+    );
+    requireField(
+      pipeline.handoff_owner_scope === handoff.owner_scope,
+      "handoff.owner_scope",
+    );
+    requireField(Boolean(route), "handoff.route");
+    if (route) {
+      const allowedTools = Array.isArray(route.allowed_tools) ? route.allowed_tools : [];
+      requireField(route.stage === "post_publication_handoff", "handoff.route.stage");
+      requireField(route.next_v === handoff.version, "handoff.route.next_v");
+      requireField(route.source_v === handoff.source_v, "handoff.route.source_v");
+      requireField(route.parent2_v == null, "handoff.route.parent2_v");
+      requireField(route.next_tool === "run_archivist", "handoff.route.next_tool");
+      requireField(Array.isArray(route.allowed_tools), "handoff.route.allowed_tools");
+      requireField(
+        allowedTools.length === 1 && allowedTools[0] === "run_archivist",
+        "handoff.route.allowed_tools_exact",
+      );
+      requireField(route.intent === "post_publication_handoff", "handoff.route.intent");
+    }
+    return [...new Set(issues)];
   }
 
   const scheduler = pipeline.scheduler_boundary;
-  return Boolean(
-    pipeline.exists === false
-    && pipeline.authority === "strict_epoch_projection"
-    && !route
-    && scheduler?.authority === "outer_scheduler"
-    && scheduler.state === "ready_to_prepare"
-    && scheduler.provider_action === "end_stream"
-    && scheduler.scheduler_action === "prepare_generation"
-    && scheduler.next_v === status.next_v
-    && scheduler.source_v === null
-  );
+  requireField(pipeline.exists === false, "scheduler.pipeline.exists");
+  requireField(pipeline.authority === "strict_epoch_projection", "scheduler.pipeline.authority");
+  requireField(!route, "scheduler.route_absent");
+  requireField(Boolean(scheduler), "scheduler.boundary");
+  if (scheduler) {
+    requireField(scheduler.authority === "outer_scheduler", "scheduler.authority");
+    requireField(scheduler.state === "ready_to_prepare", "scheduler.state");
+    requireField(scheduler.provider_action === "end_stream", "scheduler.provider_action");
+    requireField(scheduler.scheduler_action === "prepare_generation", "scheduler.scheduler_action");
+    requireField(scheduler.next_v === status.next_v, "scheduler.next_v");
+    requireField(scheduler.source_v === null, "scheduler.source_v");
+  }
+  return [...new Set(issues)];
+}
+
+export function controlLaunchBoundaryAllowed(
+  status: ControlStatus,
+  health: ControlHealth,
+): boolean {
+  return controlLaunchBoundaryIssues(status, health).length === 0;
 }
 
 export function controlSchedulerOwnsPrepareBoundary(

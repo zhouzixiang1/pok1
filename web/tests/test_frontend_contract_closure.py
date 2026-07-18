@@ -21,7 +21,7 @@ def _quoted_array(source: str, constant: str) -> list[str]:
 
 
 def test_frontend_pipeline_stage_contract_matches_backend_order():
-    from pipeline_state import STAGE_ORDER
+    from pipeline_state import STAGE_ORDER, session_recoverable_stages
 
     source = (FRONTEND / "constants" / "pipeline.ts").read_text(encoding="utf-8")
 
@@ -34,6 +34,22 @@ def test_frontend_pipeline_stage_contract_matches_backend_order():
     assert mapping is not None
     mapped_stages = re.findall(r"^\s{2}([a-z0-9_]+):", mapping.group(1), re.MULTILINE)
     assert mapped_stages == STAGE_ORDER
+
+    timeout_leases = _quoted_array(
+        source,
+        "PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT",
+    )
+    assert timeout_leases == ["timed_out", "infra_timed_out"]
+    assert set(timeout_leases).isdisjoint(STAGE_ORDER)
+    assert set(timeout_leases) == set(session_recoverable_stages()) - set(STAGE_ORDER)
+    assert 'nextTool: "abandon_generation"' in source
+    assert 'nextTool: "run_precommit_eval"' in source
+
+    component = (
+        FRONTEND / "components" / "evolution" / "PipelineStatus.tsx"
+    ).read_text(encoding="utf-8")
+    assert "isPipelineTimeoutLeaseStage(rawStage)" in component
+    assert "该租约不计入成功流水线进度" in component
 
 
 def test_frontend_has_no_retired_certification_launcher():
@@ -54,6 +70,26 @@ def test_frontend_has_no_retired_certification_launcher():
     assert '"operator_bootstrap_full_v5_job"' in progress
     assert "row.read_only === true" in progress
     assert "row.cancel_allowed === false" in progress
+
+
+def test_dashboard_operator_contract_distinguishes_authority_shapes():
+    runbook = (
+        ROOT / "docs" / "evolution-continuous-delivery-runbook.md"
+    ).read_text(encoding="utf-8")
+
+    for endpoint in (
+        "GET /api/pipeline/checkpoint",
+        "GET /api/control/health",
+        "GET /api/evolution/state",
+    ):
+        assert endpoint in runbook
+    assert "handoff journal's `record_revision`" in runbook
+    assert "`source_v`, `parent2_v`" in runbook
+    assert "configuration intent" in runbook
+    assert "effective live availability" in runbook
+    assert "API-only operator/recovery" in runbook
+    assert "Dashboard intentionally exposes no cancel control" in runbook
+    assert "Compatibility fields such as `total_games`" in runbook
 
 
 def test_operator_token_is_memory_only_and_shared_across_mutations():
@@ -113,6 +149,9 @@ def test_control_observation_pairs_status_health_without_overlapping_polls():
     assert "runtimeMutationLocked" in panel
     assert "routeMatchesGeneration" in panel
     assert "页面不从 stage 猜测下一工具" in panel
+    assert "controlStartBlockedReason(status, health)" in panel
+    assert "route.parent2_v === status.active_generation.parent2_v" in panel
+    assert "pipeline.handoff_owner_scope" in panel
     assert "clearOrchestratorSession" not in client
     assert "重置会话" not in panel
     assert "opaque session ID 不构成恢复权威" in panel

@@ -4,8 +4,10 @@ import type { ActiveGeneration, PostPublicationHandoffStatus } from "../../api/c
 import {
   PIPELINE_STAGE_CONTRACT,
   PIPELINE_STAGES,
+  PIPELINE_TIMEOUT_LEASES,
   STAGE_LABELS,
   STAGE_TO_MILESTONE,
+  isPipelineTimeoutLeaseStage,
   type PipelineStage,
 } from "../../constants/pipeline";
 import { cn } from "../../lib/utils";
@@ -20,6 +22,20 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
   if (!checkpoint) return null;
 
   const rawStage = checkpoint.stage ?? "";
+  if (isPipelineTimeoutLeaseStage(rawStage)) {
+    const lease = PIPELINE_TIMEOUT_LEASES[rawStage];
+    return (
+      <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200">
+        <p className="font-medium">
+          当前租约态：{lease.label} <span className="font-mono text-amber-600 dark:text-amber-400">({rawStage})</span>
+        </p>
+        <p className="mt-1">{lease.description}</p>
+        <p className="mt-1 text-[10px] text-amber-700 dark:text-amber-300">
+          唯一恢复工具：<span className="font-mono">{lease.nextTool}</span>。该租约不计入成功流水线进度。
+        </p>
+      </div>
+    );
+  }
   if (!PIPELINE_STAGE_CONTRACT.includes(rawStage as PipelineStage)) {
     return (
       <div className="rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-300">

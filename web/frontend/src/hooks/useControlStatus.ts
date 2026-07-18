@@ -19,6 +19,7 @@ function generationIdentity(value: ActiveGeneration | null | undefined): string 
   return [
     value.next_v,
     value.source_v ?? "none",
+    value.parent2_v ?? "none",
     value.stage,
     value.run_id,
     value.workflow_run_id ?? "none",
@@ -97,6 +98,7 @@ function assertMatchingObservation(status: ControlStatus, health: ControlHealth)
       health.pipeline.authority !== "post_publication_handoff_journal"
       || health.pipeline.handoff_projection_digest !== handoff.projection_digest
       || health.pipeline.handoff_identity_digest !== handoff.identity_digest
+      || health.pipeline.handoff_owner_scope !== handoff.owner_scope
       || health.pipeline.stage !== "post_publication_handoff"
     )
   ) {
@@ -105,6 +107,7 @@ function assertMatchingObservation(status: ControlStatus, health: ControlHealth)
   if (route && generation && (
     health.pipeline.next_v !== generation.next_v
     || health.pipeline.source_v !== generation.source_v
+    || health.pipeline.route?.parent2_v !== generation.parent2_v
     || health.pipeline.stage !== generation.stage
     || health.pipeline.run_id !== generation.run_id
     || health.pipeline.workflow_run_id !== generation.workflow_run_id

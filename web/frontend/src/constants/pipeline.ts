@@ -29,6 +29,41 @@ export const PIPELINE_STAGE_CONTRACT = [
 
 export type PipelineStage = typeof PIPELINE_STAGE_CONTRACT[number];
 
+/**
+ * Recovery-only timeout leases are real checkpoint stages, but deliberately
+ * do not participate in the ordered success/failure pipeline above.  Keeping
+ * an explicit, disjoint browser contract lets the dashboard render them as
+ * recovery authority instead of either inventing progress or calling them an
+ * unknown backend stage.
+ */
+export const PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT = [
+  "timed_out",
+  "infra_timed_out",
+] as const;
+
+export type PipelineTimeoutLeaseStage = typeof PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT[number];
+
+export const PIPELINE_TIMEOUT_LEASES: Record<PipelineTimeoutLeaseStage, {
+  label: string;
+  nextTool: "abandon_generation" | "run_precommit_eval";
+  description: string;
+}> = {
+  timed_out: {
+    label: "代次超时恢复租约",
+    nextTool: "abandon_generation",
+    description: "当前代次只能经权威 abandon 收据结束；不能重新准备或假装继续原阶段。",
+  },
+  infra_timed_out: {
+    label: "基础设施超时恢复租约",
+    nextTool: "run_precommit_eval",
+    description: "候选字节保持不变，只能从受控原生预提交恢复入口重试。",
+  },
+};
+
+export function isPipelineTimeoutLeaseStage(value: string): value is PipelineTimeoutLeaseStage {
+  return PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT.includes(value as PipelineTimeoutLeaseStage);
+}
+
 /** Successful-path milestones. Failure/rework/transitional stages map to the
  * milestone they are currently trying to complete, without being painted as
  * successful completed steps. */

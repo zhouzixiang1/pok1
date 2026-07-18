@@ -6,6 +6,7 @@ import {
   controlPipelineRouteAllowed,
   controlSchedulerOwnsPrepareBoundary,
   controlStartBlocked,
+  controlStartBlockedReason,
   type Decision,
   type AppConfig,
 } from "../api/control";
@@ -154,7 +155,10 @@ export default function ControlPanel() {
   const pipelineBlocked = controlPipelineBlocked(pipeline);
   const pipelineIssues = controlPipelineIssues(pipeline);
   const schedulerOwnsPrepare = controlSchedulerOwnsPrepareBoundary(status, health);
-  const startBlocked = !config || controlStartBlocked(status, health);
+  const startBlockedReason = !config
+    ? "运行配置不可用，暂不能启动"
+    : controlStartBlockedReason(status, health);
+  const startBlocked = startBlockedReason !== null;
   const routeMatchesGeneration = Boolean(
     route
     && status?.active_generation
@@ -169,7 +173,7 @@ export default function ControlPanel() {
     && route.stage === status.active_generation.stage
     && route.next_v === status.active_generation.next_v
     && route.source_v === status.active_generation.source_v
-    && (route.parent2_v == null || Number.isInteger(route.parent2_v))
+    && route.parent2_v === status.active_generation.parent2_v
     && (route.next_tool == null || typeof route.next_tool === "string")
     && Array.isArray(route.allowed_tools)
     && route.allowed_tools.every((tool) => typeof tool === "string")
@@ -189,6 +193,8 @@ export default function ControlPanel() {
       === handoff.projection_digest
     && pipeline.handoff_identity_digest
       === handoff.identity_digest
+    && pipeline.handoff_owner_scope
+      === handoff.owner_scope
     && route.stage === "post_publication_handoff"
     && route.next_v === handoff.version
     && route.source_v === handoff.source_v
@@ -272,17 +278,7 @@ export default function ControlPanel() {
               <button
                 onClick={handleStart}
                 disabled={loading === "start" || startBlocked}
-                title={
-                  !status || !health
-                    ? "控制状态或健康权威不可用，暂不能启动"
-                    : !status.epoch_initialized
-                    ? "完成操作员一次性 epoch reset 后才能启动"
-                    : status.operator_action
-                      ? `当前需要操作员动作：${status.operator_action}`
-                      : pipelineBlocked
-                        ? `流水线恢复已阻断：${pipelineIssues.join("、") || "请检查权威诊断"}`
-                        : undefined
-                }
+                title={startBlockedReason ?? undefined}
                 className="px-4 py-1.5 text-sm rounded bg-green-600 text-white hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {loading === "start" ? "启动中..." : "启动"}

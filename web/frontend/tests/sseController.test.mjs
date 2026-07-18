@@ -33,8 +33,10 @@ import {
   controlPipelineIssues,
   controlPipelineRouteAllowed,
   controlLaunchBoundaryAllowed,
+  controlLaunchBoundaryIssues,
   controlSchedulerOwnsPrepareBoundary,
   controlStartBlocked,
+  controlStartBlockedReason,
 } from "../node_modules/.tmp/sse-tests/api/control.js";
 import {
   controlTaskActive,
@@ -48,6 +50,12 @@ import {
 import {
   expectPipelineCheckpoint,
 } from "../node_modules/.tmp/sse-tests/api/pipeline.js";
+import {
+  PIPELINE_STAGE_CONTRACT,
+  PIPELINE_TIMEOUT_LEASES,
+  PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT,
+  isPipelineTimeoutLeaseStage,
+} from "../node_modules/.tmp/sse-tests/constants/pipeline.js";
 
 test("Critic presentation uses the advisory verdict, not execution completion", () => {
   const negativeAdvice = {
@@ -61,6 +69,7 @@ test("Critic presentation uses the advisory verdict, not execution completion", 
   };
 
   assert.equal(criticAdvisoryComplete(negativeAdvice), true);
+  assert.equal(criticAdvisoryComplete({ ...negativeAdvice, approved: false }), false);
   assert.equal(criticAdvisoryVerdict(negativeAdvice), "建议保留意见");
   assert.equal(criticAdvisoryVerdict({ ...negativeAdvice, advisory_approved: true }), "建议支持");
   assert.equal(criticAdvisoryVerdict({ ...negativeAdvice, advisory_approved: undefined }), "建议结论不可用");
@@ -73,6 +82,7 @@ test("checkpoint API and presentation reject a stale same-stage revision", () =>
     checkpoint_revision: 7,
     next_v: 143,
     source_v: 142,
+    parent2_v: null,
     stage: "reviewed",
     workflow_run_id: "workflow-v1",
     run_id: "143#1",
@@ -81,6 +91,7 @@ test("checkpoint API and presentation reject a stale same-stage revision", () =>
   const active = {
     next_v: 143,
     source_v: 142,
+    parent2_v: null,
     stage: "reviewed",
     workflow_run_id: "workflow-v1",
     run_id: "143#1",
@@ -93,10 +104,25 @@ test("checkpoint API and presentation reject a stale same-stage revision", () =>
     pipelineCheckpointIdentityIssues({ ...checkpoint, checkpoint_revision: 8 }, active),
     [],
   );
+  assert.deepEqual(
+    pipelineCheckpointIdentityIssues({ ...checkpoint, checkpoint_revision: 8, parent2_v: 141 }, active),
+    ["parent2_v"],
+  );
   assert.throws(
     () => expectPipelineCheckpoint({ ...checkpoint, checkpoint_revision: undefined }),
     /pipeline checkpoint is structurally incomplete/,
   );
+});
+
+test("timeout leases are explicit and disjoint from ordered pipeline stages", () => {
+  assert.deepEqual(PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT, ["timed_out", "infra_timed_out"]);
+  assert.equal(PIPELINE_STAGE_CONTRACT.includes("timed_out"), false);
+  assert.equal(PIPELINE_STAGE_CONTRACT.includes("infra_timed_out"), false);
+  assert.equal(isPipelineTimeoutLeaseStage("timed_out"), true);
+  assert.equal(isPipelineTimeoutLeaseStage("infra_timed_out"), true);
+  assert.equal(isPipelineTimeoutLeaseStage("unknown_future_stage"), false);
+  assert.equal(PIPELINE_TIMEOUT_LEASES.timed_out.nextTool, "abandon_generation");
+  assert.equal(PIPELINE_TIMEOUT_LEASES.infra_timed_out.nextTool, "run_precommit_eval");
 });
 
 test("unfinished control task retains ownership through cancel and shutdown requests", () => {
@@ -140,6 +166,19 @@ test("control actions and route presentation fail closed on pipeline recovery", 
   assert.equal(controlPipelineRouteAllowed(pipeline), false);
   assert.equal(controlStartBlocked(status, health), true);
   assert.deepEqual(controlPipelineIssues(pipeline), ["repo_baseline_head_mismatch"]);
+  assert.deepEqual(
+    controlPipelineIssues({
+      ...pipeline,
+      recovery: { recoverable: true, issues: [] },
+      identity_mismatches: ["parent2_v", "checkpoint_revision"],
+      error: "strict_checkpoint_revalidation_failed",
+    }),
+    [
+      "identity_mismatch:parent2_v",
+      "identity_mismatch:checkpoint_revision",
+      "strict_checkpoint_revalidation_failed",
+    ],
+  );
   assert.equal(
     controlStartBlocked({ ...status, active_generation: null, operator_action: "run_first_strict_official_certification" }, {
       ...health,
@@ -270,32 +309,37 @@ test("Start permission mirrors exact backend launch boundaries", () => {
 
   assert.equal(controlLaunchBoundaryAllowed(schedulerStatus, schedulerHealth), true);
   assert.equal(controlStartBlocked(schedulerStatus, schedulerHealth), false);
-  for (const pipeline of [
-    { ...schedulerHealth.pipeline, scheduler_boundary: undefined },
-    {
+  for (const [pipeline, expectedIssue] of [
+    [{ ...schedulerHealth.pipeline, scheduler_boundary: undefined }, "scheduler.boundary"],
+    [{
       ...schedulerHealth.pipeline,
       scheduler_boundary: {
         ...schedulerHealth.pipeline.scheduler_boundary,
         next_v: 145,
       },
-    },
-    {
+    }, "scheduler.next_v"],
+    [{
       ...schedulerHealth.pipeline,
       scheduler_boundary: {
         ...schedulerHealth.pipeline.scheduler_boundary,
         source_v: 143,
       },
-    },
+    }, "scheduler.source_v"],
   ]) {
     assert.equal(
       controlStartBlocked(schedulerStatus, { ...schedulerHealth, pipeline }),
       true,
+    );
+    assert.match(
+      controlStartBlockedReason(schedulerStatus, { ...schedulerHealth, pipeline }),
+      new RegExp(expectedIssue.replace(".", "\\.")),
     );
   }
 
   const active = {
     next_v: 144,
     source_v: 143,
+    parent2_v: null,
     stage: "reviewed",
     run_id: "144#1",
     workflow_run_id: "generation:144:workflow-v1",
@@ -332,12 +376,40 @@ test("Start permission mirrors exact backend launch boundaries", () => {
     },
   };
   assert.equal(controlStartBlocked(activeStatus, activeHealth), false);
+  assert.equal(controlStartBlockedReason(activeStatus, activeHealth), null);
+  assert.match(
+    controlStartBlockedReason(activeStatus, {
+      ...activeHealth,
+      pipeline: { ...activeHealth.pipeline, route: null },
+    }),
+    /active\.route/,
+  );
   assert.equal(
     controlStartBlocked(activeStatus, {
       ...activeHealth,
       pipeline: { ...activeHealth.pipeline, checkpoint_revision: 7 },
     }),
     true,
+  );
+  assert.deepEqual(
+    controlLaunchBoundaryIssues(activeStatus, {
+      ...activeHealth,
+      pipeline: {
+        ...activeHealth.pipeline,
+        route: { ...activeRoute, parent2_v: 140 },
+      },
+    }),
+    ["active.route.parent2_v"],
+  );
+  assert.match(
+    controlStartBlockedReason(activeStatus, {
+      ...activeHealth,
+      pipeline: {
+        ...activeHealth.pipeline,
+        route: { ...activeRoute, parent2_v: 140 },
+      },
+    }),
+    /active\.route\.parent2_v/,
   );
 
   const handoff = {
@@ -384,6 +456,13 @@ test("Start permission mirrors exact backend launch boundaries", () => {
     },
   };
   assert.equal(controlStartBlocked(handoffStatus, handoffHealth), false);
+  assert.match(
+    controlStartBlockedReason(handoffStatus, {
+      ...handoffHealth,
+      pipeline: { ...handoffHealth.pipeline, handoff_owner_scope: "foreign_process" },
+    }),
+    /handoff\.owner_scope/,
+  );
   assert.equal(
     controlStartBlocked({
       ...handoffStatus,
@@ -816,6 +895,7 @@ test("evolution adapter dispatches live handlers and preserves block/error causa
     identity_digest: "a".repeat(64),
     publication_id: "b".repeat(64),
     record_revision: 2,
+    owner_scope: "none",
     next_tool: "run_archivist",
     issues: [],
     projection_digest: "c".repeat(64),
@@ -894,6 +974,7 @@ test("same-authority handoff revision advances without fencing the evolution con
     identity_digest: "a".repeat(64),
     publication_id: "b".repeat(64),
     record_revision: 2,
+    owner_scope: "none",
     next_tool: "run_archivist",
     issues: [],
     projection_digest: "c".repeat(64),
@@ -905,6 +986,7 @@ test("same-authority handoff revision advances without fencing the evolution con
     ...handoff,
     status: "running",
     state: "running",
+    owner_scope: "current_process",
     record_revision: 3,
     projection_digest: "d".repeat(64),
   });
@@ -1230,6 +1312,7 @@ test("all production stream events have rejecting minimal runtime schemas", () =
       identity_digest: "a".repeat(64),
       publication_id: "b".repeat(64),
       record_revision: 3,
+      owner_scope: "current_process",
       next_tool: "run_archivist",
       issues: [],
       projection_digest: "c".repeat(64),
@@ -1316,6 +1399,14 @@ test("all production stream events have rejecting minimal runtime schemas", () =
     ...handoff,
     status: "running",
     state: "pending",
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("post_publication_handoff", {
+    ...handoff,
+    owner_scope: undefined,
+  }), false);
+  assert.equal(validateEvolutionStreamEvent("post_publication_handoff", {
+    ...handoff,
+    owner_scope: "none",
   }), false);
 });
 

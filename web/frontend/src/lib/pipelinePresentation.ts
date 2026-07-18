@@ -2,7 +2,8 @@ import type { ActiveGeneration } from "../api/control.js";
 import type { PipelineCheckpoint, PipelineGateResult } from "../api/types.js";
 
 export function criticAdvisoryComplete(gate: PipelineGateResult): boolean {
-  return gate.schema_valid === true
+  return gate.approved === true
+    && gate.schema_valid === true
     && gate.llm_invoked === true
     && gate.critic_llm_executed === true
     && gate.llm_failed !== true
@@ -24,6 +25,7 @@ export function pipelineCheckpointIdentityIssues(
     checkpoint.evaluation_epoch !== "national_tcp_policy_v1" ? "evaluation_epoch" : null,
     checkpoint.next_v !== activeGeneration.next_v ? "next_v" : null,
     checkpoint.source_v !== activeGeneration.source_v ? "source_v" : null,
+    (checkpoint.parent2_v ?? null) !== activeGeneration.parent2_v ? "parent2_v" : null,
     checkpoint.stage !== activeGeneration.stage ? "stage" : null,
     checkpoint.workflow_run_id !== activeGeneration.workflow_run_id ? "workflow_run_id" : null,
     checkpoint.run_id !== activeGeneration.run_id ? "run_id" : null,
