@@ -216,3 +216,124 @@ def test_active_module_contains_no_archive_bot_resolution():
     assert "historical_bootstrap_root_binding" not in source
     assert "national_protocol_quarantine" not in source
     assert "ROOT / \"bots\" / str(root" not in source
+
+
+def test_completed_authorization_accepts_production_normalized_selection(
+    tmp_path,
+    monkeypatch,
+):
+    candidate = (tmp_path / "bots" / "national_v143").resolve()
+    authorization = {
+        "kind": "official-first-strict-control-operator-authorization",
+        "authorization_digest": "d" * 64,
+    }
+    stable_selection = {
+        "selected": True,
+        "eligible": True,
+        "reason": "first_strict_control_bootstrap",
+        "kind": "official-first-strict-control-selection",
+        "bootstrap_control_id": CONTROL_ID,
+        "candidate": str(candidate),
+        "candidate_binding": {"candidate_hash": "a" * 64},
+        "bootstrap_control_receipt": {"receipt_digest": "b" * 64},
+        "operator_bootstrap_authorization": authorization,
+        "opponent": {
+            "bot": CONTROL_ID,
+            "path": str((tmp_path / "control").resolve()),
+            "artifact_hash": "c" * 64,
+            "tag": None,
+            "tag_object": None,
+            "eligible": True,
+            "reason": "first_strict_control_bootstrap",
+            "eligibility_receipt": {"receipt_digest": "e" * 64},
+            "authority": "system-owned-first-strict-control",
+            "normal_official_opponent": False,
+            "strength_admitted": False,
+            "rating_eligible": False,
+        },
+    }
+    production_selection = deepcopy(stable_selection)
+    production_selection["consumption"] = {
+        "consumed": True,
+        "successful_count": 1,
+    }
+    production_selection["considered"] = [{"eligible": True}]
+    ledger_entry = {
+        "entry_digest": "f" * 64,
+        "bootstrap_control_id": CONTROL_ID,
+        "bootstrap_control_receipt_digest": "b" * 64,
+        "outcome": "official-certified",
+        "policy_id": "official-full-v5",
+        "mode": "full",
+        "authoritative": True,
+        "blocking": False,
+        "classification": "pass",
+        "certificate_digest": "1" * 64,
+    }
+    status = {
+        "status": "official-certified",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certificate_digest": "1" * 64,
+        "certification_identity": {
+            "candidate_hash": "a" * 64,
+            "spec": {
+                "bootstrap_control_id": CONTROL_ID,
+                "candidate": str(candidate),
+            },
+        },
+        "opponent_selection": production_selection,
+        "official_job_envelope": {"opponent_selection": stable_selection},
+        "official_verdict_ledger_entry": ledger_entry,
+    }
+    checkpoint = {"audit_context": {"official_bootstrap_request": {}}}
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_current_operator_bootstrap_facts",
+        lambda *_a, **_k: ({}, []),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_parked_request_issues",
+        lambda *_a, **_k: [],
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_operator_authorization",
+        lambda *_a, **_k: authorization,
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_first_strict_control_selection",
+        lambda *_a, **_k: {"valid": True, "issues": []},
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_validated_ledger_entries",
+        lambda: ([ledger_entry], []),
+    )
+
+    result = official_bootstrap.validate_completed_operator_bootstrap_authorization(
+        status,
+        candidate,
+        checkpoint=checkpoint,
+    )
+
+    assert result["valid"] is True
+    assert result["issues"] == []
+
+    envelope_drift = deepcopy(status)
+    envelope_drift["official_job_envelope"]["opponent_selection"] = (
+        production_selection
+    )
+
+    rejected = official_bootstrap.validate_completed_operator_bootstrap_authorization(
+        envelope_drift,
+        candidate,
+        checkpoint=checkpoint,
+    )
+
+    assert rejected["valid"] is False
+    assert "official_bootstrap_completed_envelope_selection_mismatch" in rejected[
+        "issues"
+    ]

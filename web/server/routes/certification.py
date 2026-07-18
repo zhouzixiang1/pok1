@@ -45,6 +45,7 @@ from official_certification import (
     official_certification_profile_projection,
     official_full_certified,
     official_opponent_eligibility,
+    stable_official_opponent_selection,
     status_payload,
 )
 from official_certification_job import (
@@ -764,12 +765,15 @@ def _bootstrap_request_view(
     if state.get("state") == "completed":
         if not isinstance(status, dict):
             return None
+        status_selection = status.get("opponent_selection")
         envelope = status.get("official_job_envelope")
         if (
             status.get("mode") != "full"
             or status.get("policy_id") != FULL_POLICY_ID
             or status.get("certification_identity") != identity
-            or status.get("opponent_selection") != selection
+            or not isinstance(status_selection, dict)
+            or stable_official_opponent_selection(status_selection)
+            != stable_official_opponent_selection(selection)
             or not isinstance(envelope, dict)
             or envelope.get("certification_identity_digest")
             != identity.get("identity_digest")

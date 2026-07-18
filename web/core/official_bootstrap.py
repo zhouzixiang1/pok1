@@ -1339,10 +1339,29 @@ def validate_completed_operator_bootstrap_authorization(
     if Path(str((spec or {}).get("candidate") or "")).resolve() != candidate:
         issues.append("official_bootstrap_completed_candidate_path_mismatch")
 
-    selection = status.get("opponent_selection") or {}
-    envelope = status.get("official_job_envelope") or {}
-    if selection != (envelope or {}).get("opponent_selection"):
+    raw_selection = status.get("opponent_selection")
+    raw_envelope = status.get("official_job_envelope")
+    envelope_selection = (
+        raw_envelope.get("opponent_selection")
+        if isinstance(raw_envelope, dict)
+        else None
+    )
+    if not isinstance(raw_selection, dict) or not isinstance(
+        envelope_selection, dict
+    ):
         issues.append("official_bootstrap_completed_envelope_selection_mismatch")
+    else:
+        from official_certification import stable_official_opponent_selection
+
+        # The durable envelope is already the exact request-side stable
+        # receipt.  Normalize only the separately produced terminal status;
+        # accepting extra envelope fields would weaken that original binding.
+        if (
+            stable_official_opponent_selection(raw_selection)
+            != envelope_selection
+        ):
+            issues.append("official_bootstrap_completed_envelope_selection_mismatch")
+    selection = raw_selection if isinstance(raw_selection, dict) else {}
 
     ckpt = checkpoint if isinstance(checkpoint, dict) else _current_pipeline_checkpoint()
     parked = (

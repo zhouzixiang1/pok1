@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -489,6 +490,25 @@ def _write_completed_result(directory: Path, request: dict, status: dict) -> Non
         json.dumps(state, ensure_ascii=False, sort_keys=True, indent=2),
         encoding="utf-8",
     )
+
+
+def _production_normalized_bootstrap_selection(selection: dict) -> dict:
+    """Mirror live selector diagnostics omitted from the durable job receipt."""
+
+    normalized = deepcopy(selection)
+    normalized["consumption"] = {
+        "consumed": False,
+        "successful_count": 0,
+        "max_successful_consumptions": 1,
+    }
+    normalized["considered"] = [
+        {
+            "bot": "first_strict_control_v1",
+            "eligible": True,
+            "reason": "first_strict_control_bootstrap",
+        }
+    ]
+    return normalized
 
 
 def test_uninitialized_epoch_hides_jobs_and_candidate_status(client, monkeypatch):
@@ -1607,3 +1627,136 @@ def test_completed_bootstrap_job_requires_exact_envelope_and_certificate_identit
     assert client.get(
         f"/api/certification/jobs/{request['job_id']}"
     ).status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("official_status", "expected_transition"),
+    [
+        ("official-failed", "bootstrap_failed"),
+        ("official-certified", "ready_to_finalize"),
+    ],
+)
+def test_completed_bootstrap_job_accepts_production_normalized_selection(
+    client,
+    monkeypatch,
+    tmp_path,
+    official_status,
+    expected_transition,
+):
+    from official_job_envelope import build_job_envelope
+    from server.routes import certification as route
+    import official_bootstrap
+
+    request, context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
+    directory = root / request["job_id"]
+    envelope = build_job_envelope(
+        request,
+        attempt=1,
+        attempt_nonce="a" * 64,
+        suite_dir=directory / "suite_attempt_01",
+    )
+    normalized = _production_normalized_bootstrap_selection(
+        request["opponent_selection"]
+    )
+    status = {
+        "status": official_status,
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certificate_digest": "d" * 64,
+        "certification_identity": request["identity"],
+        "opponent_selection": normalized,
+        # The envelope remains the exact durable request binding.  Only the
+        # separately written production status contains live diagnostics.
+        "official_job_envelope": envelope,
+    }
+    _write_completed_result(directory, request, status)
+    monkeypatch.setattr(
+        route,
+        "authoritative_verdict_status_issues",
+        lambda _status: [],
+    )
+    monkeypatch.setattr(
+        route,
+        "official_compliance_verdict",
+        lambda _status: {
+            "ok": official_status == "official-certified",
+            "classification": (
+                "pass" if official_status == "official-certified" else "fail"
+            ),
+            "blocking": official_status != "official-certified",
+            "inconclusive": False,
+        },
+    )
+    monkeypatch.setattr(route, "official_full_certified", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_completed_operator_bootstrap_authorization",
+        lambda supplied, candidate, **_k: {
+            "valid": (
+                supplied == status
+                and Path(candidate).resolve() == context["candidate"]
+            ),
+            "issues": [],
+        },
+    )
+
+    exact = client.get(f"/api/certification/jobs/{request['job_id']}")
+    queue = client.get("/api/certification/jobs").json()
+
+    assert exact.status_code == 200
+    assert exact.json()["status"]["opponent_selection"] == normalized
+    assert envelope["opponent_selection"] == request["opponent_selection"]
+    assert queue["operator_transition"]["state"] == expected_transition
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["artifact_hash", "operator_authorization", "tag_object"],
+)
+def test_completed_bootstrap_job_rejects_bound_selection_drift(
+    client,
+    monkeypatch,
+    tmp_path,
+    drift,
+):
+    from official_job_envelope import build_job_envelope
+    from server.routes import certification as route
+
+    request, _context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
+    directory = root / request["job_id"]
+    envelope = build_job_envelope(
+        request,
+        attempt=1,
+        attempt_nonce="a" * 64,
+        suite_dir=directory / "suite_attempt_01",
+    )
+    normalized = _production_normalized_bootstrap_selection(
+        request["opponent_selection"]
+    )
+    if drift == "artifact_hash":
+        normalized["opponent"]["artifact_hash"] = "e" * 64
+    elif drift == "operator_authorization":
+        normalized["operator_bootstrap_authorization"]["candidate_hash"] = "e" * 64
+    else:
+        normalized["opponent"]["tag_object"] = "e" * 40
+    status = {
+        "status": "official-failed",
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "certification_identity": request["identity"],
+        "opponent_selection": normalized,
+        "official_job_envelope": envelope,
+    }
+    _write_completed_result(directory, request, status)
+    monkeypatch.setattr(
+        route,
+        "authoritative_verdict_status_issues",
+        lambda _status: [],
+    )
+
+    assert client.get(
+        f"/api/certification/jobs/{request['job_id']}"
+    ).status_code == 404
+    queue = client.get("/api/certification/jobs").json()
+    assert queue["jobs"] == []
+    assert queue["operator_transition"]["state"] == "bootstrap_failed"
