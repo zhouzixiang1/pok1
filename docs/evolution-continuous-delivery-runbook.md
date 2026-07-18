@@ -61,16 +61,16 @@ checkpoint, result, log, or certificate files are never copied by hand.
     recovery. Never delete, copy back, or edit a checkpoint/candidate to make
     either path appear clean.
 
-## Current Contract-38 source freeze gate
+## Current Contract-40 source freeze gate
 
 Before the stopped-runtime reconciliation route is used, require the **live
-source** Contract 38 identities, not any older Contract-37 text or cached
+source** Contract 40 identities, not any older contract text or cached
 receipt:
 
-- strict-v1 policy `811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641`,
+- strict-v1 policy `600133ba79b429e85c67300ca189f4d28a6d4947d948bc5ac8b67ef0e4ef86cd`,
   prepared-policy bytes `28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816`,
   prepared artifact `ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278`,
-  and output artifact `39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`;
+  and output artifact `f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`;
 - system national runtime 10 / `ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366`
   and system precompute
   `8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627`;
@@ -78,8 +78,21 @@ receipt:
   `d03317ec9c06081c143be84fa95bebf941cb724d08c4aea134add73d8fc388e4`
   and expected five-file artifact
   `1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2`;
-- capability schema 5 / detector `national-policy-static-v4`, and probe
-  schema/orchestrator/worker/scenario `16/17/18/8`.
+- capability schema 8 / detector `national-policy-static-v7`, and probe
+  schema/orchestrator/worker/scenario `18/19/19/8`.
+
+The stopped `generation:143:workflow-v61` checkpoint is bound to the old
+output artifact
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`
+and its recorded old HEAD. It must remain stopped there and enter only the old
+contract's exact-CAS canonical abandon. Require the finalized handoff,
+content-addressed quarantine and cleared-checkpoint proof before any
+fast-forward. Contract 40 must never resume, adopt or reinterpret v61's
+checkpoint, Reviewer journal, Quality/native result or candidate bytes as the
+corrected `600133...` / `f4e7b8...` blueprint. After the old-HEAD abandon and
+source synchronization, prepare a fresh v143; observation remains `0/10`.
+Later workflow-specific sections are retained as historical diagnostics and do
+not supersede this current transition.
 
 The fixed `192/256/96` baseline, full river refinement only, and 800-call
 cap are hard gates.  The 200 ms native quality target is a stricter local
@@ -337,11 +350,19 @@ contract, the first schema-valid negative verdict is appended as
 `quality_passed`. Recovery calls only `run_review`: it does not repeat Master,
 Worker, capability probes, or the 70-hand Quality acceptance. The second
 Reviewer owns the independent strict slot `review:retry`, invocation directory
-and provider effect. Two negatives route to a content-bound targeted repair;
-one negative plus one approval is a conflict and uses the same conservative
-repair disposition. The approval never erases the negative. A third verdict is
-forbidden. Empty, malformed, unavailable-provider and lease failures remain
-typed infrastructure/schema retries and do not enter the verdict journal.
+and provider effect. For an agent-editable strategy candidate, two negatives
+route to a content-bound targeted repair; one negative plus one approval is a
+conflict and uses the same conservative repair disposition. The approval never
+erases the negative. For the fixed system-owned first-strict blueprint, neither
+final combination authorizes Worker edits: the system projects the full two-
+attempt journal, conservative adjudication and aggregate Review gate in one
+exact checkpoint CAS to `review_rejected`, then enters only the canonical
+abandon transaction. It must never write `repair_planned`, dispatch
+`execute_workers`, or request a third Reviewer. A CAS conflict, journal/gate
+drift or `review`/`review:retry` authority mismatch leaves cleanup unexecuted
+and recovery fail-closed. Empty, malformed, unavailable-provider and lease
+failures remain typed infrastructure/schema retries and do not enter the
+verdict journal.
 
 The Reviewer is subordinate to machine authority for boundedness,
 reachability, producer ownership and required capability checks. In particular,
@@ -557,9 +578,9 @@ The pre-authority runtime ledger in the stopped `.evolution_pok` checkout has
 zero allocation, strength and prompt authority. The following generic
 reconciliation CLI applies only after a checkpoint-free/no-active-contract-
 drift runtime is synchronized. It is **not** the transition for the recorded
-active v38 checkpoint: after the infrastructure is merged, v38 remains on its
-old HEAD for the exact-CAS abandon and finalized handoff/quarantine/checkpoint-
-clear validation described above; only then may that stopped checkout
+active v61 checkpoint: v61 remains on its recorded old HEAD for the exact-CAS
+abandon and finalized handoff/quarantine/checkpoint-clear validation described
+above; only then may that stopped checkout
 fast-forward. Once the runtime is current and checkpoint-free, first run the
 read-only plan:
 

@@ -757,19 +757,28 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/llm_query.py", "resolve_llm_role_contract"),
             _ref("web/core/llm_query.py", "render_llm_prompt"),
             _ref("web/core/reviewer_retry.py", "review_attempt_action"),
+            _ref(
+                "web/core/system_strict_bootstrap.py",
+                "abandon_rejected_blueprint",
+            ),
+            _ref("web/core/gate_outcome.py", "validate_terminal_gate_outcome"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
             "All five rendered roles receive one typed, quality-bound current contract; "
             "they may report deterministic violations but cannot relax role scope, prompt "
             "provenance, or gate ownership. Reviewer verdicts are content-bound: one "
-            "negative schedules exactly one independent same-stage review; a conflict "
-            "or two negatives conservatively routes targeted repair and never silently approves."
+            "negative schedules exactly one independent same-stage review. A conflict "
+            "or two negatives conservatively routes an agent-editable candidate to targeted "
+            "repair, but terminalizes the fixed system-owned first-strict blueprint through "
+            "an exact-CAS review_rejected receipt and canonical abandon; neither path silently approves."
         ),
         prompt_required_terms=("typed", "quality"),
         producer_consumer=(
             "frozen checkpoint/evidence/template inputs → role renderer + sealed provenance "
-            "→ Master/Worker/Reviewer/advisory Critic/Orchestrator provider invocation"
+            "→ Master/Worker/Reviewer/advisory Critic/Orchestrator provider invocation; "
+            "immutable dual-Review journal → ordinary targeted repair or fixed first-strict "
+            "exact terminal outcome → canonical abandon"
         ),
         positive_tests=(
             "web/tests/test_national_prompt_rules.py::"
@@ -778,6 +787,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_all_subagent_roles_reach_provider_with_independent_receipts",
             "web/tests/test_reviewer_retry_tool.py::"
             "test_first_reject_retries_same_stage_then_conflict_routes_repair",
+            "web/tests/test_reviewer_retry_tool.py::"
+            "test_fixed_first_strict_dual_verdict_routes_exact_terminal_abandon",
+            "web/tests/test_terminal_gate_outcome.py::"
+            "test_dual_review_terminal_projection_is_exact_and_resumable",
         ),
         negative_tests=(
             "web/tests/test_llm_role_contract_registry.py::"
@@ -786,12 +799,17 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_prompt_builders_have_no_retired_positive_read_chain",
             "web/tests/test_reviewer_retry.py::"
             "test_attempt_journal_tamper_and_third_attempt_fail_closed",
+            "web/tests/test_terminal_gate_outcome.py::"
+            "test_dual_review_terminal_projection_cas_failure_preserves_source",
         ),
         fail_closed=(
             "Unknown role, template drift, forged renderer text, forbidden scope, or "
             "unfrozen evidence aborts before a decision-changing provider call. A single "
             "Reviewer rejection cannot terminalize or rerun earlier stages; malformed/infra "
-            "output consumes only its typed retry budget, while two verdicts are retained."
+            "output consumes only its typed retry budget, while two verdicts are retained. "
+            "The fixed first-strict system blueprint cannot enter repair_planned or "
+            "execute_workers; any journal, gate, dual-slot authority, or terminal CAS drift "
+            "blocks cleanup and restart instead of fabricating repair authority."
         ),
     ),
     MatrixRow(
