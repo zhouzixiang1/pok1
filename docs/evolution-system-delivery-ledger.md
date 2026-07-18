@@ -3850,3 +3850,49 @@ is enabled.
 At this ledger point source merge and runtime synchronization of the follow-up
 are pending. The runtime remains deliberately stopped at the safe revision-9
 fence and stable observation remains **0/10**.
+
+## 2026-07-18 — v52 canonical close and fresh-runtime readiness
+
+The reviewed recovery stack and its source-gate evidence were merged and
+pushed as `be949c1d9d06e2d6fc10c4b5f08c9fe8f901984b`. With all Web,
+Orchestrator and rating processes stopped, the autonomous checkout
+fast-forwarded from `58c44a08` to that exact main SHA without touching its
+untracked candidate or Arena owner lock.
+
+The first read-only reconciliation returned
+`reconcilable_terminal_review_abandon` for workflow
+`generation:143:workflow-v52`, revision 9, candidate hash
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`,
+Reviewer effect `strict-llm-23dbe4af5357d55622cd0307af9410cc1b63fb6983ce1b93a2b7aea2ec746907`,
+invocation `31b174903d184365ab481398a3ab62a4`, terminal outcome
+`fb21a441eb451d6de7b8cb70d56fd45c48c7b77128755329c026dbabd55a4487`
+and migration
+`27884c13d2fb1a87b625bc3b3918e072580f0fbe4617e4b102a4817550145bb8`.
+It explicitly reported `provider_dispatch_required=false`.
+
+The acknowledged execute completed the ordinary canonical transaction
+`fbd89f1989d7e30912971cf643fde5028ddaa8b9eb3bae284984524871909089`.
+Its abandon receipt is
+`478913d4cf704e381954ade9f3a04df7d70d4533a70bcdb0ab24efbedb23124a`
+and finalize receipt is
+`f0d7c647e8fa7bf352281b8ba9776007aff92d643f57a44be2426ee92c6ef1c0`.
+The output reported `abandoned=true`, `workflow_fenced=true`,
+`cleared_checkpoint=true`, `removed_directory=national_v143` and again
+`provider_dispatch_required=false`. The checkpoint is now absent and recovery
+diagnostics report `active=false`, `recoverable=true`, `issues=[]`.
+
+The evaluator identity check then correctly rejected the old manifest: the
+semantic hash of `web/core/evolution_infra.py` changed. The bound old cycle was
+an empty publication (`active_bots=[]`, zero games, empty ratings/H2H/stats and
+no generation evidence snapshots), so the source-owned
+`--archive-and-initialize` transaction moved it intact to
+`web/core/results/archive/evaluation_identity/20260718_195405` rather than
+deleting or migrating any strength. The new evaluation identity digest is
+`ec24c7fc72c99893fb659bb44898b706bec581c5b7c5ac662f6b9f2d65a53090`
+and manifest digest is
+`74920144d4fb00b0e812345f01b1a3ae8148d5c5894af85c3a1824d8baea48d0`;
+readback succeeds. Official doctor remains `ok=true`, checkpoint recovery is
+green, and the rebuilt source-bound frontend receipt
+`fcd562e3369c564249fac7581a884a1ca84e9ce69576a7f31b8e16e73be1b3ec`
+verifies. At this ledger point no runtime process has yet been started, no Bot
+or strength row exists, and stable observation remains **0/10**.
