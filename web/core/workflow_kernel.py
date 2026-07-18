@@ -1088,6 +1088,199 @@ class WorkflowStore:
             status="running",
         )
 
+    def reclaim_effect_lease(
+        self,
+        effect_id: str,
+        *,
+        expected_owner: str,
+        expected_lease_epoch: int,
+        owner: str,
+        lease_seconds: float,
+        causation_id: str,
+        proof: dict[str, Any],
+        now: float | None = None,
+    ) -> EffectLease:
+        """Atomically reclaim one exact lease after domain-owned death proof.
+
+        The kernel deliberately does not decide whether a process is dead; the
+        domain owns that policy.  The proof event, attempt increment, lease
+        epoch fence, and replacement owner are one SQLite transaction.  There
+        is therefore no crash/concurrency window in which the old epoch can
+        complete after a nominal fence but before a second claim transaction.
+        """
+
+        if (
+            not isinstance(expected_owner, str)
+            or not expected_owner
+            or not isinstance(owner, str)
+            or not owner
+            or not isinstance(causation_id, str)
+            or not causation_id
+            or not isinstance(proof, dict)
+            or not proof
+            or isinstance(expected_lease_epoch, bool)
+            or not isinstance(expected_lease_epoch, int)
+            or expected_lease_epoch < 1
+        ):
+            raise ValueError("effect lease reclaim identity is invalid")
+        normalized_proof = json.loads(canonical_json(proof))
+        proof_digest = normalized_proof.get("proof_digest")
+        unsigned_proof = {
+            key: value
+            for key, value in normalized_proof.items()
+            if key != "proof_digest"
+        }
+        if (
+            not isinstance(proof_digest, str)
+            or len(proof_digest) != 64
+            or proof_digest != content_digest(unsigned_proof)
+            or normalized_proof.get("owner") != expected_owner
+        ):
+            raise ValueError("effect lease reclaim proof digest is invalid")
+        current_time = float(now if now is not None else time.time())
+        lease_duration = float(lease_seconds)
+        if (
+            not math.isfinite(current_time)
+            or not math.isfinite(lease_duration)
+            or lease_duration <= 0
+        ):
+            raise ValueError("effect lease reclaim timing is invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise WorkflowConflict(f"unknown effect: {effect_id}")
+            if (
+                row["status"] != "running"
+                or str(row["lease_owner"] or "") != expected_owner
+                or int(row["lease_epoch"] or 0) != expected_lease_epoch
+            ):
+                connection.rollback()
+                raise WorkflowConflict(
+                    f"stale effect lease reclaim for {effect_id} "
+                    f"epoch={expected_lease_epoch}"
+                )
+            attempt = int(row["attempt"]) + 1
+            max_attempts = int(row["max_attempts"])
+            if attempt > max_attempts:
+                payload = {
+                    "effect_id": effect_id,
+                    "attempt": int(row["attempt"]),
+                    "lease_epoch": int(row["lease_epoch"]),
+                    "retryable": False,
+                    "error": "effect dead-owner reclaim budget exhausted",
+                    "proof_digest": proof_digest,
+                    "proof": normalized_proof,
+                }
+                self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectFailed",
+                    payload=payload,
+                    causation_id=f"{causation_id}:exhausted",
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET status = 'exhausted', updated_at = ?
+                    WHERE effect_id = ? AND status = 'running'
+                      AND lease_owner = ? AND lease_epoch = ?
+                    """,
+                    (
+                        current_time,
+                        effect_id,
+                        expected_owner,
+                        expected_lease_epoch,
+                    ),
+                )
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                if int(changed or 0) != 1:
+                    connection.rollback()
+                    raise WorkflowConflict(
+                        f"effect lease reclaim exhaustion CAS failed: {effect_id}"
+                    )
+                connection.commit()
+                raise WorkflowConflict(
+                    f"effect attempt budget exhausted: {effect_id}"
+                )
+            epoch = int(row["lease_epoch"]) + 1
+            expires = current_time + max(0.001, lease_duration)
+            payload = {
+                "effect_id": effect_id,
+                "previous_attempt": int(row["attempt"]),
+                "attempt": attempt,
+                "previous_lease_epoch": expected_lease_epoch,
+                "lease_epoch": epoch,
+                "previous_lease_owner": expected_owner,
+                "lease_owner": owner,
+                "previous_lease_until": float(row["lease_until"] or 0.0),
+                "lease_until": expires,
+                "proof": normalized_proof,
+            }
+            try:
+                event = self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectLeaseReclaimed",
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET status = 'running', attempt = ?, lease_epoch = ?,
+                        lease_owner = ?, lease_until = ?, updated_at = ?
+                    WHERE effect_id = ? AND status = 'running'
+                      AND lease_owner = ? AND lease_epoch = ?
+                    """,
+                    (
+                        attempt,
+                        epoch,
+                        owner,
+                        expires,
+                        current_time,
+                        effect_id,
+                        expected_owner,
+                        expected_lease_epoch,
+                    ),
+                )
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                if int(changed or 0) != 1:
+                    raise WorkflowConflict(
+                        f"effect lease reclaim CAS failed: {effect_id}"
+                    )
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET dispatched_at = COALESCE(dispatched_at, ?)
+                    WHERE effect_id = ?
+                    """,
+                    (current_time, effect_id),
+                )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+        return EffectLease(
+            effect_id=effect_id,
+            run_id=str(row["run_id"]),
+            kind=str(row["kind"]),
+            input_digest=str(row["input_digest"]),
+            attempt=attempt,
+            max_attempts=max_attempts,
+            lease_epoch=epoch,
+            lease_until=expires,
+            status="running",
+        )
+
     def fail_effect(
         self,
         effect_id: str,

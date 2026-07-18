@@ -159,6 +159,15 @@ def test_live_control_lease_returns_pending_then_same_input_reclaims_after_expir
     assert live_effect["status"] == "running"
     assert live_effect["attempt"] == 1
     assert live_effect["lease_epoch"] == 1
+    owner = journal._LOCAL_PARENT_OWNER_V2_RE.fullmatch(
+        live_effect["lease_owner"]
+    )
+    assert owner is not None
+    assert int(owner.group("pid")) == journal.os.getpid()
+    assert owner.group("boot") == journal._local_boot_id()
+    assert owner.group("start") == journal._observe_local_process(
+        journal.os.getpid()
+    )["start_token"]
 
     # After expiry the identical frozen input is reclaimable.  The new lease
     # epoch fences a stale completion from the cancelled owner.
@@ -184,6 +193,313 @@ def test_live_control_lease_returns_pending_then_same_input_reclaims_after_expir
             claim_now=pending["lease_until"] + 1.0,
             deck_seed_base=92_000,
         )
+
+
+@pytest.mark.parametrize(
+    ("owner", "observation", "expected_reason"),
+    [
+        ("remote:host-a:123", {"state": "missing", "pid": 123}, None),
+        (
+            "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+            + "a" * 32,
+            {"state": "missing", "pid": 123, "start_token": None},
+            "owner_pid_missing",
+        ),
+        (
+            "parent-v2:123:22222222-2222-2222-2222-222222222222:77:"
+            + "a" * 32,
+            {"state": "unknown", "pid": 123, "start_token": None},
+            "owner_boot_identity_changed",
+        ),
+        (
+            "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+            + "a" * 32,
+            {"state": "present", "pid": 123, "start_token": "77"},
+            None,
+        ),
+        (
+            "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+            + "a" * 32,
+            {"state": "present", "pid": 123, "start_token": "88"},
+            "owner_process_start_identity_changed",
+        ),
+        (
+            "parent:123:" + "a" * 32,
+            {"state": "present", "pid": 123, "start_token": "77"},
+            None,
+        ),
+        (
+            "parent:123:" + "a" * 32,
+            {"state": "missing", "pid": 123, "start_token": None},
+            "legacy_owner_pid_missing",
+        ),
+        (
+            "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+            + "a" * 32,
+            {"state": "unknown", "pid": 123, "start_token": None},
+            None,
+        ),
+    ],
+)
+def test_dead_owner_proof_refuses_remote_live_or_unknown_process(
+    monkeypatch,
+    owner,
+    observation,
+    expected_reason,
+):
+    boot_id = "11111111-1111-1111-1111-111111111111"
+    monkeypatch.setattr(journal, "_local_boot_id", lambda: boot_id)
+    monkeypatch.setattr(
+        journal,
+        "_observe_local_process",
+        lambda _pid: dict(observation),
+    )
+
+    proof = journal._dead_local_parent_owner_proof(owner, observed_at=100.0)
+
+    if expected_reason is None:
+        assert proof is None
+    else:
+        assert proof["reason"] == expected_reason
+        assert proof["owner"] == owner
+        assert len(proof["proof_digest"]) == 64
+
+
+def test_unavailable_boot_identity_is_never_death_authority(monkeypatch):
+    owner = (
+        "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+        + "a" * 32
+    )
+    monkeypatch.setattr(
+        journal,
+        "_local_boot_id",
+        lambda: (_ for _ in ()).throw(
+            journal.FirstStrictExecutionJournalError("boot unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        journal,
+        "_observe_local_process",
+        lambda _pid: pytest.fail("process observation followed missing boot identity"),
+    )
+
+    assert journal._dead_local_parent_owner_proof(
+        owner,
+        observed_at=100.0,
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("owner", "observation"),
+    [
+        ("remote-parent:host-a:123", {"state": "missing", "pid": 123}),
+        (
+            "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+            + "d" * 32,
+            {"state": "present", "pid": 123, "start_token": "77"},
+        ),
+        (
+            "parent:123:" + "d" * 32,
+            {"state": "present", "pid": 123, "start_token": "77"},
+        ),
+        (
+            "parent-v2:123:11111111-1111-1111-1111-111111111111:77:"
+            + "d" * 32,
+            {"state": "unknown", "pid": 123, "start_token": None},
+        ),
+    ],
+)
+def test_begin_never_reclaims_remote_live_legacy_live_or_unknown_owner(
+    tmp_path,
+    monkeypatch,
+    owner,
+    observation,
+):
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+    base_now = time.time()
+    first = _begin(scope, timing_plan, claim_now=base_now)
+    store = journal._store()
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE effects SET lease_owner = ?, lease_until = ? WHERE effect_id = ?",
+            (owner, base_now + 8_000.0, first["effect_id"]),
+        )
+    monkeypatch.setattr(
+        journal,
+        "_local_boot_id",
+        lambda: "11111111-1111-1111-1111-111111111111",
+    )
+    monkeypatch.setattr(
+        journal,
+        "_observe_local_process",
+        lambda _pid: dict(observation),
+    )
+
+    pending = _begin(scope, timing_plan, claim_now=base_now + 1.0)
+
+    assert pending["state"] == "pending"
+    assert pending["attempt"] == 1
+    effect = store.effect(first["effect_id"])
+    assert effect["attempt"] == 1
+    assert effect["lease_epoch"] == 1
+    assert effect["lease_owner"] == owner
+    assert not any(
+        event.event_type == "EffectLeaseReclaimed"
+        for event in store.events(first["authority_run_id"])
+    )
+
+
+def test_v2_reused_pid_start_identity_reclaims_atomically(tmp_path, monkeypatch):
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+    base_now = time.time()
+    first = _begin(scope, timing_plan, claim_now=base_now)
+    store = journal._store()
+    boot_id = "11111111-1111-1111-1111-111111111111"
+    stale_owner = f"parent-v2:123:{boot_id}:77:" + "e" * 32
+    replacement_owner = f"parent-v2:456:{boot_id}:99:" + "f" * 32
+    with store._connect() as connection:
+        connection.execute(
+            "UPDATE effects SET lease_owner = ?, lease_until = ? WHERE effect_id = ?",
+            (stale_owner, base_now + 8_000.0, first["effect_id"]),
+        )
+    monkeypatch.setattr(journal, "_local_boot_id", lambda: boot_id)
+
+    def observe(pid):
+        if int(pid) == 123:
+            return {"state": "present", "pid": 123, "start_token": "88"}
+        return {"state": "present", "pid": int(pid), "start_token": "99"}
+
+    monkeypatch.setattr(journal, "_observe_local_process", observe)
+    monkeypatch.setattr(
+        journal,
+        "_new_local_parent_owner",
+        lambda: replacement_owner,
+    )
+
+    reclaimed = _begin(scope, timing_plan, claim_now=base_now + 1.0)
+
+    assert reclaimed["lease_epoch"] == 2
+    effect = store.effect(first["effect_id"])
+    assert effect["attempt"] == 2
+    assert effect["lease_owner"] == replacement_owner
+    reclaimed_events = [
+        event
+        for event in store.events(first["authority_run_id"])
+        if event.event_type == "EffectLeaseReclaimed"
+    ]
+    assert len(reclaimed_events) == 1
+    assert reclaimed_events[0].payload["proof"]["reason"] == (
+        "owner_process_start_identity_changed"
+    )
+
+
+def test_dead_legacy_parent_reclaims_only_repeat5_once_and_rejects_late_result(
+    tmp_path,
+    monkeypatch,
+):
+    """A stopped old runtime cannot strand repeat5 behind a two-hour lease."""
+
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+    execution, _consumed = _minimal_completion_authority(monkeypatch)
+    base_now = time.time()
+
+    def begin_repeat(repeat, *, now):
+        deck = 91_000 + (repeat - 1) * 1_000
+        return journal.begin_control_execution(
+            scope=scope,
+            repeat=repeat,
+            deck_seed_base=deck,
+            bot_seed_base=deck + 1_000_000_000,
+            timing_plan=timing_plan,
+            claim_now=now,
+        )
+
+    # Already completed samples are replayed, not reclaimed or rerun.
+    for repeat in range(1, 5):
+        ticket = begin_repeat(repeat, now=base_now + repeat)
+        journal.complete_control_execution(ticket, execution=execution)
+        recovered = begin_repeat(repeat, now=base_now + 10.0)
+        assert recovered["state"] == "recovered"
+        assert recovered["execution"] == execution
+        assert journal._store().effect(ticket["effect_id"])["attempt"] == 1
+
+    old_ticket = begin_repeat(5, now=base_now + 10.0)
+    store = journal._store()
+    legacy_owner = "parent:999999:" + "b" * 32
+    with store._connect() as connection:
+        connection.execute(
+            """
+            UPDATE effects SET lease_owner = ?, lease_until = ?
+            WHERE effect_id = ?
+            """,
+            (legacy_owner, base_now + 8_000.0, old_ticket["effect_id"]),
+        )
+
+    boot_id = "11111111-1111-1111-1111-111111111111"
+    new_owner = f"parent-v2:123:{boot_id}:77:" + "c" * 32
+    monkeypatch.setattr(journal, "_local_boot_id", lambda: boot_id)
+
+    def observe(pid):
+        if int(pid) == 999999:
+            return {"state": "missing", "pid": int(pid), "start_token": None}
+        if int(pid) == 123:
+            return {"state": "present", "pid": int(pid), "start_token": "77"}
+        return {"state": "unknown", "pid": int(pid), "start_token": None}
+
+    monkeypatch.setattr(journal, "_observe_local_process", observe)
+    monkeypatch.setattr(journal, "_new_local_parent_owner", lambda: new_owner)
+
+    reclaimed = begin_repeat(5, now=base_now + 11.0)
+    assert reclaimed["lease_epoch"] == 2
+    effect = store.effect(old_ticket["effect_id"])
+    assert effect["attempt"] == 2
+    assert effect["lease_epoch"] == 2
+    assert effect["lease_owner"] == new_owner
+    assert effect["lease_until"] > base_now + 11.0
+
+    # A second restart while the replacement parent is alive does not consume
+    # attempt 3 or launch another match.
+    pending = begin_repeat(5, now=base_now + 12.0)
+    assert pending["state"] == "pending"
+    assert pending["attempt"] == 2
+    assert store.effect(old_ticket["effect_id"])["attempt"] == 2
+
+    with pytest.raises(
+        journal.FirstStrictExecutionJournalError,
+        match="first_strict_execution_stale_completion",
+    ):
+        journal.complete_control_execution(old_ticket, execution=execution)
+    assert store.effect(old_ticket["effect_id"])["status"] == "running"
+
+    receipt = journal.complete_control_execution(reclaimed, execution=execution)
+    assert receipt["effect_id"] == reclaimed["effect_id"]
+    recovered = begin_repeat(5, now=base_now + 13.0)
+    assert recovered["state"] == "recovered"
+    assert store.effect(old_ticket["effect_id"])["attempt"] == 2
+    reclaimed_events = [
+        event
+        for event in store.events(old_ticket["authority_run_id"])
+        if event.event_type == "EffectLeaseReclaimed"
+    ]
+    assert len(reclaimed_events) == 1
+    assert reclaimed_events[0].payload["proof"]["reason"] == (
+        "legacy_owner_pid_missing"
+    )
 
 
 def test_pending_payload_rejects_scope_or_ticket_tampering(tmp_path, monkeypatch):

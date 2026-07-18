@@ -553,6 +553,206 @@ def test_expired_running_effect_returns_to_pending_outbox(tmp_path):
     ]
 
 
+def test_dead_owner_reclaim_is_owner_epoch_cas_and_rejects_late_completion(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="native_match",
+        input_payload={"sample": 5},
+        causation_id="requested",
+    )
+    old = store.claim_effect(
+        "worker-149",
+        owner="parent-v2:old",
+        lease_seconds=100,
+        now=10,
+    )
+    proof = {"owner": "parent-v2:old", "reason": "owner_pid_missing"}
+    from workflow_kernel import content_digest
+
+    proof["proof_digest"] = content_digest(proof)
+    reclaimed = store.reclaim_effect_lease(
+        "worker-149",
+        expected_owner="parent-v2:old",
+        expected_lease_epoch=old.lease_epoch,
+        owner="parent-v2:new",
+        lease_seconds=100,
+        causation_id="dead-owner-reclaimed",
+        proof=proof,
+        now=11,
+    )
+    assert reclaimed.attempt == 2
+    assert reclaimed.lease_epoch == 2
+    assert reclaimed.lease_until == 111
+    assert store.events("149#0")[-1].event_type == "EffectLeaseReclaimed"
+
+    wrong_owner_proof = {
+        "owner": "other-owner",
+        "reason": "owner_pid_missing",
+    }
+    wrong_owner_proof["proof_digest"] = content_digest(wrong_owner_proof)
+    with pytest.raises(WorkflowConflict, match="stale effect lease reclaim"):
+        store.reclaim_effect_lease(
+            "worker-149",
+            expected_owner="other-owner",
+            expected_lease_epoch=old.lease_epoch,
+            owner="parent-v2:third",
+            lease_seconds=100,
+            causation_id="wrong-owner-reclaim",
+            proof=wrong_owner_proof,
+            now=11,
+        )
+
+    stale = store.complete_effect(
+        "worker-149",
+        lease_epoch=old.lease_epoch,
+        completion_id="old-owner-completion",
+        result_payload={"result": "late"},
+        causation_id="old-owner-completed",
+        require_live_lease=False,
+        now=12,
+    )
+    assert stale["accepted"] is False
+    assert stale["reason"] == "stale_lease_epoch"
+    stale_live_required = store.complete_effect(
+        "worker-149",
+        lease_epoch=old.lease_epoch,
+        completion_id="old-owner-completion-live-required",
+        result_payload={"result": "late"},
+        causation_id="old-owner-completed-live-required",
+        require_live_lease=True,
+        now=12,
+    )
+    assert stale_live_required["accepted"] is False
+    assert stale_live_required["reason"] == "stale_lease_epoch"
+    assert store.effect("worker-149")["status"] == "running"
+
+
+def test_dead_owner_reclaim_rejects_tampered_proof_and_exhausts_without_epoch_drift(
+    tmp_path,
+):
+    from workflow_kernel import content_digest
+
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="native_match",
+        input_payload={"sample": 5},
+        causation_id="requested",
+        max_attempts=1,
+    )
+    old = store.claim_effect(
+        "worker-149",
+        owner="parent-v2:old",
+        lease_seconds=100,
+        now=10,
+    )
+    proof = {"owner": "parent-v2:old", "reason": "owner_pid_missing"}
+    proof["proof_digest"] = content_digest(proof)
+    tampered = dict(proof)
+    tampered["reason"] = "owner_is_actually_live"
+    with pytest.raises(ValueError, match="proof digest"):
+        store.reclaim_effect_lease(
+            "worker-149",
+            expected_owner="parent-v2:old",
+            expected_lease_epoch=old.lease_epoch,
+            owner="parent-v2:new",
+            lease_seconds=100,
+            causation_id="tampered",
+            proof=tampered,
+            now=11,
+        )
+    unchanged = store.effect("worker-149")
+    assert unchanged["status"] == "running"
+    assert unchanged["attempt"] == 1
+    assert unchanged["lease_epoch"] == 1
+
+    with pytest.raises(WorkflowConflict, match="attempt budget exhausted"):
+        store.reclaim_effect_lease(
+            "worker-149",
+            expected_owner="parent-v2:old",
+            expected_lease_epoch=old.lease_epoch,
+            owner="parent-v2:new",
+            lease_seconds=100,
+            causation_id="dead-owner-reclaim",
+            proof=proof,
+            now=11,
+        )
+    exhausted = store.effect("worker-149")
+    assert exhausted["status"] == "exhausted"
+    assert exhausted["attempt"] == 1
+    assert exhausted["lease_epoch"] == 1
+    events = store.events("149#0")
+    assert not any(event.event_type == "EffectLeaseReclaimed" for event in events)
+    failed = [event for event in events if event.event_type == "EffectFailed"]
+    assert len(failed) == 1
+    assert failed[0].payload["proof"] == proof
+    late = store.complete_effect(
+        "worker-149",
+        lease_epoch=old.lease_epoch,
+        completion_id="late-after-exhaustion",
+        result_payload={"result": "late"},
+        causation_id="late-after-exhaustion",
+        require_live_lease=False,
+        now=12,
+    )
+    assert late["accepted"] is False
+
+
+def test_dead_owner_reclaim_concurrency_has_exactly_one_new_epoch(tmp_path):
+    from workflow_kernel import content_digest
+
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="native_match",
+        input_payload={"sample": 5},
+        causation_id="requested",
+        max_attempts=3,
+    )
+    old = store.claim_effect(
+        "worker-149",
+        owner="parent-v2:old",
+        lease_seconds=100,
+        now=10,
+    )
+    proof = {"owner": "parent-v2:old", "reason": "owner_pid_missing"}
+    proof["proof_digest"] = content_digest(proof)
+    barrier = __import__("threading").Barrier(2)
+
+    def reclaim(index):
+        barrier.wait()
+        try:
+            lease = store.reclaim_effect_lease(
+                "worker-149",
+                expected_owner="parent-v2:old",
+                expected_lease_epoch=old.lease_epoch,
+                owner=f"parent-v2:new-{index}",
+                lease_seconds=100,
+                causation_id=f"dead-owner-reclaim-{index}",
+                proof=proof,
+                now=11,
+            )
+            return ("claimed", lease.lease_epoch)
+        except WorkflowConflict:
+            return ("stale", None)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(reclaim, range(2)))
+    assert sorted(result[0] for result in results) == ["claimed", "stale"]
+    effect = store.effect("worker-149")
+    assert effect["attempt"] == 2
+    assert effect["lease_epoch"] == 2
+    assert len([
+        event
+        for event in store.events("149#0")
+        if event.event_type == "EffectLeaseReclaimed"
+    ]) == 1
+
+
 def test_event_replay_rejects_payload_digest_tampering(tmp_path):
     store = _store(tmp_path)
     store.append_event(

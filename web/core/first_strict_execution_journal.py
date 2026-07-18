@@ -26,6 +26,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import stat
 import time
 import uuid
@@ -52,6 +53,14 @@ CONTROL_EXECUTION_ROOT = (
 )
 
 _HEX = frozenset("0123456789abcdef")
+_LOCAL_PARENT_OWNER_V2_RE = re.compile(
+    r"^parent-v2:(?P<pid>[1-9][0-9]*):"
+    r"(?P<boot>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):"
+    r"(?P<start>[1-9][0-9]*):(?P<nonce>[0-9a-f]{32})$"
+)
+_LEGACY_LOCAL_PARENT_OWNER_RE = re.compile(
+    r"^parent:(?P<pid>[1-9][0-9]*):(?P<nonce>[0-9a-f]{32})$"
+)
 _SCOPE_FIELDS = (
     "workflow_run_id",
     "checkpoint_revision",
@@ -171,6 +180,126 @@ def control_execution_completion_deadline(deadline_monotonic: Any):
 
 def _plain_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _local_boot_id() -> str:
+    try:
+        value = Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="utf-8"
+        ).strip().lower()
+    except Exception as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_owner_boot_identity_unavailable"
+        ) from exc
+    if not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        value,
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_owner_boot_identity_invalid"
+        )
+    return value
+
+
+def _observe_local_process(pid: int) -> dict[str, Any]:
+    """Return a tri-state local PID observation with Linux start ticks."""
+
+    try:
+        raw = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
+    except (FileNotFoundError, ProcessLookupError):
+        return {"state": "missing", "pid": int(pid), "start_token": None}
+    except Exception:
+        return {"state": "unknown", "pid": int(pid), "start_token": None}
+    closing = raw.rfind(")")
+    fields = raw[closing + 2:].split() if closing >= 0 else []
+    start_token = fields[19] if len(fields) > 19 else ""
+    if not start_token.isdigit() or int(start_token) < 1:
+        return {"state": "unknown", "pid": int(pid), "start_token": None}
+    return {
+        "state": "present",
+        "pid": int(pid),
+        "start_token": start_token,
+    }
+
+
+def _new_local_parent_owner() -> str:
+    pid = os.getpid()
+    observation = _observe_local_process(pid)
+    if observation.get("state") != "present":
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_owner_process_identity_unavailable"
+        )
+    return (
+        f"parent-v2:{pid}:{_local_boot_id()}:"
+        f"{observation['start_token']}:{uuid.uuid4().hex}"
+    )
+
+
+def _dead_local_parent_owner_proof(
+    owner: Any,
+    *,
+    observed_at: float,
+) -> dict[str, Any] | None:
+    """Prove that one trusted local parent owner can no longer complete.
+
+    V2 owners bind boot id, PID, and Linux process start ticks.  The only
+    admitted terminal observations are a missing PID, a different boot, or a
+    reused PID with different start ticks.  The legacy owner emitted by the
+    immediately preceding runtime lacked start ticks; it is reclaimable only
+    when that exact PID is absent.  A present legacy PID remains ambiguous and
+    is never fenced.
+    """
+
+    if not isinstance(owner, str):
+        return None
+    v2 = _LOCAL_PARENT_OWNER_V2_RE.fullmatch(owner)
+    legacy = _LEGACY_LOCAL_PARENT_OWNER_RE.fullmatch(owner)
+    if v2 is None and legacy is None:
+        return None
+    try:
+        current_boot = _local_boot_id()
+    except FirstStrictExecutionJournalError:
+        # Missing local identity is absence of death proof, not authority to
+        # fence.  Keep the existing lease pending.
+        return None
+    matched = v2 or legacy
+    pid = int(matched.group("pid"))
+    observation = _observe_local_process(pid)
+    reason = None
+    stored_boot = v2.group("boot") if v2 is not None else None
+    stored_start = v2.group("start") if v2 is not None else None
+    if v2 is not None and stored_boot != current_boot:
+        reason = "owner_boot_identity_changed"
+    elif observation.get("state") == "missing":
+        reason = (
+            "owner_pid_missing"
+            if v2 is not None
+            else "legacy_owner_pid_missing"
+        )
+    elif (
+        v2 is not None
+        and observation.get("state") == "present"
+        and observation.get("start_token") != stored_start
+    ):
+        reason = "owner_process_start_identity_changed"
+    if reason is None:
+        return None
+    proof = {
+        "schema_version": 1,
+        "kind": "first-strict-dead-local-parent-owner",
+        "owner": owner,
+        "pid": pid,
+        "stored_boot_id": stored_boot,
+        "observed_boot_id": current_boot,
+        "stored_process_start_token": stored_start,
+        "observed_process_start_token": observation.get("start_token"),
+        "observation_state": observation.get("state"),
+        "reason": reason,
+        "observed_at_epoch_s": float(observed_at),
+        "legacy_owner_without_start_identity": v2 is None,
+    }
+    proof["proof_digest"] = canonical_digest(proof)
+    return proof
 
 
 def _valid_digest(value: Any) -> bool:
@@ -904,26 +1033,56 @@ def begin_control_execution(
                 and math.isfinite(float(lease_until))
                 and float(lease_until) > claim_time
             ):
-                # The matching effect is still actively owned.  Do not turn a
-                # normal cancellation/retry into a failed gate or race another
-                # subprocess pair against the original physical match.
-                pending_execution = {
-                    "state": "pending",
-                    "pending": True,
-                    "recovered": False,
-                    "authority_run_id": authority_run_id,
-                    "effect_id": effect_id,
-                    "match_run_id": match_run_id,
-                    "input_payload": input_payload,
-                    "lease_epoch": int(effect.get("lease_epoch") or 0),
-                    "lease_until": float(lease_until),
-                    "attempt": int(effect.get("attempt") or 0),
-                    "max_attempts": int(effect.get("max_attempts") or 0),
-                }
+                owner = effect.get("lease_owner")
+                dead_owner_proof = _dead_local_parent_owner_proof(
+                    owner,
+                    observed_at=claim_time,
+                )
+                if dead_owner_proof is not None:
+                    # The exact local parent process cannot produce a valid
+                    # completion.  Fence its epoch before the ordinary claim;
+                    # the incremented epoch rejects any delayed old result.
+                    lease = store.reclaim_effect_lease(
+                        effect_id,
+                        expected_owner=str(owner),
+                        expected_lease_epoch=int(
+                            effect.get("lease_epoch") or 0
+                        ),
+                        owner=_new_local_parent_owner(),
+                        lease_seconds=max(
+                            1.0,
+                            frozen_timing_plan.first_strict_lease_timeout_us
+                            / 1_000_000.0,
+                        ),
+                        causation_id=(
+                            f"control-match-dead-owner-reclaimed:{effect_id}:"
+                            f"{int(effect.get('lease_epoch') or 0)}:"
+                            f"{dead_owner_proof['proof_digest']}"
+                        ),
+                        proof=dead_owner_proof,
+                        now=claim_time,
+                    )
+                else:
+                    # A live, unknown, remote, or incompletely observed owner
+                    # remains authoritative until its lease expires.  Do not
+                    # race another physical match against it.
+                    pending_execution = {
+                        "state": "pending",
+                        "pending": True,
+                        "recovered": False,
+                        "authority_run_id": authority_run_id,
+                        "effect_id": effect_id,
+                        "match_run_id": match_run_id,
+                        "input_payload": input_payload,
+                        "lease_epoch": int(effect.get("lease_epoch") or 0),
+                        "lease_until": float(lease_until),
+                        "attempt": int(effect.get("attempt") or 0),
+                        "max_attempts": int(effect.get("max_attempts") or 0),
+                    }
             else:
                 lease = store.claim_effect(
                     effect_id,
-                    owner=f"parent:{os.getpid()}:{uuid.uuid4().hex}",
+                    owner=_new_local_parent_owner(),
                     lease_seconds=max(
                         1.0,
                         frozen_timing_plan.first_strict_lease_timeout_us / 1_000_000.0,
