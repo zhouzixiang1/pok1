@@ -26,11 +26,12 @@ from bot_namespace import strict_artifact_layout_errors
 
 
 # Bare-action output tracking now covers refinement-generator ``yield`` and
-# ``yield from`` paths in addition to ordinary function returns.  Capability
-# receipts bind this detector identity, so a candidate checked under the prior
-# return-only detector cannot be reused without a fresh capability gate.
-CAPABILITY_SCHEMA_VERSION = 7
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v6"
+# ``yield from`` paths in addition to ordinary function returns.  It also
+# follows a bounded set of pure local helper/constant forms. Capability
+# receipts bind this detector identity, so a candidate checked under an older
+# detector cannot be reused without a fresh capability gate.
+CAPABILITY_SCHEMA_VERSION = 8
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v7"
 DECISION_CONTEXT_SCHEMA_VERSION = 1
 POLICY_ENTRYPOINTS = {
     "get_baseline_decision": ("context",),
@@ -610,74 +611,406 @@ def _is_bare_action_literal(value: str | None) -> bool:
 
 
 def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
-    """Find direct/simple-alias action scalars emitted by policy entrypoints.
+    """Find bounded, statically-known action scalars at policy outputs.
 
     A global literal scan cannot distinguish an observed opponent action from
-    a candidate output.  This deliberately narrow flow analysis follows only
-    literal assignments visible to ``get_baseline_decision`` and
-    ``iter_decisions`` output paths.  A refinement entrypoint is a generator,
-    so its public decisions leave through ``yield``/``yield from`` rather than
-    ``return``.  It supports direct strings, straight-line and conditional
-    aliases (including module constants), invalidates an alias when it is
-    reassigned to an unknown value, and does not inspect arbitrary helper
-    returns that may legitimately classify public input.  The historical
-    evidence key remains ``bare_action_return_locations`` for receipt
-    compatibility; yielded entries are labelled ``bare_action_yield``.
+    a candidate output.  This deliberately small flow analysis follows only
+    output paths of ``get_baseline_decision`` and ``iter_decisions``.  In
+    addition to direct/alias returns and generator yields, it recognizes a
+    finite set of pure scalar forms that otherwise make a raw action easy to
+    hide: literal format calls, literal tuple/list subscripts, augmented
+    string aliases, and acyclic module-local helpers.  A helper is summarized
+    only when its return/yield expression is statically resolvable; dynamic
+    helpers are left to the runtime typed-intent guard rather than guessed.
+
+    The analysis never executes policy code.  Helper recursion, expression
+    combinations, and value sets are all bounded.  A known action on any
+    explored path remains evidence even when another branch is unknown.  The
+    historical evidence key remains ``bare_action_return_locations`` for
+    receipt compatibility; yielded entries are labelled ``bare_action_yield``.
     """
 
     if tree is None:
         return []
 
+    _MAX_VALUES = 16
+    _MAX_COMBINATIONS = 32
+    _MAX_HELPER_DEPTH = 4
+    _MAX_HELPER_PARAMETERS = 8
+    _UNRESOLVED_HELPER_FLOW = "\x00unresolved_helper_output_flow"
+
+    helpers = {
+        function.name: function
+        for function in tree.body
+        if isinstance(function, ast.FunctionDef)
+        and function.name not in POLICY_ENTRYPOINTS
+    }
+    module_aliases: dict[str, frozenset[str]] = {}
+    module_sequences: dict[str, tuple[frozenset[str], ...]] = {}
+
+    def bounded_values(values) -> frozenset[str]:
+        """Keep analysis work finite without discarding known action evidence."""
+
+        result: set[str] = set()
+        actions: set[str] = set()
+        unresolved = False
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            if value == _UNRESOLVED_HELPER_FLOW:
+                unresolved = True
+            if _is_bare_action_literal(value):
+                actions.add(value)
+            if len(result) < _MAX_VALUES:
+                result.add(value)
+        if unresolved:
+            result.add(_UNRESOLVED_HELPER_FLOW)
+        return frozenset(result | actions)
+
+    def union_values(*groups: frozenset[str]) -> frozenset[str]:
+        return bounded_values(
+            value for group in groups for value in group
+        )
+
+    def concat_values(
+        left: frozenset[str],
+        right: frozenset[str],
+    ) -> frozenset[str]:
+        unresolved = _UNRESOLVED_HELPER_FLOW in left or _UNRESOLVED_HELPER_FLOW in right
+        left = left.difference({_UNRESOLVED_HELPER_FLOW})
+        right = right.difference({_UNRESOLVED_HELPER_FLOW})
+        if not left or not right:
+            return (
+                frozenset({_UNRESOLVED_HELPER_FLOW})
+                if unresolved
+                else frozenset()
+            )
+        if len(left) * len(right) > _MAX_COMBINATIONS:
+            values = bounded_values(
+                f"{first}{second}"
+                for first in sorted(left)[:_MAX_VALUES]
+                for second in sorted(right)[:_MAX_VALUES]
+            )
+        else:
+            values = bounded_values(
+                f"{first}{second}" for first in left for second in right
+            )
+        return union_values(
+            values,
+            frozenset({_UNRESOLVED_HELPER_FLOW}) if unresolved else frozenset(),
+        )
+
+    def possible_sequence(
+        value: ast.AST | None,
+        aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int = 0,
+        helper_stack: frozenset[str] = frozenset(),
+    ) -> tuple[frozenset[str], ...] | None:
+        if isinstance(value, ast.Name):
+            return sequences.get(value.id)
+        if isinstance(value, (ast.Tuple, ast.List)):
+            return tuple(
+                possible_strings(
+                    item,
+                    aliases,
+                    sequences,
+                    helper_depth=helper_depth,
+                    helper_stack=helper_stack,
+                )
+                for item in value.elts
+            )
+        return None
+
+    def literal_index(value: ast.AST | None) -> int | None:
+        if isinstance(value, ast.Constant) and type(value.value) is int:
+            return int(value.value)
+        if isinstance(value, ast.UnaryOp) and isinstance(value.op, ast.USub):
+            child = literal_index(value.operand)
+            return -child if child is not None else None
+        return None
+
+    def format_values(
+        template_values: frozenset[str],
+        positional: list[frozenset[str]],
+        keywords: dict[str, frozenset[str]],
+    ) -> frozenset[str]:
+        if not template_values or any(not values for values in positional):
+            return frozenset()
+        if any(not values for values in keywords.values()):
+            return frozenset()
+        combinations: list[tuple[str, ...]] = [()]
+        for values in [*positional, *keywords.values()]:
+            if len(combinations) * len(values) > _MAX_COMBINATIONS:
+                return frozenset()
+            combinations = [
+                args + (value,)
+                for args in combinations
+                for value in values
+            ]
+        keyword_names = tuple(keywords)
+        rendered: list[str] = []
+        for template in template_values:
+            for arguments in combinations:
+                args = arguments[:len(positional)]
+                named = {
+                    name: arguments[len(positional) + index]
+                    for index, name in enumerate(keyword_names)
+                }
+                try:
+                    rendered.append(template.format(*args, **named))
+                except (IndexError, KeyError, ValueError, TypeError, AttributeError):
+                    continue
+        return bounded_values(rendered)
+
+    def helper_output_values(
+        function: ast.FunctionDef,
+        call: ast.Call,
+        caller_aliases: dict[str, frozenset[str]],
+        caller_sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int,
+        helper_stack: frozenset[str],
+    ) -> frozenset[str]:
+        """Summarize an acyclic, module-local helper without executing it."""
+
+        if (
+            function.name in helper_stack
+            or helper_depth >= _MAX_HELPER_DEPTH
+        ):
+            # A cycle/depth overflow is only propagated when this helper value
+            # reaches an entrypoint output.  Do not turn an unused recursive
+            # utility into evidence, but never certify an unresolved helper as
+            # a typed decision once it is returned/yielded publicly.
+            return frozenset({_UNRESOLVED_HELPER_FLOW})
+        if (
+            function.args.vararg is not None
+            or function.args.kwarg is not None
+            or any(isinstance(argument, ast.Starred) for argument in call.args)
+        ):
+            return frozenset()
+        parameters = [*function.args.posonlyargs, *function.args.args]
+        if len(parameters) > _MAX_HELPER_PARAMETERS or len(call.args) > len(parameters):
+            return frozenset()
+        parameter_names = [parameter.arg for parameter in parameters]
+        if any(keyword.arg is None or keyword.arg not in parameter_names for keyword in call.keywords):
+            return frozenset()
+        if len({keyword.arg for keyword in call.keywords}) != len(call.keywords):
+            return frozenset()
+        bound_aliases = dict(module_aliases)
+        bound_sequences = dict(module_sequences)
+        supplied: dict[str, ast.AST] = {}
+        for parameter, argument in zip(parameter_names, call.args):
+            supplied[parameter] = argument
+        for keyword in call.keywords:
+            assert keyword.arg is not None
+            if keyword.arg in supplied:
+                return frozenset()
+            supplied[keyword.arg] = keyword.value
+        defaults = list(function.args.defaults)
+        default_start = len(parameters) - len(defaults)
+        for index, parameter in enumerate(parameter_names):
+            value = supplied.get(parameter)
+            if value is None and index >= default_start:
+                value = defaults[index - default_start]
+            if value is None:
+                bound_aliases.pop(parameter, None)
+                bound_sequences.pop(parameter, None)
+                continue
+            values = possible_strings(
+                value,
+                caller_aliases,
+                caller_sequences,
+                helper_depth=helper_depth,
+                helper_stack=helper_stack,
+            )
+            sequence = possible_sequence(
+                value,
+                caller_aliases,
+                caller_sequences,
+                helper_depth=helper_depth,
+                helper_stack=helper_stack,
+            )
+            if values:
+                bound_aliases[parameter] = values
+            else:
+                bound_aliases.pop(parameter, None)
+            if sequence is not None:
+                bound_sequences[parameter] = sequence
+            else:
+                bound_sequences.pop(parameter, None)
+        return scan_helper_block(
+            function.body,
+            bound_aliases,
+            bound_sequences,
+            helper_depth=helper_depth + 1,
+            helper_stack=helper_stack | {function.name},
+        )[2]
+
     def possible_strings(
         value: ast.AST | None,
         aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int = 0,
+        helper_stack: frozenset[str] = frozenset(),
     ) -> frozenset[str]:
-        """Return statically possible strings that can flow through ``value``.
-
-        Unknown paths intentionally contribute no string, while known action
-        paths remain represented.  Therefore ``"check" if cond else unknown``
-        still fails closed at a public return without treating a standalone
-        input enum as output evidence.
-        """
+        """Return bounded statically-known strings that can flow through value."""
 
         if isinstance(value, ast.Constant) and isinstance(value.value, str):
             return frozenset({value.value})
         if isinstance(value, ast.Name):
             return aliases.get(value.id, frozenset())
         if isinstance(value, ast.IfExp):
-            return possible_strings(value.body, aliases) | possible_strings(
-                value.orelse,
-                aliases,
+            return union_values(
+                possible_strings(
+                    value.body, aliases, sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ),
+                possible_strings(
+                    value.orelse, aliases, sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ),
             )
         if isinstance(value, ast.BoolOp):
-            return frozenset().union(
-                *(possible_strings(item, aliases) for item in value.values)
-            )
+            return union_values(*(
+                possible_strings(
+                    item, aliases, sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                )
+                for item in value.values
+            ))
         if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
-            # ``yield from`` may consume a compact literal sequence or a
-            # module/local alias to one.  Treat only statically known string
-            # members as possible public outputs; other values stay unknown.
-            return frozenset().union(
-                *(possible_strings(item, aliases) for item in value.elts)
+            return union_values(*(
+                possible_strings(
+                    item, aliases, sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                )
+                for item in value.elts
+            ))
+        if isinstance(value, ast.Subscript):
+            sequence = possible_sequence(
+                value.value,
+                aliases,
+                sequences,
+                helper_depth=helper_depth,
+                helper_stack=helper_stack,
             )
-        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
-            left = possible_strings(value.left, aliases)
-            right = possible_strings(value.right, aliases)
-            # Literal-only aliases are deliberately tiny.  Cap the Cartesian
-            # product so a malicious policy cannot turn static checking into a
-            # string-construction workload.
-            if not left or not right or len(left) * len(right) > 16:
+            index = literal_index(value.slice)
+            if sequence is None or index is None or not -len(sequence) <= index < len(sequence):
                 return frozenset()
-            return frozenset(
-                f"{first}{second}" for first in left for second in right
+            return sequence[index]
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            return concat_values(
+                possible_strings(
+                    value.left, aliases, sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ),
+                possible_strings(
+                    value.right, aliases, sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ),
             )
+        if isinstance(value, ast.JoinedStr):
+            chunks: list[frozenset[str]] = []
+            for chunk in value.values:
+                if isinstance(chunk, ast.Constant) and isinstance(chunk.value, str):
+                    chunks.append(frozenset({chunk.value}))
+                elif isinstance(chunk, ast.FormattedValue):
+                    if chunk.format_spec is not None:
+                        return frozenset()
+                    values = possible_strings(
+                        chunk.value,
+                        aliases,
+                        sequences,
+                        helper_depth=helper_depth,
+                        helper_stack=helper_stack,
+                    )
+                    if chunk.conversion == ord("r"):
+                        values = bounded_values(repr(item) for item in values)
+                    elif chunk.conversion == ord("a"):
+                        values = bounded_values(ascii(item) for item in values)
+                    elif chunk.conversion not in {-1, ord("s")}:
+                        return frozenset()
+                    chunks.append(values)
+                else:
+                    return frozenset()
+            result = frozenset({""})
+            for chunk in chunks:
+                result = concat_values(result, chunk)
+                if not result:
+                    return frozenset()
+            return result
+        if isinstance(value, ast.Call):
+            if (
+                isinstance(value.func, ast.Attribute)
+                and value.func.attr == "format"
+                and not any(isinstance(argument, ast.Starred) for argument in value.args)
+                and all(keyword.arg is not None for keyword in value.keywords)
+            ):
+                return format_values(
+                    possible_strings(
+                        value.func.value,
+                        aliases,
+                        sequences,
+                        helper_depth=helper_depth,
+                        helper_stack=helper_stack,
+                    ),
+                    [
+                        possible_strings(
+                            argument,
+                            aliases,
+                            sequences,
+                            helper_depth=helper_depth,
+                            helper_stack=helper_stack,
+                        )
+                        for argument in value.args
+                    ],
+                    {
+                        str(keyword.arg): possible_strings(
+                            keyword.value,
+                            aliases,
+                            sequences,
+                            helper_depth=helper_depth,
+                            helper_stack=helper_stack,
+                        )
+                        for keyword in value.keywords
+                    },
+                )
+            if isinstance(value.func, ast.Name) and value.func.id in helpers:
+                return helper_output_values(
+                    helpers[value.func.id],
+                    value,
+                    aliases,
+                    sequences,
+                    helper_depth=helper_depth,
+                    helper_stack=helper_stack,
+                )
         return frozenset()
 
     def assign_aliases(
         statement: ast.Assign | ast.AnnAssign,
         aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int = 0,
+        helper_stack: frozenset[str] = frozenset(),
     ) -> None:
-        values = possible_strings(statement.value, aliases)
+        values = possible_strings(
+            statement.value,
+            aliases,
+            sequences,
+            helper_depth=helper_depth,
+            helper_stack=helper_stack,
+        )
+        sequence = possible_sequence(
+            statement.value,
+            aliases,
+            sequences,
+            helper_depth=helper_depth,
+            helper_stack=helper_stack,
+        )
         targets = (
             statement.targets
             if isinstance(statement, ast.Assign)
@@ -685,30 +1018,237 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
         )
         for target in targets:
             for name in _assigned_names(target):
-                if not values:
-                    aliases.pop(name, None)
-                else:
+                if values:
                     aliases[name] = values
+                else:
+                    aliases.pop(name, None)
+                if sequence is not None:
+                    sequences[name] = sequence
+                else:
+                    sequences.pop(name, None)
 
-    def merged_aliases(
-        *states: dict[str, frozenset[str]],
-    ) -> dict[str, frozenset[str]]:
-        merged: dict[str, frozenset[str]] = {}
-        for name in set().union(*(set(state) for state in states)):
-            values = frozenset().union(
-                *(state.get(name, frozenset()) for state in states)
-            )
+    def augment_aliases(
+        statement: ast.AugAssign,
+        aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int = 0,
+        helper_stack: frozenset[str] = frozenset(),
+    ) -> None:
+        added = possible_strings(
+            statement.value,
+            aliases,
+            sequences,
+            helper_depth=helper_depth,
+            helper_stack=helper_stack,
+        )
+        for name in _assigned_names(statement.target):
+            if isinstance(statement.op, ast.Add) and aliases.get(name) and added:
+                aliases[name] = concat_values(aliases[name], added)
+            else:
+                aliases.pop(name, None)
+            sequences.pop(name, None)
+
+    def merged_states(
+        *states: tuple[
+            dict[str, frozenset[str]],
+            dict[str, tuple[frozenset[str], ...]],
+        ],
+    ) -> tuple[
+        dict[str, frozenset[str]],
+        dict[str, tuple[frozenset[str], ...]],
+    ]:
+        aliases: dict[str, frozenset[str]] = {}
+        sequences: dict[str, tuple[frozenset[str], ...]] = {}
+        for name in set().union(*(set(state[0]) for state in states)):
+            values = union_values(*(state[0].get(name, frozenset()) for state in states))
             if values:
-                merged[name] = values
-        return merged
+                aliases[name] = values
+        for name in set().union(*(set(state[1]) for state in states)):
+            candidates = [state[1][name] for state in states if name in state[1]]
+            if not candidates or len({len(value) for value in candidates}) != 1:
+                continue
+            sequences[name] = tuple(
+                union_values(*(value[index] for value in candidates))
+                for index in range(len(candidates[0]))
+            )
+        return aliases, sequences
+
+    def yield_values(
+        value: ast.AST | None,
+        aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int = 0,
+        helper_stack: frozenset[str] = frozenset(),
+    ) -> frozenset[str]:
+        if isinstance(value, (ast.Yield, ast.YieldFrom)):
+            return possible_strings(
+                value.value,
+                aliases,
+                sequences,
+                helper_depth=helper_depth,
+                helper_stack=helper_stack,
+            )
+        if value is None:
+            return frozenset()
+        return union_values(*(
+            yield_values(
+                child,
+                aliases,
+                sequences,
+                helper_depth=helper_depth,
+                helper_stack=helper_stack,
+            )
+            for child in ast.iter_child_nodes(value)
+        ))
+
+    def scan_helper_block(
+        statements: list[ast.stmt],
+        aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
+        *,
+        helper_depth: int,
+        helper_stack: frozenset[str],
+    ) -> tuple[
+        dict[str, frozenset[str]],
+        dict[str, tuple[frozenset[str], ...]],
+        frozenset[str],
+    ]:
+        """Evaluate only static scalar emissions of one module-local helper."""
+
+        current_aliases = dict(aliases)
+        current_sequences = dict(sequences)
+        emitted: frozenset[str] = frozenset()
+        for statement in statements:
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                emitted = union_values(emitted, yield_values(
+                    statement.value, current_aliases, current_sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ))
+                assign_aliases(
+                    statement,
+                    current_aliases,
+                    current_sequences,
+                    helper_depth=helper_depth,
+                    helper_stack=helper_stack,
+                )
+                continue
+            if isinstance(statement, ast.AugAssign):
+                emitted = union_values(emitted, yield_values(
+                    statement.value, current_aliases, current_sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ))
+                augment_aliases(
+                    statement,
+                    current_aliases,
+                    current_sequences,
+                    helper_depth=helper_depth,
+                    helper_stack=helper_stack,
+                )
+                continue
+            if isinstance(statement, ast.Return):
+                emitted = union_values(
+                    emitted,
+                    possible_strings(
+                        statement.value,
+                        current_aliases,
+                        current_sequences,
+                        helper_depth=helper_depth,
+                        helper_stack=helper_stack,
+                    ),
+                    yield_values(
+                        statement.value,
+                        current_aliases,
+                        current_sequences,
+                        helper_depth=helper_depth,
+                        helper_stack=helper_stack,
+                    ),
+                )
+                continue
+            if isinstance(statement, ast.Expr):
+                emitted = union_values(emitted, yield_values(
+                    statement.value, current_aliases, current_sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                ))
+                continue
+            if isinstance(statement, ast.If):
+                left = scan_helper_block(
+                    statement.body, current_aliases, current_sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                )
+                right = scan_helper_block(
+                    statement.orelse, current_aliases, current_sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                )
+                current_aliases, current_sequences = merged_states(
+                    (left[0], left[1]), (right[0], right[1]),
+                )
+                emitted = union_values(emitted, left[2], right[2])
+                continue
+            if isinstance(statement, (ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)):
+                body = scan_helper_block(
+                    statement.body, current_aliases, current_sequences,
+                    helper_depth=helper_depth, helper_stack=helper_stack,
+                )
+                current_aliases, current_sequences = merged_states(
+                    (current_aliases, current_sequences), (body[0], body[1]),
+                )
+                emitted = union_values(emitted, body[2])
+                continue
+            if isinstance(statement, ast.Try):
+                paths = [
+                    scan_helper_block(
+                        statement.body, current_aliases, current_sequences,
+                        helper_depth=helper_depth, helper_stack=helper_stack,
+                    ),
+                    *(
+                        scan_helper_block(
+                            handler.body, current_aliases, current_sequences,
+                            helper_depth=helper_depth, helper_stack=helper_stack,
+                        )
+                        for handler in statement.handlers
+                    ),
+                    scan_helper_block(
+                        statement.orelse, current_aliases, current_sequences,
+                        helper_depth=helper_depth, helper_stack=helper_stack,
+                    ),
+                ]
+                current_aliases, current_sequences = merged_states(
+                    *((path[0], path[1]) for path in paths)
+                )
+                emitted = union_values(emitted, *(path[2] for path in paths))
+                if statement.finalbody:
+                    final = scan_helper_block(
+                        statement.finalbody, current_aliases, current_sequences,
+                        helper_depth=helper_depth, helper_stack=helper_stack,
+                    )
+                    current_aliases, current_sequences = final[:2]
+                    emitted = union_values(emitted, final[2])
+                continue
+            if isinstance(statement, ast.Match):
+                paths = [
+                    scan_helper_block(
+                        case.body, current_aliases, current_sequences,
+                        helper_depth=helper_depth, helper_stack=helper_stack,
+                    )
+                    for case in statement.cases
+                ]
+                if paths:
+                    current_aliases, current_sequences = merged_states(
+                        *((path[0], path[1]) for path in paths)
+                    )
+                    emitted = union_values(emitted, *(path[2] for path in paths))
+        return current_aliases, current_sequences, emitted
 
     # Module constants remain visible to entrypoints even if their declarations
     # appear after a function definition, so collect only module-level straight
     # assignments before analysing local return flow.
-    module_aliases: dict[str, frozenset[str]] = {}
     for statement in tree.body:
         if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-            assign_aliases(statement, module_aliases)
+            assign_aliases(statement, module_aliases, module_sequences)
+        elif isinstance(statement, ast.AugAssign):
+            augment_aliases(statement, module_aliases, module_sequences)
 
     locations: list[str] = []
 
@@ -716,11 +1256,16 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
         value: ast.AST | None,
         node: ast.AST,
         aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
         *,
         flow: str,
     ) -> None:
-        for emitted in sorted(possible_strings(value, aliases)):
-            if _is_bare_action_literal(emitted):
+        for emitted in sorted(possible_strings(value, aliases, sequences)):
+            if emitted == _UNRESOLVED_HELPER_FLOW:
+                locations.append(
+                    f"policy.py:{node.lineno}:bare_action_{flow}:unresolved_helper"
+                )
+            elif _is_bare_action_literal(emitted):
                 locations.append(
                     f"policy.py:{node.lineno}:bare_action_{flow}:{emitted}"
                 )
@@ -728,24 +1273,27 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
     def record_yield_output(
         value: ast.AST | None,
         aliases: dict[str, frozenset[str]],
+        sequences: dict[str, tuple[frozenset[str], ...]],
     ) -> None:
         if isinstance(value, ast.Yield):
             record_action_output(
                 value.value,
                 value,
                 aliases,
+                sequences,
                 flow="yield",
             )
-            record_yield_output(value.value, aliases)
+            record_yield_output(value.value, aliases, sequences)
             return
         if isinstance(value, ast.YieldFrom):
             record_action_output(
                 value.value,
                 value,
                 aliases,
+                sequences,
                 flow="yield",
             )
-            record_yield_output(value.value, aliases)
+            record_yield_output(value.value, aliases, sequences)
             return
         if value is not None:
             # Yield expressions can be parenthesized or occur as the value of
@@ -754,97 +1302,115 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
             # reshaping cannot hide a public refinement output from this
             # intentionally small flow analysis.
             for child in ast.iter_child_nodes(value):
-                record_yield_output(child, aliases)
+                record_yield_output(child, aliases, sequences)
 
     def scan_block(
         statements: list[ast.stmt],
         aliases: dict[str, frozenset[str]],
-    ) -> dict[str, frozenset[str]]:
+        sequences: dict[str, tuple[frozenset[str], ...]],
+    ) -> tuple[
+        dict[str, frozenset[str]],
+        dict[str, tuple[frozenset[str], ...]],
+    ]:
         current = dict(aliases)
+        current_sequences = dict(sequences)
         for statement in statements:
             if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                record_yield_output(statement.value, current)
-                assign_aliases(statement, current)
+                record_yield_output(statement.value, current, current_sequences)
+                assign_aliases(statement, current, current_sequences)
                 continue
             if isinstance(statement, ast.AugAssign):
-                record_yield_output(statement.value, current)
-                for name in _assigned_names(statement.target):
-                    current.pop(name, None)
+                record_yield_output(statement.value, current, current_sequences)
+                augment_aliases(statement, current, current_sequences)
                 continue
             if isinstance(statement, ast.Return):
-                record_yield_output(statement.value, current)
+                record_yield_output(statement.value, current, current_sequences)
                 record_action_output(
                     statement.value,
                     statement,
                     current,
+                    current_sequences,
                     flow="return",
                 )
                 continue
             if isinstance(statement, ast.Expr):
-                record_yield_output(statement.value, current)
+                record_yield_output(statement.value, current, current_sequences)
                 continue
             # Returns nested under a branch remain output paths.  Merge only
             # known literal possibilities for following aliases; unknown branch
             # values cannot turn a standalone input enum into output evidence.
             if isinstance(statement, ast.If):
-                record_yield_output(statement.test, current)
-                current = merged_aliases(
-                    scan_block(statement.body, current),
-                    scan_block(statement.orelse, current),
+                record_yield_output(statement.test, current, current_sequences)
+                current, current_sequences = merged_states(
+                    scan_block(statement.body, current, current_sequences),
+                    scan_block(statement.orelse, current, current_sequences),
                 )
                 continue
             if isinstance(statement, (ast.For, ast.AsyncFor)):
-                record_yield_output(statement.iter, current)
+                record_yield_output(statement.iter, current, current_sequences)
                 body_aliases = dict(current)
+                body_sequences = dict(current_sequences)
                 for name in _assigned_names(statement.target):
-                    values = possible_strings(statement.iter, current)
+                    values = possible_strings(statement.iter, current, current_sequences)
                     if values:
                         body_aliases[name] = values
                     else:
                         body_aliases.pop(name, None)
-                current = merged_aliases(
-                    current,
-                    scan_block(statement.body, body_aliases),
-                    scan_block(statement.orelse, current),
+                    sequence = possible_sequence(statement.iter, current, current_sequences)
+                    if sequence is not None:
+                        body_sequences[name] = sequence
+                    else:
+                        body_sequences.pop(name, None)
+                current, current_sequences = merged_states(
+                    (current, current_sequences),
+                    scan_block(statement.body, body_aliases, body_sequences),
+                    scan_block(statement.orelse, current, current_sequences),
                 )
                 continue
             if isinstance(statement, ast.While):
-                record_yield_output(statement.test, current)
-                current = merged_aliases(
-                    current,
-                    scan_block(statement.body, current),
-                    scan_block(statement.orelse, current),
+                record_yield_output(statement.test, current, current_sequences)
+                current, current_sequences = merged_states(
+                    (current, current_sequences),
+                    scan_block(statement.body, current, current_sequences),
+                    scan_block(statement.orelse, current, current_sequences),
                 )
                 continue
             if isinstance(statement, ast.Try):
                 paths = [
-                    scan_block(statement.body, current),
+                    scan_block(statement.body, current, current_sequences),
                     *(
-                        scan_block(handler.body, current)
+                        scan_block(handler.body, current, current_sequences)
                         for handler in statement.handlers
                     ),
-                    scan_block(statement.orelse, current),
+                    scan_block(statement.orelse, current, current_sequences),
                 ]
-                current = merged_aliases(*paths)
+                current, current_sequences = merged_states(*paths)
                 if statement.finalbody:
-                    current = scan_block(statement.finalbody, current)
+                    current, current_sequences = scan_block(
+                        statement.finalbody, current, current_sequences,
+                    )
                 continue
             if isinstance(statement, (ast.With, ast.AsyncWith)):
-                current = scan_block(statement.body, current)
+                current, current_sequences = scan_block(
+                    statement.body, current, current_sequences,
+                )
                 continue
             if isinstance(statement, ast.Match):
-                current = merged_aliases(
-                    current,
-                    *(scan_block(case.body, current) for case in statement.cases),
+                current, current_sequences = merged_states(
+                    (current, current_sequences),
+                    *(
+                        scan_block(case.body, current, current_sequences)
+                        for case in statement.cases
+                    ),
                 )
-        return current
+        return current, current_sequences
 
     for function in tree.body:
         if (
             isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
             and function.name in POLICY_ENTRYPOINTS
         ):
-            scan_block(function.body, module_aliases)
+            scan_block(function.body, module_aliases, module_sequences)
     return list(dict.fromkeys(locations))
 
 

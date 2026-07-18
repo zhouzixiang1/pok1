@@ -116,6 +116,155 @@ def get_baseline_decision(context):
 
 
 @pytest.mark.parametrize(
+    ("policy", "expected"),
+    [
+        (
+            '''\
+def _wire_helper():
+    return "check"
+
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return _wire_helper()
+'''
+            + POLICY_FOOTER,
+            "bare_action_return:check",
+        ),
+        (
+            '''\
+def _passthrough(value="fold"):
+    return value
+
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return _passthrough("fold")
+'''
+            + POLICY_FOOTER,
+            "bare_action_return:fold",
+        ),
+        (
+            '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return "{}".format("allin")
+'''
+            + POLICY_FOOTER,
+            "bare_action_return:allin",
+        ),
+        (
+            '''\
+ACTION_CHOICES = ("raise 400",)
+
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return ACTION_CHOICES[0]
+'''
+            + POLICY_FOOTER,
+            "bare_action_return:raise 400",
+        ),
+        (
+            '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    action = "c"
+    action += "all"
+    return action
+'''
+            + POLICY_FOOTER,
+            "bare_action_return:call",
+        ),
+    ],
+)
+def test_typed_intent_rejects_bounded_obfuscated_bare_action_outputs(
+    tmp_path,
+    policy,
+    expected,
+):
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+    typed = _check(result, "typed_intent_v1")
+
+    assert typed["passed"] is False
+    assert any(
+        location.endswith(expected)
+        for location in typed["evidence"]["bare_action_return_locations"]
+    )
+
+
+def test_typed_intent_rejects_helper_yield_and_unresolved_helper_cycle(tmp_path):
+    helper_yield = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"}
+
+def _wire_generator():
+    yield "allin"
+
+def iter_decisions(context, baseline, deadline):
+    yield from _wire_generator()
+'''
+    yield_result = evaluate_national_capabilities(
+        _write_bot(tmp_path / "yield", helper_yield)
+    )
+    yield_typed = _check(yield_result, "typed_intent_v1")
+    assert yield_typed["passed"] is False
+    assert any(
+        location.endswith("bare_action_yield:allin")
+        for location in yield_typed["evidence"]["bare_action_return_locations"]
+    )
+
+    cyclic = '''\
+def _cycle():
+    return _cycle()
+
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return _cycle()
+'''
+    cycle_result = evaluate_national_capabilities(
+        _write_bot(tmp_path / "cycle", cyclic + POLICY_FOOTER)
+    )
+    cycle_typed = _check(cycle_result, "typed_intent_v1")
+    assert cycle_typed["passed"] is False
+    assert any(
+        location.endswith("bare_action_return:unresolved_helper")
+        for location in cycle_typed["evidence"]["bare_action_return_locations"]
+    )
+
+
+def test_typed_intent_allows_typed_helper_output(tmp_path):
+    policy = '''\
+def _typed_helper():
+    return {"kind": "pass"}
+
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return _typed_helper()
+''' + POLICY_FOOTER
+
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+    typed = _check(result, "typed_intent_v1")
+
+    assert typed["passed"] is True
+    assert typed["evidence"]["bare_action_return_locations"] == []
+
+
+@pytest.mark.parametrize(
     ("prefix", "body", "action"),
     [
         ("", '    yield "check"\n', "check"),
