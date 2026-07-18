@@ -3773,3 +3773,47 @@ identity and run recovery/evaluation/official diagnostics before a fresh v143
 workflow. A failed inspect/execute remains stopped and is never repaired by
 copying the independent test state back. At this ledger point none of those
 runtime actions has occurred and the stable observation remains **0/10**.
+
+## 2026-07-18 — live v52 terminal projection and fenced-abandon recovery
+
+The P0 batch was merged and the stopped autonomous checkout was fast-forwarded
+through `origin/main` to `58c44a08774654eba410030ad289ac0a3079dc42`
+only after its tracked tree, workflow-v52/revision-8 checkpoint, candidate and
+absence of Web/orchestrator/rating processes were rechecked. No runtime process
+was started at that synchronization boundary.
+
+The read-only operator reconciliation reported the sole completed Reviewer
+effect `strict-llm-23dbe4af5357d55622cd0307af9410cc1b63fb6983ce1b93a2b7aea2ec746907`,
+candidate hash `39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`,
+legacy migration digest
+`27884c13d2fb1a87b625bc3b3918e072580f0fbe4617e4b102a4817550145bb8`
+and `provider_dispatch_required=false`. The acknowledged execute accepted and
+bound that already completed `approved=false` result, wrote the exact
+`review_rejected` revision-9 checkpoint and terminal outcome
+`fb21a441eb451d6de7b8cb70d56fd45c48c7b77128755329c026dbabd55a4487`,
+then fenced the Worker and strict-authority journals with that canonical
+outcome reason. It made no new provider request.
+
+The same live execution then exposed a second-guard lifecycle bug before the
+durable abandon transaction: after writing `WorkerAbandoned` and
+`StrictAuthorityAbandoned`, `_do_abandon_generation` reopened the generic route
+under the publication lock; the ordinary authority validator treated its own
+new `status=abandoned` as invalid. The surface reason was incorrectly named
+`checkpoint_epoch_requires_operator_reconciliation`, although
+`checkpoint_epoch_errors=[]`. Consequently no v52 abandon-ledger row or
+transaction directory was created, the candidate was not quarantined and the
+checkpoint was not cleared. This is a safe stopped partial state, not a Bot or
+strength result: both journals are fenced at epoch 1, the candidate and typed
+receipt remain byte-identical, and stable observation remains **0/10**.
+
+Follow-up source work therefore has two mandatory closures before runtime
+resume: (1) prove an already-fenced terminal lifecycle by exact unique final
+Worker/strict abandon events, canonical receipt reason, workflow identity and
+absence of live effects while still revalidating every accepted provider/
+candidate/checkpoint digest; ordinary abandoned journals remain unusable for
+provider recovery; and (2) make the operator CLI resume the existing revision-9
+canonical abandon without accepting or dispatching a role again. An independent
+Worker MCP review also found that terminal gate, reason and failure class were
+independent allowlists; the follow-up closes them to seven legal tuples and an
+exact top-level receipt schema. At this ledger point those follow-ups are under
+test/review and have not yet been synchronized into the stopped runtime.
