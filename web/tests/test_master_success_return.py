@@ -429,7 +429,7 @@ async def test_master_returns_valid_plan_on_first_try(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_master_binding_retry_receives_deterministic_failure_feedback(
+async def test_master_binds_duplicate_selected_metadata_without_retry(
     monkeypatch,
 ):
     import agent_master
@@ -460,18 +460,21 @@ async def test_master_binding_retry_receives_deterministic_failure_feedback(
     monkeypatch.setattr(agent_master, "run_claude_query", fake_run_claude_query)
     monkeypatch.setattr(asyncio, "sleep", no_sleep)
 
+    ui = _MockUI()
     result = await agent_master._run_master_analysis(
         source_v=143,
         next_v=144,
         stagnation_info="declining",
-        ui=_MockUI(),
+        ui=ui,
     )
 
     assert result is not None
-    assert len(prompts) == 2
-    assert "Previous proposal binding failed" not in prompts[0]
-    assert "Previous proposal binding failed" in prompts[1]
-    assert "measurement_plan_must_exactly_copy_selected_proposal" in prompts[1]
+    assert len(prompts) == 1
+    assert result["measurement_plan"] == BOUND_PROPOSAL["measurement"]
+    assert any(
+        "selected-proposal metadata was rebound" in message
+        for _level, message in ui.history
+    )
 
 
 @pytest.mark.asyncio
@@ -570,6 +573,35 @@ def test_strict_projection_rejects_malformed_provider_worker_prompts(
         assert any(item.startswith(expected_code) for item in errors)
         bound = agent_master._bind_selected_proposal_workers(plan, selected)
         assert bound["tasks"][0]["worker_prompt"] == invalid
+
+
+def test_strict_projection_binds_duplicate_selected_metadata(tmp_path):
+    import agent_master
+
+    packet = _valid_proposal_packet(
+        agent_master,
+        BOUND_PROPOSAL,
+        tmp_path / "strict_metadata_binding_invocations",
+        source_dir=agent_master.get_bot_dir(143),
+    )
+    selected = packet["ordered_proposals"][0]
+    plan = json.loads(json.dumps(VALID_PLAN))
+    plan.update({
+        "selected_proposal_id": selected["proposal_id"],
+        "targeted_failure": "Provider paraphrase must have no authority.",
+        "measurement_plan": "Provider measurement paraphrase must have no authority.",
+    })
+
+    projected, errors = agent_master._project_strict_final_master_result(
+        json.dumps(plan),
+        proposal_packet=packet,
+        architecture_policy={"schema_version": 1},
+    )
+
+    assert errors == []
+    assert projected is not None
+    assert projected["targeted_failure"] == selected["targeted_failure"]
+    assert projected["measurement_plan"] == selected["measurement"]
 
 
 def test_strict_projection_rejects_all_provider_reserved_markers(tmp_path):

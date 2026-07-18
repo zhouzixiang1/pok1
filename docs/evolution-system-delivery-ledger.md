@@ -3428,3 +3428,42 @@ negative case that records no `stop` or `start`. `bash -n` passes for both
 scripts; real `POK_PYTHON` resolution succeeds and an invalid override rejects
 without process control. This source-only operational hardening is not synced
 into the active v45 runtime while its Master work is in flight.
+
+## 2026-07-18 — v44–v46 Master-output contract repair (source pending)
+
+`workflow-v44`, `workflow-v45`, and `workflow-v46` each reached the Master
+stage and canonically abandoned before any Worker lease, candidate write,
+quality receipt, certificate, tag, rating row, or 70-hand strength sample. The
+runtime then stopped at the bounded three-abandon policy rather than retrying
+or deleting state. This is a control-plane schema failure, not evidence about
+the model's poker strength or a published Bot. The runtime has no active
+`pipeline_state.json`, no active service PID, and stability is **0/10**.
+
+The sealed v46 journal showed three independent causes: a Scout used a shared
+`fold_to_raise` leaf without a provable owner; fresh-control measurement text
+was lexically valid but differed only by punctuation from the system's
+no-strength control; and the final Master redundantly paraphrased
+proposal-owned metadata while its task prompt exceeded the selected proposal's
+reserved hard budget. The source repair makes ownership unambiguous only for a
+complete selected owner or a flat, allowlisted list immediately headed by the
+exact selected root. Every other spelling of a shared leaf, foreign root,
+unknown list child, or qualified-identifier continuation remains fail-closed.
+Fresh Scout measurements must retain the closed six-field shape, after which
+the system binds the exact no-strength control. Final `selected_proposal_id`
+is the only model semantic choice; duplicate `targeted_failure` and
+`measurement_plan` are rebound from the sealed packet before normal and
+strict-authority validation. A late system-owned final emission guard exposes
+the selected hard Worker-prompt ceiling and an honestly named advisory target;
+the existing hard validator remains authoritative.
+
+The repair binds the guard digest in Master provenance and adds positive and
+negative regressions for all four shared-leaf spellings, root-scoped allowlist
+rejection, six-field bootstrap measurement shape, duplicate final metadata,
+and exact prompt budget. A read-only replay of v46 still rejects the old
+ambiguous prose and its independently invalid retry, while the canonical
+counterfactual/compute records remain valid; this proves the repair did not
+reinterpret historical evidence. Source tests and independent review must pass
+before merge. Only then may the stopped runtime fast-forward from `origin/main`,
+run recovery/evaluation/official diagnostics, and begin a new v143 attempt.
+That fresh attempt begins at **0/10** and must earn its own candidate,
+bootstrap-control certificate, tag, and later 70-hand evidence.

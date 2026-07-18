@@ -696,7 +696,79 @@ def test_shared_leaf_retry_prompt_is_root_locked_and_hides_raw_rejection():
     assert "Rewrite the complete object from scratch" in prompt
     assert "Prior deterministic projection errors" not in prompt
     assert "opponent.terminal_response" not in prompt
-    assert "fold_to_raise" not in prompt
+    assert "opponent.rates (aggression, fold_to_raise)" in prompt
+
+
+def test_fresh_scout_measurement_is_system_bound_but_closed_shape_is_required(
+    tmp_path,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload["measurement"] += "."
+
+    accepted = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    )
+
+    assert accepted is not None
+    assert accepted["measurement"] == agent_master._FRESH_STRICT_CONTROL_MEASUREMENT
+    assert "proposal_measurement_contract_invalid" not in (
+        agent_master._master_proposal_projection_hints(
+            json.dumps(payload),
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+            evidence_mode="fresh_strict_control_no_strength",
+        )
+    )
+
+    payload.pop("measurement")
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+
+    payload["measurement"] = "not a six-field measurement"
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
+    assert "proposal_measurement_contract_invalid" in (
+        agent_master._master_proposal_projection_hints(
+            json.dumps(payload),
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+            evidence_mode="fresh_strict_control_no_strength",
+        )
+    )
 
 
 def test_architecture_policy_derives_only_action_profile_scout_primary():
@@ -2378,6 +2450,43 @@ def test_shared_fold_to_raise_bare_leaf_fails_scout_and_packet_replay(
     )
     assert accepted is not None
 
+    scoped_children = (
+        "aggression, fold_to_raise"
+        if target == "opponent.rates"
+        else "fold_to_raise, fold_to_jam"
+    )
+    scoped_fields = {
+        "structural_change": (
+            f"Route {target} ({scoped_children}) through the bounded "
+            "live decision consumer."
+        ),
+        "expected_diff": (
+            f"The paired typed intent changes only when {target} "
+            f"({scoped_children}) changes."
+        ),
+        "intervention": (
+            f"Change only {target} ({scoped_children}) in the paired "
+            "decision context."
+        ),
+    }
+    payload["structural_change"] = scoped_fields["structural_change"]
+    payload["expected_diff"] = scoped_fields["expected_diff"]
+    payload["falsifier"]["intervention"] = scoped_fields["intervention"]
+    assert agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    ) == ()
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is not None
+
     bare_fields = {
         "structural_change": (
             f"Route {target} through the bounded consumer while varying bare "
@@ -2433,6 +2542,116 @@ def test_shared_fold_to_raise_bare_leaf_fails_scout_and_packet_replay(
     parsed, errors = agent_master._parse_valid_proposal_packet(json.dumps(packet))
     assert parsed is None
     assert any(error.startswith(expected_error + ":") for error in errors)
+
+
+@pytest.mark.parametrize(
+    "unknown_leaf",
+    ("unknown_leaf", "samples", "terminal"),
+)
+def test_root_scoped_shared_leaf_list_rejects_unknown_children(
+    tmp_path,
+    unknown_leaf,
+):
+    import agent_master
+
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    target = "opponent.rates"
+    scoped = f"{target} (fold_to_raise, {unknown_leaf})"
+    payload.update({
+        "mechanism_target": target,
+        "structural_change": f"Route only {scoped} through the bounded consumer.",
+        "expected_diff": f"The paired intent changes only through {scoped}.",
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": target,
+        "control": "Hold opponent.rates at its bounded paired-state prior.",
+        "intervention": f"Change only {scoped} in the paired decision context.",
+        "expected_observation": (
+            "The typed intent changes only under the action-profile intervention."
+        ),
+    }
+
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    assert (
+        "proposal_mechanism_root_scoped_unknown_leaf:"
+        f"opponent.rates:{unknown_leaf}"
+    ) in errors
+
+
+@pytest.mark.parametrize(
+    "poker_phrase",
+    (
+        "fold_to_raise sample statistic",
+        "fold-to-raise conversion",
+        "fold to raise tendency",
+        "foldtoraise heuristic",
+    ),
+)
+def test_shared_leaf_human_poker_phrase_fails_closed_even_beside_owner(
+    tmp_path,
+    poker_phrase,
+):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism", fresh=True).split("```json\n", 1)[1].rsplit(
+            "\n```", 1
+        )[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.rates",
+        "structural_change": (
+            "Route opponent.rates.fold_to_raise through a bounded action profile; the "
+            f"{poker_phrase} is only explanatory poker prose."
+        ),
+        "expected_diff": (
+            "The paired typed intent changes only through opponent.rates.fold_to_raise while "
+            f"describing the same {poker_phrase}."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "incremental_opponent_model",
+        "state_learning_primary": "action_profile",
+        "intervention_target": "opponent.rates",
+        "control": "Hold opponent.rates at its bounded prior for the paired state.",
+        "intervention": (
+            "Change only opponent.rates.fold_to_raise in the paired context; the "
+            f"{poker_phrase} does not name a context field."
+        ),
+        "expected_observation": (
+            "The typed intent changes only under that root-bound intervention."
+        ),
+    }
+
+    expected_error = (
+        "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise"
+    )
+    assert expected_error in agent_master._proposal_mechanism_target_errors(
+        payload,
+        payload["falsifier"],
+    )
+    assert agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+        evidence_mode="fresh_strict_control_no_strength",
+        execution_mode="fixed_blueprint_capability_audit",
+        expected_measurement_target="fixed_blueprint_control",
+    ) is None
 
 
 @pytest.mark.parametrize(
@@ -2764,6 +2983,37 @@ def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_pat
         "separator_chars": 2,
         "worker_id": 1,
     }
+
+
+def test_master_final_emission_guard_binds_each_selected_prompt_budget(tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    proposal = agent_master._validated_master_proposal(
+        _proposal("mechanism"),
+        "mechanism",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+    assert proposal is not None
+    packet = {
+        "ordered_proposals": [proposal],
+        "allowed_proposal_ids": [proposal["proposal_id"]],
+    }
+
+    guard = agent_master._master_final_emission_guard(packet)
+    compilation = agent_master._selected_proposal_compilation_contract(proposal)
+
+    assert guard.startswith("# SYSTEM-OWNED FINAL EMISSION GATE")
+    assert proposal["proposal_id"] in guard
+    assert str(compilation["max_provider_chars"]) in guard
+    assert "worker_prompt_advisory_target_chars" in guard
+    assert "worker_prompt_target_cap_chars" not in guard
+    assert "advisory target" in guard
+    assert "full selected proposal and runtime contract" in guard
 
 
 def test_final_binding_rejects_wrong_primary_and_missing_typed_check(tmp_path):

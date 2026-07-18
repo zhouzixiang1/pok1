@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 6
+MATRIX_SCHEMA_VERSION = 7
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -89,6 +89,7 @@ REQUIRED_COVERAGE = frozenset({
     "first_strict_v143_v144",
     "immutable_rating_cycle",
     "stability_ten_generations",
+    "master_strict_output_projection",
 })
 REQUIRED_PROMPT_ROLES = frozenset({
     "Master",
@@ -1210,7 +1211,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         prompt_statement=(
             "All five rendered roles preserve the Master Scout closed falsifier contract: "
             "a falsifier is a closed six-key object, mechanism_target appears only at top level, and "
-            "owner-qualified shared leaves remain mandatory in executable claims."
+            "a shared leaf is executable only as a complete owner-qualified literal or an exact "
+            "selected-root allowlisted list."
         ),
         prompt_required_terms=(
             "closed six-key",
@@ -1237,6 +1239,72 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "An extra falsifier key, top-level-target duplication, bare/foreign owner, or exhausted "
             "schema repair is rejected before critics or Workers; the generation canonically abandons "
             "rather than silently normalizing provider output."
+        ),
+    ),
+    MatrixRow(
+        rule_id="master_strict_output_projection",
+        coverage=("master_strict_output_projection",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("web/core/output_schema.py", "STATE_LEARNING_INTERVENTION_TARGET_ALIASES"),
+            _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
+            _ref("web/core/agent_master.py", "_FRESH_STRICT_CONTROL_MEASUREMENT"),
+        ),
+        production_owners=(
+            _ref("web/core/agent_master.py", "_render_master_proposal_provider_prompt"),
+            _ref("web/core/agent_master.py", "_validated_master_proposal"),
+            _ref("web/core/agent_master.py", "_canonicalize_selected_proposal_metadata"),
+            _ref("web/core/agent_master.py", "_master_final_emission_guard"),
+            _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
+        ),
+        dynamic_gates=(
+            _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
+            _ref("web/core/agent_master.py", "_system_bound_proposal_measurement"),
+            _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
+            _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles treat selected Master proposal metadata as system-bound, preserve "
+            "the closed six-field fresh measurement shape, and keep the deterministic Worker hard cap. "
+            "A shared executable leaf is legal only with a complete owner-qualified literal or an exact "
+            "selected-root allowlisted list; every bare, punctuation, compact, foreign, unknown-child, "
+            "or identifier-continuation spelling is rejected."
+        ),
+        prompt_required_terms=(
+            "selected Master proposal",
+            "closed six-field",
+            "Worker hard cap",
+        ),
+        producer_consumer=(
+            "frozen architecture mapping + source graph → rendered Scout contract → validated proposal "
+            "packet → selected ID plus system-rebound metadata and digest-bound final emission guard → "
+            "strict final projection → compiled Worker prompt → quality/review/native precommit"
+        ),
+        positive_tests=(
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_shared_fold_to_raise_bare_leaf_fails_scout_and_packet_replay",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_fresh_scout_measurement_is_system_bound_but_closed_shape_is_required",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_master_final_emission_guard_binds_each_selected_prompt_budget",
+            "web/tests/test_master_success_return.py::"
+            "test_strict_projection_binds_duplicate_selected_metadata",
+        ),
+        negative_tests=(
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_root_scoped_shared_leaf_list_rejects_unknown_children",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_shared_leaf_human_poker_phrase_fails_closed_even_beside_owner",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_selected_proposal_budget_boundary_and_primary_mapping_are_exact",
+        ),
+        fail_closed=(
+            "Any ambiguous leaf, foreign or unknown target, malformed fresh measurement, unallowed "
+            "proposal ID, metadata drift after rebinding, missing guard provenance, or hard-budget "
+            "overflow blocks Worker dispatch and may only canonically abandon at the permitted "
+            "pre-Worker stage."
         ),
     ),
     MatrixRow(

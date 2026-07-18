@@ -165,11 +165,11 @@ def _render_master_proposal_provider_prompt(inputs):
         else "frozen_strength_snapshot"
     )
     measurement_contract = (
-        "measurement MUST exactly use these semicolon-separated fields: "
-        "target=fixed_blueprint_control; "
-        "primary=typed_falsifier_and_official_5_plus_3; "
-        "expected_delta=not_applicable; samples=official_5_plus_3; "
-        "uncertainty=no_strength_claim; secondary=none."
+        "measurement MUST be a non-empty six-field semicolon string. Its fresh "
+        "strict-control value is system-bound to: "
+        + _FRESH_STRICT_CONTROL_MEASUREMENT
+        + ". It is not a model-selected strength claim and any punctuation or "
+        "paraphrase has no authority."
         if bootstrap
         else (
             f"measurement MUST use: target=national_v{source_v}; "
@@ -272,9 +272,15 @@ def _render_master_proposal_provider_prompt(inputs):
         "Bracket notation such as context['opponent']['rates'] does not replace "
         "the required exact opponent.rates literal. A complete bracket path may "
         "supplement the dot literal, but an incomplete or bare leaf is invalid. "
-        "Shared leaf names are namespace-sensitive. If a shared leaf is necessary, "
-        "use only its complete owner-qualified form belonging to the selected root; "
-        "a bare leaf is invalid. Do not name another closed target, its child, or a "
+        "Shared leaf names are namespace-sensitive. Prefer a complete "
+        "owner-qualified child. A flat list is also qualified only when the exact "
+        "selected root is its immediate header, for example opponent.rates "
+        "(aggression, fold_to_raise); never emit a bare leaf outside that exact "
+        "root-scoped list. In structural_change, expected_diff, and "
+        "falsifier.intervention, never write fold-to-raise, fold to raise, "
+        "foldtoraise, or an extra bare fold_to_raise as explanatory prose: an "
+        "occurrence is legal only as part of a complete owner-qualified literal "
+        "or that exact root-scoped list. Do not name another closed target, its child, or a "
         "sample-count owner in an executable field, even as unchanged. Never append "
         "identifier characters to an owner-qualified target literal. The "
         "required_proposal_terms become final Worker-prompt obligations. A "
@@ -511,7 +517,7 @@ def _render_master_final_provider_prompt(inputs):
 
     expected = {
         "template_values", "master_context", "proposal_ensemble", "source_v",
-        "next_v", "invocation_id", "schema_repair_suffix",
+        "next_v", "invocation_id", "schema_repair_suffix", "final_output_guard",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected:
         raise ValueError("Master final renderer input contract mismatch")
@@ -525,9 +531,11 @@ def _render_master_final_provider_prompt(inputs):
         template,
         {key: str(value) for key, value in template_values.items()},
     )
-    master_prompt += str(inputs["schema_repair_suffix"])
     master_context = str(inputs["master_context"])
     proposal_ensemble = str(inputs["proposal_ensemble"])
+    final_output_guard = str(inputs["final_output_guard"])
+    if not final_output_guard.startswith("# SYSTEM-OWNED FINAL EMISSION GATE"):
+        raise ValueError("Master final emission guard is invalid")
     text = master_prompt + "\n" + master_context
     from strategy_reference_pack import current_strict_runtime_prompt_overlay
 
@@ -540,6 +548,12 @@ def _render_master_final_provider_prompt(inputs):
             + invocation_id
             + "; purpose=system_strict_bootstrap_master:final."
         )
+    text += "\n\n" + final_output_guard
+    # Keep a deterministic repair instruction at the actual end of the
+    # provider prompt.  The template and compiled context are intentionally
+    # large; burying a retry error before them made an exact binding repair
+    # easy for a model to miss.
+    text += str(inputs["schema_repair_suffix"])
 
     return LLMRenderedMaterial(
         text=text,
@@ -561,9 +575,12 @@ def _render_master_final_provider_prompt(inputs):
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest(),
-            "schema_repair_digest": hashlib.sha256(
-                str(inputs["schema_repair_suffix"]).encode("utf-8")
-            ).hexdigest(),
+                "schema_repair_digest": hashlib.sha256(
+                    str(inputs["schema_repair_suffix"]).encode("utf-8")
+                ).hexdigest(),
+                "final_output_guard_digest": hashlib.sha256(
+                    final_output_guard.encode("utf-8")
+                ).hexdigest(),
             "invocation_id": invocation_id,
         },
     )
@@ -857,9 +874,92 @@ def _proposal_mechanism_target_errors(
                 )
         return masked
 
+    root_scoped_list_errors: list[str] = []
+    expected_root_children = {
+        alias.rsplit(".", 1)[1]
+        for alias in STATE_LEARNING_INTERVENTION_TARGET_ALIASES[expected]
+        if alias.startswith(expected + ".")
+        and re.fullmatch(r"[a-z_][a-z0-9_]*", alias.rsplit(".", 1)[1])
+    }
+
+    def mask_root_scoped_shared_leaves(text: str) -> str:
+        """Mask a closed, root-qualified shorthand list for the expected axis.
+
+        The proposal contract normally requires a full owner-qualified child
+        literal.  A Scout can also make that ownership unambiguous with the
+        deliberately narrow ``opponent.rates (aggression, fold_to_raise)``
+        notation: the exact selectable root is immediately followed by a flat
+        list of identifier leaves.  Treat that syntax as qualified rather than
+        rejecting it as a bare shared leaf.  Do not accept prose, nested paths,
+        values, or a different root inside the parentheses; those remain
+        fail-closed and are still scanned for foreign targets below.
+        """
+
+        root_pattern = re.compile(
+            r"(?<![a-z0-9_])" + re.escape(expected) + r"\s*\(([^()]*)\)",
+            flags=re.IGNORECASE,
+        )
+
+        def replace(match: re.Match[str]) -> str:
+            body = match.group(1)
+            fields = re.split(r"\s*(?:,|\band\b)\s*", body)
+            normalized_fields = [
+                field.strip().strip("`'\"").lower()
+                for field in fields
+            ]
+            if not normalized_fields or any(
+                re.fullmatch(r"[a-z_][a-z0-9_]*", field) is None
+                for field in normalized_fields
+            ):
+                return match.group(0)
+            unknown_fields = sorted(set(normalized_fields) - expected_root_children)
+            if unknown_fields:
+                root_scoped_list_errors.extend(
+                    "proposal_mechanism_root_scoped_unknown_leaf:"
+                    + expected
+                    + ":"
+                    + field
+                    for field in unknown_fields
+                )
+                return match.group(0)
+            masked_body = body
+            for leaf, owners in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.items():
+                if (
+                    leaf.lower() in normalized_fields
+                    and f"{expected}.{leaf}" in owners
+                ):
+                    masked_body = re.sub(
+                        r"(?<![a-z0-9_])" + re.escape(leaf) + r"(?![a-z0-9_])",
+                        " ",
+                        masked_body,
+                        flags=re.IGNORECASE,
+                    )
+            return match.group(0).replace(body, masked_body, 1)
+
+        return root_pattern.sub(replace, text)
+
     ambiguous_shared_leaves: list[str] = []
+    unowned_fields = []
+    for value in executable_fields.values():
+        if not isinstance(value, str):
+            continue
+        masked_value = mask_literals(
+            value.lower(),
+            [
+                owner
+                for owners in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.values()
+                for owner in owners
+            ],
+        )
+        masked_value = mask_root_scoped_shared_leaves(masked_value)
+        unowned_fields.append(masked_value)
+    unowned_mechanism_text = " ".join(unowned_fields)
     for leaf, owners in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.items():
-        unowned_text = mask_literals(mechanism_text, list(owners))
+        unowned_text = unowned_mechanism_text
+        # Outside a validated root-scoped list, preserve every spelling of a
+        # shared leaf.  Executable prose cannot distinguish an explanatory
+        # phrase from a second, unowned input; treating either as harmless
+        # would let another opponent namespace alter the claimed mechanism.
         normalized_unowned = re.sub(
             r"[^a-z0-9]+", "_", unowned_text
         ).strip("_")
@@ -875,6 +975,7 @@ def _proposal_mechanism_target_errors(
             )
         ):
             ambiguous_shared_leaves.append(leaf)
+    errors.extend(sorted(set(root_scoped_list_errors)))
     if ambiguous_shared_leaves:
         errors.append(
             "proposal_mechanism_shared_leaf_requires_full_namespace:"
@@ -1099,6 +1200,39 @@ _PROPOSAL_MEASUREMENT_FIELDS = (
     "secondary",
 )
 
+_FRESH_STRICT_CONTROL_MEASUREMENT = (
+    "target=fixed_blueprint_control; "
+    "primary=typed_falsifier_and_official_5_plus_3; "
+    "expected_delta=not_applicable; samples=official_5_plus_3; "
+    "uncertainty=no_strength_claim; secondary=none"
+)
+
+
+def _system_bound_proposal_measurement(
+    raw_value: object,
+    evidence_mode: str | None,
+) -> str | None:
+    """Return a system-owned bootstrap measurement after field-presence proof.
+
+    A fresh strict control has no opponent, strength sample, or measurement
+    choice.  Its six-field measurement is therefore fixed by the bootstrap
+    contract, just like final-plan metadata is fixed by the selected proposal.
+    The provider must still emit the closed six-field shape.  Once that shape
+    is present, punctuation or a paraphrase in its values cannot alter the
+    immutable no-strength claim: the system substitutes the canonical control
+    contract.  Missing, non-string, and malformed fields remain invalid so
+    this is not a schema bypass.
+    """
+
+    if evidence_mode != "fresh_strict_control_no_strength":
+        return None
+    if (
+        not isinstance(raw_value, str)
+        or _parsed_proposal_measurement(raw_value) is None
+    ):
+        return None
+    return _FRESH_STRICT_CONTROL_MEASUREMENT
+
 
 def _parsed_proposal_measurement(value: str) -> dict[str, str] | None:
     """Parse the six-field strength hypothesis without substring loopholes."""
@@ -1128,14 +1262,9 @@ def _proposal_measurement_contract_valid(value: str, evidence_mode: str) -> bool
     if parsed is None:
         return False
     if evidence_mode == "fresh_strict_control_no_strength":
-        return parsed == {
-            "target": "fixed_blueprint_control",
-            "primary": "typed_falsifier_and_official_5_plus_3",
-            "expected_delta": "not_applicable",
-            "samples": "official_5_plus_3",
-            "uncertainty": "no_strength_claim",
-            "secondary": "none",
-        }
+        return parsed == _parsed_proposal_measurement(
+            _FRESH_STRICT_CONTROL_MEASUREMENT
+        )
     elif evidence_mode in {
         "frozen_strength_snapshot",
         "singleton_parent_no_strength",
@@ -1814,7 +1943,11 @@ def _validated_master_proposal(
         return None
     normalized["mechanism_target"] = mechanism_target
     for key in required:
-        value = str(data.get(key) or "").strip()
+        value = (
+            _system_bound_proposal_measurement(data.get(key), evidence_mode)
+            if key == "measurement"
+            else None
+        ) or str(data.get(key) or "").strip()
         if len(value) < 20:
             return None
         normalized[key] = value[:1600]
@@ -2080,8 +2213,12 @@ def _master_proposal_projection_hints(
         not in set(STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS.values())
     ):
         errors.append("proposal_mechanism_target_invalid")
+    measurement = (
+        _system_bound_proposal_measurement(data.get("measurement"), evidence_mode)
+        or str(data.get("measurement") or "")
+    )
     if evidence_mode is not None and not _proposal_measurement_contract_valid(
-        str(data.get("measurement") or ""), evidence_mode
+        measurement, evidence_mode
     ):
         errors.append("proposal_measurement_contract_invalid")
 
@@ -2991,13 +3128,17 @@ def _task_proposal_scope_paths(task: dict) -> tuple[set[str], tuple[dict, ...]]:
     return paths, tuple(invalid)
 
 
-def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
-    """Require one exact proposal selection and its writable-file contract."""
+def _resolve_allowed_selected_proposal(
+    data: dict,
+    packet: dict,
+) -> tuple[dict | None, list[str]]:
+    """Resolve the one provider-selected immutable proposal, or fail closed."""
+
     if not isinstance(data, dict):
-        return ["master_output_not_object"]
+        return None, ["master_output_not_object"]
     selected = data.get("selected_proposal_id")
     if not isinstance(selected, str):
-        return ["selected_proposal_id_must_be_one_string"]
+        return None, ["selected_proposal_id_must_be_one_string"]
     proposals = {
         item["proposal_id"]: item
         for item in packet.get("ordered_proposals", [])
@@ -3008,7 +3149,47 @@ def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
         proposal is None
         or selected not in set(map(str, packet.get("allowed_proposal_ids") or []))
     ):
-        return [f"selected_proposal_id_not_allowed:{selected}"]
+        return None, [f"selected_proposal_id_not_allowed:{selected}"]
+    return proposal, []
+
+
+def _canonicalize_selected_proposal_metadata(
+    data: dict,
+    packet: dict,
+) -> tuple[dict, dict | None, list[str], tuple[str, ...]]:
+    """Bind duplicated display metadata to the selected immutable proposal.
+
+    ``selected_proposal_id`` is the provider's one semantic selection.  Its
+    ``targeted_failure`` and ``measurement`` are already sealed in the
+    proposal packet, so letting a final-Master free-text duplicate override or
+    accidentally paraphrase them only creates a non-causal retry failure.  The
+    system therefore derives the two duplicate plan fields before any schema,
+    Worker, or strict-authority projection consumes the plan.  Selection,
+    task scope, runtime contract, and provider prompt remain independently
+    validated below.
+    """
+
+    proposal, errors = _resolve_allowed_selected_proposal(data, packet)
+    if errors or proposal is None:
+        return data, None, errors, ()
+    result = json.loads(json.dumps(data, ensure_ascii=False))
+    expected = {
+        "targeted_failure": str(proposal["targeted_failure"]),
+        "measurement_plan": str(proposal["measurement"]),
+    }
+    rebound = tuple(
+        key for key, value in expected.items() if result.get(key) != value
+    )
+    result.update(expected)
+    return result, proposal, [], rebound
+
+
+def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
+    """Require one exact proposal selection and its writable-file contract."""
+    proposal, selection_errors = _resolve_allowed_selected_proposal(data, packet)
+    if selection_errors or proposal is None:
+        return selection_errors
+    selected = str(data["selected_proposal_id"])
     errors = []
     if str(data.get("targeted_failure") or "").strip() != proposal["targeted_failure"]:
         errors.append("targeted_failure_must_exactly_copy_selected_proposal")
@@ -3381,6 +3562,51 @@ def _proposal_compilation_contract_text(packet: dict) -> str:
     return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _master_final_emission_guard(packet: dict) -> str:
+    """Render the final, system-owned selected-plan emission limits.
+
+    The final Master chooses an immutable proposal by id, then supplies only
+    task-specific implementation reasoning.  Proposal metadata and the full
+    selected contract are system-bound later, so repeating either in a Worker
+    prompt wastes the very limited provider-owned prompt budget.
+    """
+
+    allowed = set(map(str, packet.get("allowed_proposal_ids") or []))
+    rows = []
+    for proposal in packet.get("ordered_proposals") or []:
+        if not isinstance(proposal, dict):
+            continue
+        proposal_id = str(proposal.get("proposal_id") or "")
+        if proposal_id not in allowed:
+            continue
+        compilation = _selected_proposal_compilation_contract(proposal)
+        hard_cap = int(compilation["max_provider_chars"])
+        rows.append({
+            "proposal_id": proposal_id,
+            "worker_prompt_hard_cap_chars": hard_cap,
+            "worker_prompt_advisory_target_chars": max(
+                WORKER_PROMPT_MIN_CHARS,
+                hard_cap - 128,
+            ),
+        })
+    if not rows:
+        raise ValueError("Master final emission guard has no allowed proposal")
+    return (
+        "# SYSTEM-OWNED FINAL EMISSION GATE (highest priority)\n"
+        "selected_proposal_id is your only proposal-selection field. The system "
+        "binds targeted_failure and measurement_plan from that selected immutable "
+        "proposal; do not paraphrase, expand, or use either duplicate field to "
+        "change scope. For every task that writes a selected target file, keep "
+        "worker_prompt near the listed advisory target (Unicode code points) and "
+        "never exceed its hard cap. Describe only task-specific implementation and "
+        "checks: the system appends the full selected proposal and runtime contract "
+        "after validation.\n"
+        "EMISSION_CAPS="
+        + json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\nReturn the single JSON object now; do not emit analysis outside it."
+    )
+
+
 def _bind_selected_proposal_workers(data: dict, proposal: dict) -> dict:
     """Compile the selected mechanism into every writable target task."""
     result = json.loads(json.dumps(data, ensure_ascii=False))
@@ -3440,15 +3666,15 @@ def _project_strict_final_master_result(
     data, failure_mode = parse_json_output_with_mode(output or "")
     if not isinstance(data, dict) or "tasks" not in data:
         return None, [f"master_output_invalid:{failure_mode}"]
+    data, selected_proposal, selection_errors, _metadata_rebound = (
+        _canonicalize_selected_proposal_metadata(data, packet)
+    )
+    if selection_errors or selected_proposal is None:
+        return None, selection_errors
     binding_errors = _validate_final_proposal_binding(data, packet)
     if binding_errors:
         return None, binding_errors
     selected_proposal_id = data.pop("selected_proposal_id")
-    selected_proposal = next(
-        item
-        for item in packet["ordered_proposals"]
-        if item["proposal_id"] == selected_proposal_id
-    )
     data = _bind_selected_proposal_workers(data, selected_proposal)
 
     from plan_compiler import (
@@ -5056,6 +5282,9 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                         (strict_final_call or {}).get("invocation_id") or ""
                     ),
                     "schema_repair_suffix": master_schema_repair_suffix,
+                    "final_output_guard": _master_final_emission_guard(
+                        proposal_packet
+                    ),
                 },
             )
             output, _, _ = await run_claude_query(
@@ -5114,10 +5343,19 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         from llm_query import parse_json_output_with_mode
         data, _failure_mode = parse_json_output_with_mode(output)
         if data and "tasks" in data:
-            proposal_binding_errors = _validate_final_proposal_binding(
+            (
+                data,
+                selected_proposal,
+                selection_errors,
+                metadata_rebound,
+            ) = _canonicalize_selected_proposal_metadata(
                 data,
                 proposal_packet,
             )
+            proposal_binding_errors = _validate_final_proposal_binding(
+                data,
+                proposal_packet,
+            ) if not selection_errors else selection_errors
             if proposal_binding_errors:
                 ui.log_history(
                     "Master plan rejected by proposal binding: "
@@ -5154,11 +5392,28 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     pass
                 return None
             selected_proposal_id = data.pop("selected_proposal_id")
-            selected_proposal = next(
-                item
-                for item in proposal_packet["ordered_proposals"]
-                if item["proposal_id"] == selected_proposal_id
-            )
+            assert selected_proposal is not None
+            if metadata_rebound:
+                ui.log_history(
+                    "Master selected-proposal metadata was rebound by the system: "
+                    + ", ".join(metadata_rebound) + ".",
+                    "info",
+                )
+                try:
+                    from system_log import log_system_event
+                    log_system_event(
+                        "pipeline.master_selected_proposal_metadata_bound",
+                        "info",
+                        f"Master v{next_v}: bound selected proposal metadata",
+                        {
+                            "next_v": next_v,
+                            "source_v": source_v,
+                            "selected_proposal_id": selected_proposal_id,
+                            "fields": list(metadata_rebound),
+                        },
+                    )
+                except Exception:
+                    pass
             data = _bind_selected_proposal_workers(data, selected_proposal)
             # The structured runtime contract and reference-card choice already
             # determine a small set of literal execution anchors.  Bind those

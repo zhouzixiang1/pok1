@@ -72,7 +72,8 @@ EXPECTED_PROVENANCE_FIELDS = {
     ),
     "master_final": (
         "master_context_digest", "proposal_packet_digest", "source_v", "next_v",
-        "template_values_digest", "schema_repair_digest", "invocation_id",
+        "template_values_digest", "schema_repair_digest",
+        "final_output_guard_digest", "invocation_id",
     ),
     "worker_cot_audit": (
         "task_digest", "diff_digest", "worker_output_digest", "worker_role_digest",
@@ -134,7 +135,7 @@ def _renderer_inputs(role_id, marker):
     values = {
         "master_proposal": {"planning_context": marker, "direction": "mechanism", "directive": "structural mechanism", "source_v": 143, "next_v": 145, "protocol_bootstrap_prepared_only": False, "singleton_no_strength": False, "source_symbol_index": "policy.py:decide", "repair_kind": "", "projection_hints": [], "allowed_primaries": [], "invocation_id": "1" * 32},
         "master_proposal_critic": {"proposal_name": "mechanism", "lens": marker, "planning_context_digest": "1" * 64, "proposals": [{"proposal_id": "p1"}], "criteria": {"falsifiability": "required"}, "evidence_mode": "frozen_strength_snapshot", "schema_retry": False, "invocation_id": "2" * 32},
-        "master_final": {"template_values": {}, "master_context": marker, "proposal_ensemble": "{}", "source_v": 143, "next_v": 145, "invocation_id": "", "schema_repair_suffix": ""},
+        "master_final": {"template_values": {}, "master_context": marker, "proposal_ensemble": "{}", "source_v": 143, "next_v": 145, "invocation_id": "", "schema_repair_suffix": "", "final_output_guard": "# SYSTEM-OWNED FINAL EMISSION GATE\nEMISSION_CAPS=[]"},
         "worker_cot_audit": {
             "task": {"target_files": ["policy.py"]},
             "worker_role": "logic",

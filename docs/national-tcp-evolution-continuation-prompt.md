@@ -1509,3 +1509,35 @@ before stop, and reuses it for config/health/observer inline calls; regression
 coverage includes both resolved-path and missing-path fail-closed cases. Do not
 sync or restart v45 merely for this helper change. Let the active evaluation
 reach its canonical safe boundary first; any later restart resets `N/10`.
+
+## Latest superseding handoff — v46 is terminal; repair and restart are pending
+
+All previous instructions that describe v45 as live are historical. v44, v45,
+and v46 canonically abandoned at Master before Worker/candidate/quality/
+certificate/tag/rating/H2H. v46 consumed its bounded abandonment allowance and
+the outer scheduler stopped cleanly: there is no active `pipeline_state.json`,
+no active evolution service process, no candidate directory to hand-edit, and
+no strength or stability credit (**0/10**). Do not resume a historical raw
+Master response, hand-create a Bot, delete checkpoints, or copy files into the
+runtime checkout.
+
+The alignment worktree contains the pending paired source repairs: (1) an
+owner-proof grammar for shared decision-context leaves—only a complete selected
+owner or exact selected-root allowlisted list is executable; all bare,
+hyphenated, spaced, compact, foreign, unknown-child and continuation forms
+reject; (2) fresh-control measurement keeps a required six-field shape but is
+system-bound to the fixed no-strength contract; (3) final selected-proposal
+metadata is derived from the sealed proposal ID; and (4) a late, digest-bound
+emission guard makes the real Worker hard cap visible without weakening that
+gate. The companion restart helper preflights the exact project interpreter
+before stopping any service.
+
+Required next sequence: finish focused/full source tests and independent
+review; commit/push and merge the source changes to `origin/main`; from the
+stopped runtime use only Git fast-forward to that merged SHA; run checkpoint
+recovery, evaluator identity, and official-doctor diagnostics; then use the
+preflighted restart helper to create one fresh v143 workflow. Observe
+Master→Worker→quality→review→advisory Critic→native TCP precommit, then park
+for the explicit operator-only first-strict bootstrap. No v143 certificate,
+tag, rating, v144 5+3, or N/10 increment may be reported until its respective
+hard gate completes.

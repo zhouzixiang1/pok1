@@ -235,7 +235,8 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         evidence_kind="compiled_master_context",
         required_evidence_fields=(
             "master_context_digest", "proposal_packet_digest", "source_v", "next_v",
-            "template_values_digest", "schema_repair_digest", "invocation_id",
+            "template_values_digest", "schema_repair_digest",
+            "final_output_guard_digest", "invocation_id",
         ),
         scope_policy="none",
         tools=((),),
