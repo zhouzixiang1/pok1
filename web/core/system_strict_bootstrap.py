@@ -904,6 +904,10 @@ async def abandon_rejected_blueprint(
 ) -> dict[str, Any]:
     payload = deepcopy(result)
     payload["action"] = "abandon_generation"
+    terminal_review_attempt_journal = payload.pop(
+        "terminal_review_attempt_journal",
+        None,
+    )
     if not is_declared_native_bootstrap(checkpoint):
         payload.update({
             "abandoned": False,
@@ -947,11 +951,46 @@ async def abandon_rejected_blueprint(
             or not gate_payload
         ):
             raise RuntimeError("terminal_gate_request_missing_or_invalid")
+        if terminal_review_attempt_journal is not None:
+            adjudication = gate_payload.get("review_adjudication") or {}
+            terminal_attempts = (
+                terminal_review_attempt_journal
+                if isinstance(terminal_review_attempt_journal, list)
+                else []
+            )
+            if (
+                gate_name != "review"
+                or len(terminal_attempts) != 2
+                or any(not isinstance(row, dict) for row in terminal_attempts)
+                or [row.get("attempt") for row in terminal_attempts] != [1, 2]
+                or terminal_attempts[0].get("cycle_digest")
+                != terminal_attempts[1].get("cycle_digest")
+                or adjudication.get("disposition") != "repair"
+                or adjudication.get("attempt_receipt_digests")
+                != [row.get("receipt_digest") for row in terminal_attempts]
+            ):
+                raise RuntimeError(
+                    "terminal_review_attempt_journal_missing_or_invalid"
+                )
+        expected_review_attempt_journal = (
+            deepcopy(terminal_review_attempt_journal)
+            if terminal_review_attempt_journal is not None
+            else None
+        )
         terminal_stage = TERMINAL_STAGE_BY_GATE[gate_name]
         existing_outcome = live.get("terminal_gate_outcome")
         if live.get("stage") == terminal_stage and isinstance(
             existing_outcome, dict
         ):
+            if expected_review_attempt_journal is not None and (
+                live.get("review_attempt_journal")
+                != expected_review_attempt_journal
+                or ((live.get("gate_results") or {}).get("review"))
+                != gate_payload
+            ):
+                raise RuntimeError(
+                    "terminal_review_attempt_projection_mismatch"
+                )
             outcome = existing_outcome
         else:
             outcome = build_terminal_gate_outcome(
@@ -978,10 +1017,21 @@ async def abandon_rejected_blueprint(
                 expected_checkpoint_stage=str(live["stage"]),
                 expected_workflow_run_id=str(live["workflow_run_id"]),
                 terminal_gate_outcome=outcome,
+                review_attempt_journal=expected_review_attempt_journal,
             )
             if not recorded:
                 raise RuntimeError("terminal_gate_outcome_projection_rejected")
             live = read_pipeline_checkpoint()
+        if expected_review_attempt_journal is not None and (
+            not isinstance(live, dict)
+            or live.get("review_attempt_journal")
+            != expected_review_attempt_journal
+            or ((live.get("gate_results") or {}).get("review"))
+            != gate_payload
+        ):
+            raise RuntimeError(
+                "terminal_review_attempt_projection_mismatch"
+            )
         terminal_errors = validate_terminal_gate_outcome(
             live,
             outcome,

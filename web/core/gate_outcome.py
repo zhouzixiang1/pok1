@@ -422,39 +422,145 @@ def validate_terminal_gate_outcome(
                 gate_call_context,
             )
 
-            required_slots = MASTER_SLOTS + (
-                ("review",)
-                if gate_name == "review"
-                else ("review", "critic")
+            review_adjudication = gate_payload.get("review_adjudication")
+            dual_review_terminal = bool(
+                gate_name == "review"
+                and isinstance(review_adjudication, dict)
+                and review_adjudication.get("disposition") == "repair"
             )
+            expected_role_results = {gate_name: deepcopy(role_result)}
             expected_evidence = {gate_name: deepcopy(evidence)}
+            expected_gate_contexts = {
+                gate_name: deepcopy(
+                    gate_payload.get("terminal_authority_context_binding")
+                    if isinstance(
+                        gate_payload.get("terminal_authority_context_binding"),
+                        dict,
+                    )
+                    else gate_call_context(
+                        checkpoint,
+                        gate_name=gate_name,
+                        candidate_dir=Path(candidate_dir),
+                    )
+                )
+            }
+            if dual_review_terminal:
+                from reviewer_retry import (
+                    ReviewRetryError,
+                    build_review_adjudication,
+                    validate_review_attempt_journal,
+                )
+
+                journal = checkpoint.get("review_attempt_journal")
+                if not isinstance(journal, list) or len(journal) != 2:
+                    errors.append(
+                        "terminal_outcome_review_attempt_journal_invalid"
+                    )
+                    journal = []
+                else:
+                    errors.extend(
+                        "terminal_outcome_" + error
+                        for error in validate_review_attempt_journal(
+                            checkpoint,
+                            candidate_dir=Path(candidate_dir),
+                        )
+                    )
+                    try:
+                        expected_adjudication = build_review_adjudication(
+                            journal
+                        )
+                    except ReviewRetryError as exc:
+                        errors.extend(
+                            "terminal_outcome_" + error
+                            for error in exc.errors
+                        )
+                    else:
+                        if review_adjudication != expected_adjudication:
+                            errors.append(
+                                "terminal_outcome_review_adjudication_mismatch"
+                            )
+                    expected_attempts = [
+                        {
+                            "attempt": row.get("attempt"),
+                            "authority_slot": row.get("authority_slot"),
+                            "receipt_digest": row.get("receipt_digest"),
+                            "approved": row.get("approved"),
+                        }
+                        for row in journal
+                        if isinstance(row, dict)
+                    ]
+                    if (
+                        gate_payload.get("review_attempt_receipts")
+                        != expected_attempts
+                    ):
+                        errors.append(
+                            "terminal_outcome_review_attempt_receipts_mismatch"
+                        )
+                    if [row.get("authority_slot") for row in journal] != [
+                        "review",
+                        "review:retry",
+                    ]:
+                        errors.append(
+                            "terminal_outcome_review_attempt_slots_invalid"
+                        )
+                    final_gate = journal[-1].get("gate_payload") or {}
+                    for field in (
+                        "llm_role_result",
+                        "llm_authority_receipt",
+                        "llm_execution_evidence",
+                        "terminal_authority_context_binding",
+                    ):
+                        if gate_payload.get(field) != final_gate.get(field):
+                            errors.append(
+                                "terminal_outcome_review_final_"
+                                f"{field}_mismatch"
+                            )
+                    expected_role_results = {
+                        str(row.get("authority_slot") or ""): deepcopy(
+                            (row.get("gate_payload") or {}).get(
+                                "llm_role_result"
+                            )
+                        )
+                        for row in journal
+                    }
+                    expected_evidence = {
+                        str(row.get("authority_slot") or ""): deepcopy(
+                            (row.get("gate_payload") or {}).get(
+                                "llm_execution_evidence"
+                            )
+                        )
+                        for row in journal
+                    }
+                    expected_gate_contexts = {
+                        slot: gate_call_context(
+                            checkpoint,
+                            gate_name=slot,
+                            candidate_dir=Path(candidate_dir),
+                        )
+                        for slot in ("review", "review:retry")
+                    }
+                required_slots = MASTER_SLOTS + (
+                    "review",
+                    "review:retry",
+                )
+            else:
+                required_slots = MASTER_SLOTS + (
+                    ("review",)
+                    if gate_name == "review"
+                    else ("review", "critic")
+                )
             if gate_name == "critic":
                 expected_evidence["review"] = deepcopy(
                     ((gates.get("review") or {}).get("llm_execution_evidence"))
                 )
             summary_kwargs = {
                 "required_slots": required_slots,
-                "expected_role_results": {
-                    gate_name: deepcopy(role_result)
-                },
+                "expected_role_results": expected_role_results,
                 "expected_context_bindings": {
                     **expected_master_contexts(
                         checkpoint.get("master_plan") or {}
                     ),
-                    gate_name: deepcopy(
-                        gate_payload.get("terminal_authority_context_binding")
-                        if isinstance(
-                            gate_payload.get(
-                                "terminal_authority_context_binding"
-                            ),
-                            dict,
-                        )
-                        else gate_call_context(
-                            checkpoint,
-                            gate_name=gate_name,
-                            candidate_dir=Path(candidate_dir),
-                        )
-                    ),
+                    **expected_gate_contexts,
                 },
                 "expected_invocation_evidence": expected_evidence,
                 "require_no_other_accepted": True,

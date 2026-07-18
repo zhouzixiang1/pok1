@@ -4865,6 +4865,43 @@ async def run_review(args):
                     },
                 )
                 return _json_tool_result(rejected)
+        if _strict_bootstrap and not final_approved:
+            # The first strict candidate is an exact system-owned blueprint.
+            # A two-verdict rejection cannot authorize an LLM Worker to edit
+            # those fixed bytes, so ``repair_planned`` would be an executable
+            # dead end and would loop after restart.  Project both immutable
+            # attempt receipts and the conservative adjudication into the
+            # canonical terminal checkpoint CAS, then use its receipt as the
+            # sole durable abandon authority.
+            from system_strict_bootstrap import abandon_rejected_blueprint
+
+            rejected = await abandon_rejected_blueprint(
+                ckpt,
+                reason="system_strict_bootstrap_review_rejected",
+                result={
+                    "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_REJECTED",
+                    "approved": False,
+                    "success": False,
+                    "failure_class": "strategy_review",
+                    "feedback": feedback,
+                    "review_verdict_attempt": _review_verdict_attempt,
+                    "review_adjudication": adjudication,
+                    "review_attempt_receipts": gate.get(
+                        "review_attempt_receipts"
+                    ),
+                    "terminal_gate_name": "review",
+                    "terminal_reason_code": "review_rejected",
+                    "terminal_gate_payload": gate,
+                    "terminal_review_attempt_journal": prospective_journal,
+                    "directive": (
+                        "Both bounded Reviewer verdicts are terminal for the "
+                        "fixed first-strict blueprint. The exact journal and "
+                        "gate receipt were routed to canonical abandon; never "
+                        "dispatch execute_workers or a third Reviewer."
+                    ),
+                },
+            )
+            return _json_tool_result(rejected)
         checkpoint_recorded = _record_gate(
             v,
             source_v,

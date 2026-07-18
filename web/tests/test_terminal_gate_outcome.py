@@ -421,6 +421,392 @@ def test_free_form_abandon_reason_cannot_fabricate_terminal_request(
     assert writes == []
 
 
+def test_dual_review_terminal_outcome_replays_both_authority_slots(
+    tmp_path,
+    monkeypatch,
+):
+    import reviewer_retry
+    import strict_authority_workflow as authority
+    import tool_bot_management
+    from gate_outcome import (
+        build_terminal_gate_outcome,
+        validate_terminal_gate_outcome,
+    )
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    checkpoint = _checkpoint(
+        candidate,
+        stage="quality_passed",
+        revision=8,
+    )
+    checkpoint["gate_results"]["quality"] = {
+        "all_passed": True,
+        "critical_scenarios_passed": True,
+    }
+    semantic_digest = "a" * 64
+
+    def attempt_gate(slot, *, approved):
+        role_result = {
+            "approved": approved,
+            "quality_score": 8 if approved else 2,
+            "feedback": f"{slot} verdict",
+            "change_summary": "reviewed",
+            "risk_areas": [],
+        }
+        return {
+            "version": 143,
+            "source_v": 142,
+            "passed": approved,
+            "approved": approved,
+            "llm_invoked": True,
+            "reviewer_llm_executed": True,
+            "schema_valid": True,
+            "llm_role_result": role_result,
+            "llm_authority_receipt": {"slot": slot, "bound": True},
+            "llm_execution_evidence": {"slot": slot, "executed": True},
+            "terminal_authority_context_binding": {"phase": slot},
+        }
+
+    first_gate = attempt_gate("review", approved=False)
+    second_gate = attempt_gate("review:retry", approved=True)
+    first = reviewer_retry.build_review_attempt_receipt(
+        {**checkpoint, "checkpoint_revision": 7},
+        gate_payload=first_gate,
+        candidate_dir=candidate,
+        attempt=1,
+        authority_slot="review",
+        review_semantic_contract_digest=semantic_digest,
+    )
+    second = reviewer_retry.build_review_attempt_receipt(
+        checkpoint,
+        gate_payload=second_gate,
+        candidate_dir=candidate,
+        attempt=2,
+        authority_slot="review:retry",
+        review_semantic_contract_digest=semantic_digest,
+    )
+    journal = [first, second]
+    adjudication = reviewer_retry.build_review_adjudication(journal)
+    terminal_gate = {
+        **second_gate,
+        "passed": False,
+        "approved": False,
+        "feedback": "review verdict conflict",
+        "review_verdict_attempt": 2,
+        "review_consistency": "conflict",
+        "review_attempt_receipts": [
+            {
+                "attempt": row["attempt"],
+                "authority_slot": row["authority_slot"],
+                "receipt_digest": row["receipt_digest"],
+                "approved": row["approved"],
+            }
+            for row in journal
+        ],
+        "review_adjudication": adjudication,
+    }
+    checkpoint["review_attempt_journal"] = deepcopy(journal)
+    outcome = build_terminal_gate_outcome(
+        checkpoint,
+        gate_name="review",
+        gate_payload=terminal_gate,
+        candidate_dir=candidate,
+        reason_code="review_rejected",
+        failure_class="strategy_review",
+    )
+    projected = _project_terminal_outcome(
+        checkpoint,
+        "review",
+        terminal_gate,
+        outcome,
+    )
+    summaries = []
+    monkeypatch.setattr(
+        authority,
+        "expected_master_contexts",
+        lambda _plan: {},
+    )
+    monkeypatch.setattr(
+        authority,
+        "gate_call_context",
+        lambda _checkpoint, *, gate_name, **_kwargs: {"phase": gate_name},
+    )
+    monkeypatch.setattr(
+        authority,
+        "authority_summary",
+        lambda _checkpoint, **kwargs: summaries.append(deepcopy(kwargs)) or {},
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "terminal_gate_abandon_fence_proof_if_present",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert validate_terminal_gate_outcome(
+        projected,
+        candidate_dir=candidate,
+    ) == []
+    assert len(summaries) == 1
+    assert summaries[0]["required_slots"][-2:] == (
+        "review",
+        "review:retry",
+    )
+    assert summaries[0]["expected_role_results"] == {
+        "review": first_gate["llm_role_result"],
+        "review:retry": second_gate["llm_role_result"],
+    }
+
+    drifted = deepcopy(projected)
+    drifted["review_attempt_journal"][-1]["gate_payload"][
+        "llm_execution_evidence"
+    ] = {"slot": "review:retry", "executed": False}
+    drift_errors = validate_terminal_gate_outcome(
+        drifted,
+        candidate_dir=candidate,
+    )
+    assert "terminal_outcome_review_attempt_2_gate_payload_digest_invalid" in (
+        drift_errors
+    )
+    assert (
+        "terminal_outcome_review_final_llm_execution_evidence_mismatch"
+        in drift_errors
+    )
+
+
+def test_dual_review_terminal_projection_is_exact_and_resumable(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+    import system_strict_bootstrap as bootstrap
+    import tool_bot_management
+
+    candidate = tmp_path / "bots" / "national_v143"
+    candidate.mkdir(parents=True)
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    live = _checkpoint(candidate, stage="quality_passed", revision=7)
+    journal = [
+        {
+            "attempt": 1,
+            "cycle_digest": "a" * 64,
+            "receipt_digest": "b" * 64,
+            "approved": False,
+        },
+        {
+            "attempt": 2,
+            "cycle_digest": "a" * 64,
+            "receipt_digest": "c" * 64,
+            "approved": True,
+        },
+    ]
+    gate = {
+        "passed": False,
+        "approved": False,
+        "feedback": "conflicting verdicts",
+        "review_adjudication": {
+            "disposition": "repair",
+            "attempt_receipt_digests": ["b" * 64, "c" * 64],
+        },
+    }
+    writes = []
+    abandon_calls = []
+
+    monkeypatch.setattr(bootstrap, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: deepcopy(live),
+    )
+
+    def write(*_args, **kwargs):
+        nonlocal live
+        writes.append(deepcopy(kwargs))
+        assert kwargs["expected_checkpoint_revision"] == 7
+        assert kwargs["expected_checkpoint_stage"] == "quality_passed"
+        assert kwargs["expected_workflow_run_id"] == live["workflow_run_id"]
+        assert kwargs["review_attempt_journal"] == journal
+        live = _project_terminal_outcome(
+            live,
+            "review",
+            gate,
+            kwargs["terminal_gate_outcome"],
+        )
+        live["review_attempt_journal"] = deepcopy(
+            kwargs["review_attempt_journal"]
+        )
+        return True
+
+    async def abandon(**kwargs):
+        abandon_calls.append(deepcopy(kwargs))
+        if len(abandon_calls) == 1:
+            return {
+                "abandoned": False,
+                "reason": "simulated_cleanup_interruption",
+            }
+        return {"abandoned": True, "cleared_checkpoint": True}
+
+    monkeypatch.setattr(evolution_infra, "write_pipeline_checkpoint", write)
+    monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", abandon)
+    monkeypatch.setattr(
+        tool_bot_management,
+        "expected_abandon_identity",
+        lambda checkpoint: {
+            "expected_workflow_run_id": checkpoint["workflow_run_id"],
+            "expected_next_v": checkpoint["next_v"],
+            "expected_source_v": checkpoint["source_v"],
+            "expected_checkpoint_revision": checkpoint[
+                "checkpoint_revision"
+            ],
+            "expected_checkpoint_stage": checkpoint["stage"],
+        },
+    )
+
+    request = {
+        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_REJECTED",
+        "approved": False,
+        "failure_class": "strategy_review",
+        "feedback": "conflicting verdicts",
+        "terminal_gate_name": "review",
+        "terminal_reason_code": "review_rejected",
+        "terminal_gate_payload": gate,
+        "terminal_review_attempt_journal": journal,
+    }
+    first = asyncio.run(bootstrap.abandon_rejected_blueprint(
+        _checkpoint(candidate, stage="quality_passed", revision=7),
+        reason="system_strict_bootstrap_review_rejected",
+        result=request,
+    ))
+
+    assert first["abandoned"] is False
+    assert first["abandon_error"] == "simulated_cleanup_interruption"
+    assert len(writes) == 1
+    assert live["stage"] == "review_rejected"
+    assert live["review_attempt_journal"] == journal
+    assert live["gate_results"]["review"] == gate
+
+    recovered = asyncio.run(bootstrap.abandon_rejected_blueprint(
+        deepcopy(live),
+        reason="system_strict_bootstrap_review_rejected",
+        result=request,
+    ))
+
+    assert recovered["abandoned"] is True
+    assert recovered["checkpoint_stage"] == "abandoned"
+    assert len(writes) == 1
+    assert len(abandon_calls) == 2
+    assert abandon_calls[0] == abandon_calls[1]
+    assert abandon_calls[1]["expected_checkpoint_stage"] == "review_rejected"
+    assert abandon_calls[1]["expected_checkpoint_revision"] == 8
+
+    drifted_journal = deepcopy(journal)
+    drifted_journal[-1]["receipt_digest"] = "d" * 64
+    drifted_gate = deepcopy(gate)
+    drifted_gate["review_adjudication"]["attempt_receipt_digests"][-1] = (
+        "d" * 64
+    )
+    drifted = asyncio.run(bootstrap.abandon_rejected_blueprint(
+        deepcopy(live),
+        reason="system_strict_bootstrap_review_rejected",
+        result={
+            **request,
+            "terminal_gate_payload": drifted_gate,
+            "terminal_review_attempt_journal": drifted_journal,
+        },
+    ))
+
+    assert drifted["abandoned"] is False
+    assert "terminal_review_attempt_projection_mismatch" in drifted[
+        "abandon_error"
+    ]
+    assert len(abandon_calls) == 2
+
+
+def test_dual_review_terminal_projection_cas_failure_preserves_source(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+    import system_strict_bootstrap as bootstrap
+    import tool_bot_management
+
+    candidate = tmp_path / "bots" / "national_v143"
+    candidate.mkdir(parents=True)
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    checkpoint = _checkpoint(candidate, stage="quality_passed", revision=7)
+    journal = [
+        {
+            "attempt": 1,
+            "cycle_digest": "a" * 64,
+            "receipt_digest": "b" * 64,
+        },
+        {
+            "attempt": 2,
+            "cycle_digest": "a" * 64,
+            "receipt_digest": "c" * 64,
+        },
+    ]
+    gate = {
+        "passed": False,
+        "approved": False,
+        "review_adjudication": {
+            "disposition": "repair",
+            "attempt_receipt_digests": ["b" * 64, "c" * 64],
+        },
+    }
+    writes = []
+
+    monkeypatch.setattr(bootstrap, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(
+        bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: deepcopy(checkpoint),
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "write_pipeline_checkpoint",
+        lambda *_args, **kwargs: writes.append(deepcopy(kwargs)) or False,
+    )
+    monkeypatch.setattr(
+        tool_bot_management,
+        "_do_abandon_generation",
+        lambda **_kwargs: pytest.fail("CAS failure must not enter cleanup"),
+    )
+
+    result = asyncio.run(bootstrap.abandon_rejected_blueprint(
+        checkpoint,
+        reason="system_strict_bootstrap_review_rejected",
+        result={
+            "failure_class": "strategy_review",
+            "terminal_gate_name": "review",
+            "terminal_reason_code": "review_rejected",
+            "terminal_gate_payload": gate,
+            "terminal_review_attempt_journal": journal,
+        },
+    ))
+
+    assert result["abandoned"] is False
+    assert "terminal_gate_outcome_projection_rejected" in result[
+        "abandon_error"
+    ]
+    assert len(writes) == 1
+    assert writes[0]["expected_checkpoint_revision"] == 7
+    assert writes[0]["expected_checkpoint_stage"] == "quality_passed"
+    assert writes[0]["review_attempt_journal"] == journal
+    assert checkpoint["stage"] == "quality_passed"
+
+
 def test_terminal_checkpoint_rejects_noncanonical_abandon_reason(
     tmp_path,
     monkeypatch,

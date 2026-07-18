@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
 
 def test_first_reject_retries_same_stage_then_conflict_routes_repair(
     tmp_path,
@@ -157,6 +159,229 @@ def test_first_reject_retries_same_stage_then_conflict_routes_repair(
     assert len(kwargs["review_attempt_journal"]) == 2
     assert gate["approved"] is False
     assert gate["review_consistency"] == "conflict"
+
+
+@pytest.mark.parametrize(
+    ("second_approved", "expected_consistency"),
+    [(False, "consistent_reject"), (True, "conflict")],
+)
+def test_fixed_first_strict_dual_verdict_routes_exact_terminal_abandon(
+    tmp_path,
+    monkeypatch,
+    second_approved,
+    expected_consistency,
+):
+    import llm_query
+    import reviewer_retry
+    import strict_authority_workflow
+    import system_strict_bootstrap
+    import tool_gates
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    checkpoint = {
+        "workflow_run_id": "generation:143:strict-review-terminal",
+        "next_v": 143,
+        "source_v": 142,
+        "parent2_v": None,
+        "stage": "quality_passed",
+        "checkpoint_revision": 8,
+        "master_plan": {"tasks": []},
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+            }
+        },
+        "audit_context": {},
+    }
+    provider_results = [
+        {
+            "approved": False,
+            "quality_score": 3,
+            "feedback": "reachable defect A",
+            "change_summary": "reject",
+            "risk_areas": ["policy"],
+        },
+        {
+            "approved": second_approved,
+            "quality_score": 8 if second_approved else 2,
+            "feedback": "approve conflict" if second_approved else "reachable defect B",
+            "change_summary": "second verdict",
+            "risk_areas": [],
+        },
+    ]
+    writes = []
+    abandoned = {}
+
+    class UI:
+        def log_history(self, *_args, **_kwargs):
+            return None
+
+        def get_output(self):
+            return ""
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def query(*_args, **_kwargs):
+        return json.dumps(provider_results.pop(0)), 0.1, {}
+
+    def write(*_args, **kwargs):
+        writes.append(kwargs)
+        checkpoint["review_attempt_journal"] = kwargs[
+            "review_attempt_journal"
+        ]
+        checkpoint["checkpoint_revision"] += 1
+        return True
+
+    async def abandon(_checkpoint, *, reason, result):
+        abandoned.update({
+            "checkpoint": _checkpoint,
+            "reason": reason,
+            "result": result,
+        })
+        return {
+            **result,
+            "action": "abandon_generation",
+            "abandoned": True,
+            "checkpoint_stage": "abandoned",
+        }
+
+    def gate_context(_checkpoint, *, gate_name, **_kwargs):
+        return {"gate_name": gate_name, "candidate": "bound"}
+
+    def new_call(_checkpoint, *, slot, context_binding):
+        return {
+            "invocation_id": ("1" if slot == "review" else "2") * 32,
+            "slot": slot,
+            "context_binding": context_binding,
+        }
+
+    monkeypatch.setattr(tool_gates, "_set_pipeline_status", lambda *_args: None)
+    monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_gates,
+        "_owned_infrastructure_failure",
+        lambda *_args: (None, None),
+    )
+    monkeypatch.setattr(
+        tool_gates,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted,
+    )
+    monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *_a, **_k: None)
+    monkeypatch.setattr(tool_gates, "_quality_gate_ok", lambda _checkpoint: True)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_gates, "get_logs_dir", lambda _version: tmp_path / "logs")
+    monkeypatch.setattr(tool_gates, "_get_ui", lambda: UI())
+    monkeypatch.setattr(
+        tool_gates,
+        "_llm_gate_infrastructure_identity",
+        lambda **_kwargs: ("reviewer", {}),
+    )
+    monkeypatch.setattr(tool_gates, "run_claude_query", query)
+    monkeypatch.setattr(tool_gates, "write_pipeline_checkpoint", write)
+    monkeypatch.setattr(
+        tool_gates,
+        "_record_gate",
+        lambda *_a, **_k: pytest.fail(
+            "fixed first-strict rejection must not project repair_planned"
+        ),
+    )
+    monkeypatch.setattr(tool_gates, "log_system_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tool_gates,
+        "_record_quality_failure",
+        lambda *_a, **_k: pytest.fail(
+            "candidate cleanup must not enter Worker repair bookkeeping"
+        ),
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "abandon_rejected_blueprint",
+        abandon,
+    )
+    monkeypatch.setattr(strict_authority_workflow, "gate_call_context", gate_context)
+    monkeypatch.setattr(strict_authority_workflow, "new_call", new_call)
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "render_gate_provider_prompt",
+        lambda _call: "sealed strict reviewer prompt",
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "strict_invocation_log_path",
+        lambda call, **_kwargs: tmp_path / f"{call['slot'].replace(':', '-')}.log",
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "accept_role_result",
+        lambda call, **_kwargs: {
+            "kind": "test-authority-receipt",
+            "slot": call["slot"],
+        },
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "record_bound_invocation_evidence",
+        lambda call, **_kwargs: {
+            "kind": "test-execution-evidence",
+            "slot": call["slot"],
+        },
+    )
+    monkeypatch.setattr(
+        reviewer_retry,
+        "validate_strict_review_attempt_authority",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        llm_query,
+        "render_llm_prompt",
+        lambda *_args, **_kwargs: "unused ordinary prompt",
+    )
+
+    first = json.loads(asyncio.run(tool_gates.run_review.handler({
+        "version": 143,
+        "source_v": 142,
+        "plan": [],
+    }))["content"][0]["text"])
+    assert first["review_retry_scheduled"] is True
+    assert first["next_tool"] == "run_review"
+    assert len(writes) == 1
+
+    second = json.loads(asyncio.run(tool_gates.run_review.handler({
+        "version": 143,
+        "source_v": 142,
+        "plan": [],
+    }))["content"][0]["text"])
+
+    assert provider_results == []
+    assert second["approved"] is False
+    assert second["abandoned"] is True
+    assert second["action"] == "abandon_generation"
+    assert second.get("next_tool") != "execute_workers"
+    assert abandoned["reason"] == "system_strict_bootstrap_review_rejected"
+    terminal = abandoned["result"]
+    assert terminal["failure_class"] == "strategy_review"
+    assert terminal["terminal_gate_name"] == "review"
+    assert terminal["terminal_reason_code"] == "review_rejected"
+    assert terminal["terminal_gate_payload"]["review_consistency"] == (
+        expected_consistency
+    )
+    assert terminal["review_adjudication"]["disposition"] == "repair"
+    assert len(terminal["terminal_review_attempt_journal"]) == 2
+    assert [
+        row["approved"]
+        for row in terminal["terminal_review_attempt_journal"]
+    ] == [False, second_approved]
+    assert "never dispatch execute_workers" in terminal["directive"]
 
 
 def test_valid_approval_consumes_timeout_overlay_in_reviewed_cas(
