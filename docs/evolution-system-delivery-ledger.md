@@ -4338,3 +4338,42 @@ manifest digest is
 Immediate identity revalidation passed.  This reset is an operator-owned empty
 epoch boundary, not evidence for any Bot and not permission to carry the
 archived v141 validation ledger into ratings.
+
+## 2026-07-19 — live v143 official-bootstrap namespace incident
+
+Fresh workflow `generation:143:workflow-v62` reached checkpoint revision 22,
+`official_bootstrap_required`, after the corrected fixed blueprint completed
+Master, Worker, Quality, Reviewer, advisory Critic and eight complete 70-hand
+native first-control precommit samples.  Candidate artifact identity is
+`f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+The explicit operator command created durable official job
+`982bfefb23e39ff89457231fbed43219f8720b404954c639d0024c8c1ccb87a0`.
+Attempt one stopped before the official EXE or any hand was launched with
+`official_acceptance_bot_outside_active_namespace`: job creation had correctly
+selected and rebound the immutable system-owned first-strict control, but the
+low-level harness applied the normal `bots/` opponent namespace gate before it
+revalidated that separate authorization.  The result was harness-inconclusive,
+0/8 rounds, no signed verdict-ledger append and successful-control consumption
+0/1.  It is neither Bot failure nor strength evidence.
+
+The repair keeps the candidate and every normal opponent under the existing
+active `bots/` namespace.  Only a 70-hand production formal job bearing the
+current first-strict control id may defer opponent namespace validation.  The
+harness then revalidates the complete current operator-authorized selection,
+requires the supplied opponent path to equal the authorized materialized
+control path, and revalidates the immutable control bytes before execution
+profile probing, sealing or process launch.  Missing opponent, a substituted
+outside path, an unknown control label, authorization drift or materialized
+byte drift all fail closed before the EXE.  The exception grants no normal
+official-opponent, rating or strength authority to the system control.
+The completed inconclusive attempt result digest is
+`d34ef471a6e7ff7b0be09043b67c6801b09d284db28ec174a2d2bb01beaf94f9`.
+Focused verification is 50 harness tests plus 333 official/bootstrap/control
+tests, all passing.  Complete Web verification is `3441 passed, 20 skipped`
+with the existing dependency warning; compileall and `git diff --check` are
+green.  Because the harness is an always-critical evaluation-contract input,
+this repair cannot resume the old parked authorization under a new source
+hash.  The old v62 checkpoint must be exact-CAS abandoned on its recorded HEAD
+after the failed job is terminal, then the reviewed fix must flow through
+`origin/main` and a fresh v143 must reproduce every gate before another
+explicit bootstrap attempt.

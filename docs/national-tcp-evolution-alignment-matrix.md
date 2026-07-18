@@ -451,6 +451,12 @@ They are historical source-review identities, never a Bot, certificate,
 rating, strength, merge, or current runtime-resume claim. The later overlays
 supersede their operator transition.
 
+## Live v143 official-bootstrap system-control namespace closure
+
+| Rule | Authority | Production owner | Dynamic gate | Rendered prompt contract | Data producer → consumer | Positive / negative regression | Fail-closed behavior | Status |
+|---|---|---|---|---|---|---|---|---|
+| the one-time first-strict control is a system-owned formal-bootstrap opponent, not a generic active Bot or outside-path waiver | `AGENTS.md` one-time empty-pool bootstrap; `official_bootstrap_control.json`; content-bound operator authorization | `official_bootstrap.py::validate_operator_bootstrap_authorized_selection`; `first_strict_control.py::validate_materialized_control`; `official_platform_harness.py::run_official_acceptance_sync` | candidate always passes strict active-namespace validation; normal opponents always pass the same gate; only a production 70-hand formal job with the exact current control id may defer opponent validation, after which selection, exact path and immutable bytes are rebound before profile/seal/launch | roles may describe the control only as zero-strength first-Bot bootstrap authority; they cannot call it a published/normal opponent, rating sample or generic namespace exception | checked-in control package → immutable materialized control → parked v143 request → explicit operator authorization → durable job envelope → live selection/path/byte revalidation → sealed official EXE input | authorized outside-system-control positive; normal active opponent positive; unknown label, missing opponent, substituted outside path, symlink/path drift, authorization drift and byte/hash drift negatives | any mismatch stops before EXE and before successful control consumption; no 0-round harness result can certify, publish or rate a Bot | workflow-v62 exposed 0/8 pre-launch ordering defect; source repair verified by 50 harness + 333 related + full Web 3441/20-skipped; runtime re-prepare and formal certification pending |
+
 ## Contract-39 superseding overlay — closed-axis Master recovery and system-asset boundary
 
 The following rows replace only the current Master re-entry and asset wording;

@@ -1121,11 +1121,23 @@ def test_formal_harness_keeps_v143_bootstrap_on_its_distinct_authorization_path(
     candidate = tmp_path / "candidate"
     candidate.mkdir()
     (candidate / "national_bot.py").write_text("pass\n", encoding="utf-8")
+    control = tmp_path / "system-controls" / "control"
+    control.mkdir(parents=True)
+    (control / "national_bot.py").write_text("pass\n", encoding="utf-8")
     monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    validated = []
+
+    def validate_active(path):
+        resolved = Path(path).resolve()
+        validated.append(resolved)
+        if resolved == control:
+            raise RuntimeError("official_acceptance_bot_outside_active_namespace")
+        return resolved
+
     monkeypatch.setattr(
         harness,
         "_validate_active_diagnostic_bot",
-        lambda path: Path(path).resolve(),
+        validate_active,
     )
     monkeypatch.setattr(
         harness,
@@ -1147,24 +1159,162 @@ def test_formal_harness_keeps_v143_bootstrap_on_its_distinct_authorization_path(
             and isinstance(selection, dict)
             and Path(path) == candidate,
             "issues": [],
+            "selection": selection,
         },
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_materialized_control",
+        lambda path: [] if Path(path) == control else ["control_path_mismatch"],
     )
 
     result = run_official_acceptance_sync(
         candidate,
+        opponent=control,
         self_play_rounds=1,
-        opponent_rounds=0,
+        opponent_rounds=1,
         target_hands=70,
         round_runner=harness._PRODUCTION_ROUND_RUNNER,
         job_envelope={
             "bootstrap_control_id": first_strict_control.CONTROL_ID,
-            "opponent_selection": {"selected": True},
+            "opponent_selection": {
+                "selected": True,
+                "opponent": {"path": str(control)},
+            },
         },
         config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
     )
 
     assert result.passed is False
     assert any("stop-after-bootstrap-branch" in issue for issue in result.issues)
+    assert validated == [candidate]
+
+
+def test_formal_bootstrap_rejects_outside_path_not_bound_by_authorization(
+    tmp_path, monkeypatch
+):
+    import first_strict_control
+    import official_bootstrap
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    authorized = tmp_path / "system-controls" / "authorized"
+    authorized.mkdir(parents=True)
+    supplied = tmp_path / "system-controls" / "substituted"
+    supplied.mkdir(parents=True)
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        harness,
+        "_validate_active_diagnostic_bot",
+        lambda path: Path(path).resolve(),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_operator_bootstrap_authorized_selection",
+        lambda selection, _control_id, _path: {
+            "valid": True,
+            "issues": [],
+            "selection": selection,
+        },
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_materialized_control",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("a substituted path must fail before byte validation")
+        ),
+    )
+    monkeypatch.setattr(
+        harness,
+        "validate_execution_profile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a substituted path must fail before EXE preflight")
+        ),
+    )
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=supplied,
+        self_play_rounds=0,
+        opponent_rounds=1,
+        target_hands=70,
+        round_runner=harness._PRODUCTION_ROUND_RUNNER,
+        job_envelope={
+            "bootstrap_control_id": first_strict_control.CONTROL_ID,
+            "opponent_selection": {
+                "selected": True,
+                "opponent": {"path": str(authorized)},
+            },
+        },
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is False
+    assert any(
+        "official_formal_bootstrap_authorization_invalid:opponent_path_mismatch"
+        in issue
+        for issue in result.issues
+    )
+
+
+def test_formal_bootstrap_rejects_symlink_alias_of_authorized_control(
+    tmp_path, monkeypatch
+):
+    import first_strict_control
+    import official_bootstrap
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    authorized = tmp_path / "system-controls" / "authorized"
+    authorized.mkdir(parents=True)
+    alias = tmp_path / "control-alias"
+    alias.symlink_to(authorized, target_is_directory=True)
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        harness,
+        "_validate_active_diagnostic_bot",
+        lambda path: Path(path).resolve(),
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_operator_bootstrap_authorized_selection",
+        lambda selection, _control_id, _path: {
+            "valid": True,
+            "issues": [],
+            "selection": selection,
+        },
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_materialized_control",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("a symlink alias must fail before byte validation")
+        ),
+    )
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=alias,
+        self_play_rounds=0,
+        opponent_rounds=1,
+        target_hands=70,
+        round_runner=harness._PRODUCTION_ROUND_RUNNER,
+        job_envelope={
+            "bootstrap_control_id": first_strict_control.CONTROL_ID,
+            "opponent_selection": {
+                "selected": True,
+                "opponent": {"path": str(authorized)},
+            },
+        },
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is False
+    assert any(
+        "official_formal_bootstrap_authorization_invalid:opponent_path_mismatch"
+        in issue
+        for issue in result.issues
+    )
 
 
 def test_formal_harness_rejects_an_untrusted_bootstrap_label_before_exe(

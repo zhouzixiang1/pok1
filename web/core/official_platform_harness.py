@@ -2785,7 +2785,12 @@ def run_official_acceptance_sync(
     )
     suite_dir.mkdir(parents=True, exist_ok=True)
     candidate_path = Path(candidate).expanduser().resolve()
-    opponent_path = Path(opponent).expanduser().resolve() if opponent else None
+    opponent_requested = (
+        Path(os.path.abspath(os.fspath(Path(opponent).expanduser())))
+        if opponent
+        else None
+    )
+    opponent_path = opponent_requested.resolve() if opponent_requested else None
     self_play_rounds = max(0, int(self_play_rounds))
     opponent_rounds = max(0, int(opponent_rounds))
     target_hands = max(1, min(70, int(target_hands)))
@@ -2798,12 +2803,24 @@ def run_official_acceptance_sync(
     formal_execution: dict[str, Any] | None = None
 
     try:
-        if round_runner is _PRODUCTION_ROUND_RUNNER:
-            candidate_path = _validate_active_diagnostic_bot(candidate_path)
-            if opponent_path is not None:
-                opponent_path = _validate_active_diagnostic_bot(opponent_path)
         formal_requested = job_envelope is not None and target_hands == 70
         formal_job = formal_requested and round_runner is _PRODUCTION_ROUND_RUNNER
+        bootstrap_control_id = (
+            str(job_envelope.get("bootstrap_control_id") or "").strip()
+            if isinstance(job_envelope, dict)
+            else ""
+        )
+        formal_bootstrap = formal_job and bool(bootstrap_control_id)
+        if round_runner is _PRODUCTION_ROUND_RUNNER:
+            candidate_path = _validate_active_diagnostic_bot(candidate_path)
+            # A normal opponent must always be an active ``bots/`` artifact.
+            # The sole exception is the separately authorized first-strict
+            # system control.  Its exact materialized path and bytes are
+            # rebound below only after the current operator authorization has
+            # been validated; a label or an arbitrary outside path is never a
+            # namespace waiver.
+            if opponent_path is not None and not formal_bootstrap:
+                opponent_path = _validate_active_diagnostic_bot(opponent_path)
         if formal_requested and not formal_job:
             raise RuntimeError("formal official job cannot replace the production round runner")
         if formal_job:
@@ -2812,9 +2829,6 @@ def run_official_acceptance_sync(
             # quality/capability/probe receipt.  A first-strict control has a
             # separate, explicit authorization path and is intentionally not
             # treated as an omitted normal quality receipt.
-            bootstrap_control_id = str(
-                job_envelope.get("bootstrap_control_id") or ""
-            ).strip()
             if bootstrap_control_id:
                 # This is not a generic exemption from the normal admission
                 # receipt.  Only the one system-owned v143 control, with its
@@ -2847,6 +2861,45 @@ def run_official_acceptance_sync(
                             )[:12]
                         )
                     )
+                authorized_selection = bootstrap_validation.get("selection")
+                if not isinstance(authorized_selection, dict):
+                    authorized_selection = selection
+                authorized_opponent = authorized_selection.get("opponent")
+                authorized_path = (
+                    str(authorized_opponent.get("path") or "")
+                    if isinstance(authorized_opponent, dict)
+                    else ""
+                )
+                authorized_requested = (
+                    Path(os.path.abspath(os.fspath(Path(authorized_path).expanduser())))
+                    if authorized_path
+                    else None
+                )
+                if opponent_rounds > 0 and opponent_path is None:
+                    raise RuntimeError(
+                        "official_formal_bootstrap_authorization_invalid:"
+                        "opponent_missing"
+                    )
+                if opponent_path is not None:
+                    if (
+                        authorized_requested is None
+                        or opponent_requested is None
+                        or opponent_requested.is_symlink()
+                        or opponent_requested != authorized_requested
+                        or authorized_requested.resolve() != opponent_path
+                    ):
+                        raise RuntimeError(
+                            "official_formal_bootstrap_authorization_invalid:"
+                            "opponent_path_mismatch"
+                        )
+                    from first_strict_control import validate_materialized_control
+
+                    control_issues = validate_materialized_control(opponent_path)
+                    if control_issues:
+                        raise RuntimeError(
+                            "official_formal_bootstrap_authorization_invalid:"
+                            + ";".join(str(item) for item in control_issues[:12])
+                        )
             else:
                 expected_admission = (
                     job_envelope.get("quality_admission")
