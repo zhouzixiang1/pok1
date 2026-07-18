@@ -3723,19 +3723,24 @@ The integrated source stack at this documentation freeze contains:
 
 The source batch also adds a narrow compatibility proof for the completed old
 Reviewer effect. The recorded v52 renderer has exactly the five semantic inputs
-`focus_areas`, `master_plan`, `next_v`, `source_v`, and `strict_bootstrap`; the
-new source-owned renderer has those fields plus
-`review_semantic_contract`. Migration is accepted only when deleting that one
-new field reproduces the old input exactly, the historical producer/template
-and receipt identities remain valid, all non-renderer context remains equal,
-and the stored role result is `approved=false`. Approval, missing/extra input,
-or focus/Master/quality/candidate drift fails closed. The migration emits a
-content-bound `terminal_rejection_only` receipt and is carried into the typed
-gate payload. `scripts/reconcile_terminal_gate.py` first performs a read-only
-inspection; acknowledged execute accepts the existing effect and enters the
-ordinary exact-CAS abandon transaction with
-`provider_dispatch_required=false`. It cannot call the Reviewer provider a
-second time or migrate an approval.
+`focus_areas`, `master_plan`, `next_v`, `source_v`, and `strict_bootstrap`; new
+generations additionally require `review_semantic_contract` and its same-CAS
+selected-proposal Quality evidence. Migration accepts a current six-field
+projection only when deleting that one field reproduces the old input exactly.
+The actual v52 Quality payload cannot construct the new field, so its separate
+terminal-only path rebuilds the exact five source-owned values, requires the
+new Quality fields to be absent, binds fixed-blueprint mode, all three Quality
+pass flags and `code_fingerprint == live candidate hash`, and records
+`semantic_upgrade_status=unavailable_from_legacy_quality_gate`. In both paths
+the historical producer/template and receipt identities remain valid, all
+non-renderer context remains equal, and the stored role result is
+`approved=false`. Approval, missing/extra input, or focus/Master/quality/
+candidate drift fails closed. The migration emits a content-bound
+`terminal_rejection_only` receipt and is carried into the typed gate payload.
+`scripts/reconcile_terminal_gate.py` first performs a read-only inspection;
+acknowledged execute accepts the existing effect and enters the ordinary
+exact-CAS abandon transaction with `provider_dispatch_required=false`. It does
+not render or call the Reviewer provider again and cannot migrate an approval.
 
 The dashboard/runbook contract now records three deliberately different
 checkpoint shapes (raw `/api/pipeline/checkpoint`, launch-authoritative

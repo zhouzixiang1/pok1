@@ -217,18 +217,25 @@ admission blocked but leaves exactly the canonical terminal-abandon route
 launchable; an invalid or unverifiable outcome projects operator reconciliation
 and no Start tool.
 
-The stopped workflow-v52 Reviewer result predates the added
-`review_semantic_contract` field. It may be reconciled only by the narrow
-source-owned migration in
+The stopped workflow-v52 Reviewer result predates both the added
+`review_semantic_contract` field and the same-CAS Quality projection needed to
+construct that field. It may be reconciled only by the narrow source-owned
+migration in
 `strict_authority_workflow.recover_terminal_gate_rejection_call`: the recorded
-Reviewer result must be `approved=false`; the historical semantic input must
+Reviewer result must be `approved=false` and its historical semantic input must
 have exactly `focus_areas`, `master_plan`, `next_v`, `source_v` and
-`strict_bootstrap`; the current input must have exactly those five plus
-`review_semantic_contract`; deleting only that new field must reproduce the
-old input byte-for-byte. The checkpoint/candidate/quality/Master context,
-historical renderer/template identities and every receipt digest remain bound.
-An approval, a missing/extra key, or any changed focus, plan, quality or
-candidate identity is not migratable.
+`strict_bootstrap`. If a current six-field contract is constructible, deleting
+only `review_semantic_contract` must reproduce those five fields byte-for-byte.
+For the actual legacy Quality shape, the system instead rebuilds those five
+fields directly from the stopped checkpoint and requires the two new selected-
+proposal Quality fields to be absent, the fixed-blueprint mode and three Quality
+pass flags to be exact, and the Quality code fingerprint to equal the live
+candidate hash. That terminal-only receipt records
+`semantic_upgrade_status=unavailable_from_legacy_quality_gate`; it does not
+render a new or historical provider prompt. The checkpoint/candidate/quality/
+Master context, historical renderer/template identities and every receipt
+digest remain bound. An approval, a missing/extra key, or any changed focus,
+plan, quality or candidate identity is not migratable.
 
 Run this only while the autonomous checkout is stopped and still owns the
 recorded v52 checkpoint. First inspect without mutation:
