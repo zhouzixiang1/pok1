@@ -196,14 +196,6 @@ def _opponent_posterior(context):
     }
 
 
-def _opponent_adjustments(context):
-    posterior = _opponent_posterior(context)
-    return {
-        "range_strength": posterior["range_strength"],
-        "raise_fraction": posterior["raise_fraction"],
-    }
-
-
 _HEADS_UP_PREFLOP_EQUITY_DELTA = {
     "sb_open": 0.018,
     "sb_limp": 0.0,
@@ -237,6 +229,8 @@ def _preflop_spot_adjustment(context):
     if hand.get("street") != "preflop" or cards.get("board"):
         return {"equity_delta": 0.0, "sizing_delta": 0.0}
     spot = str((context.get("line", {}) or {}).get("preflop_spot") or "")
+    if spot in _HEADS_UP_LINE_STATE_ONLY_SPOTS:
+        return {"equity_delta": 0.0, "sizing_delta": 0.0}
     return {
         "equity_delta": _HEADS_UP_PREFLOP_EQUITY_DELTA.get(spot, 0.0),
         "sizing_delta": _HEADS_UP_PREFLOP_SIZE_DELTA.get(spot, 0.0),

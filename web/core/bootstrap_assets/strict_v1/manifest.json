@@ -12,7 +12,7 @@
   "epoch": "national_tcp_policy_v1",
   "executor": "system_policy_bootstrap_v1",
   "files": {
-    "policy.py": "811f06007e979daaba278885607dee2db1ceac4aff8465bbb220eeeb3a0e5641",
+    "policy.py": "600133ba79b429e85c67300ca189f4d28a6d4947d948bc5ac8b67ef0e4ef86cd",
     "prepared_policy.py": "28bcce8753c4f752c26c7491a81c6e3c6e0df18041f9333bd90e0096dc384816"
   },
   "mode": "fresh_national_policy_bootstrap",
@@ -21,7 +21,7 @@
     "docs/official-terminal-settlement-oracle-2026-07-11.md": "ad96bc4fbe7939597b7a86ff6f9193ed2e50891be9b6b9c074883f5750c23bd9"
   },
   "official_policy_id": "official-full-v5",
-  "output_artifact_hash": "39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4",
+  "output_artifact_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
   "prepared_artifact_hash": "ff388a3d88b67b2bc93e2968114aa1669aef7596ffeef78c1b75f42cfc873278",
   "provenance": {
     "history_injected": false,

@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 12
+MATRIX_SCHEMA_VERSION = 13
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -87,6 +87,7 @@ REQUIRED_COVERAGE = frozenset({
     "evidence_history_isolation",
     "frontend_authoritative_status",
     "first_strict_v143_v144",
+    "strict_v1_reviewer_dead_code",
     "immutable_rating_cycle",
     "stability_ten_generations",
     "master_strict_output_projection",
@@ -1139,6 +1140,61 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "No missing control, reset receipt, explicit zero-migration result flag, eligible "
             "parent, certificate, tag, or operator acknowledgement may be inferred; the "
             "checkpoint parks/requires recovery."
+        ),
+    ),
+    MatrixRow(
+        rule_id="strict_v1_reviewer_dead_code_contract",
+        coverage=("strict_v1_reviewer_dead_code",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("web/core/bootstrap_assets/strict_v1/policy.py"),
+            _ref("web/core/bootstrap_assets/strict_v1/manifest.json"),
+            _ref("web/core/system_strict_bootstrap.py", "validate_blueprint_package"),
+            _ref("web/core/national_capability_contract.py", "evaluate_national_capabilities"),
+        ),
+        production_owners=(
+            _ref("web/core/system_strict_bootstrap.py", "materialize_fresh_candidate"),
+            _ref("web/core/bootstrap_assets/strict_v1/policy.py", "_preflop_spot_adjustment"),
+        ),
+        dynamic_gates=(
+            _ref("web/core/system_strict_bootstrap.py", "validate_blueprint_package"),
+            _ref("web/core/national_capability_contract.py", "evaluate_national_capabilities"),
+            _ref("web/core/tool_gates.py", "run_quality_gates"),
+            _ref("web/core/tool_gates.py", "run_review"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five roles distinguish deterministic machine-approved bounded policy work from "
+            "semantic code review. Reviewer may reject a truly unreachable definition, but cannot "
+            "reinterpret a system-bounded tracker or deadline-capped refinement as a protocol "
+            "violation. The six heads-up line states retain four actionable and two explicitly "
+            "neutral consumers."
+        ),
+        prompt_required_terms=(
+            "unreachable definition",
+            "six heads-up line states",
+            "explicitly neutral",
+        ),
+        producer_consumer=(
+            "system runtime six-state line.preflop_spot → policy actionable/neutral partition → "
+            "explicit neutral adjustment for sb_limp/bb_option → baseline typed intent; checked-in "
+            "policy bytes → manifest policy digest/output artifact hash → materializer, capability, "
+            "Quality and Reviewer"
+        ),
+        positive_tests=(
+            "web/tests/test_lll_informed_strict_bootstrap.py::"
+            "test_line_state_only_spots_are_explicit_neutral_consumers",
+        ),
+        negative_tests=(
+            "web/tests/test_lll_informed_strict_bootstrap.py::"
+            "test_checked_in_policy_has_no_retired_opponent_adjustment_helper",
+        ),
+        fail_closed=(
+            "A manifest mismatch, extra candidate file, capability failure, non-typed decision, or "
+            "Reviewer rejection cannot publish. Reviewer infrastructure retry is a separate "
+            "authority that must be consumed atomically before an approved or rejected semantic "
+            "projection; a stale claim cannot be silently ignored."
         ),
     ),
     MatrixRow(

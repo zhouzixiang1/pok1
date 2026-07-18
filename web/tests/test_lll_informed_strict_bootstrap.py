@@ -7,6 +7,7 @@ policy and prove the independently implemented strategy directions.
 
 from __future__ import annotations
 
+import ast
 from copy import deepcopy
 import importlib.util
 import itertools
@@ -269,6 +270,26 @@ def test_runtime_decision_context_produces_the_four_actionable_preflop_spots(
         _assert_typed(policy.get_baseline_decision(context), context)
     assert observed == policy._HEADS_UP_ACTIONABLE_PREFLOP_SPOTS
     assert not observed & policy._HEADS_UP_LINE_STATE_ONLY_SPOTS
+
+
+def test_line_state_only_spots_are_explicit_neutral_consumers(modules):
+    _precompute, policy = modules
+    for spot in policy._HEADS_UP_LINE_STATE_ONLY_SPOTS:
+        context = _context(spot=spot)
+        assert policy._preflop_spot_adjustment(context) == {
+            "equity_delta": 0.0,
+            "sizing_delta": 0.0,
+        }
+
+
+def test_checked_in_policy_has_no_retired_opponent_adjustment_helper():
+    tree = ast.parse(POLICY_PATH.read_text(encoding="utf-8"))
+    top_level_definitions = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert "_opponent_adjustments" not in top_level_definitions
 
 
 def test_real_heads_up_spots_reach_distinct_baseline_actions(modules):

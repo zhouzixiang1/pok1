@@ -548,7 +548,7 @@ not that CPU capacity or poker strength was evaluated and found insufficient.
 <!-- executable-national-alignment-matrix:begin -->
 ## Executable current-contract registry (generated)
 
-This block is generated from `web/core/national_alignment_matrix.py` (schema 12) and is regression-checked.  `source_contract` verifies source paths/symbols/test anchors only; `runtime_pending` is not a runtime, certificate, or strength claim. `current` means an active requirement, and only `superseded` rows may point at historical archive material.
+This block is generated from `web/core/national_alignment_matrix.py` (schema 13) and is regression-checked.  `source_contract` verifies source paths/symbols/test anchors only; `runtime_pending` is not a runtime, certificate, or strength claim. `current` means an active requirement, and only `superseded` rows may point at historical archive material.
 
 ### `raw_tcp_delimiter_stream` — current / source_contract
 
@@ -717,6 +717,18 @@ This block is generated from `web/core/national_alignment_matrix.py` (schema 12)
 - Positive regression: `web/tests/test_first_strict_control.py::test_control_is_a_direct_content_bound_policy_artifact`; `web/tests/test_hidden_fixes.py::test_H1_completed_control_match_recovers_by_same_identity_after_cancel`; `web/tests/test_checkpoint_epoch_recovery.py::test_normal_strict_v144_resume_accepts_published_parent_binding`
 - Negative regression: `web/tests/test_first_strict_control.py::test_control_receipt_rejects_pool_or_authority_escalation`; `web/tests/test_first_strict_control.py::test_control_result_rejects_missing_zero_migration_projection`; `web/tests/test_official_certify_cli.py::test_cli_first_strict_requires_explicit_one_time_acknowledgement`
 - Fail-closed: No missing control, reset receipt, explicit zero-migration result flag, eligible parent, certificate, tag, or operator acknowledgement may be inferred; the checkpoint parks/requires recovery.
+
+### `strict_v1_reviewer_dead_code_contract` — current / source_contract
+
+- Authority/source: `web/core/bootstrap_assets/strict_v1/policy.py`; `web/core/bootstrap_assets/strict_v1/manifest.json`; `web/core/system_strict_bootstrap.py::validate_blueprint_package`; `web/core/national_capability_contract.py::evaluate_national_capabilities`
+- Production owner: `web/core/system_strict_bootstrap.py::materialize_fresh_candidate`; `web/core/bootstrap_assets/strict_v1/policy.py::_preflop_spot_adjustment`
+- Dynamic gate: `web/core/system_strict_bootstrap.py::validate_blueprint_package`; `web/core/national_capability_contract.py::evaluate_national_capabilities`; `web/core/tool_gates.py::run_quality_gates`; `web/core/tool_gates.py::run_review`
+- Prompt renderer/template: Master=`web/core/agent_master.py::_render_master_final_provider_prompt` → `web/core/prompts/master_prompt.md`; Worker=`web/core/agent_workers.py::_render_worker_provider_prompt` → `web/core/prompts/worker_prompt.md`, `web/core/prompts/worker_profile_national_native.md`; Reviewer=`web/core/tool_gates.py::_render_reviewer_provider_prompt` → `web/core/prompts/reviewer_prompt.md`; Critic=`web/core/agent_review.py::_render_critic_provider_prompt` → `web/core/prompts/critic_prompt.md`; Orchestrator=`web/core/orchestrator.py::_render_orchestrator_provider_prompt` → `web/core/prompts/orchestrator.md`
+- Prompt statement: All five roles distinguish deterministic machine-approved bounded policy work from semantic code review. Reviewer may reject a truly unreachable definition, but cannot reinterpret a system-bounded tracker or deadline-capped refinement as a protocol violation. The six heads-up line states retain four actionable and two explicitly neutral consumers.
+- Producer → consumer: system runtime six-state line.preflop_spot → policy actionable/neutral partition → explicit neutral adjustment for sb_limp/bb_option → baseline typed intent; checked-in policy bytes → manifest policy digest/output artifact hash → materializer, capability, Quality and Reviewer
+- Positive regression: `web/tests/test_lll_informed_strict_bootstrap.py::test_line_state_only_spots_are_explicit_neutral_consumers`
+- Negative regression: `web/tests/test_lll_informed_strict_bootstrap.py::test_checked_in_policy_has_no_retired_opponent_adjustment_helper`
+- Fail-closed: A manifest mismatch, extra candidate file, capability failure, non-typed decision, or Reviewer rejection cannot publish. Reviewer infrastructure retry is a separate authority that must be consumed atomically before an approved or rejected semantic projection; a stale claim cannot be silently ignored.
 
 ### `immutable_native_rating_cycle` — current / runtime_pending
 

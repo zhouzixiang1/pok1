@@ -4098,3 +4098,38 @@ its checkpoint preserved at `critic_checked` revision 16.  Four first-control
 samples are durable; repeat 5 has a dead-owner lease and must be recovered by
 the journal/state-machine contract.  No checkpoint, SQLite row, candidate, tag,
 certificate, or rating state may be manually rewritten to accelerate recovery.
+
+## 2026-07-19 — v61 Reviewer evidence and strict-v1 dead-code closure
+
+Fresh workflow `generation:143:workflow-v61` materialized output artifact
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`,
+completed Worker and passed Quality in 207.3 seconds, including a complete
+70-hand native TCP acceptance.  The first Reviewer invocation stalled for 180
+seconds and created a retryable `reviewer_llm` infrastructure claim at
+`quality_passed`.  The bound retry returned a schema-valid rejection (score 4):
+`_opponent_adjustments` was unreachable, while the six-state heads-up line
+contract exposed `_HEADS_UP_LINE_STATE_ONLY_SPOTS` only to tests rather than an
+active policy path.
+
+The source closure removes only the unreachable helper and consumes the two
+line-state-only spots through an explicit neutral preflop adjustment.  The
+second change preserves existing behavior and the six-state/four-actionable
+contract.  The content-bound blueprint manifest now names policy digest
+`600133ba79b429e85c67300ca189f4d28a6d4947d948bc5ac8b67ef0e4ef86cd`
+and output artifact
+`f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+`validate_blueprint_package()==[]`, materialization reproduces that artifact,
+the national capability contract returns `ok=true`, and the focused policy,
+runtime, system-control and bootstrap suite passes 196 tests.
+
+The live retry also exposed a separate control-plane P0: after the valid retry
+result, the old infrastructure claim remained bound to `quality_passed`, so
+projection of `review_rejected` failed closed and recovery repeatedly replayed
+the same rejection.  The operator used the authenticated loopback Stop endpoint
+with no native/official job active.  It cancelled the owned LLM session, stopped
+the idle rating daemon and preserved checkpoint revision 9 and candidate bytes;
+no checkpoint, journal, SQLite row or candidate file was edited.  This source
+closure does not claim to repair that infra-claim transition, publish v143, or
+carry the old candidate's 70-hand result to the new artifact.  A reviewed
+atomic infra-claim consumption repair and controlled abandon/re-prepare remain
+required before restart, and that restart resets observation to **0/10**.
