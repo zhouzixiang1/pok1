@@ -1095,12 +1095,15 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref("web/core/system_strict_bootstrap.py", "validate_bootstrap_checkpoint"),
+            _ref("web/core/national_native.py", "run_native_precommit"),
+            _ref("web/core/first_strict_control.py", "validate_control_result"),
             _ref("web/core/tool_eval.py", "_build_first_strict_control_execution_scope"),
             _ref("web/core/official_certification.py", "build_spec"),
             _ref("web/core/tool_commit.py", "commit_bot"),
         ),
         dynamic_gates=(
             _ref("web/core/system_strict_bootstrap.py", "is_declared_native_bootstrap"),
+            _ref("web/core/first_strict_control.py", "control_gate_blockers"),
             _ref("web/core/official_certification.py", "official_full_certified"),
             _ref("web/core/epoch_authority.py", "require_policy_epoch_initialized"),
         ),
@@ -1112,23 +1115,30 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         prompt_required_terms=("v143", "v144+", "official-full-v5", "certificate"),
         producer_consumer=(
             "stopped-checkout reset receipt → fresh v143 checkpoint/control artifact → "
+            "native 8×70 repeat and aggregate results with explicit migration_projection=false → "
+            "first-strict result validator → "
             "operator first-strict bootstrap certificate/tag → published v143 parent → v144 5+3 full certification"
         ),
         positive_tests=(
             "web/tests/test_first_strict_control.py::"
             "test_control_is_a_direct_content_bound_policy_artifact",
+            "web/tests/test_hidden_fixes.py::"
+            "test_H1_completed_control_match_recovers_by_same_identity_after_cancel",
             "web/tests/test_checkpoint_epoch_recovery.py::"
             "test_normal_strict_v144_resume_accepts_published_parent_binding",
         ),
         negative_tests=(
             "web/tests/test_first_strict_control.py::"
             "test_control_receipt_rejects_pool_or_authority_escalation",
+            "web/tests/test_first_strict_control.py::"
+            "test_control_result_rejects_missing_zero_migration_projection",
             "web/tests/test_official_certify_cli.py::"
             "test_cli_first_strict_requires_explicit_one_time_acknowledgement",
         ),
         fail_closed=(
-            "No missing control, reset receipt, eligible parent, certificate, tag, or "
-            "operator acknowledgement may be inferred; the checkpoint parks/requires recovery."
+            "No missing control, reset receipt, explicit zero-migration result flag, eligible "
+            "parent, certificate, tag, or operator acknowledgement may be inferred; the "
+            "checkpoint parks/requires recovery."
         ),
     ),
     MatrixRow(

@@ -102,3 +102,10 @@ def test_control_opponent_projection_preserves_formal_only_scope():
     assert opponent["strength_admitted"] is False
     assert opponent["rating_eligible"] is False
     assert opponent["official_opponent_eligible"] is False
+
+
+def test_control_result_rejects_missing_zero_migration_projection():
+    import first_strict_control as control
+
+    issues, _summary = control.validate_control_result({"matchups": [{}]})
+    assert "first_strict_control_matchup_migration_projection_mismatch" in issues

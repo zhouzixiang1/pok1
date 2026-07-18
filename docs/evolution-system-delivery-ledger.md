@@ -4077,3 +4077,24 @@ The v53/v55 70-hand matches remain candidate-quality evidence only.  No
 published artifact/opponent or immutable evaluation cycle exists, so they
 cannot enter strength admission, rating, H2H, selection or later history
 injection.
+
+## 2026-07-18 — v56 live first-strict projection mismatch
+
+`generation:143:workflow-v56` reached native precommit with artifact
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`.
+All eight content-bound 70-hand matches against `first_strict_control_v1`
+completed as 8W-0L-0D (mean net chips `14029.5`).  The candidate was nevertheless
+rejected because `first_strict_control.validate_control_result` requires the
+aggregate and every repeat to state `migration_projection is False`, while
+`national_native.run_native_precommit` omitted the field and therefore supplied
+`None`.  The nine resulting mismatch codes were a producer/consumer contract
+defect, not a strength or compliance failure.
+
+This change makes the zero-migration authority explicit at both production
+sites, retains the consumer's fail-closed requirement, adds positive and
+missing-field regressions, and updates the executable matrix.  v57 demonstrated
+a separate same-artifact Reviewer nondeterminism issue and v58 was stopped with
+its checkpoint preserved at `critic_checked` revision 16.  Four first-control
+samples are durable; repeat 5 has a dead-owner lease and must be recovered by
+the journal/state-machine contract.  No checkpoint, SQLite row, candidate, tag,
+certificate, or rating state may be manually rewritten to accelerate recovery.

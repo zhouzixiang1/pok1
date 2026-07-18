@@ -7125,6 +7125,10 @@ async def run_native_precommit(
                 },
             }
             if system_control:
+                # This result is produced by the live native runner. Make the
+                # zero-migration authority explicit so the first-strict
+                # validator never has to infer it from a missing field.
+                repeat_result["migration_projection"] = False
                 # Full events/hand records/settlements live only in the
                 # content-addressed execution authority.  The checkpoint result
                 # carries a small reference plus independently recomputed
@@ -7198,6 +7202,11 @@ async def run_native_precommit(
             ],
             "repeats": repeats,
         }
+        if system_control:
+            # The aggregate carries the same explicit zero-migration boundary
+            # as every repeat. Absence remains invalid at the fail-closed
+            # consumer in first_strict_control.py.
+            matchup["migration_projection"] = False
         matchups.append(matchup)
         if gate_authoritative and candidate_issues:
             blockers.append({"reason": "native_candidate_compliance", "opponent": matchup["opponent"], "details": "; ".join(candidate_issues[:5])})

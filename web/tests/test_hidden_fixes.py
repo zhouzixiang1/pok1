@@ -454,6 +454,43 @@ async def test_H1_completed_control_match_recovers_by_same_identity_after_cancel
         row["execution_receipt"] for row in progress["completed_samples"]
     ]
 
+    # Finish the same frozen eight-sample journal. This is the real producer
+    # path that v56 exercised, so prove both projections consumed by
+    # first_strict_control.validate_control_result carry the explicit negative
+    # authority flag rather than merely checking source text.
+    for expected_next_repeat in range(4, 9):
+        recovered = await national_native.run_native_precommit(
+            candidate,
+            [opponent],
+            hands=70,
+            matches_per_opponent=8,
+            sample_plan=sample_plan,
+            batch_plan=batch_plan,
+            control_execution_scope=execution_scope,
+            cancel_token=retry_token,
+            timing_plan=timing_plan,
+        )
+        progress = recovered["first_strict_batch_pending"]
+        assert progress["next_repeat"] == expected_next_repeat
+
+    completed = await national_native.run_native_precommit(
+        candidate,
+        [opponent],
+        hands=70,
+        matches_per_opponent=8,
+        sample_plan=sample_plan,
+        batch_plan=batch_plan,
+        control_execution_scope=execution_scope,
+        cancel_token=retry_token,
+        timing_plan=timing_plan,
+    )
+    assert len(match_calls) == 8
+    assert completed["matchups"][0]["migration_projection"] is False
+    assert all(
+        row["migration_projection"] is False
+        for row in completed["matchups"][0]["repeats"]
+    )
+
 
 # ──────────────────────────────────────────────
 # H2: gather CancelledError propagation in _execute_workers
