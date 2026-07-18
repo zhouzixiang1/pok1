@@ -4318,3 +4318,23 @@ Both workflow instances (`generation:143:workflow-v61` and its
 `:strict-authority-v3` child) are durably `abandoned`; every provider/Worker
 effect is terminal.  This paragraph is a documentation-only follow-up to the
 named freeze and does not change its evaluation contract.
+
+Post-sync evaluator diagnostics found one exact semantic-file delta:
+`web/core/evolution_infra.py` changed from
+`fcae35ce8945bbf376d4d057cb49ab128866889b9c02cc7d0ce0c997e3be21df`
+to `8547f42a16f8285c0b2e52e4cb595b2c8530e96b545f523287c46c0e62fd3d0f`.
+The rating identity intentionally hashes that whole production owner, so the
+change could not be waived as “checkpoint-only”.  With no published strict
+Bot, no active checkpoint/job/process and an empty rating pool, the operator
+ran the sole controlled migration command with reason
+`Contract-40 evolution_infra checkpoint authority changed; empty strict pool; no strength migration`.
+It archived the prior empty-pool identity and authoritative files at
+`web/core/results/archive/evaluation_identity/20260719_013436`, migrated no
+rating, H2H, replay, selection or generation evidence, and initialized instance
+`bfa2f02e33db4a4ca99c066a6d13dae0`.  New base identity digest is
+`4942280735e8838416a58ce7f0c7d715436aea60474b11c982c3909a670c8f73`;
+manifest digest is
+`f4a287d21d3fe8990da4a6fb10afbb2fa4fcf2a1c4014edcd4521f932f2175df`.
+Immediate identity revalidation passed.  This reset is an operator-owned empty
+epoch boundary, not evidence for any Bot and not permission to carry the
+archived v141 validation ledger into ratings.
