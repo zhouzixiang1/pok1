@@ -34,6 +34,17 @@ Bot directory: `bots/national_v{version}/`
 {review_lineage_contract}
 </context>
 
+<review_semantics>
+The following system-projected contract is checkpoint-owned and controls how
+the Master proposal is interpreted by this gate. It is not a strength claim.
+
+{review_semantic_instructions}
+
+```json
+{review_semantic_contract}
+```
+</review_semantics>
+
 <action_semantics>
 The active candidate ABI is native and typed. Candidate policy may return only
 `pass`, `fold`, `allin`, or `raise` with an exact positive `raise_to`. Reject
@@ -83,6 +94,11 @@ Full national legality checklist from `sever/国赛平台/非法行为说明.doc
 You check ONLY these five areas:
 
 1. **Role boundary compliance** — Does each change match the assigned worker role?
+   In `fixed_blueprint_capability_audit_v1`, Worker role and target files are
+   ownership/scope constraints only: do not require the system-owned blueprint
+   to use proposal-spelled helpers, fields, branches, or control-flow shape.
+   In `strategy_implementation_v1`, the assigned role also owns the declared
+   mechanism implementation.
    The boundary criterion is: **"does the change add a new function / control flow branch?"**
    - Hyperparameter Tuner: EXISTING numeric constants/thresholds/magic numbers in `policy.py` ONLY. No other files, new functions, classes, imports, or control flow.
    - Algorithmic Logic Architect: structural changes inside `policy.py` (new functions, refactored logic, new conditionals, imports, and local constants inside new logic). It must not perform unrelated existing-constant tuning.
@@ -107,10 +123,15 @@ You check ONLY these five areas:
    actually consumed by policy. If the task cites official EXE feedback,
    verify the cited protocol/state-machine/logging issue was addressed; do not
    approve a pure strength tweak for a compliance failure.
-   Read `master_plan.architecture_policy` and its RuntimeContract. Reject if a
-   parent `baseline_passed_check` regressed, the selected focus is only named in
-   prose, an artifact owner lies outside the worker's declared scope, or the
-   provider-to-consumer path is absent. For opponent work, require the typed
+   Read `master_plan.architecture_policy`, its RuntimeContract, and the
+   machine-bound `review_semantics` mode above. Reject if a parent
+   `baseline_passed_check` regressed or an artifact owner lies outside the
+   worker's declared scope. In `strategy_implementation_v1`, also reject when
+   the selected focus is only named in prose or its provider-to-consumer path
+   is absent. In `fixed_blueprint_capability_audit_v1`, do not convert proposal
+   prose, helper names, field names, or reachable-chain labels into an
+   implementation requirement; consume the content-bound selected-capability
+   projection instead. For opponent work, require the typed
    `decision_context.opponent` fields used by existing policy consumers;
    replacing a rich model with a sparse snapshot and silent default priors is
    a behavior regression, not successful incremental modeling.
@@ -130,7 +151,8 @@ You check ONLY these five areas:
    and a reachable policy consumer must use that posterior. Counts or logs
    without action influence are incomplete.
 
-   **Dynamic reachability check** — Every new or materially changed policy
+   **Dynamic reachability check** — In `strategy_implementation_v1`, every new
+   or materially changed policy
    mechanism must demonstrate `producer -> consumer -> socket-validated typed intent -> telemetry`
    on a real national transcript. Require an exact firing tuple and a
    one-predicate control pair, plus an observable action difference and nonzero
@@ -149,7 +171,10 @@ You check ONLY these five areas:
    passive `check`, and the matched one-predicate ablation. Treat `allin` as
    aggressive, never as the passive member. Reject
    100% raise-on-line policies; one selected identity proves reachability, not
-   mixing.
+   mixing. In `fixed_blueprint_capability_audit_v1`, the system-supplied
+   selected-capability evidence is the dynamic authority for the named audit
+   lens. Check its content binding and passed status, but do not demand a
+   proposal-spelled helper, field, or structural chain from fixed bytes.
 
    **Refinement evidence check** — Measure a socket-validated typed baseline against its authoritative
    `deadline.baseline_target_ms` (200 ms in native precommit; strictly under 250 ms is the formal ceiling),
@@ -183,9 +208,14 @@ You check ONLY these five areas:
    verify that the actual `name` handshake starts the system-owned worker before
    preflop without resetting the target decision clock.
 
-   **Attribution check** — Exactly one strategy primary may be newly blocking:
-   one work primitive, one opponent-profile dimension, or one line control.
-   Reject unrelated kitchen-sink changes outside the active contract. ABI
+   **Attribution check** — In `strategy_implementation_v1`, exactly one strategy
+   primary may be newly blocking: one work primitive, one opponent-profile
+   dimension, or one line control. Reject unrelated kitchen-sink changes
+   outside the active contract. In `fixed_blueprint_capability_audit_v1`, the
+   system-owned baseline may contain multiple pre-existing capabilities; the
+   selected proposal chooses one bound audit lens and does not claim to have
+   caused those bytes. Still reject candidate-owned changes outside the five
+   files or any violation exposed by the selected capability evidence. ABI
    migration is system-owned preparation and must never appear as a Worker
    strategy task.
 
@@ -212,6 +242,9 @@ You check ONLY these five areas:
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
 
 5. **Strategy drift detection** — Check whether the changes introduce unintended side effects OUTSIDE the declared scope:
+   - In `fixed_blueprint_capability_audit_v1`, scope means artifact ownership,
+     ABI, protocol/safety behavior, and the selected evidence projection; it
+     does not mean exact proposal-spelled identifiers or structure.
    - If the Master plan says "improve postflop aggression", but the diff also modifies preflop fold thresholds, flag this as drift.
    - If a Tuner changes `policy.py` constants that affect subsystems NOT mentioned in the task, flag this.
    - Compare the change scope against the declared target_files — changes to undeclared files are drift.

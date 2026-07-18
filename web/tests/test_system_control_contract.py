@@ -735,11 +735,40 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
     candidate = tmp_path / "national_v143"
     candidate.mkdir()
     (candidate / "policy.py").write_text("POLICY = 1\n", encoding="utf-8")
+    proposal_binding = {
+        "execution_mode": "fixed_blueprint_capability_audit",
+        "selected_proposal_id": "fixed-audit",
+        "contract_digest": "d" * 64,
+        "falsifier": {"test_name": "action-profile-check"},
+    }
     checkpoint = {
         "source_v": 142,
         "next_v": 143,
-        "master_plan": {"tasks": [{"worker_id": "W1"}]},
-        "gate_results": {"quality": {"all_passed": True}},
+        "master_plan": {
+            "tasks": [{"worker_id": "W1"}],
+            "proposal_binding": proposal_binding,
+        },
+        "gate_results": {"quality": {
+            "all_passed": True,
+            "critical_scenarios_passed": True,
+            "selected_proposal_quality_ok": True,
+            "selected_proposal_quality_evidence": {
+                "required": True,
+                "ok": True,
+                "check_id": "action-profile-check",
+                "check_evidence_digest": "e" * 64,
+                "proposal_contract_digest": "d" * 64,
+                "evidence_scope": (
+                    "reachable_symbol_delta_plus_typed_capability_only;"
+                    "not_full_counterfactual_or_strength_proof"
+                ),
+                "reachable_symbol_diff_required": False,
+                "reachable_symbol_diff_ok": True,
+                "changed_reachable_symbols": [],
+                "reachable_symbol_diff_digest": "",
+                "errors": [],
+            },
+        }},
         "audit_context": {
             "worker_cot_focus_areas": [
                 "  sizing   boundary ",
@@ -760,6 +789,9 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
         candidate_dir=candidate,
     )
     semantics = context["renderer_semantics"]
+    assert semantics["semantic_inputs"]["review_semantic_contract"][
+        "review_semantic_mode"
+    ] == "fixed_blueprint_capability_audit_v1"
     assert semantics["semantic_inputs"]["focus_areas"] == [
         "  sizing   boundary ",
         "range update",
@@ -780,6 +812,13 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
     }
     rendered = authority.render_gate_provider_prompt(call)
     replay_inputs = json.loads(rendered.renderer_inputs_json)
+    assert replay_inputs["review_semantic_contract"]["contract_digest"] == (
+        semantics["semantic_inputs"]["review_semantic_contract"][
+            "contract_digest"
+        ]
+    )
+    assert "FIXED BLUEPRINT CAPABILITY AUDIT" in rendered
+    assert "Do not reject because the fixed blueprint uses different" in rendered
     assert replay_inputs["focus_areas"] == [
         "  sizing   boundary ",
         "range update",
@@ -800,6 +839,28 @@ def test_strict_reviewer_context_normalizes_and_seals_real_renderer(
         gate_name="review",
         candidate_dir=candidate,
     ) != context
+    changed_quality = deepcopy(checkpoint)
+    changed_quality["gate_results"]["quality"][
+        "selected_proposal_quality_evidence"
+    ]["check_evidence_digest"] = "f" * 64
+    assert authority.gate_call_context(
+        changed_quality,
+        gate_name="review",
+        candidate_dir=candidate,
+    ) != context
+    missing_quality_projection = deepcopy(checkpoint)
+    missing_quality_projection["gate_results"]["quality"].pop(
+        "selected_proposal_quality_evidence"
+    )
+    with pytest.raises(
+        authority.StrictAuthorityError,
+        match="strict_authority_review_semantic_contract_invalid",
+    ):
+        authority.gate_call_context(
+            missing_quality_projection,
+            gate_name="review",
+            candidate_dir=candidate,
+        )
     tampered_call = deepcopy(call)
     tampered_call["context_binding"]["renderer_semantics"][
         "sentinel_rendered_prompt_sha256"

@@ -96,6 +96,12 @@ def _valid_master_plan():
         "expected_behavior_change": "raise selected draws instead of folding",
         "do_not_touch": ["national_bot.py", "precompute.py"],
         "measurement_plan": "compare the candidate against its parent",
+        "proposal_binding": {
+            "execution_mode": "strategy_implementation",
+            "selected_proposal_id": "availability-test-proposal",
+            "contract_digest": "a" * 64,
+            "falsifier": {"test_name": "availability-typed-check"},
+        },
         "tasks": [{
             "worker_id": 1,
             "role": "Algorithmic Logic Architect",
@@ -546,6 +552,25 @@ def _gate_tool_fixture(tmp_path, monkeypatch, *, stage):
         "quality": {
             "all_passed": True,
             "critical_scenarios_passed": True,
+            "selected_proposal_quality_ok": True,
+            "selected_proposal_quality_evidence": {
+                "required": True,
+                "ok": True,
+                "check_id": "availability-typed-check",
+                "check_evidence_digest": "b" * 64,
+                "proposal_contract_digest": "a" * 64,
+                "evidence_scope": (
+                    "reachable_symbol_delta_plus_typed_capability_only;"
+                    "not_full_counterfactual_or_strength_proof"
+                ),
+                "reachable_symbol_diff_required": True,
+                "reachable_symbol_diff_ok": True,
+                "changed_reachable_symbols": [
+                    "policy.py:get_baseline_decision"
+                ],
+                "reachable_symbol_diff_digest": "c" * 64,
+                "errors": [],
+            },
         },
     }
     if stage == "reviewed":

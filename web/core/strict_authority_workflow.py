@@ -696,12 +696,24 @@ def _gate_semantic_inputs(
         )
     normalized_plan = _json_value(master_plan)
     if gate_name == "review":
+        from tool_gates import _review_semantic_contract
+
+        try:
+            review_semantics = _review_semantic_contract(
+                normalized_plan,
+                _json_value((checkpoint.get("gate_results") or {}).get("quality") or {}),
+            )
+        except (TypeError, ValueError) as exc:
+            raise StrictAuthorityError(
+                "strict_authority_review_semantic_contract_invalid"
+            ) from exc
         return ({
             "master_plan": normalized_plan,
             "source_v": int(source_v),
             "next_v": int(next_v),
             "strict_bootstrap": True,
             "focus_areas": _normalized_reviewer_focus_areas(checkpoint),
+            "review_semantic_contract": review_semantics,
         }, None)
 
     from agent_review import _critic_code_evidence

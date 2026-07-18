@@ -318,7 +318,10 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         producer_name="_render_reviewer_provider_prompt",
         template_paths=("web/core/prompts/reviewer_prompt.md",),
         evidence_kind="review_candidate_pair",
-        required_evidence_fields=("source_v", "next_v", "review_prompt_digest"),
+        required_evidence_fields=(
+            "source_v", "next_v", "review_prompt_digest",
+            "review_semantic_contract_digest",
+        ),
         scope_policy="canonical_candidates",
         tools=(("Read",), ("Bash", "Read")),
         read_scope="explicit_source_and_target_candidate_dirs",

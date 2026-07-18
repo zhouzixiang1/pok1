@@ -58,19 +58,204 @@ from national_position_contract import detect_position_semantics_errors
 from blocking_runtime import run_blocking_isolated
 
 
+_REVIEW_SEMANTIC_MODES = {
+    "fixed_blueprint_capability_audit": "fixed_blueprint_capability_audit_v1",
+    "strategy_implementation": "strategy_implementation_v1",
+}
+_SELECTED_CAPABILITY_EVIDENCE_SCOPE = (
+    "reachable_symbol_delta_plus_typed_capability_only;"
+    "not_full_counterfactual_or_strength_proof"
+)
+
+
+def _canonical_digest(value):
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _review_semantic_contract(master_plan, quality_gate):
+    """Project the checkpoint-owned meaning of one Reviewer invocation.
+
+    A fixed first-strict blueprint is already materialized by the system.  Its
+    selected Master proposal is a capability-audit lens, not a Worker strategy
+    implementation contract.  Normal generations keep the stronger mechanism
+    implementation semantics.  Bind that distinction and the exact quality
+    evidence into the provider input so prompt prose cannot silently swap the
+    two modes.
+    """
+
+    if not isinstance(master_plan, dict) or not isinstance(quality_gate, dict):
+        raise ValueError("Reviewer semantic source must be checkpoint objects")
+    binding = master_plan.get("proposal_binding")
+    evidence = quality_gate.get("selected_proposal_quality_evidence")
+    if not isinstance(binding, dict) or not isinstance(evidence, dict):
+        raise ValueError("Reviewer selected proposal evidence missing")
+    execution_mode = str(binding.get("execution_mode") or "")
+    review_semantic_mode = _REVIEW_SEMANTIC_MODES.get(execution_mode)
+    if review_semantic_mode is None:
+        raise ValueError("Reviewer execution mode is not recognized")
+
+    proposal_digest = str(binding.get("contract_digest") or "")
+    check_id = str(((binding.get("falsifier") or {}).get("test_name")) or "")
+    check_evidence_digest = str(evidence.get("check_evidence_digest") or "")
+    evidence_proposal_digest = str(
+        evidence.get("proposal_contract_digest") or ""
+    )
+    changed_symbols = evidence.get("changed_reachable_symbols")
+    errors = evidence.get("errors")
+    if not isinstance(changed_symbols, list) or any(
+        not isinstance(item, str) for item in changed_symbols
+    ):
+        raise ValueError("Reviewer changed reachable symbols are invalid")
+    if not isinstance(errors, list) or any(not isinstance(item, str) for item in errors):
+        raise ValueError("Reviewer selected capability errors are invalid")
+
+    invalid = []
+    if quality_gate.get("all_passed") is not True:
+        invalid.append("quality_not_all_passed")
+    if quality_gate.get("critical_scenarios_passed") is not True:
+        invalid.append("quality_critical_scenarios_not_passed")
+    if evidence.get("required") is not True or evidence.get("ok") is not True:
+        invalid.append("selected_capability_not_passed")
+    if quality_gate.get("selected_proposal_quality_ok") is not True:
+        invalid.append("selected_capability_gate_flag_not_passed")
+    if check_id == "" or evidence.get("check_id") != check_id:
+        invalid.append("selected_capability_check_mismatch")
+    if not re.fullmatch(r"[0-9a-f]{64}", proposal_digest):
+        invalid.append("proposal_contract_digest_invalid")
+    if evidence_proposal_digest != proposal_digest:
+        invalid.append("proposal_contract_digest_mismatch")
+    if not re.fullmatch(r"[0-9a-f]{64}", check_evidence_digest):
+        invalid.append("selected_capability_evidence_digest_invalid")
+    if evidence.get("evidence_scope") != _SELECTED_CAPABILITY_EVIDENCE_SCOPE:
+        invalid.append("selected_capability_evidence_scope_invalid")
+    if errors:
+        invalid.append("selected_capability_evidence_has_errors")
+
+    requires_reachable_delta = execution_mode == "strategy_implementation"
+    if evidence.get("reachable_symbol_diff_required") is not requires_reachable_delta:
+        invalid.append("reachable_symbol_requirement_mode_mismatch")
+    if evidence.get("reachable_symbol_diff_ok") is not True:
+        invalid.append("reachable_symbol_evidence_failed")
+    reachable_digest = str(evidence.get("reachable_symbol_diff_digest") or "")
+    if requires_reachable_delta:
+        if not changed_symbols:
+            invalid.append("strategy_reachable_symbol_delta_missing")
+        if not re.fullmatch(r"[0-9a-f]{64}", reachable_digest):
+            invalid.append("strategy_reachable_symbol_digest_invalid")
+    elif changed_symbols or reachable_digest:
+        invalid.append("fixed_audit_forbids_reachable_delta_claim")
+    if invalid:
+        raise ValueError("Reviewer semantic contract invalid: " + ",".join(invalid))
+
+    capability_projection = {
+        "schema_version": 1,
+        "check_id": check_id,
+        "check_evidence_digest": check_evidence_digest,
+        "proposal_contract_digest": evidence_proposal_digest,
+        "evidence_scope": evidence["evidence_scope"],
+        "reachable_symbol_diff_required": requires_reachable_delta,
+        "reachable_symbol_diff_ok": True,
+        "changed_reachable_symbols": list(changed_symbols),
+        "reachable_symbol_diff_digest": reachable_digest,
+    }
+    subject = {
+        "schema_version": 1,
+        "review_semantic_mode": review_semantic_mode,
+        "execution_mode": execution_mode,
+        "selected_proposal_id": str(binding.get("selected_proposal_id") or ""),
+        "proposal_contract_digest": proposal_digest,
+        "selected_capability_evidence": capability_projection,
+        "selected_capability_evidence_digest": _canonical_digest(
+            capability_projection
+        ),
+        "quality_gate_digest": _canonical_digest(quality_gate),
+    }
+    return {**subject, "contract_digest": _canonical_digest(subject)}
+
+
+def _quality_review_evidence_projection(quality_result):
+    """Select the exact Quality fields persisted for the downstream Reviewer.
+
+    This projection is merged into the same ``quality`` gate payload passed to
+    ``_record_gate``.  It deliberately does not reconstruct evidence from the
+    broader architecture/capability reports on recovery.
+    """
+
+    if not isinstance(quality_result, dict):
+        raise ValueError("Quality result must be an object")
+    evidence = quality_result.get("selected_proposal_quality_evidence")
+    ok = quality_result.get("selected_proposal_quality_ok")
+    if not isinstance(evidence, dict) or not isinstance(ok, bool):
+        raise ValueError("Quality selected proposal projection missing")
+    return {
+        "selected_proposal_quality_evidence": json.loads(json.dumps(evidence)),
+        "selected_proposal_quality_ok": ok,
+    }
+
+
 def _render_reviewer_provider_prompt(inputs):
     from llm_query import LLMRenderedMaterial
 
     expected = {
         "master_plan", "source_v", "next_v", "strict_bootstrap",
-        "invocation_id", "focus_areas",
+        "invocation_id", "focus_areas", "review_semantic_contract",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected:
         raise ValueError("Reviewer renderer input contract mismatch")
     master_plan = inputs["master_plan"]
     focus_areas = inputs["focus_areas"]
-    if not isinstance(master_plan, dict) or not isinstance(focus_areas, list):
+    semantic_contract = inputs["review_semantic_contract"]
+    if (
+        not isinstance(master_plan, dict)
+        or not isinstance(focus_areas, list)
+        or not isinstance(semantic_contract, dict)
+    ):
         raise ValueError("Reviewer renderer typed input mismatch")
+    semantic_subject = {
+        key: value
+        for key, value in semantic_contract.items()
+        if key != "contract_digest"
+    }
+    if semantic_contract.get("contract_digest") != _canonical_digest(
+        semantic_subject
+    ):
+        raise ValueError("Reviewer semantic contract digest mismatch")
+    review_semantic_mode = semantic_contract.get("review_semantic_mode")
+    fixed_capability_audit = (
+        review_semantic_mode == "fixed_blueprint_capability_audit_v1"
+    )
+    if fixed_capability_audit:
+        semantic_instructions = (
+            "FIXED BLUEPRINT CAPABILITY AUDIT: the system, not the selected "
+            "proposal prose, owns the prepared policy bytes. Review those "
+            "bytes for code correctness, the five-file ABI, national protocol "
+            "safety, deadlines/sandbox boundaries, dead code, and the bound "
+            "selected-capability quality projection below. The proposal's "
+            "structural_change, reachable_chain, helper names, field names, "
+            "counterfactual, and expected_diff are an audit lens only. Do not "
+            "reject because the fixed blueprint uses different identifiers or "
+            "code structure. Do not claim proposal causality or poker strength. "
+            "The content-bound quality projection is the authority that the "
+            "named typed capability check executed and passed; do not replace "
+            "it with a new prose-derived implementation requirement."
+        )
+    elif review_semantic_mode == "strategy_implementation_v1":
+        semantic_instructions = (
+            "STRATEGY IMPLEMENTATION REVIEW: the selected proposal is the "
+            "Worker implementation contract. Require the selected mechanism, "
+            "declared target files, materially changed reachable chain, typed "
+            "falsifier evidence, and Worker task to agree. Reject telemetry-only "
+            "or unreachable implementations and unrelated strategy drift."
+        )
+    else:
+        raise ValueError("Reviewer semantic mode is not recognized")
     source_v = int(inputs["source_v"])
     next_v = int(inputs["next_v"])
     strict_bootstrap = bool(inputs["strict_bootstrap"])
@@ -83,6 +268,13 @@ def _render_reviewer_provider_prompt(inputs):
     )
     text = text.replace("{version}", str(next_v))
     text = text.replace("{parent_version}", str(source_v))
+    text = text.replace(
+        "{review_semantic_contract}",
+        json.dumps(semantic_contract, indent=2, ensure_ascii=False),
+    )
+    text = text.replace(
+        "{review_semantic_instructions}", semantic_instructions
+    )
     if strict_bootstrap:
         prompt_fields = {
             "{review_tool_contract}": (
@@ -93,8 +285,21 @@ def _render_reviewer_provider_prompt(inputs):
                 f"v{source_v} is numeric high-water only, not a parent or readable path."
             ),
             "{review_evaluation_step_one}": (
-                "Read the target functions named by the frozen Master plan; the "
-                "system Worker boundary already proved the five-file scope and preimage delta."
+                (
+                    "Read the prepared policy regions needed to check code "
+                    "correctness and the bound capability evidence. Treat "
+                    "functions named by the frozen Master plan only as "
+                    "navigation hints, never as required identifiers or a "
+                    "required implementation structure; the system Worker "
+                    "boundary already proved the five-file scope and preimage "
+                    "delta."
+                )
+                if fixed_capability_audit
+                else (
+                    "Read the target functions named by the frozen Master plan; "
+                    "the system Worker boundary already proved the five-file "
+                    "scope and preimage delta."
+                )
             ),
             "{review_size_baseline_contract}": (
                 "This prepared strict-bootstrap candidate has no readable historical "
@@ -159,6 +364,9 @@ def _render_reviewer_provider_prompt(inputs):
             "source_v": int(inputs["source_v"]),
             "next_v": int(inputs["next_v"]),
             "review_prompt_digest": prompt_digest,
+            "review_semantic_contract_digest": str(
+                semantic_contract["contract_digest"]
+            ),
             "focus_areas_digest": hashlib.sha256(
                 json.dumps(
                     focus_areas,
@@ -2886,6 +3094,7 @@ async def run_quality_gates(args):
         "runtime_contract_identity_ok": result["runtime_contract_identity_ok"],
         "runtime_contract_identity_errors": result["runtime_contract_identity_errors"],
         "runtime_contract_ledger_digest": result["runtime_contract_ledger_digest"],
+        **_quality_review_evidence_projection(result),
         "quality_infrastructure": result["quality_infrastructure"],
         "runtime_probe_schema_version": result["runtime_probe_schema_version"],
         "runtime_probe_orchestrator_version": result["runtime_probe_orchestrator_version"],
@@ -3930,6 +4139,18 @@ async def run_review(args):
 
         from llm_query import render_llm_prompt
 
+        try:
+            _review_semantics = _review_semantic_contract(
+                authoritative_plan,
+                (ckpt.get("gate_results") or {}).get("quality") or {},
+            )
+        except (TypeError, ValueError) as exc:
+            return _state_blocked(
+                f"run_review semantic contract invalid: {exc}",
+                v,
+                source_v,
+                ckpt,
+            )
         rendered_prompt = render_llm_prompt(
             "LEAD CODE REVIEWER",
             producer=_render_reviewer_provider_prompt,
@@ -3940,6 +4161,7 @@ async def run_review(args):
                 "strict_bootstrap": False,
                 "invocation_id": "",
                 "focus_areas": [str(item) for item in _focus_areas],
+                "review_semantic_contract": _review_semantics,
             },
         )
     _review_attempt_key, _review_infra_metadata = _llm_gate_infrastructure_identity(

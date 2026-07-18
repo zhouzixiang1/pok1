@@ -88,7 +88,10 @@ EXPECTED_PROVENANCE_FIELDS = {
     "debug_agent": (
         "candidate_path", "error_digest", "changed_diff_digest", "target_file", "next_v",
     ),
-    "lead_code_reviewer": ("source_v", "next_v", "review_prompt_digest"),
+    "lead_code_reviewer": (
+        "source_v", "next_v", "review_prompt_digest",
+        "review_semantic_contract_digest",
+    ),
     "strategy_critic": (
         "source_v", "next_v", "master_plan_digest", "code_evidence_digest",
         "h2h_snapshot_digest", "previous_critic_digest", "invocation_id",
@@ -160,7 +163,53 @@ def _renderer_inputs(role_id, marker):
         },
         "worker": {"task": {"target_files": ["policy.py"]}, "next_v": 145, "source_v": 143, "candidate_path": str(ROOT / "web/core/results/workflow/artifacts/workspaces" / ("a" * 64)), "allowed_files": ["policy.py"], "reviewer_feedback": marker, "attempt_note": "", "retry_guidance": "", "role": "logic"},
         "debug_agent": {"error_output": marker, "changed_diff": "+change", "target_file": "policy.py", "next_v": 145, "candidate_path": str(ROOT / "web/core/results/workflow/artifacts/workspaces" / ("a" * 64))},
-        "lead_code_reviewer": {"master_plan": {"analysis": marker}, "source_v": 143, "next_v": 145, "strict_bootstrap": False, "invocation_id": "", "focus_areas": []},
+        "lead_code_reviewer": {
+            "master_plan": {
+                "analysis": marker,
+                "proposal_binding": {
+                    "execution_mode": "fixed_blueprint_capability_audit",
+                    "selected_proposal_id": "proposal-a",
+                    "contract_digest": "1" * 64,
+                    "falsifier": {"test_name": "typed-capability-check"},
+                },
+            },
+            "source_v": 143,
+            "next_v": 145,
+            "strict_bootstrap": False,
+            "invocation_id": "",
+            "focus_areas": [],
+            "review_semantic_contract": __import__("tool_gates")._review_semantic_contract(
+                {
+                    "proposal_binding": {
+                        "execution_mode": "fixed_blueprint_capability_audit",
+                        "selected_proposal_id": "proposal-a",
+                        "contract_digest": "1" * 64,
+                        "falsifier": {"test_name": "typed-capability-check"},
+                    },
+                },
+                {
+                    "all_passed": True,
+                    "critical_scenarios_passed": True,
+                    "selected_proposal_quality_ok": True,
+                    "selected_proposal_quality_evidence": {
+                        "required": True,
+                        "ok": True,
+                        "check_id": "typed-capability-check",
+                        "check_evidence_digest": "2" * 64,
+                        "proposal_contract_digest": "1" * 64,
+                        "evidence_scope": (
+                            "reachable_symbol_delta_plus_typed_capability_only;"
+                            "not_full_counterfactual_or_strength_proof"
+                        ),
+                        "reachable_symbol_diff_required": False,
+                        "reachable_symbol_diff_ok": True,
+                        "changed_reachable_symbols": [],
+                        "reachable_symbol_diff_digest": "",
+                        "errors": [],
+                    },
+                },
+            ),
+        },
         "strategy_critic": {"source_v": 143, "next_v": 145, "master_plan": marker, "code_evidence": {"lineage_contract": "lineage", "evaluation_steps": "steps", "prompt_section": "diff"}, "h2h_snapshot_contract": "snapshot", "previous_critic": None, "invocation_id": ""},
         "crossover_compatibility": {"parent_a_v": 143, "parent_b_v": 144, "parent_a_code": {"policy.py": marker}, "parent_b_code": {"policy.py": "b"}, "parent_a_rating": "unknown", "parent_b_rating": "unknown", "h2h_context": "unknown", "architecture_context": {}, "parent_snapshot_receipt": {"receipt_digest": "d" * 64}},
         "crossover": {"parent_a_v": 143, "parent_b_v": 144, "target_v": 145, "parent_artifacts": ["b" * 64, "c" * 64], "compatibility_receipt": {"compatible": True}, "capability_context": {}, "h2h_snapshot_contract": marker, "architecture_policy": {}, "frozen_parent_a_dir": str(ROOT / "web/core/results/workflow/artifacts" / ("b" * 64)), "frozen_parent_b_dir": str(ROOT / "web/core/results/workflow/artifacts" / ("c" * 64)), "retry_feedback": ""},
