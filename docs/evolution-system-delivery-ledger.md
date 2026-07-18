@@ -3824,7 +3824,29 @@ bound invocation evidence, effect and invocation identities before it exposes
 the canonical resume. It neither accepts nor binds the role a second time and
 reports a failed abandon as failed. The independent Worker MCP finding is also
 closed: gate/reason/failure is one of seven exact tuples, and a re-digested
-receipt with an extra/missing top-level key is invalid. Combined focused tests
-after integration report 535 passed. At this ledger point final full source
-gates and runtime synchronization of the follow-up are pending; the stopped
-runtime remains at the safe revision-9 fence and **0/10**.
+receipt with an extra/missing top-level key is invalid. The last independent
+review found one further crash prefix: `ensure_instance()` and
+`request_effect()` are separate transactions, so a running definition-v3
+strict instance can legitimately have stream/fence zero and no events or
+effects. Commit `c34acf5e` preserves its ordinary terminal transition while
+restricting the receipt-bound legacy tombstone exception to an already
+abandoned empty instance. The new running-empty regression, exact tombstone
+drift negatives and role-bound Reviewer/Critic negatives all pass; final
+independent review approved the exact source freeze with no remaining P0/P1.
+
+Final source gates for that freeze report Web `3376 passed, 20 skipped`, Sever
+`33 passed`, frontend `25 passed`, successful lint and production build, full
+Python compile, and clean Git diff. The stopped runtime was then re-read without
+mutation: it remains at `58c44a08`, revision 9 and the outcome/candidate/journal
+identities recorded above; all current-v52 effects are terminal, the latest
+provider effect is still the original Reviewer, and there has been no second
+provider call. Twenty-one expired running strict effects from historical
+v3--v18 owners remain in the durable database, but current source has no global
+`pending_outbox()` consumer and the v52 recovery never consumes them. They are
+therefore recorded as source-owned historical-fencing debt, never a reason to
+edit SQLite manually; any future global consumer must close that debt before it
+is enabled.
+
+At this ledger point source merge and runtime synchronization of the follow-up
+are pending. The runtime remains deliberately stopped at the safe revision-9
+fence and stable observation remains **0/10**.
