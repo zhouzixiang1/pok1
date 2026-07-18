@@ -62,6 +62,116 @@ def _checkpoint():
     }
 
 
+def _contract_chain():
+    parked = {
+        "evaluation_contract_version": 40,
+        "evaluation_contract_hash": OLD_HASH,
+        "checkpoint_contract_digest": "a" * 64,
+        "protocol_bootstrap_receipt_digest": "b" * 64,
+        "first_strict_control_receipt_digest": "c" * 64,
+        "bootstrap_policy_digest": "d" * 64,
+    }
+    authorization = {
+        **parked,
+        "bootstrap_control_receipt_digest": "e" * 64,
+        "candidate_binding_digest": "f" * 64,
+    }
+    bootstrap_receipt = {
+        "receipt_digest": "e" * 64,
+        "bootstrap_policy": {"contract_digest": "d" * 64},
+    }
+    candidate_binding = {"candidate_binding_digest": "f" * 64}
+    control_receipt = {"receipt_digest": "c" * 64}
+    return (
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+    )
+
+
+def test_bootstrap_contract_chain_binds_baseline_parked_authorization_and_control():
+    (
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+    ) = _contract_chain()
+
+    assert recovery._bootstrap_contract_chain_issues(
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+        expected_evaluation_contract_version=40,
+        expected_evaluation_contract_hash=OLD_HASH,
+        expected_checkpoint_contract_digest="a" * 64,
+        expected_protocol_bootstrap_receipt_digest="b" * 64,
+        expected_first_strict_control_receipt_digest="c" * 64,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "issue"),
+    [
+        ("parked", "evaluation_contract_version", "bootstrap_contract_evaluation_contract_chain_mismatch"),
+        ("authorization", "evaluation_contract_version", "bootstrap_contract_evaluation_contract_chain_mismatch"),
+        ("parked", "evaluation_contract_hash", "bootstrap_contract_evaluation_contract_chain_mismatch"),
+        ("authorization", "evaluation_contract_hash", "bootstrap_contract_evaluation_contract_chain_mismatch"),
+        ("parked", "checkpoint_contract_digest", "bootstrap_contract_checkpoint_contract_chain_mismatch"),
+        ("authorization", "checkpoint_contract_digest", "bootstrap_contract_checkpoint_contract_chain_mismatch"),
+        ("parked", "protocol_bootstrap_receipt_digest", "bootstrap_contract_control_receipt_chain_mismatch"),
+        ("authorization", "protocol_bootstrap_receipt_digest", "bootstrap_contract_control_receipt_chain_mismatch"),
+        ("parked", "first_strict_control_receipt_digest", "bootstrap_contract_control_receipt_chain_mismatch"),
+        ("authorization", "first_strict_control_receipt_digest", "bootstrap_contract_control_receipt_chain_mismatch"),
+        ("control", "receipt_digest", "bootstrap_contract_control_receipt_chain_mismatch"),
+        ("authorization", "bootstrap_control_receipt_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
+        ("bootstrap", "receipt_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
+        ("authorization", "candidate_binding_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
+        ("binding", "candidate_binding_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
+        ("parked", "bootstrap_policy_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
+    ],
+)
+def test_bootstrap_contract_chain_rejects_each_spliced_identity(
+    target,
+    field,
+    issue,
+):
+    (
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+    ) = _contract_chain()
+    mapping = {
+        "parked": parked,
+        "authorization": authorization,
+        "bootstrap": bootstrap_receipt,
+        "binding": candidate_binding,
+        "control": control_receipt,
+    }[target]
+    mapping[field] = "0" * 64 if field != "evaluation_contract_version" else 39
+
+    issues = recovery._bootstrap_contract_chain_issues(
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+        expected_evaluation_contract_version=40,
+        expected_evaluation_contract_hash=OLD_HASH,
+        expected_checkpoint_contract_digest="a" * 64,
+        expected_protocol_bootstrap_receipt_digest="b" * 64,
+        expected_first_strict_control_receipt_digest="c" * 64,
+    )
+
+    assert issue in issues
+
+
 def _configure_claim(monkeypatch, root: Path):
     root.mkdir(parents=True)
     (root / "bots" / "national_v143").mkdir(parents=True)

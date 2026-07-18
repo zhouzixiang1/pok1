@@ -53,6 +53,65 @@ class BootstrapContractRecoveryError(RuntimeError):
         super().__init__("; ".join(self.issues[:12]))
 
 
+def _bootstrap_contract_chain_issues(
+    parked: dict[str, Any],
+    authorization: dict[str, Any],
+    bootstrap_receipt: dict[str, Any],
+    candidate_binding: dict[str, Any],
+    control_receipt: dict[str, Any],
+    *,
+    expected_evaluation_contract_version: int,
+    expected_evaluation_contract_hash: str,
+    expected_checkpoint_contract_digest: str,
+    expected_protocol_bootstrap_receipt_digest: str,
+    expected_first_strict_control_receipt_digest: str,
+) -> list[str]:
+    issues: list[str] = []
+    if (
+        parked.get("evaluation_contract_version")
+        != expected_evaluation_contract_version
+        or authorization.get("evaluation_contract_version")
+        != expected_evaluation_contract_version
+        or parked.get("evaluation_contract_hash")
+        != expected_evaluation_contract_hash
+        or authorization.get("evaluation_contract_hash")
+        != expected_evaluation_contract_hash
+    ):
+        issues.append("bootstrap_contract_evaluation_contract_chain_mismatch")
+    if (
+        parked.get("checkpoint_contract_digest")
+        != expected_checkpoint_contract_digest
+        or authorization.get("checkpoint_contract_digest")
+        != expected_checkpoint_contract_digest
+    ):
+        issues.append("bootstrap_contract_checkpoint_contract_chain_mismatch")
+    if (
+        authorization.get("protocol_bootstrap_receipt_digest")
+        != expected_protocol_bootstrap_receipt_digest
+        or parked.get("protocol_bootstrap_receipt_digest")
+        != expected_protocol_bootstrap_receipt_digest
+        or authorization.get("first_strict_control_receipt_digest")
+        != expected_first_strict_control_receipt_digest
+        or parked.get("first_strict_control_receipt_digest")
+        != expected_first_strict_control_receipt_digest
+        or authorization.get("first_strict_control_receipt_digest")
+        != control_receipt.get("receipt_digest")
+    ):
+        issues.append("bootstrap_contract_control_receipt_chain_mismatch")
+    policy = bootstrap_receipt.get("bootstrap_policy")
+    policy = policy if isinstance(policy, dict) else {}
+    if (
+        authorization.get("bootstrap_control_receipt_digest")
+        != bootstrap_receipt.get("receipt_digest")
+        or authorization.get("candidate_binding_digest")
+        != candidate_binding.get("candidate_binding_digest")
+        or parked.get("bootstrap_policy_digest")
+        != policy.get("contract_digest")
+    ):
+        issues.append("bootstrap_contract_embedded_binding_chain_mismatch")
+    return issues
+
+
 def _git(root: Path, *args: str, binary: bool = False) -> bytes | str:
     proc = subprocess.run(
         ["git", *args], cwd=str(root), capture_output=True,
@@ -180,6 +239,11 @@ def _terminal_job_facts(
     candidate_hash: str,
     workflow_run_id: str,
     parked_request: dict[str, Any],
+    expected_evaluation_contract_version: int,
+    expected_evaluation_contract_hash: str,
+    expected_checkpoint_contract_digest: str,
+    expected_protocol_bootstrap_receipt_digest: str,
+    expected_first_strict_control_receipt_digest: str,
 ) -> dict[str, Any]:
     from official_bootstrap import (
         CONTROL_ID,
@@ -335,8 +399,46 @@ def _terminal_job_facts(
         authorization.get("parked_request_digest") != parked_request.get("request_digest")
         or authorization.get("workflow_run_id") != workflow_run_id
         or authorization.get("candidate_hash") != candidate_hash
+        or Path(str(authorization.get("candidate_path") or "")).resolve()
+        != candidate.resolve()
+        or authorization.get("candidate_version")
+        != FIRST_STRICT_POLICY_VERSION
+        or authorization.get("bootstrap_control_id") != CONTROL_ID
+        or authorization.get("active_bots") != []
+        or authorization.get("strict_published_bots") != []
+        or authorization.get("normal_official_opponent") is not False
+        or authorization.get("strength_admitted") is not False
+        or authorization.get("rating_eligible") is not False
     ):
         issues.append("bootstrap_contract_operator_authorization_mismatch")
+    if (
+        Path(str(parked_request.get("candidate_path") or "")).resolve()
+        != candidate.resolve()
+        or parked_request.get("candidate_version")
+        != FIRST_STRICT_POLICY_VERSION
+        or parked_request.get("source_v") != ARCHIVED_VERSION_HIGH_WATER
+        or parked_request.get("active_bots") != []
+        or parked_request.get("strict_published_bots") != []
+    ):
+        issues.append("bootstrap_contract_parked_authority_mismatch")
+    issues.extend(_bootstrap_contract_chain_issues(
+        parked_request,
+        authorization if isinstance(authorization, dict) else {},
+        bootstrap_receipt,
+        binding,
+        control_receipt,
+        expected_evaluation_contract_version=(
+            expected_evaluation_contract_version
+        ),
+        expected_evaluation_contract_hash=expected_evaluation_contract_hash,
+        expected_checkpoint_contract_digest=expected_checkpoint_contract_digest,
+        expected_protocol_bootstrap_receipt_digest=(
+            expected_protocol_bootstrap_receipt_digest
+        ),
+        expected_first_strict_control_receipt_digest=(
+            expected_first_strict_control_receipt_digest
+        ),
+    ))
     entries, ledger_issues = _validated_ledger_entries()
     issues.extend(ledger_issues)
     deterministic = status.get("official_deterministic_status_receipt") or {}
@@ -530,6 +632,33 @@ def build_claim(
         candidate_facts = {}
     parked = ((checkpoint.get("audit_context") or {}).get("official_bootstrap_request"))
     try:
+        from official_bootstrap import _checkpoint_gate_contract_projection
+
+        checkpoint_contract_digest = canonical_digest(
+            _checkpoint_gate_contract_projection(checkpoint)
+        )
+    except Exception as exc:
+        issues.append(
+            f"bootstrap_contract_checkpoint_projection_unavailable:{type(exc).__name__}"
+        )
+        checkpoint_contract_digest = ""
+    audit_context = checkpoint.get("audit_context")
+    audit_context = audit_context if isinstance(audit_context, dict) else {}
+    protocol_bootstrap = audit_context.get("protocol_bootstrap")
+    protocol_bootstrap = (
+        protocol_bootstrap if isinstance(protocol_bootstrap, dict) else {}
+    )
+    quality_gate = (checkpoint.get("gate_results") or {}).get("quality")
+    quality_gate = quality_gate if isinstance(quality_gate, dict) else {}
+    checkpoint_control_receipt = quality_gate.get(
+        "first_strict_control_receipt"
+    )
+    checkpoint_control_receipt = (
+        checkpoint_control_receipt
+        if isinstance(checkpoint_control_receipt, dict)
+        else {}
+    )
+    try:
         job_facts = _terminal_job_facts(
             root,
             job_id=expected_terminal_job_id,
@@ -537,6 +666,17 @@ def build_claim(
             candidate_hash=expected_candidate_hash,
             workflow_run_id=expected_workflow_run_id,
             parked_request=parked,
+            expected_evaluation_contract_version=int(
+                old_contract.get("version", 0) or 0
+            ),
+            expected_evaluation_contract_hash=expected_baseline_contract_hash,
+            expected_checkpoint_contract_digest=checkpoint_contract_digest,
+            expected_protocol_bootstrap_receipt_digest=str(
+                protocol_bootstrap.get("receipt_digest") or ""
+            ),
+            expected_first_strict_control_receipt_digest=str(
+                checkpoint_control_receipt.get("receipt_digest") or ""
+            ),
         )
     except BootstrapContractRecoveryError as exc:
         issues.extend(exc.issues)

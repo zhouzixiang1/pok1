@@ -80,46 +80,47 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if runtime_errors:
         raise RuntimeError("; ".join(runtime_errors))
+    if args.execute and not args.acknowledge_runtime_checkout:
+        raise RuntimeError("execution requires --acknowledge-runtime-checkout")
+    if args.execute and not args.claim_digest:
+        raise RuntimeError("execution requires the reviewed --claim-digest")
+    if args.execute:
+        completed = finalized_claim_result(ROOT, args.claim_digest)
+        if completed is not None:
+            print(json.dumps(completed, indent=2, ensure_ascii=False))
+            return 0
+        # A crash may happen after the canonical claim/fence/ledger/quarantine
+        # but before checkpoint clear or finalize receipt.  Resume that prefix
+        # before attempting to rebuild a pre-claim candidate proof.
+        with _reconciliation_lock(), _index_lock():
+            resume = incomplete_claim_resume_identity(ROOT, args.claim_digest)
+            if resume is not None:
+                result = asyncio.run(_do_abandon_generation(
+                    reason=abandon_reason(args.claim_digest),
+                    _bypass_rate_limit=True,
+                    expected_workflow_run_id=resume["workflow_run_id"],
+                    expected_next_v=resume["next_v"],
+                    expected_source_v=resume["source_v"],
+                    expected_checkpoint_revision=resume["checkpoint_revision"],
+                    expected_checkpoint_stage=resume["stage"],
+                    _operator_bootstrap_contract_change_claim_digest=(
+                        args.claim_digest
+                    ),
+                ))
+                if result.get("abandoned") is True:
+                    print(json.dumps({
+                        "status": "abandoned_after_crash_resume",
+                        "claim_digest": args.claim_digest,
+                        "abandon": result,
+                    }, indent=2, ensure_ascii=False))
+                    return 0
     checkpoint = read_pipeline_checkpoint()
     if not isinstance(checkpoint, dict):
-        if args.execute and args.claim_digest:
-            completed = finalized_claim_result(ROOT, args.claim_digest)
-            if completed is not None:
-                print(json.dumps(completed, indent=2, ensure_ascii=False))
-                return 0
-            with _reconciliation_lock(), _index_lock():
-                resume = incomplete_claim_resume_identity(
-                    ROOT, args.claim_digest
-                )
-                if resume is not None:
-                    result = asyncio.run(_do_abandon_generation(
-                        reason=abandon_reason(args.claim_digest),
-                        _bypass_rate_limit=True,
-                        expected_workflow_run_id=resume["workflow_run_id"],
-                        expected_next_v=resume["next_v"],
-                        expected_source_v=resume["source_v"],
-                        expected_checkpoint_revision=resume[
-                            "checkpoint_revision"
-                        ],
-                        expected_checkpoint_stage=resume["stage"],
-                        _operator_bootstrap_contract_change_claim_digest=(
-                            args.claim_digest
-                        ),
-                    ))
-                    if result.get("abandoned") is True:
-                        print(json.dumps({
-                            "status": "abandoned_after_crash_resume",
-                            "claim_digest": args.claim_digest,
-                            "abandon": result,
-                        }, indent=2, ensure_ascii=False))
-                        return 0
         raise RuntimeError("parked bootstrap checkpoint is missing or unreadable")
     claim = _claim(args, checkpoint)
     if not args.execute:
         print(json.dumps({**claim, "mode": "dry_run", "mutates": False}, indent=2, ensure_ascii=False))
         return 0
-    if not args.acknowledge_runtime_checkout:
-        raise RuntimeError("execution requires --acknowledge-runtime-checkout")
     if args.claim_digest != claim.get("claim_digest"):
         raise RuntimeError("reviewed dry-run claim digest does not match live proof")
     # Preserve canonical lock order: the abandon owner acquires its workflow
