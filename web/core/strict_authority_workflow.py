@@ -301,28 +301,43 @@ def abandon_authority(
         history = store.events(run_id)
         effects = store.effects_for_run(run_id)
         if not history and not effects:
-            outcome = (checkpoint or {}).get("terminal_gate_outcome") or {}
-            receipt_digest = str(outcome.get("receipt_digest") or "")
-            expected_reason = f"terminal_gate_outcome:{receipt_digest}"
-            exact_legacy_tombstone = bool(
+            exact_empty_instance = bool(
                 int(instance.get("definition_version") or -1)
                 == DEFINITION_VERSION
                 and int(instance.get("stream_version", -1)) == 0
                 and int(instance.get("fence_epoch", -1)) == 0
-                and instance.get("status") == "abandoned"
-                and checkpoint.get("stage")
-                in {"quality_rejected", "review_rejected", "critic_rejected"}
-                and outcome.get("workflow_run_id")
-                == checkpoint.get("workflow_run_id")
-                and outcome.get("terminal_stage") == checkpoint.get("stage")
-                and len(receipt_digest) == 64
-                and all(
-                    char in "0123456789abcdef"
-                    for char in receipt_digest
-                )
-                and str(reason) == expected_reason
             )
-            if not exact_legacy_tombstone:
+            if instance.get("status") == "abandoned":
+                outcome = (checkpoint or {}).get("terminal_gate_outcome") or {}
+                receipt_digest = str(outcome.get("receipt_digest") or "")
+                expected_reason = f"terminal_gate_outcome:{receipt_digest}"
+                exact_legacy_tombstone = bool(
+                    exact_empty_instance
+                    and checkpoint.get("stage")
+                    in {
+                        "quality_rejected",
+                        "review_rejected",
+                        "critic_rejected",
+                    }
+                    and outcome.get("workflow_run_id")
+                    == checkpoint.get("workflow_run_id")
+                    and outcome.get("terminal_stage")
+                    == checkpoint.get("stage")
+                    and len(receipt_digest) == 64
+                    and all(
+                        char in "0123456789abcdef"
+                        for char in receipt_digest
+                    )
+                    and str(reason) == expected_reason
+                )
+                if not exact_legacy_tombstone:
+                    raise StrictAuthorityError(
+                        "strict_authority_abandon_tombstone_invalid"
+                    )
+            elif not (
+                instance.get("status") == "running"
+                and exact_empty_instance
+            ):
                 raise StrictAuthorityError(
                     "strict_authority_abandon_tombstone_invalid"
                 )

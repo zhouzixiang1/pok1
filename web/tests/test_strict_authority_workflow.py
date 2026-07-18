@@ -1056,7 +1056,7 @@ def test_generation_abandon_tombstone_rejects_extra_state(authority):
 
 @pytest.mark.parametrize(
     "mutation",
-    ("definition", "status", "stream", "fence", "event", "effect"),
+    ("definition", "stream", "fence", "event", "effect"),
 )
 def test_generation_abandon_tombstone_rejects_nonexact_shape(
     authority,
@@ -1080,12 +1080,6 @@ def test_generation_abandon_tombstone_rejects_nonexact_shape(
         if mutation == "definition":
             connection.execute(
                 "UPDATE workflow_instances SET definition_version = 99 "
-                "WHERE run_id = ?",
-                (run_id,),
-            )
-        elif mutation == "status":
-            connection.execute(
-                "UPDATE workflow_instances SET status = 'running' "
                 "WHERE run_id = ?",
                 (run_id,),
             )
@@ -1138,6 +1132,38 @@ def test_generation_abandon_tombstone_rejects_nonexact_shape(
             (run_id,),
         ).fetchone()[0]
     assert count == 0
+
+
+def test_generation_abandon_recovers_running_empty_predispatch_crash(authority):
+    module, store = authority
+    checkpoint = _checkpoint()
+    run_id = module.authority_run_id(checkpoint["workflow_run_id"])
+    # Model a crash after ensure_instance but before request_effect appends its
+    # EffectRequested row.  This is an ordinary live prefix, not a legacy
+    # abandoned tombstone and therefore needs no terminal receipt migration.
+    store.ensure_instance(
+        run_id,
+        definition_version=module.DEFINITION_VERSION,
+        status="running",
+    )
+    instance = store.instance(run_id)
+    assert instance["definition_version"] == module.DEFINITION_VERSION
+    assert instance["status"] == "running"
+    assert instance["stream_version"] == 0
+    assert instance["fence_epoch"] == 0
+    assert store.events(run_id) == []
+    assert store.effects_for_run(run_id) == []
+
+    recovered = module.abandon_authority(
+        checkpoint,
+        reason="abandon_generation",
+    )
+
+    assert recovered["abandoned"] is True
+    assert recovered["fence_epoch"] == 1
+    assert [event.event_type for event in store.events(run_id)] == [
+        "StrictAuthorityAbandoned"
+    ]
 
 
 def test_generation_abandon_blocks_accepted_provider_replay_dispatch(authority):
