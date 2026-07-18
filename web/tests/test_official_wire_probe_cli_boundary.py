@@ -1,8 +1,10 @@
 import asyncio
 import importlib.util
 import inspect
+import os
 from pathlib import Path
 import socket
+import subprocess
 import sys
 
 import pytest
@@ -68,6 +70,26 @@ def test_wire_probe_is_short_diagnostic_and_rejects_unbound_hand_70(capsys):
     with pytest.raises(SystemExit):
         module.parse_args([*required, "--target-hands", "70"])
     assert "requires scripts/official_certify.py full" in capsys.readouterr().err
+
+
+def test_runtime_scripts_import_with_script_directory_before_core():
+    env = dict(os.environ)
+    env["PYTHONPATH"] = "web/core:."
+    for script in (
+        "scripts/official_wire_probe.py",
+        "scripts/abandon_parked_bootstrap_contract_change.py",
+    ):
+        completed = subprocess.run(
+            [sys.executable, script, "--help"],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
 
 
 def test_wire_probe_rejects_arbitrary_script_and_symlink_paths(tmp_path):

@@ -20,10 +20,15 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CORE = ROOT / "web" / "core"
-if str(CORE) not in sys.path:
-    sys.path.insert(0, str(CORE))
-if str(ROOT) not in sys.path:
-    sys.path.insert(1, str(ROOT))
+for entry in list(sys.path):
+    try:
+        resolved = Path(entry or ".").resolve()
+    except OSError:
+        continue
+    if resolved in {CORE, ROOT}:
+        sys.path.remove(entry)
+sys.path.insert(0, str(CORE))
+sys.path.insert(1, str(ROOT))
 
 from bootstrap_contract_recovery import (  # noqa: E402
     abandon_reason,

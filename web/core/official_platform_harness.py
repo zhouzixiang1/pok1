@@ -50,7 +50,6 @@ from official_execution_profile import (
 )
 from blocking_runtime import run_blocking_isolated
 from official_platform_resource import acquire_official_platform
-from official_wire_probe import WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -98,6 +97,7 @@ THP_FOOTER_RE = re.compile(
 TERMINAL_COMPLETION_SCHEMA_VERSION = 1
 FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 2
 FORMAL_QUALITY_ADMISSION_KIND = "official-formal-quality-admission"
+FORMAL_WIRE_CAUSAL_ORDER_SCHEMA_VERSION = 1
 
 
 class FormalQualityAdmissionError(RuntimeError):
@@ -2344,7 +2344,7 @@ def run_official_round(
                 "proxy_ports": proxy_ports,
                 "issues": list(wire_capture.issues),
                 "causal_order_schema_version": (
-                    WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+                    FORMAL_WIRE_CAUSAL_ORDER_SCHEMA_VERSION
                 ),
                 "finalized_replay_required": True,
             }
