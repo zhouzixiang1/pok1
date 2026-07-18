@@ -361,6 +361,101 @@ def test_provider_result_without_schema_acceptance_is_not_authority(authority):
     assert "strict_authority_proposal:mechanism_accepted_count:0" in errors
 
 
+@pytest.mark.parametrize("approved", [False, True])
+def test_renderer_source_drift_recovery_is_rejection_only(
+    authority,
+    monkeypatch,
+    tmp_path,
+    approved,
+):
+    module, _store = authority
+    checkpoint = _checkpoint(stage="quality_passed", revision=10)
+    candidate = tmp_path / "national_v155"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    semantic_inputs = {
+        "master_plan": {},
+        "source_v": 142,
+        "next_v": 155,
+        "strict_bootstrap": True,
+        "focus_areas": [],
+    }
+    old_context = {
+        "phase": "review",
+        "candidate_artifact_hash": "a" * 64,
+        "quality_gate_digest": "b" * 64,
+        "master_receipt_digest": "c" * 64,
+        "master_plan_digest": "d" * 64,
+        "renderer_semantics": {
+            "schema_version": 1,
+            "role": "LEAD CODE REVIEWER",
+            "semantic_inputs": semantic_inputs,
+            "semantic_inputs_digest": module.content_digest(semantic_inputs),
+            "renderer_static_identity": {"producer_file_sha256": "old"},
+        },
+    }
+    current_context = deepcopy(old_context)
+    current_context["renderer_semantics"]["renderer_static_identity"] = {
+        "producer_file_sha256": "new"
+    }
+    role_result = {
+        "approved": approved,
+        "quality_score": 3 if not approved else 9,
+        "feedback": "terminal reject" if not approved else "approved",
+        "change_summary": "reviewed",
+        "risk_areas": [],
+    }
+    call = module.new_call(
+        checkpoint,
+        slot="review",
+        context_binding=old_context,
+    )
+    module.dispatch_call(
+        call,
+        full_prompt="old renderer prompt",
+        tools=["Read"],
+        owner="pytest",
+    )
+    provider_result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="renderer-drift-review",
+        total_cost_usd=0.01,
+        usage={},
+        result=json.dumps(role_result, sort_keys=True),
+    )
+    module._observe_provider_result(
+        provider_result,
+        invocation_id=call["invocation_id"],
+        effect_id=call["effect_id"],
+    )
+    module.complete_provider_call(
+        call,
+        raw_output=provider_result.result,
+        provider_results=[provider_result],
+    )
+    monkeypatch.setattr(
+        module,
+        "gate_call_context",
+        lambda *_args, **_kwargs: current_context,
+    )
+
+    recovered = module.recover_terminal_gate_rejection_call(
+        checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+    if approved:
+        assert recovered is None
+    else:
+        assert recovered["effect_id"] == call["effect_id"]
+        assert recovered["terminal_reconciliation"] is True
+        assert recovered["projected_role_result"]["approved"] is False
+
+
 def test_generation_abandon_fences_strict_child_journal(authority):
     module, store = authority
     checkpoint = _checkpoint()

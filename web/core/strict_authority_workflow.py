@@ -1240,6 +1240,159 @@ def _recover_completed_unaccepted_call(
     }
 
 
+def recover_terminal_gate_rejection_call(
+    checkpoint: dict[str, Any],
+    *,
+    gate_name: str,
+    candidate_dir: str | Path,
+) -> dict[str, Any] | None:
+    """Recover one old-code schema-valid rejection without a provider replay.
+
+    This is deliberately one-way reconciliation.  A changed renderer source
+    identity may be ignored only after the durable provider projection is a
+    rejection (Reviewer ``approved is False``).  Every semantic input,
+    candidate/quality/master digest, workflow binding, completed-effect digest,
+    and accepted-event digest remains exact.  An approval is never returned
+    through this path and therefore can never be promoted under changed gate
+    code.
+    """
+
+    if gate_name != "review":
+        raise StrictAuthorityError(
+            "strict_authority_terminal_recovery_gate_not_supported"
+        )
+    if str((checkpoint or {}).get("stage") or "") != "quality_passed":
+        raise StrictAuthorityError(
+            "strict_authority_terminal_recovery_stage_invalid"
+        )
+    binding = generation_binding(checkpoint)
+    run_id = authority_run_id(binding["workflow_run_id"])
+    current_context = gate_call_context(
+        checkpoint,
+        gate_name=gate_name,
+        candidate_dir=Path(candidate_dir),
+    )
+    store = _store()
+    if not store.instance(run_id):
+        return None
+    events = store.events(run_id)
+    effect_ids = list(dict.fromkeys(
+        str(event.payload.get("effect_id") or "")
+        for event in events
+        if event.event_type == "StrictProviderResultObserved"
+        and event.payload.get("slot") == gate_name
+    ))
+    matches: list[dict[str, Any]] = []
+    for effect_id in effect_ids:
+        if not effect_id:
+            continue
+        effect = store.effect(effect_id)
+        input_payload = effect.get("input_payload") or {}
+        provider = effect.get("result_payload") or {}
+        recorded_context = input_payload.get("context_binding")
+        projected = provider.get("projected_role_result")
+        if (
+            effect.get("status") != "completed"
+            or effect.get("kind") != EFFECT_KIND
+            or effect.get("run_id") != run_id
+            or input_payload.get("slot") != gate_name
+            or input_payload.get("role") != SLOT_CONTRACTS[gate_name][0]
+            or input_payload.get("purpose") != SLOT_CONTRACTS[gate_name][1]
+            or input_payload.get("generation_binding") != binding
+            or input_payload.get("generation_binding_digest")
+            != content_digest(binding)
+            or input_payload.get("checkpoint_stage") != "quality_passed"
+            or not _plain_int(input_payload.get("checkpoint_revision"))
+            or int(input_payload["checkpoint_revision"])
+            > int(checkpoint.get("checkpoint_revision") or -1)
+            or not isinstance(recorded_context, dict)
+            or input_payload.get("context_binding_digest")
+            != content_digest(recorded_context)
+            or not isinstance(projected, dict)
+            or projected.get("approved") is not False
+            or provider.get("role_projection_valid") is not True
+        ):
+            continue
+
+        # Renderer implementation identity can rotate when the repair itself
+        # lands.  Only the normalized role inputs may bridge that change.
+        recorded_semantics = recorded_context.get("renderer_semantics") or {}
+        current_semantics = current_context.get("renderer_semantics") or {}
+        if any(
+            recorded_context.get(key) != current_context.get(key)
+            for key in set(recorded_context) | set(current_context)
+            if key != "renderer_semantics"
+        ) or any(
+            recorded_semantics.get(key) != current_semantics.get(key)
+            for key in (
+                "schema_version",
+                "role",
+                "semantic_inputs",
+                "semantic_inputs_digest",
+            )
+        ):
+            continue
+        provider_subject = {
+            key: value for key, value in provider.items()
+            if key != "result_digest"
+        }
+        if (
+            provider.get("result_digest") != content_digest(provider_subject)
+            or provider.get("projected_role_result_digest")
+            != content_digest(_json_value(projected))
+            or provider.get("raw_output_digest")
+            != hashlib.sha256(
+                str(provider.get("raw_output") or "").encode("utf-8")
+            ).hexdigest()
+        ):
+            raise StrictAuthorityError(
+                "strict_authority_terminal_recovery_provider_invalid"
+            )
+        descriptor = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "slot": gate_name,
+            "role": input_payload["role"],
+            "purpose": input_payload["purpose"],
+            "invocation_id": input_payload.get("invocation_id"),
+            "generation_binding": deepcopy(binding),
+            "generation_binding_digest": input_payload[
+                "generation_binding_digest"
+            ],
+            "checkpoint_stage": input_payload["checkpoint_stage"],
+            "checkpoint_revision": int(input_payload["checkpoint_revision"]),
+            "context_binding": deepcopy(recorded_context),
+            "context_binding_digest": input_payload["context_binding_digest"],
+        }
+        recovered = _recover_accepted_call(descriptor)
+        if recovered is None:
+            recovered = _recover_completed_unaccepted_call(descriptor)
+        if recovered is None:
+            raise StrictAuthorityError(
+                "strict_authority_terminal_recovery_effect_unrecoverable"
+            )
+        recovered_result = (
+            recovered.get("accepted_role_result")
+            or recovered.get("projected_role_result")
+        )
+        if not isinstance(recovered_result, dict) or recovered_result.get(
+            "approved"
+        ) is not False:
+            raise StrictAuthorityError(
+                "strict_authority_terminal_recovery_not_rejection"
+            )
+        recovered["terminal_reconciliation"] = True
+        matches.append(recovered)
+    if not matches:
+        return None
+    unique_effects = {str(item.get("effect_id") or "") for item in matches}
+    if len(matches) != 1 or len(unique_effects) != 1:
+        raise StrictAuthorityError(
+            f"strict_authority_terminal_recovery_count:{len(matches)}"
+        )
+    return matches[0]
+
+
 _STABLE_CALL_FIELDS = (
     "slot",
     "role",
@@ -3594,6 +3747,7 @@ __all__ = [
     "proposal_call_context",
     "record_bound_invocation_evidence",
     "recover_accepted_master_final_result",
+    "recover_terminal_gate_rejection_call",
     "render_gate_provider_prompt",
     "reject_duplicate_proposal",
     "schema_retry_prompt",

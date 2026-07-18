@@ -17,6 +17,7 @@ import threading
 import uuid
 import hashlib
 import stat
+from copy import deepcopy
 
 
 import fcntl
@@ -1343,7 +1344,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                expected_checkpoint_revision=None,
                                expected_checkpoint_stage=None,
                                expected_workflow_run_id=None,
-                               workflow_run_id=None):
+                               workflow_run_id=None,
+                               terminal_gate_outcome=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -1535,6 +1537,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_official_job = None
         existing_repair_baseline_artifact_hash = None
         existing_publication_intent = None
+        existing_terminal_gate_outcome = None
         existing_epoch_binding = None
         existing_workflow_run_id = ""
         requested_workflow_run_id = str(workflow_run_id or "").strip()
@@ -1586,6 +1589,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 "repair_baseline_artifact_hash"
             )
             existing_publication_intent = existing.get("publication_intent")
+            existing_terminal_gate_outcome = existing.get(
+                "terminal_gate_outcome"
+            )
             existing_epoch_binding = existing.get("epoch_binding")
             existing_workflow_run_id = str(
                 existing.get("workflow_run_id")
@@ -1748,6 +1754,26 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             return False
         if stage == "publishing" and existing_publication_intent is None:
             log.error("Publishing stage requires an immutable publication intent")
+            return False
+
+        terminal_stages = {
+            "quality_rejected", "review_rejected", "critic_rejected",
+        }
+        if terminal_gate_outcome is not None:
+            if stage not in terminal_stages:
+                log.error("Terminal gate outcome requires a terminal gate stage")
+                return False
+            if existing_terminal_gate_outcome is not None and (
+                existing_terminal_gate_outcome != terminal_gate_outcome
+            ):
+                log.error("Refusing terminal gate outcome replacement")
+                return False
+            existing_terminal_gate_outcome = deepcopy(terminal_gate_outcome)
+        if stage in terminal_stages and existing_terminal_gate_outcome is None:
+            log.error("Terminal gate stage requires an immutable outcome")
+            return False
+        if existing_terminal_gate_outcome is not None and stage not in terminal_stages:
+            log.error("A terminal gate outcome cannot leave its terminal stage")
             return False
 
         if infra_failure is not None or clear_infra_failure:
@@ -2086,8 +2112,29 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
         }
+        if existing_terminal_gate_outcome is not None:
+            state["terminal_gate_outcome"] = existing_terminal_gate_outcome
 
         epoch_errors = checkpoint_epoch_errors(state)
+        if stage in terminal_stages:
+            try:
+                from gate_outcome import validate_terminal_gate_outcome
+
+                terminal_errors = validate_terminal_gate_outcome(
+                    state,
+                    candidate_dir=get_bot_dir(next_v),
+                )
+            except Exception as exc:
+                terminal_errors = [
+                    "terminal_outcome_projection_validation_error:"
+                    f"{type(exc).__name__}"
+                ]
+            if terminal_errors:
+                log.error(
+                    "Refusing invalid terminal gate outcome: %s",
+                    terminal_errors,
+                )
+                return False
         if not epoch_errors:
             epoch_errors.extend(
                 live_checkpoint_parent_authority_errors(

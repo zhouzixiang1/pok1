@@ -71,7 +71,7 @@ def test_system_control_plane_is_exact_and_restart_critical_at_every_stage():
         | ORCHESTRATOR_ROOT_GUARD_FILES
         | FORMAL_BOOTSTRAP_FILES
     )
-    assert evaluation_contract.CONTRACT_VERSION == 38
+    assert evaluation_contract.CONTRACT_VERSION == 39
     assert SYSTEM_BOOTSTRAP_FILES == set(
         evolution_scope.CRITICAL_SYSTEM_BOOTSTRAP_EXACT
     )
@@ -1066,12 +1066,15 @@ def test_every_checkpoint_stage_binds_its_exact_llm_prompt_inputs():
         },
         "master_planned": WORKER_PROMPT_INPUTS,
         "quality_failed": WORKER_PROMPT_INPUTS,
+        "quality_rejected": set(),
         "precommit_failed": WORKER_PROMPT_INPUTS,
         "repair_planned": WORKER_PROMPT_INPUTS,
         "rework_running": WORKER_PROMPT_INPUTS,
         "workers_done": set(),
         "quality_passed": {"web/core/prompts/reviewer_prompt.md"},
+        "review_rejected": set(),
         "reviewed": {"web/core/prompts/critic_prompt.md"},
+        "critic_rejected": set(),
         "critic_checked": set(),
         "verified": OFFICIAL_PROMPT_INPUTS,
         "official_bootstrap_required": OFFICIAL_PROMPT_INPUTS,

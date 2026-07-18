@@ -129,6 +129,7 @@ CRITICAL_EVALUATION_GATE_EXACT = frozenset({
     "web/core/worker_boundary.py",
     "web/core/prompts/official_platform_analysis.md",
     "scripts/official_certify.py",
+    "scripts/reconcile_terminal_gate.py",
 }).union(
     CRITICAL_SYSTEM_BOOTSTRAP_EXACT,
     CRITICAL_FIRST_STRICT_CONTROL_EXACT,
@@ -150,6 +151,7 @@ CRITICAL_GENERATION_EXACT = frozenset({
     "web/core/direction_auditor.py",
     "web/core/evidence_snapshot.py",
     "web/core/evaluation_contract.py",
+    "web/core/gate_outcome.py",
     "web/core/epoch_authority.py",
     "web/core/evolution_infra.py",
     "web/core/evolution_scope.py",
@@ -172,6 +174,7 @@ CRITICAL_GENERATION_EXACT = frozenset({
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_schema.py",
     "web/core/pipeline_state.py",
+    "web/core/terminal_gate_reconcile.py",
     "web/core/plan_compiler.py",
     "web/core/publish_reconcile.py",
     "web/core/publication_transaction.py",

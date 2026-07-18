@@ -1855,7 +1855,35 @@ class AbandonGenerationInput(TypedDict):
 
 @tool("abandon_generation", "Clear pipeline checkpoint and remove incomplete next-gen directory. Use when a generation is stuck and needs to be restarted.", {})
 async def abandon_generation(args):
-    result = await _do_abandon_generation(reason="abandon_generation")
+    checkpoint = read_pipeline_checkpoint()
+    outcome = (
+        checkpoint.get("terminal_gate_outcome")
+        if isinstance(checkpoint, dict)
+        else None
+    )
+    if isinstance(outcome, dict):
+        try:
+            from gate_outcome import terminal_outcome_abandon_reason
+
+            reason = terminal_outcome_abandon_reason(outcome)
+            identity = expected_abandon_identity(checkpoint)
+            result = await _do_abandon_generation(
+                reason=reason,
+                _bypass_rate_limit=True,
+                expected_terminal_gate_outcome_digest=outcome.get(
+                    "receipt_digest"
+                ),
+                **identity,
+            )
+        except Exception as exc:
+            result = {
+                "abandoned": False,
+                "blocked": True,
+                "reason": "terminal_gate_abandon_identity_invalid",
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            }
+    else:
+        result = await _do_abandon_generation(reason="abandon_generation")
     return {"content": [{"type": "text", "text": json.dumps(result)}]}
 
 
@@ -1870,6 +1898,7 @@ async def _do_abandon_generation(
     expected_source_v: int | None = None,
     expected_checkpoint_revision: int | None = None,
     expected_checkpoint_stage: str | None = None,
+    expected_terminal_gate_outcome_digest: str | None = None,
 ) -> dict:
     """Core abandon logic — clears the pipeline checkpoint and removes the
     incomplete next-gen directory.
@@ -1935,6 +1964,13 @@ async def _do_abandon_generation(
                     expected_checkpoint_stage is not None
                     and current["stage"] != str(expected_checkpoint_stage)
                 )
+                or (
+                    expected_terminal_gate_outcome_digest is not None
+                    and (
+                        candidate.get("terminal_gate_outcome") or {}
+                    ).get("receipt_digest")
+                    != str(expected_terminal_gate_outcome_digest)
+                )
             )
         if not mismatch:
             return None
@@ -1948,6 +1984,9 @@ async def _do_abandon_generation(
                 "source_v": expected_source_v,
                 "checkpoint_revision": expected_checkpoint_revision,
                 "stage": expected_checkpoint_stage,
+                "terminal_gate_outcome_digest": (
+                    expected_terminal_gate_outcome_digest
+                ),
             },
             "current_checkpoint": current,
             "directive": (
@@ -2014,6 +2053,66 @@ async def _do_abandon_generation(
     )
     if identity_conflict:
         return identity_conflict
+    terminal_stages = {
+        "quality_rejected", "review_rejected", "critic_rejected",
+    }
+    if isinstance(checkpoint, dict) and checkpoint.get("stage") in terminal_stages:
+        outcome = checkpoint.get("terminal_gate_outcome")
+        try:
+            from gate_outcome import terminal_outcome_abandon_reason
+
+            canonical_terminal_reason = terminal_outcome_abandon_reason(outcome)
+        except Exception as exc:
+            return {
+                "abandoned": False,
+                "reason": "terminal_gate_outcome_identity_invalid",
+                "action": "operator_reconcile",
+                "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+            }
+        if (
+            reason != canonical_terminal_reason
+            or expected_terminal_gate_outcome_digest
+            != outcome.get("receipt_digest")
+        ):
+            return {
+                "abandoned": False,
+                "reason": "terminal_gate_abandon_authority_mismatch",
+                "action": "operator_reconcile",
+            }
+    if expected_terminal_gate_outcome_digest is not None:
+        outcome = (
+            checkpoint.get("terminal_gate_outcome")
+            if isinstance(checkpoint, dict)
+            else None
+        )
+        if not isinstance(outcome, dict) or outcome.get(
+            "receipt_digest"
+        ) != str(expected_terminal_gate_outcome_digest):
+            return {
+                "abandoned": False,
+                "reason": "terminal_gate_outcome_identity_mismatch",
+                "action": "operator_reconcile",
+            }
+        try:
+            from gate_outcome import validate_terminal_gate_outcome
+
+            terminal_errors = validate_terminal_gate_outcome(
+                checkpoint,
+                outcome,
+                candidate_dir=get_bot_dir(int(checkpoint["next_v"])),
+            )
+        except Exception as exc:
+            terminal_errors = [
+                "terminal_outcome_abandon_validation_error:"
+                f"{type(exc).__name__}"
+            ]
+        if terminal_errors:
+            return {
+                "abandoned": False,
+                "reason": "terminal_gate_outcome_invalid",
+                "action": "operator_reconcile",
+                "issues": terminal_errors,
+            }
     infra_failure = (
         dict(checkpoint.get("infra_failure"))
         if isinstance(checkpoint, dict) and isinstance(checkpoint.get("infra_failure"), dict)

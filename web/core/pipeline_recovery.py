@@ -23,8 +23,11 @@ TARGET_DIR_STAGES = {
     "master_planned",
     "workers_done",
     "quality_failed",
+    "quality_rejected",
     "quality_passed",
+    "review_rejected",
     "reviewed",
+    "critic_rejected",
     "critic_checked",
     "precommit_failed",
     "repair_planned",
@@ -46,7 +49,9 @@ HEAD_DRIFT_REPAIR_STAGES = {
 }
 HEAD_DRIFT_POST_QUALITY_STAGES = {
     "quality_passed",
+    "review_rejected",
     "reviewed",
+    "critic_rejected",
     "critic_checked",
     "verified",
     "official_certifying",
@@ -344,6 +349,28 @@ def checkpoint_recovery_diagnostics(
     elif stage == "official_inconclusive":
         issues.append("official_inconclusive_requires_infra_intervention")
         warnings.append("official_full_gate_not_recoverable_by_bot_rework")
+    elif stage in {"quality_rejected", "review_rejected", "critic_rejected"}:
+        try:
+            from gate_outcome import validate_terminal_gate_outcome
+
+            terminal_errors = validate_terminal_gate_outcome(
+                checkpoint,
+                candidate_dir=root / bot_relpath(int(next_v)),
+            )
+        except Exception as exc:
+            terminal_errors = [
+                "terminal_outcome_recovery_validation_error:"
+                f"{type(exc).__name__}"
+            ]
+        diag["terminal_gate_outcome"] = {
+            "valid": not terminal_errors,
+            "receipt_digest": (
+                checkpoint.get("terminal_gate_outcome") or {}
+            ).get("receipt_digest"),
+            "errors": terminal_errors,
+        }
+        if terminal_errors:
+            issues.append("terminal_gate_outcome_invalid")
 
     snapshot = snapshot if snapshot is not None else _snapshot_for_recovery(root)
     baseline = checkpoint.get("repo_baseline")

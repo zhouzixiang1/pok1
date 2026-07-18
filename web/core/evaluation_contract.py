@@ -37,7 +37,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 38
+CONTRACT_VERSION = 39
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -58,6 +58,7 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/evolution_infra.py",
     "web/core/evolution_core.py",
     "web/core/evolution_scope.py",
+    "web/core/gate_outcome.py",
     "web/core/generation_evidence.py",
     "web/core/managed_bot_executor.py",
     "web/core/managed_bot_socket.py",
@@ -92,12 +93,14 @@ ALWAYS_CRITICAL_EXACT = frozenset({
     "web/core/official_verdict_ledger.py",
     "web/core/official_wire_probe.py",
     "scripts/official_certify.py",
+    "scripts/reconcile_terminal_gate.py",
     "web/core/orchestrator.py",
     "web/core/orchestrator_context.py",
     "web/core/orchestrator_cost_policy.py",
     "web/core/pipeline_recovery.py",
     "web/core/pipeline_infrastructure.py",
     "web/core/pipeline_state.py",
+    "web/core/terminal_gate_reconcile.py",
     "web/core/post_publication_handoff.py",
     "web/core/publish_reconcile.py",
     "web/core/publication_transaction.py",
@@ -308,12 +311,15 @@ _STAGE_EXACT = {
     "direction_audited": MASTER_STAGE_EXACT,
     "master_planned": WORKER_REPAIR_STAGE_EXACT,
     "quality_failed": WORKER_REPAIR_STAGE_EXACT,
+    "quality_rejected": ALWAYS_CRITICAL_EXACT,
     "precommit_failed": WORKER_REPAIR_STAGE_EXACT,
     "repair_planned": WORKER_REPAIR_STAGE_EXACT,
     "rework_running": WORKER_REPAIR_STAGE_EXACT,
     "workers_done": QUALITY_STAGE_EXACT,
     "quality_passed": REVIEW_STAGE_EXACT,
+    "review_rejected": ALWAYS_CRITICAL_EXACT,
     "reviewed": CRITIC_STAGE_EXACT,
+    "critic_rejected": ALWAYS_CRITICAL_EXACT,
     "critic_checked": PRECOMMIT_STAGE_EXACT,
     "verified": COMMIT_STAGE_EXACT,
     "official_bootstrap_required": COMMIT_STAGE_EXACT,

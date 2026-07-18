@@ -911,18 +911,92 @@ async def abandon_rejected_blueprint(
         })
         return payload
     try:
-        from tool_bot_management import _do_abandon_generation
+        from evolution_infra import read_pipeline_checkpoint, write_pipeline_checkpoint
+        from gate_outcome import (
+            TERMINAL_STAGE_BY_GATE,
+            build_terminal_gate_outcome,
+            terminal_outcome_abandon_reason,
+            validate_terminal_gate_outcome,
+        )
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
 
+        live = read_pipeline_checkpoint()
+        if not isinstance(live, dict) or any(
+            live.get(field) != checkpoint.get(field)
+            for field in (
+                "workflow_run_id",
+                "next_v",
+                "source_v",
+                "parent2_v",
+                "checkpoint_revision",
+                "stage",
+            )
+        ):
+            raise RuntimeError("terminal_gate_checkpoint_identity_changed")
+        gate_name = str(payload.pop("terminal_gate_name", "") or "")
+        reason_code = str(payload.pop("terminal_reason_code", "") or "")
+        failure_class = str(payload.get("failure_class") or "control_plane")
+        gate_payload = payload.pop("terminal_gate_payload", None)
+        if (
+            gate_name not in TERMINAL_STAGE_BY_GATE
+            or not reason_code
+            or not isinstance(gate_payload, dict)
+            or not gate_payload
+        ):
+            raise RuntimeError("terminal_gate_request_missing_or_invalid")
+        terminal_stage = TERMINAL_STAGE_BY_GATE[gate_name]
+        existing_outcome = live.get("terminal_gate_outcome")
+        if live.get("stage") == terminal_stage and isinstance(
+            existing_outcome, dict
+        ):
+            outcome = existing_outcome
+        else:
+            outcome = build_terminal_gate_outcome(
+                live,
+                gate_name=gate_name,
+                gate_payload=gate_payload,
+                candidate_dir=PROJECT_ROOT / "bots" / f"national_v{live['next_v']}",
+                reason_code=reason_code,
+                failure_class=failure_class,
+            )
+            recorded = write_pipeline_checkpoint(
+                int(live["next_v"]),
+                int(live["source_v"]),
+                terminal_stage,
+                master_plan=live.get("master_plan"),
+                reviewer_feedback=str(
+                    payload.get("feedback")
+                    or live.get("reviewer_feedback")
+                    or ""
+                ),
+                generation_attempt=live.get("generation_attempt", 0),
+                gate_results={gate_name: gate_payload},
+                expected_checkpoint_revision=int(live["checkpoint_revision"]),
+                expected_checkpoint_stage=str(live["stage"]),
+                expected_workflow_run_id=str(live["workflow_run_id"]),
+                terminal_gate_outcome=outcome,
+            )
+            if not recorded:
+                raise RuntimeError("terminal_gate_outcome_projection_rejected")
+            live = read_pipeline_checkpoint()
+        terminal_errors = validate_terminal_gate_outcome(
+            live,
+            outcome,
+            candidate_dir=PROJECT_ROOT / "bots" / f"national_v{live['next_v']}",
+        )
+        if terminal_errors:
+            raise RuntimeError(
+                "terminal_gate_outcome_invalid:" + ";".join(terminal_errors[:5])
+            )
+        payload["terminal_gate_outcome"] = deepcopy(outcome)
         abandon_result = await _do_abandon_generation(
-            reason=str(reason),
+            reason=terminal_outcome_abandon_reason(outcome),
             _bypass_rate_limit=True,
-            expected_workflow_run_id=str(
-                checkpoint.get("workflow_run_id") or checkpoint.get("run_id") or ""
-            ),
-            expected_next_v=int(checkpoint.get("next_v")),
-            expected_source_v=int(checkpoint.get("source_v")),
-            expected_checkpoint_revision=int(checkpoint.get("checkpoint_revision") or 0),
-            expected_checkpoint_stage=str(checkpoint.get("stage") or ""),
+            expected_terminal_gate_outcome_digest=outcome["receipt_digest"],
+            **expected_abandon_identity(live),
         )
     except Exception as exc:
         abandon_result = {

@@ -1035,8 +1035,11 @@ STAGE_ORDER = [
     "master_planned",
     "workers_done",
     "quality_failed",
+    "quality_rejected",
     "quality_passed",
+    "review_rejected",
     "reviewed",
+    "critic_rejected",
     "critic_checked",
     "precommit_failed",
     "repair_planned",
@@ -1084,8 +1087,11 @@ STAGE_GATE_ALLOWLIST = {
     "master_planned": set(),
     "workers_done": set(),
     "quality_failed": {"quality"},
+    "quality_rejected": {"quality"},
     "quality_passed": {"quality", "review"},
+    "review_rejected": {"quality", "review"},
     "reviewed": {"quality", "review", "critic"},
+    "critic_rejected": {"quality", "review", "critic"},
     "critic_checked": {"quality", "review", "critic"},
     "precommit_failed": {"quality", "review", "critic", "precommit_eval"},
     "repair_planned": {"quality", "review", "critic", "precommit_eval"},
@@ -1108,8 +1114,11 @@ NEXT_TOOL_BY_STAGE = {
     "master_planned": "execute_workers",
     "workers_done": "run_quality_gates",
     "quality_failed": "execute_workers",
+    "quality_rejected": "abandon_generation",
     "quality_passed": "run_review",
+    "review_rejected": "abandon_generation",
     "reviewed": "run_critic",
+    "critic_rejected": "abandon_generation",
     "critic_checked": "run_precommit_eval",
     "precommit_failed": "execute_workers",
     "repair_planned": "execute_workers",
@@ -1229,6 +1238,14 @@ HEAD_DRIFT_RESUME_POLICY = {
         "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
+    "quality_rejected": {
+        "allowed_tools": ("abandon_generation",),
+        "resume_kind": "terminal_gate_abandon",
+        "warning_suffix": "terminal_gate_abandon",
+        "requires_target": True,
+        "requires_contract_unchanged": False,
+        "branch_alias_allowed": True,
+    },
     "quality_passed": {
         "allowed_tools": ("run_review",),
         "resume_kind": "post_quality",
@@ -1237,12 +1254,28 @@ HEAD_DRIFT_RESUME_POLICY = {
         "requires_contract_unchanged": True,
         "branch_alias_allowed": True,
     },
+    "review_rejected": {
+        "allowed_tools": ("abandon_generation",),
+        "resume_kind": "terminal_gate_abandon",
+        "warning_suffix": "terminal_gate_abandon",
+        "requires_target": True,
+        "requires_contract_unchanged": False,
+        "branch_alias_allowed": True,
+    },
     "reviewed": {
         "allowed_tools": ("run_critic",),
         "resume_kind": "post_quality",
         "warning_suffix": "post_quality",
         "requires_target": True,
         "requires_contract_unchanged": True,
+        "branch_alias_allowed": True,
+    },
+    "critic_rejected": {
+        "allowed_tools": ("abandon_generation",),
+        "resume_kind": "terminal_gate_abandon",
+        "warning_suffix": "terminal_gate_abandon",
+        "requires_target": True,
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "critic_checked": {
@@ -1677,6 +1710,27 @@ def validate_stage_transition(current_stage, proposed_stage):
         return True, "no_guard"
     if proposed_stage == current_stage:
         return True, "same_stage"
+    terminal_edges = {
+        ("workers_done", "quality_rejected"),
+        ("quality_failed", "quality_rejected"),
+        ("quality_passed", "review_rejected"),
+        ("reviewed", "critic_rejected"),
+    }
+    terminal_stages = {
+        "quality_rejected", "review_rejected", "critic_rejected",
+    }
+    if proposed_stage in terminal_stages:
+        if (current_stage, proposed_stage) in terminal_edges:
+            return True, "terminal_gate_outcome_projection"
+        return False, (
+            "terminal_gate_outcome_source_invalid: "
+            f"{current_stage} -> {proposed_stage}"
+        )
+    if current_stage in terminal_stages:
+        return False, (
+            "terminal_gate_outcome_requires_canonical_abandon: "
+            f"{current_stage} -> {proposed_stage}"
+        )
     if current_stage == "publishing":
         return False, "publication_transaction_is_durable"
     if current_stage == "official_bootstrap_required":
@@ -1919,6 +1973,63 @@ def route_policy(checkpoint: dict | None) -> dict:
             "source_v": checkpoint.get("source_v"),
             "parent2_v": checkpoint.get("parent2_v"),
             **infra_route,
+        }
+
+    terminal_stage = str(checkpoint.get("stage") or "")
+    if terminal_stage in {
+        "quality_rejected", "review_rejected", "critic_rejected",
+    }:
+        try:
+            from bot_namespace import bot_relpath
+            from gate_outcome import validate_terminal_gate_outcome
+
+            candidate_dir = (
+                Path(__file__).resolve().parents[2]
+                / bot_relpath(int(checkpoint.get("next_v")))
+            )
+            terminal_errors = validate_terminal_gate_outcome(
+                checkpoint,
+                candidate_dir=candidate_dir,
+            )
+        except Exception as exc:
+            terminal_errors = [
+                "terminal_outcome_route_validation_error:"
+                f"{type(exc).__name__}"
+            ]
+        if terminal_errors:
+            return {
+                "stage": terminal_stage,
+                "next_v": checkpoint.get("next_v"),
+                "source_v": checkpoint.get("source_v"),
+                "next_tool": None,
+                "allowed_tools": [],
+                "intent": "operator_reconcile_checkpoint",
+                "blocked": True,
+                "recoverable": False,
+                "failure_class": "control_plane",
+                "issues": terminal_errors,
+                "directive": (
+                    "The terminal gate receipt is missing, corrupt, or no "
+                    "longer matches the candidate. Preserve checkpoint and "
+                    "candidate for operator reconciliation."
+                ),
+            }
+        outcome = checkpoint.get("terminal_gate_outcome") or {}
+        return {
+            "stage": terminal_stage,
+            "next_v": checkpoint.get("next_v"),
+            "source_v": checkpoint.get("source_v"),
+            "next_tool": "abandon_generation",
+            "allowed_tools": ["abandon_generation"],
+            "intent": "terminal_gate_abandon",
+            "failure_class": str(
+                outcome.get("failure_class") or "control_plane"
+            ),
+            "terminal_gate_outcome_digest": outcome.get("receipt_digest"),
+            "directive": (
+                "The content-bound terminal gate outcome authorizes only the "
+                "canonical abandon transaction; never rerun the provider."
+            ),
         }
 
     stage = checkpoint.get("stage")
@@ -2185,7 +2296,9 @@ def generic_abandon_block(checkpoint: dict | None, *,
             "epoch_issues": route.get("epoch_issues") or [],
             "directive": route.get("directive"),
         }
-    if route.get("intent") == "system_bootstrap_abandon":
+    if route.get("intent") in {
+        "system_bootstrap_abandon", "terminal_gate_abandon",
+    }:
         return None
     never_disposable = {
         "verified",

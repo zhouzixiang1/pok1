@@ -6,6 +6,7 @@ import json
 import os
 import re
 import time
+from copy import deepcopy
 from pathlib import Path
 
 from bot_namespace import bot_name, bot_tag, strict_lineage_parent_versions
@@ -184,6 +185,15 @@ async def _abandon_strict_gate_authority(
         getattr(error, "errors", ()) or (str(error),)
     )
     label = "REVIEW" if gate_name == "review" else "CRITIC"
+    gate_payload = {
+        "passed": False,
+        "approved": False,
+        "schema_valid": False,
+        "terminal_control_failure": True,
+        "failure_class": "control_plane",
+        "validation_errors": validation_errors,
+        "error": f"SYSTEM_STRICT_BOOTSTRAP_{label}_AUTHORITY_INVALID",
+    }
     return await abandon_rejected_blueprint(
         checkpoint,
         reason=f"system_strict_bootstrap_{gate_name}_authority_invalid",
@@ -193,6 +203,9 @@ async def _abandon_strict_gate_authority(
             "success": False,
             "failure_class": "control_plane",
             "validation_errors": validation_errors,
+            "terminal_gate_name": gate_name,
+            "terminal_reason_code": f"{gate_name}_authority_invalid",
+            "terminal_gate_payload": gate_payload,
             "directive": (
                 f"The first-strict {gate_name} authority context, prompt, or "
                 "journal drifted. The generation was canonically abandoned; "
@@ -1137,12 +1150,30 @@ async def _finalize_strict_blueprint_quality_rejection(
         return result
     from system_strict_bootstrap import abandon_rejected_blueprint
 
+    quality_gate = deepcopy(
+        (((checkpoint or {}).get("gate_results") or {}).get("quality") or {})
+    )
+    if not quality_gate:
+        return {
+            **result,
+            "abandoned": False,
+            "blocked": True,
+            "error": "SYSTEM_STRICT_BOOTSTRAP_QUALITY_GATE_MISSING",
+            "directive": (
+                "The failed quality gate was not durably projected; preserve "
+                "the candidate and checkpoint for operator reconciliation."
+            ),
+        }
+
     return await abandon_rejected_blueprint(
         checkpoint,
         reason="system_strict_bootstrap_quality_rejected",
         result={
             **result,
             "failure_class": "quality_gate",
+            "terminal_gate_name": "quality",
+            "terminal_reason_code": "quality_gate_rejected",
+            "terminal_gate_payload": quality_gate,
             "directive": (
                 "A real quality gate rejected the immutable strict blueprint; "
                 "the tool layer has terminated this generation."
@@ -4119,27 +4150,6 @@ async def run_review(args):
             risk_areas=data.get("risk_areas", []),
         )
         if _strict_bootstrap:
-            if not approved:
-                from system_strict_bootstrap import abandon_rejected_blueprint
-
-                rejected = await abandon_rejected_blueprint(
-                    ckpt,
-                    reason="system_strict_bootstrap_review_rejected",
-                    result={
-                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_REJECTED",
-                        "approved": False,
-                        "success": False,
-                        "action": "abandon_generation",
-                        "failure_class": "strategy_review",
-                        "feedback": feedback,
-                        "directive": (
-                            "The real Reviewer rejected the content-bound blueprint. "
-                            "Abandon this generation and revise the checked-in blueprint "
-                            "under a fresh contract; no in-generation repair is allowed."
-                        ),
-                    },
-                )
-                return _json_tool_result(rejected)
             from system_strict_bootstrap import (
                 SystemStrictBootstrapError,
                 build_system_gate_receipt,
@@ -4164,15 +4174,37 @@ async def run_review(args):
                         log_file=log_file,
                     )
                 )
-                gate["system_verifier_receipt"] = build_system_gate_receipt(
-                    ckpt,
-                    gate_name="review",
-                    candidate_dir=get_bot_dir(v),
-                    llm_gate=gate,
+                gate["terminal_authority_context_binding"] = (
+                    _review_strict_call.get("context_binding")
                 )
+                if approved:
+                    gate["system_verifier_receipt"] = build_system_gate_receipt(
+                        ckpt,
+                        gate_name="review",
+                        candidate_dir=get_bot_dir(v),
+                        llm_gate=gate,
+                    )
             except (SystemStrictBootstrapError, StrictAuthorityError) as exc:
                 from system_strict_bootstrap import abandon_rejected_blueprint
 
+                terminal_gate = gate
+                if not (
+                    isinstance(gate.get("llm_authority_receipt"), dict)
+                    and isinstance(gate.get("llm_execution_evidence"), dict)
+                ):
+                    from workflow_kernel import content_digest
+
+                    terminal_gate = {
+                        "version": v,
+                        "source_v": source_v,
+                        "passed": False,
+                        "approved": False,
+                        "schema_valid": False,
+                        "terminal_control_failure": True,
+                        "failure_class": "control_plane",
+                        "validation_errors": list(exc.errors),
+                        "observed_role_result_digest": content_digest(data),
+                    }
                 rejected = await abandon_rejected_blueprint(
                     ckpt,
                     reason="system_strict_bootstrap_review_receipt_invalid",
@@ -4183,9 +4215,36 @@ async def run_review(args):
                         "action": "abandon_generation",
                         "failure_class": "control_plane",
                         "validation_errors": list(exc.errors),
+                        "terminal_gate_name": "review",
+                        "terminal_reason_code": "review_receipt_invalid",
+                        "terminal_gate_payload": terminal_gate,
                         "directive": (
                             "The LLM Review succeeded but its content-chain receipt failed. "
                             "Abandon; never treat the receipt as a Reviewer waiver."
+                        ),
+                    },
+                )
+                return _json_tool_result(rejected)
+            if not approved:
+                from system_strict_bootstrap import abandon_rejected_blueprint
+
+                rejected = await abandon_rejected_blueprint(
+                    ckpt,
+                    reason="system_strict_bootstrap_review_rejected",
+                    result={
+                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_REJECTED",
+                        "approved": False,
+                        "success": False,
+                        "action": "abandon_generation",
+                        "failure_class": "strategy_review",
+                        "feedback": feedback,
+                        "terminal_gate_name": "review",
+                        "terminal_reason_code": "review_rejected",
+                        "terminal_gate_payload": gate,
+                        "directive": (
+                            "The real Reviewer rejected the content-bound blueprint. "
+                            "The terminal receipt authorizes canonical abandon; no "
+                            "provider replay or in-generation repair is allowed."
                         ),
                     },
                 )
@@ -4553,6 +4612,27 @@ async def run_critic(args):
         except (SystemStrictBootstrapError, StrictAuthorityError) as exc:
             from system_strict_bootstrap import abandon_rejected_blueprint
 
+            gate["terminal_authority_context_binding"] = (
+                _critic_strict_call.get("context_binding")
+            )
+            terminal_gate = gate
+            if not (
+                isinstance(gate.get("llm_authority_receipt"), dict)
+                and isinstance(gate.get("llm_execution_evidence"), dict)
+            ):
+                from workflow_kernel import content_digest
+
+                terminal_gate = {
+                    "version": v,
+                    "source_v": source_v,
+                    "passed": False,
+                    "approved": False,
+                    "schema_valid": False,
+                    "terminal_control_failure": True,
+                    "failure_class": "control_plane",
+                    "validation_errors": list(exc.errors),
+                    "observed_role_result_digest": content_digest(data),
+                }
             rejected = await abandon_rejected_blueprint(
                 ckpt,
                 reason="system_strict_bootstrap_critic_receipt_invalid",
@@ -4563,6 +4643,9 @@ async def run_critic(args):
                     "action": "abandon_generation",
                     "failure_class": "control_plane",
                     "validation_errors": list(exc.errors),
+                    "terminal_gate_name": "critic",
+                    "terminal_reason_code": "critic_receipt_invalid",
+                    "terminal_gate_payload": terminal_gate,
                     "directive": (
                         "The schema-valid Critic completed but the deterministic content "
                         "chain drifted. Abandon; the verifier is adjunct evidence, not a "
