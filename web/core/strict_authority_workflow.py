@@ -52,6 +52,44 @@ INVOCATION_EVIDENCE_BINDING_KIND = (
 )
 MAX_SCHEMA_ATTEMPTS_PER_SLOT = 2
 
+LEGACY_REVIEW_TERMINAL_MIGRATION_KIND = (
+    "first-strict-review-terminal-semantic-migration-v1"
+)
+_LEGACY_REVIEW_SEMANTIC_INPUT_KEYS = frozenset({
+    "focus_areas",
+    "master_plan",
+    "next_v",
+    "source_v",
+    "strict_bootstrap",
+})
+_CURRENT_REVIEW_SEMANTIC_INPUT_KEYS = (
+    _LEGACY_REVIEW_SEMANTIC_INPUT_KEYS | {"review_semantic_contract"}
+)
+_RENDERER_SEMANTIC_CONTRACT_KEYS = frozenset({
+    "schema_version",
+    "role",
+    "invocation_normalization",
+    "semantic_inputs",
+    "semantic_inputs_digest",
+    "renderer_static_identity",
+    "renderer_static_identity_digest",
+    "sentinel_rendered_prompt_sha256",
+    "sentinel_rendered_prompt_chars",
+    "sentinel_evidence_kind",
+    "sentinel_evidence_provenance_sha256",
+    "sentinel_renderer_receipt_digest",
+    "sentinel_evidence_receipt_digest",
+    "sentinel_dispatch_receipt_digest",
+    "contract_digest",
+})
+_RENDERER_STATIC_IDENTITY_KEYS = frozenset({
+    "producer_file",
+    "producer_name",
+    "producer_file_sha256",
+    "producer_function_sha256",
+    "template_digests",
+})
+
 MASTER_SLOTS = (
     "proposal:mechanism",
     "proposal:counterfactual",
@@ -1252,6 +1290,213 @@ def _recover_completed_unaccepted_call(
     }
 
 
+def _legacy_review_terminal_migration_contract(
+    recorded_semantics: dict[str, Any],
+    current_semantics: dict[str, Any] | None,
+    *,
+    legacy_projection: dict[str, Any] | None = None,
+    legacy_quality_gate_digest: str | None = None,
+) -> dict[str, Any] | None:
+    """Bind the sole old-five-input -> current-review rejection migration.
+
+    The old provider prompt did not contain ``review_semantic_contract``.  It
+    can therefore never authorize approval under the new semantics.  For an
+    already completed rejection only, the system may prove that removing this
+    one newly-added field from the current source-owned projection recreates
+    the recorded semantic inputs byte-for-byte.  The historical renderer and
+    template identity remain bound by their original digests.
+    """
+
+    if not isinstance(recorded_semantics, dict):
+        return None
+    recorded_inputs = recorded_semantics.get("semantic_inputs")
+    if (
+        set(recorded_semantics) != _RENDERER_SEMANTIC_CONTRACT_KEYS
+        or recorded_semantics.get("schema_version") != 1
+        or recorded_semantics.get("role") != "LEAD CODE REVIEWER"
+        or not isinstance(recorded_inputs, dict)
+        or set(recorded_inputs) != _LEGACY_REVIEW_SEMANTIC_INPUT_KEYS
+        or recorded_semantics.get("semantic_inputs_digest")
+        != content_digest(recorded_inputs)
+    ):
+        return None
+
+    recorded_static = recorded_semantics.get("renderer_static_identity")
+    if (
+        not isinstance(recorded_static, dict)
+        or set(recorded_static) != _RENDERER_STATIC_IDENTITY_KEYS
+        or recorded_static.get("producer_file") != "web/core/tool_gates.py"
+        or recorded_static.get("producer_name")
+        != "_render_reviewer_provider_prompt"
+        or recorded_semantics.get("renderer_static_identity_digest")
+        != content_digest(recorded_static)
+        or recorded_semantics.get("contract_digest")
+        != content_digest({
+            key: value for key, value in recorded_semantics.items()
+            if key != "contract_digest"
+        })
+    ):
+        return None
+    digest_fields = (
+        "producer_file_sha256",
+        "producer_function_sha256",
+    )
+    if any(not _valid_digest(recorded_static.get(field)) for field in digest_fields):
+        return None
+    template_digests = recorded_static.get("template_digests")
+    if (
+        not isinstance(template_digests, list)
+        or len(template_digests) != 1
+        or not isinstance(template_digests[0], list)
+        or len(template_digests[0]) != 2
+        or template_digests[0][0]
+        != "web/core/prompts/reviewer_prompt.md"
+        or not _valid_digest(template_digests[0][1])
+    ):
+        return None
+    for field in (
+        "sentinel_rendered_prompt_sha256",
+        "sentinel_evidence_provenance_sha256",
+        "sentinel_renderer_receipt_digest",
+        "sentinel_evidence_receipt_digest",
+        "sentinel_dispatch_receipt_digest",
+    ):
+        if not _valid_digest(recorded_semantics.get(field)):
+            return None
+    if (
+        recorded_semantics.get("invocation_normalization")
+        != "fixed-32-byte-sentinel-v1"
+        or recorded_semantics.get("sentinel_evidence_kind")
+        != "review_candidate_pair"
+        or not _plain_int(recorded_semantics.get("sentinel_rendered_prompt_chars"))
+        or int(recorded_semantics["sentinel_rendered_prompt_chars"]) <= 0
+    ):
+        return None
+
+    review_contract_digest = None
+    semantic_upgrade_status = "current_review_contract_available"
+    if isinstance(current_semantics, dict):
+        current_inputs = current_semantics.get("semantic_inputs")
+        if (
+            set(current_semantics) != _RENDERER_SEMANTIC_CONTRACT_KEYS
+            or current_semantics.get("schema_version") != 1
+            or current_semantics.get("role") != "LEAD CODE REVIEWER"
+            or not isinstance(current_inputs, dict)
+            or set(current_inputs) != _CURRENT_REVIEW_SEMANTIC_INPUT_KEYS
+            or current_semantics.get("semantic_inputs_digest")
+            != content_digest(current_inputs)
+        ):
+            return None
+        derived_legacy_projection = {
+            key: deepcopy(value)
+            for key, value in current_inputs.items()
+            if key != "review_semantic_contract"
+        }
+        if derived_legacy_projection != recorded_inputs:
+            return None
+        review_contract = current_inputs.get("review_semantic_contract")
+        if not isinstance(review_contract, dict) or review_contract.get(
+            "contract_digest"
+        ) != content_digest({
+            key: value for key, value in review_contract.items()
+            if key != "contract_digest"
+        }):
+            return None
+        review_contract_digest = review_contract["contract_digest"]
+        legacy_projection = derived_legacy_projection
+    else:
+        semantic_upgrade_status = "unavailable_from_legacy_quality_gate"
+        current_inputs = legacy_projection
+        if (
+            not isinstance(current_inputs, dict)
+            or set(current_inputs) != _LEGACY_REVIEW_SEMANTIC_INPUT_KEYS
+            or current_inputs != recorded_inputs
+            or not _valid_digest(legacy_quality_gate_digest)
+        ):
+            return None
+
+    subject = {
+        "schema_version": 1,
+        "kind": LEGACY_REVIEW_TERMINAL_MIGRATION_KIND,
+        "disposition": "terminal_rejection_only",
+        "semantic_upgrade_status": semantic_upgrade_status,
+        "recorded_semantic_inputs_digest": content_digest(recorded_inputs),
+        "current_semantic_inputs_digest": content_digest(current_inputs),
+        "legacy_projection_digest": content_digest(legacy_projection),
+        "current_review_semantic_contract_digest": review_contract_digest,
+        "legacy_quality_gate_digest": legacy_quality_gate_digest,
+        "recorded_renderer_contract_digest": recorded_semantics[
+            "contract_digest"
+        ],
+        "recorded_renderer_static_identity_digest": recorded_semantics[
+            "renderer_static_identity_digest"
+        ],
+        "recorded_producer_file_sha256": recorded_static[
+            "producer_file_sha256"
+        ],
+        "recorded_producer_function_sha256": recorded_static[
+            "producer_function_sha256"
+        ],
+        "recorded_template_digests_digest": content_digest(template_digests),
+    }
+    return {**subject, "migration_digest": content_digest(subject)}
+
+
+def _legacy_review_terminal_checkpoint_projection(
+    checkpoint: dict[str, Any],
+    *,
+    candidate_dir: str | Path,
+) -> tuple[dict[str, Any], dict[str, Any], str] | None:
+    """Rebuild the old five-input context from an exact legacy checkpoint."""
+
+    from bot_artifact import hash_path
+    from system_strict_bootstrap import is_declared_native_bootstrap
+
+    if not is_declared_native_bootstrap(checkpoint):
+        return None
+    master_plan = checkpoint.get("master_plan")
+    quality = ((checkpoint.get("gate_results") or {}).get("quality") or {})
+    audit = checkpoint.get("audit_context") or {}
+    master_receipt = audit.get("system_strict_bootstrap") or {}
+    binding = master_plan.get("proposal_binding") if isinstance(master_plan, dict) else None
+    if (
+        not isinstance(master_plan, dict)
+        or not isinstance(quality, dict)
+        or not isinstance(binding, dict)
+        or binding.get("execution_mode") != "fixed_blueprint_capability_audit"
+        or "selected_proposal_quality_evidence" in quality
+        or "selected_proposal_quality_ok" in quality
+        or quality.get("all_passed") is not True
+        or quality.get("critical_scenarios_passed") is not True
+        or quality.get("passed") is not True
+        or not _valid_digest(master_receipt.get("receipt_digest"))
+        or not _valid_digest(master_receipt.get("plan_digest"))
+    ):
+        return None
+    candidate_hash = hash_path(Path(candidate_dir))
+    if (
+        not _valid_digest(candidate_hash)
+        or quality.get("code_fingerprint") != candidate_hash
+    ):
+        return None
+    semantic_inputs = {
+        "master_plan": _json_value(master_plan),
+        "source_v": int(checkpoint["source_v"]),
+        "next_v": int(checkpoint["next_v"]),
+        "strict_bootstrap": True,
+        "focus_areas": _normalized_reviewer_focus_areas(checkpoint),
+    }
+    quality_digest = content_digest(quality)
+    context_subject = {
+        "phase": "review",
+        "candidate_artifact_hash": candidate_hash,
+        "quality_gate_digest": quality_digest,
+        "master_receipt_digest": master_receipt["receipt_digest"],
+        "master_plan_digest": master_receipt["plan_digest"],
+    }
+    return context_subject, semantic_inputs, quality_digest
+
+
 def recover_terminal_gate_rejection_call(
     checkpoint: dict[str, Any],
     *,
@@ -1279,11 +1524,27 @@ def recover_terminal_gate_rejection_call(
         )
     binding = generation_binding(checkpoint)
     run_id = authority_run_id(binding["workflow_run_id"])
-    current_context = gate_call_context(
-        checkpoint,
-        gate_name=gate_name,
-        candidate_dir=Path(candidate_dir),
-    )
+    legacy_checkpoint_projection = None
+    try:
+        current_context = gate_call_context(
+            checkpoint,
+            gate_name=gate_name,
+            candidate_dir=Path(candidate_dir),
+        )
+    except StrictAuthorityError as exc:
+        if exc.errors != (
+            "strict_authority_review_semantic_contract_invalid",
+        ):
+            raise
+        legacy_checkpoint_projection = (
+            _legacy_review_terminal_checkpoint_projection(
+                checkpoint,
+                candidate_dir=candidate_dir,
+            )
+        )
+        if legacy_checkpoint_projection is None:
+            raise
+        current_context = None
     store = _store()
     if not store.instance(run_id):
         return None
@@ -1329,20 +1590,47 @@ def recover_terminal_gate_rejection_call(
         # Renderer implementation identity can rotate when the repair itself
         # lands.  Only the normalized role inputs may bridge that change.
         recorded_semantics = recorded_context.get("renderer_semantics") or {}
-        current_semantics = current_context.get("renderer_semantics") or {}
-        if any(
-            recorded_context.get(key) != current_context.get(key)
-            for key in set(recorded_context) | set(current_context)
-            if key != "renderer_semantics"
-        ) or any(
-            recorded_semantics.get(key) != current_semantics.get(key)
-            for key in (
-                "schema_version",
-                "role",
-                "semantic_inputs",
-                "semantic_inputs_digest",
+        if current_context is not None:
+            current_semantics = current_context.get("renderer_semantics") or {}
+            context_mismatch = any(
+                recorded_context.get(key) != current_context.get(key)
+                for key in set(recorded_context) | set(current_context)
+                if key != "renderer_semantics"
             )
-        ):
+            exact_semantics = not any(
+                recorded_semantics.get(key) != current_semantics.get(key)
+                for key in (
+                    "schema_version",
+                    "role",
+                    "semantic_inputs",
+                    "semantic_inputs_digest",
+                )
+            )
+            migration_contract = (
+                None
+                if exact_semantics
+                else _legacy_review_terminal_migration_contract(
+                    recorded_semantics,
+                    current_semantics,
+                )
+            )
+        else:
+            legacy_subject, legacy_inputs, legacy_quality_digest = (
+                legacy_checkpoint_projection
+            )
+            context_mismatch = any(
+                recorded_context.get(key) != legacy_subject.get(key)
+                for key in set(recorded_context) | set(legacy_subject)
+                if key != "renderer_semantics"
+            )
+            exact_semantics = False
+            migration_contract = _legacy_review_terminal_migration_contract(
+                recorded_semantics,
+                None,
+                legacy_projection=legacy_inputs,
+                legacy_quality_gate_digest=legacy_quality_digest,
+            )
+        if context_mismatch or (not exact_semantics and migration_contract is None):
             continue
         provider_subject = {
             key: value for key, value in provider.items()
@@ -1394,6 +1682,8 @@ def recover_terminal_gate_rejection_call(
                 "strict_authority_terminal_recovery_not_rejection"
             )
         recovered["terminal_reconciliation"] = True
+        if migration_contract is not None:
+            recovered["terminal_semantic_migration"] = migration_contract
         matches.append(recovered)
     if not matches:
         return None
@@ -3733,6 +4023,7 @@ __all__ = [
     "ALL_SLOTS",
     "GATE_SLOTS",
     "INVOCATION_EVIDENCE_SLOTS",
+    "LEGACY_REVIEW_TERMINAL_MIGRATION_KIND",
     "MASTER_SLOTS",
     "StrictAuthorityError",
     "accept_role_result",

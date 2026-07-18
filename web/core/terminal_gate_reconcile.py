@@ -60,6 +60,9 @@ def inspect_completed_review_rejection() -> dict[str, Any]:
         ).get("candidate_artifact_hash"),
         "effect_id": call.get("effect_id"),
         "invocation_id": call.get("invocation_id"),
+        "terminal_semantic_migration": deepcopy(
+            call.get("terminal_semantic_migration")
+        ),
         "provider_dispatch_required": False,
     }
 
@@ -119,6 +122,10 @@ async def reconcile_completed_review_rejection() -> dict[str, Any]:
         ),
         "operator_reconciled_completed_effect": True,
     }
+    if isinstance(call.get("terminal_semantic_migration"), dict):
+        gate["terminal_semantic_migration"] = deepcopy(
+            call["terminal_semantic_migration"]
+        )
     result = await abandon_rejected_blueprint(
         checkpoint,
         reason="operator_terminal_review_reconciliation",
@@ -139,6 +146,9 @@ async def reconcile_completed_review_rejection() -> dict[str, Any]:
         **result,
         "effect_id": inspected["effect_id"],
         "invocation_id": inspected["invocation_id"],
+        "terminal_semantic_migration": deepcopy(
+            inspected.get("terminal_semantic_migration")
+        ),
         "provider_dispatch_required": False,
     }
 

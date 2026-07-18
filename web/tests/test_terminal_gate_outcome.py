@@ -254,3 +254,102 @@ def test_invalid_terminal_receipt_projects_operator_reconcile(
     assert route["recoverable"] is False
     assert route["next_tool"] is None
     assert route["allowed_tools"] == []
+
+
+def test_operator_reconcile_binds_legacy_migration_without_provider_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import strict_authority_workflow as authority
+    import system_strict_bootstrap as bootstrap
+    import terminal_gate_reconcile as reconcile
+
+    checkpoint = {
+        "workflow_run_id": "generation:143:legacy-reconcile",
+        "next_v": 143,
+        "source_v": 142,
+        "stage": "quality_passed",
+        "checkpoint_revision": 8,
+    }
+    role_result = {
+        "approved": False,
+        "quality_score": 3,
+        "feedback": "legacy terminal rejection",
+        "change_summary": "reviewed",
+        "risk_areas": [],
+    }
+    migration = {
+        "schema_version": 1,
+        "kind": authority.LEGACY_REVIEW_TERMINAL_MIGRATION_KIND,
+        "disposition": "terminal_rejection_only",
+        "migration_digest": "a" * 64,
+    }
+    call = {
+        "effect_id": "strict-llm-" + "b" * 64,
+        "invocation_id": "c" * 32,
+        "context_binding": {"candidate_artifact_hash": "d" * 64},
+        "terminal_semantic_migration": migration,
+    }
+    monkeypatch.setattr(
+        reconcile,
+        "inspect_completed_review_rejection",
+        lambda: {
+            "checkpoint": checkpoint,
+            "call": call,
+            "role_result": role_result,
+            "effect_id": call["effect_id"],
+            "invocation_id": call["invocation_id"],
+            "terminal_semantic_migration": migration,
+        },
+    )
+    monkeypatch.setattr(
+        evolution_core,
+        "get_logs_dir",
+        lambda _version: tmp_path,
+    )
+    monkeypatch.setattr(
+        authority,
+        "strict_invocation_log_path",
+        lambda *_args, **_kwargs: tmp_path / "reviewer_io.txt",
+    )
+    accepted = []
+    monkeypatch.setattr(
+        authority,
+        "accept_role_result",
+        lambda *_args, **_kwargs: accepted.append(True) or {
+            "receipt_digest": "e" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        authority,
+        "record_bound_invocation_evidence",
+        lambda *_args, **_kwargs: {"evidence_digest": "f" * 64},
+    )
+    dispatches = []
+    monkeypatch.setattr(
+        authority,
+        "dispatch_call",
+        lambda *_args, **_kwargs: dispatches.append(True),
+    )
+    captured = {}
+
+    async def abandon(_checkpoint, *, reason, result):
+        captured.update({
+            "checkpoint": _checkpoint,
+            "reason": reason,
+            "result": result,
+        })
+        return {"abandoned": True, "checkpoint_stage": "abandoned"}
+
+    monkeypatch.setattr(bootstrap, "abandon_rejected_blueprint", abandon)
+
+    result = asyncio.run(reconcile.reconcile_completed_review_rejection())
+
+    assert accepted == [True]
+    assert dispatches == []
+    assert result["provider_dispatch_required"] is False
+    assert result["abandoned"] is True
+    terminal_gate = captured["result"]["terminal_gate_payload"]
+    assert terminal_gate["terminal_semantic_migration"] == migration
+    assert captured["result"]["provider_dispatch_required"] is False

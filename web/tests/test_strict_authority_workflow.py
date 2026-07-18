@@ -456,6 +456,392 @@ def test_renderer_source_drift_recovery_is_rejection_only(
         assert recovered["projected_role_result"]["approved"] is False
 
 
+def _legacy_review_renderer_context(module):
+    review_subject = {
+        "schema_version": 1,
+        "review_semantic_mode": "fixed_blueprint_capability_audit_v1",
+        "quality_gate_digest": "9" * 64,
+    }
+    review_contract = {
+        **review_subject,
+        "contract_digest": module.content_digest(review_subject),
+    }
+    legacy_inputs = {
+        "master_plan": {
+            "tasks": [{"worker_id": "W1"}],
+            "proposal_binding": {
+                "execution_mode": "fixed_blueprint_capability_audit",
+            },
+        },
+        "source_v": 142,
+        "next_v": 155,
+        "strict_bootstrap": True,
+        "focus_areas": ["range update"],
+    }
+    current_inputs = {
+        **deepcopy(legacy_inputs),
+        "review_semantic_contract": review_contract,
+    }
+    static = {
+        "producer_file": "web/core/tool_gates.py",
+        "producer_name": "_render_reviewer_provider_prompt",
+        "producer_file_sha256": "1" * 64,
+        "producer_function_sha256": "2" * 64,
+        "template_digests": [[
+            "web/core/prompts/reviewer_prompt.md",
+            "3" * 64,
+        ]],
+    }
+
+    def semantics(inputs):
+        subject = {
+            "schema_version": 1,
+            "role": "LEAD CODE REVIEWER",
+            "invocation_normalization": "fixed-32-byte-sentinel-v1",
+            "semantic_inputs": deepcopy(inputs),
+            "semantic_inputs_digest": module.content_digest(inputs),
+            "renderer_static_identity": deepcopy(static),
+            "renderer_static_identity_digest": module.content_digest(static),
+            "sentinel_rendered_prompt_sha256": "4" * 64,
+            "sentinel_rendered_prompt_chars": 1234,
+            "sentinel_evidence_kind": "review_candidate_pair",
+            "sentinel_evidence_provenance_sha256": "5" * 64,
+            "sentinel_renderer_receipt_digest": "6" * 64,
+            "sentinel_evidence_receipt_digest": "7" * 64,
+            "sentinel_dispatch_receipt_digest": "8" * 64,
+        }
+        return {**subject, "contract_digest": module.content_digest(subject)}
+
+    base = {
+        "phase": "review",
+        "candidate_artifact_hash": "a" * 64,
+        "quality_gate_digest": "b" * 64,
+        "master_receipt_digest": "c" * 64,
+        "master_plan_digest": "d" * 64,
+    }
+    return (
+        {**base, "renderer_semantics": semantics(legacy_inputs)},
+        {**base, "renderer_semantics": semantics(current_inputs)},
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "approval",
+        "legacy_missing",
+        "legacy_extra",
+        "focus",
+        "master",
+        "quality",
+        "candidate",
+    ],
+)
+def test_legacy_five_key_review_bridge_is_exact_rejection_only(
+    authority,
+    monkeypatch,
+    tmp_path,
+    mutation,
+):
+    module, _store = authority
+    checkpoint = _checkpoint(stage="quality_passed", revision=10)
+    candidate = tmp_path / "national_v155"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    recorded_context, current_context = _legacy_review_renderer_context(module)
+    if mutation == "legacy_missing":
+        recorded_context["renderer_semantics"]["semantic_inputs"].pop(
+            "focus_areas"
+        )
+    elif mutation == "legacy_extra":
+        recorded_context["renderer_semantics"]["semantic_inputs"][
+            "unexpected"
+        ] = True
+    if mutation in {"legacy_missing", "legacy_extra"}:
+        inputs = recorded_context["renderer_semantics"]["semantic_inputs"]
+        recorded_context["renderer_semantics"][
+            "semantic_inputs_digest"
+        ] = module.content_digest(inputs)
+        subject = {
+            key: value
+            for key, value in recorded_context["renderer_semantics"].items()
+            if key != "contract_digest"
+        }
+        recorded_context["renderer_semantics"][
+            "contract_digest"
+        ] = module.content_digest(subject)
+    elif mutation == "focus":
+        current_context["renderer_semantics"]["semantic_inputs"][
+            "focus_areas"
+        ] = ["different"]
+    elif mutation == "master":
+        current_context["renderer_semantics"]["semantic_inputs"][
+            "master_plan"
+        ] = {"tasks": []}
+    elif mutation == "quality":
+        current_context["quality_gate_digest"] = "e" * 64
+    elif mutation == "candidate":
+        current_context["candidate_artifact_hash"] = "f" * 64
+    if mutation in {"focus", "master"}:
+        inputs = current_context["renderer_semantics"]["semantic_inputs"]
+        current_context["renderer_semantics"][
+            "semantic_inputs_digest"
+        ] = module.content_digest(inputs)
+
+    approved = mutation == "approval"
+    role_result = {
+        "approved": approved,
+        "quality_score": 9 if approved else 3,
+        "feedback": "approved" if approved else "terminal reject",
+        "change_summary": "reviewed",
+        "risk_areas": [],
+    }
+    call = module.new_call(
+        checkpoint,
+        slot="review",
+        context_binding=recorded_context,
+    )
+    module.dispatch_call(
+        call,
+        full_prompt="legacy five-key reviewer prompt",
+        tools=["Read"],
+        owner="pytest",
+    )
+    provider_result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id=f"legacy-review-{mutation}",
+        total_cost_usd=0.01,
+        usage={},
+        result=json.dumps(role_result, sort_keys=True),
+    )
+    module._observe_provider_result(
+        provider_result,
+        invocation_id=call["invocation_id"],
+        effect_id=call["effect_id"],
+    )
+    module.complete_provider_call(
+        call,
+        raw_output=provider_result.result,
+        provider_results=[provider_result],
+    )
+    monkeypatch.setattr(
+        module,
+        "gate_call_context",
+        lambda *_args, **_kwargs: current_context,
+    )
+
+    recovered = module.recover_terminal_gate_rejection_call(
+        checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+    assert recovered is None
+
+
+def test_legacy_five_key_review_rejection_emits_migration_receipt(
+    authority,
+    monkeypatch,
+    tmp_path,
+):
+    module, _store = authority
+    checkpoint = _checkpoint(stage="quality_passed", revision=10)
+    candidate = tmp_path / "national_v155"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    recorded_context, current_context = _legacy_review_renderer_context(module)
+    role_result = {
+        "approved": False,
+        "quality_score": 3,
+        "feedback": "terminal reject",
+        "change_summary": "reviewed",
+        "risk_areas": [],
+    }
+    call = module.new_call(
+        checkpoint,
+        slot="review",
+        context_binding=recorded_context,
+    )
+    module.dispatch_call(
+        call,
+        full_prompt="legacy five-key reviewer prompt",
+        tools=["Read"],
+        owner="pytest",
+    )
+    result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="legacy-review-positive",
+        total_cost_usd=0.01,
+        usage={},
+        result=json.dumps(role_result, sort_keys=True),
+    )
+    module._observe_provider_result(
+        result,
+        invocation_id=call["invocation_id"],
+        effect_id=call["effect_id"],
+    )
+    module.complete_provider_call(
+        call,
+        raw_output=result.result,
+        provider_results=[result],
+    )
+    monkeypatch.setattr(
+        module,
+        "gate_call_context",
+        lambda *_args, **_kwargs: current_context,
+    )
+
+    recovered = module.recover_terminal_gate_rejection_call(
+        checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+
+    migration = recovered["terminal_semantic_migration"]
+    assert migration["kind"] == module.LEGACY_REVIEW_TERMINAL_MIGRATION_KIND
+    assert migration["disposition"] == "terminal_rejection_only"
+    assert len(migration["migration_digest"]) == 64
+    assert recovered["projected_role_result"]["approved"] is False
+
+    import evolution_core
+    import evolution_infra
+    import system_strict_bootstrap
+    import terminal_gate_reconcile
+
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+    monkeypatch.setattr(
+        evolution_core,
+        "get_bot_dir",
+        lambda _version: candidate,
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    inspected = terminal_gate_reconcile.inspect_completed_review_rejection()
+    assert inspected["terminal_semantic_migration"] == migration
+    assert inspected["provider_dispatch_required"] is False
+
+
+def test_legacy_quality_without_new_selected_evidence_uses_closed_projection(
+    authority,
+    monkeypatch,
+    tmp_path,
+):
+    import system_strict_bootstrap
+    from bot_artifact import hash_path
+
+    module, _store = authority
+    candidate = tmp_path / "national_v155"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    candidate_hash = hash_path(candidate)
+    recorded_context, _current_context = _legacy_review_renderer_context(module)
+    master_plan = deepcopy(
+        recorded_context["renderer_semantics"]["semantic_inputs"]["master_plan"]
+    )
+    quality = {
+        "version": 155,
+        "source_v": 142,
+        "passed": True,
+        "all_passed": True,
+        "critical_scenarios_passed": True,
+        "code_fingerprint": candidate_hash,
+        "national_architecture_transition": {"ok": True},
+        "national_capability_contract": {"ok": True},
+    }
+    checkpoint = _checkpoint(stage="quality_passed", revision=10)
+    checkpoint.update({
+        "master_plan": master_plan,
+        "gate_results": {"quality": quality},
+    })
+    checkpoint["audit_context"]["system_strict_bootstrap"] = {
+        "receipt_digest": "c" * 64,
+        "plan_digest": "d" * 64,
+    }
+    checkpoint["audit_context"]["worker_cot_focus_areas"] = [
+        "range update"
+    ]
+    recorded_context.update({
+        "candidate_artifact_hash": candidate_hash,
+        "quality_gate_digest": module.content_digest(quality),
+        "master_receipt_digest": "c" * 64,
+        "master_plan_digest": "d" * 64,
+    })
+    role_result = {
+        "approved": False,
+        "quality_score": 3,
+        "feedback": "terminal reject",
+        "change_summary": "reviewed",
+        "risk_areas": [],
+    }
+    call = module.new_call(
+        checkpoint,
+        slot="review",
+        context_binding=recorded_context,
+    )
+    module.dispatch_call(
+        call,
+        full_prompt="real-shape legacy five-key reviewer prompt",
+        tools=["Read"],
+        owner="pytest",
+    )
+    result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="legacy-quality-positive",
+        total_cost_usd=0.01,
+        usage={},
+        result=json.dumps(role_result, sort_keys=True),
+    )
+    module._observe_provider_result(
+        result,
+        invocation_id=call["invocation_id"],
+        effect_id=call["effect_id"],
+    )
+    module.complete_provider_call(
+        call,
+        raw_output=result.result,
+        provider_results=[result],
+    )
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+
+    recovered = module.recover_terminal_gate_rejection_call(
+        checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    )
+
+    migration = recovered["terminal_semantic_migration"]
+    assert migration["semantic_upgrade_status"] == (
+        "unavailable_from_legacy_quality_gate"
+    )
+    assert migration["current_review_semantic_contract_digest"] is None
+    assert migration["legacy_quality_gate_digest"] == module.content_digest(
+        quality
+    )
+    assert recovered["projected_role_result"]["approved"] is False
+
+
 def test_generation_abandon_fences_strict_child_journal(authority):
     module, store = authority
     checkpoint = _checkpoint()
