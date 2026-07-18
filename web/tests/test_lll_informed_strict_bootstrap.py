@@ -272,9 +272,11 @@ def test_runtime_decision_context_produces_the_four_actionable_preflop_spots(
     assert not observed & policy._HEADS_UP_LINE_STATE_ONLY_SPOTS
 
 
-def test_line_state_only_spots_are_explicit_neutral_consumers(modules):
+def test_line_state_only_spots_are_explicit_neutral_consumers(modules, monkeypatch):
     _precompute, policy = modules
     for spot in policy._HEADS_UP_LINE_STATE_ONLY_SPOTS:
+        monkeypatch.setitem(policy._HEADS_UP_PREFLOP_EQUITY_DELTA, spot, 0.75)
+        monkeypatch.setitem(policy._HEADS_UP_PREFLOP_SIZE_DELTA, spot, 0.50)
         context = _context(spot=spot)
         assert policy._preflop_spot_adjustment(context) == {
             "equity_delta": 0.0,
