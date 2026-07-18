@@ -71,6 +71,49 @@ export interface EvolutionStatusEvent extends EvolutionStatusIdentity {
   emitted_at: number;
 }
 
+/**
+ * A process-local status phrase is deliberately short lived.  It is not
+ * checkpoint evidence, and retaining it after the backend's replay window
+ * would let a stopped Master/Worker phrase masquerade as current work.
+ */
+export const EVOLUTION_STATUS_MAX_AGE_SECONDS = 30;
+
+/**
+ * Return the latest local time at which an accepted transient status may be
+ * rendered.  A delayed replay must not gain a fresh full TTL merely because
+ * the browser happened to receive it late; a modest future-clock allowance
+ * still expires no later than 30 seconds after local acceptance.
+ */
+export function evolutionStatusExpiryAt(
+  status: EvolutionStatusEvent,
+  acceptedAt: number,
+): number {
+  return Math.min(
+    acceptedAt + EVOLUTION_STATUS_MAX_AGE_SECONDS,
+    status.emitted_at + EVOLUTION_STATUS_MAX_AGE_SECONDS,
+  );
+}
+
+/**
+ * Guard the locally retained status independently of task/checkpoint
+ * identity.  This is used by the UI expiry timer, so an otherwise matching
+ * task cannot keep an old phrase visible indefinitely after SSE goes quiet.
+ */
+export function isAcceptedEvolutionStatusFresh(
+  status: EvolutionStatusEvent | null | undefined,
+  acceptedAt: number | null | undefined,
+  observedAt: number = Date.now() / 1000,
+): boolean {
+  return Boolean(
+    status
+    && typeof acceptedAt === "number"
+    && Number.isFinite(acceptedAt)
+    && typeof observedAt === "number"
+    && Number.isFinite(observedAt)
+    && observedAt < evolutionStatusExpiryAt(status, acceptedAt),
+  );
+}
+
 /** Explicit backend notice that no task projection can currently be verified. */
 export interface TaskAuthorityLostEvent {
   reason: string;
@@ -584,7 +627,7 @@ export function isFreshEvolutionStatusEvent(
   return isEvolutionStatusEvent(value)
     && isNumber(observedAt)
     && value.emitted_at <= observedAt + 5
-    && observedAt - value.emitted_at <= 30;
+    && observedAt - value.emitted_at < EVOLUTION_STATUS_MAX_AGE_SECONDS;
 }
 
 export function validateEvolutionStreamEvent(eventType: string, value: unknown): boolean {

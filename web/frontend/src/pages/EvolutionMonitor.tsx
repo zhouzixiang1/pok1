@@ -28,8 +28,10 @@ import {
   type EvolutionStatusEvent,
   type TransientStatusTask,
   createTransientStatusTaskAuthorityState,
+  evolutionStatusExpiryAt,
   evolutionStatusMatchesActiveGeneration,
   formatDegradedHealth,
+  isAcceptedEvolutionStatusFresh,
   isFreshEvolutionStatusEvent,
   loseTransientStatusTaskAuthority,
   observeTransientStatusTaskProjection,
@@ -106,6 +108,7 @@ export default function EvolutionMonitor() {
   const [streamTaskOwner, setStreamTaskOwner] = useState<
     TransientStatusTask | undefined
   >(undefined);
+  const [acceptedStatusExpiryAt, setAcceptedStatusExpiryAt] = useState<number | null>(null);
 
   const ioRef = useRef<HTMLDivElement>(null);
   const openToolId = useRef<number | null>(null);
@@ -113,6 +116,8 @@ export default function EvolutionMonitor() {
   const activeRoleRef = useRef<string>(activeRole);
   const checkpointRequestSequence = useRef(0);
   const acceptedStatusRef = useRef<EvolutionStatusEvent | null>(null);
+  const acceptedStatusAcceptedAtRef = useRef<number | null>(null);
+  const acceptedStatusExpiryAtRef = useRef<number | null>(null);
   const activeGenerationRef = useRef(epochStatus?.active_generation ?? null);
   const streamTaskOwnerRef = useRef<TransientStatusTask | undefined>(undefined);
   const taskAuthorityRef = useRef(createTransientStatusTaskAuthorityState());
@@ -154,6 +159,9 @@ export default function EvolutionMonitor() {
     openToolId.current = null;
     thinkingId.current = null;
     acceptedStatusRef.current = null;
+    acceptedStatusAcceptedAtRef.current = null;
+    acceptedStatusExpiryAtRef.current = null;
+    setAcceptedStatusExpiryAt(null);
     streamTaskOwnerRef.current = undefined;
     controlTaskRef.current = null;
     taskAuthorityRef.current = createTransientStatusTaskAuthorityState();
@@ -206,7 +214,8 @@ export default function EvolutionMonitor() {
   }, []);
 
   const acceptTransientStatus = useCallback((candidate: EvolutionStatusEvent): boolean => {
-    if (!isFreshEvolutionStatusEvent(candidate)) return false;
+    const acceptedAt = Date.now() / 1000;
+    if (!isFreshEvolutionStatusEvent(candidate, acceptedAt)) return false;
     if (!shouldAcceptEvolutionStatus(
       candidate,
       activeGenerationRef.current,
@@ -216,20 +225,49 @@ export default function EvolutionMonitor() {
       return false;
     }
     acceptedStatusRef.current = candidate;
+    acceptedStatusAcceptedAtRef.current = acceptedAt;
+    const expiryAt = evolutionStatusExpiryAt(candidate, acceptedAt);
+    acceptedStatusExpiryAtRef.current = expiryAt;
+    setAcceptedStatusExpiryAt(expiryAt);
     setStatus(candidate.msg);
     setIsWorking(candidate.is_working);
     return true;
   }, []);
 
   const invalidateAcceptedStatus = useCallback((task: TransientStatusTask | null) => {
-    if (evolutionStatusMatchesActiveGeneration(
-      acceptedStatusRef.current,
-      activeGenerationRef.current,
-      task,
-    )) return;
+    if (
+      evolutionStatusMatchesActiveGeneration(
+        acceptedStatusRef.current,
+        activeGenerationRef.current,
+        task,
+      )
+      && isAcceptedEvolutionStatusFresh(
+        acceptedStatusRef.current,
+        acceptedStatusAcceptedAtRef.current,
+      )
+    ) return;
     acceptedStatusRef.current = null;
+    acceptedStatusAcceptedAtRef.current = null;
+    acceptedStatusExpiryAtRef.current = null;
+    setAcceptedStatusExpiryAt(null);
     setIsWorking(false);
     setStatus(transientStatusFallback(activeGenerationRef.current, task));
+  }, []);
+
+  const expireAcceptedStatus = useCallback((expectedExpiryAt: number) => {
+    if (acceptedStatusExpiryAtRef.current !== expectedExpiryAt) return;
+    // The locally retained phrase reached its bounded replay lifetime.  Even
+    // when task/checkpoint identity still matches, display only the neutral
+    // backend-bound fallback until a fresh SSE status arrives.
+    acceptedStatusRef.current = null;
+    acceptedStatusAcceptedAtRef.current = null;
+    acceptedStatusExpiryAtRef.current = null;
+    setAcceptedStatusExpiryAt(null);
+    setIsWorking(false);
+    setStatus(transientStatusFallback(
+      activeGenerationRef.current,
+      controlTaskRef.current,
+    ));
   }, []);
 
   const loseTaskAuthority = useCallback(() => {
@@ -274,17 +312,36 @@ export default function EvolutionMonitor() {
 
   useEffect(() => {
     const accepted = acceptedStatusRef.current;
-    if (evolutionStatusMatchesActiveGeneration(
-      accepted,
-      epochStatus?.active_generation,
-      effectiveControlTask,
-    )) return;
+    if (
+      evolutionStatusMatchesActiveGeneration(
+        accepted,
+        epochStatus?.active_generation,
+        effectiveControlTask,
+      )
+      && isAcceptedEvolutionStatusFresh(
+        accepted,
+        acceptedStatusAcceptedAtRef.current,
+      )
+    ) return;
     invalidateAcceptedStatus(effectiveControlTask);
   }, [
     epochStatus?.active_generation,
     effectiveControlTask,
     invalidateAcceptedStatus,
   ]);
+
+  useEffect(() => {
+    if (acceptedStatusExpiryAt === null) return undefined;
+    const waitMs = Math.max(
+      0,
+      Math.ceil((acceptedStatusExpiryAt - Date.now() / 1000) * 1000),
+    );
+    const timer = window.setTimeout(
+      () => expireAcceptedStatus(acceptedStatusExpiryAt),
+      waitMs,
+    );
+    return () => window.clearTimeout(timer);
+  }, [acceptedStatusExpiryAt, expireAcceptedStatus]);
 
   useEffect(() => {
     // Polling health and the JSON state endpoint may move the lifecycle
@@ -467,6 +524,9 @@ export default function EvolutionMonitor() {
       // A reconnect must never keep a prior Master/Worker phrase alive. A
       // replay is accepted only when it carries the current checkpoint tuple.
       acceptedStatusRef.current = null;
+      acceptedStatusAcceptedAtRef.current = null;
+      acceptedStatusExpiryAtRef.current = null;
+      setAcceptedStatusExpiryAt(null);
       setStatus(transientStatusFallback(
         activeGenerationRef.current,
         controlTaskRef.current,
@@ -484,6 +544,9 @@ export default function EvolutionMonitor() {
       setStreamTaskOwner(undefined);
       setStreamState(reason === "epoch_blocked" ? "blocked" : "disconnected");
       acceptedStatusRef.current = null;
+      acceptedStatusAcceptedAtRef.current = null;
+      acceptedStatusExpiryAtRef.current = null;
+      setAcceptedStatusExpiryAt(null);
       setStatus(
         reason === "epoch_blocked"
           ? "等待 epoch 权威"

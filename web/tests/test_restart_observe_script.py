@@ -67,6 +67,7 @@ def _write_interpreter_handoff_fixture(tmp_path: Path) -> tuple[Path, Path, Path
         "printf 'pokctl %s\\n' \"$*\" >> \"${POKCTL_CALLS:?}\"\n"
         "case \"${1:-}\" in\n"
         "  resolve-python) printf '%s\\n' \"${POK_PYTHON:?}\" ;;\n"
+        "  verify-frontend-static) [ \"${VERIFY_FRONTEND_RECEIPT:-1}\" = \"1\" ] ;;\n"
         "  stop|start) : ;;\n"
         "  *) echo \"unexpected pokctl command: $*\" >&2; exit 2 ;;\n"
         "esac\n",
@@ -207,9 +208,15 @@ def test_restart_helper_preflights_the_shared_interpreter_before_stop():
     assert "require_web_python >&2" in process_control
     assert "printf '%s\\n' \"$PYTHON\"" in process_control
     assert "durable config writer import preflight failed before stopping service" in restart
+    assert "--no-build frontend receipt preflight failed before stopping service" in restart
+    assert "./pokctl.sh verify-frontend-static" in restart
     assert restart.index("./pokctl.sh resolve-python") < restart.index(
         "run ./pokctl.sh stop"
     )
+    assert restart.index("./pokctl.sh verify-frontend-static") < restart.index(
+        "run ./pokctl.sh stop"
+    )
+    assert "ignoring --no-build" not in restart
 
 
 def test_restart_uses_resolved_python_for_config_and_health_before_stop(tmp_path):
@@ -280,6 +287,40 @@ def test_restart_refuses_missing_resolved_python_before_stop(tmp_path):
     assert "durable config writer import preflight failed before stopping service" in proc.stderr
     call_lines = calls.read_text(encoding="utf-8").splitlines()
     assert any(line.startswith("pokctl resolve-python") for line in call_lines)
+    assert not any(line.startswith("pokctl stop") for line in call_lines)
+    assert not any(line.startswith("pokctl start") for line in call_lines)
+    assert not (root / "web/core/results/app_config.json").exists()
+
+
+def test_restart_refuses_stale_no_build_receipt_before_stop(tmp_path):
+    root, project_python, calls = _write_interpreter_handoff_fixture(tmp_path)
+    env = {
+        **os.environ,
+        "POK_PYTHON": str(project_python),
+        "POKCTL_CALLS": str(calls),
+        "FAKE_PYTHON_CALLS": str(calls),
+        "VERIFY_FRONTEND_RECEIPT": "0",
+    }
+
+    proc = subprocess.run(
+        [
+            "bash",
+            "scripts/pok_restart_observe.sh",
+            "--no-build",
+            "--observe-generations",
+            "0",
+        ],
+        cwd=root,
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert proc.returncode != 0
+    assert "frontend receipt preflight failed before stopping service" in proc.stderr
+    call_lines = calls.read_text(encoding="utf-8").splitlines()
+    assert any(line.startswith("pokctl verify-frontend-static") for line in call_lines)
     assert not any(line.startswith("pokctl stop") for line in call_lines)
     assert not any(line.startswith("pokctl start") for line in call_lines)
     assert not (root / "web/core/results/app_config.json").exists()

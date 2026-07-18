@@ -190,6 +190,22 @@ frontend_static_ready() {
     [ -f "web/server/static/index.html" ] && [ -d "web/server/static/assets" ]
 }
 
+frontend_static_receipt_valid() {
+    local receipt="web/server/static/.pok-static-build-receipt.json"
+    if ! frontend_static_ready; then
+        echo "  Missing: web/server/static/index.html or web/server/static/assets" >&2
+        return 1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        echo "  Node.js is required to verify the source-bound frontend receipt." >&2
+        return 1
+    fi
+    if ! node web/frontend/scripts/static-build-receipt.mjs --verify "$receipt" >&2; then
+        echo "  Static bundle receipt is missing, malformed, or does not match current frontend sources." >&2
+        return 1
+    fi
+}
+
 configure_evolution_publish_env() {
     : "${POK_EVOLUTION_RUNTIME:=1}"
     : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
@@ -276,9 +292,8 @@ cmd_start() {
         exit 1
     fi
 
-    if arg_present "--no-build" "$@" && ! frontend_static_ready; then
-        echo "✗ --no-build requested, but frontend static build is missing."
-        echo "  Missing: web/server/static/index.html or web/server/static/assets"
+    if arg_present "--no-build" "$@" && ! frontend_static_receipt_valid; then
+        echo "✗ --no-build requested, but frontend static receipt validation failed."
         echo "  Start without --no-build, or run: cd web/frontend && npm ci && npm run build"
         exit 1
     fi
@@ -462,6 +477,11 @@ cmd_restart() {
     # Validate before stopping a healthy owned server. An invalid explicit
     # override must fail closed without converting a configuration typo into
     # avoidable downtime.
+    if arg_present "--no-build" "$@" && ! frontend_static_receipt_valid; then
+        echo "✗ --no-build requested, but frontend static receipt validation failed; refusing restart before stop."
+        echo "  Start without --no-build, or run: cd web/frontend && npm ci && npm run build"
+        exit 1
+    fi
     require_web_python || exit 1
     cmd_stop
     sleep 1
@@ -487,6 +507,13 @@ cmd_resolve_python() {
     printf '%s\n' "$PYTHON"
 }
 
+cmd_verify_frontend_static() {
+    # Shared by the restart observer before it stops an owned service. Keep
+    # this source-controlled check in one place rather than treating the
+    # existence of a generated index.html as proof of freshness.
+    frontend_static_receipt_valid
+}
+
 # ── 入口 ──
 usage() {
     cat <<EOF
@@ -501,6 +528,7 @@ Commands:
   start [args...]    后台启动服务 (args 透传给 python web/main.py)
   stop               优雅停止服务
   status             查询服务状态
+  verify-frontend-static 校验 --no-build 的源绑定前端构建回执
   restart [args...]  重启服务
   logs [file]        实时查看日志 (默认: server.stdout.log, 可指定 app.log)
   resolve-python     输出已经过隔离 Web 依赖校验的项目 Python 路径
@@ -526,6 +554,14 @@ case "${1:-}" in
     status)  shift; cmd_status ;;
     restart) shift; cmd_restart "$@" ;;
     logs)    shift; cmd_logs "$@" ;;
+    verify-frontend-static)
+        shift
+        if [ "$#" -ne 0 ]; then
+            echo "verify-frontend-static does not accept arguments" >&2
+            exit 2
+        fi
+        cmd_verify_frontend_static
+        ;;
     resolve-python)
         shift
         if [ "$#" -ne 0 ]; then

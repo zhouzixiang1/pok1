@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "test": "rm -rf node_modules/.tmp/sse-tests && tsc -p tsconfig.sse-test.json && node --test tests/sseController.test.mjs",
-    "build": "tsc -b && vite build && rm -rf ../server/static && cp -r dist ../server/static",
+    "build": "SOURCE_FINGERPRINT=$(node scripts/static-build-receipt.mjs --source-fingerprint) && tsc -b && vite build && node scripts/static-build-receipt.mjs --write dist/.pok-static-build-receipt.json --expect-source-fingerprint \"$SOURCE_FINGERPRINT\" && rm -rf ../server/static && cp -r dist ../server/static",
     "lint": "eslint .",
     "preview": "vite preview"
   },

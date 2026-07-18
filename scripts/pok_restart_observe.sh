@@ -97,6 +97,17 @@ PY
     fi
 fi
 
+# A generated index.html alone is not proof that the dashboard contains the
+# current status-authority code.  For an explicit --no-build restart, verify
+# the source-bound receipt before stopping the owned service; never discover a
+# stale SPA only after checkpoint/config handoff has begun.
+if [ "$DRY_RUN" = "0" ] && [ "$OBSERVE_ONLY" = "0" ] && [ "$NO_BUILD" = "1" ]; then
+    if ! ./pokctl.sh verify-frontend-static; then
+        echo "refusing restart: --no-build frontend receipt preflight failed before stopping service" >&2
+        exit 1
+    fi
+fi
+
 : "${POK_EVOLUTION_RUNTIME:=1}"
 : "${POK_REQUIRE_EVOLUTION_PUSH:=$POK_EVOLUTION_RUNTIME}"
 : "${EVOLUTION_GIT_PUSH:=$POK_REQUIRE_EVOLUTION_PUSH}"
@@ -198,10 +209,6 @@ PY
 fi
 
 START_ARGS=(--host "$HOST" --port "$PORT")
-if [ "$NO_BUILD" = "1" ] && [ ! -f "web/server/static/index.html" ]; then
-    log "frontend static build missing; ignoring --no-build for this restart"
-    NO_BUILD=0
-fi
 if [ "$NO_BUILD" = "1" ]; then
     START_ARGS+=(--no-build)
 fi

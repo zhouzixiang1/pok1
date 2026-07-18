@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import test from "node:test";
 
 import {
@@ -11,8 +14,10 @@ import {
   createEvolutionStreamController,
   compareTransientStatusTaskProjection,
   createTransientStatusTaskAuthorityState,
+  evolutionStatusExpiryAt,
   evolutionStatusMatchesActiveGeneration,
   formatDegradedHealth,
+  isAcceptedEvolutionStatusFresh,
   isFreshEvolutionStatusEvent,
   loseTransientStatusTaskAuthority,
   observeTransientStatusTaskProjection,
@@ -969,8 +974,19 @@ test("transient evolution status rejects stale, inactive, and mismatched checkpo
     false,
   );
   assert.equal(isFreshEvolutionStatusEvent(current, 101), true);
+  assert.equal(isFreshEvolutionStatusEvent(current, 130), false);
   assert.equal(isFreshEvolutionStatusEvent(current, 131), false);
   assert.equal(isFreshEvolutionStatusEvent({ ...current, emitted_at: 107 }, 101), false);
+  // A delayed replay never receives another full 30 seconds merely because
+  // the browser accepted it late.  The UI timer must clear the retained
+  // phrase at the source replay boundary even if its task identity remains
+  // otherwise valid.
+  assert.equal(evolutionStatusExpiryAt(current, 105), 130);
+  assert.equal(isAcceptedEvolutionStatusFresh(current, 105, 129.999), true);
+  assert.equal(isAcceptedEvolutionStatusFresh(current, 105, 130), false);
+  assert.equal(evolutionStatusExpiryAt({ ...current, emitted_at: 108 }, 105), 135);
+  assert.equal(isAcceptedEvolutionStatusFresh({ ...current, emitted_at: 108 }, 105, 134.999), true);
+  assert.equal(isAcceptedEvolutionStatusFresh({ ...current, emitted_at: 108 }, 105, 135), false);
   assert.equal(
     transientStatusTaskMatches(activeTask, { ...activeTask, lifecycle_revision: 8 }),
     false,
@@ -1431,4 +1447,79 @@ test("published high-water movement uses the backend replay identity and clears 
     ...published,
     stream_authority_digest: "invalid",
   }), null);
+});
+
+test("source-bound static receipt rejects stale frontend code before --no-build", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "pok-static-receipt-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const frontend = join(root, "web", "frontend");
+  const script = join(frontend, "scripts", "static-build-receipt.mjs");
+  const distReceipt = join(frontend, "dist", ".pok-static-build-receipt.json");
+  const staticReceipt = join(root, "web", "server", "static", ".pok-static-build-receipt.json");
+
+  mkdirSync(join(frontend, "scripts"), { recursive: true });
+  mkdirSync(join(frontend, "src"), { recursive: true });
+  mkdirSync(join(frontend, "public"), { recursive: true });
+  mkdirSync(join(root, "web", "server", "static", "assets"), { recursive: true });
+  cpSync(new URL("../scripts/static-build-receipt.mjs", import.meta.url), script);
+  for (const [relativePath, contents] of Object.entries({
+    "index.html": "<div id=\"root\"></div>\n",
+    "package.json": "{}\n",
+    "package-lock.json": "{}\n",
+    "postcss.config.js": "export default {}\n",
+    "tsconfig.json": "{}\n",
+    "tsconfig.app.json": "{}\n",
+    "tsconfig.node.json": "{}\n",
+    "vite.config.ts": "export default {}\n",
+    "banner.png": "not-a-real-png\n",
+    "src/main.tsx": "export const revision = 1;\n",
+    "public/favicon.png": "not-a-real-png\n",
+  })) {
+    const path = join(frontend, relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, contents, "utf8");
+  }
+
+  const write = spawnSync(process.execPath, [script, "--write", distReceipt], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(write.status, 0, write.stderr);
+  cpSync(distReceipt, staticReceipt);
+  const verified = spawnSync(process.execPath, [script, "--verify", staticReceipt], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(verified.status, 0, verified.stderr);
+
+  writeFileSync(join(frontend, "src", "main.tsx"), "export const revision = 2;\n", "utf8");
+  const stale = spawnSync(process.execPath, [script, "--verify", staticReceipt], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.notEqual(stale.status, 0);
+  assert.match(stale.stderr, /does not match current frontend build inputs/);
+
+  const receipt = JSON.parse(readFileSync(staticReceipt, "utf8"));
+  const changedDuringBuild = spawnSync(process.execPath, [
+    script,
+    "--write",
+    distReceipt,
+    "--expect-source-fingerprint",
+    receipt.source_fingerprint,
+  ], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.notEqual(changedDuringBuild.status, 0);
+  assert.match(changedDuringBuild.stderr, /changed while the production build was running/);
+
+  receipt.unexpected = true;
+  writeFileSync(staticReceipt, `${JSON.stringify(receipt)}\n`, "utf8");
+  const malformed = spawnSync(process.execPath, [script, "--verify", staticReceipt], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /receipt keys do not match/);
 });
