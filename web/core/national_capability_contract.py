@@ -25,8 +25,12 @@ from typing import Any, Iterable
 from bot_namespace import strict_artifact_layout_errors
 
 
-CAPABILITY_SCHEMA_VERSION = 6
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v5"
+# Bare-action output tracking now covers refinement-generator ``yield`` and
+# ``yield from`` paths in addition to ordinary function returns.  Capability
+# receipts bind this detector identity, so a candidate checked under the prior
+# return-only detector cannot be reused without a fresh capability gate.
+CAPABILITY_SCHEMA_VERSION = 7
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v6"
 DECISION_CONTEXT_SCHEMA_VERSION = 1
 POLICY_ENTRYPOINTS = {
     "get_baseline_decision": ("context",),
@@ -606,15 +610,19 @@ def _is_bare_action_literal(value: str | None) -> bool:
 
 
 def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
-    """Find direct/simple-alias action scalars returned by policy entrypoints.
+    """Find direct/simple-alias action scalars emitted by policy entrypoints.
 
     A global literal scan cannot distinguish an observed opponent action from
     a candidate output.  This deliberately narrow flow analysis follows only
     literal assignments visible to ``get_baseline_decision`` and
-    ``iter_decisions`` returns.  It supports direct strings, straight-line and
-    conditional aliases (including module constants), invalidates an alias
-    when it is reassigned to an unknown value, and does not inspect arbitrary
-    helper returns that may legitimately classify public input.
+    ``iter_decisions`` output paths.  A refinement entrypoint is a generator,
+    so its public decisions leave through ``yield``/``yield from`` rather than
+    ``return``.  It supports direct strings, straight-line and conditional
+    aliases (including module constants), invalidates an alias when it is
+    reassigned to an unknown value, and does not inspect arbitrary helper
+    returns that may legitimately classify public input.  The historical
+    evidence key remains ``bare_action_return_locations`` for receipt
+    compatibility; yielded entries are labelled ``bare_action_yield``.
     """
 
     if tree is None:
@@ -644,6 +652,13 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
         if isinstance(value, ast.BoolOp):
             return frozenset().union(
                 *(possible_strings(item, aliases) for item in value.values)
+            )
+        if isinstance(value, (ast.Tuple, ast.List, ast.Set)):
+            # ``yield from`` may consume a compact literal sequence or a
+            # module/local alias to one.  Treat only statically known string
+            # members as possible public outputs; other values stay unknown.
+            return frozenset().union(
+                *(possible_strings(item, aliases) for item in value.elts)
             )
         if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
             left = possible_strings(value.left, aliases)
@@ -697,6 +712,50 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
 
     locations: list[str] = []
 
+    def record_action_output(
+        value: ast.AST | None,
+        node: ast.AST,
+        aliases: dict[str, frozenset[str]],
+        *,
+        flow: str,
+    ) -> None:
+        for emitted in sorted(possible_strings(value, aliases)):
+            if _is_bare_action_literal(emitted):
+                locations.append(
+                    f"policy.py:{node.lineno}:bare_action_{flow}:{emitted}"
+                )
+
+    def record_yield_output(
+        value: ast.AST | None,
+        aliases: dict[str, frozenset[str]],
+    ) -> None:
+        if isinstance(value, ast.Yield):
+            record_action_output(
+                value.value,
+                value,
+                aliases,
+                flow="yield",
+            )
+            record_yield_output(value.value, aliases)
+            return
+        if isinstance(value, ast.YieldFrom):
+            record_action_output(
+                value.value,
+                value,
+                aliases,
+                flow="yield",
+            )
+            record_yield_output(value.value, aliases)
+            return
+        if value is not None:
+            # Yield expressions can be parenthesized or occur as the value of
+            # an assignment/return expression.  Walk only the current
+            # expression tree (never nested function bodies) so syntactic
+            # reshaping cannot hide a public refinement output from this
+            # intentionally small flow analysis.
+            for child in ast.iter_child_nodes(value):
+                record_yield_output(child, aliases)
+
     def scan_block(
         statements: list[ast.stmt],
         aliases: dict[str, frozenset[str]],
@@ -704,29 +763,53 @@ def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
         current = dict(aliases)
         for statement in statements:
             if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                record_yield_output(statement.value, current)
                 assign_aliases(statement, current)
                 continue
             if isinstance(statement, ast.AugAssign):
+                record_yield_output(statement.value, current)
                 for name in _assigned_names(statement.target):
                     current.pop(name, None)
                 continue
             if isinstance(statement, ast.Return):
-                for value in sorted(possible_strings(statement.value, current)):
-                    if _is_bare_action_literal(value):
-                        locations.append(
-                            f"policy.py:{statement.lineno}:bare_action_return:{value}"
-                        )
+                record_yield_output(statement.value, current)
+                record_action_output(
+                    statement.value,
+                    statement,
+                    current,
+                    flow="return",
+                )
+                continue
+            if isinstance(statement, ast.Expr):
+                record_yield_output(statement.value, current)
                 continue
             # Returns nested under a branch remain output paths.  Merge only
             # known literal possibilities for following aliases; unknown branch
             # values cannot turn a standalone input enum into output evidence.
             if isinstance(statement, ast.If):
+                record_yield_output(statement.test, current)
                 current = merged_aliases(
                     scan_block(statement.body, current),
                     scan_block(statement.orelse, current),
                 )
                 continue
-            if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            if isinstance(statement, (ast.For, ast.AsyncFor)):
+                record_yield_output(statement.iter, current)
+                body_aliases = dict(current)
+                for name in _assigned_names(statement.target):
+                    values = possible_strings(statement.iter, current)
+                    if values:
+                        body_aliases[name] = values
+                    else:
+                        body_aliases.pop(name, None)
+                current = merged_aliases(
+                    current,
+                    scan_block(statement.body, body_aliases),
+                    scan_block(statement.orelse, current),
+                )
+                continue
+            if isinstance(statement, ast.While):
+                record_yield_output(statement.test, current)
                 current = merged_aliases(
                     current,
                     scan_block(statement.body, current),

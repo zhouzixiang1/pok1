@@ -115,6 +115,76 @@ def get_baseline_decision(context):
     assert any(location.endswith(":bare_action_return:fold") for location in locations)
 
 
+@pytest.mark.parametrize(
+    ("prefix", "body", "action"),
+    [
+        ("", '    yield "check"\n', "check"),
+        ("", '    return (yield "fold")\n', "fold"),
+        (
+            'REFINEMENT_ACTION = "call"\n',
+            "    action = REFINEMENT_ACTION\n"
+            "    yield action\n",
+            "call",
+        ),
+        (
+            'REFINEMENT_ACTIONS = ("allin",)\n',
+            "    yield from REFINEMENT_ACTIONS\n",
+            "allin",
+        ),
+    ],
+)
+def test_typed_intent_rejects_bare_action_refinement_yields(
+    tmp_path,
+    prefix,
+    body,
+    action,
+):
+    policy = (
+        prefix
+        + "def get_baseline_decision(context):\n"
+        + "    legal = context['legal']\n"
+        + "    betting = context['betting']\n"
+        + "    opponent = context['opponent']\n"
+        + "    return {'kind': 'pass'}\n\n"
+        + "def iter_decisions(context, baseline, deadline):\n"
+        + body
+    )
+
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+    typed = _check(result, "typed_intent_v1")
+
+    assert typed["passed"] is False
+    assert any(
+        location.endswith(f":bare_action_yield:{action}")
+        for location in typed["evidence"]["bare_action_return_locations"]
+    )
+
+
+def test_typed_intent_rejects_conditional_bare_action_refinement_yields(tmp_path):
+    policy = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "pass"}
+
+def iter_decisions(context, baseline, deadline):
+    if context["hand"].get("street") == "turn":
+        branch_action = "check"
+        yield branch_action
+    else:
+        yield "fold"
+'''
+
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+    typed = _check(result, "typed_intent_v1")
+
+    assert typed["passed"] is False
+    locations = typed["evidence"]["bare_action_return_locations"]
+    assert any(location.endswith(":bare_action_yield:check") for location in locations)
+    assert any(location.endswith(":bare_action_yield:fold") for location in locations)
+
+
 def test_typed_intent_distinguishes_public_check_input_from_check_output_kind(
     tmp_path,
 ):
