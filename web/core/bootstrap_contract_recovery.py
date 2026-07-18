@@ -66,6 +66,8 @@ def _bootstrap_contract_chain_issues(
     expected_checkpoint_contract_digest: str,
     expected_protocol_bootstrap_receipt_digest: str,
     expected_first_strict_control_receipt_digest: str,
+    expected_protocol_bootstrap_receipt: dict[str, Any],
+    expected_first_strict_control_receipt: dict[str, Any],
 ) -> list[str]:
     issues: list[str] = []
     if expected_evaluation_contract_version != PARKED_EVALUATION_CONTRACT_VERSION:
@@ -101,6 +103,25 @@ def _bootstrap_contract_chain_issues(
         != control_receipt.get("receipt_digest")
     ):
         issues.append("bootstrap_contract_control_receipt_chain_mismatch")
+    parked_protocol = parked.get("protocol_bootstrap_receipt")
+    parked_protocol = (
+        parked_protocol if isinstance(parked_protocol, dict) else {}
+    )
+    parked_control = parked.get("first_strict_control_receipt")
+    parked_control = parked_control if isinstance(parked_control, dict) else {}
+    if (
+        parked_protocol != expected_protocol_bootstrap_receipt
+        or parked_protocol.get("receipt_digest")
+        != expected_protocol_bootstrap_receipt_digest
+    ):
+        issues.append("bootstrap_contract_embedded_protocol_receipt_mismatch")
+    if (
+        parked_control != expected_first_strict_control_receipt
+        or parked_control != control_receipt
+        or parked_control.get("receipt_digest")
+        != expected_first_strict_control_receipt_digest
+    ):
+        issues.append("bootstrap_contract_embedded_control_receipt_mismatch")
     policy = bootstrap_receipt.get("bootstrap_policy")
     policy = policy if isinstance(policy, dict) else {}
     if (
@@ -247,6 +268,8 @@ def _terminal_job_facts(
     expected_checkpoint_contract_digest: str,
     expected_protocol_bootstrap_receipt_digest: str,
     expected_first_strict_control_receipt_digest: str,
+    expected_protocol_bootstrap_receipt: dict[str, Any],
+    expected_first_strict_control_receipt: dict[str, Any],
 ) -> dict[str, Any]:
     from official_bootstrap import (
         CONTROL_ID,
@@ -440,6 +463,12 @@ def _terminal_job_facts(
         ),
         expected_first_strict_control_receipt_digest=(
             expected_first_strict_control_receipt_digest
+        ),
+        expected_protocol_bootstrap_receipt=(
+            expected_protocol_bootstrap_receipt
+        ),
+        expected_first_strict_control_receipt=(
+            expected_first_strict_control_receipt
         ),
     ))
     entries, ledger_issues = _validated_ledger_entries()
@@ -680,6 +709,10 @@ def build_claim(
             ),
             expected_first_strict_control_receipt_digest=str(
                 checkpoint_control_receipt.get("receipt_digest") or ""
+            ),
+            expected_protocol_bootstrap_receipt=protocol_bootstrap,
+            expected_first_strict_control_receipt=(
+                checkpoint_control_receipt
             ),
         )
     except BootstrapContractRecoveryError as exc:

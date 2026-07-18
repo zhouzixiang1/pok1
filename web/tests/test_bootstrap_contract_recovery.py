@@ -82,6 +82,9 @@ def _contract_chain():
     }
     candidate_binding = {"candidate_binding_digest": "f" * 64}
     control_receipt = {"receipt_digest": "c" * 64}
+    protocol_receipt = {"receipt_digest": "b" * 64, "kind": "protocol"}
+    parked["protocol_bootstrap_receipt"] = protocol_receipt
+    parked["first_strict_control_receipt"] = dict(control_receipt)
     return (
         parked,
         authorization,
@@ -111,6 +114,10 @@ def test_bootstrap_contract_chain_binds_baseline_parked_authorization_and_contro
         expected_checkpoint_contract_digest="a" * 64,
         expected_protocol_bootstrap_receipt_digest="b" * 64,
         expected_first_strict_control_receipt_digest="c" * 64,
+        expected_protocol_bootstrap_receipt=parked[
+            "protocol_bootstrap_receipt"
+        ],
+        expected_first_strict_control_receipt=control_receipt,
     ) == []
 
 
@@ -136,6 +143,10 @@ def test_bootstrap_contract_chain_rejects_self_consistent_old_contract_version()
         expected_checkpoint_contract_digest="a" * 64,
         expected_protocol_bootstrap_receipt_digest="b" * 64,
         expected_first_strict_control_receipt_digest="c" * 64,
+        expected_protocol_bootstrap_receipt=parked[
+            "protocol_bootstrap_receipt"
+        ],
+        expected_first_strict_control_receipt=control_receipt,
     )
 
     assert "bootstrap_contract_evaluation_contract_chain_mismatch" in issues
@@ -160,6 +171,8 @@ def test_bootstrap_contract_chain_rejects_self_consistent_old_contract_version()
         ("authorization", "candidate_binding_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
         ("binding", "candidate_binding_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
         ("parked", "bootstrap_policy_digest", "bootstrap_contract_embedded_binding_chain_mismatch"),
+        ("parked_protocol", "kind", "bootstrap_contract_embedded_protocol_receipt_mismatch"),
+        ("parked_control", "kind", "bootstrap_contract_embedded_control_receipt_mismatch"),
     ],
 )
 def test_bootstrap_contract_chain_rejects_each_spliced_identity(
@@ -180,6 +193,8 @@ def test_bootstrap_contract_chain_rejects_each_spliced_identity(
         "bootstrap": bootstrap_receipt,
         "binding": candidate_binding,
         "control": control_receipt,
+        "parked_protocol": parked["protocol_bootstrap_receipt"],
+        "parked_control": parked["first_strict_control_receipt"],
     }[target]
     mapping[field] = "0" * 64 if field != "evaluation_contract_version" else 39
 
@@ -194,6 +209,62 @@ def test_bootstrap_contract_chain_rejects_each_spliced_identity(
         expected_checkpoint_contract_digest="a" * 64,
         expected_protocol_bootstrap_receipt_digest="b" * 64,
         expected_first_strict_control_receipt_digest="c" * 64,
+        expected_protocol_bootstrap_receipt={
+            "receipt_digest": "b" * 64,
+            "kind": "protocol",
+        },
+        expected_first_strict_control_receipt=control_receipt,
+    )
+
+    assert issue in issues
+
+
+@pytest.mark.parametrize(
+    ("embedded_field", "issue"),
+    [
+        (
+            "protocol_bootstrap_receipt",
+            "bootstrap_contract_embedded_protocol_receipt_mismatch",
+        ),
+        (
+            "first_strict_control_receipt",
+            "bootstrap_contract_embedded_control_receipt_mismatch",
+        ),
+    ],
+)
+def test_rehashed_parked_request_cannot_splice_embedded_receipt(
+    embedded_field,
+    issue,
+):
+    (
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+    ) = _contract_chain()
+    expected_protocol = dict(parked["protocol_bootstrap_receipt"])
+    parked[embedded_field] = {
+        **parked[embedded_field],
+        "spliced": True,
+    }
+    parked["request_digest"] = canonical_digest({
+        key: value for key, value in parked.items() if key != "request_digest"
+    })
+
+    issues = recovery._bootstrap_contract_chain_issues(
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+        expected_evaluation_contract_version=40,
+        expected_evaluation_contract_hash=OLD_HASH,
+        expected_checkpoint_contract_digest="a" * 64,
+        expected_protocol_bootstrap_receipt_digest="b" * 64,
+        expected_first_strict_control_receipt_digest="c" * 64,
+        expected_protocol_bootstrap_receipt=expected_protocol,
+        expected_first_strict_control_receipt=control_receipt,
     )
 
     assert issue in issues
