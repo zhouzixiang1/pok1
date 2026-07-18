@@ -227,6 +227,7 @@ def test_health_uses_only_canonical_ignored_checkpoint_summary(
         "initialized": False,
         "version_authority_high_water": 142,
         "strict_published_versions": [],
+        "strict_published_bot_identities": [],
         "active_bots": [],
         "reset_receipt_valid": False,
         "reset_receipt_issues": ["reset_missing"],
