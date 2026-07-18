@@ -435,14 +435,22 @@ def _validate_active_abandon_claim(claim: dict) -> dict:
     return claim
 
 
-def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
-    """Read-only proof that both generation journals are terminal and fenced."""
+def _validate_abandon_workflow_fences(
+    *,
+    workflow_run_id: str,
+    abandon_reason: str,
+    require_worker_outer_reason: bool,
+    require_strict_authority: bool = True,
+) -> dict:
+    """Read-only proof of the Worker prefix and optional strict child fence."""
 
     from strict_authority_workflow import DEFINITION_VERSION, authority_run_id
     from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
     from workflow_kernel import KERNEL_SCHEMA_VERSION, canonical_json, content_digest
 
-    workflow_run_id = str(claim["checkpoint"]["workflow_run_id"])
+    workflow_run_id = str(workflow_run_id or "")
+    if not workflow_run_id:
+        raise RuntimeError("completed_abandon_workflow_run_id_missing")
     strict_run_id = authority_run_id(workflow_run_id)
     database = Path(RESULTS_DIR) / "workflow" / "events.sqlite3"
     if not os.path.lexists(database):
@@ -479,7 +487,9 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
     # the outer reason.  Do not conflate the two identities: doing so makes a
     # correctly quarantined terminal generation impossible to re-prove after a
     # process restart.
-    claim_outer_reason = str(claim["abandon_reason"])
+    claim_outer_reason = str(abandon_reason)
+    if not claim_outer_reason:
+        raise RuntimeError("completed_abandon_outer_reason_missing")
     outer_reason = claim_outer_reason[:1000]
     try:
         connection.execute("PRAGMA query_only=ON")
@@ -651,13 +661,17 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
             workflow_run_id,
             "WorkerAbandoned",
             WORKER_WORKFLOW_DEFINITION_VERSION,
-            require_outer_reason=False,
+            require_outer_reason=require_worker_outer_reason,
         )
-        strict = terminal_projection(
-            strict_run_id,
-            "StrictAuthorityAbandoned",
-            DEFINITION_VERSION,
-            require_outer_reason=True,
+        strict = (
+            terminal_projection(
+                strict_run_id,
+                "StrictAuthorityAbandoned",
+                DEFINITION_VERSION,
+                require_outer_reason=True,
+            )
+            if require_strict_authority
+            else None
         )
         connection.rollback()
     finally:
@@ -669,7 +683,126 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
         or (after.st_dev, after.st_ino) != (metadata.st_dev, metadata.st_ino)
     ):
         raise RuntimeError("completed_abandon_workflow_database_changed")
-    return {"worker": main, "strict_authority": strict}
+    proof = {"worker": main}
+    if strict is not None:
+        proof["strict_authority"] = strict
+    return proof
+
+
+def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
+    """Reprove historical/finalized claim fences, including legacy Worker reasons."""
+
+    return _validate_abandon_workflow_fences(
+        workflow_run_id=str(claim["checkpoint"]["workflow_run_id"]),
+        abandon_reason=str(claim["abandon_reason"]),
+        require_worker_outer_reason=False,
+        require_strict_authority=True,
+    )
+
+
+def validate_terminal_gate_abandon_fences(
+    checkpoint: dict,
+    *,
+    reason: str,
+) -> dict:
+    """Prove the exact already-fenced lifecycle of one terminal gate receipt.
+
+    This is the narrow bridge needed by canonical abandon's second state guard
+    and by a crash retry after both journals were fenced.  It does not create,
+    repair, or relax either journal.
+    """
+
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("terminal_gate_abandon_checkpoint_invalid")
+    outcome = checkpoint.get("terminal_gate_outcome")
+    if not isinstance(outcome, dict):
+        raise RuntimeError("terminal_gate_abandon_outcome_missing")
+    workflow_run_id = str(checkpoint.get("workflow_run_id") or "")
+    receipt_digest = str(outcome.get("receipt_digest") or "")
+    expected_reason = f"terminal_gate_outcome:{receipt_digest}"
+    if (
+        checkpoint.get("stage")
+        not in {"quality_rejected", "review_rejected", "critic_rejected"}
+        or outcome.get("workflow_run_id") != workflow_run_id
+        or outcome.get("terminal_stage") != checkpoint.get("stage")
+        or len(receipt_digest) != 64
+        or any(char not in "0123456789abcdef" for char in receipt_digest)
+        or str(reason) != expected_reason
+    ):
+        raise RuntimeError("terminal_gate_abandon_fence_identity_invalid")
+    return _validate_abandon_workflow_fences(
+        workflow_run_id=workflow_run_id,
+        abandon_reason=expected_reason,
+        require_worker_outer_reason=True,
+        require_strict_authority=True,
+    )
+
+
+def terminal_gate_abandon_fence_proof_if_present(
+    checkpoint: dict,
+    *,
+    reason: str,
+) -> dict | None:
+    """Return exact terminal fence proof, or ``None`` before fencing begins.
+
+    Seeing either journal already abandoned is an irreversible lifecycle
+    boundary.  The exact Worker-first prefix may finish the strict fence after
+    a crash; every mismatched prefix or strict-first/partial shape fails closed
+    rather than being mistaken for the ordinary pre-fence validation pass.
+    """
+
+    from strict_authority_workflow import authority_run_id
+
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("terminal_gate_abandon_checkpoint_invalid")
+    workflow_run_id = str(checkpoint.get("workflow_run_id") or "")
+    database = Path(RESULTS_DIR) / "workflow" / "events.sqlite3"
+    if not os.path.lexists(database):
+        return None
+    metadata = os.lstat(database)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+    ):
+        raise RuntimeError("terminal_gate_abandon_workflow_database_unsafe")
+    expected = Path(RESULTS_DIR).resolve() / "workflow" / "events.sqlite3"
+    resolved = database.resolve(strict=True)
+    if resolved != expected:
+        raise RuntimeError("terminal_gate_abandon_workflow_database_escaped")
+    connection = sqlite3.connect(
+        f"{resolved.as_uri()}?mode=ro",
+        uri=True,
+        timeout=30.0,
+        isolation_level=None,
+    )
+    try:
+        connection.execute("PRAGMA query_only=ON")
+        rows = connection.execute(
+            "SELECT run_id, status FROM workflow_instances "
+            "WHERE run_id IN (?, ?)",
+            (workflow_run_id, authority_run_id(workflow_run_id)),
+        ).fetchall()
+    finally:
+        connection.close()
+    statuses = {str(row[0]): str(row[1]) for row in rows}
+    worker_abandoned = statuses.get(workflow_run_id) == "abandoned"
+    strict_abandoned = (
+        statuses.get(authority_run_id(workflow_run_id)) == "abandoned"
+    )
+    if not worker_abandoned and not strict_abandoned:
+        return None
+    if worker_abandoned and not strict_abandoned:
+        return _validate_abandon_workflow_fences(
+            workflow_run_id=workflow_run_id,
+            abandon_reason=str(reason),
+            require_worker_outer_reason=True,
+            require_strict_authority=False,
+        )
+    return validate_terminal_gate_abandon_fences(
+        checkpoint,
+        reason=reason,
+    )
 
 
 def validate_completed_abandon_handoff(
@@ -2232,7 +2365,12 @@ async def _do_abandon_generation(
                 latest_block = _generic_abandon_stage_block(latest, reason)
                 if latest_block and recorded_abandon_receipt is None:
                     return latest_block, None
-                workflow.abandon(reason)
+                workflow.abandon(
+                    reason,
+                    accept_existing_reason=(
+                        latest.get("stage") not in terminal_stages
+                    ),
+                )
                 from strict_authority_workflow import abandon_authority
 
                 strict_fence = abandon_authority(latest, reason=reason)

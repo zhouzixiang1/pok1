@@ -327,6 +327,12 @@ def test_abandoned_worker_requires_outer_checkpoint_reconciliation(tmp_path):
     workflow.prepare(_envelope(snapshot))
 
     abandoned = workflow.abandon("worker_infrastructure_exhausted")
+    assert workflow.abandon("worker_infrastructure_exhausted") == abandoned
+    with pytest.raises(
+        RuntimeError,
+        match="worker_abandon_fence_identity_invalid",
+    ):
+        workflow.abandon("different_outer_reason")
 
     assert abandoned["status"] == "abandoned"
     assert abandoned["abandon_reason"] == "worker_infrastructure_exhausted"

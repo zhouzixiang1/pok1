@@ -273,7 +273,7 @@ def abandon_authority(
         raise WorkflowConflict(
             f"multiple strict authority abandon events: {run_id}"
         )
-    if instance.get("status") != "abandoned" or not terminal_events:
+    if not terminal_events:
         try:
             store.terminal_transition(
                 run_id,
@@ -290,14 +290,75 @@ def abandon_authority(
             current = store.instance(run_id)
             if current.get("status") != "abandoned":
                 raise
-    current = store.instance(run_id)
+    current = _validated_strict_abandon_fence(
+        checkpoint,
+        reason=str(reason),
+        store=store,
+    )
     return {
         "run_id": run_id,
         "present": True,
-        "abandoned": current.get("status") == "abandoned",
+        "abandoned": True,
         "fence_epoch": int(current.get("fence_epoch") or 0),
         "stream_version": int(current.get("stream_version") or 0),
     }
+
+
+def _validated_strict_abandon_fence(
+    checkpoint: dict[str, Any],
+    *,
+    reason: str,
+    store: WorkflowStore | None = None,
+) -> dict[str, Any]:
+    """Reprove the exact strict-authority terminal fence without reopening it."""
+
+    workflow_run_id = str((checkpoint or {}).get("workflow_run_id") or "")
+    run_id = authority_run_id(workflow_run_id)
+    store = store or _store()
+    instance = store.instance(run_id)
+    events = store.events(run_id)
+    terminal = [
+        event
+        for event in events
+        if event.event_type == "StrictAuthorityAbandoned"
+    ]
+    expected_payload = {
+        "reason": str(reason)[:1000],
+        "workflow_run_id": workflow_run_id,
+    }
+    if (
+        int(instance.get("definition_version") or -1) != DEFINITION_VERSION
+        or instance.get("status") != "abandoned"
+        or int(instance.get("fence_epoch") or 0) < 1
+        or len(terminal) != 1
+        or terminal[0].seq != len(events)
+        or int(instance.get("stream_version") or -1) != terminal[0].seq
+        or terminal[0].schema_version != 1
+        or terminal[0].payload != expected_payload
+        or terminal[0].causation_id
+        != (
+            f"strict-authority-abandoned:{run_id}:"
+            f"{content_digest(expected_payload)}"
+        )
+    ):
+        raise StrictAuthorityError(
+            "strict_authority_abandon_fence_identity_invalid"
+        )
+    for event in events:
+        if event.event_type != "EffectRequested":
+            continue
+        effect_id = str(event.payload.get("effect_id") or "")
+        effect = store.effect(effect_id)
+        if (
+            not effect_id
+            or effect.get("run_id") != run_id
+            or effect.get("status")
+            not in {"completed", "exhausted", "abandoned"}
+        ):
+            raise StrictAuthorityError(
+                "strict_authority_abandon_fence_effect_live"
+            )
+    return instance
 
 
 def generation_binding(checkpoint: dict[str, Any]) -> dict[str, Any]:
@@ -1955,6 +2016,7 @@ def _frozen_phase_checkpoint_revision(
     binding: dict[str, Any],
     current_revision: int,
     expected_context_binding: dict[str, Any] | None = None,
+    matching_abandon_reason: str | None = None,
 ) -> int:
     """Return the first durable revision for one authority phase.
 
@@ -1974,8 +2036,14 @@ def _frozen_phase_checkpoint_revision(
         if not instance:
             return int(current_revision)
         if instance.get("status") == "abandoned":
-            raise StrictAuthorityError(
-                f"strict_authority_phase_journal_abandoned:{phase_name}"
+            if matching_abandon_reason is None:
+                raise StrictAuthorityError(
+                    f"strict_authority_phase_journal_abandoned:{phase_name}"
+                )
+            _validated_strict_abandon_fence(
+                checkpoint,
+                reason=matching_abandon_reason,
+                store=store,
             )
         events = store.events(run_id)
     except StrictAuthorityError:
@@ -3400,6 +3468,7 @@ def validate_receipts(
     expected_role_results: dict[str, Any] | None = None,
     expected_context_bindings: dict[str, dict[str, Any]] | None = None,
     require_no_other_accepted: bool = False,
+    matching_abandon_reason: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
     """Re-read effects/events and validate exact accepted slot identities."""
 
@@ -3435,6 +3504,7 @@ def validate_receipts(
                     slot=representative,
                     binding=binding,
                     current_revision=int(current_revision),
+                    matching_abandon_reason=matching_abandon_reason,
                 )
             except StrictAuthorityError as exc:
                 errors.extend(exc.errors)
@@ -3944,6 +4014,7 @@ def authority_summary(
     expected_context_bindings: dict[str, dict[str, Any]] | None = None,
     expected_invocation_evidence: dict[str, dict[str, Any]] | None = None,
     require_no_other_accepted: bool = False,
+    matching_abandon_reason: str | None = None,
 ) -> dict[str, Any]:
     required_slots = tuple(required_slots)
     expected_invocation_evidence = expected_invocation_evidence or {}
@@ -3953,6 +4024,7 @@ def authority_summary(
         expected_role_results=expected_role_results,
         expected_context_bindings=expected_context_bindings,
         require_no_other_accepted=require_no_other_accepted,
+        matching_abandon_reason=matching_abandon_reason,
     )
     required_set = set(required_slots)
     invalid_expected_slots = set(expected_invocation_evidence) - (

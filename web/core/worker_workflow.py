@@ -1431,14 +1431,27 @@ class WorkerWorkflow:
         )
         return self.state()
 
-    def abandon(self, reason: str) -> dict[str, Any]:
+    def abandon(
+        self,
+        reason: str,
+        *,
+        accept_existing_reason: bool = False,
+    ) -> dict[str, Any]:
+        """Fence this Worker once and reprove an exact idempotent replay.
+
+        ``accept_existing_reason`` is a narrow compatibility hook for outer
+        cleanup of an older Worker that had already terminalized under its own
+        executor reason.  New terminal-gate cleanup never enables it.
+        """
+
         state = self.state()
+        bounded_reason = str(reason)[:1000]
+        already_abandoned = state["status"] == "abandoned"
         if state["status"] != "abandoned":
             # Persist and bind the same bounded value.  Otherwise an oversized
             # caller reason is truncated in the event payload but hashed in
             # the causation id, leaving future recovery unable to reprove its
             # own terminal journal without retaining the unbounded input.
-            bounded_reason = str(reason)[:1000]
             self.store.terminal_transition(
                 self.run_id,
                 event_type="WorkerAbandoned",
@@ -1450,7 +1463,63 @@ class WorkerWorkflow:
                 expected_version=int(state["last_seq"]),
                 status="abandoned",
             )
-        return self.state()
+        terminal_state = self.state()
+        events = self.store.events(self.run_id)
+        terminal = [
+            event for event in events
+            if event.event_type == "WorkerAbandoned"
+        ]
+        instance = self.store.instance(self.run_id)
+        cycle = int(terminal_state.get("cycle") or 0)
+        terminal_reason = str(terminal_state.get("abandon_reason") or "")
+        if already_abandoned and accept_existing_reason:
+            expected_reason = terminal_reason
+        else:
+            expected_reason = bounded_reason
+        causal_subjects = [expected_reason]
+        if (
+            already_abandoned
+            and accept_existing_reason
+            and expected_reason == bounded_reason
+            and str(reason) != bounded_reason
+        ):
+            # Historical producers bounded the payload but hashed the original
+            # outer argument.  This compatibility is unavailable to the exact
+            # terminal-gate lifecycle path.
+            causal_subjects.append(str(reason))
+        expected_causations = {
+            f"worker-abandoned:{self.run_id}:cycle-{cycle}:"
+            f"{content_digest(subject)}"
+            for subject in causal_subjects
+        }
+        if (
+            terminal_state.get("status") != "abandoned"
+            or terminal_reason != expected_reason
+            or int(instance.get("definition_version") or -1)
+            != WORKER_WORKFLOW_DEFINITION_VERSION
+            or instance.get("status") != "abandoned"
+            or int(instance.get("fence_epoch") or 0) < 1
+            or len(terminal) != 1
+            or terminal[0].seq != len(events)
+            or int(instance.get("stream_version") or -1) != terminal[0].seq
+            or terminal[0].schema_version != 1
+            or terminal[0].payload != {"reason": expected_reason}
+            or terminal[0].causation_id not in expected_causations
+        ):
+            raise RuntimeError("worker_abandon_fence_identity_invalid")
+        for event in events:
+            if event.event_type != "EffectRequested":
+                continue
+            effect_id = str(event.payload.get("effect_id") or "")
+            effect = self.store.effect(effect_id)
+            if (
+                not effect_id
+                or effect.get("run_id") != self.run_id
+                or effect.get("status")
+                not in {"completed", "exhausted", "abandoned"}
+            ):
+                raise RuntimeError("worker_abandon_fence_effect_live")
+        return terminal_state
 
 
 def serialized_worker_command(function):

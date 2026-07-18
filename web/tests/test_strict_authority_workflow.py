@@ -865,6 +865,14 @@ def test_generation_abandon_fences_strict_child_journal(authority):
     assert len(events) == 1
     with pytest.raises(
         module.StrictAuthorityError,
+        match="strict_authority_abandon_fence_identity_invalid",
+    ):
+        module.abandon_authority(
+            checkpoint,
+            reason="terminal_gate_outcome:" + "f" * 64,
+        )
+    with pytest.raises(
+        module.StrictAuthorityError,
         match="strict_authority_phase_journal_abandoned:master",
     ):
         module.new_call(
@@ -872,6 +880,60 @@ def test_generation_abandon_fences_strict_child_journal(authority):
             slot="proposal:mechanism",
             context_binding={"slot": "proposal:mechanism", "suffix": "one"},
         )
+
+
+def test_abandoned_journal_is_readable_only_for_explicit_receipt_revalidation(
+    authority,
+):
+    module, _store = authority
+    checkpoint = _checkpoint(stage="quality_passed", revision=8)
+    _call(
+        module,
+        checkpoint,
+        "review",
+        role_result={
+            "approved": False,
+            "quality_score": 3,
+            "feedback": "terminal rejection",
+            "change_summary": "reviewed",
+            "risk_areas": [],
+        },
+    )
+    module.abandon_authority(
+        checkpoint,
+        reason="terminal_gate_outcome:" + "a" * 64,
+    )
+    matching_reason = "terminal_gate_outcome:" + "a" * 64
+
+    _refs, ordinary_errors = module.validate_receipts(
+        {**checkpoint, "stage": "review_rejected", "checkpoint_revision": 9},
+        required_slots=("review",),
+    )
+    assert "strict_authority_phase_journal_abandoned:review" in ordinary_errors
+
+    refs, terminal_errors = module.validate_receipts(
+        {**checkpoint, "stage": "review_rejected", "checkpoint_revision": 9},
+        required_slots=("review",),
+        matching_abandon_reason=matching_reason,
+    )
+    assert terminal_errors == []
+    assert set(refs) == {"review"}
+
+    _refs, drift_errors = module.validate_receipts(
+        {**checkpoint, "stage": "review_rejected", "checkpoint_revision": 9},
+        required_slots=("review",),
+        expected_role_results={
+            "review": {
+                "approved": False,
+                "quality_score": 3,
+                "feedback": "forged terminal rejection",
+                "change_summary": "reviewed",
+                "risk_areas": [],
+            },
+        },
+        matching_abandon_reason=matching_reason,
+    )
+    assert "strict_authority_review_role_result_mismatch" in drift_errors
 
 
 def test_generation_abandon_tombstone_blocks_predispatch_descriptor(authority):

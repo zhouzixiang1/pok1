@@ -381,6 +381,33 @@ def validate_terminal_gate_outcome(
     }.items():
         if outcome.get(field) != expected:
             errors.append(f"terminal_outcome_{field}_mismatch")
+    subject = {
+        key: value
+        for key, value in outcome.items()
+        if key != "receipt_digest"
+    }
+    receipt_valid = bool(
+        _valid_digest(outcome.get("receipt_digest"))
+        and outcome.get("receipt_digest") == content_digest(subject)
+    )
+    matching_reason = None
+    fence_proof = None
+    if receipt_valid and not errors:
+        try:
+            from tool_bot_management import (
+                terminal_gate_abandon_fence_proof_if_present,
+            )
+
+            matching_reason = terminal_outcome_abandon_reason(outcome)
+            fence_proof = terminal_gate_abandon_fence_proof_if_present(
+                checkpoint,
+                reason=matching_reason,
+            )
+        except Exception as exc:
+            errors.append(
+                "terminal_outcome_abandon_fence_invalid:"
+                f"{type(exc).__name__}:{str(exc)[:240]}"
+            )
     if isinstance(role_result, dict) and (
         expected_authority_digest is None or expected_evidence_digest is None
     ):
@@ -389,6 +416,7 @@ def validate_terminal_gate_outcome(
         try:
             from strict_authority_workflow import (
                 MASTER_SLOTS,
+                StrictAuthorityError,
                 authority_summary,
                 expected_master_contexts,
                 gate_call_context,
@@ -404,11 +432,12 @@ def validate_terminal_gate_outcome(
                 expected_evidence["review"] = deepcopy(
                     ((gates.get("review") or {}).get("llm_execution_evidence"))
                 )
-            authority_summary(
-                checkpoint,
-                required_slots=required_slots,
-                expected_role_results={gate_name: deepcopy(role_result)},
-                expected_context_bindings={
+            summary_kwargs = {
+                "required_slots": required_slots,
+                "expected_role_results": {
+                    gate_name: deepcopy(role_result)
+                },
+                "expected_context_bindings": {
                     **expected_master_contexts(
                         checkpoint.get("master_plan") or {}
                     ),
@@ -427,9 +456,39 @@ def validate_terminal_gate_outcome(
                         )
                     ),
                 },
-                expected_invocation_evidence=expected_evidence,
-                require_no_other_accepted=True,
-            )
+                "expected_invocation_evidence": expected_evidence,
+                "require_no_other_accepted": True,
+            }
+            try:
+                authority_summary(checkpoint, **summary_kwargs)
+            except StrictAuthorityError as initial_exc:
+                abandoned_errors = tuple(initial_exc.errors)
+                if (
+                    errors
+                    or not receipt_valid
+                    or fence_proof is None
+                    or "strict_authority" not in fence_proof
+                    or matching_reason is None
+                    or not abandoned_errors
+                    or any(
+                        not error.startswith(
+                            "strict_authority_phase_journal_abandoned:"
+                        )
+                        for error in abandoned_errors
+                    )
+                ):
+                    raise
+                # The first canonical-abandon guard validates while journals
+                # are live.  Its fenced critical section then terminalizes
+                # both journals and re-runs this validator.  Only an exact
+                # dual-journal lifecycle proof can make that second read (or a
+                # crash retry) inspect abandoned authority; ordinary callers
+                # retain the default rejection above.
+                authority_summary(
+                    checkpoint,
+                    **summary_kwargs,
+                    matching_abandon_reason=matching_reason,
+                )
         except Exception as exc:
             errors.append(
                 "terminal_outcome_strict_authority_invalid:"

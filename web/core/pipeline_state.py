@@ -2283,16 +2283,24 @@ def generic_abandon_block(checkpoint: dict | None, *,
     route = route_policy(checkpoint)
     next_tool = route.get("next_tool")
     if route.get("intent") == "operator_reconcile_checkpoint":
+        terminal_gate_stage = stage in {
+            "quality_rejected", "review_rejected", "critic_rejected",
+        }
         return {
             "abandoned": False,
             "blocked": True,
-            "reason": "checkpoint_epoch_requires_operator_reconciliation",
+            "reason": (
+                "terminal_gate_outcome_invalid"
+                if terminal_gate_stage
+                else "checkpoint_epoch_requires_operator_reconciliation"
+            ),
             "stage": stage,
             "next_v": checkpoint.get("next_v"),
             "source_v": checkpoint.get("source_v"),
             "next_tool": None,
             "operator_action": route.get("operator_action"),
             "operator_command": route.get("operator_command"),
+            "issues": route.get("issues") or route.get("epoch_issues") or [],
             "epoch_issues": route.get("epoch_issues") or [],
             "directive": route.get("directive"),
         }
