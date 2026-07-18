@@ -200,13 +200,28 @@ You check ONLY these five areas:
    800 top-level evaluator-call dynamic cap unless the evaluation contract and
    its positive/negative evidence explicitly change together. Reject a
    baseline evaluator alias (including imported, closure, or default aliases),
-   `itertools.combinations`, or a nested deck-pair sweep. At river, reject any
+   `itertools.combinations`, or a nested deck-pair sweep **when that construct
+   is reachable from the synchronous baseline**. This is a semantic rule, not
+   a keyword ban: `itertools.combinations(deck, 2)` inside the separately
+   bounded refinement generator is permitted when the machine evidence proves
+   the finite C(45,2)=990 ceiling, `MAX_EQUITY_SAMPLES`, monotonic deadline
+   checks, and a timely socket-visible baseline. At river, reject any
    synchronous baseline that exhausts all remaining opponent holes. A compact
    prior is only invalid/degraded-input fallback or refinement initialization;
    full `C(45,2)` enumeration must appear only in bounded, deadline-checked
    refinement and must still prove a timely socket-visible baseline first. Also
    verify that the actual `name` handshake starts the system-owned worker before
    preflop without resetting the target decision clock.
+
+   Treat the bound Quality/capability projections as machine authority for
+   reachability, byte/query bounds, producer ownership, and required checks.
+   Do not reject a fixed blueprint merely because a bounded dict/list is
+   dynamic Python data when the projection proves a fixed system-owned
+   producer and capped consumer. A real unused helper remains code-quality
+   feedback, but it does not turn machine-approved bounded refinement or a
+   system-owned tracker into an architecture violation. Cite the exact
+   function and reachable call edge for every hard rejection; aesthetic or
+   keyword-only concerns belong in `risk_areas`, not `approved=false`.
 
    **Attribution check** — In `strategy_implementation_v1`, exactly one strategy
    primary may be newly blocking: one work primitive, one opponent-profile

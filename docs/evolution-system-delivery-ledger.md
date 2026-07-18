@@ -4151,3 +4151,59 @@ normal build path. The matrix records the direct launcher as a production owner
 and dynamic gate. This source-only repair has no runtime, candidate,
 certificate, rating, or strength effect and remains pending review/merge/safe
 runtime synchronization.
+## 2026-07-18 — Reviewer verdict retry source contract (detached, runtime pending)
+
+Live workflows exposed a second independent blocker after the v56 native
+projection repair. The exact artifact
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`
+and its frozen Quality handoff received Reviewer approvals in v56/v58 but
+negative scores in v57/v59. The v59 rejection mixed one real cleanup item (the
+unused `_opponent_adjustments` helper) with two machine-refuted claims: the
+showdown bucket map has a fixed system-owned producer, and the river
+`C(45,2)=990` enumeration exists only in sample/deadline-capped refinement.
+`evaluate_national_capabilities` reported `ok=true` with zero failed required
+checks. These observations do not waive code review; they prove that one
+stochastic negative verdict is not terminal authority over already-completed
+deterministic work.
+
+The detached Reviewer-retry source adds an append-only
+`pipeline-review-verdict-attempt-v1` projection bound to workflow, candidate
+artifact, Master plan, Quality gate, semantic contract, provider role result,
+strict authority/evidence receipts, checkpoint revision and (when present) the
+exact consumed infrastructure-overlay digest/attempt. A first valid negative
+keeps the checkpoint at `quality_passed`; the only route is an independent
+`review:retry` call. It cannot replay Master, Worker, capability probes or the
+70-hand Quality acceptance. A second negative and an approve/reject conflict
+both retain the two receipts and conservatively project `repair_planned`; a
+third verdict is invalid. Empty/malformed/provider/lease failures remain typed
+infrastructure/schema attempts and never enter the verdict count.
+
+This also closes the v61 timeout-overlay failure: a schema-valid resumed
+Reviewer verdict clears only the exact `run_review` overlay by digest in the
+same checkpoint transition, and the resulting attempt receipt binds the
+consumed overlay attempt. It cannot attempt a stage transition while a
+`quality_passed` infrastructure lease remains live. The dashboard shows the
+pending second review explicitly instead of appearing idle, and the Reviewer
+prompt now states that machine-proved bounded refinement/system producers are
+semantic authority rather than keyword bans.
+
+At this entry the work remains detached from `origin/main`; no runtime,
+checkpoint, candidate, rating, certificate or service was modified. Focused
+Python evidence is `235 passed` before final follow-up tests and `223 passed`
+after the infrastructure/system-receipt additions; complete Web runs were
+`3397 passed, 20 skipped` and `3399 passed, 20 skipped`, Sever was `33 passed`, and frontend was `26
+passed` plus lint and production build (static receipt
+`2b4fd8532708e8c7ddba4024a79f9f6306ea1a551c943cfc2015c541f6654f33`).
+The final checkpoint-journal validator follow-up is covered by an additional
+focused `29 passed`; compileall excluding immutable result evidence and
+`git diff --check` are green. An independent source review is still required
+before merge or stopped-runtime synchronization.
+
+One boundary remains explicit: the current first-strict fixed-blueprint
+contract forbids an LLM Worker from rewriting the checked-in blueprint after a
+Reviewer rejection, and the first-control identity pins those system bytes.
+The new state machine correctly reaches content-bound `repair_planned`, but a
+future source batch must either provide a separately reviewed system-owned
+blueprint repair transaction or change that fixed-bootstrap product contract.
+This detached change does not weaken the fixed-byte/control identity merely to
+make `execute_workers` appear successful.

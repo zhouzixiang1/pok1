@@ -104,6 +104,63 @@ def test_fresh_checkpoint_defaults_precommit_attempt_to_zero():
     assert state.get("precommit_attempt") == 0
 
 
+def test_reviewer_attempt_journal_is_append_only_and_survives_stage_writes(
+    monkeypatch,
+):
+    import reviewer_retry
+
+    monkeypatch.setattr(
+        reviewer_retry,
+        "validate_review_attempt_journal",
+        lambda _checkpoint, **_kwargs: [],
+    )
+    _write_basic(stage="quality_passed", gate_results={
+        "quality": _passing_quality_gate(),
+    })
+    first = {"attempt": 1, "receipt_digest": "a" * 64}
+    second = {"attempt": 2, "receipt_digest": "b" * 64}
+
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="quality_passed",
+        review_attempt_journal=[first],
+    ) is True
+    assert read_pipeline_checkpoint()["review_attempt_journal"] == [first]
+
+    # Unrelated writes preserve the append-only projection.
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="quality_passed",
+    ) is True
+    assert read_pipeline_checkpoint()["review_attempt_journal"] == [first]
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="quality_passed",
+        review_attempt_journal=[first, second],
+    ) is True
+    assert read_pipeline_checkpoint()["review_attempt_journal"] == [first, second]
+
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="quality_passed",
+        review_attempt_journal=[first],
+    ) is False
+    assert write_pipeline_checkpoint(
+        next_v=100,
+        source_v=99,
+        stage="quality_passed",
+        review_attempt_journal=[
+            {"attempt": 1, "receipt_digest": "c" * 64},
+            second,
+        ],
+    ) is False
+    assert read_pipeline_checkpoint()["review_attempt_journal"] == [first, second]
+
+
 def test_fresh_checkpoint_persists_log_correlation_fields():
     """Fresh checkpoints carry the same correlation key the event bus emits."""
     state = _write_basic(stage="prepared")

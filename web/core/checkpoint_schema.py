@@ -610,6 +610,18 @@ def checkpoint_epoch_errors(checkpoint: Any) -> list[str]:
         errors.append("checkpoint_evaluation_epoch_missing_or_mismatch")
     if _legacy_migration_declared(checkpoint):
         errors.append("checkpoint_legacy_strategy_migration_forbidden")
+    try:
+        from reviewer_retry import validate_review_attempt_journal
+
+        errors.extend(
+            "checkpoint_" + item
+            for item in validate_review_attempt_journal(checkpoint)
+        )
+    except Exception as exc:
+        errors.append(
+            "checkpoint_review_attempt_journal_unavailable:"
+            f"{type(exc).__name__}"
+        )
 
     target = _strict_int(checkpoint.get("next_v"))
     source = _strict_int(checkpoint.get("source_v"))

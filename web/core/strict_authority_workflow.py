@@ -98,8 +98,12 @@ MASTER_SLOTS = (
     "ballot:scope",
     "master:final",
 )
-GATE_SLOTS = ("review", "critic")
-ALL_SLOTS = MASTER_SLOTS + GATE_SLOTS
+GATE_SLOTS = ("review", "critic", "review:retry")
+# The canonical success path remains the historical eight ordered slots.
+# ``review:retry`` is an optional, mutually-exclusive rejection branch and is
+# therefore known authority without becoming a required success-path suffix.
+ALL_SLOTS = MASTER_SLOTS + ("review", "critic")
+KNOWN_SLOTS = ALL_SLOTS + ("review:retry",)
 INVOCATION_EVIDENCE_SLOTS = MASTER_SLOTS[:5] + GATE_SLOTS
 
 SLOT_CONTRACTS = {
@@ -128,6 +132,10 @@ SLOT_CONTRACTS = {
         "LEAD CODE REVIEWER",
         "system_strict_bootstrap_gate:review",
     ),
+    "review:retry": (
+        "LEAD CODE REVIEWER",
+        "system_strict_bootstrap_gate:review:retry",
+    ),
     "critic": (
         "STRATEGY CRITIC",
         "system_strict_bootstrap_gate:critic",
@@ -136,6 +144,7 @@ SLOT_CONTRACTS = {
 SLOT_STAGES = {
     **{slot: "direction_audited" for slot in MASTER_SLOTS},
     "review": "quality_passed",
+    "review:retry": "quality_passed",
     "critic": "reviewed",
 }
 SLOT_PARSE_CONTRACTS = {
@@ -143,6 +152,7 @@ SLOT_PARSE_CONTRACTS = {
     **{slot: "master-proposal-ballot-v1" for slot in MASTER_SLOTS[3:5]},
     "master:final": "master-plan-schema-v1",
     "review": "reviewer-output-schema-v1",
+    "review:retry": "reviewer-output-schema-v1",
     "critic": "critic-output-schema-v1",
 }
 SLOT_TOOLS = {
@@ -150,6 +160,7 @@ SLOT_TOOLS = {
     **{slot: [] for slot in MASTER_SLOTS[3:5]},
     "master:final": [],
     "review": ["Read"],
+    "review:retry": ["Read"],
     "critic": ["Read"],
 }
 
@@ -772,7 +783,7 @@ def _normalized_reviewer_focus_areas(
 
 
 def _gate_renderer_components(gate_name: str):
-    if gate_name == "review":
+    if gate_name in {"review", "review:retry"}:
         from tool_gates import _render_reviewer_provider_prompt
 
         return "LEAD CODE REVIEWER", _render_reviewer_provider_prompt
@@ -860,7 +871,7 @@ def _gate_semantic_inputs(
             "strict_authority_gate_checkpoint_semantics_invalid"
         )
     normalized_plan = _json_value(master_plan)
-    if gate_name == "review":
+    if gate_name in {"review", "review:retry"}:
         from tool_gates import _review_semantic_contract
 
         try:
@@ -2145,7 +2156,7 @@ def _frozen_phase_checkpoint_revision(
                 f"strict_authority_phase_effect_invalid:{phase_name}"
             )
         effect_slot = str(input_payload.get("slot") or "")
-        if effect_slot not in ALL_SLOTS:
+        if effect_slot not in KNOWN_SLOTS:
             raise StrictAuthorityError(
                 f"strict_authority_phase_effect_slot_invalid:{phase_name}"
             )
@@ -2618,7 +2629,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             raise StrictAuthorityError(
                 ["strict_authority_projection_master:" + item for item in errors]
             )
-    elif slot in {"review", "critic"}:
+    elif slot in {"review", "review:retry", "critic"}:
         from llm_query import parse_json_output_with_mode
         from output_schema import validate_agent_output
 
@@ -2635,7 +2646,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                     else ""
                 )
             projected, errors = validate_agent_output(
-                "reviewer" if slot == "review" else "critic",
+                "reviewer" if slot in {"review", "review:retry"} else "critic",
                 parsed,
             )
             if errors:
@@ -3056,6 +3067,8 @@ def _invocation_evidence_log_name(slot: str, actual_role: str) -> str:
         return f"master_proposal_critic_{critic_id}{suffix}_io.txt"
     if slot == "review" and actual_role == "LEAD CODE REVIEWER":
         return "reviewer_io.txt"
+    if slot == "review:retry" and actual_role == "LEAD CODE REVIEWER":
+        return "reviewer_retry_io.txt"
     if slot == "critic" and actual_role == "STRATEGY CRITIC":
         return "critic_io.txt"
     raise StrictAuthorityError(
@@ -3552,7 +3565,7 @@ def validate_receipts(
     expected_role_results = expected_role_results or {}
     expected_context_bindings = expected_context_bindings or {}
     errors: list[str] = []
-    if len(set(required)) != len(required) or any(slot not in ALL_SLOTS for slot in required):
+    if len(set(required)) != len(required) or any(slot not in KNOWN_SLOTS for slot in required):
         return {}, ["strict_authority_required_slot_set_invalid"]
     if (
         len(set(permitted_other)) != len(permitted_other)
@@ -3608,7 +3621,7 @@ def validate_receipts(
         payload = event.payload
         slot = str(payload.get("slot") or "")
         by_slot.setdefault(slot, []).append(event)
-        if slot not in ALL_SLOTS:
+        if slot not in KNOWN_SLOTS:
             errors.append(f"strict_authority_unexpected_slot:{slot}")
             continue
         expected_role, expected_purpose = SLOT_CONTRACTS[slot]
@@ -3846,9 +3859,18 @@ def validate_receipts(
     if master_revisions:
         master_revision = next(iter(master_revisions))
         review_revision = revisions.get("review")
+        review_retry_revision = revisions.get("review:retry")
         critic_revision = revisions.get("critic")
         if review_revision is not None and review_revision <= master_revision:
             errors.append("strict_authority_review_revision_precedes_master")
+        if (
+            review_revision is not None
+            and review_retry_revision is not None
+            and review_retry_revision <= review_revision
+        ):
+            errors.append("strict_authority_review_retry_revision_precedes_review")
+        if review_retry_revision is not None and critic_revision is not None:
+            errors.append("strict_authority_critic_after_review_retry_forbidden")
         if (
             review_revision is not None
             and critic_revision is not None

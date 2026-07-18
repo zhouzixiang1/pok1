@@ -1,5 +1,7 @@
 import hashlib
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -216,6 +218,129 @@ def test_completed_gate_stage_exposes_only_its_canonical_next_tool(
     ok, reason = validate_stage_transition(stage, "workers_done")
     assert ok is False
     assert "backward_transition" in reason
+
+
+def test_quality_passed_first_reviewer_negative_routes_only_second_review(
+    monkeypatch,
+):
+    import core.pipeline_state as pipeline_state
+
+    monkeypatch.setattr(
+        pipeline_state,
+        "_quality_gate_matches_active_workflow",
+        lambda _gates: True,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "reviewer_retry",
+        SimpleNamespace(
+            current_review_attempts=lambda *_args, **_kwargs: [
+                {"attempt": 1, "approved": False}
+            ],
+            review_attempt_action=lambda _rows: {
+                "action": "dispatch",
+                "attempt": 2,
+                "consistency": "initial_reject",
+            },
+            validate_review_attempt_journal=lambda *_args, **_kwargs: [],
+        ),
+    )
+    checkpoint = {
+        "stage": "quality_passed",
+        "next_v": 264,
+        "source_v": 244,
+        "gate_results": {"quality": {"all_passed": True}},
+        "review_attempt_journal": [{
+            "review_semantic_contract_digest": "a" * 64,
+        }],
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] == "run_review"
+    assert route["allowed_tools"] == ["run_review"]
+    assert route["intent"] == "review_verdict_retry"
+    assert "exactly once" in route["directive"]
+    assert "Master" in route["directive"]
+
+
+def test_completed_reviewer_attempts_without_projection_block_third_call(
+    monkeypatch,
+):
+    import core.pipeline_state as pipeline_state
+
+    monkeypatch.setattr(
+        pipeline_state,
+        "_quality_gate_matches_active_workflow",
+        lambda _gates: True,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "reviewer_retry",
+        SimpleNamespace(
+            current_review_attempts=lambda *_args, **_kwargs: [
+                {"attempt": 1, "approved": False},
+                {"attempt": 2, "approved": False},
+            ],
+            review_attempt_action=lambda _rows: {
+                "action": "repair",
+                "attempt": 2,
+                "consistency": "consistent_reject",
+            },
+            validate_review_attempt_journal=lambda *_args, **_kwargs: [],
+        ),
+    )
+    checkpoint = {
+        "stage": "quality_passed",
+        "next_v": 264,
+        "source_v": 244,
+        "gate_results": {"quality": {"all_passed": True}},
+        "review_attempt_journal": [{
+            "review_semantic_contract_digest": "a" * 64,
+        }],
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] is None
+    assert route["blocked"] is True
+    assert route["issues"] == ["review_adjudication_projection_missing"]
+
+
+def test_reworked_quality_cycle_ignores_prior_cycle_budget(monkeypatch):
+    import core.pipeline_state as pipeline_state
+
+    monkeypatch.setattr(
+        pipeline_state,
+        "_quality_gate_matches_active_workflow",
+        lambda _gates: True,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "reviewer_retry",
+        SimpleNamespace(
+            current_review_attempts=lambda *_args, **_kwargs: [],
+            review_attempt_action=lambda _rows: {
+                "action": "dispatch",
+                "attempt": 1,
+            },
+            validate_review_attempt_journal=lambda *_args, **_kwargs: [],
+        ),
+    )
+    checkpoint = {
+        "stage": "quality_passed",
+        "next_v": 264,
+        "source_v": 244,
+        "gate_results": {"quality": {"all_passed": True}},
+        "review_attempt_journal": [{
+            "review_semantic_contract_digest": "a" * 64,
+        }],
+    }
+
+    route = route_policy(checkpoint)
+
+    assert route["next_tool"] == "run_review"
+    assert route["intent"] == "gate"
 
 
 def test_legacy_critic_repair_contract_fails_closed_without_worker_synthesis():

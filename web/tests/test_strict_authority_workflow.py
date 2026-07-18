@@ -1978,6 +1978,55 @@ def test_gate_receipt_replay_allows_only_the_ordered_bound_suffix(
         candidate_dir=candidate,
     ) == []
 
+    # The historical no-attempt-journal receipt above remains replayable. New
+    # source binds the same approval to the append-only Reviewer attempt and
+    # adjudication without changing the provider role result.
+    from reviewer_retry import (
+        build_review_adjudication,
+        build_review_attempt_receipt,
+    )
+
+    provider_gate = {
+        key: deepcopy(value)
+        for key, value in review_gate.items()
+        if key != "system_verifier_receipt"
+    }
+    attempt = build_review_attempt_receipt(
+        review_checkpoint,
+        gate_payload=provider_gate,
+        candidate_dir=candidate,
+        attempt=1,
+        authority_slot="review",
+        review_semantic_contract_digest=module.content_digest(
+            expected_contexts["review"]
+        ),
+    )
+    review_checkpoint["review_attempt_journal"] = [attempt]
+    review_gate.pop("system_verifier_receipt")
+    review_gate.update({
+        "review_verdict_attempt": 1,
+        "review_attempt_receipts": [{
+            "attempt": 1,
+            "authority_slot": "review",
+            "receipt_digest": attempt["receipt_digest"],
+            "approved": True,
+        }],
+        "review_adjudication": build_review_adjudication([attempt]),
+    })
+    review_gate["system_verifier_receipt"] = (
+        bootstrap.build_system_gate_receipt(
+            review_checkpoint,
+            gate_name="review",
+            candidate_dir=candidate,
+            llm_gate=review_gate,
+        )
+    )
+    assert bootstrap.validate_system_gate_receipt(
+        review_checkpoint,
+        gate_name="review",
+        candidate_dir=candidate,
+    ) == []
+
     critic_checkpoint = deepcopy(review_checkpoint)
     critic_checkpoint.update({
         "stage": "reviewed",
@@ -3193,6 +3242,62 @@ def test_gate_evidence_replay_is_stable_and_log_drift_fails(authority):
             recovered,
             log_file=log_file,
         )
+
+
+def test_reviewer_retry_owns_independent_slot_and_revision(authority):
+    module, store = authority
+    first_checkpoint = _checkpoint(stage="quality_passed", revision=20)
+    first, first_result, _first_receipt = _call(
+        module,
+        first_checkpoint,
+        "review",
+        role_result={"approved": False, "feedback": "repair"},
+    )
+    first_evidence = _bind_call_evidence(module, store, first)
+
+    retry_checkpoint = {**first_checkpoint, "checkpoint_revision": 21}
+    retry, retry_result, _retry_receipt = _call(
+        module,
+        retry_checkpoint,
+        "review:retry",
+        role_result={"approved": True, "feedback": "looks safe"},
+    )
+    retry_evidence = _bind_call_evidence(module, store, retry)
+
+    assert first["effect_id"] != retry["effect_id"]
+    assert first["invocation_id"] != retry["invocation_id"]
+    assert first["checkpoint_revision"] == 20
+    assert retry["checkpoint_revision"] == 21
+    assert retry_evidence["io_log_path"].endswith("reviewer_retry_io.txt")
+
+    summary = module.authority_summary(
+        retry_checkpoint,
+        required_slots=("review", "review:retry"),
+        expected_role_results={
+            "review": first_result,
+            "review:retry": retry_result,
+        },
+        expected_context_bindings={
+            "review": {"slot": "review", "suffix": "one"},
+            "review:retry": {"slot": "review:retry", "suffix": "one"},
+        },
+        expected_invocation_evidence={
+            "review": first_evidence,
+            "review:retry": retry_evidence,
+        },
+        require_no_other_accepted=True,
+    )
+    assert list(summary["receipts"]) == ["review", "review:retry"]
+
+    recovered = module.new_call(
+        {**retry_checkpoint, "checkpoint_revision": 22},
+        slot="review:retry",
+        context_binding={"slot": "review:retry", "suffix": "one"},
+    )
+    assert recovered["replay_provider"] is True
+    assert recovered["accepted_receipt"]["role_result_digest"] == (
+        retry["accepted_receipt"]["role_result_digest"]
+    )
 
 
 def test_invocation_evidence_prompt_digest_must_match_provider_effect(

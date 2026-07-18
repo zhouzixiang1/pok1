@@ -1345,7 +1345,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                expected_checkpoint_stage=None,
                                expected_workflow_run_id=None,
                                workflow_run_id=None,
-                               terminal_gate_outcome=None):
+                               terminal_gate_outcome=None,
+                               review_attempt_journal=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -1538,6 +1539,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_repair_baseline_artifact_hash = None
         existing_publication_intent = None
         existing_terminal_gate_outcome = None
+        existing_review_attempt_journal = []
         existing_epoch_binding = None
         existing_workflow_run_id = ""
         requested_workflow_run_id = str(workflow_run_id or "").strip()
@@ -1591,6 +1593,9 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_publication_intent = existing.get("publication_intent")
             existing_terminal_gate_outcome = existing.get(
                 "terminal_gate_outcome"
+            )
+            existing_review_attempt_journal = deepcopy(
+                existing.get("review_attempt_journal") or []
             )
             existing_epoch_binding = existing.get("epoch_binding")
             existing_workflow_run_id = str(
@@ -1648,6 +1653,20 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
 
         if gate_results:
             existing_gate_results.update(gate_results)
+        if review_attempt_journal is not None:
+            if not isinstance(review_attempt_journal, list):
+                log.error("Invalid Reviewer attempt journal projection")
+                return False
+            # The caller supplies the complete append-only projection.  Never
+            # accept truncation or mutation of an already durable prefix.
+            if (
+                len(review_attempt_journal) < len(existing_review_attempt_journal)
+                or review_attempt_journal[: len(existing_review_attempt_journal)]
+                != existing_review_attempt_journal
+            ):
+                log.error("Refusing Reviewer attempt journal rewrite")
+                return False
+            existing_review_attempt_journal = deepcopy(review_attempt_journal)
         existing_gate_results = _prune_gate_results_for_stage(stage, existing_gate_results)
         if worker_failure_count is not None:
             existing_failure_count = worker_failure_count
@@ -2112,6 +2131,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             "last_stage_change_ts": new_stage_ts,
             "last_update_ts": now_ts,  # Always bumps on any checkpoint write
         }
+        if existing_review_attempt_journal:
+            state["review_attempt_journal"] = existing_review_attempt_journal
         if existing_terminal_gate_outcome is not None:
             state["terminal_gate_outcome"] = existing_terminal_gate_outcome
 

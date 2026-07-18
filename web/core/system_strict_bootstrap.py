@@ -1735,6 +1735,56 @@ def _system_gate_subject(
     from strict_authority_workflow import (
         MASTER_SLOTS, authority_summary, expected_master_contexts, gate_call_context,
     )
+    if gate_name == "review" and (
+        checkpoint.get("review_attempt_journal")
+        or llm_gate.get("review_adjudication") is not None
+        or llm_gate.get("review_attempt_receipts") is not None
+    ):
+        try:
+            from reviewer_retry import (
+                build_review_adjudication,
+                current_review_attempts,
+            )
+
+            review_context = gate_call_context(
+                checkpoint,
+                gate_name="review",
+                candidate_dir=candidate,
+            )
+            review_attempts = current_review_attempts(
+                checkpoint,
+                candidate_dir=candidate,
+                review_semantic_contract_digest=_canonical_digest(
+                    review_context
+                ),
+            )
+            expected_adjudication = build_review_adjudication(
+                review_attempts
+            )
+            expected_attempt_refs = [
+                {
+                    "attempt": row["attempt"],
+                    "authority_slot": row["authority_slot"],
+                    "receipt_digest": row["receipt_digest"],
+                    "approved": row["approved"],
+                }
+                for row in review_attempts
+            ]
+            if llm_gate.get("review_adjudication") != expected_adjudication:
+                errors.append("system_bootstrap_review_adjudication_mismatch")
+            if llm_gate.get("review_attempt_receipts") != expected_attempt_refs:
+                errors.append("system_bootstrap_review_attempt_refs_mismatch")
+        except Exception as exc:
+            retry_errors = list(getattr(exc, "errors", ()) or ())
+            errors.extend(
+                "system_bootstrap_review_attempt_invalid:" + str(item)
+                for item in retry_errors
+            )
+            if not retry_errors:
+                errors.append(
+                    "system_bootstrap_review_attempt_unavailable:"
+                    f"{type(exc).__name__}:{str(exc)[:240]}"
+                )
     required_slots = MASTER_SLOTS + (("review",) if gate_name == "review" else ("review", "critic"))
     expected_gate_evidence = {
         gate_name: deepcopy(llm_gate.get("llm_execution_evidence")),

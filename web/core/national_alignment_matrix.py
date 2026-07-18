@@ -749,18 +749,22 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/agent_master.py", "_render_master_final_provider_prompt"),
             _ref("web/core/agent_workers.py", "_render_worker_provider_prompt"),
             _ref("web/core/tool_gates.py", "_render_reviewer_provider_prompt"),
+            _ref("web/core/reviewer_retry.py", "build_review_attempt_receipt"),
             _ref("web/core/agent_review.py", "_render_critic_provider_prompt"),
             _ref("web/core/orchestrator.py", "_render_orchestrator_provider_prompt"),
         ),
         dynamic_gates=(
             _ref("web/core/llm_query.py", "resolve_llm_role_contract"),
             _ref("web/core/llm_query.py", "render_llm_prompt"),
+            _ref("web/core/reviewer_retry.py", "review_attempt_action"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
             "All five rendered roles receive one typed, quality-bound current contract; "
             "they may report deterministic violations but cannot relax role scope, prompt "
-            "provenance, or gate ownership."
+            "provenance, or gate ownership. Reviewer verdicts are content-bound: one "
+            "negative schedules exactly one independent same-stage review; a conflict "
+            "or two negatives conservatively routes targeted repair and never silently approves."
         ),
         prompt_required_terms=("typed", "quality"),
         producer_consumer=(
@@ -772,16 +776,22 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_cross_role_prompts_and_reference_packet_bind_current_baseline_contract",
             "web/tests/test_llm_role_contract_registry.py::"
             "test_all_subagent_roles_reach_provider_with_independent_receipts",
+            "web/tests/test_reviewer_retry_tool.py::"
+            "test_first_reject_retries_same_stage_then_conflict_routes_repair",
         ),
         negative_tests=(
             "web/tests/test_llm_role_contract_registry.py::"
             "test_unknown_role_and_tool_scope_drift_fail_before_provider",
             "web/tests/test_strict_prompt_evidence_boundary.py::"
             "test_prompt_builders_have_no_retired_positive_read_chain",
+            "web/tests/test_reviewer_retry.py::"
+            "test_attempt_journal_tamper_and_third_attempt_fail_closed",
         ),
         fail_closed=(
             "Unknown role, template drift, forged renderer text, forbidden scope, or "
-            "unfrozen evidence aborts before a decision-changing provider call."
+            "unfrozen evidence aborts before a decision-changing provider call. A single "
+            "Reviewer rejection cannot terminalize or rerun earlier stages; malformed/infra "
+            "output consumes only its typed retry budget, while two verdicts are retained."
         ),
     ),
     MatrixRow(

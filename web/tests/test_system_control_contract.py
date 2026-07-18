@@ -175,6 +175,7 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     import strict_authority_workflow
     import system_strict_bootstrap
     import tool_gates
+    import reviewer_retry
 
     candidate = tmp_path / "national_v143"
     candidate.mkdir()
@@ -311,12 +312,20 @@ def test_first_strict_review_records_final_provider_prompt_authority(
     monkeypatch.setattr(
         strict_authority_workflow,
         "accept_role_result",
-        lambda *_args, **_kwargs: {"kind": "test-authority-receipt"},
+        lambda *_args, **_kwargs: {
+            "kind": "test-authority-receipt",
+            "slot": "review",
+        },
     )
     monkeypatch.setattr(
         strict_authority_workflow,
         "record_bound_invocation_evidence",
         record_evidence,
+    )
+    monkeypatch.setattr(
+        reviewer_retry,
+        "validate_strict_review_attempt_authority",
+        lambda *_args, **_kwargs: [],
     )
 
     result = asyncio.run(

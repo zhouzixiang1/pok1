@@ -37,6 +37,7 @@ from tool_helpers import (
     _critic_result_to_preserve,
     _py_files_changed_between, _resolve_version_args, PROJECT_ROOT,
     _set_pipeline_status, read_pipeline_checkpoint,
+    write_pipeline_checkpoint,
 )
 from system_log import log_system_event
 from llm_failure import is_llm_infra_error, infra_payload
@@ -4163,24 +4164,101 @@ async def run_review(args):
     from system_strict_bootstrap import is_declared_native_bootstrap
 
     _strict_bootstrap = is_declared_native_bootstrap(ckpt)
-    _review_invocation_id = None
-    _review_strict_call = None
+    _review_semantics = None
+    _strict_review_base_context = None
     if _strict_bootstrap:
         from strict_authority_workflow import (
             StrictAuthorityError,
             gate_call_context,
-            new_call,
-            render_gate_provider_prompt,
         )
+
+        try:
+            # The base review context is the cycle identity for both verdict
+            # attempts.  Attempt two has its own authority slot/context, but it
+            # may not change the artifact, Quality handoff, or prompt semantics.
+            _strict_review_base_context = gate_call_context(
+                ckpt,
+                gate_name="review",
+                candidate_dir=get_bot_dir(v),
+            )
+            _review_cycle_contract_digest = _canonical_digest(
+                _strict_review_base_context
+            )
+        except StrictAuthorityError as exc:
+            return _json_tool_result(
+                await _abandon_strict_gate_authority(
+                    ckpt,
+                    gate_name="review",
+                    error=exc,
+                )
+            )
+    else:
+        try:
+            _review_semantics = _review_semantic_contract(
+                authoritative_plan,
+                (ckpt.get("gate_results") or {}).get("quality") or {},
+            )
+            _review_cycle_contract_digest = str(
+                _review_semantics["contract_digest"]
+            )
+        except (TypeError, ValueError) as exc:
+            return _state_blocked(
+                f"run_review semantic contract invalid: {exc}",
+                v,
+                source_v,
+                ckpt,
+            )
+
+    from reviewer_retry import (
+        ReviewRetryError,
+        current_review_attempts,
+        review_attempt_action,
+    )
+
+    try:
+        _current_review_attempts = current_review_attempts(
+            ckpt,
+            candidate_dir=get_bot_dir(v),
+            review_semantic_contract_digest=_review_cycle_contract_digest,
+        )
+        _review_retry_action = review_attempt_action(_current_review_attempts)
+    except ReviewRetryError as exc:
+        return _state_blocked(
+            "run_review durable attempt journal invalid: "
+            + "; ".join(exc.errors),
+            v,
+            source_v,
+            ckpt,
+        )
+    if _review_retry_action.get("action") != "dispatch":
+        return _state_blocked(
+            "run_review verdict attempts are already adjudicated for this "
+            "artifact/Quality cycle.",
+            v,
+            source_v,
+            ckpt,
+        )
+    _review_verdict_attempt = int(_review_retry_action["attempt"])
+
+    _review_invocation_id = None
+    _review_strict_call = None
+    if _strict_bootstrap:
+        from strict_authority_workflow import new_call, render_gate_provider_prompt
 
         try:
             _review_strict_call = new_call(
                 ckpt,
-                slot="review",
-                context_binding=gate_call_context(
-                    ckpt,
-                    gate_name="review",
-                    candidate_dir=get_bot_dir(v),
+                slot=(
+                    "review" if _review_verdict_attempt == 1 else "review:retry"
+                ),
+                context_binding=(
+                    _strict_review_base_context
+                    if _review_verdict_attempt == 1
+                    else gate_call_context(
+                        ckpt,
+                        gate_name="review:retry",
+                        candidate_dir=get_bot_dir(v),
+                    )
                 ),
             )
             _review_invocation_id = _review_strict_call["invocation_id"]
@@ -4207,18 +4285,6 @@ async def run_review(args):
 
         from llm_query import render_llm_prompt
 
-        try:
-            _review_semantics = _review_semantic_contract(
-                authoritative_plan,
-                (ckpt.get("gate_results") or {}).get("quality") or {},
-            )
-        except (TypeError, ValueError) as exc:
-            return _state_blocked(
-                f"run_review semantic contract invalid: {exc}",
-                v,
-                source_v,
-                ckpt,
-            )
         rendered_prompt = render_llm_prompt(
             "LEAD CODE REVIEWER",
             producer=_render_reviewer_provider_prompt,
@@ -4249,6 +4315,8 @@ async def run_review(args):
     )
 
     log_file = get_logs_dir(v) / "reviewer_io.txt"
+    if _review_verdict_attempt == 2:
+        log_file = get_logs_dir(v) / "reviewer_retry_io.txt"
     if _review_strict_call is not None:
         from strict_authority_workflow import (
             StrictAuthorityError,
@@ -4467,13 +4535,6 @@ async def run_review(args):
                 gate["terminal_authority_context_binding"] = (
                     _review_strict_call.get("context_binding")
                 )
-                if approved:
-                    gate["system_verifier_receipt"] = build_system_gate_receipt(
-                        ckpt,
-                        gate_name="review",
-                        candidate_dir=get_bot_dir(v),
-                        llm_gate=gate,
-                    )
             except (SystemStrictBootstrapError, StrictAuthorityError) as exc:
                 from system_strict_bootstrap import abandon_rejected_blueprint
 
@@ -4515,26 +4576,193 @@ async def run_review(args):
                     },
                 )
                 return _json_tool_result(rejected)
-            if not approved:
+        from reviewer_retry import (
+            ReviewRetryError,
+            build_review_adjudication,
+            build_review_attempt_receipt,
+            review_attempt_action,
+            validate_strict_review_attempt_authority,
+        )
+
+        try:
+            attempt_receipt = build_review_attempt_receipt(
+                ckpt,
+                gate_payload=gate,
+                candidate_dir=get_bot_dir(v),
+                attempt=_review_verdict_attempt,
+                authority_slot=(
+                    "review" if _review_verdict_attempt == 1 else "review:retry"
+                ),
+                review_semantic_contract_digest=_review_cycle_contract_digest,
+                consumed_infrastructure_failure=_review_infra,
+            )
+            current_attempts = [*_current_review_attempts, attempt_receipt]
+            review_action = review_attempt_action(current_attempts)
+            adjudication = (
+                build_review_adjudication(current_attempts)
+                if review_action["action"] in {"approve", "repair"}
+                else None
+            )
+        except ReviewRetryError as exc:
+            return _state_blocked(
+                "run_review attempt receipt invalid: " + "; ".join(exc.errors),
+                v,
+                source_v,
+                ckpt,
+            )
+        prospective_journal = [
+            *(ckpt.get("review_attempt_journal") or []),
+            attempt_receipt,
+        ]
+        if _strict_bootstrap:
+            authority_errors = validate_strict_review_attempt_authority(
+                ckpt,
+                journal=current_attempts,
+                candidate_dir=get_bot_dir(v),
+            )
+            if authority_errors:
                 from system_strict_bootstrap import abandon_rejected_blueprint
 
                 rejected = await abandon_rejected_blueprint(
                     ckpt,
-                    reason="system_strict_bootstrap_review_rejected",
+                    reason="system_strict_bootstrap_review_attempt_authority_invalid",
                     result={
-                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_REJECTED",
+                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_ATTEMPT_AUTHORITY_INVALID",
                         "approved": False,
                         "success": False,
                         "action": "abandon_generation",
-                        "failure_class": "strategy_review",
-                        "feedback": feedback,
+                        "failure_class": "control_plane",
+                        "validation_errors": authority_errors,
                         "terminal_gate_name": "review",
-                        "terminal_reason_code": "review_rejected",
+                        "terminal_reason_code": "review_authority_invalid",
                         "terminal_gate_payload": gate,
                         "directive": (
-                            "The real Reviewer rejected the content-bound blueprint. "
-                            "The terminal receipt authorizes canonical abandon; no "
-                            "provider replay or in-generation repair is allowed."
+                            "The Reviewer provider attempt could not be replayed "
+                            "from its strict authority journal. Preserve the "
+                            "content-bound failure; never infer a verdict."
+                        ),
+                    },
+                )
+                return _json_tool_result(rejected)
+
+        if review_action["action"] == "dispatch":
+            checkpoint_recorded = write_pipeline_checkpoint(
+                v,
+                source_v,
+                "quality_passed",
+                master_plan=authoritative_plan,
+                generation_attempt=ckpt.get("generation_attempt", 0),
+                review_attempt_journal=prospective_journal,
+                clear_infra_failure=_review_infra is not None,
+                infra_failure_owner=(
+                    "run_review" if _review_infra is not None else None
+                ),
+                expected_infra_failure_digest=(
+                    infrastructure_failure_digest(_review_infra)
+                    if _review_infra is not None
+                    else None
+                ),
+                expected_checkpoint_revision=int(ckpt["checkpoint_revision"]),
+                expected_checkpoint_stage="quality_passed",
+                expected_workflow_run_id=str(ckpt["workflow_run_id"]),
+            )
+            if not checkpoint_recorded:
+                return _json_tool_result({
+                    "error": "REVIEW_ATTEMPT_CHECKPOINT_CAS_CONFLICT",
+                    "approved": None,
+                    "success": False,
+                    "action": "retry_same_tool",
+                    "failure_class": "control_plane",
+                    "review_verdict_attempt": _review_verdict_attempt,
+                    "next_v": v,
+                    "source_v": source_v,
+                    "directive": (
+                        "The provider verdict is content-bound, but its append-only "
+                        "checkpoint CAS did not commit. Re-enter run_review to replay "
+                        "the exact authority effect; do not dispatch a different role "
+                        "or rerun earlier stages."
+                    ),
+                })
+            result = {
+                "approved": False,
+                "llm_invoked": True,
+                "reviewer_llm_executed": True,
+                "schema_valid": True,
+                "quality_score": data.get("quality_score", 0),
+                "change_summary": data.get("change_summary", ""),
+                "risk_areas": data.get("risk_areas", []),
+                "feedback": feedback,
+                "review_verdict_attempt": _review_verdict_attempt,
+                "review_retry_scheduled": True,
+                "next_tool": "run_review",
+                "checkpoint_stage": "quality_passed",
+                "checkpoint_recorded": checkpoint_recorded,
+                "directive": (
+                    "The first schema-valid Reviewer rejected. Dispatch exactly "
+                    "one independent second Reviewer for the same frozen "
+                    "artifact/Quality inputs; do not rerun Master, Worker, or Quality."
+                ),
+                "logs": ui.get_output(),
+            }
+            return _json_tool_result(result)
+
+        if adjudication is not None:
+            gate = {
+                **gate,
+                "review_verdict_attempt": _review_verdict_attempt,
+                "review_attempt_receipts": [
+                    {
+                        "attempt": row["attempt"],
+                        "authority_slot": row["authority_slot"],
+                        "receipt_digest": row["receipt_digest"],
+                        "approved": row["approved"],
+                    }
+                    for row in current_attempts
+                ],
+                "review_adjudication": adjudication,
+            }
+        final_approved = review_action["action"] == "approve"
+        if not final_approved:
+            combined_feedback = "\n\n".join(
+                f"Reviewer attempt {row['attempt']}: "
+                + str((row.get("gate_payload") or {}).get("feedback") or "")
+                for row in current_attempts
+            ).strip()
+            feedback = combined_feedback or feedback
+            gate.update({
+                "approved": False,
+                "passed": False,
+                "feedback": feedback,
+                "review_consistency": review_action.get("consistency"),
+            })
+        elif _strict_bootstrap:
+            try:
+                gate["system_verifier_receipt"] = build_system_gate_receipt(
+                    {**ckpt, "review_attempt_journal": prospective_journal},
+                    gate_name="review",
+                    candidate_dir=get_bot_dir(v),
+                    llm_gate=gate,
+                )
+            except SystemStrictBootstrapError as exc:
+                from system_strict_bootstrap import abandon_rejected_blueprint
+
+                rejected = await abandon_rejected_blueprint(
+                    ckpt,
+                    reason="system_strict_bootstrap_review_receipt_invalid",
+                    result={
+                        "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_RECEIPT_INVALID",
+                        "approved": False,
+                        "success": False,
+                        "action": "abandon_generation",
+                        "failure_class": "control_plane",
+                        "validation_errors": list(exc.errors),
+                        "terminal_gate_name": "review",
+                        "terminal_reason_code": "review_receipt_invalid",
+                        "terminal_gate_payload": gate,
+                        "directive": (
+                            "The approved Reviewer adjudication could not be "
+                            "bound to the strict system receipt. Preserve the "
+                            "provider evidence and abandon; never waive it."
                         ),
                     },
                 )
@@ -4544,7 +4772,7 @@ async def run_review(args):
             source_v,
             "review",
             gate,
-            stage="reviewed" if approved else "repair_planned",
+            stage="reviewed" if final_approved else "repair_planned",
             master_plan=authoritative_plan,
             reviewer_feedback=feedback,
             clear_infra_failure=_review_infra is not None,
@@ -4554,12 +4782,30 @@ async def run_review(args):
                 if _review_infra is not None
                 else None
             ),
+            review_attempt_journal=prospective_journal,
         )
-        if not approved:
+        if not checkpoint_recorded:
+            return _json_tool_result({
+                "error": "REVIEW_ADJUDICATION_CHECKPOINT_CAS_CONFLICT",
+                "approved": None,
+                "success": False,
+                "action": "retry_same_tool",
+                "failure_class": "control_plane",
+                "review_verdict_attempt": _review_verdict_attempt,
+                "next_v": v,
+                "source_v": source_v,
+                "directive": (
+                    "The Reviewer authority is durable but its reviewed/repair "
+                    "projection did not commit. Retry run_review to replay the "
+                    "same effect and exact adjudication; never dispatch a third "
+                    "Reviewer or infer success."
+                ),
+            })
+        if not final_approved:
             _record_quality_failure(v, "reviewer", "Code Reviewer",
                                     f"Rejected (score={data.get('quality_score', 0)}): {feedback[:2000]}")
         result = {
-            "approved": approved,
+            "approved": final_approved,
             "llm_invoked": True,
             "reviewer_llm_executed": True,
             "schema_valid": True,
@@ -4567,6 +4813,9 @@ async def run_review(args):
             "change_summary": data.get("change_summary", ""),
             "risk_areas": data.get("risk_areas", []),
             "feedback": feedback,
+            "review_verdict_attempt": _review_verdict_attempt,
+            "review_adjudication": adjudication,
+            "next_tool": "run_critic" if final_approved else "execute_workers",
             "checkpoint_recorded": checkpoint_recorded,
             "logs": ui.get_output(),
         }

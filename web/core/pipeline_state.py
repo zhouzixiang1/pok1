@@ -2083,6 +2083,84 @@ def route_policy(checkpoint: dict | None) -> dict:
         next_tool = "run_precommit_eval"
         intent = "precommit_profile_refresh"
         profile_refresh_needed = True
+    elif stage == "quality_passed" and checkpoint.get("review_attempt_journal"):
+        try:
+            from bot_namespace import bot_relpath
+            from reviewer_retry import (
+                current_review_attempts,
+                review_attempt_action,
+            )
+
+            journal = checkpoint.get("review_attempt_journal") or []
+            semantic_digest = str(
+                (journal[-1] if isinstance(journal, list) and journal else {}).get(
+                    "review_semantic_contract_digest"
+                )
+                or ""
+            )
+            candidate_dir = (
+                Path(__file__).resolve().parents[2]
+                / bot_relpath(int(checkpoint.get("next_v")))
+            )
+            review_attempts = current_review_attempts(
+                checkpoint,
+                candidate_dir=candidate_dir,
+                review_semantic_contract_digest=semantic_digest,
+            )
+            retry_action = review_attempt_action(review_attempts)
+        except Exception as exc:
+            return {
+                "stage": stage,
+                "next_v": next_v,
+                "source_v": source_v,
+                "parent2_v": parent2_v,
+                "next_tool": None,
+                "allowed_tools": [],
+                "intent": "operator_reconcile_checkpoint",
+                "blocked": True,
+                "recoverable": False,
+                "failure_class": "control_plane",
+                "issues": [
+                    "review_attempt_route_invalid:"
+                    f"{type(exc).__name__}:{str(exc)[:240]}"
+                ],
+                "directive": (
+                    "The append-only Reviewer verdict journal is invalid or no "
+                    "longer binds the candidate/Quality cycle. Preserve it and "
+                    "reconcile; never rerun earlier stages or infer a verdict."
+                ),
+            }
+        if retry_action.get("action") == "dispatch" and retry_action.get(
+            "attempt"
+        ) == 2:
+            next_tool = "run_review"
+            intent = "review_verdict_retry"
+        elif retry_action.get("action") == "dispatch" and retry_action.get(
+            "attempt"
+        ) == 1:
+            # An earlier repair cycle remains append-only history. The new
+            # artifact/Quality digest starts a fresh bounded review cycle.
+            next_tool = "run_review"
+            intent = "gate"
+        else:
+            return {
+                "stage": stage,
+                "next_v": next_v,
+                "source_v": source_v,
+                "parent2_v": parent2_v,
+                "next_tool": None,
+                "allowed_tools": [],
+                "intent": "operator_reconcile_checkpoint",
+                "blocked": True,
+                "recoverable": False,
+                "failure_class": "control_plane",
+                "issues": ["review_adjudication_projection_missing"],
+                "directive": (
+                    "The verdict journal is complete but its reviewed/repair "
+                    "checkpoint projection is missing. Reconcile the exact CAS; "
+                    "do not dispatch a third Reviewer."
+                ),
+            }
     elif stage == "selected":
         next_tool = "run_crossover" if parent2_v is not None else "prepare_next_gen"
         intent = "crossover_prepare" if parent2_v is not None else "prepare"
@@ -2203,6 +2281,12 @@ def route_policy(checkpoint: dict | None) -> dict:
             "The mandatory Critic execution receipt is incomplete or invalid. "
             "Call run_critic again for the same candidate; its strategic verdict "
             "remains advisory and must not create Worker rework."
+        )
+    elif intent == "review_verdict_retry":
+        directive = (
+            "The first schema-valid Reviewer verdict rejected the exact frozen "
+            "artifact/Quality cycle. Call run_review exactly once more. Do not "
+            "rerun Master, Worker, Quality, or accept historical approvals."
         )
     elif stage in {"repair_planned", "rework_running"}:
         directive = (

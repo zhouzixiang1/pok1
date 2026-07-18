@@ -189,7 +189,8 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
                  master_plan=None, reviewer_feedback=None, generation_attempt=None,
                  infra_failure=None, clear_infra_failure=False,
                  infra_failure_owner=None,
-                 expected_infra_failure_digest=None, record_gate=True):
+                 expected_infra_failure_digest=None, record_gate=True,
+                 review_attempt_journal=None):
     ckpt = _matching_checkpoint(version, source_v)
     if not ckpt:
         log.warning("_record_gate: no matching checkpoint for v%s/v%s, gate '%s' dropped", version, source_v, gate_name)
@@ -237,6 +238,11 @@ def _record_gate(version, source_v, gate_name, gate_data, stage=None,
         infra_failure_owner=infra_failure_owner,
         expected_infra_failure_digest=expected_infra_failure_digest,
         repair_baseline_artifact_hash=(gate_artifact_hash or None),
+        review_attempt_journal=(
+            review_attempt_journal
+            if review_attempt_journal is not None
+            else ckpt.get("review_attempt_journal")
+        ),
     )
     if not recorded:
         log.warning(

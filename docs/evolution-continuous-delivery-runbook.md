@@ -330,6 +330,28 @@ projection. Missing or drifted evidence blocks Reviewer; generic “quality
 passed” text cannot reconstruct it. This semantic distinction changes neither
 the raw TCP compliance kernel nor the native/official publication gates.
 
+Reviewer verdict retries are separate from schema/transport retries. For one
+immutable candidate artifact, frozen Quality gate, Master plan and semantic
+contract, the first schema-valid negative verdict is appended as
+`pipeline-review-verdict-attempt-v1` and the checkpoint stays at
+`quality_passed`. Recovery calls only `run_review`: it does not repeat Master,
+Worker, capability probes, or the 70-hand Quality acceptance. The second
+Reviewer owns the independent strict slot `review:retry`, invocation directory
+and provider effect. Two negatives route to a content-bound targeted repair;
+one negative plus one approval is a conflict and uses the same conservative
+repair disposition. The approval never erases the negative. A third verdict is
+forbidden. Empty, malformed, unavailable-provider and lease failures remain
+typed infrastructure/schema retries and do not enter the verdict journal.
+
+The Reviewer is subordinate to machine authority for boundedness,
+reachability, producer ownership and required capability checks. In particular,
+a syntactic `itertools.combinations(deck, 2)` inside deadline/sample-capped
+refinement is not the prohibited synchronous baseline sweep, and a bounded
+dict produced by the system-owned opponent tracker is not a candidate-created
+unbounded table. Reviewers must cite the exact reachable code defect for a
+hard rejection; a genuine unused helper may be targeted cleanup, while
+keyword-only or aesthetic concerns remain advisory risk text.
+
 Models may identify a symptom or propose a falsifiable repair from frozen
 evidence, but only the deterministic gates and native receipts decide
 admission.  Run timing and protocol tests with representative concurrent host
