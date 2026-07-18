@@ -48,14 +48,113 @@ from epoch_authority import (
     schema2_abandon_quarantine_contract,
     schema2_abandon_receipt_identity,
     schema2_abandon_transaction_preimage,
-    validate_schema2_abandon_claim_structure,
-    validate_schema2_abandon_finalize_receipt,
-    validate_schema2_abandon_ledger_history,
+    schema3_abandon_transaction_preimage,
+    validate_abandon_claim_structure,
+    validate_abandon_finalize_receipt,
+    validate_abandon_ledger_history,
 )
 
 # A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
 _LAST_ABANDON_TS = [0.0, ""]
 _TERMINAL_REASON_MAX_CHARS = 1000
+_FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY = (
+    "first_strict_control_execution_scope"
+)
+
+
+def _fence_first_strict_control_execution(
+    checkpoint: dict,
+    *,
+    reason: str,
+) -> dict:
+    """Terminalize only the journal authority frozen by this checkpoint."""
+
+    audit_context = checkpoint.get("audit_context") or {}
+    if not isinstance(audit_context, dict):
+        raise RuntimeError("first_strict_execution_audit_context_invalid")
+    precommit_plan = audit_context.get("precommit_eval_plan")
+    plan_opponents = (
+        precommit_plan.get("opponents")
+        if isinstance(precommit_plan, dict)
+        else []
+    )
+    declares_control = any(
+        isinstance(item, dict)
+        and item.get("authority") == "system_first_strict_control"
+        for item in (plan_opponents or [])
+    )
+    scope_present = _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY in audit_context
+    precommit_attempt = checkpoint.get("precommit_attempt")
+    if not declares_control and not scope_present:
+        return {
+            "present": False,
+            "reason": "first_strict_execution_scope_not_declared",
+        }
+    if declares_control != scope_present:
+        if declares_control and (
+            type(precommit_attempt) is not int or precommit_attempt < 1
+        ):
+            return {
+                "present": False,
+                "reason": "first_strict_execution_not_started",
+            }
+        raise RuntimeError("first_strict_execution_plan_scope_mismatch")
+    try:
+        from first_strict_execution_journal import abandon_control_execution
+        from precommit_eval_contract import (
+            build_evaluation_contract,
+            opponents_from_plan,
+        )
+        from tool_eval import _validate_first_strict_control_execution_scope
+        from tool_gates import _bot_code_fingerprint
+
+        version = int(checkpoint["next_v"])
+        source_v = int(checkpoint["source_v"])
+        candidate_name = bot_name(version)
+        code_fingerprint = _bot_code_fingerprint(get_bot_dir(version))
+        opponents = opponents_from_plan(precommit_plan)
+        evaluation_contract = build_evaluation_contract(
+            precommit_plan,
+            candidate_code_fingerprint=code_fingerprint,
+        )
+        normalized_scope, scope_error = (
+            _validate_first_strict_control_execution_scope(
+                audit_context.get(
+                    _FIRST_STRICT_CONTROL_EXECUTION_SCOPE_KEY
+                ),
+                v=version,
+                candidate_name=candidate_name,
+                code_fingerprint=code_fingerprint,
+                opponents=opponents,
+                precommit_plan=precommit_plan,
+                evaluation_contract=evaluation_contract,
+                workflow_run_id=str(
+                    checkpoint.get("workflow_run_id") or ""
+                ),
+                precommit_attempt=int(precommit_attempt),
+            )
+        )
+        if scope_error or normalized_scope is None:
+            raise RuntimeError(scope_error or "scope normalization failed")
+        receipt = abandon_control_execution(
+            normalized_scope,
+            reason=reason,
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "first_strict_execution_fence_invalid:"
+            f"{type(exc).__name__}:{str(exc)[:300]}"
+        ) from exc
+    return {
+        "present": True,
+        "abandoned": True,
+        "scope": normalized_scope,
+        "terminal_receipt": receipt,
+        "proof_digest": canonical_digest({
+            "scope": normalized_scope,
+            "terminal_receipt": receipt,
+        }),
+    }
 
 
 def _fsync_parent_directory(path) -> None:
@@ -376,7 +475,8 @@ def _assert_safe_existing_transaction_chain(transaction_dir: Path) -> None:
 def _validate_active_abandon_claim(claim: dict) -> dict:
     """Reopen all live authority; never trust a merely re-signed sidecar."""
 
-    validate_schema2_abandon_claim_structure(claim)
+    validate_abandon_claim_structure(claim)
+    _validate_claim_first_strict_execution_fence(claim)
     checkpoint_identity = claim["checkpoint"]
     version = int(checkpoint_identity["next_v"])
     current_git = _current_abandon_git_state(version)
@@ -397,7 +497,7 @@ def _validate_active_abandon_claim(claim: dict) -> dict:
         path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
         project_root=PROJECT_ROOT,
     )
-    abandon_receipt = validate_schema2_abandon_ledger_history(
+    abandon_receipt = validate_abandon_ledger_history(
         claim,
         rows,
         require_active_head=True,
@@ -427,12 +527,42 @@ def _validate_active_abandon_claim(claim: dict) -> dict:
 
     finalize_path = transaction_dir / "receipt.json"
     if os.path.lexists(finalize_path):
-        validate_schema2_abandon_finalize_receipt(
+        validate_abandon_finalize_receipt(
             claim,
             _read_json_regular(finalize_path),
             rows,
         )
     return claim
+
+
+def _validate_claim_first_strict_execution_fence(
+    claim: dict,
+) -> dict | None:
+    """Reopen the schema-3 journal receipt bound before checkpoint removal."""
+
+    if claim.get("schema_version") != 3:
+        return None
+    fence = claim.get("first_strict_execution_fence")
+    if not isinstance(fence, dict):
+        raise RuntimeError("recorded_abandon_first_strict_fence_missing")
+    try:
+        from first_strict_execution_journal import (
+            read_abandoned_control_execution,
+        )
+
+        observed = read_abandoned_control_execution(
+            fence.get("scope"),
+            reason=str(claim.get("abandon_reason") or ""),
+            expected_terminal_receipt=fence.get("terminal_receipt"),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "recorded_abandon_first_strict_fence_unverifiable:"
+            f"{type(exc).__name__}:{str(exc)[:240]}"
+        ) from exc
+    if observed != fence.get("terminal_receipt"):
+        raise RuntimeError("recorded_abandon_first_strict_fence_changed")
+    return fence
 
 
 def _validate_abandon_workflow_fences(
@@ -947,12 +1077,12 @@ def validate_completed_abandon_handoff(
         path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
         project_root=PROJECT_ROOT,
     )
-    abandon_receipt = validate_schema2_abandon_ledger_history(
+    abandon_receipt = validate_abandon_ledger_history(
         claim,
         rows,
         require_active_head=True,
     )
-    validate_schema2_abandon_finalize_receipt(
+    validate_abandon_finalize_receipt(
         claim,
         finalize_receipt,
         rows,
@@ -970,6 +1100,11 @@ def validate_completed_abandon_handoff(
         "abandon_receipt_digest": abandon_receipt.get("receipt_digest"),
         "finalize_receipt_digest": finalize_receipt.get("receipt_digest"),
         "abandon_checkpoint_identity": terminal_identity,
+        "first_strict_execution_fence": (
+            claim.get("first_strict_execution_fence")
+            if claim.get("schema_version") == 3
+            else result.get("first_strict_execution_fence")
+        ),
     }
     for field, value in expected_result.items():
         if result.get(field) != value:
@@ -980,6 +1115,9 @@ def validate_completed_abandon_handoff(
         "finalize_receipt_digest": finalize_receipt["receipt_digest"],
         "checkpoint_identity": terminal_identity,
         "workflow_fences": workflow_fences,
+        "first_strict_execution_fence": claim.get(
+            "first_strict_execution_fence"
+        ),
     }
 
 
@@ -1081,7 +1219,8 @@ def reprove_historical_completed_abandon(transaction_id: str) -> dict:
     )
     _assert_safe_existing_transaction_chain(transaction_dir)
     claim = _read_json_regular(transaction_dir / "claim.json")
-    validate_schema2_abandon_claim_structure(claim)
+    validate_abandon_claim_structure(claim)
+    _validate_claim_first_strict_execution_fence(claim)
     if claim.get("transaction_id") != transaction_id:
         raise RuntimeError(
             "historical_completed_abandon_transaction_identity_mismatch"
@@ -1104,14 +1243,14 @@ def reprove_historical_completed_abandon(transaction_id: str) -> dict:
     # Unlike generic historical receipt validation, terminal handoff must be
     # the current ledger tip.  A later abandon means a successor lifecycle has
     # already consumed this boundary and this reproof is not actionable.
-    abandon_receipt = validate_schema2_abandon_ledger_history(
+    abandon_receipt = validate_abandon_ledger_history(
         claim,
         rows,
         require_active_head=True,
     )
     if abandon_receipt is None:
         raise RuntimeError("historical_completed_abandon_receipt_missing")
-    validate_schema2_abandon_finalize_receipt(
+    validate_abandon_finalize_receipt(
         claim,
         finalize_receipt,
         rows,
@@ -1150,6 +1289,9 @@ def reprove_historical_completed_abandon(transaction_id: str) -> dict:
         "abandon_receipt_digest": abandon_receipt["receipt_digest"],
         "finalize_receipt_digest": finalize_receipt["receipt_digest"],
         "workflow_fences": workflow_fences,
+        "first_strict_execution_fence": claim.get(
+            "first_strict_execution_fence"
+        ),
         "source": source,
     }
 
@@ -1209,6 +1351,7 @@ def _build_recorded_abandon_claim(
     checkpoint: dict,
     *,
     reason: str,
+    first_strict_execution_fence: dict | None = None,
 ) -> tuple[dict, Path, Path]:
     if not _is_autonomous_runtime_checkout():
         raise RuntimeError("abandon_requires_autonomous_runtime_checkout")
@@ -1217,6 +1360,7 @@ def _build_recorded_abandon_claim(
     candidate, candidate_identity = _candidate_claim_preimage(version)
     git_state = _current_abandon_git_state(version)
     ledger = _abandon_ledger_claim(checkpoint, str(reason))
+    schema_version = 3 if first_strict_execution_fence is not None else 2
     claim_identity = {
         "checkpoint": checkpoint_identity,
         "abandon_reason": str(reason),
@@ -1225,8 +1369,14 @@ def _build_recorded_abandon_claim(
         "ledger": ledger,
         "git_state": git_state,
     }
+    if schema_version == 3:
+        claim_identity["first_strict_execution_fence"] = (
+            first_strict_execution_fence
+        )
     transaction_id = canonical_digest(
-        schema2_abandon_transaction_preimage(claim_identity)
+        schema3_abandon_transaction_preimage(claim_identity)
+        if schema_version == 3
+        else schema2_abandon_transaction_preimage(claim_identity)
     )
     transaction_dir = (
         Path(RESULTS_DIR)
@@ -1234,7 +1384,7 @@ def _build_recorded_abandon_claim(
         / transaction_id
     )
     claim_payload = {
-        "schema_version": 2,
+        "schema_version": schema_version,
         "kind": "national-policy-recorded-abandon-finalize-claim",
         "evaluation_epoch": EVALUATION_EPOCH,
         "git_head": git_state["head"],
@@ -1247,11 +1397,15 @@ def _build_recorded_abandon_claim(
         "quarantine": schema2_abandon_quarantine_contract(),
         "ledger": ledger,
     }
+    if schema_version == 3:
+        claim_payload["first_strict_execution_fence"] = (
+            first_strict_execution_fence
+        )
     claim = {
         **claim_payload,
         "claim_digest": canonical_digest(claim_payload),
     }
-    validate_schema2_abandon_claim_structure(claim)
+    validate_abandon_claim_structure(claim)
     return claim, candidate, transaction_dir
 
 
@@ -1303,7 +1457,7 @@ def _claim_abandon_receipt(claim: dict) -> dict | None:
         path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
         project_root=PROJECT_ROOT,
     )
-    receipt = validate_schema2_abandon_ledger_history(
+    receipt = validate_abandon_ledger_history(
         claim,
         rows,
         require_active_head=True,
@@ -1327,6 +1481,7 @@ def _finalize_checkpoint_abandon_transaction(
     infra_failure: dict | None,
     timestamp: float,
     recorded_abandon_receipt: dict | None,
+    first_strict_execution_fence: dict | None,
     clear_pipeline_state,
 ) -> dict:
     """Run the publication-linearized durable abandon state machine."""
@@ -1339,6 +1494,7 @@ def _finalize_checkpoint_abandon_transaction(
         claim, candidate, transaction_dir = _build_recorded_abandon_claim(
             checkpoint,
             reason=reason,
+            first_strict_execution_fence=first_strict_execution_fence,
         )
         _ensure_transaction_directory(transaction_dir)
         _ensure_durable_json(transaction_dir / "claim.json", claim)
@@ -1354,6 +1510,16 @@ def _finalize_checkpoint_abandon_transaction(
             checkpoint_identity = claim["checkpoint"]
         if claim.get("abandon_reason") != str(reason):
             raise RuntimeError("recorded_abandon_claim_reason_mismatch")
+        claimed_fence = claim.get("first_strict_execution_fence")
+        if (
+            first_strict_execution_fence is None
+            and not isinstance(checkpoint, dict)
+        ):
+            first_strict_execution_fence = claimed_fence
+        if claimed_fence != first_strict_execution_fence:
+            raise RuntimeError(
+                "recorded_abandon_first_strict_fence_mismatch"
+            )
         transaction_dir, _ = _claim_transaction_paths(claim)
         candidate = Path(get_bot_dir(int(checkpoint_identity["next_v"])))
         _ensure_transaction_directory(transaction_dir)
@@ -1429,7 +1595,7 @@ def _finalize_checkpoint_abandon_transaction(
         _fsync_parent_directory(checkpoint_path)
 
     receipt_payload = {
-        "schema_version": 2,
+        "schema_version": int(claim.get("schema_version") or 0),
         "kind": "national-policy-recorded-abandon-finalize",
         "evaluation_epoch": EVALUATION_EPOCH,
         "mode": "execute",
@@ -1440,6 +1606,10 @@ def _finalize_checkpoint_abandon_transaction(
         "candidate_state": state,
         "candidate_manifest_digest": claim["candidate"]["manifest_digest"],
     }
+    if claim.get("schema_version") == 3:
+        receipt_payload["first_strict_execution_fence_digest"] = (
+            claim["first_strict_execution_fence"]["proof_digest"]
+        )
     finalize_receipt = {
         **receipt_payload,
         "receipt_digest": canonical_digest(receipt_payload),
@@ -1456,6 +1626,9 @@ def _finalize_checkpoint_abandon_transaction(
             bot_name(int(claim["checkpoint"]["next_v"]))
             if claim["candidate"]["present"] is True
             else None
+        ),
+        "first_strict_execution_fence": claim.get(
+            "first_strict_execution_fence"
         ),
     }
 
@@ -2414,6 +2587,7 @@ async def _do_abandon_generation(
                 "reason": f"abandon cooldown active ({60 - (now - _LAST_ABANDON_TS[0]):.0f}s remaining)"}
     workflow_fenced = False
     workflow_run_id = None
+    first_strict_execution_fence = None
     if isinstance(checkpoint, dict):
         try:
             from worker_workflow import (
@@ -2428,7 +2602,7 @@ async def _do_abandon_generation(
             # use the same short lock, so a late Worker can never recreate an
             # abandoned candidate after rmtree.
             def fence_latest_checkpoint():
-                nonlocal recorded_abandon_receipt
+                nonlocal recorded_abandon_receipt, first_strict_execution_fence
                 latest = read_pipeline_checkpoint()
                 if not isinstance(latest, dict):
                     raise RuntimeError(
@@ -2456,6 +2630,12 @@ async def _do_abandon_generation(
                 latest_block = _generic_abandon_stage_block(latest, reason)
                 if latest_block and recorded_abandon_receipt is None:
                     return latest_block, None
+                first_strict_execution_fence = (
+                    _fence_first_strict_control_execution(
+                        latest,
+                        reason=reason,
+                    )
+                )
                 workflow.abandon(
                     reason,
                     accept_existing_reason=(
@@ -2507,6 +2687,9 @@ async def _do_abandon_generation(
                     "reason": reason,
                     "error": f"{type(exc).__name__}: {str(exc)[:500]}",
                     "workflow_run_id": workflow_run_id,
+                    "first_strict_execution_fence": (
+                        first_strict_execution_fence
+                    ),
                 },
             )
             return {
@@ -2514,6 +2697,7 @@ async def _do_abandon_generation(
                 "reason": "workflow_fence_failed",
                 "error": f"{type(exc).__name__}: {str(exc)[:500]}",
                 "workflow_run_id": workflow_run_id,
+                "first_strict_execution_fence": first_strict_execution_fence,
             }
     cleared_checkpoint = False
     removed_dir = None
@@ -2597,6 +2781,12 @@ async def _do_abandon_generation(
                 infra_failure=infra_failure,
                 timestamp=now,
                 recorded_abandon_receipt=recorded_abandon_receipt,
+                first_strict_execution_fence=(
+                    first_strict_execution_fence
+                    if isinstance(first_strict_execution_fence, dict)
+                    and first_strict_execution_fence.get("present") is True
+                    else None
+                ),
                 clear_pipeline_state=clear_pipeline_checkpoint,
             )
             abandon_receipt = transaction["abandon_receipt"]
@@ -2604,6 +2794,10 @@ async def _do_abandon_generation(
             abandon_transaction_id = transaction["transaction_id"]
             abandon_checkpoint_identity = transaction["checkpoint_identity"]
             removed_dir = transaction["removed_directory"]
+            if transaction.get("first_strict_execution_fence") is not None:
+                first_strict_execution_fence = transaction[
+                    "first_strict_execution_fence"
+                ]
             cleared_checkpoint = True
     except Exception as exc:
         log_system_event(
@@ -2622,6 +2816,7 @@ async def _do_abandon_generation(
             "reason": str(exc).split(":", 1)[0],
             "workflow_fenced": workflow_fenced,
             "workflow_run_id": workflow_run_id,
+            "first_strict_execution_fence": first_strict_execution_fence,
             "abandoned_v": abandoned_v,
             "removed_directory": (
                 bot_name(int(abandoned_v))
@@ -2643,7 +2838,10 @@ async def _do_abandon_generation(
                       "reason": reason, "abandoned_v": abandoned_v,
                       "infra_failure": infra_failure,
                       "workflow_fenced": workflow_fenced,
-                      "workflow_run_id": workflow_run_id})
+                      "workflow_run_id": workflow_run_id,
+                      "first_strict_execution_fence": (
+                          first_strict_execution_fence
+                      )})
     # A4: update rate-limit timestamp on successful abandon.
     _LAST_ABANDON_TS[0] = now
     _LAST_ABANDON_TS[1] = reason
@@ -2687,6 +2885,7 @@ async def _do_abandon_generation(
         "abandoned_v": abandoned_v,
         "workflow_fenced": workflow_fenced,
         "workflow_run_id": workflow_run_id,
+        "first_strict_execution_fence": first_strict_execution_fence,
         "abandon_receipt_digest": (
             abandon_receipt.get("receipt_digest")
             if isinstance(abandon_receipt, dict)

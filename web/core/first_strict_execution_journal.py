@@ -43,6 +43,10 @@ from workflow_kernel import (
 EXECUTION_DEFINITION_VERSION = 3
 EXECUTION_EFFECT_KIND = "first_strict_native_70_hand_match"
 EXECUTION_EVENT_TYPE = "NativeMatchRecorded"
+CONTROL_EXECUTION_TERMINAL_SCHEMA_VERSION = 1
+CONTROL_EXECUTION_SUCCESS_EVENT_TYPE = "FirstStrictExecutionSucceeded"
+CONTROL_EXECUTION_ABANDON_EVENT_TYPE = "FirstStrictExecutionAbandoned"
+CONTROL_EXECUTION_EXPECTED_REPEATS = 8
 RECEIPT_REF_SCHEMA_VERSION = 1
 RECEIPT_REF_KIND = "first-strict-native-match-execution-ref"
 CONTROL_EXECUTION_ROOT = (
@@ -366,6 +370,117 @@ def execution_scope_digest(scope: Any) -> str:
 
 def _authority_run_id(scope: Any) -> str:
     return f"first-strict-control:{execution_scope_digest(scope)}"
+
+
+def _terminal_effect_projection(
+    effects: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return the bounded identity projection committed by a terminal event."""
+
+    completed: list[dict[str, Any]] = []
+    abandoned: list[dict[str, Any]] = []
+    exhausted: list[dict[str, Any]] = []
+    nonterminal: list[dict[str, Any]] = []
+    for effect in sorted(effects, key=lambda item: str(item.get("effect_id") or "")):
+        row = {
+            "effect_id": str(effect.get("effect_id") or ""),
+            "input_digest": str(effect.get("input_digest") or ""),
+            "attempt": int(effect.get("attempt") or 0),
+            "lease_epoch": int(effect.get("lease_epoch") or 0),
+        }
+        status = str(effect.get("status") or "")
+        if status == "completed":
+            row["result_digest"] = str(effect.get("result_digest") or "")
+            completed.append(row)
+        elif status == "abandoned":
+            abandoned.append(row)
+        elif status == "exhausted":
+            exhausted.append(row)
+        else:
+            row["status"] = status
+            nonterminal.append(row)
+    return {
+        "completed": completed,
+        "abandoned": abandoned,
+        "exhausted": exhausted,
+        "nonterminal": nonterminal,
+    }
+
+
+def _control_terminal_receipt(
+    *,
+    store: WorkflowStore,
+    normalized_scope: dict[str, Any],
+    event_type: str,
+    expected_payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-prove one exact terminal transition and return its compact receipt."""
+
+    authority_run_id = _authority_run_id(normalized_scope)
+    instance = store.instance(authority_run_id)
+    expected_status = (
+        "succeeded"
+        if event_type == CONTROL_EXECUTION_SUCCESS_EVENT_TYPE
+        else "abandoned"
+    )
+    if (
+        not instance
+        or int(instance.get("definition_version") or 0)
+        != EXECUTION_DEFINITION_VERSION
+        or instance.get("status") != expected_status
+        or int(instance.get("fence_epoch") or 0) < 1
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_terminal_instance_invalid"
+        )
+    terminal_events = [
+        event
+        for event in store.events(authority_run_id)
+        if event.event_type in {
+            CONTROL_EXECUTION_SUCCESS_EVENT_TYPE,
+            CONTROL_EXECUTION_ABANDON_EVENT_TYPE,
+        }
+    ]
+    if (
+        len(terminal_events) != 1
+        or terminal_events[0].event_type != event_type
+        or terminal_events[0].payload != expected_payload
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_terminal_event_invalid"
+        )
+    effects = store.effects_for_run(authority_run_id)
+    projection = _terminal_effect_projection(effects)
+    if projection.get("nonterminal"):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_terminal_effect_not_fenced"
+        )
+    if expected_status == "succeeded" and (
+        projection.get("abandoned")
+        or projection.get("exhausted")
+        or len(projection.get("completed") or [])
+        != CONTROL_EXECUTION_EXPECTED_REPEATS
+    ):
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_success_effects_invalid"
+        )
+    event = terminal_events[0]
+    receipt_payload = {
+        "schema_version": CONTROL_EXECUTION_TERMINAL_SCHEMA_VERSION,
+        "kind": "first-strict-control-execution-terminal-receipt",
+        "outcome": expected_status,
+        "authority_run_id": authority_run_id,
+        "scope_digest": execution_scope_digest(normalized_scope),
+        "terminal_event_seq": int(event.seq),
+        "terminal_event_payload_digest": str(event.payload_digest),
+        "stream_version": int(instance.get("stream_version") or 0),
+        "fence_epoch": int(instance.get("fence_epoch") or 0),
+        "effects": projection,
+    }
+    return {
+        **receipt_payload,
+        "receipt_digest": canonical_digest(receipt_payload),
+    }
 
 
 def _validated_execution_ticket(ticket: Any) -> dict[str, Any]:
@@ -932,6 +1047,280 @@ def _completed_execution_reference(
     return reference, deepcopy(evidence["execution"])
 
 
+def _successful_control_execution_payload(
+    *,
+    store: WorkflowStore,
+    normalized_scope: dict[str, Any],
+    expected_receipts: Any,
+) -> dict[str, Any]:
+    """Re-prove all eight receipts before the authority becomes successful."""
+
+    authority_run_id = _authority_run_id(normalized_scope)
+    effects = store.effects_for_run(authority_run_id)
+    expected_ids = {
+        f"{authority_run_id}:repeat-{repeat}"
+        for repeat in range(1, CONTROL_EXECUTION_EXPECTED_REPEATS + 1)
+    }
+    if {str(effect.get("effect_id") or "") for effect in effects} != expected_ids:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_success_effect_set_invalid"
+        )
+    references: list[dict[str, Any]] = []
+    for repeat in range(1, CONTROL_EXECUTION_EXPECTED_REPEATS + 1):
+        effect_id = f"{authority_run_id}:repeat-{repeat}"
+        effect = next(
+            item for item in effects if item.get("effect_id") == effect_id
+        )
+        input_payload = effect.get("input_payload") or {}
+        if (
+            effect.get("run_id") != authority_run_id
+            or effect.get("kind") != EXECUTION_EFFECT_KIND
+            or effect.get("status") != "completed"
+            or input_payload.get("scope") != normalized_scope
+            or input_payload.get("scope_digest")
+            != execution_scope_digest(normalized_scope)
+            or input_payload.get("repeat") != repeat
+        ):
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_success_effect_binding_invalid"
+            )
+        reference, _execution = _completed_execution_reference(
+            store,
+            authority_run_id=authority_run_id,
+            effect_id=effect_id,
+            input_payload=input_payload,
+        )
+        references.append(reference)
+    try:
+        normalized_expected = json.loads(canonical_json(expected_receipts))
+    except (TypeError, ValueError) as exc:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_success_receipts_invalid"
+        ) from exc
+    if normalized_expected != references:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_success_receipts_mismatch"
+        )
+    receipts_digest = canonical_digest(references)
+    return {
+        "schema_version": CONTROL_EXECUTION_TERMINAL_SCHEMA_VERSION,
+        "kind": "first-strict-control-execution-terminal",
+        "outcome": "succeeded",
+        "authority_run_id": authority_run_id,
+        "scope_digest": execution_scope_digest(normalized_scope),
+        "expected_repeats": CONTROL_EXECUTION_EXPECTED_REPEATS,
+        "completed_receipts_digest": receipts_digest,
+    }
+
+
+def succeed_control_execution(
+    scope: Any,
+    *,
+    expected_receipts: Any,
+) -> dict[str, Any]:
+    """Atomically close one exact eight-sample first-strict authority.
+
+    The terminal event is written before the successful precommit checkpoint.
+    If the process dies between those stores, a retry can recover all eight
+    completed receipts from this succeeded instance and write the checkpoint;
+    it never launches another physical match.
+    """
+
+    normalized_scope = normalize_execution_scope(scope)
+    authority_run_id = _authority_run_id(normalized_scope)
+    store = _store()
+    with store.command_lock(authority_run_id, blocking=True):
+        instance = store.instance(authority_run_id)
+        if not instance:
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_success_instance_missing"
+            )
+        if int(instance.get("definition_version") or 0) != EXECUTION_DEFINITION_VERSION:
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_success_definition_mismatch"
+            )
+        payload = _successful_control_execution_payload(
+            store=store,
+            normalized_scope=normalized_scope,
+            expected_receipts=expected_receipts,
+        )
+        status = str(instance.get("status") or "")
+        if status == "running":
+            store.terminal_transition(
+                authority_run_id,
+                event_type=CONTROL_EXECUTION_SUCCESS_EVENT_TYPE,
+                payload=payload,
+                causation_id=(
+                    "first-strict-control-succeeded:"
+                    + str(payload["completed_receipts_digest"])
+                ),
+                expected_version=int(instance.get("stream_version") or 0),
+                status="succeeded",
+            )
+        elif status != "succeeded":
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_success_terminal_conflict"
+            )
+        return _control_terminal_receipt(
+            store=store,
+            normalized_scope=normalized_scope,
+            event_type=CONTROL_EXECUTION_SUCCESS_EVENT_TYPE,
+            expected_payload=payload,
+        )
+
+
+def read_succeeded_control_execution(
+    scope: Any,
+    *,
+    expected_receipts: Any,
+    expected_terminal_receipt: Any | None = None,
+) -> dict[str, Any]:
+    """Read-only revalidation for cached precommit and publication gates."""
+
+    normalized_scope = normalize_execution_scope(scope)
+    authority_run_id = _authority_run_id(normalized_scope)
+    store = _store()
+    with store.command_lock(authority_run_id, blocking=True):
+        instance = store.instance(authority_run_id)
+        if str(instance.get("status") or "") != "succeeded":
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_success_not_terminal"
+            )
+        payload = _successful_control_execution_payload(
+            store=store,
+            normalized_scope=normalized_scope,
+            expected_receipts=expected_receipts,
+        )
+        receipt = _control_terminal_receipt(
+            store=store,
+            normalized_scope=normalized_scope,
+            event_type=CONTROL_EXECUTION_SUCCESS_EVENT_TYPE,
+            expected_payload=payload,
+        )
+    if expected_terminal_receipt is not None:
+        try:
+            expected = json.loads(canonical_json(expected_terminal_receipt))
+        except (TypeError, ValueError) as exc:
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_terminal_receipt_invalid"
+            ) from exc
+        if expected != receipt:
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_terminal_receipt_mismatch"
+            )
+    return receipt
+
+
+def abandon_control_execution(
+    scope: Any,
+    *,
+    reason: str,
+) -> dict[str, Any]:
+    """Fence one exact first-strict authority before generation cleanup.
+
+    A valid checkpoint scope with no journal yet becomes a terminal tombstone.
+    This closes the crash window after checkpoint scope persistence but before
+    the first effect request.  Existing completed receipts remain immutable;
+    every requested/retry/running/deferred effect becomes abandoned in the
+    same SQLite transaction and all late lease epochs are rejected.
+    """
+
+    normalized_scope = normalize_execution_scope(scope)
+    normalized_reason = str(reason).strip()
+    if not normalized_reason or len(normalized_reason) > 1000:
+        raise FirstStrictExecutionJournalError(
+            "first_strict_execution_abandon_reason_invalid"
+        )
+    authority_run_id = _authority_run_id(normalized_scope)
+    scope_digest = execution_scope_digest(normalized_scope)
+    payload = {
+        "schema_version": CONTROL_EXECUTION_TERMINAL_SCHEMA_VERSION,
+        "kind": "first-strict-control-execution-terminal",
+        "outcome": "abandoned",
+        "authority_run_id": authority_run_id,
+        "scope_digest": scope_digest,
+        "reason": normalized_reason,
+    }
+    store = _store()
+    with store.command_lock(authority_run_id, blocking=True):
+        instance = store.instance(authority_run_id)
+        if not instance:
+            store.create_terminal_transition(
+                authority_run_id,
+                definition_version=EXECUTION_DEFINITION_VERSION,
+                event_type=CONTROL_EXECUTION_ABANDON_EVENT_TYPE,
+                payload=payload,
+                causation_id=f"first-strict-control-abandoned:{scope_digest}",
+                status="abandoned",
+            )
+        else:
+            if int(instance.get("definition_version") or 0) != EXECUTION_DEFINITION_VERSION:
+                raise FirstStrictExecutionJournalError(
+                    "first_strict_execution_abandon_definition_mismatch"
+                )
+            status = str(instance.get("status") or "")
+            if status == "running":
+                store.terminal_transition(
+                    authority_run_id,
+                    event_type=CONTROL_EXECUTION_ABANDON_EVENT_TYPE,
+                    payload=payload,
+                    causation_id=f"first-strict-control-abandoned:{scope_digest}",
+                    expected_version=int(instance.get("stream_version") or 0),
+                    status="abandoned",
+                )
+            elif status != "abandoned":
+                raise FirstStrictExecutionJournalError(
+                    "first_strict_execution_abandon_terminal_conflict"
+                )
+        return _control_terminal_receipt(
+            store=store,
+            normalized_scope=normalized_scope,
+            event_type=CONTROL_EXECUTION_ABANDON_EVENT_TYPE,
+            expected_payload=payload,
+        )
+
+
+def read_abandoned_control_execution(
+    scope: Any,
+    *,
+    reason: str,
+    expected_terminal_receipt: Any | None = None,
+) -> dict[str, Any]:
+    """Read-only proof used by durable abandon-transaction recovery."""
+
+    normalized_scope = normalize_execution_scope(scope)
+    normalized_reason = str(reason).strip()
+    authority_run_id = _authority_run_id(normalized_scope)
+    payload = {
+        "schema_version": CONTROL_EXECUTION_TERMINAL_SCHEMA_VERSION,
+        "kind": "first-strict-control-execution-terminal",
+        "outcome": "abandoned",
+        "authority_run_id": authority_run_id,
+        "scope_digest": execution_scope_digest(normalized_scope),
+        "reason": normalized_reason,
+    }
+    store = _store()
+    with store.command_lock(authority_run_id, blocking=True):
+        receipt = _control_terminal_receipt(
+            store=store,
+            normalized_scope=normalized_scope,
+            event_type=CONTROL_EXECUTION_ABANDON_EVENT_TYPE,
+            expected_payload=payload,
+        )
+    if expected_terminal_receipt is not None:
+        try:
+            expected = json.loads(canonical_json(expected_terminal_receipt))
+        except (TypeError, ValueError) as exc:
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_terminal_receipt_invalid"
+            ) from exc
+        if expected != receipt:
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_terminal_receipt_mismatch"
+            )
+    return receipt
+
+
 def begin_control_execution(
     *,
     scope: dict[str, Any],
@@ -1014,15 +1403,36 @@ def begin_control_execution(
         )
     with store.command_lock(authority_run_id, blocking=True):
         instance = store.instance(authority_run_id)
-        effect = store.request_effect(
-            run_id=authority_run_id,
-            effect_id=effect_id,
-            kind=EXECUTION_EFFECT_KIND,
-            input_payload=input_payload,
-            causation_id=f"control-match-requested:{effect_id}",
-            max_attempts=3,
-            expected_version=int(instance.get("stream_version") or 0),
-        )
+        instance_status = str(instance.get("status") or "")
+        if instance_status == "succeeded":
+            # A crash may occur after the eight-sample authority becomes
+            # terminal but before the successful pipeline checkpoint is
+            # written.  Permit only exact completed receipt recovery.
+            effect = store.effect(effect_id)
+            if (
+                not effect
+                or effect.get("run_id") != authority_run_id
+                or effect.get("kind") != EXECUTION_EFFECT_KIND
+                or effect.get("input_payload") != input_payload
+                or effect.get("status") != "completed"
+            ):
+                raise FirstStrictExecutionJournalError(
+                    "first_strict_execution_succeeded_recovery_invalid"
+                )
+        elif instance_status != "running":
+            raise FirstStrictExecutionJournalError(
+                "first_strict_execution_authority_terminal"
+            )
+        else:
+            effect = store.request_effect(
+                run_id=authority_run_id,
+                effect_id=effect_id,
+                kind=EXECUTION_EFFECT_KIND,
+                input_payload=input_payload,
+                causation_id=f"control-match-requested:{effect_id}",
+                max_attempts=3,
+                expected_version=int(instance.get("stream_version") or 0),
+            )
         completed_effect = effect.get("status") == "completed"
         if not completed_effect:
             lease_until = effect.get("lease_until")
@@ -1558,10 +1968,14 @@ def read_control_execution_receipt(
 __all__ = [
     "CONTROL_EXECUTION_ROOT",
     "FirstStrictExecutionJournalError",
+    "abandon_control_execution",
     "begin_control_execution",
     "complete_control_execution",
     "control_execution_completion_deadline",
     "execution_scope_digest",
     "normalize_execution_scope",
     "read_control_execution_receipt",
+    "read_abandoned_control_execution",
+    "read_succeeded_control_execution",
+    "succeed_control_execution",
 ]

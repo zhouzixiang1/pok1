@@ -351,6 +351,10 @@ _SCHEMA2_ABANDON_CLAIM_KEYS = frozenset({
     "ledger",
     "claim_digest",
 })
+_SCHEMA3_ABANDON_CLAIM_KEYS = frozenset({
+    *_SCHEMA2_ABANDON_CLAIM_KEYS,
+    "first_strict_execution_fence",
+})
 
 
 def _is_hex_digest(value: object, *, lengths: tuple[int, ...] = (64,)) -> bool:
@@ -397,6 +401,133 @@ def schema2_abandon_transaction_preimage(claim: dict[str, Any]) -> dict[str, Any
         "ledger": claim.get("ledger"),
         "git_state": claim.get("git_state"),
     }
+
+
+def schema3_abandon_transaction_preimage(claim: dict[str, Any]) -> dict[str, Any]:
+    """Bind the exact first-strict journal fence into a new transaction id."""
+
+    return {
+        **schema2_abandon_transaction_preimage(claim),
+        "first_strict_execution_fence": claim.get(
+            "first_strict_execution_fence"
+        ),
+    }
+
+
+def _validate_schema3_first_strict_fence(fence: Any) -> dict[str, Any]:
+    required = {
+        "present",
+        "abandoned",
+        "scope",
+        "terminal_receipt",
+        "proof_digest",
+    }
+    if (
+        not isinstance(fence, dict)
+        or set(fence) != required
+        or fence.get("present") is not True
+        or fence.get("abandoned") is not True
+    ):
+        raise RuntimeError("recorded_abandon_first_strict_fence_invalid")
+    scope = fence.get("scope")
+    scope_fields = {
+        "workflow_run_id",
+        "checkpoint_revision",
+        "candidate_version",
+        "candidate_label",
+        "candidate_artifact_hash",
+        "control_id",
+        "control_artifact_hash",
+        "control_receipt_digest",
+        "precommit_plan_digest",
+        "evaluation_contract_digest",
+        "native_match_timing_plan_digest",
+        "precommit_attempt",
+    }
+    if not isinstance(scope, dict) or set(scope) != scope_fields:
+        raise RuntimeError("recorded_abandon_first_strict_scope_invalid")
+    if (
+        not isinstance(scope.get("workflow_run_id"), str)
+        or not scope.get("workflow_run_id")
+        or type(scope.get("checkpoint_revision")) is not int
+        or int(scope["checkpoint_revision"]) < 1
+        or type(scope.get("candidate_version")) is not int
+        or int(scope["candidate_version"]) < FIRST_STRICT_POLICY_VERSION
+        or type(scope.get("precommit_attempt")) is not int
+        or int(scope["precommit_attempt"]) < 1
+        or not isinstance(scope.get("candidate_label"), str)
+        or not scope.get("candidate_label")
+        or not isinstance(scope.get("control_id"), str)
+        or not scope.get("control_id")
+        or any(
+            not _is_hex_digest(scope.get(field))
+            for field in (
+                "candidate_artifact_hash",
+                "control_artifact_hash",
+                "control_receipt_digest",
+                "precommit_plan_digest",
+                "evaluation_contract_digest",
+                "native_match_timing_plan_digest",
+            )
+        )
+    ):
+        raise RuntimeError("recorded_abandon_first_strict_scope_invalid")
+    scope_digest = _canonical_object_digest(scope)
+    receipt = fence.get("terminal_receipt")
+    receipt_fields = {
+        "schema_version",
+        "kind",
+        "outcome",
+        "authority_run_id",
+        "scope_digest",
+        "terminal_event_seq",
+        "terminal_event_payload_digest",
+        "stream_version",
+        "fence_epoch",
+        "effects",
+        "receipt_digest",
+    }
+    unsigned_receipt = {
+        key: value for key, value in receipt.items() if key != "receipt_digest"
+    } if isinstance(receipt, dict) else {}
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != receipt_fields
+        or receipt.get("schema_version") != 1
+        or receipt.get("kind")
+        != "first-strict-control-execution-terminal-receipt"
+        or receipt.get("outcome") != "abandoned"
+        or receipt.get("scope_digest") != scope_digest
+        or receipt.get("authority_run_id")
+        != f"first-strict-control:{scope_digest}"
+        or type(receipt.get("terminal_event_seq")) is not int
+        or int(receipt["terminal_event_seq"]) < 1
+        or not _is_hex_digest(receipt.get("terminal_event_payload_digest"))
+        or type(receipt.get("stream_version")) is not int
+        or int(receipt["stream_version"]) < int(receipt["terminal_event_seq"])
+        or type(receipt.get("fence_epoch")) is not int
+        or int(receipt["fence_epoch"]) < 1
+        or not isinstance(receipt.get("effects"), dict)
+        or set(receipt["effects"])
+        != {"completed", "abandoned", "exhausted", "nonterminal"}
+        or any(
+            not isinstance(receipt["effects"].get(key), list)
+            or len(receipt["effects"].get(key)) > 8
+            for key in receipt["effects"]
+        )
+        or receipt["effects"].get("nonterminal") != []
+        or not _is_hex_digest(receipt.get("receipt_digest"))
+        or receipt.get("receipt_digest")
+        != _canonical_object_digest(unsigned_receipt)
+    ):
+        raise RuntimeError("recorded_abandon_first_strict_receipt_invalid")
+    expected_proof_digest = _canonical_object_digest({
+        "scope": scope,
+        "terminal_receipt": receipt,
+    })
+    if fence.get("proof_digest") != expected_proof_digest:
+        raise RuntimeError("recorded_abandon_first_strict_proof_invalid")
+    return fence
 
 
 def validate_schema2_abandon_claim_structure(
@@ -537,6 +668,69 @@ def validate_schema2_abandon_claim_structure(
     return claim
 
 
+def validate_schema3_abandon_claim_structure(
+    claim: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate a schema-3 claim while retaining schema-2 compatibility."""
+
+    if not isinstance(claim, dict) or set(claim) != _SCHEMA3_ABANDON_CLAIM_KEYS:
+        raise RuntimeError("recorded_abandon_claim_fields_invalid")
+    unsigned = {key: value for key, value in claim.items() if key != "claim_digest"}
+    if (
+        claim.get("schema_version") != 3
+        or claim.get("kind")
+        != "national-policy-recorded-abandon-finalize-claim"
+        or claim.get("evaluation_epoch") != EVALUATION_EPOCH
+        or claim.get("checkout_role") != "autonomous_evolution_runtime"
+        or not _is_hex_digest(claim.get("claim_digest"))
+        or claim.get("claim_digest") != _claim_payload_digest(unsigned)
+    ):
+        raise RuntimeError("recorded_abandon_claim_envelope_invalid")
+    _validate_schema3_first_strict_fence(
+        claim.get("first_strict_execution_fence")
+    )
+    fence = claim["first_strict_execution_fence"]
+    scope = fence["scope"]
+    checkpoint = claim.get("checkpoint") or {}
+    if (
+        scope.get("workflow_run_id") != checkpoint.get("workflow_run_id")
+        or scope.get("candidate_version") != checkpoint.get("next_v")
+        or scope.get("candidate_label")
+        != f"national_v{checkpoint.get('next_v')}"
+        or int(scope.get("checkpoint_revision") or 0)
+        > int(checkpoint.get("checkpoint_revision") or 0)
+    ):
+        raise RuntimeError("recorded_abandon_first_strict_checkpoint_mismatch")
+
+    # Reuse every schema-2 common-field validator with a synthetic envelope;
+    # its self-referential ids are rebuilt rather than copied from schema 3.
+    base = {
+        key: value
+        for key, value in claim.items()
+        if key not in {"first_strict_execution_fence", "claim_digest"}
+    }
+    base["schema_version"] = 2
+    base["transaction_id"] = _canonical_object_digest(
+        schema2_abandon_transaction_preimage(base)
+    )
+    base["claim_digest"] = _claim_payload_digest(base)
+    validate_schema2_abandon_claim_structure(base)
+    expected_transaction_id = _canonical_object_digest(
+        schema3_abandon_transaction_preimage(claim)
+    )
+    if claim.get("transaction_id") != expected_transaction_id:
+        raise RuntimeError("recorded_abandon_transaction_id_invalid")
+    return claim
+
+
+def validate_abandon_claim_structure(
+    claim: dict[str, Any],
+) -> dict[str, Any]:
+    if isinstance(claim, dict) and claim.get("schema_version") == 3:
+        return validate_schema3_abandon_claim_structure(claim)
+    return validate_schema2_abandon_claim_structure(claim)
+
+
 def validate_schema2_abandon_ledger_history(
     claim: dict[str, Any],
     rows: list[dict[str, Any]],
@@ -584,6 +778,40 @@ def validate_schema2_abandon_ledger_history(
     return receipt
 
 
+def _schema3_common_schema2_claim(claim: dict[str, Any]) -> dict[str, Any]:
+    base = {
+        key: value
+        for key, value in claim.items()
+        if key not in {"first_strict_execution_fence", "claim_digest"}
+    }
+    base["schema_version"] = 2
+    base["transaction_id"] = _canonical_object_digest(
+        schema2_abandon_transaction_preimage(base)
+    )
+    base["claim_digest"] = _claim_payload_digest(base)
+    return base
+
+
+def validate_abandon_ledger_history(
+    claim: dict[str, Any],
+    rows: list[dict[str, Any]],
+    *,
+    require_active_head: bool,
+) -> dict[str, Any] | None:
+    if isinstance(claim, dict) and claim.get("schema_version") == 3:
+        validate_schema3_abandon_claim_structure(claim)
+        return validate_schema2_abandon_ledger_history(
+            _schema3_common_schema2_claim(claim),
+            rows,
+            require_active_head=require_active_head,
+        )
+    return validate_schema2_abandon_ledger_history(
+        claim,
+        rows,
+        require_active_head=require_active_head,
+    )
+
+
 def validate_schema2_abandon_finalize_receipt(
     claim: dict[str, Any],
     receipt: dict[str, Any],
@@ -597,7 +825,7 @@ def validate_schema2_abandon_finalize_receipt(
     """
 
     validate_schema2_abandon_claim_structure(claim)
-    abandon_receipt = validate_schema2_abandon_ledger_history(
+    abandon_receipt = validate_abandon_ledger_history(
         claim,
         rows,
         require_active_head=False,
@@ -641,6 +869,71 @@ def validate_schema2_abandon_finalize_receipt(
     ):
         raise RuntimeError("recorded_abandon_finalize_receipt_invalid")
     return receipt
+
+
+def validate_schema3_abandon_finalize_receipt(
+    claim: dict[str, Any],
+    receipt: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    validate_schema3_abandon_claim_structure(claim)
+    abandon_receipt = validate_abandon_ledger_history(
+        claim,
+        rows,
+        require_active_head=False,
+    )
+    required = {
+        "schema_version",
+        "kind",
+        "evaluation_epoch",
+        "mode",
+        "claim_digest",
+        "workflow_run_id",
+        "abandon_receipt_digest",
+        "checkpoint_cleared",
+        "candidate_state",
+        "candidate_manifest_digest",
+        "first_strict_execution_fence_digest",
+        "receipt_digest",
+    }
+    unsigned = {
+        key: value for key, value in receipt.items() if key != "receipt_digest"
+    } if isinstance(receipt, dict) else {}
+    expected_state = "quarantine" if claim["candidate"]["present"] else "absent"
+    if (
+        not isinstance(receipt, dict)
+        or set(receipt) != required
+        or receipt.get("schema_version") != 3
+        or receipt.get("kind") != "national-policy-recorded-abandon-finalize"
+        or receipt.get("evaluation_epoch") != EVALUATION_EPOCH
+        or receipt.get("mode") != "execute"
+        or receipt.get("claim_digest") != claim.get("claim_digest")
+        or receipt.get("workflow_run_id")
+        != claim["checkpoint"]["workflow_run_id"]
+        or abandon_receipt is None
+        or receipt.get("abandon_receipt_digest")
+        != abandon_receipt.get("receipt_digest")
+        or receipt.get("checkpoint_cleared") is not True
+        or receipt.get("candidate_state") != expected_state
+        or receipt.get("candidate_manifest_digest")
+        != claim["candidate"]["manifest_digest"]
+        or receipt.get("first_strict_execution_fence_digest")
+        != claim["first_strict_execution_fence"]["proof_digest"]
+        or not _is_hex_digest(receipt.get("receipt_digest"))
+        or receipt.get("receipt_digest") != _canonical_object_digest(unsigned)
+    ):
+        raise RuntimeError("recorded_abandon_finalize_receipt_invalid")
+    return receipt
+
+
+def validate_abandon_finalize_receipt(
+    claim: dict[str, Any],
+    receipt: dict[str, Any],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if isinstance(claim, dict) and claim.get("schema_version") == 3:
+        return validate_schema3_abandon_finalize_receipt(claim, receipt, rows)
+    return validate_schema2_abandon_finalize_receipt(claim, receipt, rows)
 
 
 def _read_bounded_regular_json(path: Path, *, limit: int = 1024 * 1024) -> dict:
@@ -801,7 +1094,7 @@ def _validate_schema2_active_claim_state(
 ) -> None:
     """Read-only live recovery validation used by the canonical epoch view."""
 
-    validate_schema2_abandon_claim_structure(claim)
+    validate_abandon_claim_structure(claim)
     version = int(claim["checkpoint"]["next_v"])
     current_git_state = {
         "head": infra._git("rev-parse", "HEAD"),
@@ -870,7 +1163,7 @@ def _validate_schema2_active_claim_state(
         path=results_dir / "abandoned_versions.jsonl",
         project_root=infra.PROJECT_ROOT,
     )
-    abandon_receipt = validate_schema2_abandon_ledger_history(
+    abandon_receipt = validate_abandon_ledger_history(
         claim,
         rows,
         require_active_head=True,
@@ -894,7 +1187,7 @@ def _validate_schema2_active_claim_state(
 
     finalize = transaction_dir / "receipt.json"
     if os.path.lexists(finalize):
-        validate_schema2_abandon_finalize_receipt(
+        validate_abandon_finalize_receipt(
             claim,
             _read_bounded_regular_json(finalize),
             rows,
@@ -984,8 +1277,8 @@ def _runtime_reconciliation_claim_status(
                 })
             )
             new_valid = False
-            if schema == 2:
-                validate_schema2_abandon_claim_structure(claim)
+            if schema in {2, 3}:
+                validate_abandon_claim_structure(claim)
                 if results_dir is None or bots_dir is None or infra is None:
                     raise RuntimeError("recorded_finalize_live_authority_unavailable")
                 _validate_schema2_active_claim_state(
@@ -1595,7 +1888,13 @@ __all__ = [
     "schema2_abandon_quarantine_contract",
     "schema2_abandon_receipt_identity",
     "schema2_abandon_transaction_preimage",
+    "schema3_abandon_transaction_preimage",
+    "validate_abandon_claim_structure",
+    "validate_abandon_finalize_receipt",
+    "validate_abandon_ledger_history",
     "validate_schema2_abandon_claim_structure",
+    "validate_schema3_abandon_claim_structure",
     "validate_schema2_abandon_finalize_receipt",
+    "validate_schema3_abandon_finalize_receipt",
     "validate_schema2_abandon_ledger_history",
 ]

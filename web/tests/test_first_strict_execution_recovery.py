@@ -95,6 +95,26 @@ def _minimal_completion_authority(monkeypatch):
     return execution, consumed
 
 
+def _complete_control_repeats(scope, timing_plan, execution, count):
+    receipts = []
+    tickets = []
+    for repeat in range(1, count + 1):
+        deck = 91_000 + (repeat - 1) * 1_000
+        ticket = journal.begin_control_execution(
+            scope=scope,
+            repeat=repeat,
+            deck_seed_base=deck,
+            bot_seed_base=deck + 1_000_000_000,
+            timing_plan=timing_plan,
+            claim_now=time.time(),
+        )
+        receipts.append(
+            journal.complete_control_execution(ticket, execution=execution)
+        )
+        tickets.append(ticket)
+    return tickets, receipts
+
+
 def _assert_completion_not_recorded(store, ticket):
     effect = store.effect(ticket["effect_id"])
     assert effect["status"] == "running"
@@ -500,6 +520,183 @@ def test_dead_legacy_parent_reclaims_only_repeat5_once_and_rejects_late_result(
     assert reclaimed_events[0].payload["proof"]["reason"] == (
         "legacy_owner_pid_missing"
     )
+
+
+def test_control_authority_succeeds_only_after_exact_eight_receipts(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+    execution, _consumed = _minimal_completion_authority(monkeypatch)
+    _tickets, first_five = _complete_control_repeats(
+        scope,
+        timing_plan,
+        execution,
+        5,
+    )
+
+    with pytest.raises(
+        journal.FirstStrictExecutionJournalError,
+        match="first_strict_execution_success_effect_set_invalid",
+    ):
+        journal.succeed_control_execution(
+            scope,
+            expected_receipts=first_five,
+        )
+    authority_run_id = journal._authority_run_id(scope)
+    assert journal._store().instance(authority_run_id)["status"] == "running"
+
+    remaining_receipts = []
+    for repeat in range(6, 9):
+        deck = 91_000 + (repeat - 1) * 1_000
+        ticket = journal.begin_control_execution(
+            scope=scope,
+            repeat=repeat,
+            deck_seed_base=deck,
+            bot_seed_base=deck + 1_000_000_000,
+            timing_plan=timing_plan,
+            claim_now=time.time(),
+        )
+        remaining_receipts.append(
+            journal.complete_control_execution(ticket, execution=execution)
+        )
+    all_receipts = [*first_five, *remaining_receipts]
+    terminal = journal.succeed_control_execution(
+        scope,
+        expected_receipts=all_receipts,
+    )
+    assert terminal["outcome"] == "succeeded"
+    assert len(terminal["effects"]["completed"]) == 8
+    assert terminal["effects"]["nonterminal"] == []
+    assert journal.succeed_control_execution(
+        scope,
+        expected_receipts=all_receipts,
+    ) == terminal
+    assert journal.read_succeeded_control_execution(
+        scope,
+        expected_receipts=all_receipts,
+        expected_terminal_receipt=terminal,
+    ) == terminal
+
+    # A verified-checkpoint crash replays exact completed effects; it cannot
+    # request a ninth sample or change an existing sample identity.
+    recovered = journal.begin_control_execution(
+        scope=scope,
+        repeat=8,
+        deck_seed_base=98_000,
+        bot_seed_base=1_000_098_000,
+        timing_plan=timing_plan,
+        claim_now=time.time(),
+    )
+    assert recovered["state"] == "recovered"
+    with pytest.raises(
+        journal.FirstStrictExecutionJournalError,
+        match="first_strict_execution_succeeded_recovery_invalid",
+    ):
+        journal.begin_control_execution(
+            scope=scope,
+            repeat=8,
+            deck_seed_base=999_000,
+            bot_seed_base=1_000_999_000,
+            timing_plan=timing_plan,
+            claim_now=time.time(),
+        )
+
+
+def test_control_authority_abandon_preserves_receipts_and_fences_running_repeat(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+    execution, _consumed = _minimal_completion_authority(monkeypatch)
+    _tickets, receipts = _complete_control_repeats(
+        scope,
+        timing_plan,
+        execution,
+        4,
+    )
+    deck = 95_000
+    running = journal.begin_control_execution(
+        scope=scope,
+        repeat=5,
+        deck_seed_base=deck,
+        bot_seed_base=deck + 1_000_000_000,
+        timing_plan=timing_plan,
+        claim_now=time.time(),
+    )
+
+    terminal = journal.abandon_control_execution(
+        scope,
+        reason="operator_abandon_v58",
+    )
+    assert terminal["outcome"] == "abandoned"
+    assert len(terminal["effects"]["completed"]) == 4
+    assert len(terminal["effects"]["abandoned"]) == 1
+    assert terminal["effects"]["nonterminal"] == []
+    assert journal.abandon_control_execution(
+        scope,
+        reason="operator_abandon_v58",
+    ) == terminal
+    for reference in receipts:
+        evidence, issues = journal.read_control_execution_receipt(
+            reference,
+            expected_scope=scope,
+        )
+        assert issues == []
+        assert evidence["execution"] == execution
+    with pytest.raises(
+        journal.FirstStrictExecutionJournalError,
+        match="first_strict_execution_stale_completion",
+    ):
+        journal.complete_control_execution(running, execution=execution)
+    with pytest.raises(
+        journal.FirstStrictExecutionJournalError,
+        match="first_strict_execution_authority_terminal",
+    ):
+        journal.begin_control_execution(
+            scope=scope,
+            repeat=6,
+            deck_seed_base=96_000,
+            bot_seed_base=1_000_096_000,
+            timing_plan=timing_plan,
+            claim_now=time.time(),
+        )
+
+
+def test_control_authority_abandon_creates_exact_pre_effect_tombstone(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(journal, "CONTROL_EXECUTION_ROOT", tmp_path / "journal")
+    timing_plan = national_native.build_native_match_timing_plan(
+        hands=70,
+        requested_timeout_sec=national_native.LOCAL_PRECOMMIT_MATCH_TIMEOUT_SEC,
+    )
+    scope = _scope(timing_plan)
+
+    terminal = journal.abandon_control_execution(scope, reason="cancelled")
+    assert terminal["outcome"] == "abandoned"
+    assert terminal["effects"] == {
+        "completed": [],
+        "abandoned": [],
+        "exhausted": [],
+        "nonterminal": [],
+    }
+    with pytest.raises(
+        journal.FirstStrictExecutionJournalError,
+        match="first_strict_execution_authority_terminal",
+    ):
+        _begin(scope, timing_plan, claim_now=time.time())
 
 
 def test_pending_payload_rejects_scope_or_ticket_tampering(tmp_path, monkeypatch):

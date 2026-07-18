@@ -1126,6 +1126,115 @@ def _schema2_claim_fixture(
     return checkpoint, state_file, candidate, claim, transaction_dir
 
 
+def test_schema3_first_strict_fence_survives_checkpoint_clear_and_revalidates(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_core
+    import evolution_infra
+    import first_strict_execution_journal as execution_journal
+    from bot_artifact import canonical_digest
+    from epoch_authority import (
+        validate_abandon_claim_structure,
+        validate_abandon_finalize_receipt,
+    )
+
+    checkpoint = _strict_checkpoint(144, 143, "precommit_failed")
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text(json.dumps(checkpoint), encoding="utf-8")
+    candidate = tmp_path / "national_v144"
+    _strict_artifact(candidate, 144)
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tbm.RESULTS_DIR)
+    monkeypatch.setattr(tbm, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tbm, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(
+        execution_journal,
+        "CONTROL_EXECUTION_ROOT",
+        tmp_path / "first_strict_journal",
+    )
+    scope = {
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "checkpoint_revision": checkpoint["checkpoint_revision"],
+        "candidate_version": checkpoint["next_v"],
+        "candidate_label": "national_v144",
+        "candidate_artifact_hash": "a" * 64,
+        "control_id": "first_strict_control_v1",
+        "control_artifact_hash": "b" * 64,
+        "control_receipt_digest": "c" * 64,
+        "precommit_plan_digest": "d" * 64,
+        "evaluation_contract_digest": "e" * 64,
+        "native_match_timing_plan_digest": "f" * 64,
+        "precommit_attempt": 1,
+    }
+    terminal_receipt = execution_journal.abandon_control_execution(
+        scope,
+        reason="abandon_generation",
+    )
+    fence = {
+        "present": True,
+        "abandoned": True,
+        "scope": scope,
+        "terminal_receipt": terminal_receipt,
+        "proof_digest": canonical_digest({
+            "scope": scope,
+            "terminal_receipt": terminal_receipt,
+        }),
+    }
+
+    def clear(**_expected):
+        state_file.unlink()
+        return True
+
+    transaction = tbm._finalize_checkpoint_abandon_transaction(
+        checkpoint,
+        reason="abandon_generation",
+        infra_failure=None,
+        timestamp=10.0,
+        recorded_abandon_receipt=None,
+        first_strict_execution_fence=fence,
+        clear_pipeline_state=clear,
+    )
+    transaction_dir = (
+        tbm.RESULTS_DIR
+        / "policy_epoch_abandon_transactions"
+        / transaction["transaction_id"]
+    )
+    claim = json.loads(
+        (transaction_dir / "claim.json").read_text(encoding="utf-8")
+    )
+    finalize = json.loads(
+        (transaction_dir / "receipt.json").read_text(encoding="utf-8")
+    )
+    rows = evolution_infra.load_abandoned_version_receipts(
+        path=tbm.RESULTS_DIR / "abandoned_versions.jsonl",
+        project_root=tbm.PROJECT_ROOT,
+    )
+
+    assert claim["schema_version"] == 3
+    assert claim["first_strict_execution_fence"] == fence
+    assert finalize["schema_version"] == 3
+    assert finalize["first_strict_execution_fence_digest"] == fence[
+        "proof_digest"
+    ]
+    assert validate_abandon_claim_structure(claim) == claim
+    assert validate_abandon_finalize_receipt(claim, finalize, rows) == finalize
+    assert transaction["first_strict_execution_fence"] == fence
+    assert not state_file.exists()
+    assert not candidate.exists()
+
+    forged = json.loads(json.dumps(claim))
+    forged["first_strict_execution_fence"]["scope"][
+        "checkpoint_revision"
+    ] += 1
+    unsigned = {
+        key: value for key, value in forged.items() if key != "claim_digest"
+    }
+    forged["claim_digest"] = canonical_digest(unsigned)
+    with pytest.raises(RuntimeError, match="first_strict"):
+        validate_abandon_claim_structure(forged)
+
+
 def test_schema2_resigned_forgery_extra_key_and_path_traversal_fail_closed(
     tmp_path,
     monkeypatch,

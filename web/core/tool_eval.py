@@ -1306,6 +1306,24 @@ async def _run_national_precommit_backend(
         and (not strength_evidence_required or strength_sample_count >= 2)
     )
 
+    first_strict_execution_terminal_receipt = None
+    if system_control_plan and passed:
+        # Close the physical-execution authority before projecting a verified
+        # checkpoint.  A crash after this atomic SQLite transition is safe:
+        # the next exact precommit invocation replays all eight receipts and
+        # reaches this idempotent transition without launching another match.
+        from first_strict_execution_journal import succeed_control_execution
+
+        execution_receipts = [
+            repeat.get("execution_receipt")
+            for matchup in matchups
+            for repeat in (matchup.get("repeats") or [])
+        ]
+        first_strict_execution_terminal_receipt = succeed_control_execution(
+            control_execution_scope,
+            expected_receipts=execution_receipts,
+        )
+
     try:
         log_system_event(
             "pipeline.precommit_eval.national",
@@ -1380,6 +1398,11 @@ async def _run_national_precommit_backend(
         "precommit_eval_contract_digest": evaluation_contract.get("contract_digest"),
         "control_execution_scope": (
             national_result.get("control_execution_scope")
+            if system_control_plan
+            else None
+        ),
+        "first_strict_execution_terminal_receipt": (
+            first_strict_execution_terminal_receipt
             if system_control_plan
             else None
         ),
@@ -1923,6 +1946,37 @@ async def run_precommit_eval(args):
                 )
             )
         )
+        first_strict_terminal_matches = True
+        cached_plan_opponents = (
+            stored_plan.get("opponents")
+            if isinstance(stored_plan, dict)
+            else []
+        )
+        if any(
+            isinstance(item, dict)
+            and item.get("authority") == "system_first_strict_control"
+            for item in (cached_plan_opponents or [])
+        ):
+            try:
+                from first_strict_execution_journal import (
+                    read_succeeded_control_execution,
+                )
+
+                cached_national = precommit_gate.get("national") or {}
+                cached_receipts = [
+                    repeat.get("execution_receipt")
+                    for matchup in (cached_national.get("matchups") or [])
+                    for repeat in (matchup.get("repeats") or [])
+                ]
+                read_succeeded_control_execution(
+                    precommit_gate.get("control_execution_scope"),
+                    expected_receipts=cached_receipts,
+                    expected_terminal_receipt=precommit_gate.get(
+                        "first_strict_execution_terminal_receipt"
+                    ),
+                )
+            except Exception:
+                first_strict_terminal_matches = False
         if (
             precommit_gate.get("passed") is True
             and cached_fingerprint == code_fingerprint
@@ -1937,6 +1991,7 @@ async def run_precommit_eval(args):
             and _quality_gate_ok(_precommit_ckpt)
             and _review_gate_ok(_precommit_ckpt)
             and _critic_gate_ok(_precommit_ckpt)
+            and first_strict_terminal_matches
         ):
             precommit_gate["idempotent_cache"] = True
             precommit_gate["directive"] = (

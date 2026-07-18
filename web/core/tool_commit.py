@@ -1044,6 +1044,33 @@ def validate_commit_gate_ledger(
                                         "first_strict_control_execution_scope_"
                                         f"{field}_mismatch"
                                     )
+                        try:
+                            from first_strict_execution_journal import (
+                                read_succeeded_control_execution,
+                            )
+
+                            execution_receipts = [
+                                repeat.get("execution_receipt")
+                                for matchup in (
+                                    (precommit.get("national") or {}).get(
+                                        "matchups"
+                                    )
+                                    or []
+                                )
+                                for repeat in (matchup.get("repeats") or [])
+                            ]
+                            read_succeeded_control_execution(
+                                execution_scope,
+                                expected_receipts=execution_receipts,
+                                expected_terminal_receipt=precommit.get(
+                                    "first_strict_execution_terminal_receipt"
+                                ),
+                            )
+                        except Exception as exc:
+                            control_errors.append(
+                                "first_strict_control_execution_terminal_invalid:"
+                                f"{type(exc).__name__}"
+                            )
                         result_errors, recomputed_control_gate = (
                             validate_control_result(
                                 precommit,
