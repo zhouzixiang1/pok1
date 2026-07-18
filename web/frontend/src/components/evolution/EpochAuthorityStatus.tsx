@@ -1,6 +1,7 @@
 import type { ControlStatus, EpochState } from "../../api/control";
 import { authorityNextVersion } from "../../hooks/useControlStatus";
 import { cn } from "../../lib/utils";
+import { canonicalGenerationLabel } from "../../lib/canonicalGenerationIdentity";
 
 const stateLabels: Record<EpochState, string> = {
   reset_required: "需要执行一次性 epoch 重置",
@@ -51,6 +52,9 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
   const nextVersion = authorityNextVersion(status);
   const debris = status.unpublished_candidate_versions;
   const resetBlocked = !status.epoch_initialized;
+  const activeIdentityLabel = status.active_generation
+    ? canonicalGenerationLabel(status.active_generation, status.active_generation.next_v)
+    : null;
 
   return (
     <section className={cn("rounded-xl border p-4", stateTone[status.epoch_state], className)} aria-label="严格国赛 epoch 权威">
@@ -169,7 +173,11 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
 
           {status.active_generation && (
             <p>
-              权威活动代次：<span className="font-mono">v{status.active_generation.next_v}</span>
+              权威活动代次：{activeIdentityLabel ? (
+                <span className="font-mono">{activeIdentityLabel}</span>
+              ) : (
+                <span className="font-semibold text-red-700 dark:text-red-300">双身份投影不可用</span>
+              )}
               {status.active_generation.source_v != null && <> · source_v=<span className="font-mono">v{status.active_generation.source_v}</span></>}
               <> · {status.active_generation.stage}</>
               <> · workflow <span className="font-mono">{status.active_generation.workflow_run_id || "—"}</span></>

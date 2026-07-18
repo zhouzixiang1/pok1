@@ -17,6 +17,7 @@ from bot_namespace import (
     bot_name,
     bot_tag,
     resolve_national_bot_spec,
+    strict_generation_identity,
     version_sort_key,
 )
 
@@ -65,7 +66,11 @@ def _inventory_strength_snapshot(active_names: list[str]) -> dict:
 def _decorate_published(summary: dict) -> dict:
     """Project the already-resolved published pool without lifecycle guessing."""
 
+    identity = strict_generation_identity(summary.get("version"))
+    if summary.get("name") != identity["canonical_bot_name"]:
+        raise ValueError("published_bot_summary_canonical_name_mismatch")
     summary.update({
+        **identity,
         "active": True,
         "tagged": True,
         "reaped": False,
@@ -212,7 +217,7 @@ async def bot_detail(version: int):
     except Exception:
         pass
 
-    return summary
+    return _decorate_published(summary)
 
 
 @router.get("/{version}/download")

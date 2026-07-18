@@ -12,6 +12,7 @@ from bot_namespace import (
     build_runtime_manifest,
     parse_bot_version,
     resolve_national_bot_spec,
+    strict_generation_identity,
 )
 
 
@@ -43,6 +44,33 @@ def test_parser_accepts_only_canonical_active_namespace():
     assert parse_bot_version("claude_v143") is None
     assert parse_bot_version("v143") is None
     assert parse_bot_version("national_v0") is None
+
+
+def test_strict_generation_identity_maps_immutable_versions_to_ui_ordinals():
+    assert strict_generation_identity(143) == {
+        "generation_ordinal": 1,
+        "canonical_version": 143,
+        "canonical_bot_name": "national_v143",
+        "canonical_tag": "national-bot-v143",
+    }
+    assert strict_generation_identity(144) == {
+        "generation_ordinal": 2,
+        "canonical_version": 144,
+        "canonical_bot_name": "national_v144",
+        "canonical_tag": "national-bot-v144",
+    }
+
+
+@pytest.mark.parametrize("value", [True, False, "143", 143.0, None])
+def test_strict_generation_identity_rejects_non_integer_versions(value):
+    with pytest.raises(TypeError):
+        strict_generation_identity(value)
+
+
+@pytest.mark.parametrize("value", [0, 1, 142, -1])
+def test_strict_generation_identity_rejects_pre_epoch_versions(value):
+    with pytest.raises(ValueError):
+        strict_generation_identity(value)
 
 
 def test_first_strict_candidate_has_fresh_noninherited_lineage(tmp_path):

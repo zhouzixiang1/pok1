@@ -703,6 +703,9 @@ def _sync_evolution_fields(state: dict) -> dict:
         )
         state["strict_generation_count"] = generation_count
         state["strict_published_versions"] = epoch["strict_published_versions"]
+        state["strict_published_bot_identities"] = epoch[
+            "strict_published_bot_identities"
+        ]
         state["active_bots"] = epoch["active_bots"]
         state["reset_receipt_valid"] = bool(epoch["reset_receipt_valid"])
         state["reset_receipt_digest"] = epoch.get("reset_receipt_digest")
@@ -756,6 +759,7 @@ def _sync_evolution_fields(state: dict) -> dict:
             "version_authority_high_water": 0,
             "strict_generation_count": 0,
             "strict_published_versions": [],
+            "strict_published_bot_identities": [],
             "active_bots": [],
             "reset_receipt_valid": False,
             "reset_receipt_digest": None,

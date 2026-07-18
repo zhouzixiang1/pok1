@@ -244,6 +244,12 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     assert state["initialized"] is True
     assert state["strict_published"] is True
     assert state["strict_published_bots"] == ["national_v143"]
+    assert state["strict_published_bot_identities"] == [{
+        "generation_ordinal": 1,
+        "canonical_version": 143,
+        "canonical_bot_name": "national_v143",
+        "canonical_tag": "national-bot-v143",
+    }]
     assert state["namespace_publication_proven"] is True
 
 
@@ -1080,6 +1086,11 @@ def test_valid_active_checkpoint_owns_target_but_not_published_high_water(
     assert projection["next_v"] == 145
     assert projection["next_v_authority"] == "active_checkpoint_epoch_binding"
     assert projection["active_generation"]["checkpoint_revision"] == 8
+    assert projection["active_generation"]["next_v"] == 145
+    assert projection["active_generation"]["canonical_version"] == 145
+    assert projection["active_generation"]["generation_ordinal"] == 3
+    assert projection["active_generation"]["canonical_bot_name"] == "national_v145"
+    assert projection["active_generation"]["canonical_tag"] == "national-bot-v145"
 
 
 def test_projection_routes_exact_recorded_abandon_to_cas_finalize(

@@ -107,6 +107,54 @@ class TestListBots:
         assert [row["name"] for row in result["history"]] == ["national_v143"]
         assert "national_v155" not in json.dumps(result)
 
+    def test_backend_ordinals_survive_sorting_and_pool_filtering(
+        self, monkeypatch, tmp_path
+    ):
+        from server.routes import bots as bots_mod
+
+        bots_root = tmp_path / "bots"
+        for name in ("national_v143", "national_v144"):
+            (bots_root / name).mkdir(parents=True)
+        monkeypatch.setattr(bots_mod, "BOTS_DIR", bots_root)
+        monkeypatch.setattr(
+            bots_mod,
+            "build_bot_summary",
+            lambda _path, name, *_args, **_kwargs: {
+                "name": name,
+                "version": int(name.removeprefix("national_v")),
+                "completed": True,
+            },
+        )
+
+        both = bots_mod.build_bot_listing(
+            {}, {}, {},
+            include_history=False,
+            active_names=["national_v144", "national_v143"],
+        )["active"]
+        assert [(row["canonical_bot_name"], row["generation_ordinal"]) for row in both] == [
+            ("national_v143", 1),
+            ("national_v144", 2),
+        ]
+        only_second = bots_mod.build_bot_listing(
+            {}, {}, {},
+            include_history=False,
+            active_names=["national_v144"],
+        )["active"]
+        assert only_second[0]["generation_ordinal"] == 2
+        assert only_second[0]["canonical_tag"] == "national-bot-v144"
+
+    def test_published_summary_name_version_mismatch_fails_closed(self):
+        from server.routes import bots as bots_mod
+
+        with pytest.raises(
+            ValueError,
+            match="published_bot_summary_canonical_name_mismatch",
+        ):
+            bots_mod._decorate_published({
+                "name": "national_v143",
+                "version": 144,
+            })
+
     @pytest.mark.requires_active_bot
     def test_data_stream_bot_snapshot_uses_active_namespace(self, monkeypatch):
         import evolution_infra
@@ -140,6 +188,10 @@ class TestBotDetail:
         data = resp.json()
         assert data["name"] == bot_name(active_bot_version)
         assert data["version"] == active_bot_version
+        assert data["canonical_version"] == active_bot_version
+        assert data["canonical_bot_name"] == bot_name(active_bot_version)
+        assert data["canonical_tag"] == f"national-bot-v{active_bot_version}"
+        assert data["generation_ordinal"] == active_bot_version - 142
         assert "files" in data
         assert "total_lines" in data
         assert "official_certification" in data

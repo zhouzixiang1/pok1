@@ -1,4 +1,5 @@
 import { withOperatorControlHeader } from "./operatorControl.js";
+import { canonicalGenerationIdentityIssues } from "../lib/canonicalGenerationIdentity.js";
 
 export type EvaluationEpoch = "national_tcp_policy_v1";
 
@@ -31,7 +32,14 @@ export type IgnoredCheckpointReason =
   | "runtime_reconciliation_in_progress"
   | "abandon_receipt_ledger_requires_reconciliation";
 
-export interface ActiveGeneration {
+export interface CanonicalGenerationIdentity {
+  generation_ordinal: number;
+  canonical_version: number;
+  canonical_bot_name: string;
+  canonical_tag: string;
+}
+
+export interface ActiveGeneration extends CanonicalGenerationIdentity {
   next_v: number;
   source_v: number | null;
   parent2_v: number | null;
@@ -169,6 +177,7 @@ export interface ControlStatus {
   version_authority_high_water: number;
   strict_generation_count: number;
   strict_published_versions: number[];
+  strict_published_bot_identities: CanonicalGenerationIdentity[];
   active_bots: string[];
   reset_receipt_valid: boolean;
   reset_receipt_digest: string | null;
@@ -373,6 +382,9 @@ export function controlLaunchBoundaryIssues(
   };
 
   if (active) {
+    for (const issue of canonicalGenerationIdentityIssues(active, active.next_v)) {
+      issues.push(`active.canonical_identity.${issue}`);
+    }
     requireField(pipeline.exists === true, "active.pipeline.exists");
     requireField(pipeline.authority === "strict_epoch_projection", "active.pipeline.authority");
     requireField(Boolean(route), "active.route");

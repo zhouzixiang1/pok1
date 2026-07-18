@@ -90,6 +90,9 @@ def test_dashboard_operator_contract_distinguishes_authority_shapes():
     assert "API-only operator/recovery" in runbook
     assert "Dashboard intentionally exposes no cancel control" in runbook
     assert "Compatibility fields such as `total_games`" in runbook
+    assert "`bot_namespace.strict_generation_identity`" in runbook
+    assert "Sorting, filtering, reaping" in runbook
+    assert "must never calculate the ordinal" in runbook
 
 
 def test_operator_token_is_memory_only_and_shared_across_mutations():
@@ -199,8 +202,10 @@ def test_pipeline_component_validates_identity_and_does_not_greenwash_repair_or_
     labels = (FRONTEND / "constants" / "pipeline.ts").read_text(encoding="utf-8")
 
     assert "checkpoint.master_plan.tasks" in source
-    for field in ("evaluation_epoch", "next_v", "source_v", "stage", "workflow_run_id", "run_id", "checkpoint_revision"):
+    for field in ("evaluation_epoch", "next_v", "source_v", "parent2_v", "stage", "workflow_run_id", "run_id", "checkpoint_revision"):
         assert f"checkpoint.{field}" in presentation
+    assert "activeGeneration.canonical_version" in presentation
+    assert "canonicalGenerationIdentityIssues(activeGeneration)" in presentation
     assert "checkpoint_revision: number" in types
     assert "gate.advisory_approved === true" in presentation
     assert "gate.approved === true ? \"建议支持\"" not in source
@@ -244,24 +249,39 @@ def test_official_ui_distinguishes_first_strict_control_from_normal_full_profile
     assert "不猜测为普通 5+3" in bots
 
 
-def test_bot_page_sequence_is_presentation_only_and_keeps_real_tag_visible():
+def test_bot_page_consumes_backend_dual_identity_without_reindexing_or_tag_synthesis():
     bots = (FRONTEND / "pages" / "BotManager.tsx").read_text(encoding="utf-8")
 
-    assert "displayOrdinalByName" in bots
-    assert ".sort((a, b) => a.version - b.version)" in bots
-    assert ".map((bot, index) => [bot.name, index + 1] as const)" in bots
-    assert "Bot {displayOrdinal}" in bots
+    assert "displayOrdinalByName" not in bots
+    assert ".map((bot, index) => [bot.name, index + 1] as const)" not in bots
+    assert "displayIdentityByName" in bots
+    assert "validatedPublishedIdentity" in bots
+    assert "sameCanonicalGenerationIdentity(bot, authority)" in bots
+    assert "第{identity.generation_ordinal}代" in bots
     assert "tag: {completionTag}" in bots
-    assert "`national-bot-v${bot.version}`" in bots
-    assert "bot.active === true" in bots
-    assert "bot.tagged === true" in bots
-    assert "真实身份以旁列 annotated completion tag 为准" in bots
-    # Display order must not reuse strength rank or mutate any frozen DTO.
-    ordinal_block = bots[bots.index("const displayOrdinalByName"):bots.index("const bots = useMemo", bots.index("const displayOrdinalByName"))]
-    assert ".rank" not in ordinal_block
-    assert "selection_score" not in ordinal_block
-    assert "leaderboard_score" not in ordinal_block
-    assert "updateData" not in ordinal_block
+    assert "`national-bot-v${bot.version}`" not in bots
+    assert "identity?.canonical_tag" in bots
+    assert "排序和过滤不会重编号" in bots
+
+
+def test_active_generation_views_render_backend_owned_dual_identity():
+    control = (FRONTEND / "pages" / "ControlPanel.tsx").read_text(encoding="utf-8")
+    epoch = (
+        FRONTEND / "components" / "evolution" / "EpochAuthorityStatus.tsx"
+    ).read_text(encoding="utf-8")
+    pipeline = (
+        FRONTEND / "components" / "evolution" / "PipelineStatus.tsx"
+    ).read_text(encoding="utf-8")
+    helper = (
+        FRONTEND / "lib" / "canonicalGenerationIdentity.ts"
+    ).read_text(encoding="utf-8")
+
+    for source in (control, epoch, pipeline):
+        assert "canonicalGenerationLabel" in source
+        assert "双身份投影不可用" in source
+    assert "version -" not in helper
+    assert "generation_ordinal +" not in helper
+    assert "canonical_tag}" in helper
 
 
 def test_official_ui_preserves_jobless_digest_bound_bootstrap_failure_and_normal_stage_jobs():

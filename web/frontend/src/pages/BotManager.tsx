@@ -7,6 +7,11 @@ import { EmptyState } from "../components/shared/EmptyState";
 import { Skeleton } from "../components/shared/Skeleton";
 import { useBots, useH2H, useUpdateData } from "../context/DataProvider";
 import { useControlStatus } from "../hooks/useControlStatus";
+import type { CanonicalGenerationIdentity } from "../api/control";
+import {
+  canonicalGenerationIdentityIssues,
+  sameCanonicalGenerationIdentity,
+} from "../lib/canonicalGenerationIdentity";
 
 const CheckIcon = () => (
   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
@@ -28,6 +33,23 @@ interface CertificationView {
 const isDigest = (value: unknown): value is string => (
   typeof value === "string" && /^[0-9a-f]{64}$/.test(value)
 );
+
+function validatedPublishedIdentity(
+  bot: BotSummary,
+  authority: CanonicalGenerationIdentity | null | undefined,
+): CanonicalGenerationIdentity | null {
+  if (
+    !authority
+    || bot.name !== bot.canonical_bot_name
+    || bot.version !== bot.canonical_version
+    || canonicalGenerationIdentityIssues(bot, bot.version).length > 0
+    || canonicalGenerationIdentityIssues(authority, bot.version).length > 0
+    || !sameCanonicalGenerationIdentity(bot, authority)
+  ) {
+    return null;
+  }
+  return bot;
+}
 
 function certificationView(certification?: OfficialCertification): CertificationView {
   if (!certification) {
@@ -164,12 +186,12 @@ function RatingLine({ bot }: { bot: BotSummary }) {
 }
 function BotCard({
   bot,
-  displayOrdinal,
+  identity,
   h2hData,
   onMessage,
 }: {
   bot: BotSummary;
-  displayOrdinal: number | null;
+  identity: CanonicalGenerationIdentity | null;
   h2hData: Record<string, H2HEntry>;
   onMessage: (message: string) => void;
 }) {
@@ -209,16 +231,9 @@ function BotCard({
   }, [bot.version, expanded, selectedFile]);
 
   const certification = detail?.official_certification ?? bot.official_certification;
-  // This is presentation metadata only.  The backend has already admitted
-  // this row through the strict published inventory; the real completion tag
-  // remains the durable identity and the display ordinal never enters rating,
-  // evidence, checkpoint, or publication state.
-  const completionTag = bot.active === true
-    && bot.tagged === true
-    && Number.isSafeInteger(bot.version)
-    && bot.version > 0
-    ? `national-bot-v${bot.version}`
-    : null;
+  // Both identities are backend projections cross-bound against the epoch
+  // inventory above.  Neither sorting nor filtering can mint a new ordinal.
+  const completionTag = identity?.canonical_tag ?? null;
   const certView = certificationView(certification);
   const formalSummary = certification?.formal_summary;
   const ledgerEntry = certification?.official_verdict_ledger_entry;
@@ -268,15 +283,15 @@ function BotCard({
       >
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            {displayOrdinal != null ? (
-              <span className="font-semibold text-gray-900 dark:text-white">Bot {displayOrdinal}</span>
+            {identity ? (
+              <span className="font-semibold text-gray-900 dark:text-white">第{identity.generation_ordinal}代</span>
             ) : (
-              <span className="font-semibold text-red-700 dark:text-red-300">Bot 序号不可用</span>
+              <span className="font-semibold text-red-700 dark:text-red-300">Bot 双身份不可用</span>
             )}
             {completionTag ? (
               <span
                 className="rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 font-mono text-[10px] text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
-                title={`真实发布目录：${bot.name}`}
+                title={`真实发布目录：${identity?.canonical_bot_name}`}
               >
                 tag: {completionTag}
               </span>
@@ -285,7 +300,7 @@ function BotCard({
                 tag 身份不可用
               </span>
             )}
-            <span className="font-mono text-[10px] text-gray-400">{compactBotName(bot.name)}</span>
+            <span className="font-mono text-[10px] text-gray-400">{identity?.canonical_bot_name ?? bot.name}</span>
             <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"><CheckIcon /> 严格发布</span>
             <span className={`rounded border px-1.5 py-0.5 text-[10px] ${certView.tone}`}>{certView.label}</span>
           </div>
@@ -415,11 +430,21 @@ export default function BotManager() {
     return streamedBots.filter((bot) => allowed.has(bot.name));
   }, [status, streamedBots]);
 
-  const displayOrdinalByName = useMemo(() => new Map(
-    [...publishedBots]
-      .sort((a, b) => a.version - b.version)
-      .map((bot, index) => [bot.name, index + 1] as const),
-  ), [publishedBots]);
+  const displayIdentityByName = useMemo(() => {
+    const authorityByName = new Map<string, CanonicalGenerationIdentity | null>();
+    for (const identity of status?.strict_published_bot_identities ?? []) {
+      const name = identity.canonical_bot_name;
+      if (authorityByName.has(name) || canonicalGenerationIdentityIssues(identity).length > 0) {
+        authorityByName.set(name, null);
+      } else {
+        authorityByName.set(name, identity);
+      }
+    }
+    return new Map(publishedBots.map((bot) => [
+      bot.name,
+      validatedPublishedIdentity(bot, authorityByName.get(bot.name)),
+    ] as const));
+  }, [publishedBots, status?.strict_published_bot_identities]);
 
   const bots = useMemo(() => {
     return [...publishedBots].sort((a, b) => {
@@ -436,7 +461,7 @@ export default function BotManager() {
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 dark:text-white">严格发布 Bot</h1>
-          <p className="mt-1 text-xs text-gray-500">只读页面：Bot 序号仅表示当前发布池的版本顺序，真实身份以旁列 annotated completion tag 为准。</p>
+          <p className="mt-1 text-xs text-gray-500">只读页面：代次序号与 canonical Bot/tag 均由后端 epoch 权威投影；排序和过滤不会重编号。</p>
         </div>
         <div className="flex items-center gap-2 text-xs text-gray-500">
           <span>排序</span>
@@ -478,7 +503,7 @@ export default function BotManager() {
             <BotCard
               key={bot.name}
               bot={bot}
-              displayOrdinal={displayOrdinalByName.get(bot.name) ?? null}
+              identity={displayIdentityByName.get(bot.name) ?? null}
               h2hData={h2hData}
               onMessage={setMessage}
             />

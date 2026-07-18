@@ -11,6 +11,7 @@ import {
   type PipelineStage,
 } from "../../constants/pipeline";
 import { cn } from "../../lib/utils";
+import { canonicalGenerationLabel } from "../../lib/canonicalGenerationIdentity";
 import {
   criticAdvisoryComplete,
   criticAdvisoryVerdict,
@@ -123,6 +124,10 @@ export function PipelineStatus({
   schedulerActive?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const activeIdentityLabel = activeGeneration
+    ? canonicalGenerationLabel(activeGeneration, activeGeneration.next_v)
+    : null;
+  const activeIdentityText = activeIdentityLabel ?? "双身份投影不可用";
 
   if (handoff && handoff.status !== "none") {
     const blocked = handoff.status === "blocked" || handoff.blocked || handoffBlocked;
@@ -162,7 +167,7 @@ export function PipelineStatus({
     return (
       <div className="p-3">
         <h3 className="mb-1 text-xs font-semibold uppercase text-red-700 dark:text-red-300">
-          流水线 v{activeGeneration.next_v} 恢复已阻断
+          流水线 {activeIdentityText} 恢复已阻断
         </h3>
         <p className="text-xs text-red-600 dark:text-red-300">
           后端不会执行当前 checkpoint route；解决权威或恢复诊断前不会推进下一代。
@@ -194,7 +199,7 @@ export function PipelineStatus({
     return (
       <div className="p-3">
         <h3 className="mb-1 text-xs font-semibold uppercase text-gray-500">
-          流水线 v{activeGeneration.next_v}
+          流水线 {activeIdentityText}
           {activeGeneration.source_v != null ? ` · source_v=v${activeGeneration.source_v}` : ""}
         </h3>
         <p className="text-xs text-amber-600 dark:text-amber-300">
@@ -226,7 +231,7 @@ export function PipelineStatus({
     <div className="p-3">
       <button onClick={() => setExpanded(!expanded)} className="w-full text-left flex items-center justify-between mb-2">
         <h3 className="text-xs font-semibold uppercase text-gray-500">
-          流水线 v{activeGeneration.next_v}
+          流水线 {activeIdentityText}
           {activeGeneration.source_v != null ? ` · source_v=v${activeGeneration.source_v}` : ""}
           {activeGeneration.attempt.generation ? ` (尝试 ${activeGeneration.attempt.generation})` : ""}
         </h3>

@@ -18,6 +18,7 @@ import { stabilityPresentation } from "../lib/stabilityView";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { cn, compactBotName } from "../lib/utils";
+import { canonicalGenerationLabel } from "../lib/canonicalGenerationIdentity";
 
 const strengthConfidenceLabel: Record<string, string> = {
   high: "强度高置信",
@@ -192,6 +193,12 @@ export default function Overview() {
   const top5 = visibleRatings.slice(0, 5);
   const rest = visibleRatings.slice(5);
   const nextAuthorityVersion = authorityNextVersion(controlStatus);
+  const activeIdentityLabel = controlStatus?.active_generation
+    ? canonicalGenerationLabel(
+      controlStatus.active_generation,
+      controlStatus.active_generation.next_v,
+    )
+    : null;
   const strengthEmptyMessage = controlStatus?.epoch_initialized
     ? controlStatus.active_bots.length === 0
       ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
@@ -464,7 +471,7 @@ export default function Overview() {
                   </Badge>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
                     {controlStatus.active_generation
-                      ? `target v${controlStatus.active_generation.next_v} · source_v ${controlStatus.active_generation.source_v == null ? "—" : `v${controlStatus.active_generation.source_v}`}`
+                      ? `${activeIdentityLabel ?? "双身份投影不可用"} · source_v ${controlStatus.active_generation.source_v == null ? "—" : `v${controlStatus.active_generation.source_v}`}`
                       : controlStatus.post_publication_handoff.status !== "none"
                         ? `post-publication v${controlStatus.post_publication_handoff.version ?? "?"}`
                         : `scheduler target ${nextAuthorityVersion == null ? "待恢复" : `v${nextAuthorityVersion}`}`}

@@ -1,5 +1,6 @@
 import type { ActiveGeneration } from "../api/control.js";
 import type { PipelineCheckpoint, PipelineGateResult } from "../api/types.js";
+import { canonicalGenerationIdentityIssues } from "./canonicalGenerationIdentity.js";
 
 export function criticAdvisoryComplete(gate: PipelineGateResult): boolean {
   return gate.approved === true
@@ -24,11 +25,14 @@ export function pipelineCheckpointIdentityIssues(
   return [
     checkpoint.evaluation_epoch !== "national_tcp_policy_v1" ? "evaluation_epoch" : null,
     checkpoint.next_v !== activeGeneration.next_v ? "next_v" : null,
+    checkpoint.next_v !== activeGeneration.canonical_version ? "canonical_version" : null,
     checkpoint.source_v !== activeGeneration.source_v ? "source_v" : null,
     (checkpoint.parent2_v ?? null) !== activeGeneration.parent2_v ? "parent2_v" : null,
     checkpoint.stage !== activeGeneration.stage ? "stage" : null,
     checkpoint.workflow_run_id !== activeGeneration.workflow_run_id ? "workflow_run_id" : null,
     checkpoint.run_id !== activeGeneration.run_id ? "run_id" : null,
     checkpoint.checkpoint_revision !== activeGeneration.checkpoint_revision ? "checkpoint_revision" : null,
+    ...canonicalGenerationIdentityIssues(activeGeneration)
+      .map((issue) => `canonical_identity.${issue}`),
   ].filter((value): value is string => value !== null);
 }

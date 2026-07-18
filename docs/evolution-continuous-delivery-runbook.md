@@ -148,6 +148,22 @@ Outside handoff, the browser pairs the raw checkpoint with
 `active_generation` across `next_v`, both parents (`source_v`, `parent2_v`),
 stage, run/workflow IDs and checkpoint revision.
 
+The strict epoch has two simultaneously displayed identities, both produced by
+`bot_namespace.strict_generation_identity`:
+
+- `generation_ordinal` starts at 1 for the first strict-policy artifact and is
+  presentation metadata only;
+- `canonical_version`, `canonical_bot_name` and `canonical_tag` retain the
+  immutable Git/artifact/certificate namespace (`national_v143`,
+  `national-bot-v143` for ordinal 1).
+
+Epoch status, active-generation status and every `/api/bots` row carry this
+four-field projection. The browser may cross-bind the projections and reject a
+mismatch, but must never calculate the ordinal from pool position or construct
+a tag from a version. Sorting, filtering, reaping or a temporarily singleton
+pool therefore cannot renumber a published Bot. Ordinals never enter lineage,
+rating, evidence, certification, checkpoint or publication identity.
+
 `timed_out` and `infra_timed_out` are real recovery-only checkpoint leases.
 They deliberately remain outside the ordered `STAGE_ORDER`: the dashboard
 renders an explicit lease banner and the sole canonical recovery tool

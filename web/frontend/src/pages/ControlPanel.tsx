@@ -18,6 +18,7 @@ import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { authorityNextVersion, useControlStatus } from "../hooks/useControlStatus";
 import { getOperatorControlToken, setOperatorControlToken } from "../api/operatorControl";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
+import { canonicalGenerationLabel } from "../lib/canonicalGenerationIdentity";
 
 
 // ── Inline SVG helpers ─────────────────────────────────────────────────────────
@@ -149,6 +150,9 @@ export default function ControlPanel() {
   const orphanTask = Boolean(taskActive && !status?.running);
   const runtimeMutationLocked = Boolean(status?.running || taskActive);
   const authorityTarget = authorityNextVersion(status);
+  const activeIdentityLabel = status?.active_generation
+    ? canonicalGenerationLabel(status.active_generation, status.active_generation.next_v)
+    : null;
   const pipeline = health?.pipeline;
   const route = pipeline?.route ?? null;
   const handoff = status?.post_publication_handoff;
@@ -353,7 +357,7 @@ export default function ControlPanel() {
             <div>
               <span className="text-xs text-gray-500 block mb-1">流程阶段</span>
               <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 text-xs font-medium">
-                v{status.active_generation.next_v}
+                {activeIdentityLabel ?? "双身份投影不可用"}
                 {status.active_generation.source_v != null ? ` · source_v=v${status.active_generation.source_v}` : ""}: {status.active_generation.stage}
               </span>
               {!checkpoint && <p className="mt-1 text-[10px] text-amber-600">详细 checkpoint 暂不可用</p>}

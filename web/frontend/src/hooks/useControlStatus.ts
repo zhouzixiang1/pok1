@@ -18,6 +18,10 @@ function generationIdentity(value: ActiveGeneration | null | undefined): string 
   if (!value) return "none";
   return [
     value.next_v,
+    value.generation_ordinal,
+    value.canonical_version,
+    value.canonical_bot_name,
+    value.canonical_tag,
     value.source_v ?? "none",
     value.parent2_v ?? "none",
     value.stage,
@@ -65,6 +69,8 @@ function assertMatchingObservation(status: ControlStatus, health: ControlHealth)
       !== JSON.stringify(status.unpaired_completion_versions)
     || JSON.stringify(healthStatus.unpaired_high_water_versions)
       !== JSON.stringify(status.unpaired_high_water_versions)
+    || JSON.stringify(healthStatus.strict_published_bot_identities)
+      !== JSON.stringify(status.strict_published_bot_identities)
     || generationIdentity(health.active_generation) !== generationIdentity(status.active_generation)
     || generationIdentity(healthStatus.active_generation) !== generationIdentity(status.active_generation)
     || !digestPattern.test(status.stability_observation_digest)

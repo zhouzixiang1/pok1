@@ -334,6 +334,11 @@ export interface OfficialCertificationJobsProjection {
 export interface BotSummary {
   name: string;
   version: number;
+  /** Backend-owned dual identity; the browser must not recompute either field. */
+  generation_ordinal: number;
+  canonical_version: number;
+  canonical_bot_name: string;
+  canonical_tag: string;
   completed: boolean;
   total_lines: number;
   files: string[];

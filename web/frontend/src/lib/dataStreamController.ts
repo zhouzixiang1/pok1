@@ -16,6 +16,7 @@ import {
   type EventSourceController,
   type EventSourceControllerDependencies,
 } from "./eventSourceController.js";
+import { canonicalGenerationIdentityIssues } from "./canonicalGenerationIdentity.js";
 
 export type DataStore = {
   ratings: BotRating[];
@@ -365,6 +366,12 @@ const isBotSummary = (value: unknown): value is BotSummary => {
     !isObject(value)
     || typeof value.name !== "string"
     || !isInteger(value.version)
+    || value.name !== value.canonical_bot_name
+    || value.version !== value.canonical_version
+    || canonicalGenerationIdentityIssues(
+      value as unknown as BotSummary,
+      value.version,
+    ).length > 0
     || typeof value.completed !== "boolean"
     || !isInteger(value.total_lines)
     || !isStringArray(value.files)

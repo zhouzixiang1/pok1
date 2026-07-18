@@ -674,6 +674,10 @@ class TestStatus:
                 "next_v": 144,
                 "strict_generation_count": 1,
                 "active_generation": {
+                    "generation_ordinal": 2,
+                    "canonical_version": 144,
+                    "canonical_bot_name": "national_v144",
+                    "canonical_tag": "national-bot-v144",
                     "next_v": 144,
                     "source_v": 143,
                     "stage": "prepared",
@@ -686,6 +690,12 @@ class TestStatus:
                 "initialized": True,
                 "version_authority_high_water": 143,
                 "strict_published_versions": [143],
+                "strict_published_bot_identities": [{
+                    "generation_ordinal": 1,
+                    "canonical_version": 143,
+                    "canonical_bot_name": "national_v143",
+                    "canonical_tag": "national-bot-v143",
+                }],
                 "active_bots": ["national_v143"],
                 "reset_receipt_valid": True,
                 "reset_receipt_digest": "a" * 64,
@@ -710,6 +720,11 @@ class TestStatus:
         assert data["next_v"] == 144
         assert data["generation_count"] == 1
         assert data["active_generation"]["stage"] == "prepared"
+        assert data["active_generation"]["generation_ordinal"] == 2
+        assert data["active_generation"]["canonical_version"] == 144
+        assert data["active_generation"]["canonical_bot_name"] == "national_v144"
+        assert data["active_generation"]["canonical_tag"] == "national-bot-v144"
+        assert data["strict_published_bot_identities"][0]["generation_ordinal"] == 1
         assert data["evaluation_epoch"] == "national_tcp_policy_v1"
         assert data["reset_receipt_digest"] == "a" * 64
         assert len(data["stream_authority_digest"]) == 64
@@ -747,6 +762,10 @@ class TestStatus:
             "next_v": 143,
             "strict_generation_count": 0,
             "active_generation": {
+                "generation_ordinal": 1,
+                "canonical_version": 143,
+                "canonical_bot_name": "national_v143",
+                "canonical_tag": "national-bot-v143",
                 "next_v": 143,
                 "source_v": 142,
                 "stage": "official_bootstrap_required",
@@ -759,6 +778,7 @@ class TestStatus:
             "initialized": True,
             "version_authority_high_water": 142,
             "strict_published_versions": [],
+            "strict_published_bot_identities": [],
             "active_bots": [],
             "reset_receipt_valid": True,
             "reset_receipt_issues": [],
@@ -796,6 +816,7 @@ class TestStatus:
                 "initialized": False,
                 "version_authority_high_water": 142,
                 "strict_published_versions": [],
+                "strict_published_bot_identities": [],
                 "active_bots": [],
                 "reset_receipt_valid": False,
                 "reset_receipt_issues": ["policy_epoch_reset_receipt_missing_or_unsafe"],
@@ -878,6 +899,12 @@ class TestStatus:
                 "initialized": True,
                 "version_authority_high_water": 143,
                 "strict_published_versions": [143],
+                "strict_published_bot_identities": [{
+                    "generation_ordinal": 1,
+                    "canonical_version": 143,
+                    "canonical_bot_name": "national_v143",
+                    "canonical_tag": "national-bot-v143",
+                }],
                 "active_bots": ["national_v143"],
                 "reset_receipt_valid": True,
                 "reset_receipt_issues": [],

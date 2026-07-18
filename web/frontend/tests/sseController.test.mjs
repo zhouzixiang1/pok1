@@ -56,6 +56,11 @@ import {
   PIPELINE_TIMEOUT_LEASE_STAGE_CONTRACT,
   isPipelineTimeoutLeaseStage,
 } from "../node_modules/.tmp/sse-tests/constants/pipeline.js";
+import {
+  canonicalGenerationIdentityIssues,
+  canonicalGenerationLabel,
+  sameCanonicalGenerationIdentity,
+} from "../node_modules/.tmp/sse-tests/lib/canonicalGenerationIdentity.js";
 
 test("Critic presentation uses the advisory verdict, not execution completion", () => {
   const negativeAdvice = {
@@ -89,6 +94,10 @@ test("checkpoint API and presentation reject a stale same-stage revision", () =>
   });
   assert.ok(checkpoint);
   const active = {
+    generation_ordinal: 1,
+    canonical_version: 143,
+    canonical_bot_name: "national_v143",
+    canonical_tag: "national-bot-v143",
     next_v: 143,
     source_v: 142,
     parent2_v: null,
@@ -111,6 +120,30 @@ test("checkpoint API and presentation reject a stale same-stage revision", () =>
   assert.throws(
     () => expectPipelineCheckpoint({ ...checkpoint, checkpoint_revision: undefined }),
     /pipeline checkpoint is structurally incomplete/,
+  );
+});
+
+test("frontend validates but never derives canonical generation identity", () => {
+  const identity = {
+    generation_ordinal: 1,
+    canonical_version: 143,
+    canonical_bot_name: "national_v143",
+    canonical_tag: "national-bot-v143",
+  };
+  assert.deepEqual(canonicalGenerationIdentityIssues(identity, 143), []);
+  assert.equal(canonicalGenerationLabel(identity, 143), "第1代 · national_v143 · national-bot-v143");
+  assert.equal(sameCanonicalGenerationIdentity(identity, { ...identity }), true);
+  assert.deepEqual(
+    canonicalGenerationIdentityIssues({ ...identity, canonical_tag: "national-bot-v144" }, 143),
+    ["canonical_tag"],
+  );
+  assert.deepEqual(
+    canonicalGenerationIdentityIssues({ ...identity, generation_ordinal: 0 }, 143),
+    ["generation_ordinal"],
+  );
+  assert.equal(
+    sameCanonicalGenerationIdentity(identity, { ...identity, generation_ordinal: 2 }),
+    false,
   );
 });
 
@@ -337,6 +370,10 @@ test("Start permission mirrors exact backend launch boundaries", () => {
   }
 
   const active = {
+    generation_ordinal: 2,
+    canonical_version: 144,
+    canonical_bot_name: "national_v144",
+    canonical_tag: "national-bot-v144",
     next_v: 144,
     source_v: 143,
     parent2_v: null,
@@ -633,9 +670,14 @@ function daemonStatus() {
 }
 
 function botSummary(name = "national_v143") {
+  const version = Number(name.slice("national_v".length));
   return {
     name,
-    version: Number(name.slice("national_v".length)),
+    version,
+    generation_ordinal: version - 142,
+    canonical_version: version,
+    canonical_bot_name: name,
+    canonical_tag: `national-bot-v${version}`,
     completed: true,
     total_lines: 100,
     files: ["policy.py"],
@@ -1289,6 +1331,12 @@ test("all production stream events have rejecting minimal runtime schemas", () =
   }
   assert.equal(validateDataStreamEvent("ratings", {}), false);
   assert.equal(validateDataStreamEvent("daemon", []), false);
+  assert.equal(validateDataStreamEvent("bots", {
+    active: [{ ...botSummary(), generation_ordinal: 0 }],
+  }), false);
+  assert.equal(validateDataStreamEvent("bots", {
+    active: [{ ...botSummary(), canonical_tag: "national-bot-v144" }],
+  }), false);
   assert.equal(validateDataStreamEvent("generations", [{
     version: "v143",
     files: ["critic_io.txt.lock"],

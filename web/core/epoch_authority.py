@@ -27,6 +27,7 @@ from bot_namespace import (
     EVALUATION_EPOCH,
     FIRST_STRICT_POLICY_VERSION,
     parse_bot_version,
+    strict_generation_identity,
 )
 from first_strict_control import CONTROL_ID as FIRST_STRICT_CONTROL_ID
 
@@ -1080,6 +1081,9 @@ def policy_epoch_initialization(
         if (version := parse_bot_version(str(name))) is not None
         and version >= FIRST_STRICT_POLICY_VERSION
     })
+    strict_published_bot_identities = [
+        strict_generation_identity(version) for version in strict_versions
+    ]
     strict_published = bool(strict_bots)
     # Numeric namespace authority and executable publication authority are
     # intentionally distinct.  The paired completion/high-water resolver owns
@@ -1184,6 +1188,7 @@ def policy_epoch_initialization(
         "strict_published": strict_published,
         "strict_published_bots": strict_bots,
         "strict_published_versions": strict_versions,
+        "strict_published_bot_identities": strict_published_bot_identities,
         "namespace_publication_proven": namespace_publication_proven,
         "publication_recovery_ready": partial_publication_recovery,
         "unpaired_completion_versions": unpaired_completion_versions,
@@ -1284,6 +1289,9 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
         "active_bots": active_bots,
         "active_bots_count": len(active_bots),
         "strict_published_versions": published_versions,
+        "strict_published_bot_identities": [
+            strict_generation_identity(version) for version in published_versions
+        ],
         "strict_generation_count": len(published_versions),
         "active_generation": None,
         "ignored_checkpoint": None,
@@ -1489,7 +1497,9 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
         return projection
 
     generation_attempt = int(checkpoint.get("generation_attempt") or 0)
+    canonical_identity = strict_generation_identity(int(checkpoint["next_v"]))
     projection["active_generation"] = {
+        **canonical_identity,
         "next_v": int(checkpoint["next_v"]),
         "source_v": checkpoint.get("source_v"),
         "parent2_v": checkpoint.get("parent2_v"),
