@@ -98,6 +98,40 @@ git fetch --tags origin
 
 Do not switch branches or reset this checkout while the evolution service is running. If the service is stopped and the checkout is clean, update it with `git pull --ff-only --tags` before restarting. If the incoming change touches the active evaluation contract reported by `web/core/evaluation_contract.py`, stop the evolution service, merge/pull, restart from the new baseline, and observe the next generation. If the incoming change is contract-neutral for the active stage, it may be merged at the next safe point or reconciled automatically when evolution publishes its next commit.
 
+### Parked first-strict contract-change recovery
+
+`official_bootstrap_required` remains non-disposable. One narrower
+operator-only recovery exists for an unpublished first strict Bot whose
+explicit bootstrap job is terminal, inconclusive, and ran zero of eight
+rounds, when a reviewed descendant HEAD changes an always-critical official
+contract. Never call the MCP `abandon_generation`, rewrite the checkpoint,
+retry the old authorization under new bytes, or delete the durable job.
+
+After stopping every runtime/official process, fast-forward the autonomous
+checkout to the exact reviewed `origin/main`. Run this command once without
+`--execute`, using the exact old checkpoint/head/hash and terminal job:
+
+```bash
+python scripts/abandon_parked_bootstrap_contract_change.py \
+  --expected-baseline-head <40-hex-old-head> \
+  --expected-baseline-contract-hash <64-hex-old-contract-hash> \
+  --expected-current-head <40-hex-reviewed-origin-main> \
+  --expected-workflow-run-id <exact-workflow-run-id> \
+  --expected-checkpoint-revision <exact-revision> \
+  --expected-candidate-hash <64-hex-artifact-hash> \
+  --expected-terminal-job-id <64-hex-job-id>
+```
+
+Review the complete claim and repeat the same command with
+`--execute --acknowledge-runtime-checkout --claim-digest <dry-run-digest>`.
+It writes an immutable no-follow `O_EXCL`/fsync external claim, then calls the
+existing workflow/strict-authority fence, candidate quarantine, abandon-ledger
+and checkpoint-CAS transaction. A crash retry reopens the same claim and
+canonical finalize receipt; it never deletes state directly. Fresh v143 job
+discovery excludes the old job only while that claim, terminal result, signed
+inconclusive ledger row, canonical abandon receipt and quarantined candidate
+still validate.
+
 Before restarting after an evaluator-identity migration, establish the rating
 identity and the independent official-verdict authority in this order:
 

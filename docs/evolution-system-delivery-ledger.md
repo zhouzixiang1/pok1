@@ -4352,9 +4352,13 @@ Attempt one stopped before the official EXE or any hand was launched with
 `official_acceptance_bot_outside_active_namespace`: job creation had correctly
 selected and rebound the immutable system-owned first-strict control, but the
 low-level harness applied the normal `bots/` opponent namespace gate before it
-revalidated that separate authorization.  The result was harness-inconclusive,
-0/8 rounds, no signed verdict-ledger append and successful-control consumption
-0/1.  It is neither Bot failure nor strength evidence.
+revalidated that separate authorization. The result was harness-inconclusive
+and ran 0/8 rounds. It appended signed verdict-ledger sequence 2 / entry
+`5cd4f54a6b29e6e71dd04db3e25244969bc6b0489687a0ee25bbdf0b9345f2bb`,
+whose outcome is `official-inconclusive`, classification is `harness`,
+`authoritative=false`, `blocking=false`, and certificate digest is empty.
+Successful-control consumption remains 0/1. The row is immutable operational
+evidence but neither Bot failure nor strength/certification authority.
 
 The repair keeps the candidate and every normal opponent under the existing
 active `bots/` namespace.  Only a 70-hand production formal job bearing the
@@ -4373,10 +4377,11 @@ tests, all passing.  Complete Web verification is `3445 passed, 20 skipped`
 with the existing dependency warning; compileall and `git diff --check` are
 green.  Because the harness is an always-critical evaluation-contract input,
 this repair cannot resume the old parked authorization under a new source
-hash.  The old v62 checkpoint must be exact-CAS abandoned on its recorded HEAD
-after the failed job is terminal, then the reviewed fix must flow through
-`origin/main` and a fresh v143 must reproduce every gate before another
-explicit bootstrap attempt.
+hash. The old v62 checkpoint must remain byte-exact while the stopped runtime
+fast-forwards to the reviewed `origin/main`; the controlled contract-change
+claim then exact-CAS abandons and quarantines it through the canonical owner.
+A fresh v143 must reproduce every gate before another explicit bootstrap
+attempt.
 
 Independent review first rejected three fail-open edges: nonempty rather than
 exact control id before namespace deferral, caller-envelope hashes surviving
@@ -4387,3 +4392,23 @@ the reviewer approved exact SHA
 separate Codex-only Worker MCP review attempt terminalized before any model
 turn with no successful file-read evidence; its empty output was rejected and
 is not review evidence.
+
+### Controlled contract-change abandon owner
+
+The recovery implementation adds a stopped-runtime authority without weakening
+the ordinary stage guard. A dry-run claim binds the byte-exact old checkpoint,
+full old/new Git commits, reproduced old/current evaluation-contract hashes,
+complete changed-path set, exact five-file candidate, parked request, terminal
+request/state/result/evidence digests, the signed non-authoritative row above,
+consumption 0/1, and absence of any active job, certificate, tag, `.completed`,
+tracked candidate or published strict pool. Execution requires the reviewed
+claim digest, persists it with no-follow `O_EXCL`/fsync semantics, and lets the
+canonical schema-3 workflow/first-control fence and quarantine/finalize
+transaction own every mutation. The old checkpoint is never rewritten under
+the new contract, and ordinary MCP abandon remains blocked.
+
+Because a fresh workflow reuses `bots/national_v143`, HTTP job discovery also
+reopens the finalized migration proof before treating the old job as
+historical. It requires the exact old job/result, signed ledger row, canonical
+abandon finalize receipt and quarantined old artifact; drift keeps the old job
+related-invalid rather than silently ignoring evidence.

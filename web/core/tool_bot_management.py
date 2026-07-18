@@ -1642,6 +1642,40 @@ def _generic_abandon_stage_block(checkpoint, reason):
     )
 
 
+def _bootstrap_contract_change_abandon_authority(
+    checkpoint: dict | None,
+    *,
+    reason: str,
+    claim_digest: str | None,
+) -> dict | None:
+    """Reopen the external operator claim that alone disposes parked v143.
+
+    The public MCP tool cannot provide ``claim_digest``.  Even a direct Python
+    caller gains no authority from the string: the immutable external claim,
+    old checkpoint bytes, current Git contract, terminal 0/8 official job,
+    signed non-authoritative verdict, control consumption and publication
+    predicates are rebuilt on every lock boundary.
+    """
+
+    if claim_digest is None:
+        return None
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError("bootstrap_contract_change_checkpoint_missing")
+    from bootstrap_contract_recovery import (
+        abandon_reason,
+        validate_claim_for_checkpoint,
+    )
+
+    expected_reason = abandon_reason(claim_digest)
+    if str(reason) != expected_reason:
+        raise RuntimeError("bootstrap_contract_change_reason_mismatch")
+    return validate_claim_for_checkpoint(
+        PROJECT_ROOT,
+        checkpoint,
+        claim_digest,
+    )
+
+
 def expected_abandon_identity(checkpoint: dict) -> dict:
     """Return the full checkpoint CAS identity required by forced callers."""
 
@@ -2296,6 +2330,7 @@ async def _do_abandon_generation(
     expected_checkpoint_revision: int | None = None,
     expected_checkpoint_stage: str | None = None,
     expected_terminal_gate_outcome_digest: str | None = None,
+    _operator_bootstrap_contract_change_claim_digest: str | None = None,
 ) -> dict:
     """Core abandon logic — clears the pipeline checkpoint and removes the
     incomplete next-gen directory.
@@ -2545,9 +2580,35 @@ async def _do_abandon_generation(
                 "action": "operator_reconcile",
             }
         recorded_abandon_receipt = _claim_abandon_receipt(live_abandon_claim)
+    try:
+        # Once the canonical transaction has appended its exact abandon row,
+        # crash recovery is owned by that durable claim/receipt.  Requiring the
+        # now-cleared checkpoint again would strand the clear-after-claim
+        # window.  External authority is needed only to cross the original
+        # non-disposable stage boundary.
+        bootstrap_contract_change_authority = (
+            None
+            if recorded_abandon_receipt is not None
+            or not isinstance(checkpoint, dict)
+            else _bootstrap_contract_change_abandon_authority(
+                checkpoint,
+                reason=reason,
+                claim_digest=(
+                    _operator_bootstrap_contract_change_claim_digest
+                ),
+            )
+        )
+    except Exception as exc:
+        return {
+            "abandoned": False,
+            "reason": "bootstrap_contract_change_authority_invalid",
+            "action": "operator_reconcile",
+            "error": f"{type(exc).__name__}: {str(exc)[:500]}",
+        }
     blocked = (
         None
         if recorded_abandon_receipt is not None
+        or bootstrap_contract_change_authority is not None
         else _generic_abandon_stage_block(checkpoint, reason)
     )
     if blocked:
@@ -2627,8 +2688,21 @@ async def _do_abandon_generation(
                         raise RuntimeError(
                             "recorded abandon receipt no longer matches checkpoint"
                         )
+                latest_bootstrap_authority = (
+                    _bootstrap_contract_change_abandon_authority(
+                        latest,
+                        reason=reason,
+                        claim_digest=(
+                            _operator_bootstrap_contract_change_claim_digest
+                        ),
+                    )
+                )
                 latest_block = _generic_abandon_stage_block(latest, reason)
-                if latest_block and recorded_abandon_receipt is None:
+                if (
+                    latest_block
+                    and recorded_abandon_receipt is None
+                    and latest_bootstrap_authority is None
+                ):
                     return latest_block, None
                 first_strict_execution_fence = (
                     _fence_first_strict_control_execution(
@@ -2769,8 +2843,21 @@ async def _do_abandon_generation(
                     if isinstance(latest.get("infra_failure"), dict)
                     else None
                 )
+                latest_bootstrap_authority = (
+                    _bootstrap_contract_change_abandon_authority(
+                        latest,
+                        reason=reason,
+                        claim_digest=(
+                            _operator_bootstrap_contract_change_claim_digest
+                        ),
+                    )
+                )
                 latest_block = _generic_abandon_stage_block(latest, reason)
-                if latest_block and recorded_abandon_receipt is None:
+                if (
+                    latest_block
+                    and recorded_abandon_receipt is None
+                    and latest_bootstrap_authority is None
+                ):
                     return latest_block
                 checkpoint = latest
             elif live_abandon_claim is None:

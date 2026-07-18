@@ -987,6 +987,20 @@ def _bootstrap_job_resolution(
             parked,
             raw_request if raw_request is not None else request,
         ):
+            from bootstrap_contract_recovery import (
+                is_finalized_historical_bootstrap_job,
+            )
+
+            if is_finalized_historical_bootstrap_job(
+                PROJECT_ROOT,
+                current_workflow_run_id=context["workflow_run_id"],
+                job_directory=resolved_directory,
+            ):
+                # The exact old 0/8 job remains immutable operational evidence,
+                # but its old workflow was canonically abandoned under a
+                # content-bound contract-migration claim.  It is not an active
+                # authorization candidate for this new workflow.
+                continue
             invalid_related.append(str(request.get("job_id") or directory.name))
     if matches and invalid_related:
         return None, "authorized_bootstrap_job_identity_ambiguous"

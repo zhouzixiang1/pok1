@@ -1287,6 +1287,43 @@ def test_bootstrap_transition_requires_operator_start_when_no_job_exists(
     assert "--force" not in transition["command"]
 
 
+def test_new_workflow_excludes_only_exact_finalized_contract_migration_job(
+    monkeypatch,
+    tmp_path,
+):
+    from server.routes import certification as route
+    import bootstrap_contract_recovery
+
+    request, context, root = _bootstrap_job_fixture(tmp_path, monkeypatch)
+    directory = root / request["job_id"]
+    context["workflow_run_id"] = "generation:143:fresh-after-contract-migration"
+    monkeypatch.setattr(route, "_parked_bootstrap_request", lambda _ctx: {
+        "request_digest": "f" * 64,
+    })
+    monkeypatch.setattr(route, "_bootstrap_request_view", lambda *_a, **_k: None)
+    monkeypatch.setattr(route, "_bootstrap_request_related", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        bootstrap_contract_recovery,
+        "is_finalized_historical_bootstrap_job",
+        lambda _root, *, current_workflow_run_id, job_directory: (
+            current_workflow_run_id == context["workflow_run_id"]
+            and Path(job_directory) == directory
+        ),
+    )
+
+    assert route._bootstrap_job_resolution(context) == (None, None)
+
+    monkeypatch.setattr(
+        bootstrap_contract_recovery,
+        "is_finalized_historical_bootstrap_job",
+        lambda *_a, **_k: False,
+    )
+    assert route._bootstrap_job_resolution(context) == (
+        None,
+        "authorized_bootstrap_job_validation_failed",
+    )
+
+
 @pytest.mark.parametrize("corruption", ("invalid_digest", "partial_request"))
 def test_malformed_bootstrap_attempt_never_reopens_nonforce_start(
     client,
