@@ -144,6 +144,27 @@ Each round retains:
 - `wire_events.jsonl` and `replay_summary.json`;
 - copied official THP text and parsed hand counts.
 
+New formal captures bind `wire_events.jsonl` to causal-order schema 1.  Each
+event carries a monotonic record sequence plus the sequence/time of the raw TCP
+observation that caused it.  The proxy writes the bytes to the peer before
+recorder I/O; an idle/EOF proof for a delimiter-free token is replayed at that
+raw observation, even if the proof is recorded later under host load.  Replay
+reconstructs the strict incremental UTF-8 decoder and the national tokenizers
+from `raw_hex`; stored `messages` or `remaining` can never replace raw bytes as
+authority.
+
+A formal schema-1 receipt requires one exact, final `capture_finalized` event.
+Evidence rebuilds the finalized summary from raw JSONL and requires it to equal
+the stored `replay_summary.json`.  Missing/mixed causal fields, a missing or
+non-final marker, raw/stored disagreement, or removal of the receipt's causal
+schema marker is harness-invalid and fails closed.  Immutable legacy captures
+without any causal envelope keep their historical append-order/stored-summary
+meaning; causal events cannot downgrade into that compatibility path.
+The current full-certification validator independently requires the schema-1
+marker and finalized contract before inspecting artifacts, so deleting both
+the marker and causal event fields cannot select the legacy path for a new
+`official-full-v5` result.
+
 The suite writes `summary.json`, `official_evidence.json`, and a separate
 `llm_official_analysis.json`. Deterministic evidence is the only gate authority.
 The LLM sidecar is evidence-ID-grounded explanation and repair guidance only;

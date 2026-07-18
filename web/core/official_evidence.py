@@ -133,6 +133,16 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _payload_sha256(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        _jsonable(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _tail_text(path: Path, *, max_chars: int = MAX_TEXT_TAIL_CHARS) -> str:
     try:
         raw = path.read_bytes()
@@ -234,6 +244,16 @@ def _wire_artifact_issues(receipt: dict[str, Any]) -> list[str]:
         return []
     if not bool(wire_probe.get("enabled")):
         return ["wire_probe_disabled_for_full_round"]
+    marker_present = (
+        "causal_order_schema_version" in wire_probe
+        or "finalized_replay_required" in wire_probe
+    )
+    if marker_present and not (
+        type(wire_probe.get("causal_order_schema_version")) is int
+        and wire_probe["causal_order_schema_version"] == 1
+        and wire_probe.get("finalized_replay_required") is True
+    ):
+        return ["wire_probe_causal_contract_invalid"]
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     issues: list[str] = []
     if not _path_exists(artifacts.get("wire_events")):
@@ -383,25 +403,119 @@ def _wire_events_path(receipt: dict[str, Any]) -> Path | None:
 
 def _extract_replay_summary(receipt: dict[str, Any]) -> dict[str, Any] | None:
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
+    stored: dict[str, Any] | None = None
     raw = artifacts.get("replay_summary")
     if raw:
-        data = _read_json(Path(str(raw)))
-        if data is not None:
-            return data
+        stored = _read_json(Path(str(raw)))
     round_dir = _round_dir_from_receipt(receipt)
-    if round_dir is not None:
-        data = _read_json(round_dir / "replay_summary.json")
-        if data is not None:
-            return data
+    if stored is None and round_dir is not None:
+        stored = _read_json(round_dir / "replay_summary.json")
     wire_path = _wire_events_path(receipt)
-    if wire_path is None or not wire_path.exists():
-        return None
-    try:
-        from official_wire_probe import load_events, replay_events
+    wire_probe = (
+        receipt.get("wire_probe")
+        if isinstance(receipt.get("wire_probe"), dict)
+        else {}
+    )
+    marker_present = (
+        "causal_order_schema_version" in wire_probe
+        or "finalized_replay_required" in wire_probe
+    )
+    causal_contract = (
+        type(wire_probe.get("causal_order_schema_version")) is int
+        and wire_probe.get("causal_order_schema_version") == 1
+        and wire_probe.get("finalized_replay_required") is True
+    )
 
-        summary = replay_events(load_events(wire_path))
-        if round_dir is not None:
-            _write_json(round_dir / "replay_summary.json", summary)
+    def failure(kind: str, reason: str) -> dict[str, Any]:
+        return {
+            "events_seen": 0,
+            "issues": [{"kind": kind, "reason": reason}],
+            "warnings": [],
+        }
+
+    if marker_present and not causal_contract:
+        return failure(
+            "wire_probe_causal_contract_invalid",
+            "receipt causal wire marker is incomplete or unsupported",
+        )
+    if wire_path is None or not wire_path.exists():
+        if causal_contract:
+            return failure(
+                "wire_replay_raw_events_missing",
+                "schema-v1 finalized replay requires the raw wire JSONL",
+            )
+        return stored
+    try:
+        from official_wire_probe import (
+            WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION,
+            load_events,
+            replay_events,
+        )
+
+        events = load_events(wire_path)
+        has_causal_envelope = any(
+            any(
+                field in event
+                for field in (
+                    "causal_order_schema_version",
+                    "record_seq",
+                    "observation_seq",
+                    "observation_t",
+                    "observation_dt",
+                )
+            )
+            for event in events
+        )
+        if not causal_contract:
+            if has_causal_envelope:
+                return failure(
+                    "wire_probe_causal_receipt_marker_missing",
+                    "causal raw events require the schema-v1 receipt marker",
+                )
+            if stored is not None:
+                return stored
+            summary = replay_events(events)
+            if round_dir is not None:
+                _write_json(round_dir / "replay_summary.json", summary)
+            return summary
+
+        if not events or any(
+            type(event.get("causal_order_schema_version")) is not int
+            or event.get("causal_order_schema_version")
+            != WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+            for event in events
+        ):
+            return failure(
+                "wire_probe_causal_event_envelope_missing",
+                "schema-v1 receipt cannot consume legacy, mixed, or empty raw events",
+            )
+
+        summary = replay_events(events, finalized=True)
+        if stored is None:
+            summary = dict(summary)
+            summary["issues"] = [
+                *list(summary.get("issues") or []),
+                {
+                    "kind": "wire_replay_stored_summary_missing",
+                    "reason": (
+                        "schema-v1 finalized replay requires its stored summary"
+                    ),
+                },
+            ]
+        elif stored != summary:
+            summary = dict(summary)
+            replayed_sha256 = _payload_sha256(summary)
+            summary["issues"] = [
+                *list(summary.get("issues") or []),
+                {
+                    "kind": "wire_replay_stored_summary_mismatch",
+                    "reason": (
+                        "stored replay summary does not equal finalized raw-wire replay"
+                    ),
+                    "stored_sha256": _payload_sha256(stored),
+                    "replayed_sha256": replayed_sha256,
+                },
+            ]
         return summary
     except Exception as exc:
         return {

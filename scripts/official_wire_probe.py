@@ -349,6 +349,7 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
     recorder = WireEventRecorder(round_dir / "wire_events.jsonl")
     proxy = TcpWireProbe(platform_host=cfg.host, platform_port=cfg.port, recorder=recorder)
     started_at = time.time()
+    final_wire_summary: dict[str, Any] = {}
 
     try:
         xvfb_log = (round_dir / "xvfb.log").open("wb")
@@ -416,7 +417,7 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
             target_reached_at: float | None = None
             summary: dict[str, Any] = {}
             while time.time() < deadline:
-                summary = replay_events(recorder.events)
+                summary = proxy.summary()
                 if summary["events_seen"] != last_event_count:
                     last_event_count = summary["events_seen"]
                     last_progress_at = time.time()
@@ -444,7 +445,7 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
                     break
                 await asyncio.sleep(0.5)
             else:
-                summary = replay_events(recorder.events)
+                summary = proxy.summary()
                 receipt["issues"].append(
                     f"wire_round_timeout: {cfg.round_timeout_sec:g}s "
                     f"hands_started={summary.get('hands_started_min', 0)} "
@@ -460,6 +461,7 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
             _terminate_process(proc)
             _close_process_files(proc)
         await proxy.stop()
+        final_wire_summary = proxy.summary(finalized=True)
         recorder.close()
         if platform_env is not None:
             _close_window(platform_env, window_id)
@@ -474,7 +476,7 @@ async def _run_probe_round(args: argparse.Namespace) -> dict[str, Any]:
         for proc in (wine_proc, xvfb_proc):
             _close_process_files(proc)
 
-    summary = receipt.get("wire_summary") or replay_events(recorder.events)
+    summary = final_wire_summary
     receipt["wire_summary"] = summary
     receipt["duration_sec"] = round(time.time() - started_at, 2)
     receipt["artifacts"].update({

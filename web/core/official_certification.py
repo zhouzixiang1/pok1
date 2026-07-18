@@ -945,6 +945,12 @@ def _full_evidence_artifact_issues(receipt: dict[str, Any]) -> list[str]:
     probe = receipt.get("wire_probe")
     if not isinstance(probe, dict) or not bool(probe.get("enabled")):
         return ["full_wire_probe_missing_or_disabled"]
+    if not (
+        type(probe.get("causal_order_schema_version")) is int
+        and probe.get("causal_order_schema_version") == 1
+        and probe.get("finalized_replay_required") is True
+    ):
+        return ["full_wire_probe_causal_contract_missing_or_invalid"]
     artifacts = receipt.get("artifacts") if isinstance(receipt.get("artifacts"), dict) else {}
     issues: list[str] = []
     required_files = (

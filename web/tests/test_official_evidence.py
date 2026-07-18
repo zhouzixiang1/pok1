@@ -2,10 +2,81 @@ import json
 from pathlib import Path
 
 from official_evidence import build_official_evidence_bundle, build_official_evidence_from_summary
+from official_wire_probe import WireEventRecorder, replay_events
 
 
 def _write_jsonl(path: Path, rows):
     path.write_text("\n".join(json.dumps(row, ensure_ascii=False) for row in rows) + "\n", encoding="utf-8")
+
+
+def _causal_evidence_fixture(root: Path):
+    round_dir = root / "suite" / "self_play_01"
+    round_dir.mkdir(parents=True)
+    wire_events = round_dir / "wire_events.jsonl"
+    recorder = WireEventRecorder(wire_events)
+    try:
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"preflop|SMALLBLIND|<0,3><1,4>",
+            messages=["preflop|SMALLBLIND|<0,3><1,4>"],
+            remaining="",
+        )
+        recorder.record(
+            conn="*",
+            direction="probe_lifecycle",
+            raw=b"",
+            messages=[],
+            remaining="",
+            event_type="capture_finalized",
+        )
+        events = list(recorder.events)
+        stored = replay_events(events, finalized=True)
+    finally:
+        recorder.close()
+    replay_summary = round_dir / "replay_summary.json"
+    replay_summary.write_text(
+        json.dumps(stored, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    report = {
+        "candidate": "/tmp/national_v1",
+        "opponent": "/tmp/national_v2",
+        "summary": {
+            "suite_dir": str(root / "suite"),
+            "rounds_requested": 1,
+            "rounds_run": 1,
+            "target_hands": 70,
+        },
+        "rounds": [{
+            "round_id": "self_play_01",
+            "round_kind": "self_play",
+            "round_index": 1,
+            "target_hands": 70,
+            "passed": False,
+            "issues": [],
+            "wire_probe": {
+                "enabled": True,
+                "issues": [],
+                "causal_order_schema_version": 1,
+                "finalized_replay_required": True,
+            },
+            "log_summary": {
+                "hands_started_min": 1,
+                "settlements_min": 0,
+                "issues": [],
+            },
+            "artifacts": {
+                "round_dir": str(round_dir),
+                "wire_events": str(wire_events),
+                "replay_summary": str(replay_summary),
+                "thp_files": [],
+                "thp_summaries": [],
+            },
+        }],
+        "issues": [],
+    }
+    return report, events, stored, wire_events, replay_summary
 
 
 def test_evidence_bundle_replays_wire_events_and_classifies_protocol_issue(tmp_path):
@@ -78,6 +149,170 @@ def test_evidence_bundle_replays_wire_events_and_classifies_protocol_issue(tmp_p
     assert bundle["rounds"][0]["wire_replay_summary"]["issues"][0]["kind"] == "illegal_check"
     assert (round_dir / "replay_summary.json").exists()
     assert (tmp_path / "official_evidence.json").exists()
+
+
+def test_evidence_bundle_replays_idle_commit_in_raw_wire_causal_order(tmp_path):
+    round_dir = tmp_path / "suite" / "self_play_01"
+    round_dir.mkdir(parents=True)
+    wire_events = round_dir / "wire_events.jsonl"
+    recorder = WireEventRecorder(wire_events)
+    try:
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"preflop|SMALLBLIND|<0,3><1,4>",
+            messages=["preflop|SMALLBLIND|<0,3><1,4>"],
+            remaining="",
+        )
+        raw_call = recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=b"call",
+            messages=[],
+            remaining="call",
+        )
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"flop|<0,5><1,6><2,7>",
+            messages=["flop|<0,5><1,6><2,7>"],
+            remaining="",
+        )
+        recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=b"",
+            messages=["call"],
+            remaining="",
+            event_type="idle_flush",
+            observation_seq=raw_call["observation_seq"],
+            observation_t=raw_call["observation_t"],
+            deferred_parser_mode="client_action",
+        )
+        recorder.record(
+            conn="*",
+            direction="probe_lifecycle",
+            raw=b"",
+            messages=[],
+            remaining="",
+            event_type="capture_finalized",
+        )
+        stored_summary = replay_events(recorder.events, finalized=True)
+    finally:
+        recorder.close()
+    replay_summary_path = round_dir / "replay_summary.json"
+    replay_summary_path.write_text(
+        json.dumps(stored_summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+    report = {
+        "candidate": "/tmp/national_v1",
+        "opponent": "/tmp/national_v2",
+        "summary": {
+            "suite_dir": str(tmp_path / "suite"),
+            "rounds_requested": 1,
+            "rounds_run": 1,
+            "target_hands": 70,
+        },
+        "rounds": [
+            {
+                "round_id": "self_play_01",
+                "round_kind": "self_play",
+                "round_index": 1,
+                "target_hands": 70,
+                "passed": False,
+                "issues": [],
+                "wire_probe": {
+                    "enabled": True,
+                    "issues": [],
+                    "causal_order_schema_version": 1,
+                    "finalized_replay_required": True,
+                },
+                "log_summary": {
+                    "hands_started_min": 1,
+                    "settlements_min": 0,
+                    "issues": [],
+                },
+                "artifacts": {
+                    "round_dir": str(round_dir),
+                    "wire_events": str(wire_events),
+                    "replay_summary": str(replay_summary_path),
+                    "thp_files": [],
+                    "thp_summaries": [],
+                },
+            }
+        ],
+        "issues": [],
+    }
+
+    bundle = build_official_evidence_bundle(
+        report,
+        output_path=tmp_path / "official_evidence.json",
+    )
+
+    replay = bundle["rounds"][0]["wire_replay_summary"]
+    assert replay["issues"] == []
+    assert replay["seats"]["A"]["current_stage"] == "flop"
+    assert replay["seats"]["A"]["hand_actions"][0]["stage"] == "preflop"
+    assert replay["seats"]["A"]["hand_actions"][0]["action_type"] == "call"
+
+
+def test_causal_evidence_rejects_stored_summary_mismatch(tmp_path):
+    report, _events, stored, _wire_events, replay_summary = (
+        _causal_evidence_fixture(tmp_path)
+    )
+    tampered = dict(stored)
+    tampered["warnings"] = [
+        {"kind": "fabricated_clean_warning", "reason": "not raw-derived"}
+    ]
+    replay_summary.write_text(json.dumps(tampered), encoding="utf-8")
+
+    replay = build_official_evidence_bundle(report)["rounds"][0][
+        "wire_replay_summary"
+    ]
+
+    assert any(
+        issue.get("kind") == "wire_replay_stored_summary_mismatch"
+        for issue in replay["issues"]
+    )
+
+
+def test_causal_evidence_rejects_receipt_marker_stripping(tmp_path):
+    report, _events, _stored, _wire_events, _replay_summary = (
+        _causal_evidence_fixture(tmp_path)
+    )
+    report["rounds"][0]["wire_probe"] = {"enabled": True, "issues": []}
+
+    replay = build_official_evidence_bundle(report)["rounds"][0][
+        "wire_replay_summary"
+    ]
+
+    assert replay["issues"][0]["kind"] == (
+        "wire_probe_causal_receipt_marker_missing"
+    )
+
+
+def test_schema_v1_receipt_rejects_legacy_or_mixed_raw_events(tmp_path):
+    report, events, _stored, wire_events, _replay_summary = (
+        _causal_evidence_fixture(tmp_path)
+    )
+    legacy = {
+        "t": 2.0,
+        "dt": 2.0,
+        "conn": "A",
+        "direction": "bot_to_server",
+        "messages": ["call"],
+    }
+    _write_jsonl(wire_events, [events[0], legacy, events[-1]])
+
+    replay = build_official_evidence_bundle(report)["rounds"][0][
+        "wire_replay_summary"
+    ]
+
+    assert replay["issues"][0]["kind"] == (
+        "wire_probe_causal_event_envelope_missing"
+    )
 
 
 def test_evidence_from_raw_summary_infers_pass_without_strength_rating(tmp_path):

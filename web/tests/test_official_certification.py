@@ -372,6 +372,151 @@ def _full_report(
     ))
     source_sha256 = managed_identity["source"]["sha256"]
 
+    def causal_wire_fixture(round_dir, bot_a_name, bot_b_name):
+        from official_wire_probe import WireEventRecorder, replay_events
+
+        recorder = WireEventRecorder(round_dir / "wire_events.jsonl")
+
+        def record_action(conn, direction, message):
+            if direction == "bot_to_server":
+                raw_action = recorder.record(
+                    conn=conn,
+                    direction=direction,
+                    raw=message.encode(),
+                    messages=[],
+                    remaining=message,
+                )
+                recorder.record(
+                    conn=conn,
+                    direction=direction,
+                    raw=b"",
+                    messages=[message],
+                    remaining="",
+                    event_type="idle_flush",
+                    observation_seq=raw_action["observation_seq"],
+                    observation_t=raw_action["observation_t"],
+                    deferred_parser_mode="client_action",
+                )
+                return
+            recorder.record(
+                conn=conn,
+                direction=direction,
+                raw=message.encode(),
+                messages=[message],
+                remaining="",
+            )
+
+        try:
+            for conn, name in (("A", bot_a_name), ("B", bot_b_name)):
+                recorder.record(
+                    conn=conn,
+                    direction="server_to_bot",
+                    raw=b"name",
+                    messages=["name"],
+                    remaining="",
+                )
+                raw_name = recorder.record(
+                    conn=conn,
+                    direction="bot_to_server",
+                    raw=name.encode("utf-8"),
+                    messages=[],
+                    remaining=name,
+                )
+                recorder.record(
+                    conn=conn,
+                    direction="bot_to_server",
+                    raw=b"",
+                    messages=[name],
+                    remaining="",
+                    event_type="idle_flush",
+                    observation_seq=raw_name["observation_seq"],
+                    observation_t=raw_name["observation_t"],
+                    deferred_parser_mode="client_name",
+                )
+            for hand in range(1, 71):
+                a_small = hand % 2 == 1
+                recorder.record(
+                    conn="A",
+                    direction="server_to_bot",
+                    raw=(
+                        f"preflop|{'SMALLBLIND' if a_small else 'BIGBLIND'}|"
+                        "<0,0><1,1>"
+                    ).encode(),
+                    messages=[
+                        f"preflop|{'SMALLBLIND' if a_small else 'BIGBLIND'}|"
+                        "<0,0><1,1>"
+                    ],
+                    remaining="",
+                )
+                recorder.record(
+                    conn="B",
+                    direction="server_to_bot",
+                    raw=(
+                        f"preflop|{'BIGBLIND' if a_small else 'SMALLBLIND'}|"
+                        "<2,2><3,3>"
+                    ).encode(),
+                    messages=[
+                        f"preflop|{'BIGBLIND' if a_small else 'SMALLBLIND'}|"
+                        "<2,2><3,3>"
+                    ],
+                    remaining="",
+                )
+                if a_small:
+                    for conn, direction in (
+                        ("A", "bot_to_server"),
+                        ("B", "server_to_bot"),
+                    ):
+                        record_action(conn, direction, "call")
+                    for conn, direction in (
+                        ("B", "bot_to_server"),
+                        ("A", "server_to_bot"),
+                    ):
+                        record_action(conn, direction, "fold")
+                else:
+                    for conn, direction in (
+                        ("B", "bot_to_server"),
+                        ("A", "server_to_bot"),
+                    ):
+                        record_action(conn, direction, "fold")
+                if hand <= 69:
+                    for conn, amount in (("A", 50), ("B", -50)):
+                        message = f"earnChips {amount}"
+                        raw_settlement = recorder.record(
+                            conn=conn,
+                            direction="server_to_bot",
+                            raw=message.encode(),
+                            messages=[],
+                            remaining=message,
+                        )
+                        recorder.record(
+                            conn=conn,
+                            direction="server_to_bot",
+                            raw=b"",
+                            messages=[message],
+                            remaining="",
+                            event_type="idle_flush",
+                            observation_seq=raw_settlement["observation_seq"],
+                            observation_t=raw_settlement["observation_t"],
+                            deferred_parser_mode="server",
+                        )
+            recorder.record(
+                conn="*",
+                direction="probe_lifecycle",
+                raw=b"",
+                messages=[],
+                remaining="",
+                event_type="capture_finalized",
+            )
+            summary = replay_events(recorder.events, finalized=True)
+        finally:
+            recorder.close()
+        assert summary["issues"] == [], json.dumps(summary["issues"])
+        (round_dir / "replay_summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return summary
+
     def isolation_row(connection, launch, artifact_hash):
         return {
             "connection": connection,
@@ -393,11 +538,6 @@ def _full_report(
             round_dir.mkdir(parents=True, exist_ok=True)
             wire_events = round_dir / "wire_events.jsonl"
             replay_summary = round_dir / "replay_summary.json"
-            wire_events.write_text("{}\n", encoding="utf-8")
-            replay_summary.write_text(
-                json.dumps({"events_seen": 1, "issues": [], "warnings": []}),
-                encoding="utf-8",
-            )
             artifact_paths = {}
             for artifact_name in (
                 "receipt",
@@ -456,35 +596,11 @@ def _full_report(
                 "instance_id": "candidate_b" if kind == "self_play" else "opponent",
                 "seat": "lower",
             }
-            wire_summary = {
-                "hands_started_min": 70,
-                "settlements_min": 69,
-                "pending_expected_actions": [],
-                "issues": [],
-                "warnings": [],
-                "seats": {
-                    "A": {
-                        "name": bot_a_name,
-                        "hands_started": 70,
-                        "settlements": 69,
-                        "settlement_records": [
-                            {"hand": hand, "amount": 50}
-                            for hand in range(1, 70)
-                        ],
-                        "pending_expected_action": False,
-                    },
-                    "B": {
-                        "name": bot_b_name,
-                        "hands_started": 70,
-                        "settlements": 69,
-                        "settlement_records": [
-                            {"hand": hand, "amount": -50}
-                            for hand in range(1, 70)
-                        ],
-                        "pending_expected_action": False,
-                    },
-                },
-            }
+            wire_summary = causal_wire_fixture(
+                round_dir,
+                bot_a_name,
+                bot_b_name,
+            )
             receipt = {
                 "round_id": f"{kind}_{round_index:02d}",
                 "round_kind": kind,
@@ -509,7 +625,12 @@ def _full_report(
                         },
                     },
                 },
-                "wire_probe": {"enabled": True, "issues": []},
+                "wire_probe": {
+                    "enabled": True,
+                    "issues": [],
+                    "causal_order_schema_version": 1,
+                    "finalized_replay_required": True,
+                },
                 "log_summary": {
                     "hands_started_min": 70,
                     "settlements_min": 69,
@@ -1119,6 +1240,23 @@ def test_full_report_requires_round_identity_and_wire_artifacts(tmp_path):
 
     assert any("round_kind_mismatch" in issue for issue in issues)
     assert any("full_wire_probe_missing_or_disabled" in issue for issue in issues)
+
+
+def test_full_report_rejects_causal_wire_contract_downgrade(tmp_path):
+    candidate = _bot(tmp_path / "national_v1")
+    opponent = _bot(tmp_path / "national_v2")
+    spec = build_spec("full", candidate, opponent=opponent)
+    report = _full_report(tmp_path, candidate, opponent)
+    probe = report["report"]["rounds"][0]["wire_probe"]
+    probe.pop("causal_order_schema_version")
+    probe.pop("finalized_replay_required")
+
+    issues = report_validation_issues(report, spec)
+
+    assert any(
+        "full_wire_probe_causal_contract_missing_or_invalid" in issue
+        for issue in issues
+    )
 
 
 def test_candidate_change_during_certification_is_inconclusive(tmp_path, monkeypatch):

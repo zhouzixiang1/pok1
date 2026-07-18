@@ -50,6 +50,7 @@ from official_execution_profile import (
 )
 from blocking_runtime import run_blocking_isolated
 from official_platform_resource import acquire_official_platform
+from official_wire_probe import WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1440,13 +1441,18 @@ class OfficialWireCapture:
                 pass
             loop.close()
 
-    def summary(self) -> dict[str, Any]:
+    def summary(self, *, finalized: bool = False) -> dict[str, Any]:
         if not self.enabled or self.recorder is None:
             return {}
         try:
+            if self.proxy is not None:
+                return self.proxy.summary(finalized=finalized)
             from official_wire_probe import replay_events
 
-            return replay_events(list(self.recorder.events))
+            return replay_events(
+                list(self.recorder.events),
+                finalized=finalized,
+            )
         except Exception as exc:
             return {
                 "events_seen": 0,
@@ -1456,19 +1462,27 @@ class OfficialWireCapture:
                 "warnings": [],
             }
 
-    def write_replay_summary(self) -> dict[str, Any]:
-        summary = self.summary()
+    def write_replay_summary(self, *, finalized: bool = False) -> dict[str, Any]:
+        summary = self.summary(finalized=finalized)
         if self.enabled:
             _write_json(self.replay_summary_path, summary)
         return summary
 
-    def stop(self) -> None:
+    def stop(self) -> dict[str, Any]:
+        final_summary: dict[str, Any] = {}
         self._stop_requested.set()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             if self._thread.is_alive():
                 self.issues.append("wire_probe_stop_error: event loop thread did not stop")
         if self.recorder is not None:
+            try:
+                final_summary = self.write_replay_summary(finalized=True)
+            except Exception as exc:
+                self.issues.append(
+                    "wire_probe_final_replay_error: "
+                    f"{type(exc).__name__}: {str(exc)[:300]}"
+                )
             try:
                 self.recorder.close()
             except Exception:
@@ -1477,6 +1491,7 @@ class OfficialWireCapture:
         self._thread = None
         self.proxy = None
         self.recorder = None
+        return final_summary
 
 
 def _format_wire_issues(summary: dict[str, Any]) -> list[str]:
@@ -2328,6 +2343,10 @@ def run_official_round(
                 "enabled": wire_capture.enabled,
                 "proxy_ports": proxy_ports,
                 "issues": list(wire_capture.issues),
+                "causal_order_schema_version": (
+                    WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+                ),
+                "finalized_replay_required": True,
             }
             if wire_capture.issues:
                 receipt["issues"].extend(wire_capture.issues)
@@ -2509,7 +2528,10 @@ def run_official_round(
             wire_summary = wire_capture.write_replay_summary()
             if wire_summary:
                 receipt["wire_replay_summary"] = wire_summary
-        wire_capture.stop()
+        final_wire_summary = wire_capture.stop()
+        if final_wire_summary:
+            wire_summary = final_wire_summary
+            receipt["wire_replay_summary"] = final_wire_summary
         if platform_env is not None and not platform_closed_for_terminal:
             _close_window(platform_env, window_id)
             time.sleep(2.0)

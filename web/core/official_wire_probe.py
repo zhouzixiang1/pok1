@@ -14,6 +14,7 @@ import codecs
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -32,6 +33,8 @@ CARD_RE = re.compile(r"<(\d+),(\d+)>")
 SMALL_BLIND = 50
 BIG_BLIND = 100
 INITIAL_CHIPS = 20000
+WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION = 1
+MAX_WIRE_EVENT_RECORD_LAG_SEC = 1.0
 
 
 def _now() -> str:
@@ -339,6 +342,17 @@ class OfficialWireReplay:
                 "direction": direction,
                 "remaining": remaining,
                 "reason": "TCP stream closed with an unparseable protocol tail",
+            })
+        elif event_type == "stream_cancelled" and remaining:
+            self.issues.append({
+                "kind": "wire_stream_cancelled_remainder",
+                "conn": label,
+                "direction": direction,
+                "remaining": remaining,
+                "reason": (
+                    "wire capture stopped before a pending protocol token "
+                    "reached an idle or EOF boundary"
+                ),
             })
         for message in event.get("messages") or []:
             if direction == "server_to_bot":
@@ -1103,6 +1117,8 @@ class WireEventRecorder:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.started_at = time.time()
         self.events: list[dict[str, Any]] = []
+        self._record_seq = 0
+        self._observation_seq = 0
         self._fp = self.output_path.open("a", encoding="utf-8", buffering=1)
 
     def close(self) -> None:
@@ -1118,12 +1134,29 @@ class WireEventRecorder:
         remaining: str,
         event_type: str = "data",
         details: dict[str, Any] | None = None,
-    ) -> None:
+        observation_seq: int | None = None,
+        observation_t: float | None = None,
+        deferred_parser_mode: str | None = None,
+    ) -> dict[str, Any]:
         now = time.time()
+        self._record_seq += 1
+        if observation_seq is None:
+            self._observation_seq += 1
+            semantic_seq = self._observation_seq
+        else:
+            semantic_seq = int(observation_seq)
+            if not 1 <= semantic_seq <= self._observation_seq:
+                raise ValueError("wire_event_observation_seq_out_of_range")
+        semantic_t = now if observation_t is None else float(observation_t)
         event = {
             "ts": _now(),
             "t": now,
             "dt": round(now - self.started_at, 6),
+            "causal_order_schema_version": WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION,
+            "record_seq": self._record_seq,
+            "observation_seq": semantic_seq,
+            "observation_t": semantic_t,
+            "observation_dt": round(semantic_t - self.started_at, 6),
             "conn": conn,
             "direction": direction,
             "event_type": event_type,
@@ -1137,8 +1170,11 @@ class WireEventRecorder:
             "remaining": remaining,
             "details": details or {},
         }
+        if deferred_parser_mode is not None:
+            event["deferred_parser_mode"] = str(deferred_parser_mode)
         self.events.append(event)
         self._fp.write(json.dumps(event, ensure_ascii=False) + "\n")
+        return event
 
 
 class TcpWireProbe:
@@ -1152,7 +1188,11 @@ class TcpWireProbe:
         self._tasks: set[asyncio.Task] = set()
         self._buffers: dict[tuple[str, str], str] = {}
         self._decoders: dict[tuple[str, str], codecs.IncrementalDecoder] = {}
+        self._buffer_last_observation_seq: dict[tuple[str, str], int] = {}
+        self._buffer_last_observed_at: dict[tuple[str, str], float] = {}
         self._awaiting_name: dict[str, bool] = {"A": True, "B": True}
+        self.issues: list[str] = []
+        self._capture_finalized = False
 
     async def start(self, host: str = "127.0.0.1") -> dict[str, int]:
         ports: dict[str, int] = {}
@@ -1177,6 +1217,22 @@ class TcpWireProbe:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._servers.clear()
         self._tasks.clear()
+        if not self._capture_finalized:
+            try:
+                self.recorder.record(
+                    conn="*",
+                    direction="probe_lifecycle",
+                    raw=b"",
+                    messages=[],
+                    remaining="",
+                    event_type="capture_finalized",
+                )
+                self._capture_finalized = True
+            except Exception as exc:
+                self.issues.append(
+                    "wire_probe_finalize_record_error:"
+                    f"{type(exc).__name__}:{str(exc)[:300]}"
+                )
 
     async def _accept(self, label: str, bot_reader: asyncio.StreamReader, bot_writer: asyncio.StreamWriter) -> None:
         try:
@@ -1200,7 +1256,19 @@ class TcpWireProbe:
         }
         self._tasks.update(tasks)
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, _pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in done:
+                if task.cancelled():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    self.issues.append(
+                        "wire_probe_pipe_error:"
+                        f"{type(error).__name__}:{str(error)[:300]}"
+                    )
         finally:
             for task in tasks:
                 task.cancel()
@@ -1242,11 +1310,16 @@ class TcpWireProbe:
                         continue
                     if direction == "server_to_bot":
                         messages, remaining = split_server_messages(buffered, flush_numeric=True)
+                        deferred_parser_mode = "server"
                     else:
+                        allow_name = self._awaiting_name.get(label, False)
                         messages, remaining = split_client_messages(
                             buffered,
-                            allow_name=self._awaiting_name.get(label, False),
+                            allow_name=allow_name,
                             flush_numeric=True,
+                        )
+                        deferred_parser_mode = (
+                            "client_name" if allow_name else "client_action"
                         )
                     if messages:
                         self._buffers[key] = remaining
@@ -1259,7 +1332,13 @@ class TcpWireProbe:
                             messages=messages,
                             remaining=remaining,
                             event_type="idle_flush",
+                            observation_seq=self._buffer_last_observation_seq.get(key),
+                            observation_t=self._buffer_last_observed_at.get(key),
+                            deferred_parser_mode=deferred_parser_mode,
                         )
+                        if not remaining:
+                            self._buffer_last_observation_seq.pop(key, None)
+                            self._buffer_last_observed_at.pop(key, None)
                     continue
                 if not raw:
                     buffered = self._buffers.get(key, "")
@@ -1278,36 +1357,61 @@ class TcpWireProbe:
                         return
                     if direction == "server_to_bot":
                         messages, remaining = split_server_messages(buffered, flush_numeric=True)
+                        deferred_parser_mode = "server"
                     else:
+                        allow_name = self._awaiting_name.get(label, False)
                         messages, remaining = split_client_messages(
                             buffered,
-                            allow_name=self._awaiting_name.get(label, False),
+                            allow_name=allow_name,
                             flush_numeric=True,
                         )
+                        deferred_parser_mode = (
+                            "client_name" if allow_name else "client_action"
+                        )
                     self._buffers[key] = remaining
+                    if messages:
+                        self.recorder.record(
+                            conn=label,
+                            direction=direction,
+                            raw=b"",
+                            messages=messages,
+                            remaining=remaining,
+                            event_type="eof_flush",
+                            observation_seq=self._buffer_last_observation_seq.get(key),
+                            observation_t=self._buffer_last_observed_at.get(key),
+                            deferred_parser_mode=deferred_parser_mode,
+                        )
                     self.recorder.record(
                         conn=label,
                         direction=direction,
                         raw=b"",
-                        messages=messages,
+                        messages=[],
                         remaining=remaining,
                         event_type="stream_eof",
                     )
+                    self._buffer_last_observation_seq.pop(key, None)
+                    self._buffer_last_observed_at.pop(key, None)
                     return
-                writer.write(raw)
-                await writer.drain()
+                observed_at = time.time()
                 try:
                     text = decoder.decode(raw, final=False)
                 except UnicodeDecodeError as exc:
-                    self.recorder.record(
-                        conn=label,
-                        direction=direction,
-                        raw=raw,
-                        messages=[],
-                        remaining=self._buffers.get(key, ""),
-                        event_type="stream_encoding_error",
-                        details={"error": f"UnicodeDecodeError: {str(exc)[:300]}"},
-                    )
+                    writer.write(raw)
+                    try:
+                        self.recorder.record(
+                            conn=label,
+                            direction=direction,
+                            raw=raw,
+                            messages=[],
+                            remaining=self._buffers.get(key, ""),
+                            event_type="stream_encoding_error",
+                            details={
+                                "error": f"UnicodeDecodeError: {str(exc)[:300]}"
+                            },
+                            observation_t=observed_at,
+                        )
+                    finally:
+                        await writer.drain()
                     return
                 buffer = self._buffers.get(key, "") + text
                 if direction == "server_to_bot":
@@ -1321,14 +1425,48 @@ class TcpWireProbe:
                     if messages and self._awaiting_name.get(label, False):
                         self._awaiting_name[label] = False
                 self._buffers[key] = remaining
+                writer.write(raw)
+                try:
+                    event = self.recorder.record(
+                        conn=label,
+                        direction=direction,
+                        raw=raw,
+                        messages=messages,
+                        remaining=remaining,
+                        observation_t=observed_at,
+                    )
+                except BaseException:
+                    await writer.drain()
+                    raise
+                if remaining:
+                    # The semantic token cannot causally precede the last raw
+                    # bytes that contributed to the still-pending buffer.  A
+                    # later idle/EOF boundary may prove the token, but replay
+                    # must place that proof immediately after this capture,
+                    # before any official response those bytes triggered.
+                    self._buffer_last_observation_seq[key] = int(
+                        event["observation_seq"]
+                    )
+                    self._buffer_last_observed_at[key] = observed_at
+                else:
+                    self._buffer_last_observation_seq.pop(key, None)
+                    self._buffer_last_observed_at.pop(key, None)
+                await writer.drain()
+        except asyncio.CancelledError:
+            remaining = self._buffers.get(key, "")
+            pending_bytes, _decoder_flag = decoder.getstate()
+            if remaining or pending_bytes:
                 self.recorder.record(
                     conn=label,
                     direction=direction,
-                    raw=raw,
-                    messages=messages,
+                    raw=b"",
+                    messages=[],
                     remaining=remaining,
+                    event_type="stream_cancelled",
+                    details={"pending_utf8_hex": bytes(pending_bytes).hex()},
                 )
-        except asyncio.CancelledError:
+            self._buffer_last_observation_seq.pop(key, None)
+            self._buffer_last_observed_at.pop(key, None)
             raise
         except (ConnectionError, OSError) as exc:
             self.recorder.record(
@@ -1342,12 +1480,499 @@ class TcpWireProbe:
             )
             return
 
+    def summary(self, *, finalized: bool = False) -> dict[str, Any]:
+        summary = replay_events(
+            list(self.recorder.events),
+            finalized=finalized,
+        )
+        if self.issues:
+            summary["issues"] = _dedupe_dicts([
+                *list(summary.get("issues") or []),
+                *[
+                    {
+                        "kind": "wire_probe_internal_error",
+                        "conn": "?",
+                        "hand": None,
+                        "stage": None,
+                        "message": "",
+                        "reason": issue,
+                    }
+                    for issue in self.issues
+                ],
+            ])
+        return summary
 
-def replay_events(events: list[dict[str, Any]], *, now: float | None = None) -> dict[str, Any]:
-    replay = OfficialWireReplay()
+
+_CAUSAL_EVENT_FIELDS = {
+    "causal_order_schema_version",
+    "record_seq",
+    "observation_seq",
+    "observation_t",
+    "observation_dt",
+}
+
+
+def _causal_raw_transition_issue(
+    events: list[dict[str, Any]],
+    *,
+    finalized: bool,
+) -> str | None:
+    """Rebuild every schema-v1 parser transition from captured raw bytes.
+
+    ``messages`` and ``remaining`` are useful diagnostics, but they are not an
+    authority boundary: both are stored in the same JSONL event as ``raw_hex``.
+    A finalized replay therefore reconstructs the incremental UTF-8 decoder and
+    the national no-delimiter tokenizers for each connection/direction and
+    requires every stored transition to match exactly.
+    """
+
+    decoders: dict[tuple[str, str], codecs.IncrementalDecoder] = {}
+    buffers: dict[tuple[str, str], str] = {}
+    eof_finalized: set[tuple[str, str]] = set()
+    terminated: set[tuple[str, str]] = set()
+    name_requested: dict[str, bool] = {}
+
+    def payload(event: dict[str, Any]) -> tuple[list[str], str] | None:
+        messages = event.get("messages")
+        remaining = event.get("remaining")
+        if (
+            not isinstance(messages, list)
+            or any(not isinstance(message, str) for message in messages)
+            or not isinstance(remaining, str)
+        ):
+            return None
+        return list(messages), remaining
+
+    def raw_bytes(event: dict[str, Any]) -> bytes | None:
+        raw_hex = event.get("raw_hex")
+        if not isinstance(raw_hex, str) or len(raw_hex) % 2:
+            return None
+        if raw_hex != raw_hex.lower() or re.fullmatch(r"[0-9a-f]*", raw_hex) is None:
+            return None
+        try:
+            return bytes.fromhex(raw_hex)
+        except ValueError:
+            return None
+
+    def parse(
+        conn: str,
+        direction: str,
+        buffer: str,
+        *,
+        flush_boundary: bool,
+    ) -> tuple[list[str], str, str] | None:
+        if direction == "server_to_bot":
+            messages, remaining = split_server_messages(
+                buffer,
+                flush_numeric=flush_boundary,
+            )
+            return messages, remaining, "server"
+        if direction == "bot_to_server":
+            allow_name = bool(name_requested.get(conn, False))
+            messages, remaining = split_client_messages(
+                buffer,
+                allow_name=allow_name,
+                flush_numeric=flush_boundary,
+            )
+            return (
+                messages,
+                remaining,
+                "client_name" if allow_name else "client_action",
+            )
+        return None
+
+    def apply_handshake(conn: str, direction: str, messages: list[str]) -> None:
+        if direction == "server_to_bot" and "name" in messages:
+            name_requested[conn] = True
+        elif direction == "bot_to_server" and messages and name_requested.get(conn):
+            name_requested[conn] = False
+
     for event in events:
-        replay.consume_event(event)
-    return replay.summary(now=now)
+        event_type = event.get("event_type")
+        conn = event.get("conn")
+        direction = event.get("direction")
+        if not isinstance(event_type, str) or not isinstance(conn, str) or not isinstance(direction, str):
+            return "causal_wire_event_shape_invalid"
+        stored = payload(event)
+        raw = raw_bytes(event)
+        if stored is None or raw is None:
+            return "causal_wire_event_payload_invalid"
+        stored_messages, stored_remaining = stored
+
+        if event_type in {"capture_finalized", "upstream_connect_failed"}:
+            if (
+                direction != "probe_lifecycle"
+                or raw
+                or stored_messages
+                or stored_remaining
+            ):
+                return "causal_wire_lifecycle_payload_invalid"
+            continue
+
+        if direction not in {"server_to_bot", "bot_to_server"}:
+            return "causal_wire_event_direction_invalid"
+        key = (conn, direction)
+        if key in terminated:
+            return "causal_wire_event_after_terminal"
+        decoder = decoders.setdefault(
+            key,
+            codecs.getincrementaldecoder("utf-8")("strict"),
+        )
+        buffer = buffers.get(key, "")
+
+        if event_type == "data":
+            if not raw or key in eof_finalized:
+                return "causal_wire_data_payload_invalid"
+            try:
+                text = decoder.decode(raw, final=False)
+            except UnicodeDecodeError:
+                return "causal_wire_data_decode_mismatch"
+            parsed = parse(
+                conn,
+                direction,
+                buffer + text,
+                flush_boundary=False,
+            )
+            if parsed is None:
+                return "causal_wire_event_direction_invalid"
+            messages, remaining, _mode = parsed
+            if stored_messages != messages or stored_remaining != remaining:
+                return "causal_wire_data_parse_mismatch"
+            buffers[key] = remaining
+            apply_handshake(conn, direction, messages)
+            continue
+
+        if event_type in {"idle_flush", "eof_flush"}:
+            if raw or not buffer:
+                return "causal_wire_flush_payload_invalid"
+            if event_type == "idle_flush":
+                pending_bytes, _flag = decoder.getstate()
+                if pending_bytes:
+                    return "causal_wire_idle_flush_utf8_incomplete"
+            else:
+                if key in eof_finalized:
+                    return "causal_wire_duplicate_eof_flush"
+                try:
+                    buffer += decoder.decode(b"", final=True)
+                except UnicodeDecodeError:
+                    return "causal_wire_eof_decode_mismatch"
+                eof_finalized.add(key)
+            parsed = parse(
+                conn,
+                direction,
+                buffer,
+                flush_boundary=True,
+            )
+            if parsed is None:
+                return "causal_wire_event_direction_invalid"
+            messages, remaining, mode = parsed
+            if event.get("deferred_parser_mode") != mode:
+                return "causal_wire_event_deferred_parser_invalid"
+            if (
+                not messages
+                or stored_messages != messages
+                or stored_remaining != remaining
+            ):
+                return "causal_wire_deferred_parse_mismatch"
+            buffers[key] = remaining
+            apply_handshake(conn, direction, messages)
+            continue
+
+        if event_type == "stream_eof":
+            if raw or stored_messages:
+                return "causal_wire_stream_eof_payload_invalid"
+            if key not in eof_finalized:
+                try:
+                    buffer += decoder.decode(b"", final=True)
+                except UnicodeDecodeError:
+                    return "causal_wire_eof_decode_mismatch"
+                eof_finalized.add(key)
+                parsed = parse(
+                    conn,
+                    direction,
+                    buffer,
+                    flush_boundary=True,
+                )
+                if parsed is None:
+                    return "causal_wire_event_direction_invalid"
+                messages, buffer, _mode = parsed
+                if messages:
+                    return "causal_wire_eof_flush_missing"
+            if stored_remaining != buffer:
+                return "causal_wire_event_terminal_remainder_mismatch"
+            buffers[key] = buffer
+            terminated.add(key)
+            continue
+
+        if event_type in {"stream_cancelled", "stream_error"}:
+            if raw or stored_messages or stored_remaining != buffer:
+                return "causal_wire_event_terminal_remainder_mismatch"
+            pending_bytes, _flag = decoder.getstate()
+            if pending_bytes:
+                return "causal_wire_event_pending_utf8_unresolved"
+            terminated.add(key)
+            continue
+
+        if event_type == "stream_encoding_error":
+            if stored_messages or stored_remaining != buffer:
+                return "causal_wire_encoding_error_payload_invalid"
+            probe_decoder = codecs.getincrementaldecoder("utf-8")("strict")
+            probe_decoder.setstate(decoder.getstate())
+            try:
+                probe_decoder.decode(raw, final=not raw)
+            except UnicodeDecodeError:
+                terminated.add(key)
+                continue
+            return "causal_wire_encoding_error_unproven"
+
+        return "causal_wire_event_type_invalid"
+
+    if finalized:
+        for key, decoder in decoders.items():
+            pending_bytes, _flag = decoder.getstate()
+            if key not in terminated and pending_bytes:
+                return "causal_wire_event_pending_utf8_unresolved"
+
+    return None
+
+
+def _causally_ordered_events(
+    events: list[dict[str, Any]],
+    *,
+    finalized: bool,
+) -> tuple[list[dict[str, Any]], str | None]:
+    if not events:
+        return (
+            [],
+            "causal_wire_capture_finalized_missing" if finalized else None,
+        )
+    field_presence = [
+        any(field in event for field in _CAUSAL_EVENT_FIELDS)
+        for event in events
+    ]
+    if not any(field_presence):
+        # Immutable oracle captures predate the causal-order envelope.  Their
+        # append order remains the only available authority.
+        return list(events), None
+    if not all(field_presence):
+        return [], "mixed_legacy_and_causal_wire_events"
+
+    sources: dict[int, dict[str, Any]] = {}
+    reused_observations: set[int] = set()
+    pending_observations: dict[tuple[str, str], int] = {}
+    max_observation_seq = 0
+    last_observation_t = float("-inf")
+    last_observation_dt = float("-inf")
+    last_record_t = float("-inf")
+    last_record_dt = float("-inf")
+    recorder_epoch: float | None = None
+    for expected_record_seq, event in enumerate(events, 1):
+        if not _CAUSAL_EVENT_FIELDS.issubset(event):
+            return [], "causal_wire_event_fields_missing"
+        if (
+            type(event.get("causal_order_schema_version")) is not int
+            or event["causal_order_schema_version"]
+            != WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+        ):
+            return [], "causal_wire_event_schema_invalid"
+        if (
+            type(event.get("record_seq")) is not int
+            or event["record_seq"] != expected_record_seq
+        ):
+            return [], "causal_wire_event_record_seq_invalid"
+        observation_seq = event.get("observation_seq")
+        if type(observation_seq) is not int or observation_seq <= 0:
+            return [], "causal_wire_event_observation_seq_invalid"
+        if not all(
+            isinstance(event.get(field), (int, float))
+            and not isinstance(event.get(field), bool)
+            and math.isfinite(float(event[field]))
+            for field in ("t", "dt", "observation_t", "observation_dt")
+        ):
+            return [], "causal_wire_event_time_invalid"
+        record_t = float(event["t"])
+        record_dt = float(event["dt"])
+        observation_t = float(event["observation_t"])
+        observation_dt = float(event["observation_dt"])
+        event_epoch = record_t - record_dt
+        observation_epoch = observation_t - observation_dt
+        if recorder_epoch is None:
+            recorder_epoch = event_epoch
+        source = sources.get(observation_seq)
+        if (
+            record_dt < 0
+            or observation_dt < 0
+            or record_t < last_record_t
+            or record_dt < last_record_dt
+            or record_t < observation_t
+            or record_dt + 0.000001 < observation_dt
+            or abs(event_epoch - recorder_epoch) > 0.00001
+            or abs(observation_epoch - recorder_epoch) > 0.00001
+            or (
+                source is None
+                and record_t - observation_t > MAX_WIRE_EVENT_RECORD_LAG_SEC
+            )
+        ):
+            return [], "causal_wire_event_record_time_invalid"
+        last_record_t = record_t
+        last_record_dt = record_dt
+
+        key = (str(event.get("conn") or ""), str(event.get("direction") or ""))
+        if source is None:
+            if event.get("event_type") in {"idle_flush", "eof_flush"}:
+                return [], "causal_wire_event_flush_source_missing"
+            if observation_seq != max_observation_seq + 1:
+                return [], "causal_wire_event_observation_gap"
+            if (
+                observation_t < last_observation_t
+                or observation_dt < last_observation_dt
+            ):
+                return [], "causal_wire_event_observation_time_invalid"
+            sources[observation_seq] = event
+            max_observation_seq = observation_seq
+            last_observation_t = observation_t
+            last_observation_dt = observation_dt
+            if event.get("event_type") in {
+                "stream_eof",
+                "stream_cancelled",
+                "stream_error",
+            }:
+                pending_seq = pending_observations.get(key)
+                pending_source = sources.get(pending_seq) if pending_seq else None
+                expected_remaining = str(
+                    (pending_source or {}).get("remaining") or ""
+                )
+                if str(event.get("remaining") or "") != expected_remaining:
+                    return [], "causal_wire_event_terminal_remainder_mismatch"
+            if event.get("raw_hex") not in {"", None}:
+                if event.get("remaining"):
+                    pending_observations[key] = observation_seq
+                else:
+                    pending_observations.pop(key, None)
+            continue
+
+        parser_mode = event.get("deferred_parser_mode")
+        if (
+            observation_seq in reused_observations
+            or pending_observations.get(key) != observation_seq
+            or event.get("event_type") not in {"idle_flush", "eof_flush"}
+            or event.get("raw_hex") not in {"", None}
+            or not event.get("messages")
+            or source.get("raw_hex") in {"", None}
+            or not source.get("remaining")
+            or event.get("conn") != source.get("conn")
+            or event.get("direction") != source.get("direction")
+            or float(event["observation_t"]) != float(source["observation_t"])
+            or float(event["observation_dt"]) != float(source["observation_dt"])
+        ):
+            return [], "causal_wire_event_observation_reuse_invalid"
+        if parser_mode == "server" and event.get("direction") == "server_to_bot":
+            parsed_messages, parsed_remaining = split_server_messages(
+                str(source.get("remaining") or ""),
+                flush_numeric=True,
+            )
+        elif parser_mode in {"client_name", "client_action"} and event.get(
+            "direction"
+        ) == "bot_to_server":
+            parsed_messages, parsed_remaining = split_client_messages(
+                str(source.get("remaining") or ""),
+                allow_name=parser_mode == "client_name",
+                flush_numeric=True,
+            )
+        else:
+            return [], "causal_wire_event_deferred_parser_invalid"
+        if (
+            list(event.get("messages") or []) != parsed_messages
+            or str(event.get("remaining") or "") != parsed_remaining
+        ):
+            return [], "causal_wire_event_deferred_parse_mismatch"
+        reused_observations.add(observation_seq)
+        if parsed_remaining:
+            pending_observations[key] = observation_seq
+        else:
+            pending_observations.pop(key, None)
+
+    final_markers = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event.get("event_type") == "capture_finalized"
+    ]
+    if len(final_markers) > 1:
+        return [], "causal_wire_capture_finalized_duplicate"
+    if final_markers:
+        marker_index, marker = final_markers[0]
+        if (
+            marker_index != len(events) - 1
+            or marker.get("conn") != "*"
+            or marker.get("direction") != "probe_lifecycle"
+            or marker.get("raw_hex") not in {"", None}
+            or marker.get("messages") != []
+            or marker.get("remaining") != ""
+            or marker.get("details") not in ({}, None)
+        ):
+            return [], "causal_wire_capture_finalized_invalid"
+    elif finalized:
+        return [], "causal_wire_capture_finalized_missing"
+
+    raw_transition_issue = _causal_raw_transition_issue(
+        events,
+        finalized=finalized,
+    )
+    if raw_transition_issue is not None:
+        return [], raw_transition_issue
+
+    if finalized and pending_observations:
+        return [], "causal_wire_event_pending_buffer_unresolved"
+
+    ordered = sorted(
+        events,
+        key=lambda event: (
+            int(event["observation_seq"]),
+            1 if event.get("event_type") in {"idle_flush", "eof_flush"} else 0,
+            int(event["record_seq"]),
+        ),
+    )
+    return ordered, None
+
+
+def replay_events(
+    events: list[dict[str, Any]],
+    *,
+    now: float | None = None,
+    finalized: bool = False,
+) -> dict[str, Any]:
+    replay = OfficialWireReplay()
+    ordered, causal_issue = _causally_ordered_events(
+        events,
+        finalized=finalized,
+    )
+    if causal_issue is not None:
+        replay.events_seen = len(events)
+        replay.issues.append({
+            "kind": "wire_event_causal_order_invalid",
+            "conn": "?",
+            "hand": None,
+            "stage": None,
+            "message": "",
+            "reason": causal_issue,
+        })
+        return replay.summary(now=now)
+    for event in ordered:
+        consumed = event
+        if "observation_seq" in event:
+            consumed = dict(event)
+            consumed["recorded_t"] = event.get("t")
+            consumed["recorded_dt"] = event.get("dt")
+            consumed["t"] = float(event["observation_t"])
+            consumed["dt"] = float(event["observation_dt"])
+        replay.consume_event(consumed)
+    summary_now = now
+    if finalized and summary_now is None and ordered:
+        if "observation_t" in ordered[0]:
+            summary_now = max(float(event["observation_t"]) for event in ordered)
+        else:
+            summary_now = max(float(event.get("t", 0.0) or 0.0) for event in ordered)
+    return replay.summary(now=summary_now)
 
 
 def load_events(path: str | Path) -> list[dict[str, Any]]:

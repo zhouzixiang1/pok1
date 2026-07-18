@@ -1711,11 +1711,12 @@ def test_official_wire_capture_writes_round_artifacts(tmp_path):
     )
     capture = OfficialWireCapture(tmp_path / "round", cfg)
 
+    final_summary = {}
     try:
         ports = capture.start()
         summary = capture.write_replay_summary()
     finally:
-        capture.stop()
+        final_summary = capture.stop()
 
     if not ports and any("could not bind on any address" in issue for issue in capture.issues):
         pytest.skip("sandbox forbids loopback listener sockets")
@@ -1724,6 +1725,19 @@ def test_official_wire_capture_writes_round_artifacts(tmp_path):
     assert (tmp_path / "round" / "wire_events.jsonl").exists()
     assert (tmp_path / "round" / "replay_summary.json").exists()
     assert summary["events_seen"] == 0
+    stored = json.loads(
+        (tmp_path / "round" / "replay_summary.json").read_text(encoding="utf-8")
+    )
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "round" / "wire_events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    assert events[-1]["event_type"] == "capture_finalized"
+    assert final_summary == stored
+    assert final_summary["issues"] == []
 
 
 def test_format_wire_issues_preserves_replay_context():

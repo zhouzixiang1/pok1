@@ -203,6 +203,660 @@ def test_wire_probe_incrementally_decodes_fragmented_utf8_name(tmp_path):
     assert "\ufffd" not in json.dumps(recorder.events, ensure_ascii=False)
 
 
+def test_wire_probe_replays_idle_action_at_last_raw_observation(tmp_path):
+    class Reader:
+        def __init__(self):
+            self.queue = asyncio.Queue()
+
+        async def read(self, _size):
+            return await self.queue.get()
+
+    class Writer:
+        def __init__(self, recorder):
+            self.payload = bytearray()
+            self.recorder = recorder
+            self.responded = False
+
+        def write(self, payload):
+            self.payload.extend(payload)
+
+        async def drain(self):
+            if not self.responded:
+                self.responded = True
+                self.recorder.record(
+                    conn="A",
+                    direction="server_to_bot",
+                    raw=b"flop|<0,3><1,4><2,5>",
+                    messages=["flop|<0,3><1,4><2,5>"],
+                    remaining="",
+                )
+
+    async def exercise(probe, reader):
+        await reader.queue.put(b"call")
+
+        async def close_after_idle():
+            await asyncio.sleep(0.07)
+            await reader.queue.put(b"")
+
+        closer = asyncio.create_task(close_after_idle())
+        await probe._pipe("A", "bot_to_server", reader, writer)
+        await closer
+
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    recorder.record(
+        conn="A",
+        direction="server_to_bot",
+        raw=b"preflop|SMALLBLIND|<0,1><1,2>",
+        messages=["preflop|SMALLBLIND|<0,1><1,2>"],
+        remaining="",
+    )
+    probe = TcpWireProbe(
+        platform_host="127.0.0.1",
+        platform_port=1,
+        recorder=recorder,
+    )
+    probe._awaiting_name["A"] = False
+    reader = Reader()
+    writer = Writer(recorder)
+    try:
+        asyncio.run(exercise(probe, reader))
+    finally:
+        recorder.close()
+
+    assert bytes(writer.payload) == b"call"
+    raw_index = next(
+        index
+        for index, event in enumerate(recorder.events)
+        if event["raw_hex"] == b"call".hex()
+        and event["direction"] == "bot_to_server"
+    )
+    flop_index = next(
+        index
+        for index, event in enumerate(recorder.events)
+        if event["messages"] == ["flop|<0,3><1,4><2,5>"]
+    )
+    flush_index = next(
+        index
+        for index, event in enumerate(recorder.events)
+        if event["event_type"] == "idle_flush"
+    )
+    assert raw_index < flop_index < flush_index
+    assert (
+        recorder.events[flush_index]["observation_seq"]
+        == recorder.events[raw_index]["observation_seq"]
+    )
+    assert replay_events(recorder.events)["issues"] == []
+
+    causal_fields = {
+        "causal_order_schema_version",
+        "record_seq",
+        "observation_seq",
+        "observation_t",
+        "observation_dt",
+    }
+    legacy_append_order = [
+        {key: value for key, value in event.items() if key not in causal_fields}
+        for event in recorder.events
+    ]
+    assert any(
+        issue["kind"] == "unsolicited_client_action"
+        for issue in replay_events(legacy_append_order)["issues"]
+    )
+
+
+def test_wire_probe_binds_fragmented_raise_to_last_contributing_chunk(tmp_path):
+    class Reader:
+        def __init__(self):
+            self.queue = asyncio.Queue()
+
+        async def read(self, _size):
+            return await self.queue.get()
+
+    class Writer:
+        def __init__(self, recorder):
+            self.payload = bytearray()
+            self.recorder = recorder
+            self.responded = False
+
+        def write(self, payload):
+            self.payload.extend(payload)
+
+        async def drain(self):
+            if self.payload == b"raise 200" and not self.responded:
+                self.responded = True
+                self.recorder.record(
+                    conn="A",
+                    direction="server_to_bot",
+                    raw=b"flop|<0,3><1,4><2,5>",
+                    messages=["flop|<0,3><1,4><2,5>"],
+                    remaining="",
+                )
+
+    async def exercise(probe, reader):
+        await reader.queue.put(b"raise 2")
+        await reader.queue.put(b"00")
+
+        async def close_after_idle():
+            await asyncio.sleep(0.07)
+            await reader.queue.put(b"")
+
+        closer = asyncio.create_task(close_after_idle())
+        await probe._pipe("A", "bot_to_server", reader, writer)
+        await closer
+
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    recorder.record(
+        conn="A",
+        direction="server_to_bot",
+        raw=b"preflop|SMALLBLIND|<0,1><1,2>",
+        messages=["preflop|SMALLBLIND|<0,1><1,2>"],
+        remaining="",
+    )
+    probe = TcpWireProbe(
+        platform_host="127.0.0.1",
+        platform_port=1,
+        recorder=recorder,
+    )
+    probe._awaiting_name["A"] = False
+    reader = Reader()
+    writer = Writer(recorder)
+    try:
+        asyncio.run(exercise(probe, reader))
+    finally:
+        recorder.close()
+
+    raw_events = [
+        event
+        for event in recorder.events
+        if event["direction"] == "bot_to_server" and event["raw_hex"]
+    ]
+    flush = next(
+        event for event in recorder.events if event["event_type"] == "idle_flush"
+    )
+    assert [event["messages"] for event in raw_events] == [[], []]
+    assert flush["messages"] == ["raise 200"]
+    assert flush["observation_seq"] == raw_events[-1]["observation_seq"]
+    assert flush["observation_seq"] != raw_events[0]["observation_seq"]
+    assert replay_events(recorder.events)["issues"] == []
+
+
+def test_causal_replay_keeps_malformed_suffix_fail_closed(tmp_path):
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    try:
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"preflop|SMALLBLIND|<0,1><1,2>",
+            messages=["preflop|SMALLBLIND|<0,1><1,2>"],
+            remaining="",
+        )
+        raw = recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=b"callx",
+            messages=[],
+            remaining="callx",
+        )
+        recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=b"",
+            messages=["callx"],
+            remaining="",
+            event_type="idle_flush",
+            observation_seq=raw["observation_seq"],
+            observation_t=raw["observation_t"],
+            deferred_parser_mode="client_action",
+        )
+    finally:
+        recorder.close()
+
+    summary = replay_events(recorder.events)
+    assert [issue["kind"] for issue in summary["issues"]] == [
+        "wire_action_format"
+    ]
+
+
+def _causal_event(record_seq, observation_seq, t, conn, direction, messages, **extra):
+    event = {
+        "causal_order_schema_version": 1,
+        "record_seq": record_seq,
+        "observation_seq": observation_seq,
+        "observation_t": float(t),
+        "observation_dt": float(t),
+        "t": float(extra.pop("recorded_t", t)),
+        "dt": float(extra.pop("recorded_dt", t)),
+        "conn": conn,
+        "direction": direction,
+        "event_type": extra.pop("event_type", "data"),
+        "raw_hex": extra.pop("raw_hex", ""),
+        "messages": list(messages),
+        "remaining": extra.pop("remaining", ""),
+        "details": {},
+        **extra,
+    }
+    if event["event_type"] in {"idle_flush", "eof_flush"}:
+        event.setdefault(
+            "deferred_parser_mode",
+            "server" if direction == "server_to_bot" else "client_action",
+        )
+    return event
+
+
+def _causal_issue_reason(events, *, finalized=False):
+    summary = replay_events(events, finalized=finalized)
+    issue = next(
+        (
+            item
+            for item in summary["issues"]
+            if item["kind"] == "wire_event_causal_order_invalid"
+        ),
+        None,
+    )
+    return None if issue is None else issue.get("reason")
+
+
+def _capture_finalized_event(record_seq, observation_seq, t):
+    return _causal_event(
+        record_seq,
+        observation_seq,
+        t,
+        "*",
+        "probe_lifecycle",
+        [],
+        event_type="capture_finalized",
+    )
+
+
+@pytest.mark.parametrize("schema", [True, 1.0])
+def test_causal_schema_version_requires_exact_integer(schema):
+    event = _causal_event(
+        1,
+        1,
+        0,
+        "A",
+        "server_to_bot",
+        ["name"],
+        raw_hex=b"name".hex(),
+    )
+    event["causal_order_schema_version"] = schema
+
+    assert _causal_issue_reason([event]) == "causal_wire_event_schema_invalid"
+
+
+def test_causal_replay_rejects_duplicate_or_stale_boundary_proof():
+    base = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            ["name"],
+            raw_hex=b"name".hex(),
+        ),
+        _causal_event(
+            2,
+            2,
+            1,
+            "A",
+            "bot_to_server",
+            [],
+            raw_hex=b"BotA".hex(),
+            remaining="BotA",
+        ),
+    ]
+    proof = _causal_event(
+        3,
+        2,
+        1,
+        "A",
+        "bot_to_server",
+        ["BotA"],
+        event_type="idle_flush",
+        recorded_t=1.1,
+        recorded_dt=1.1,
+        deferred_parser_mode="client_name",
+    )
+    duplicate = dict(proof, record_seq=4, t=1.2, dt=1.2)
+    assert _causal_issue_reason([*base, proof, duplicate]) == (
+        "causal_wire_event_observation_reuse_invalid"
+    )
+
+    latest = _causal_event(
+        3,
+        3,
+        2,
+        "A",
+        "bot_to_server",
+        [],
+        raw_hex=b"x".hex(),
+        remaining="BotAx",
+    )
+    stale = dict(proof, record_seq=4, t=2.1, dt=2.1)
+    assert _causal_issue_reason([*base, latest, stale]) == (
+        "causal_wire_event_observation_reuse_invalid"
+    )
+
+
+def test_causal_replay_rebuilds_data_transition_from_raw_bytes():
+    events = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            ["preflop|SMALLBLIND|<0,1><1,2>"],
+            raw_hex=b"preflop|SMALLBLIND|<0,1><1,2>".hex(),
+        ),
+        # The envelope lies about the raw suffix.  Deferred validation alone
+        # would turn raw ``callx`` into a legal semantic ``call``.
+        _causal_event(
+            2,
+            2,
+            1,
+            "A",
+            "bot_to_server",
+            [],
+            raw_hex=b"callx".hex(),
+            remaining="call",
+        ),
+        _causal_event(
+            3,
+            2,
+            1,
+            "A",
+            "bot_to_server",
+            ["call"],
+            event_type="idle_flush",
+            recorded_t=1.1,
+            recorded_dt=1.1,
+            deferred_parser_mode="client_action",
+        ),
+    ]
+
+    assert _causal_issue_reason(events) == "causal_wire_data_parse_mismatch"
+
+
+def test_causal_replay_rejects_terminal_remainder_mismatch():
+    events = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            [],
+            raw_hex=b"preflop|".hex(),
+            remaining="preflop|",
+        ),
+        _causal_event(
+            2,
+            2,
+            1,
+            "A",
+            "server_to_bot",
+            [],
+            event_type="stream_eof",
+            remaining="",
+        ),
+    ]
+
+    assert _causal_issue_reason(events) == (
+        "causal_wire_event_terminal_remainder_mismatch"
+    )
+
+
+def test_finalized_causal_replay_requires_one_exact_last_marker():
+    source = _causal_event(
+        1,
+        1,
+        0,
+        "A",
+        "server_to_bot",
+        ["name"],
+        raw_hex=b"name".hex(),
+    )
+    marker = _capture_finalized_event(2, 2, 1)
+
+    assert _causal_issue_reason([], finalized=True) == (
+        "causal_wire_capture_finalized_missing"
+    )
+    assert _causal_issue_reason([source], finalized=True) == (
+        "causal_wire_capture_finalized_missing"
+    )
+    assert _causal_issue_reason(
+        [source, marker, _capture_finalized_event(3, 3, 2)],
+        finalized=True,
+    ) == "causal_wire_capture_finalized_duplicate"
+    trailing = _causal_event(
+        3,
+        3,
+        2,
+        "A",
+        "probe_lifecycle",
+        [],
+        event_type="upstream_connect_failed",
+    )
+    assert _causal_issue_reason([source, marker, trailing], finalized=True) == (
+        "causal_wire_capture_finalized_invalid"
+    )
+    assert _causal_issue_reason([source, marker], finalized=True) is None
+
+
+def test_finalized_causal_replay_rejects_pending_utf8_decoder_bytes():
+    events = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            [],
+            raw_hex=b"\xe4".hex(),
+            remaining="",
+        ),
+        _capture_finalized_event(2, 2, 1),
+    ]
+
+    assert _causal_issue_reason(events, finalized=True) == (
+        "causal_wire_event_pending_utf8_unresolved"
+    )
+
+
+def test_live_replay_waits_for_fragmented_utf8_before_finalization():
+    encoded = "候选".encode("utf-8")
+    events = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            ["name"],
+            raw_hex=b"name".hex(),
+        ),
+        _causal_event(
+            2,
+            2,
+            1,
+            "A",
+            "bot_to_server",
+            [],
+            raw_hex=encoded[:1].hex(),
+            remaining="",
+        ),
+    ]
+    assert _causal_issue_reason(events, finalized=False) is None
+
+    events.extend([
+        _causal_event(
+            3,
+            3,
+            2,
+            "A",
+            "bot_to_server",
+            [],
+            raw_hex=encoded[1:].hex(),
+            remaining="候选",
+        ),
+        _causal_event(
+            4,
+            3,
+            2,
+            "A",
+            "bot_to_server",
+            ["候选"],
+            event_type="idle_flush",
+            recorded_t=2.1,
+            recorded_dt=2.1,
+            deferred_parser_mode="client_name",
+        ),
+        _capture_finalized_event(5, 4, 3),
+    ])
+    assert _causal_issue_reason(events, finalized=True) is None
+
+
+def test_capture_finalized_time_preserves_silent_request_timeout():
+    events = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            ["preflop|SMALLBLIND|<0,1><1,2>"],
+            raw_hex=b"preflop|SMALLBLIND|<0,1><1,2>".hex(),
+        ),
+        _capture_finalized_event(2, 2, 61),
+    ]
+
+    summary = replay_events(events, finalized=True)
+    assert not any(
+        issue["kind"] == "wire_event_causal_order_invalid"
+        for issue in summary["issues"]
+    )
+    assert any(
+        issue["kind"] == "pending_bot_response_timeout"
+        for issue in summary["issues"]
+    )
+
+
+def test_delayed_boundary_proof_allows_load_but_source_record_lag_does_not():
+    source = _causal_event(
+        1,
+        1,
+        0,
+        "A",
+        "server_to_bot",
+        ["preflop|SMALLBLIND|<0,1><1,2>"],
+        raw_hex=b"preflop|SMALLBLIND|<0,1><1,2>".hex(),
+    )
+    raw_call = _causal_event(
+        2,
+        2,
+        1,
+        "A",
+        "bot_to_server",
+        [],
+        raw_hex=b"call".hex(),
+        remaining="call",
+    )
+    delayed_proof = _causal_event(
+        3,
+        2,
+        1,
+        "A",
+        "bot_to_server",
+        ["call"],
+        event_type="idle_flush",
+        recorded_t=3.1,
+        recorded_dt=3.1,
+        deferred_parser_mode="client_action",
+    )
+    assert _causal_issue_reason([source, raw_call, delayed_proof]) is None
+
+    delayed_source = dict(source, t=2.0, dt=2.0)
+    assert _causal_issue_reason([delayed_source]) == (
+        "causal_wire_event_record_time_invalid"
+    )
+
+
+@pytest.mark.parametrize(
+    ("last_byte_at", "expected_timeout"),
+    ((59.999, False), (60.001, True)),
+)
+def test_causal_replay_timeout_uses_last_contributing_byte(
+    last_byte_at,
+    expected_timeout,
+):
+    events = [
+        _causal_event(
+            1,
+            1,
+            0,
+            "A",
+            "server_to_bot",
+            ["preflop|SMALLBLIND|<0,1><1,2>"],
+            raw_hex=b"preflop|SMALLBLIND|<0,1><1,2>".hex(),
+        ),
+        _causal_event(
+            2,
+            2,
+            last_byte_at,
+            "A",
+            "bot_to_server",
+            [],
+            raw_hex=b"call".hex(),
+            remaining="call",
+        ),
+        _causal_event(
+            3,
+            2,
+            last_byte_at,
+            "A",
+            "bot_to_server",
+            ["call"],
+            event_type="idle_flush",
+            recorded_t=last_byte_at + 0.05,
+            recorded_dt=last_byte_at + 0.05,
+        ),
+    ]
+
+    kinds = {issue["kind"] for issue in replay_events(events)["issues"]}
+    assert ("pending_bot_response_timeout" in kinds) is expected_timeout
+
+
+def test_causal_replay_rejects_mixed_or_tampered_event_metadata():
+    causal = _causal_event(
+        1,
+        1,
+        0,
+        "A",
+        "server_to_bot",
+        ["name"],
+        raw_hex=b"name".hex(),
+    )
+    legacy = _event(1, "A", "bot_to_server", ["BotA"])
+    mixed = replay_events([causal, legacy])
+    assert mixed["issues"][0]["kind"] == "wire_event_causal_order_invalid"
+    assert mixed["issues"][0]["reason"] == "mixed_legacy_and_causal_wire_events"
+
+    tampered = [dict(causal), dict(causal)]
+    tampered[1].update({
+        "record_seq": 2,
+        "conn": "B",
+        "direction": "bot_to_server",
+        "event_type": "idle_flush",
+        "messages": ["call"],
+        "raw_hex": "",
+    })
+    rejected = replay_events(tampered)
+    assert rejected["issues"][0]["kind"] == "wire_event_causal_order_invalid"
+    assert rejected["issues"][0]["reason"] == "causal_wire_event_observation_reuse_invalid"
+
+
 def test_replay_rejects_newline_as_team_name_framing():
     summary = replay_events([
         _event(0, "A", "server_to_bot", ["name"]),
@@ -800,3 +1454,117 @@ def test_wire_probe_target_reached_requires_no_pending_action():
         "settlements_min": 69,
         "pending_expected_actions": [],
     }, 70)
+
+
+def test_wire_probe_forwards_bytes_even_if_recorder_fails(tmp_path):
+    class Reader:
+        async def read(self, _size):
+            return b"call"
+
+    class Writer:
+        def __init__(self):
+            self.payload = bytearray()
+            self.drains = 0
+
+        def write(self, payload):
+            self.payload.extend(payload)
+
+        async def drain(self):
+            self.drains += 1
+
+    class FailingRecorder(WireEventRecorder):
+        def record(self, **kwargs):
+            if kwargs.get("raw"):
+                raise RuntimeError("synthetic recorder failure")
+            return super().record(**kwargs)
+
+    recorder = FailingRecorder(tmp_path / "wire.jsonl")
+    probe = TcpWireProbe(
+        platform_host="127.0.0.1",
+        platform_port=1,
+        recorder=recorder,
+    )
+    probe._awaiting_name["A"] = False
+    writer = Writer()
+    try:
+        with pytest.raises(RuntimeError, match="synthetic recorder failure"):
+            asyncio.run(
+                probe._pipe(
+                    "A",
+                    "bot_to_server",
+                    Reader(),
+                    writer,
+                )
+            )
+    finally:
+        recorder.close()
+
+    assert bytes(writer.payload) == b"call"
+    assert writer.drains == 1
+
+
+def test_full_two_port_probe_preserves_causal_relay_and_final_marker(tmp_path):
+    async def upstream_handler(reader, writer):
+        try:
+            writer.write(b"name")
+            await writer.drain()
+            name = (await asyncio.wait_for(reader.read(128), timeout=1)).decode()
+            response = {
+                "BotA": "preflop|SMALLBLIND|<0,1><1,2>",
+                "BotB": "preflop|BIGBLIND|<2,3><3,4>",
+            }[name]
+            writer.write(response.encode())
+            await writer.drain()
+            await reader.read()
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
+    async def bot(port, name):
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        assert await asyncio.wait_for(reader.readexactly(4), timeout=1) == b"name"
+        writer.write(name.encode())
+        await writer.drain()
+        response = (await asyncio.wait_for(reader.read(128), timeout=1)).decode()
+        await asyncio.sleep(0.08)
+        writer.close()
+        await writer.wait_closed()
+        return response
+
+    async def exercise(recorder):
+        upstream = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
+        upstream_port = upstream.sockets[0].getsockname()[1]
+        probe = TcpWireProbe(
+            platform_host="127.0.0.1",
+            platform_port=upstream_port,
+            recorder=recorder,
+        )
+        try:
+            ports = await probe.start()
+            responses = await asyncio.gather(
+                bot(ports["A"], "BotA"),
+                bot(ports["B"], "BotB"),
+            )
+            await asyncio.sleep(0.05)
+            return responses
+        finally:
+            await probe.stop()
+            upstream.close()
+            await upstream.wait_closed()
+
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    try:
+        responses = asyncio.run(exercise(recorder))
+        summary = replay_events(list(recorder.events), finalized=True)
+    finally:
+        recorder.close()
+
+    assert responses == [
+        "preflop|SMALLBLIND|<0,1><1,2>",
+        "preflop|BIGBLIND|<2,3><3,4>",
+    ]
+    assert recorder.events[-1]["event_type"] == "capture_finalized"
+    assert summary["issues"] == []
+    assert summary["seats"]["A"]["name"] == "BotA"
+    assert summary["seats"]["B"]["name"] == "BotB"
+    assert summary["hands_started_min"] == 1
