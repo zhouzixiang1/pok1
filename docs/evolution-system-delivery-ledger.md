@@ -4369,7 +4369,7 @@ official-opponent, rating or strength authority to the system control.
 The completed inconclusive attempt result digest is
 `d34ef471a6e7ff7b0be09043b67c6801b09d284db28ec174a2d2bb01beaf94f9`.
 Focused verification is 54 harness tests plus 333 official/bootstrap/control
-tests, all passing.  Complete Web verification is `3441 passed, 20 skipped`
+tests, all passing.  Complete Web verification is `3445 passed, 20 skipped`
 with the existing dependency warning; compileall and `git diff --check` are
 green.  Because the harness is an always-critical evaluation-contract input,
 this repair cannot resume the old parked authorization under a new source
@@ -4377,3 +4377,13 @@ hash.  The old v62 checkpoint must be exact-CAS abandoned on its recorded HEAD
 after the failed job is terminal, then the reviewed fix must flow through
 `origin/main` and a fresh v143 must reproduce every gate before another
 explicit bootstrap attempt.
+
+Independent review first rejected three fail-open edges: nonempty rather than
+exact control id before namespace deferral, caller-envelope hashes surviving
+authorization into sealing, and a fallback from a validator result missing its
+own authorized selection to caller input.  The final tree closes all three and
+the reviewer approved exact SHA
+`7b7d25bd1450eddb47bc95cb508c8f1d649aa7fe` with no remaining P0/P1.  A
+separate Codex-only Worker MCP review attempt terminalized before any model
+turn with no successful file-read evidence; its empty output was rejected and
+is not review evidence.
