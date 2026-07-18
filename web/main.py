@@ -12,6 +12,7 @@ Usage:
 import argparse
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,12 @@ log = logging.getLogger("pok.main")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = WEB_DIR / "frontend"
+STATIC_DIR = WEB_DIR / "server" / "static"
+STATIC_BUILD_RECEIPT = STATIC_DIR / ".pok-static-build-receipt.json"
+STATIC_BUILD_RECEIPT_VERIFIER = (
+    FRONTEND_DIR / "scripts" / "static-build-receipt.mjs"
+)
 
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(WEB_DIR / "core"))
@@ -72,6 +79,68 @@ def build_frontend() -> bool:
     return True
 
 
+def verify_frontend_static_receipt() -> bool:
+    """Fail closed when ``--no-build`` would serve an unbound SPA bundle.
+
+    ``pokctl.sh`` already performs this preflight before it stops an owned
+    service.  The documented direct launcher must enforce the same source
+    binding too: otherwise ``python web/main.py --no-build`` can start an app
+    with stale dashboard status-authority code.  The Node verifier owns the
+    receipt schema and source fingerprint calculation, so this launcher only
+    owns the startup gate rather than duplicating shell or JavaScript logic.
+    """
+
+    index_html = STATIC_DIR / "index.html"
+    assets_dir = STATIC_DIR / "assets"
+    if not index_html.is_file() or not assets_dir.is_dir():
+        log.error(
+            "[build] --no-build requires %s and %s",
+            index_html,
+            assets_dir,
+        )
+        return False
+
+    node = shutil.which("node")
+    if node is None:
+        log.error(
+            "[build] --no-build requires Node.js to verify the source-bound "
+            "frontend static receipt."
+        )
+        return False
+    if not STATIC_BUILD_RECEIPT_VERIFIER.is_file():
+        log.error(
+            "[build] --no-build static receipt verifier is missing: %s",
+            STATIC_BUILD_RECEIPT_VERIFIER,
+        )
+        return False
+
+    try:
+        verification = subprocess.run(
+            [
+                node,
+                str(STATIC_BUILD_RECEIPT_VERIFIER),
+                "--verify",
+                str(STATIC_BUILD_RECEIPT),
+            ],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        log.error("[build] --no-build receipt verifier could not start: %s", exc)
+        return False
+    if verification.returncode != 0:
+        detail = (verification.stderr or verification.stdout).strip()
+        log.error(
+            "[build] --no-build static bundle receipt is missing, malformed, "
+            "or does not match current frontend sources%s",
+            f": {detail}" if detail else "",
+        )
+        return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="national_tcp_policy_v1 evolution Web/API control plane"
@@ -84,6 +153,15 @@ def main():
     parser.add_argument("--dev", action="store_true", help="Enable auto-reload")
     args = parser.parse_args()
 
+    # Validate an explicitly reused bundle before importing the app, starting
+    # the orchestrator, or handing control to Uvicorn.  A normal build owns
+    # writing/copying its receipt atomically as part of ``npm run build``.
+    if args.no_build:
+        if not verify_frontend_static_receipt():
+            sys.exit(1)
+    elif not build_frontend():
+        sys.exit(1)
+
     # The autonomous checkout is publication-authoritative.  Directly using
     # the documented ``python web/main.py`` entrypoint there must retain the
     # same push-required semantics as the restart helper; otherwise commit_bot
@@ -93,8 +171,6 @@ def main():
         os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
         os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
 
-    import uvicorn
-
     if args.view_only:
         os.environ["POK_WEB_VIEW_ONLY"] = "1"
         args.no_daemon = True
@@ -102,11 +178,6 @@ def main():
     if args.no_daemon:
         os.environ["DAEMON_DISABLED"] = "1"
     os.environ.setdefault("POK_WORKFLOW_PROFILE", "national_native")
-
-    # Auto-build frontend before starting server
-    if not args.no_build:
-        if not build_frontend():
-            sys.exit(1)
 
     # Initialize structured logging
     from logging_config import configure_logging
@@ -120,6 +191,8 @@ def main():
     # Note: atexit.register(stop_daemon) is handled inside start_daemon() itself
     # (daemon_management.py line ~90) — no need to register again here.
     # Duplicate registration causes stop_daemon to run 2x on exit (1s wasted in orphan checks).
+
+    import uvicorn
 
     uvicorn.run(
         "server.app:app",
