@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
+import sqlite3
 
 import pytest
 from claude_agent_sdk import ResultMessage
@@ -1051,6 +1052,92 @@ def test_generation_abandon_tombstone_rejects_extra_state(authority):
             reason=f"terminal_gate_outcome:{receipt_digest}",
         )
     assert store.instance(run_id)["fence_epoch"] == 0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("definition", "status", "stream", "fence", "event", "effect"),
+)
+def test_generation_abandon_tombstone_rejects_nonexact_shape(
+    authority,
+    mutation,
+):
+    module, store = authority
+    checkpoint = _checkpoint(stage="review_rejected", revision=9)
+    receipt_digest = "d" * 64
+    checkpoint["terminal_gate_outcome"] = {
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "terminal_stage": "review_rejected",
+        "receipt_digest": receipt_digest,
+    }
+    run_id = module.authority_run_id(checkpoint["workflow_run_id"])
+    store.ensure_instance(
+        run_id,
+        definition_version=module.DEFINITION_VERSION,
+        status="abandoned",
+    )
+    with sqlite3.connect(store.path) as connection:
+        if mutation == "definition":
+            connection.execute(
+                "UPDATE workflow_instances SET definition_version = 99 "
+                "WHERE run_id = ?",
+                (run_id,),
+            )
+        elif mutation == "status":
+            connection.execute(
+                "UPDATE workflow_instances SET status = 'running' "
+                "WHERE run_id = ?",
+                (run_id,),
+            )
+        elif mutation == "stream":
+            connection.execute(
+                "UPDATE workflow_instances SET stream_version = 1 "
+                "WHERE run_id = ?",
+                (run_id,),
+            )
+        elif mutation == "fence":
+            connection.execute(
+                "UPDATE workflow_instances SET fence_epoch = 1 "
+                "WHERE run_id = ?",
+                (run_id,),
+            )
+        elif mutation == "event":
+            connection.execute(
+                "INSERT INTO workflow_events VALUES (?, 1, ?, 1, ?, ?, ?, 1)",
+                (
+                    run_id,
+                    "UnexpectedTombstoneState",
+                    "{}",
+                    module.content_digest({}),
+                    "unexpected-tombstone-state",
+                ),
+            )
+            connection.execute(
+                "UPDATE workflow_instances SET stream_version = 1 "
+                "WHERE run_id = ?",
+                (run_id,),
+            )
+        elif mutation == "effect":
+            connection.execute(
+                "INSERT INTO effects(effect_id, run_id, kind, input_payload, "
+                "input_digest, status, max_attempts, created_at, updated_at) "
+                "VALUES (?, ?, 'forged', '{}', ?, 'abandoned', 1, 1, 1)",
+                ("forged-tombstone-effect", run_id, module.content_digest({})),
+            )
+        connection.commit()
+
+    with pytest.raises((module.StrictAuthorityError, module.WorkflowConflict)):
+        module.abandon_authority(
+            checkpoint,
+            reason=f"terminal_gate_outcome:{receipt_digest}",
+        )
+    with sqlite3.connect(store.path) as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) FROM workflow_events WHERE run_id = ? "
+            "AND event_type = 'StrictAuthorityAbandoned'",
+            (run_id,),
+        ).fetchone()[0]
+    assert count == 0
 
 
 def test_generation_abandon_blocks_accepted_provider_replay_dispatch(authority):

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import asyncio
 import hashlib
 import json
 import sqlite3
+from contextlib import nullcontext
 
 import pytest
 from claude_agent_sdk import ResultMessage
@@ -435,3 +437,143 @@ def test_rev9_terminal_route_revalidates_exact_already_fenced_lifecycle(
             terminal,
             reason=reason,
         )
+
+
+def test_quality_terminal_legacy_strict_tombstone_routes_and_completes_action(
+    tmp_path,
+    monkeypatch,
+):
+    import bot_namespace
+    import checkpoint_schema
+    import evolution_core
+    import evolution_infra
+    import gate_outcome
+    import pipeline_infrastructure
+    import pipeline_state
+    import stability_observation
+    import strict_authority_workflow as authority
+    import tool_bot_management as management
+    from worker_workflow import WorkerWorkflow
+    from workflow_kernel import WorkflowStore
+
+    results = tmp_path / "results"
+    store = WorkflowStore(results / "workflow" / "events.sqlite3")
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results)
+    monkeypatch.setattr(management, "RESULTS_DIR", results)
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    checkpoint = _checkpoint(candidate, stage="workers_done", revision=8)
+    rejected_quality = {
+        "version": 143,
+        "source_v": 142,
+        "passed": False,
+        "all_passed": False,
+        "failures": ["deterministic quality rejection"],
+    }
+    outcome = gate_outcome.build_terminal_gate_outcome(
+        checkpoint,
+        gate_name="quality",
+        gate_payload=rejected_quality,
+        candidate_dir=candidate,
+        reason_code="quality_gate_rejected",
+        failure_class="quality_gate",
+    )
+    terminal = {
+        **checkpoint,
+        "stage": "quality_rejected",
+        "checkpoint_revision": 9,
+        "gate_results": {"quality": rejected_quality},
+        "terminal_gate_outcome": outcome,
+    }
+    reason = gate_outcome.terminal_outcome_abandon_reason(outcome)
+    WorkerWorkflow.for_checkpoint(terminal).abandon(reason)
+    strict_run_id = authority.authority_run_id(terminal["workflow_run_id"])
+    store.ensure_instance(
+        strict_run_id,
+        definition_version=authority.DEFINITION_VERSION,
+        status="abandoned",
+    )
+
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "checkpoint_epoch_errors",
+        lambda _checkpoint: [],
+    )
+    monkeypatch.setattr(
+        pipeline_infrastructure,
+        "normalize_checkpoint_infrastructure",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        pipeline_infrastructure,
+        "infrastructure_route",
+        lambda _checkpoint: None,
+    )
+    monkeypatch.setattr(bot_namespace, "bot_relpath", lambda _version: candidate)
+    route = pipeline_state.route_policy(terminal)
+    assert route["intent"] == "terminal_gate_abandon"
+    assert route["next_tool"] == "abandon_generation"
+    prefix = management.terminal_gate_abandon_fence_proof_if_present(
+        terminal,
+        reason=reason,
+    )
+    assert set(prefix) == {"worker"}
+
+    state_file = tmp_path / "pipeline_state.json"
+    state_file.write_text(json.dumps(terminal), encoding="utf-8")
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", state_file)
+    monkeypatch.setattr(management, "read_pipeline_checkpoint", lambda: terminal)
+    monkeypatch.setattr(management, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(management, "_load_live_abandon_claim", lambda: None)
+    monkeypatch.setattr(
+        management,
+        "recorded_abandon_receipt_for_checkpoint",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        management,
+        "bot_publication_lock",
+        lambda **_kwargs: nullcontext(),
+    )
+    monkeypatch.setattr(management, "log_system_event", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        stability_observation,
+        "reset_stability_observation",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        management,
+        "_finalize_checkpoint_abandon_transaction",
+        lambda *_args, **_kwargs: {
+            "abandon_receipt": {"receipt_digest": "1" * 64},
+            "finalize_receipt": {"receipt_digest": "2" * 64},
+            "transaction_id": "3" * 64,
+            "checkpoint_identity": {
+                "workflow_run_id": terminal["workflow_run_id"],
+                "checkpoint_revision": 9,
+            },
+            "removed_directory": "national_v143",
+        },
+    )
+
+    result = asyncio.run(management._do_abandon_generation(
+        reason=reason,
+        _bypass_rate_limit=True,
+        expected_terminal_gate_outcome_digest=outcome["receipt_digest"],
+        **management.expected_abandon_identity(terminal),
+    ))
+
+    assert result["abandoned"] is True
+    strict_events = store.events(strict_run_id)
+    assert [event.event_type for event in strict_events] == [
+        "StrictAuthorityAbandoned"
+    ]
+    assert strict_events[0].payload == {
+        "reason": reason,
+        "workflow_run_id": terminal["workflow_run_id"],
+    }
+    assert all(
+        event.event_type != "EffectRequested"
+        for event in strict_events
+    )

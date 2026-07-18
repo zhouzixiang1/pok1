@@ -731,18 +731,11 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
     )
 
 
-def validate_terminal_gate_abandon_fences(
+def _terminal_gate_abandon_identity(
     checkpoint: dict,
     *,
     reason: str,
-) -> dict:
-    """Prove the exact already-fenced lifecycle of one terminal gate receipt.
-
-    This is the narrow bridge needed by canonical abandon's second state guard
-    and by a crash retry after both journals were fenced.  It does not create,
-    repair, or relax either journal.
-    """
-
+) -> tuple[str, str]:
     if not isinstance(checkpoint, dict):
         raise RuntimeError("terminal_gate_abandon_checkpoint_invalid")
     outcome = checkpoint.get("terminal_gate_outcome")
@@ -761,6 +754,25 @@ def validate_terminal_gate_abandon_fences(
         or str(reason) != expected_reason
     ):
         raise RuntimeError("terminal_gate_abandon_fence_identity_invalid")
+    return workflow_run_id, expected_reason
+
+
+def validate_terminal_gate_abandon_fences(
+    checkpoint: dict,
+    *,
+    reason: str,
+) -> dict:
+    """Prove the exact already-fenced lifecycle of one terminal gate receipt.
+
+    This is the narrow bridge needed by canonical abandon's second state guard
+    and by a crash retry after both journals were fenced.  It does not create,
+    repair, or relax either journal.
+    """
+
+    workflow_run_id, expected_reason = _terminal_gate_abandon_identity(
+        checkpoint,
+        reason=reason,
+    )
     return _validate_abandon_workflow_fences(
         workflow_run_id=workflow_run_id,
         abandon_reason=expected_reason,
@@ -782,11 +794,15 @@ def terminal_gate_abandon_fence_proof_if_present(
     rather than being mistaken for the ordinary pre-fence validation pass.
     """
 
-    from strict_authority_workflow import authority_run_id
+    from strict_authority_workflow import DEFINITION_VERSION, authority_run_id
 
     if not isinstance(checkpoint, dict):
         raise RuntimeError("terminal_gate_abandon_checkpoint_invalid")
-    workflow_run_id = str(checkpoint.get("workflow_run_id") or "")
+    workflow_run_id, expected_reason = _terminal_gate_abandon_identity(
+        checkpoint,
+        reason=reason,
+    )
+    strict_run_id = authority_run_id(workflow_run_id)
     database = Path(RESULTS_DIR) / "workflow" / "events.sqlite3"
     if not os.path.lexists(database):
         return None
@@ -810,23 +826,67 @@ def terminal_gate_abandon_fence_proof_if_present(
     try:
         connection.execute("PRAGMA query_only=ON")
         rows = connection.execute(
-            "SELECT run_id, status FROM workflow_instances "
+            "SELECT run_id, definition_version, stream_version, status, "
+            "fence_epoch FROM workflow_instances "
             "WHERE run_id IN (?, ?)",
-            (workflow_run_id, authority_run_id(workflow_run_id)),
+            (workflow_run_id, strict_run_id),
         ).fetchall()
+        strict_event_count = int(connection.execute(
+            "SELECT COUNT(*) FROM workflow_events WHERE run_id = ?",
+            (strict_run_id,),
+        ).fetchone()[0])
+        strict_effect_count = int(connection.execute(
+            "SELECT COUNT(*) FROM effects WHERE run_id = ?",
+            (strict_run_id,),
+        ).fetchone()[0])
     finally:
         connection.close()
-    statuses = {str(row[0]): str(row[1]) for row in rows}
-    worker_abandoned = statuses.get(workflow_run_id) == "abandoned"
-    strict_abandoned = (
-        statuses.get(authority_run_id(workflow_run_id)) == "abandoned"
-    )
+    instances = {str(row[0]): row for row in rows}
+    worker = instances.get(workflow_run_id)
+    strict = instances.get(strict_run_id)
+    worker_abandoned = worker is not None and str(worker[3]) == "abandoned"
+    strict_abandoned = strict is not None and str(strict[3]) == "abandoned"
     if not worker_abandoned and not strict_abandoned:
         return None
-    if worker_abandoned and not strict_abandoned:
+    exact_legacy_strict_tombstone = bool(
+        strict is not None
+        and int(strict[1]) == DEFINITION_VERSION
+        and int(strict[2]) == 0
+        and str(strict[3]) == "abandoned"
+        and int(strict[4]) == 0
+        and strict_event_count == 0
+        and strict_effect_count == 0
+    )
+    if worker_abandoned and exact_legacy_strict_tombstone:
+        # This is recoverable only as the exact Worker-first prefix.  Never
+        # expose a strict_authority key: authority_summary must still reject
+        # review/critic receipts until abandon_authority appends the missing
+        # canonical terminal event inside the action boundary.
         return _validate_abandon_workflow_fences(
             workflow_run_id=workflow_run_id,
-            abandon_reason=str(reason),
+            abandon_reason=expected_reason,
+            require_worker_outer_reason=True,
+            require_strict_authority=False,
+        )
+    if worker_abandoned and not strict_abandoned:
+        if (
+            strict is not None
+            and (
+                int(strict[1]) != DEFINITION_VERSION
+                or (
+                    int(strict[2]) == 0
+                    and int(strict[4]) == 0
+                    and strict_event_count == 0
+                    and strict_effect_count == 0
+                )
+            )
+        ):
+            raise RuntimeError(
+                "terminal_gate_abandon_strict_prefix_invalid"
+            )
+        return _validate_abandon_workflow_fences(
+            workflow_run_id=workflow_run_id,
+            abandon_reason=expected_reason,
             require_worker_outer_reason=True,
             require_strict_authority=False,
         )

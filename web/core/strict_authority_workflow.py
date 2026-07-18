@@ -298,7 +298,9 @@ def abandon_authority(
             f"multiple strict authority abandon events: {run_id}"
         )
     if not terminal_events:
-        if instance.get("status") == "abandoned":
+        history = store.events(run_id)
+        effects = store.effects_for_run(run_id)
+        if not history and not effects:
             outcome = (checkpoint or {}).get("terminal_gate_outcome") or {}
             receipt_digest = str(outcome.get("receipt_digest") or "")
             expected_reason = f"terminal_gate_outcome:{receipt_digest}"
@@ -307,7 +309,7 @@ def abandon_authority(
                 == DEFINITION_VERSION
                 and int(instance.get("stream_version", -1)) == 0
                 and int(instance.get("fence_epoch", -1)) == 0
-                and not store.effects_for_run(run_id)
+                and instance.get("status") == "abandoned"
                 and checkpoint.get("stage")
                 in {"quality_rejected", "review_rejected", "critic_rejected"}
                 and outcome.get("workflow_run_id")
@@ -324,6 +326,10 @@ def abandon_authority(
                 raise StrictAuthorityError(
                     "strict_authority_abandon_tombstone_invalid"
                 )
+        elif instance.get("status") == "abandoned":
+            raise StrictAuthorityError(
+                "strict_authority_abandon_tombstone_invalid"
+            )
         try:
             store.terminal_transition(
                 run_id,
