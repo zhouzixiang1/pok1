@@ -236,6 +236,25 @@ def authority_run_id(workflow_run_id: str) -> str:
     return f"{workflow_run_id}:{RUN_SUFFIX}"
 
 
+def strict_authority_abandon_event_identity(
+    checkpoint: dict[str, Any],
+    *,
+    reason: str,
+) -> tuple[dict[str, str], str]:
+    """Return the sole exact strict-authority terminal event identity."""
+
+    workflow_run_id = str((checkpoint or {}).get("workflow_run_id") or "")
+    run_id = authority_run_id(workflow_run_id)
+    payload = {
+        "reason": str(reason)[:1000],
+        "workflow_run_id": workflow_run_id,
+    }
+    return (
+        payload,
+        f"strict-authority-abandoned:{run_id}:{content_digest(payload)}",
+    )
+
+
 def abandon_authority(
     checkpoint: dict[str, Any],
     *,
@@ -245,23 +264,28 @@ def abandon_authority(
 
     run_id = authority_run_id(str((checkpoint or {}).get("workflow_run_id") or ""))
     store = _store()
-    payload = {
-        "reason": str(reason)[:1000],
-        "workflow_run_id": str(checkpoint.get("workflow_run_id") or ""),
-    }
+    payload, causation_id = strict_authority_abandon_event_identity(
+        checkpoint,
+        reason=reason,
+    )
     instance = store.instance(run_id)
     if not instance:
-        # new_call is intentionally side-effect free, so an abandon can race a
-        # descriptor that has not reached dispatch yet.  Publish an abandoned
-        # tombstone first: even a crash before the terminal event is appended
-        # then prevents ensure_instance/request_effect from resurrecting this
-        # child journal as running.  This uses the SQLite instance transaction,
-        # not a nested actor flock; callers already own the Worker actor lock.
-        store.ensure_instance(
-            run_id,
-            definition_version=DEFINITION_VERSION,
-            status="abandoned",
-        )
+        # A descriptor that never reached dispatch has no instance.  Create
+        # its tombstone and sole terminal event in one SQLite transaction so a
+        # crash cannot leave an unbound reason-less abandoned row.
+        try:
+            store.create_terminal_transition(
+                run_id,
+                definition_version=DEFINITION_VERSION,
+                event_type="StrictAuthorityAbandoned",
+                payload=payload,
+                causation_id=causation_id,
+                status="abandoned",
+            )
+        except WorkflowConflict:
+            # A concurrent owner may have completed the identical transition;
+            # the exact validator below decides whether it is reusable.
+            pass
         instance = store.instance(run_id)
 
     terminal_events = [
@@ -274,15 +298,38 @@ def abandon_authority(
             f"multiple strict authority abandon events: {run_id}"
         )
     if not terminal_events:
+        if instance.get("status") == "abandoned":
+            outcome = (checkpoint or {}).get("terminal_gate_outcome") or {}
+            receipt_digest = str(outcome.get("receipt_digest") or "")
+            expected_reason = f"terminal_gate_outcome:{receipt_digest}"
+            exact_legacy_tombstone = bool(
+                int(instance.get("definition_version") or -1)
+                == DEFINITION_VERSION
+                and int(instance.get("stream_version", -1)) == 0
+                and int(instance.get("fence_epoch", -1)) == 0
+                and not store.effects_for_run(run_id)
+                and checkpoint.get("stage")
+                in {"quality_rejected", "review_rejected", "critic_rejected"}
+                and outcome.get("workflow_run_id")
+                == checkpoint.get("workflow_run_id")
+                and outcome.get("terminal_stage") == checkpoint.get("stage")
+                and len(receipt_digest) == 64
+                and all(
+                    char in "0123456789abcdef"
+                    for char in receipt_digest
+                )
+                and str(reason) == expected_reason
+            )
+            if not exact_legacy_tombstone:
+                raise StrictAuthorityError(
+                    "strict_authority_abandon_tombstone_invalid"
+                )
         try:
             store.terminal_transition(
                 run_id,
                 event_type="StrictAuthorityAbandoned",
                 payload=payload,
-                causation_id=(
-                    f"strict-authority-abandoned:{run_id}:"
-                    f"{content_digest(payload)}"
-                ),
+                causation_id=causation_id,
                 expected_version=int(instance["stream_version"]),
                 status="abandoned",
             )
@@ -322,10 +369,12 @@ def _validated_strict_abandon_fence(
         for event in events
         if event.event_type == "StrictAuthorityAbandoned"
     ]
-    expected_payload = {
-        "reason": str(reason)[:1000],
-        "workflow_run_id": workflow_run_id,
-    }
+    expected_payload, expected_causation_id = (
+        strict_authority_abandon_event_identity(
+            checkpoint,
+            reason=reason,
+        )
+    )
     if (
         int(instance.get("definition_version") or -1) != DEFINITION_VERSION
         or instance.get("status") != "abandoned"
@@ -335,11 +384,7 @@ def _validated_strict_abandon_fence(
         or int(instance.get("stream_version") or -1) != terminal[0].seq
         or terminal[0].schema_version != 1
         or terminal[0].payload != expected_payload
-        or terminal[0].causation_id
-        != (
-            f"strict-authority-abandoned:{run_id}:"
-            f"{content_digest(expected_payload)}"
-        )
+        or terminal[0].causation_id != expected_causation_id
     ):
         raise StrictAuthorityError(
             "strict_authority_abandon_fence_identity_invalid"

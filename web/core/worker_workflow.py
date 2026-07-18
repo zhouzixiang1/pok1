@@ -399,8 +399,29 @@ def next_worker_command(state: dict[str, Any]) -> dict[str, Any]:
     return {"command": "recover", "status": status}
 
 
-def replay_worker(store: WorkflowStore, run_id: str) -> dict[str, Any]:
-    events = store.events(run_id)
+def worker_abandon_event_identity(
+    run_id: str,
+    *,
+    reason: str,
+    cycle: int,
+) -> tuple[dict[str, str], str]:
+    """Return the sole exact Worker terminal payload and causal identity."""
+
+    bounded_reason = str(reason)[:1000]
+    payload = {"reason": bounded_reason}
+    causation_id = (
+        f"worker-abandoned:{str(run_id)}:cycle-{int(cycle)}:"
+        f"{content_digest(bounded_reason)}"
+    )
+    return payload, causation_id
+
+
+def replay_worker_events(
+    run_id: str,
+    events: list[WorkflowEvent],
+) -> dict[str, Any]:
+    """Purely replay an already validated, ordered Worker event sequence."""
+
     allowed = {
         "WorkerPrepared",
         "WorkerCycleOpened",
@@ -445,6 +466,10 @@ def replay_worker(store: WorkflowStore, run_id: str) -> dict[str, Any]:
         events,
         reduce_worker_event,
     )
+
+
+def replay_worker(store: WorkflowStore, run_id: str) -> dict[str, Any]:
+    return replay_worker_events(run_id, store.events(run_id))
 
 
 class WorkerArtifactStore:
@@ -1452,14 +1477,16 @@ class WorkerWorkflow:
             # caller reason is truncated in the event payload but hashed in
             # the causation id, leaving future recovery unable to reprove its
             # own terminal journal without retaining the unbounded input.
+            payload, causation_id = worker_abandon_event_identity(
+                self.run_id,
+                reason=bounded_reason,
+                cycle=int(state.get("cycle") or 0),
+            )
             self.store.terminal_transition(
                 self.run_id,
                 event_type="WorkerAbandoned",
-                payload={"reason": bounded_reason},
-                causation_id=(
-                    f"worker-abandoned:{self.run_id}:"
-                    f"cycle-{state.get('cycle', 0)}:{content_digest(bounded_reason)}"
-                ),
+                payload=payload,
+                causation_id=causation_id,
                 expected_version=int(state["last_seq"]),
                 status="abandoned",
             )
@@ -1476,7 +1503,7 @@ class WorkerWorkflow:
             expected_reason = terminal_reason
         else:
             expected_reason = bounded_reason
-        causal_subjects = [expected_reason]
+        legacy_unbounded_reason = None
         if (
             already_abandoned
             and accept_existing_reason
@@ -1486,12 +1513,24 @@ class WorkerWorkflow:
             # Historical producers bounded the payload but hashed the original
             # outer argument.  This compatibility is unavailable to the exact
             # terminal-gate lifecycle path.
-            causal_subjects.append(str(reason))
+            legacy_unbounded_reason = str(reason)
         expected_causations = {
-            f"worker-abandoned:{self.run_id}:cycle-{cycle}:"
-            f"{content_digest(subject)}"
-            for subject in causal_subjects
+            worker_abandon_event_identity(
+                self.run_id,
+                reason=expected_reason,
+                cycle=cycle,
+            )[1]
         }
+        if legacy_unbounded_reason is not None:
+            expected_causations.add(
+                f"worker-abandoned:{self.run_id}:cycle-{cycle}:"
+                f"{content_digest(legacy_unbounded_reason)}"
+            )
+        expected_payload = worker_abandon_event_identity(
+            self.run_id,
+            reason=expected_reason,
+            cycle=cycle,
+        )[0]
         if (
             terminal_state.get("status") != "abandoned"
             or terminal_reason != expected_reason
@@ -1503,7 +1542,7 @@ class WorkerWorkflow:
             or terminal[0].seq != len(events)
             or int(instance.get("stream_version") or -1) != terminal[0].seq
             or terminal[0].schema_version != 1
-            or terminal[0].payload != {"reason": expected_reason}
+            or terminal[0].payload != expected_payload
             or terminal[0].causation_id not in expected_causations
         ):
             raise RuntimeError("worker_abandon_fence_identity_invalid")

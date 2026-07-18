@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import hashlib
 import json
 import sqlite3
 
@@ -330,6 +331,95 @@ def test_rev9_terminal_route_revalidates_exact_already_fenced_lifecycle(
         "receipt_digest_invalid" in issue
         for issue in invalid_receipt["issues"]
     )
+
+    from workflow_kernel import canonical_json, content_digest
+
+    strict_run_id = authority.authority_run_id(terminal["workflow_run_id"])
+    with sqlite3.connect(store.path) as connection:
+        worker_row = connection.execute(
+            "SELECT payload, payload_digest, causation_id FROM workflow_events "
+            "WHERE run_id = ? AND event_type = 'WorkerAbandoned'",
+            (terminal["workflow_run_id"],),
+        ).fetchone()
+        strict_row = connection.execute(
+            "SELECT payload, payload_digest, causation_id FROM workflow_events "
+            "WHERE run_id = ? AND event_type = 'StrictAuthorityAbandoned'",
+            (strict_run_id,),
+        ).fetchone()
+
+        worker_extra = {"reason": reason, "extra": True}
+        worker_encoded = canonical_json(worker_extra)
+        connection.execute(
+            "UPDATE workflow_events SET payload = ?, payload_digest = ? "
+            "WHERE run_id = ? AND event_type = 'WorkerAbandoned'",
+            (
+                worker_encoded,
+                hashlib.sha256(worker_encoded.encode()).hexdigest(),
+                terminal["workflow_run_id"],
+            ),
+        )
+        connection.commit()
+        with pytest.raises(RuntimeError, match="reason_unbound"):
+            management.validate_terminal_gate_abandon_fences(
+                terminal,
+                reason=reason,
+            )
+        connection.execute(
+            "UPDATE workflow_events SET payload = ?, payload_digest = ?, "
+            "causation_id = ? WHERE run_id = ? "
+            "AND event_type = 'WorkerAbandoned'",
+            (*worker_row, terminal["workflow_run_id"]),
+        )
+
+        wrong_cycle = str(worker_row[2]).replace("cycle-0:", "cycle-9:")
+        connection.execute(
+            "UPDATE workflow_events SET causation_id = ? WHERE run_id = ? "
+            "AND event_type = 'WorkerAbandoned'",
+            (wrong_cycle, terminal["workflow_run_id"]),
+        )
+        connection.commit()
+        with pytest.raises(RuntimeError, match="reason_unbound"):
+            management.validate_terminal_gate_abandon_fences(
+                terminal,
+                reason=reason,
+            )
+        connection.execute(
+            "UPDATE workflow_events SET causation_id = ? WHERE run_id = ? "
+            "AND event_type = 'WorkerAbandoned'",
+            (worker_row[2], terminal["workflow_run_id"]),
+        )
+
+        strict_extra = {
+            "reason": reason,
+            "workflow_run_id": terminal["workflow_run_id"],
+            "extra": True,
+        }
+        strict_encoded = canonical_json(strict_extra)
+        connection.execute(
+            "UPDATE workflow_events SET payload = ?, payload_digest = ?, "
+            "causation_id = ? WHERE run_id = ? "
+            "AND event_type = 'StrictAuthorityAbandoned'",
+            (
+                strict_encoded,
+                hashlib.sha256(strict_encoded.encode()).hexdigest(),
+                f"strict-authority-abandoned:{strict_run_id}:"
+                f"{content_digest(strict_extra)}",
+                strict_run_id,
+            ),
+        )
+        connection.commit()
+        with pytest.raises(RuntimeError, match="binding_invalid"):
+            management.validate_terminal_gate_abandon_fences(
+                terminal,
+                reason=reason,
+            )
+        connection.execute(
+            "UPDATE workflow_events SET payload = ?, payload_digest = ?, "
+            "causation_id = ? WHERE run_id = ? "
+            "AND event_type = 'StrictAuthorityAbandoned'",
+            (*strict_row, strict_run_id),
+        )
+        connection.commit()
 
     with sqlite3.connect(store.path) as connection:
         connection.execute(

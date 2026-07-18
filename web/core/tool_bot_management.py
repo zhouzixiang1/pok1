@@ -444,9 +444,22 @@ def _validate_abandon_workflow_fences(
 ) -> dict:
     """Read-only proof of the Worker prefix and optional strict child fence."""
 
-    from strict_authority_workflow import DEFINITION_VERSION, authority_run_id
-    from worker_workflow import WORKER_WORKFLOW_DEFINITION_VERSION
-    from workflow_kernel import KERNEL_SCHEMA_VERSION, canonical_json, content_digest
+    from strict_authority_workflow import (
+        DEFINITION_VERSION,
+        authority_run_id,
+        strict_authority_abandon_event_identity,
+    )
+    from worker_workflow import (
+        WORKER_WORKFLOW_DEFINITION_VERSION,
+        replay_worker_events,
+        worker_abandon_event_identity,
+    )
+    from workflow_kernel import (
+        KERNEL_SCHEMA_VERSION,
+        WorkflowEvent,
+        canonical_json,
+        content_digest,
+    )
 
     workflow_run_id = str(workflow_run_id or "")
     if not workflow_run_id:
@@ -598,48 +611,66 @@ def _validate_abandon_workflow_fences(
                     f"completed_abandon_{event_type}_outer_reason_mismatch"
                 )
             if event_type == "WorkerAbandoned":
-                # WorkerAbandoned stores its own bounded execution reason in
-                # the causal id.  This binds a pre-existing inner failure
-                # without pretending it is the later outer abandon reason.
-                causation_id = event["causation_id"]
-                prefix = f"worker-abandoned:{run_id}:cycle-"
-                # The normal outer-abandon path hashes the untruncated claim
-                # reason while storing its first 1000 characters in the
-                # Worker event.  A pre-existing Worker failure instead hashes
-                # its own emitted reason.  Accept only either exact, provable
-                # construction; an unrelated truncated reason remains
-                # unbound and fails closed.
-                causal_subjects = [terminal_reason]
+                worker_events = [
+                    WorkflowEvent(
+                        run_id=run_id,
+                        seq=int(row["seq"]),
+                        event_type=str(row["event_type"]),
+                        schema_version=int(row["schema_version"]),
+                        payload=row_payload,
+                        payload_digest=str(row["payload_digest"]),
+                        causation_id=str(row["causation_id"]),
+                    )
+                    for row, row_payload in decoded_history
+                ]
+                try:
+                    worker_state = replay_worker_events(
+                        run_id,
+                        worker_events,
+                    )
+                except Exception as exc:
+                    raise RuntimeError(
+                        "completed_abandon_WorkerAbandoned_replay_invalid"
+                    ) from exc
+                cycle = int(worker_state.get("cycle") or 0)
+                expected_payload, expected_causation = (
+                    worker_abandon_event_identity(
+                        run_id,
+                        reason=terminal_reason,
+                        cycle=cycle,
+                    )
+                )
+                expected_causations = {expected_causation}
                 if (
                     terminal_reason == outer_reason
                     and claim_outer_reason != terminal_reason
                 ):
-                    causal_subjects.append(claim_outer_reason)
-                cycle_text = ""
-                if isinstance(causation_id, str) and causation_id.startswith(prefix):
-                    for subject in causal_subjects:
-                        suffix = f":{content_digest(subject)}"
-                        if causation_id.endswith(suffix):
-                            cycle_text = causation_id[len(prefix):-len(suffix)]
-                            break
-                if not cycle_text.isascii() or not cycle_text.isdecimal():
+                    expected_causations.add(
+                        f"worker-abandoned:{run_id}:cycle-{cycle}:"
+                        f"{content_digest(claim_outer_reason)}"
+                    )
+                if (
+                    payload != expected_payload
+                    or event["causation_id"] not in expected_causations
+                ):
                     raise RuntimeError(
                         "completed_abandon_WorkerAbandoned_reason_unbound"
                     )
-            if event_type == "StrictAuthorityAbandoned" and (
-                payload.get("workflow_run_id") != workflow_run_id
-            ):
-                raise RuntimeError(
-                    "completed_abandon_StrictAuthorityAbandoned_binding_invalid"
+            if event_type == "StrictAuthorityAbandoned":
+                expected_payload, expected_causation = (
+                    strict_authority_abandon_event_identity(
+                        {"workflow_run_id": workflow_run_id},
+                        reason=terminal_reason,
+                    )
                 )
-            if event_type == "StrictAuthorityAbandoned" and (
-                event["causation_id"]
-                != f"strict-authority-abandoned:{run_id}:"
-                f"{content_digest(payload)}"
-            ):
-                raise RuntimeError(
-                    "completed_abandon_StrictAuthorityAbandoned_reason_unbound"
-                )
+                if payload != expected_payload:
+                    raise RuntimeError(
+                        "completed_abandon_StrictAuthorityAbandoned_binding_invalid"
+                    )
+                if event["causation_id"] != expected_causation:
+                    raise RuntimeError(
+                        "completed_abandon_StrictAuthorityAbandoned_reason_unbound"
+                    )
             live_effects = connection.execute(
                 "SELECT COUNT(*) FROM effects WHERE run_id = ? "
                 "AND status NOT IN ('completed', 'exhausted', 'abandoned')",

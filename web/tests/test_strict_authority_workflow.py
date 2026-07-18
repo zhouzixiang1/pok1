@@ -975,7 +975,14 @@ def test_generation_abandon_tombstone_blocks_predispatch_descriptor(authority):
 
 def test_generation_abandon_recovers_preterminal_tombstone(authority):
     module, store = authority
-    checkpoint = _checkpoint()
+    checkpoint = _checkpoint(stage="review_rejected", revision=9)
+    receipt_digest = "a" * 64
+    checkpoint["terminal_gate_outcome"] = {
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "terminal_stage": "review_rejected",
+        "receipt_digest": receipt_digest,
+    }
+    reason = f"terminal_gate_outcome:{receipt_digest}"
     run_id = module.authority_run_id(checkpoint["workflow_run_id"])
     # Model a process death after the fail-closed tombstone transaction but
     # before the terminal event/fence transaction.
@@ -987,13 +994,21 @@ def test_generation_abandon_recovers_preterminal_tombstone(authority):
     assert store.instance(run_id)["fence_epoch"] == 0
     assert store.events(run_id) == []
 
-    recovered = module.abandon_authority(
-        checkpoint,
-        reason="abandon_generation",
-    )
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_abandon_tombstone_invalid",
+    ):
+        module.abandon_authority(
+            checkpoint,
+            reason="terminal_gate_outcome:" + "b" * 64,
+        )
+    assert store.instance(run_id)["fence_epoch"] == 0
+    assert store.events(run_id) == []
+
+    recovered = module.abandon_authority(checkpoint, reason=reason)
     repeated = module.abandon_authority(
         checkpoint,
-        reason="abandon_generation",
+        reason=reason,
     )
 
     assert recovered["abandoned"] is True
@@ -1002,6 +1017,40 @@ def test_generation_abandon_recovers_preterminal_tombstone(authority):
     assert [event.event_type for event in store.events(run_id)] == [
         "StrictAuthorityAbandoned"
     ]
+
+
+def test_generation_abandon_tombstone_rejects_extra_state(authority):
+    module, store = authority
+    checkpoint = _checkpoint(stage="review_rejected", revision=9)
+    receipt_digest = "c" * 64
+    checkpoint["terminal_gate_outcome"] = {
+        "workflow_run_id": checkpoint["workflow_run_id"],
+        "terminal_stage": "review_rejected",
+        "receipt_digest": receipt_digest,
+    }
+    run_id = module.authority_run_id(checkpoint["workflow_run_id"])
+    store.ensure_instance(
+        run_id,
+        definition_version=module.DEFINITION_VERSION,
+        status="abandoned",
+    )
+    store.append_event(
+        run_id,
+        "UnexpectedTombstoneState",
+        {},
+        causation_id="unexpected-tombstone-state",
+        expected_version=0,
+    )
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_abandon_tombstone_invalid",
+    ):
+        module.abandon_authority(
+            checkpoint,
+            reason=f"terminal_gate_outcome:{receipt_digest}",
+        )
+    assert store.instance(run_id)["fence_epoch"] == 0
 
 
 def test_generation_abandon_blocks_accepted_provider_replay_dispatch(authority):

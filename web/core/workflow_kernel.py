@@ -690,6 +690,67 @@ class WorkflowStore:
             connection.commit()
         return event
 
+    def create_terminal_transition(
+        self,
+        run_id: str,
+        *,
+        definition_version: int,
+        event_type: str,
+        payload: dict[str, Any],
+        causation_id: str,
+        status: str,
+    ) -> WorkflowEvent:
+        """Atomically create a new instance with its first terminal event."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                if connection.execute(
+                    "SELECT 1 FROM workflow_instances WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone() is not None:
+                    raise WorkflowConflict(
+                        f"workflow instance already exists: {run_id}"
+                    )
+                now = time.time()
+                connection.execute(
+                    """
+                    INSERT INTO workflow_instances(
+                        run_id, definition_version, stream_version, status,
+                        fence_epoch, created_at, updated_at
+                    ) VALUES (?, ?, 0, ?, 0, ?, ?)
+                    """,
+                    (
+                        run_id,
+                        int(definition_version),
+                        str(status),
+                        now,
+                        now,
+                    ),
+                )
+                event = self._append_event_locked(
+                    connection,
+                    run_id=run_id,
+                    event_type=event_type,
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=0,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE workflow_instances
+                    SET status = ?, fence_epoch = 1, updated_at = ?
+                    WHERE run_id = ?
+                    """,
+                    (str(status), time.time(), run_id),
+                )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+        return event
+
     def append_event_and_set_status(
         self,
         run_id: str,
@@ -896,6 +957,16 @@ class WorkflowStore:
             operation="effect_read",
         )
         return self._effect_from_row(row)
+
+    def effects_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        """Read all effects owned by one workflow in stable identity order."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM effects WHERE run_id = ? ORDER BY effect_id",
+                (str(run_id),),
+            ).fetchall()
+        return [self._effect_from_row(row) for row in rows]
 
     def pending_outbox(self, *, now: float | None = None) -> list[dict[str, Any]]:
         cutoff = float(now if now is not None else time.time())
