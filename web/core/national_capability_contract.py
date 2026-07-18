@@ -25,8 +25,8 @@ from typing import Any, Iterable
 from bot_namespace import strict_artifact_layout_errors
 
 
-CAPABILITY_SCHEMA_VERSION = 5
-NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v4"
+CAPABILITY_SCHEMA_VERSION = 6
+NATIONAL_CAPABILITY_DETECTOR_VERSION = "national-policy-static-v5"
 DECISION_CONTEXT_SCHEMA_VERSION = 1
 POLICY_ENTRYPOINTS = {
     "get_baseline_decision": ("context",),
@@ -48,6 +48,20 @@ CONTEXT_FIELDS = (
 INTENT_KINDS = ("pass", "fold", "allin", "raise")
 SYSTEM_FILES = ("national_bot.py", "precompute.py")
 RETIRED_ABI_FILES = ("main.py", "state.py", "strategy.py")
+
+# A candidate never owns the raw TCP vocabulary.  ``pass`` is included even
+# though it is not a wire token: it is a typed intent kind and therefore must
+# still be wrapped in ``{"kind": "pass"}``, rather than returned as a bare
+# scalar.  The static checker only follows these values to policy entrypoint
+# returns; their appearance in public-state enums is valid input handling.
+_BARE_ACTION_LITERALS = frozenset({
+    "pass",
+    "fold",
+    "allin",
+    "raise",
+    "call",
+    "check",
+})
 
 REQUIRED_CHECKS = (
     "national_policy_module",
@@ -570,6 +584,187 @@ def _literal_string(
     return None
 
 
+def _is_bare_action_literal(value: str | None) -> bool:
+    """Return whether a statically-known scalar is a policy/wire action.
+
+    ``raise <amount>`` is a raw TCP token, while the single-word values are
+    either raw TCP tokens or the candidate-side ``pass``/``raise`` intent
+    names.  All of them are forbidden only when they flow to a public policy
+    entrypoint return; input facts such as ``opponent_action == "check"`` are
+    deliberately not evidence of candidate wire ownership.
+    """
+
+    if value in _BARE_ACTION_LITERALS:
+        return True
+    prefix = "raise "
+    suffix = (
+        value[len(prefix):]
+        if isinstance(value, str) and value.startswith(prefix)
+        else ""
+    )
+    return bool(suffix) and all("0" <= character <= "9" for character in suffix)
+
+
+def _bare_action_return_locations(tree: ast.Module | None) -> list[str]:
+    """Find direct/simple-alias action scalars returned by policy entrypoints.
+
+    A global literal scan cannot distinguish an observed opponent action from
+    a candidate output.  This deliberately narrow flow analysis follows only
+    literal assignments visible to ``get_baseline_decision`` and
+    ``iter_decisions`` returns.  It supports direct strings, straight-line and
+    conditional aliases (including module constants), invalidates an alias
+    when it is reassigned to an unknown value, and does not inspect arbitrary
+    helper returns that may legitimately classify public input.
+    """
+
+    if tree is None:
+        return []
+
+    def possible_strings(
+        value: ast.AST | None,
+        aliases: dict[str, frozenset[str]],
+    ) -> frozenset[str]:
+        """Return statically possible strings that can flow through ``value``.
+
+        Unknown paths intentionally contribute no string, while known action
+        paths remain represented.  Therefore ``"check" if cond else unknown``
+        still fails closed at a public return without treating a standalone
+        input enum as output evidence.
+        """
+
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return frozenset({value.value})
+        if isinstance(value, ast.Name):
+            return aliases.get(value.id, frozenset())
+        if isinstance(value, ast.IfExp):
+            return possible_strings(value.body, aliases) | possible_strings(
+                value.orelse,
+                aliases,
+            )
+        if isinstance(value, ast.BoolOp):
+            return frozenset().union(
+                *(possible_strings(item, aliases) for item in value.values)
+            )
+        if isinstance(value, ast.BinOp) and isinstance(value.op, ast.Add):
+            left = possible_strings(value.left, aliases)
+            right = possible_strings(value.right, aliases)
+            # Literal-only aliases are deliberately tiny.  Cap the Cartesian
+            # product so a malicious policy cannot turn static checking into a
+            # string-construction workload.
+            if not left or not right or len(left) * len(right) > 16:
+                return frozenset()
+            return frozenset(
+                f"{first}{second}" for first in left for second in right
+            )
+        return frozenset()
+
+    def assign_aliases(
+        statement: ast.Assign | ast.AnnAssign,
+        aliases: dict[str, frozenset[str]],
+    ) -> None:
+        values = possible_strings(statement.value, aliases)
+        targets = (
+            statement.targets
+            if isinstance(statement, ast.Assign)
+            else [statement.target]
+        )
+        for target in targets:
+            for name in _assigned_names(target):
+                if not values:
+                    aliases.pop(name, None)
+                else:
+                    aliases[name] = values
+
+    def merged_aliases(
+        *states: dict[str, frozenset[str]],
+    ) -> dict[str, frozenset[str]]:
+        merged: dict[str, frozenset[str]] = {}
+        for name in set().union(*(set(state) for state in states)):
+            values = frozenset().union(
+                *(state.get(name, frozenset()) for state in states)
+            )
+            if values:
+                merged[name] = values
+        return merged
+
+    # Module constants remain visible to entrypoints even if their declarations
+    # appear after a function definition, so collect only module-level straight
+    # assignments before analysing local return flow.
+    module_aliases: dict[str, frozenset[str]] = {}
+    for statement in tree.body:
+        if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            assign_aliases(statement, module_aliases)
+
+    locations: list[str] = []
+
+    def scan_block(
+        statements: list[ast.stmt],
+        aliases: dict[str, frozenset[str]],
+    ) -> dict[str, frozenset[str]]:
+        current = dict(aliases)
+        for statement in statements:
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                assign_aliases(statement, current)
+                continue
+            if isinstance(statement, ast.AugAssign):
+                for name in _assigned_names(statement.target):
+                    current.pop(name, None)
+                continue
+            if isinstance(statement, ast.Return):
+                for value in sorted(possible_strings(statement.value, current)):
+                    if _is_bare_action_literal(value):
+                        locations.append(
+                            f"policy.py:{statement.lineno}:bare_action_return:{value}"
+                        )
+                continue
+            # Returns nested under a branch remain output paths.  Merge only
+            # known literal possibilities for following aliases; unknown branch
+            # values cannot turn a standalone input enum into output evidence.
+            if isinstance(statement, ast.If):
+                current = merged_aliases(
+                    scan_block(statement.body, current),
+                    scan_block(statement.orelse, current),
+                )
+                continue
+            if isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                current = merged_aliases(
+                    current,
+                    scan_block(statement.body, current),
+                    scan_block(statement.orelse, current),
+                )
+                continue
+            if isinstance(statement, ast.Try):
+                paths = [
+                    scan_block(statement.body, current),
+                    *(
+                        scan_block(handler.body, current)
+                        for handler in statement.handlers
+                    ),
+                    scan_block(statement.orelse, current),
+                ]
+                current = merged_aliases(*paths)
+                if statement.finalbody:
+                    current = scan_block(statement.finalbody, current)
+                continue
+            if isinstance(statement, (ast.With, ast.AsyncWith)):
+                current = scan_block(statement.body, current)
+                continue
+            if isinstance(statement, ast.Match):
+                current = merged_aliases(
+                    current,
+                    *(scan_block(case.body, current) for case in statement.cases),
+                )
+        return current
+
+    for function in tree.body:
+        if (
+            isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and function.name in POLICY_ENTRYPOINTS
+        ):
+            scan_block(function.body, module_aliases)
+    return list(dict.fromkeys(locations))
+
+
 def _constant_int(node: ast.AST | None) -> int | None:
     if isinstance(node, ast.Constant) and type(node.value) is int:
         return int(node.value)
@@ -913,6 +1108,7 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
             "loaded_names": set(),
             "string_literals": set(),
             "integer_return_locations": [],
+            "bare_action_return_locations": [],
             "raise_dict_locations": [],
             "kind_literals": set(),
             "large_literal_locations": [],
@@ -929,6 +1125,7 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
     loaded_names: set[str] = set()
     string_literals: set[str] = set()
     integer_return_locations: list[str] = []
+    bare_action_return_locations = _bare_action_return_locations(tree)
     raise_dict_locations: list[str] = []
     kind_literals: set[str] = set()
     large_literal_locations: list[str] = []
@@ -1384,6 +1581,7 @@ def _policy_static_evidence(tree: ast.Module | None) -> dict[str, Any]:
         "loaded_names": loaded_names,
         "string_literals": string_literals,
         "integer_return_locations": integer_return_locations,
+        "bare_action_return_locations": bare_action_return_locations,
         "raise_dict_locations": raise_dict_locations,
         "kind_literals": kind_literals,
         "large_literal_locations": list(dict.fromkeys(large_literal_locations)),
@@ -1485,12 +1683,12 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
     )
     forbidden_kind_literals = sorted(
         static["kind_literals"].difference(INTENT_KINDS)
-        | static["string_literals"].intersection({"call", "check"})
     )
     typed_ok = bool(
         baseline_ok
         and refinement_ok
         and not static["integer_return_locations"]
+        and not static["bare_action_return_locations"]
         and not forbidden_kind_literals
     )
     if "raise" in static["kind_literals"] and not static["raise_dict_locations"]:
@@ -1635,11 +1833,15 @@ def evaluate_national_capabilities(bot_dir: str | Path) -> dict[str, Any]:
             locations=[
                 "policy.py",
                 *static["integer_return_locations"],
+                *static["bare_action_return_locations"],
                 *static["raise_dict_locations"],
             ],
             details={
                 "observed_kind_literals": sorted(static["kind_literals"]),
                 "forbidden_kind_literals": forbidden_kind_literals,
+                "bare_action_return_locations": static[
+                    "bare_action_return_locations"
+                ],
             },
         ),
         system_check(

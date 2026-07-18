@@ -48,6 +48,121 @@ def _check(result: dict, check_id: str) -> dict:
     return result["checks_by_id"][check_id]
 
 
+@pytest.mark.parametrize(
+    ("prefix", "body", "action"),
+    [
+        ("", '    return "check"\n', "check"),
+        ("", '    return "fold"\n', "fold"),
+        ('WIRE_ACTION = "call"\n', "    return WIRE_ACTION\n", "call"),
+        (
+            "",
+            '    wire_action = "allin"\n'
+            "    alias = wire_action\n"
+            "    return alias\n",
+            "allin",
+        ),
+        ("", '    return "raise 400"\n', "raise 400"),
+    ],
+)
+def test_typed_intent_rejects_bare_action_return_and_simple_alias(
+    tmp_path,
+    prefix,
+    body,
+    action,
+):
+    policy = (
+        prefix
+        + "def get_baseline_decision(context):\n"
+        + "    legal = context['legal']\n"
+        + "    betting = context['betting']\n"
+        + "    opponent = context['opponent']\n"
+        + body
+        + POLICY_FOOTER
+    )
+
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+    typed = _check(result, "typed_intent_v1")
+
+    assert typed["passed"] is False
+    assert typed["evidence"]["forbidden_kind_literals"] == []
+    assert any(
+        location.endswith(f":bare_action_return:{action}")
+        for location in typed["evidence"]["bare_action_return_locations"]
+    )
+
+
+def test_typed_intent_rejects_conditional_bare_action_return_paths(tmp_path):
+    policy = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    if context["hand"].get("street") == "turn":
+        branch_action = "check"
+    else:
+        branch_action = "fold"
+    if context["line"].get("opponent_action"):
+        return branch_action
+    return "check" if "pass" in legal["policy_kinds"] else {"kind": "fold"}
+''' + POLICY_FOOTER
+
+    result = evaluate_national_capabilities(_write_bot(tmp_path / "bot", policy))
+    typed = _check(result, "typed_intent_v1")
+
+    assert typed["passed"] is False
+    locations = typed["evidence"]["bare_action_return_locations"]
+    assert any(location.endswith(":bare_action_return:check") for location in locations)
+    assert any(location.endswith(":bare_action_return:fold") for location in locations)
+
+
+def test_typed_intent_distinguishes_public_check_input_from_check_output_kind(
+    tmp_path,
+):
+    input_policy = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    observed = str((context["line"] or {}).get("opponent_action") or "")
+    if observed == "check":
+        return {"kind": "pass"}
+    return {"kind": "fold"}
+''' + POLICY_FOOTER
+    input_result = evaluate_national_capabilities(
+        _write_bot(tmp_path / "input", input_policy)
+    )
+    assert _check(input_result, "typed_intent_v1")["passed"] is True
+
+    invalid_policy = '''\
+def get_baseline_decision(context):
+    legal = context["legal"]
+    betting = context["betting"]
+    opponent = context["opponent"]
+    return {"kind": "check"}
+''' + POLICY_FOOTER
+    invalid_result = evaluate_national_capabilities(
+        _write_bot(tmp_path / "invalid", invalid_policy)
+    )
+    invalid_typed = _check(invalid_result, "typed_intent_v1")
+    assert invalid_typed["passed"] is False
+    assert invalid_typed["evidence"]["forbidden_kind_literals"] == ["check"]
+    assert invalid_typed["evidence"]["bare_action_return_locations"] == []
+
+
+def test_strict_v1_final_blueprint_passes_output_capability_probe(tmp_path):
+    from system_strict_bootstrap import materialize_fresh_candidate
+
+    bot = tmp_path / "national_v143"
+    materialize_fresh_candidate(bot, final_policy=True)
+
+    result = evaluate_national_capabilities(bot)
+
+    assert result["ok"] is True
+    typed = _check(result, "typed_intent_v1")
+    assert typed["passed"] is True
+    assert typed["evidence"]["bare_action_return_locations"] == []
+
+
 def test_static_capability_contract_rejects_unbound_candidate_model_file(tmp_path):
     policy = '''\
 def get_baseline_decision(context):
