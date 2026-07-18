@@ -3097,6 +3097,20 @@ def _provider_prompt_reserved_markers(prompt: str) -> tuple[str, ...]:
     )
 
 
+def _canonical_provider_worker_prompt(prompt: str) -> str:
+    """Return exactly the provider text that selected-contract binding uses.
+
+    The binder has always removed a trailing Unicode-whitespace suffix before
+    appending system-owned blocks.  Validate the same canonical text so a
+    prompt at a selected cap has one arithmetic meaning in the model repair
+    error, the final bind, and the later compiler.  This is whitespace
+    normalization only: provider-authored non-whitespace text is never
+    shortened to make a plan fit.
+    """
+
+    return prompt.rstrip()
+
+
 def _task_proposal_scope_paths(task: dict) -> tuple[set[str], tuple[dict, ...]]:
     """Parse proposal-writable task paths without iterating provider scalars."""
 
@@ -3290,7 +3304,7 @@ def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
                     },
                 ))
                 continue
-            prompt = raw_prompt
+            prompt = _canonical_provider_worker_prompt(raw_prompt)
             if len(prompt.strip()) < WORKER_PROMPT_MIN_CHARS:
                 errors.append(_proposal_binding_error(
                     "selected_proposal_worker_prompt_below_minimum",
@@ -3319,23 +3333,29 @@ def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
                 len(prompt) + binding_chars + 2 + runtime_contract_reserve
             )
             if combined_chars > WORKER_PROMPT_MAX_CHARS:
+                budget_payload = {
+                    "worker_id": task.get("worker_id", bound_task_count),
+                    "proposal_id": selected,
+                    "actual_provider_chars": len(prompt),
+                    "reserved_selected_contract_chars": binding_chars,
+                    "reserved_runtime_contract_max_chars": (
+                        runtime_contract_reserve
+                    ),
+                    "separator_chars": 2,
+                    "combined_chars": combined_chars,
+                    "global_cap_chars": WORKER_PROMPT_MAX_CHARS,
+                    "max_provider_chars": compilation["max_provider_chars"],
+                    "overflow_chars": combined_chars - WORKER_PROMPT_MAX_CHARS,
+                    "character_metric": compilation["character_metric"],
+                }
+                if len(raw_prompt) != len(prompt):
+                    budget_payload["submitted_provider_chars"] = len(raw_prompt)
+                    budget_payload["trimmed_trailing_whitespace_chars"] = (
+                        len(raw_prompt) - len(prompt)
+                    )
                 errors.append(_proposal_binding_error(
                     "selected_proposal_worker_prompt_has_no_binding_budget",
-                    {
-                        "worker_id": task.get("worker_id", bound_task_count),
-                        "proposal_id": selected,
-                        "actual_provider_chars": len(prompt),
-                        "reserved_selected_contract_chars": binding_chars,
-                        "reserved_runtime_contract_max_chars": (
-                            runtime_contract_reserve
-                        ),
-                        "separator_chars": 2,
-                        "combined_chars": combined_chars,
-                        "global_cap_chars": WORKER_PROMPT_MAX_CHARS,
-                        "max_provider_chars": compilation["max_provider_chars"],
-                        "overflow_chars": combined_chars - WORKER_PROMPT_MAX_CHARS,
-                        "character_metric": compilation["character_metric"],
-                    },
+                    budget_payload,
                 ))
     if bound_task_count == 0 and not missing_files:
         errors.append("selected_proposal_has_no_bound_worker_task")
@@ -3598,9 +3618,12 @@ def _master_final_emission_guard(packet: dict) -> str:
         "proposal; do not paraphrase, expand, or use either duplicate field to "
         "change scope. For every task that writes a selected target file, keep "
         "worker_prompt near the listed advisory target (Unicode code points) and "
-        "never exceed its hard cap. Describe only task-specific implementation and "
-        "checks: the system appends the full selected proposal and runtime contract "
-        "after validation.\n"
+        "never exceed its hard cap. That selected row is the sole model-owned "
+        "length authority: do not rely on template-wide length advice, compiler "
+        "externalization, truncation, or a task brief to make it fit. Describe only "
+        "task-specific implementation and checks; when the cap is small, use compact "
+        "directives rather than reproducing code, the proposal, or the runtime "
+        "contract. The system appends those immutable blocks after validation.\n"
         "EMISSION_CAPS="
         + json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         + "\nReturn the single JSON object now; do not emit analysis outside it."
@@ -3627,7 +3650,7 @@ def _bind_selected_proposal_workers(data: dict, proposal: dict) -> dict:
             ):
                 continue
             task["worker_prompt"] = (
-                provider_prompt.rstrip()
+                _canonical_provider_worker_prompt(provider_prompt)
                 + "\n\n"
                 + block
             )

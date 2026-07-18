@@ -3961,10 +3961,17 @@ async def run_master(args):
             )
             if _compile_meta.get("compiled"):
                 log_system_event(
-                    "pipeline.master_plan_compiled",
-                    "info",
-                    f"Master plan v{next_v}: compiled {len(_compile_meta.get('compiled_tasks', []))} oversized worker prompt(s)",
+                    "pipeline.master_plan_compaction_forbidden",
+                    "error",
+                    f"Master plan v{next_v}: rejected unexpected Worker-prompt compaction",
                     {"next_v": next_v, "source_v": source_v, "phase": phase, "compiler": _compile_meta},
+                )
+                # A Master plan accepted through the selected-proposal binding
+                # must remain losslessly inline.  Replacing it with a generated
+                # task brief changes the authority/replay shape; reject it here
+                # before a checkpoint, Worker lease, or bootstrap receipt.
+                compiler_errors.append(
+                    "master_plan_worker_prompt_externalization_forbidden"
                 )
             _contract_binding = _compile_meta.get("contract_binding") or {}
             if any(_contract_binding.get(key) for key in (

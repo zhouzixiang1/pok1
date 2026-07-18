@@ -3223,15 +3223,29 @@ def validate_master_final_projection(
     """Replay the deterministic post-Master compiler and bind it to the journal.
 
     ``master:final`` is accepted before the system attaches the architecture
-    policy, externalizes an oversized Worker prompt, and builds the runtime
-    contract ledger.  The accepted payload itself is retained in WorkflowStore,
-    so validation can replay those exact transformations in a private temporary
-    tree.  This avoids a lossy "drop compiler fields" inverse and continues to
-    work after the real ``.task_context`` directory has been removed.
+    policy and builds the runtime-contract ledger.  The accepted payload itself
+    is retained in WorkflowStore, so validation can replay those exact lossless
+    transformations in a private temporary tree.  Generated task briefs are a
+    generic compaction aid, never a strict-Master authority form.
     """
 
     if not isinstance(plan, dict):
         return {}, ["strict_authority_master_plan_missing"]
+    if any(
+        isinstance(task, dict)
+        and any(
+            field in task
+            for field in (
+                "worker_prompt_compiled",
+                "worker_prompt_original_chars",
+                "task_brief_file",
+            )
+        )
+        for task in (plan.get("tasks") or [])
+    ):
+        return {}, [
+            "strict_authority_master_projection_externalization_forbidden"
+        ]
     expected_roles = expected_master_role_results(plan)
     refs, errors = validate_receipts(
         checkpoint,
@@ -3350,6 +3364,13 @@ def validate_master_final_projection(
             )):
                 projection_errors.append(
                     "strict_authority_master_projection_compiler_binding_invalid"
+                )
+            if compiler.get("compiled"):
+                # Strict authority compares a lossless, sealed Master result.
+                # A generated task brief is a generic compaction aid, not a
+                # replayable strict-Master authority form.
+                projection_errors.append(
+                    "strict_authority_master_projection_externalization_forbidden"
                 )
             compiled_rows = compiler.get("compiled_tasks") or []
             if any(row.get("context_trimmed") is not False for row in compiled_rows):

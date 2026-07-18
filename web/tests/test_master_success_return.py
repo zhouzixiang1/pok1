@@ -478,8 +478,12 @@ async def test_master_binds_duplicate_selected_metadata_without_retry(
 
 
 @pytest.mark.asyncio
-async def test_master_binding_retry_receives_exact_prompt_budget(monkeypatch):
+async def test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_inline(
+    monkeypatch,
+    tmp_path,
+):
     import agent_master
+    import plan_compiler
 
     invalid = json.loads(json.dumps(VALID_PLAN))
     invalid["tasks"][0]["worker_prompt"] = "x" * 12000
@@ -533,6 +537,20 @@ async def test_master_binding_retry_receives_exact_prompt_budget(monkeypatch):
         + 2
     )
     assert payload["overflow_chars"] == 12000 - payload["max_provider_chars"]
+
+    # The retry returned a schema-valid plan.  It must now remain losslessly
+    # inline through the default compiler instead of crossing a hidden 10k
+    # compaction threshold after Master acceptance.
+    compiled, meta = plan_compiler.compile_master_plan(
+        result,
+        next_v=144,
+        target_dir=tmp_path / "national_v144",
+        project_root=tmp_path,
+    )
+    assert meta["hard_prompt_chars"] == 12000
+    assert meta["compiled"] is False
+    assert "plan_compiler" not in compiled
+    assert not (tmp_path / "national_v144" / ".task_context").exists()
 
 
 def test_strict_projection_rejects_malformed_provider_worker_prompts(
@@ -604,19 +622,17 @@ def test_strict_projection_binds_duplicate_selected_metadata(tmp_path):
     assert projected["measurement_plan"] == selected["measurement"]
 
 
-def test_strict_master_replay_recompiles_once_and_rebases_context_metadata(
+def test_v51_10017_char_strict_master_prompt_stays_inline_and_replays(
     monkeypatch,
     tmp_path,
 ):
-    """Replay the same compiler pass without leaking its temporary path.
+    """A v51-sized bound prompt has one lossless strict replay shape.
 
-    A strict final result is accepted before the production compiler injects
-    system-owned terms and externalizes an oversized Worker prompt.  The
-    receipt verifier must replay that *one* compiler pass, not bind the terms
-    once and then compile again: the latter changes ``contract_binding``
-    provenance.  The production and temporary candidate roots intentionally
-    have different relative task-context path lengths, which also proves that
-    ``compiled_chars`` is rebased together with the prompt path.
+    v51 accepted a 10,017-character bound prompt under the visible 12,000
+    character contract, then an unrelated hidden 10,000-character compiler
+    threshold externalized it and caused the strict projection mismatch.  The
+    default compiler must retain this exact inline authority form; only an
+    explicit non-strict caller may request compaction.
     """
 
     import agent_master
@@ -638,14 +654,28 @@ def test_strict_master_replay_recompiles_once_and_rebases_context_metadata(
         "targeted_failure": selected["targeted_failure"],
         "measurement_plan": selected["measurement"],
     })
+    base_prompt = provider_plan["tasks"][0]["worker_prompt"]
+    # Derive the deterministic system-owned binding delta first, then choose a
+    # provider-owned suffix that produces the exact v51 post-bind length.
+    base_accepted, base_errors = agent_master._project_strict_final_master_result(
+        json.dumps(provider_plan),
+        proposal_packet=packet,
+        architecture_policy={"schema_version": 1},
+    )
+    assert base_errors == []
+    assert base_accepted is not None
+    binding_delta = (
+        len(base_accepted["tasks"][0]["worker_prompt"]) - len(base_prompt)
+    )
     provider_budget = agent_master._selected_proposal_compilation_contract(
         selected
     )["max_provider_chars"]
-    base_prompt = provider_plan["tasks"][0]["worker_prompt"]
+    target_bound_chars = 10_017
+    provider_chars = target_bound_chars - binding_delta
+    assert len(base_prompt) <= provider_chars <= provider_budget
     provider_plan["tasks"][0]["worker_prompt"] = (
         base_prompt
-        + "\n"
-        + "x" * (provider_budget - len(base_prompt) - 1)
+        + "x" * (provider_chars - len(base_prompt))
     )
     architecture_policy = {"schema_version": 1}
     accepted_final, errors = agent_master._project_strict_final_master_result(
@@ -655,9 +685,8 @@ def test_strict_master_replay_recompiles_once_and_rebases_context_metadata(
     )
     assert errors == []
     assert accepted_final is not None
-    assert len(accepted_final["tasks"][0]["worker_prompt"]) > (
-        plan_compiler.HARD_WORKER_PROMPT_CHARS
-    )
+    assert len(accepted_final["tasks"][0]["worker_prompt"]) == target_bound_chars
+    assert target_bound_chars <= plan_compiler.HARD_WORKER_PROMPT_CHARS
 
     project_root = tmp_path / "operator"
     candidate_dir = project_root / "bots" / "national_v143"
@@ -674,8 +703,10 @@ def test_strict_master_replay_recompiles_once_and_rebases_context_metadata(
         target_dir=candidate_dir,
         project_root=project_root,
     )
-    assert compiler["compiled"] is True, json.dumps(compiler, sort_keys=True)
+    assert compiler["hard_prompt_chars"] == 12000
+    assert compiler["compiled"] is False, json.dumps(compiler, sort_keys=True)
     assert compiler["contract_binding"]["bound"] is True
+    assert not (candidate_dir / ".task_context").exists()
     production_plan = attach_runtime_contract_ledger(
         production_plan,
         replace=True,
@@ -711,6 +742,21 @@ def test_strict_master_replay_recompiles_once_and_rebases_context_metadata(
 
     assert replay_errors == []
     assert proof["compiled_plan_digest"] == strict.content_digest(production_plan)
+
+    # Defense in depth: even a caller that manufactures a task-brief-shaped
+    # checkpoint cannot route it through strict projection.
+    externalized = json.loads(json.dumps(production_plan))
+    externalized["tasks"][0]["worker_prompt_compiled"] = True
+    externalized["tasks"][0]["task_brief_file"] = ".task_context/w1.md"
+    _proof, externalized_errors = strict.validate_master_final_projection(
+        {"source_v": 142, "next_v": 143},
+        externalized,
+        candidate_dir=candidate_dir,
+        project_root=project_root,
+    )
+    assert externalized_errors == [
+        "strict_authority_master_projection_externalization_forbidden"
+    ]
 
 
 def test_strict_projection_rejects_all_provider_reserved_markers(tmp_path):

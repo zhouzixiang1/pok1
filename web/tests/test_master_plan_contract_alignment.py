@@ -720,7 +720,7 @@ def test_unknown_future_focus_requires_contract_in_both_layers():
     assert any("runtime_contract is required" in error for error in semantic_errors)
 
 
-def test_compiler_preserves_runtime_terms_across_ten_to_twelve_k_boundary(tmp_path):
+def test_explicit_lower_compaction_cap_preserves_runtime_terms(tmp_path):
     import plan_compiler
 
     plan = {
@@ -742,7 +742,8 @@ def test_compiler_preserves_runtime_terms_across_ten_to_twelve_k_boundary(tmp_pa
         }],
     }
     original_chars = len(plan["tasks"][0]["worker_prompt"])
-    assert plan_compiler.HARD_WORKER_PROMPT_CHARS < original_chars <= WORKER_PROMPT_MAX_CHARS
+    explicit_compaction_cap = 10_000
+    assert explicit_compaction_cap < original_chars <= WORKER_PROMPT_MAX_CHARS
     _validated, schema_errors = validate_agent_output("master", plan)
     assert schema_errors == []
 
@@ -751,6 +752,7 @@ def test_compiler_preserves_runtime_terms_across_ten_to_twelve_k_boundary(tmp_pa
         next_v=144,
         target_dir=tmp_path / "national_v144",
         project_root=tmp_path,
+        hard_prompt_chars=explicit_compaction_cap,
     )
 
     assert meta["compiled"] is True
@@ -761,7 +763,7 @@ def test_compiler_preserves_runtime_terms_across_ten_to_twelve_k_boundary(tmp_pa
     assert semantic_errors == []
 
 
-def test_compiler_preserves_dynamic_focus_terms(tmp_path):
+def test_explicit_lower_compaction_cap_preserves_dynamic_focus_terms(tmp_path):
     import plan_compiler
 
     plan = {
@@ -794,7 +796,8 @@ def test_compiler_preserves_dynamic_focus_terms(tmp_path):
         }],
     }
     original_chars = len(plan["tasks"][0]["worker_prompt"])
-    assert plan_compiler.HARD_WORKER_PROMPT_CHARS < original_chars <= WORKER_PROMPT_MAX_CHARS
+    explicit_compaction_cap = 10_000
+    assert explicit_compaction_cap < original_chars <= WORKER_PROMPT_MAX_CHARS
     schema_plan = deepcopy(plan)
     schema_plan.pop("architecture_policy")
     _validated, schema_errors = validate_agent_output("master", schema_plan)
@@ -805,6 +808,7 @@ def test_compiler_preserves_dynamic_focus_terms(tmp_path):
         next_v=145,
         target_dir=tmp_path / "national_v145",
         project_root=tmp_path,
+        hard_prompt_chars=explicit_compaction_cap,
     )
 
     compiled_prompt = compiled["tasks"][0]["worker_prompt"].lower()
@@ -993,7 +997,10 @@ def test_compiler_keeps_long_prompt_inline_when_selected_contract_cannot_fit(tmp
     assert not (tmp_path / "national_v144" / ".task_context").exists()
 
 
-def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatch, tmp_path):
+def test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_task_brief(
+    monkeypatch,
+    tmp_path,
+):
     """A sealed final Master must verify against its own prompt digest.
 
     The bootstrap receipt used to reproduce only a subset of the Master
@@ -1032,11 +1039,12 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatc
     )
     import plan_compiler
 
-    # Force the deterministic compiler onto its externalized form without
-    # trimming the digest-bound selected contract.
+    # An explicit generic lower cap can still create a task brief for a
+    # non-strict caller, but bootstrap must reject that lossy authority form.
+    explicit_compaction_cap = 10_000
     padding = "x" * max(
         1,
-        plan_compiler.HARD_WORKER_PROMPT_CHARS + 1 - len(selected_block),
+        explicit_compaction_cap + 1 - len(selected_block),
     )
     plan = {
         "selected_proposal_id": selected["proposal_id"],
@@ -1055,11 +1063,15 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatc
         }],
     }
 
+    # The inline selected block remains the only bootstrappable form.
+    assert system_strict_bootstrap.validate_selected_proposal_for_blueprint(plan) == []
+
     compiled, compiler = plan_compiler.compile_master_plan(
         plan,
         next_v=143,
         target_dir=tmp_path / "candidate",
         project_root=tmp_path,
+        hard_prompt_chars=explicit_compaction_cap,
     )
     assert compiler["compiled"] is True
     compiled_prompt = compiled["tasks"][0]["worker_prompt"]
@@ -1067,17 +1079,11 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatc
     assert plan_compiler.SELECTED_PROPOSAL_END in compiled_prompt
     assert f"proposal_id={selected['proposal_id']}" in compiled_prompt
     assert f"contract_digest={binding['contract_digest']}" in compiled_prompt
-    assert system_strict_bootstrap.validate_selected_proposal_for_blueprint(compiled) == []
+    assert "system_bootstrap_master_externalized_worker_prompt_forbidden" in (
+        system_strict_bootstrap.validate_selected_proposal_for_blueprint(compiled)
+    )
 
-    # The brief is a system-owned, version-local Worker aid, not a durable
-    # receipt.  Recovery still proves the sealed contract from the compact
-    # anchor and the deterministic final-Master projection.
-    import shutil
-
-    shutil.rmtree(tmp_path / "candidate" / ".task_context")
-    assert system_strict_bootstrap.validate_selected_proposal_for_blueprint(compiled) == []
-
-    missing_anchor = deepcopy(compiled)
+    missing_anchor = deepcopy(plan)
     missing_anchor["tasks"][0]["worker_prompt"] = (
         "Read the transient task brief, but no selected proposal identity is present."
     )
@@ -1087,7 +1093,7 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatc
         )
     )
 
-    drifted = deepcopy(compiled)
+    drifted = deepcopy(plan)
     drifted["proposal_binding"]["state_learning_primary"] = "showdown_range"
     assert "system_bootstrap_proposal_contract_packet_mismatch" in (
         system_strict_bootstrap.validate_selected_proposal_for_blueprint(drifted)
@@ -1130,7 +1136,7 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract(monkeypatc
 
     monkeypatch.setattr(agent_master, "_selected_proposal_contract", _future_contract)
     monkeypatch.setattr(agent_master, "_selected_proposal_binding", _future_binding)
-    extended = deepcopy(compiled)
+    extended = deepcopy(plan)
     extended_binding = _future_binding(selected, packet)
     extended["proposal_binding"] = extended_binding
     extended["tasks"][0]["worker_prompt"] = extended["tasks"][0]["worker_prompt"].replace(

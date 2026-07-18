@@ -414,11 +414,13 @@ fail-closed and candidate code never treats that system contract as approval.
 </innovation_and_dynamic_reachability>
 
 <worker_prompt_quality>
-Each `worker_prompt` SHOULD target 6000 characters (soft limit); the hard limit is 12000.
-For longer rationale, H2H data, or Direction-audit context, keep the worker prompt concise and
-let the deterministic plan compiler externalize oversized context into generated
-`<task_brief_file>` references. Do not manually create, copy, or reference `.task_context`
-files; those files are version-local compiler artifacts.
+Do not use a generic numeric length cap from this template. The final
+`SYSTEM-OWNED FINAL EMISSION GATE` names the sole allowed Unicode hard cap for
+each selected proposal after its immutable selected-contract and runtime
+reserves. It is a hard model-output limit, not a target to approximate. Keep
+the provider-owned text compact enough for that exact row; never rely on
+compiler externalization, truncation, or a `<task_brief_file>` to make a strict
+plan fit. Do not manually create, copy, or reference `.task_context` files.
 Focus on essential changes only:
 - Which function to modify/add (file name + function name)
 - WHY this change is needed (1-2 sentences linking to H2H weakness or match data)

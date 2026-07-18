@@ -1210,6 +1210,18 @@ def validate_selected_proposal_for_blueprint(
     }
     if writable != {"policy.py"}:
         errors.append("system_bootstrap_master_writable_file_set_mismatch")
+    if any(
+        field in task
+        for field in (
+            "worker_prompt_compiled",
+            "worker_prompt_original_chars",
+            "task_brief_file",
+        )
+    ):
+        # The first-strict receipt must bind the exact inline Worker contract.
+        # A generated brief is intentionally non-durable and cannot substitute
+        # for that sealed authority surface.
+        errors.append("system_bootstrap_master_externalized_worker_prompt_forbidden")
     prompt = str(task.get("worker_prompt") or "")
     from plan_compiler import SELECTED_PROPOSAL_BEGIN, SELECTED_PROPOSAL_END
     if any(term not in prompt for term in (

@@ -917,6 +917,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         status=CURRENT_STATUS,
         evidence_state=SOURCE_CONTRACT,
         authority=(
+            _ref("web/core/output_schema.py", "WORKER_PROMPT_MAX_CHARS"),
             _ref("web/core/agent_master.py", "_selected_proposal_binding"),
             _ref(
                 "web/core/system_strict_bootstrap.py",
@@ -928,11 +929,15 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
         ),
         production_owners=(
-            _ref("web/core/plan_compiler.py", "_compiled_selected_proposal_anchor"),
+            _ref("web/core/agent_master.py", "_canonical_provider_worker_prompt"),
+            _ref("web/core/plan_compiler.py", "compile_master_plan"),
+            _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/system_strict_bootstrap.py", "build_master_receipt"),
             _ref("web/core/tool_bot_management.py", "_generic_abandon_stage_block"),
         ),
         dynamic_gates=(
+            _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
+            _ref("web/core/tool_planning.py", "run_master"),
             _ref(
                 "web/core/system_strict_bootstrap.py",
                 "validate_selected_proposal_for_blueprint",
@@ -946,34 +951,37 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         prompts=_CORE_PROMPTS,
         prompt_statement=(
             "All five rendered roles preserve the typed, quality-gated selected-proposal "
-            "boundary: only a Worker consumes the sealed proposal_id and contract_digest, "
-            "and no role may substitute a brief or elevate it into a candidate-owned sixth artifact."
+            "boundary: only a Worker consumes the sealed proposal_id and contract_digest; the "
+            "selected EMISSION_CAPS row is the sole model-owned prompt limit, and no role may "
+            "substitute a task brief or elevate one into a candidate-owned sixth artifact."
         ),
         prompt_required_terms=("proposal_id", "contract_digest"),
         producer_consumer=(
             "Scout packet + ballots → canonical Master typed-primary contract → sealed "
-            "proposal binding/full Worker block → compiler-owned transient brief plus compact "
-            "identity anchor → bootstrap receipt/final-Master replay → deterministic Worker envelope"
+            "proposal binding + one rstrip-normalized provider prompt + full Worker block → "
+            "12,000-character inline compiler/replay form → bootstrap receipt/final-Master "
+            "replay → deterministic Worker envelope"
         ),
         positive_tests=(
             "web/tests/test_master_plan_contract_alignment.py::"
-            "test_system_bootstrap_reuses_canonical_selected_proposal_contract",
-            "web/tests/test_master_plan_contract_alignment.py::"
-            "test_compiler_externalizes_long_prompt_without_losing_selected_contract",
-            "web/tests/test_abandon_helper.py::"
-            "test_strict_bootstrap_master_receipt_failure_is_disposable_only_during_master",
+            "test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_task_brief",
+            "web/tests/test_master_success_return.py::"
+            "test_v51_10017_char_strict_master_prompt_stays_inline_and_replays",
+            "web/tests/test_master_success_return.py::"
+            "test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_inline",
         ),
         negative_tests=(
             "web/tests/test_master_plan_contract_alignment.py::"
-            "test_system_bootstrap_reuses_canonical_selected_proposal_contract",
-            "web/tests/test_abandon_helper.py::"
-            "test_strict_bootstrap_master_receipt_failure_is_disposable_only_during_master",
+            "test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_task_brief",
+            "web/tests/test_master_success_return.py::"
+            "test_v51_10017_char_strict_master_prompt_stays_inline_and_replays",
         ),
         fail_closed=(
-            "A missing or mismatched typed-primary field, packet binding, compact identity "
-            "anchor, source graph, or final-Master replay blocks Worker dispatch. A receipt "
-            "failure can canonically abandon only the pre-Worker direction_audited stage; it "
-            "cannot spin, bypass a later gate, or be repaired by a sixth Bot file."
+            "A missing or mismatched typed-primary field, packet binding, source graph, prompt "
+            "cap, or final-Master replay blocks Worker dispatch. An unexpected task brief or "
+            "compiler compaction is rejected before checkpoint/bootstrap receipt. A receipt failure "
+            "can canonically abandon only the pre-Worker direction_audited stage; it cannot spin, "
+            "bypass a later gate, or be repaired by a sixth Bot file."
         ),
     ),
     MatrixRow(
@@ -1319,6 +1327,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         status=CURRENT_STATUS,
         evidence_state=SOURCE_CONTRACT,
         authority=(
+            _ref("web/core/output_schema.py", "WORKER_PROMPT_MAX_CHARS"),
             _ref("web/core/output_schema.py", "STATE_LEARNING_INTERVENTION_TARGET_ALIASES"),
             _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
             _ref("web/core/agent_master.py", "_FRESH_STRICT_CONTROL_MEASUREMENT"),
@@ -1328,18 +1337,23 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/agent_master.py", "_validated_master_proposal"),
             _ref("web/core/agent_master.py", "_canonicalize_selected_proposal_metadata"),
             _ref("web/core/agent_master.py", "_master_final_emission_guard"),
+            _ref("web/core/plan_compiler.py", "compile_master_plan"),
+            _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
         ),
         dynamic_gates=(
             _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
             _ref("web/core/agent_master.py", "_system_bound_proposal_measurement"),
             _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
+            _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
             "All five rendered roles treat selected Master proposal metadata as system-bound, preserve "
-            "the closed six-field fresh measurement shape, and keep the deterministic Worker hard cap. "
+            "the closed six-field fresh measurement shape, and obey the selected EMISSION_CAPS row as "
+            "the sole deterministic Worker hard cap; strict plans remain inline and never rely on task "
+            "brief externalization. "
             "A shared executable leaf is legal only with a complete owner-qualified literal or an exact "
             "selected-root allowlisted list; every bare, punctuation, compact, foreign, unknown-child, "
             "or identifier-continuation spelling is rejected."
@@ -1352,8 +1366,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         producer_consumer=(
             "frozen architecture mapping + source graph → rendered Scout contract → validated proposal "
             "packet → selected ID plus system-rebound metadata and digest-bound final emission guard → "
-            "one production-equivalent compiler pass plus comparison-only bound-context replay → compiled "
-            "Worker prompt → quality/review/native precommit"
+            "one lossless production-equivalent compiler pass plus comparison-only bound-context replay → "
+            "inline Worker prompt → quality/review/native precommit"
         ),
         positive_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
@@ -1365,7 +1379,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "web/tests/test_master_success_return.py::"
             "test_strict_projection_binds_duplicate_selected_metadata",
             "web/tests/test_master_success_return.py::"
-            "test_strict_master_replay_recompiles_once_and_rebases_context_metadata",
+            "test_v51_10017_char_strict_master_prompt_stays_inline_and_replays",
         ),
         negative_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
@@ -1377,9 +1391,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         fail_closed=(
             "Any ambiguous leaf, foreign or unknown target, malformed fresh measurement, unallowed "
-            "proposal ID, metadata drift after rebinding, compiler-binding/context-path provenance drift, "
-            "missing guard provenance, or hard-budget overflow blocks Worker dispatch and may only canonically abandon at the permitted "
-            "pre-Worker stage."
+            "proposal ID, metadata drift after rebinding, unexpected compiler compaction/task brief, "
+            "missing guard provenance, or hard-budget overflow blocks Worker dispatch and may only "
+            "canonically abandon at the permitted pre-Worker stage."
         ),
     ),
     MatrixRow(

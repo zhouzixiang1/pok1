@@ -2960,7 +2960,16 @@ def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_pat
 
     assert agent_master._validate_final_proposal_binding(plan, packet) == []
 
-    plan["tasks"][0]["worker_prompt"] += "x"
+    # v51 exposed that the binder removes a trailing whitespace suffix while
+    # the pre-bind arithmetic counted it.  The validator must use the same
+    # lossless canonical text as the binder: whitespace cannot create a false
+    # overflow, and no non-whitespace provider text is trimmed to make room.
+    plan["tasks"][0]["worker_prompt"] = "x" * exact_limit + " \t\n"
+    assert agent_master._validate_final_proposal_binding(plan, packet) == []
+    bound = agent_master._bind_selected_proposal_workers(plan, proposal)
+    assert bound["tasks"][0]["worker_prompt"].startswith("x" * exact_limit + "\n\n")
+
+    plan["tasks"][0]["worker_prompt"] = "x" * (exact_limit + 1)
     errors = agent_master._validate_final_proposal_binding(plan, packet)
     budget_error = next(
         item
@@ -3013,7 +3022,9 @@ def test_master_final_emission_guard_binds_each_selected_prompt_budget(tmp_path)
     assert "worker_prompt_advisory_target_chars" in guard
     assert "worker_prompt_target_cap_chars" not in guard
     assert "advisory target" in guard
-    assert "full selected proposal and runtime contract" in guard
+    assert "sole model-owned length authority" in guard
+    assert "compiler externalization" in guard
+    assert "runtime contract" in guard
 
 
 def test_final_binding_rejects_wrong_primary_and_missing_typed_check(tmp_path):

@@ -1,9 +1,11 @@
 """Deterministic Master-plan compilation.
 
-Master should decide strategy, not hand-carry arbitrarily long worker prompts
-through every checkpoint and orchestrator turn. This compiler keeps the public
-plan shape backward-compatible while moving oversized task context into a
-target-bot-local brief file that workers can read explicitly.
+Master plans that have passed the schema and selected-proposal binding own one
+lossless inline Worker prompt.  Their default compiler threshold is therefore
+the same 12,000-character schema/binding ceiling, rather than a second hidden
+compaction threshold.  Callers that deliberately exercise a lower, non-strict
+context budget may still pass ``hard_prompt_chars`` explicitly; that generic
+compaction mode is never authority for a strict Master plan.
 """
 
 from __future__ import annotations
@@ -27,7 +29,10 @@ from output_schema import (
 
 
 SOFT_WORKER_PROMPT_CHARS = 6_000
-HARD_WORKER_PROMPT_CHARS = 10_000
+# This is the only default hard ceiling for an accepted Master plan.  A lower
+# number is a caller-selected generic compaction budget, not a second implicit
+# admission rule for the strict Master/Worker authority chain.
+HARD_WORKER_PROMPT_CHARS = WORKER_PROMPT_MAX_CHARS
 TASK_CONTEXT_CHARS = 12_000
 SYSTEM_OWNED_CONTRACT_HEADER = (
     "System-owned worker contract binding (derived from the structured "

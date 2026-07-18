@@ -3544,3 +3544,47 @@ runtime typed-intent validator/fallback remains the final safety boundary.
 Then the stopped runtime may fast-forward from `origin/main`, rebuild its
 static bundle/receipt, re-run recovery/evaluation/official diagnostics, and
 launch a fresh v143.
+
+## 2026-07-18 — v51 Master prompt-cap authority repair (source pending merge)
+
+`generation:143:workflow-v51` is terminal pre-publication evidence only: it
+created no Worker-owned candidate change, `.completed` artifact, certificate,
+tag, rating row, or strength sample. On final-Master Try 1, the provider
+emitted a 4,445-character `worker_prompt` for selected proposal
+`99151cc219f9ece9`; the final emission gate had published a 3,765-character
+provider cap, so selected-contract/runtime reserve arithmetic produced
+`combined_chars=12,680`, an honest 680-character overflow. The existing
+bounded Master repair correctly exposed that arithmetic to Try 2.
+
+Try 2 then exposed a separate control-plane contradiction. Its model-visible
+binding and schema admission used the authoritative 12,000-character ceiling;
+the accepted post-binding prompt was later re-bound by the plan compiler to
+10,017 characters. A hidden default 10,000-character compiler threshold
+externalized that otherwise accepted strict prompt into `.task_context`, and
+the strict replay could no longer reproduce the final projection. The resulting
+`strict_authority_master_final_projection_mismatch` reached the system Worker
+as a bootstrap execution failure and the outer workflow recorded
+`worker_terminal_abandon`. This is neither a strength result nor evidence that
+a shorter prompt would improve poker policy quality.
+
+The source repair establishes one lossless strict-Master cap: the compiler
+default is `WORKER_PROMPT_MAX_CHARS` (12,000), equal to schema admission and
+selected-proposal reserve arithmetic. Provider text is canonically
+`rstrip()`-normalized in both budget validation and selected-contract binding;
+only a trailing Unicode-whitespace suffix is normalized, never
+non-whitespace model content. The rendered template and final gate identify
+the selected `EMISSION_CAPS` row as the sole model-owned limit and explicitly
+forbid reliance on compaction, truncation, or task briefs. An unexpected
+compiler compaction is rejected before checkpoint/Worker/bootstrap receipt;
+strict authority and first-strict bootstrap independently reject a
+task-brief-shaped authority plan. Generic compaction survives only for an
+explicit lower `hard_prompt_chars` caller and is not a strict authority path.
+
+Regression evidence includes
+`test_v51_style_master_binding_overflow_gets_bounded_repair_and_stays_inline`,
+`test_v51_10017_char_strict_master_prompt_stays_inline_and_replays`, exact
+trailing-whitespace/binder-boundary coverage, explicit lower-cap legacy
+compaction coverage, and negative strict/bootstrap externalization checks. The
+bounded retry count and fail-closed rejection policy are unchanged. This source
+repair must be reviewed, merged, and followed by the normal stopped runtime
+sync/recovery diagnostics; it does not reinterpret or revive v51.
