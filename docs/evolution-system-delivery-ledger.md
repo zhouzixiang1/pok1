@@ -4207,3 +4207,97 @@ future source batch must either provide a separately reviewed system-owned
 blueprint repair transaction or change that fixed-bootstrap product contract.
 This detached change does not weaken the fixed-byte/control identity merely to
 make `execute_workers` appear successful.
+
+## 2026-07-19 — Contract-40 strict Reviewer recovery freeze
+
+This entry supersedes the pending-source and fixed-blueprint-repair statements
+immediately above for the first strict generation only.  It does not rewrite
+the historical v61 evidence.  Runtime workflow
+`generation:143:workflow-v61` remains on recorded old HEAD
+`fe39cfa60388435b8a52af36761c4c4dd042738a`, checkpoint revision 9,
+`quality_passed`, and old output artifact
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`.
+The authenticated control Stop completed, the orchestrator and rating daemon
+are absent, and no checkpoint, journal, SQLite row, candidate byte,
+certificate, tag, or rating row was edited.  The Web control process remains
+available on the old HEAD while the stopped-runtime transaction is prepared.
+
+The reviewed source freeze is production HEAD `901afc97` plus the generated
+Contract-40 runbook/matrix projection at `587398e9`.  It contains these
+separate closures:
+
+1. `run_review` consumes an exact owned infrastructure overlay in the same
+   checkpoint CAS that appends the verdict receipt and projects the next stage.
+2. A strict Reviewer's infrastructure key excludes the random invocation
+   nonce while retaining authority slot/purpose, generation/context,
+   checkpoint revision, candidate, runtime contract and backend identity.
+   Thus retries for one frozen call advance the same bounded budget instead of
+   resetting to attempt one.
+3. Before dispatching `review:retry`, the system reopens the first verdict's
+   provider effect, role result, invocation evidence and context authority.
+   Provider-visible purpose and renderer provenance are exactly
+   `system_strict_bootstrap_gate:review:retry`.
+4. The fixed first-strict blueprint cannot enter an unexecutable LLM rework.
+   Two negative verdicts, or an approve/reject conflict, atomically project the
+   full two-attempt journal, final gate and terminal outcome to
+   `review_rejected`, replay both `review` and `review:retry` authority slots,
+   and continue only through canonical exact-identity abandon.  A checkpoint
+   CAS failure preserves the completed provider authority for replay; a
+   cleanup interruption resumes the same terminal transaction; drift fails
+   closed.  Ordinary successor candidates retain the conservative
+   `repair_planned -> execute_workers` route.
+5. First-control begin/abandon now share instance-creation authority, and a
+   content-addressed cross-process initialization lock protects the first
+   SQLite WAL/schema open.  The lock is released before run locks and by the
+   kernel on process death.  Independent stress ran 1,000 fresh-database
+   begin/abandon races without a SQLite or abandon failure.
+6. The corrected strict-v1 blueprint removes the genuinely unreachable helper
+   and explicitly consumes the two neutral line-state spots.  A poisoned-table
+   regression proves the branch is executed rather than passing only because
+   both table defaults are zero.  Current policy identity is
+   `600133ba79b429e85c67300ca189f4d28a6d4947d948bc5ac8b67ef0e4ef86cd`;
+   materialized output identity is
+   `f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+7. Direct `web/main.py --no-build` validates the source-bound static receipt
+   before importing the app, starting Uvicorn, or supervising a daemon.
+
+Independent review approved the strict production freeze with no remaining
+P0/P1 in that path.  It separately confirmed that Quality/Critic terminal
+outcomes and ordinary-candidate repair semantics were unchanged.  Verification
+on the combined tree was:
+
+- Reviewer/terminal/strict/system-control focused: `275 passed`;
+- independent combined review: `391 passed`;
+- complete Web: `3439 passed, 20 skipped` in 185.12 seconds;
+- Sever: `33 passed`;
+- frontend: `26 passed`, lint green, production build green, receipt
+  `2b4fd8532708e8c7ddba4024a79f9f6306ea1a551c943cfc2015c541f6654f33`;
+- compileall for active source with immutable `results/` excluded and
+  `git diff --check`: green.
+
+One non-blocking successor boundary remains open: ordinary (non-bootstrap)
+Reviewer provider calls still need the shared workflow-kernel effect/lease
+adapter so a provider success before checkpoint CAS is replayed rather than
+re-dispatched.  That v144+ P1 is being developed in a detached worktree and is
+not permission to delay or weaken the already-durable strict v143 path.  It
+must be merged and synchronized after v143 reaches a terminal publication
+boundary and before v144 Review begins.
+
+An operator diagnostic also proved that the old CLI label `--dry-run` is not a
+zero-side-effect recovery oracle: on the stopped old runtime it opened one
+Orchestrator provider stream and appended `$0.029529` of usage, while leaving
+the v61 checkpoint, candidate and Reviewer journal unchanged.  This invocation
+is recorded rather than hidden; it is not used as recovery evidence again.
+The stopped-runtime handoff instead uses the raw checkpoint, control health,
+process/port state and canonical abandon receipts.
+
+The only permitted v61 transition is now: revalidate the old checkpoint and
+absence of active work on old HEAD, execute the canonical forced abandon with
+its complete workflow/version/revision/stage CAS identity and an
+`evaluation_contract_changed` reason, verify Worker and strict-authority
+fences plus abandon/finalize receipts and candidate quarantine, then stop the
+old Web process.  Only after that proof may the runtime fast-forward through
+`origin/main`, rebuild/verify the frontend receipt, run recovery/epoch/
+evaluator/official diagnostics, and start a fresh Contract-40 v143.  No old
+v61 Quality/70-hand/Reviewer evidence migrates to the new artifact, and the
+restart begins stability observation at **0/10**.
