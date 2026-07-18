@@ -81,6 +81,7 @@ def _inputs(*, execution_mode: str):
         "invocation_id": (
             "1" * 32 if execution_mode == "fixed_blueprint_capability_audit" else ""
         ),
+        "authority_slot": "review",
         "focus_areas": [],
         "review_semantic_contract": semantic_contract,
     }, quality
@@ -113,6 +114,30 @@ def test_fixed_blueprint_review_is_capability_audit_not_prose_implementation():
     assert provenance["review_semantic_contract_digest"] == (
         replay["review_semantic_contract"]["contract_digest"]
     )
+    assert provenance["review_authority_slot"] == "review"
+
+
+def test_strict_reviewer_retry_prompt_binds_exact_retry_purpose():
+    import strict_authority_workflow
+
+    inputs, _quality = _inputs(
+        execution_mode="fixed_blueprint_capability_audit"
+    )
+    semantic_inputs = {
+        key: value for key, value in inputs.items()
+        if key != "authority_slot"
+    }
+    rendered = strict_authority_workflow._render_registered_gate_prompt(
+        "review:retry",
+        semantic_inputs,
+    )
+    provenance = json.loads(
+        rendered.dispatch_receipt.evidence.provenance_json
+    )
+
+    assert "purpose=system_strict_bootstrap_gate:review:retry." in rendered.text
+    assert "purpose=system_strict_bootstrap_gate:review." not in rendered.text
+    assert provenance["review_authority_slot"] == "review:retry"
 
 
 def test_strategy_review_still_requires_mechanism_and_reachable_chain():

@@ -274,7 +274,8 @@ def _render_reviewer_provider_prompt(inputs):
 
     expected = {
         "master_plan", "source_v", "next_v", "strict_bootstrap",
-        "invocation_id", "focus_areas", "review_semantic_contract",
+        "invocation_id", "authority_slot", "focus_areas",
+        "review_semantic_contract",
     }
     if not isinstance(inputs, dict) or set(inputs) != expected:
         raise ValueError("Reviewer renderer input contract mismatch")
@@ -328,6 +329,11 @@ def _render_reviewer_provider_prompt(inputs):
     source_v = int(inputs["source_v"])
     next_v = int(inputs["next_v"])
     strict_bootstrap = bool(inputs["strict_bootstrap"])
+    authority_slot = str(inputs["authority_slot"] or "")
+    if authority_slot not in {"review", "review:retry"} or (
+        not strict_bootstrap and authority_slot != "review"
+    ):
+        raise ValueError("Reviewer authority slot is invalid")
     text = (
         Path(__file__).resolve().parent / "prompts" / "reviewer_prompt.md"
     ).read_text(encoding="utf-8")
@@ -414,7 +420,7 @@ def _render_reviewer_provider_prompt(inputs):
         text += (
             "\n\nSYSTEM CALL BINDING (copying this value does not grant authority): "
             f"invocation_id={invocation_id}; "
-            "purpose=system_strict_bootstrap_gate:review."
+            f"purpose=system_strict_bootstrap_gate:{authority_slot}."
         )
     if focus_areas:
         text += (
@@ -436,6 +442,7 @@ def _render_reviewer_provider_prompt(inputs):
             "review_semantic_contract_digest": str(
                 semantic_contract["contract_digest"]
             ),
+            "review_authority_slot": authority_slot,
             "focus_areas_digest": hashlib.sha256(
                 json.dumps(
                     focus_areas,
@@ -1209,9 +1216,17 @@ def _llm_gate_infrastructure_identity(
     prompt_text,
     checkpoint,
     source_fingerprint_override=None,
+    harness_identity_override=None,
 ):
     """Bind LLM-gate retries to code, prompt, backend, and runtime contract."""
     prompt_digest = hashlib.sha256(str(prompt_text).encode("utf-8")).hexdigest()
+    harness_identity = (
+        prompt_digest
+        if harness_identity_override is None
+        else str(harness_identity_override)
+    )
+    if not re.fullmatch(r"[0-9a-f]{64}", harness_identity):
+        raise ValueError("LLM gate harness identity must be a SHA-256 digest")
     ledger = (checkpoint or {}).get("runtime_contract_ledger") or {}
     contract_digest = str(ledger.get("ledger_digest") or "")
     backend_contract = {
@@ -1231,18 +1246,65 @@ def _llm_gate_infrastructure_identity(
         component=component,
         candidate_fingerprint=candidate_fingerprint,
         source_fingerprint=source_fingerprint,
-        harness_identity=prompt_digest,
+        harness_identity=harness_identity,
         contract_identity=contract_digest,
         extra={"role": role, "backend_contract": backend_contract},
     )
     return attempt_key, {
         "role": role,
         "prompt_digest": prompt_digest,
+        "attempt_harness_identity": harness_identity,
+        "attempt_harness_identity_mode": (
+            "stable_override_v1"
+            if harness_identity_override is not None
+            else "rendered_prompt_sha256_v1"
+        ),
         "candidate_fingerprint": candidate_fingerprint,
         "source_fingerprint": source_fingerprint,
         "runtime_contract_ledger_digest": contract_digest,
         "backend_contract": backend_contract,
     }
+
+
+def _strict_review_infrastructure_harness_identity(call):
+    """Bind infra retries to strict semantics while excluding invocation nonce.
+
+    The strict renderer places the random invocation id in provider-visible
+    text.  Hashing that final text makes every real provider retry look like a
+    new infrastructure identity and resets its bounded retry budget.  The
+    durable descriptor already owns a nonce-free generation/context identity;
+    use exactly that phase identity plus the Reviewer authority slot instead.
+    """
+
+    if not isinstance(call, dict):
+        raise ValueError("Strict Reviewer call descriptor is missing")
+    slot = str(call.get("slot") or "")
+    expected_purpose = f"system_strict_bootstrap_gate:{slot}"
+    revision = call.get("checkpoint_revision")
+    if (
+        slot not in {"review", "review:retry"}
+        or call.get("purpose") != expected_purpose
+        or call.get("checkpoint_stage") != "quality_passed"
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+        or revision < 0
+    ):
+        raise ValueError("Strict Reviewer infrastructure descriptor is invalid")
+    for field in ("generation_binding_digest", "context_binding_digest"):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(call.get(field) or "")):
+            raise ValueError(
+                f"Strict Reviewer infrastructure {field} is invalid"
+            )
+    return _canonical_digest({
+        "schema_version": 1,
+        "kind": "strict-reviewer-infrastructure-harness-v1",
+        "slot": slot,
+        "purpose": expected_purpose,
+        "generation_binding_digest": call["generation_binding_digest"],
+        "checkpoint_stage": "quality_passed",
+        "checkpoint_revision": int(revision),
+        "context_binding_digest": call["context_binding_digest"],
+    })
 
 
 # ──────────────────────────────────────────────
@@ -4184,7 +4246,7 @@ async def run_review(args):
             _review_cycle_contract_digest = _canonical_digest(
                 _strict_review_base_context
             )
-        except StrictAuthorityError as exc:
+        except (StrictAuthorityError, ValueError) as exc:
             return _json_tool_result(
                 await _abandon_strict_gate_authority(
                     ckpt,
@@ -4213,6 +4275,7 @@ async def run_review(args):
         ReviewRetryError,
         current_review_attempts,
         review_attempt_action,
+        validate_strict_review_attempt_authority,
     )
 
     try:
@@ -4239,18 +4302,20 @@ async def run_review(args):
             ckpt,
         )
     _review_verdict_attempt = int(_review_retry_action["attempt"])
+    _review_authority_slot = (
+        "review" if _review_verdict_attempt == 1 else "review:retry"
+    )
 
     _review_invocation_id = None
     _review_strict_call = None
+    _review_infra_harness_identity = None
     if _strict_bootstrap:
         from strict_authority_workflow import new_call, render_gate_provider_prompt
 
         try:
             _review_strict_call = new_call(
                 ckpt,
-                slot=(
-                    "review" if _review_verdict_attempt == 1 else "review:retry"
-                ),
+                slot=_review_authority_slot,
                 context_binding=(
                     _strict_review_base_context
                     if _review_verdict_attempt == 1
@@ -4261,9 +4326,43 @@ async def run_review(args):
                     )
                 ),
             )
+            if _review_verdict_attempt == 2:
+                # A structurally valid checkpoint row is not enough to authorize
+                # another provider. Reopen the first verdict's exact Master,
+                # provider, evidence, role-result and context authority before
+                # any fresh review:retry dispatch. A recovered completed retry
+                # may already be an accepted suffix, so that no-provider-replay
+                # case validates the suffix without treating its presence as a
+                # fresh-dispatch conflict; the full two-row authority is checked
+                # again before checkpoint projection below.
+                _prior_authority_errors = (
+                    validate_strict_review_attempt_authority(
+                        ckpt,
+                        journal=_current_review_attempts,
+                        candidate_dir=get_bot_dir(v),
+                        require_no_other_accepted=not bool(
+                            _review_strict_call.get("replay_provider")
+                        ),
+                    )
+                )
+                if _prior_authority_errors:
+                    return _json_tool_result(
+                        await _abandon_strict_gate_authority(
+                            ckpt,
+                            gate_name="review",
+                            error=StrictAuthorityError(
+                                _prior_authority_errors
+                            ),
+                        )
+                    )
             _review_invocation_id = _review_strict_call["invocation_id"]
             rendered_prompt = render_gate_provider_prompt(_review_strict_call)
-        except StrictAuthorityError as exc:
+            _review_infra_harness_identity = (
+                _strict_review_infrastructure_harness_identity(
+                    _review_strict_call
+                )
+            )
+        except (StrictAuthorityError, ValueError) as exc:
             return _json_tool_result(
                 await _abandon_strict_gate_authority(
                     ckpt,
@@ -4294,6 +4393,7 @@ async def run_review(args):
                 "next_v": int(v),
                 "strict_bootstrap": False,
                 "invocation_id": "",
+                "authority_slot": "review",
                 "focus_areas": [str(item) for item in _focus_areas],
                 "review_semantic_contract": _review_semantics,
             },
@@ -4305,6 +4405,7 @@ async def run_review(args):
         source_dir=None if _strict_bootstrap else get_bot_dir(source_v),
         prompt_text=str(rendered_prompt),
         checkpoint=ckpt,
+        harness_identity_override=_review_infra_harness_identity,
         source_fingerprint_override=(
             hashlib.sha256(
                 f"numeric-high-water-only:v{source_v}".encode("ascii")
@@ -4581,7 +4682,6 @@ async def run_review(args):
             build_review_adjudication,
             build_review_attempt_receipt,
             review_attempt_action,
-            validate_strict_review_attempt_authority,
         )
 
         try:
@@ -4590,9 +4690,7 @@ async def run_review(args):
                 gate_payload=gate,
                 candidate_dir=get_bot_dir(v),
                 attempt=_review_verdict_attempt,
-                authority_slot=(
-                    "review" if _review_verdict_attempt == 1 else "review:retry"
-                ),
+                authority_slot=_review_authority_slot,
                 review_semantic_contract_digest=_review_cycle_contract_digest,
                 consumed_infrastructure_failure=_review_infra,
             )

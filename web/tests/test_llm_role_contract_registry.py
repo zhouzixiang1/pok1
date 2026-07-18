@@ -90,7 +90,7 @@ EXPECTED_PROVENANCE_FIELDS = {
     ),
     "lead_code_reviewer": (
         "source_v", "next_v", "review_prompt_digest",
-        "review_semantic_contract_digest",
+        "review_semantic_contract_digest", "review_authority_slot",
     ),
     "strategy_critic": (
         "source_v", "next_v", "master_plan_digest", "code_evidence_digest",
@@ -177,6 +177,7 @@ def _lead_reviewer_inputs(marker):
         "next_v": 145,
         "strict_bootstrap": False,
         "invocation_id": "",
+        "authority_slot": "review",
         "focus_areas": [],
         "review_semantic_contract": tool_gates._review_semantic_contract(
             plan,

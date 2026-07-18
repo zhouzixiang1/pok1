@@ -198,10 +198,16 @@ def test_first_strict_review_records_final_provider_prompt_authority(
         "audit_context": {},
     }
     strict_call = {
+        "slot": "review",
+        "purpose": "system_strict_bootstrap_gate:review",
         "invocation_id": "1" * 32,
         "effect_id": "strict-llm-" + "1" * 64,
         "prompt_digest": "",
         "generation_binding": {"next_v": 143},
+        "generation_binding_digest": "2" * 64,
+        "checkpoint_stage": "quality_passed",
+        "checkpoint_revision": 9,
+        "context_binding_digest": "3" * 64,
     }
     final_provider_prompt_digest = "a" * 64
     captured = {}
@@ -657,8 +663,14 @@ def test_strict_review_log_allocation_failure_canonically_abandons(
         "audit_context": {},
     }
     strict_call = {
+        "slot": "review",
+        "purpose": "system_strict_bootstrap_gate:review",
         "invocation_id": "4" * 32,
         "generation_binding": {"next_v": 143},
+        "generation_binding_digest": "5" * 64,
+        "checkpoint_stage": "quality_passed",
+        "checkpoint_revision": 9,
+        "context_binding_digest": "6" * 64,
     }
     captured = {}
 

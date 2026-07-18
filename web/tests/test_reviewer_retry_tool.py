@@ -272,3 +272,245 @@ def test_valid_approval_consumes_timeout_overlay_in_reviewed_cas(
     assert captured["review_attempt_journal"][0][
         "consumed_infrastructure_attempt"
     ] == 1
+
+
+def test_strict_reviewer_infra_identity_ignores_nonce_and_exhausts_budget(
+    tmp_path,
+):
+    import tool_gates
+    from pipeline_infrastructure import build_infrastructure_failure
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    checkpoint = {
+        "runtime_contract_ledger": {"ledger_digest": "d" * 64},
+    }
+
+    def strict_call(invocation_id, *, context_digest="b" * 64):
+        return {
+            "slot": "review",
+            "purpose": "system_strict_bootstrap_gate:review",
+            "invocation_id": invocation_id,
+            "generation_binding_digest": "a" * 64,
+            "checkpoint_stage": "quality_passed",
+            "checkpoint_revision": 8,
+            "context_binding_digest": context_digest,
+        }
+
+    first_call = strict_call("1" * 32)
+    restarted_call = strict_call("2" * 32)
+    first_harness = tool_gates._strict_review_infrastructure_harness_identity(
+        first_call
+    )
+    restarted_harness = (
+        tool_gates._strict_review_infrastructure_harness_identity(
+            restarted_call
+        )
+    )
+    assert first_harness == restarted_harness
+
+    keys = []
+    metadata_rows = []
+    for call, prompt in (
+        (first_call, "review invocation_id=" + "1" * 32),
+        (restarted_call, "review invocation_id=" + "2" * 32),
+    ):
+        harness = tool_gates._strict_review_infrastructure_harness_identity(call)
+        key, metadata = tool_gates._llm_gate_infrastructure_identity(
+            component="reviewer_llm",
+            role="LEAD CODE REVIEWER",
+            candidate_dir=candidate,
+            source_dir=None,
+            prompt_text=prompt,
+            checkpoint=checkpoint,
+            source_fingerprint_override="c" * 64,
+            harness_identity_override=harness,
+        )
+        keys.append(key)
+        metadata_rows.append(metadata)
+
+    assert keys[0] == keys[1]
+    assert metadata_rows[0]["prompt_digest"] != metadata_rows[1]["prompt_digest"]
+    assert {
+        row["attempt_harness_identity"] for row in metadata_rows
+    } == {first_harness}
+    assert {
+        row["attempt_harness_identity_mode"] for row in metadata_rows
+    } == {"stable_override_v1"}
+
+    overlay = None
+    attempts = []
+    for attempt in range(1, 4):
+        overlay = build_infrastructure_failure(
+            overlay,
+            component="reviewer_llm",
+            code="reviewer_llm_unavailable",
+            owner_tool="run_review",
+            resume_stage="quality_passed",
+            attempt_key=keys[(attempt - 1) % 2],
+            issues=["timeout"],
+            max_attempts=3,
+            now=float(attempt),
+        )
+        attempts.append(overlay["attempt"])
+    assert attempts == [1, 2, 3]
+    assert overlay["exhausted"] is True
+    assert overlay["action"] == "abandon_generation"
+
+    changed = tool_gates._strict_review_infrastructure_harness_identity(
+        strict_call("3" * 32, context_digest="e" * 64)
+    )
+    assert changed != first_harness
+
+
+def test_strict_retry_reopens_first_authority_before_provider_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    import reviewer_retry
+    import strict_authority_workflow
+    import system_strict_bootstrap
+    import tool_gates
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("VALUE = 1\n", encoding="utf-8")
+    first_attempt = {"attempt": 1, "approved": False}
+    checkpoint = {
+        "workflow_run_id": "generation:143:strict-predispatch-review",
+        "next_v": 143,
+        "source_v": 142,
+        "parent2_v": None,
+        "stage": "quality_passed",
+        "checkpoint_revision": 9,
+        "master_plan": {"tasks": []},
+        "gate_results": {
+            "quality": {
+                "all_passed": True,
+                "critical_scenarios_passed": True,
+            }
+        },
+        "review_attempt_journal": [first_attempt],
+        "audit_context": {},
+    }
+    observed = {
+        "rendered": 0,
+        "provider": 0,
+        "authority": [],
+        "abandon": [],
+    }
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def provider(*_args, **_kwargs):
+        observed["provider"] += 1
+        raise AssertionError("review:retry provider must not be dispatched")
+
+    async def abandon(checkpoint_arg, *, gate_name, error):
+        observed["abandon"].append((checkpoint_arg, gate_name, error.errors))
+        return {
+            "abandoned": True,
+            "error": "SYSTEM_STRICT_BOOTSTRAP_REVIEW_AUTHORITY_INVALID",
+            "validation_errors": list(error.errors),
+        }
+
+    def validate(checkpoint_arg, *, journal, candidate_dir, **kwargs):
+        observed["authority"].append({
+            "checkpoint": checkpoint_arg,
+            "journal": journal,
+            "candidate_dir": candidate_dir,
+            **kwargs,
+        })
+        return ["strict_authority_review_receipt_missing"]
+
+    monkeypatch.setattr(tool_gates, "_set_pipeline_status", lambda *_args: None)
+    monkeypatch.setattr(tool_gates, "_matching_checkpoint", lambda *_args: checkpoint)
+    monkeypatch.setattr(
+        tool_gates,
+        "_owned_infrastructure_failure",
+        lambda *_args: (None, None),
+    )
+    monkeypatch.setattr(
+        tool_gates,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted,
+    )
+    monkeypatch.setattr(tool_gates, "_idempotency_check", lambda *_a, **_k: None)
+    monkeypatch.setattr(tool_gates, "_quality_gate_ok", lambda _checkpoint: True)
+    monkeypatch.setattr(tool_gates, "get_bot_dir", lambda _version: candidate)
+    monkeypatch.setattr(tool_gates, "run_claude_query", provider)
+    monkeypatch.setattr(tool_gates, "_abandon_strict_gate_authority", abandon)
+    monkeypatch.setattr(
+        system_strict_bootstrap,
+        "is_declared_native_bootstrap",
+        lambda _checkpoint: True,
+    )
+    monkeypatch.setattr(
+        reviewer_retry,
+        "current_review_attempts",
+        lambda *_args, **_kwargs: [first_attempt],
+    )
+    monkeypatch.setattr(
+        reviewer_retry,
+        "review_attempt_action",
+        lambda _journal: {
+            "action": "dispatch",
+            "attempt": 2,
+            "consistency": "initial_reject",
+        },
+    )
+    monkeypatch.setattr(
+        reviewer_retry,
+        "validate_strict_review_attempt_authority",
+        validate,
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "gate_call_context",
+        lambda _checkpoint, *, gate_name, candidate_dir: {
+            "phase": gate_name,
+            "candidate": str(candidate_dir),
+        },
+    )
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "new_call",
+        lambda *_args, **_kwargs: {
+            "slot": "review:retry",
+            "purpose": "system_strict_bootstrap_gate:review:retry",
+            "invocation_id": "1" * 32,
+            "generation_binding_digest": "a" * 64,
+            "checkpoint_stage": "quality_passed",
+            "checkpoint_revision": 9,
+            "context_binding_digest": "b" * 64,
+        },
+    )
+
+    def render(*_args, **_kwargs):
+        observed["rendered"] += 1
+        raise AssertionError("invalid first authority must block prompt rendering")
+
+    monkeypatch.setattr(
+        strict_authority_workflow,
+        "render_gate_provider_prompt",
+        render,
+    )
+
+    payload = json.loads(asyncio.run(tool_gates.run_review.handler({
+        "version": 143,
+        "source_v": 142,
+        "plan": [],
+    }))["content"][0]["text"])
+
+    assert payload["abandoned"] is True
+    assert payload["validation_errors"] == [
+        "strict_authority_review_receipt_missing"
+    ]
+    assert observed["provider"] == 0
+    assert observed["rendered"] == 0
+    assert len(observed["authority"]) == 1
+    assert observed["authority"][0]["journal"] == [first_attempt]
+    assert observed["authority"][0]["require_no_other_accepted"] is True
+    assert observed["abandon"][0][1] == "review"

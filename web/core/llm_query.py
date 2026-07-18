@@ -320,7 +320,7 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         evidence_kind="review_candidate_pair",
         required_evidence_fields=(
             "source_v", "next_v", "review_prompt_digest",
-            "review_semantic_contract_digest",
+            "review_semantic_contract_digest", "review_authority_slot",
         ),
         scope_policy="canonical_candidates",
         tools=(("Read",), ("Bash", "Read")),

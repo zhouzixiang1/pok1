@@ -801,10 +801,17 @@ def _render_registered_gate_prompt(
     role, producer = _gate_renderer_components(gate_name)
     from llm_query import render_llm_prompt
 
+    registered_inputs = dict(renderer_inputs)
+    if gate_name in {"review", "review:retry"}:
+        # The authority slot is system-owned renderer input.  Keeping it out of
+        # the checkpoint-derived semantic input object preserves the reviewed
+        # legacy migration shape, while the renderer receipt and prompt still
+        # bind the exact first/retry purpose.
+        registered_inputs["authority_slot"] = gate_name
     return render_llm_prompt(
         role,
         producer=producer,
-        renderer_inputs=renderer_inputs,
+        renderer_inputs=registered_inputs,
     )
 
 
@@ -1041,7 +1048,14 @@ def render_gate_provider_prompt(call: dict[str, Any]):
             "strict_authority_gate_render_receipt_invalid"
         ) from exc
     if (
-        _json_value(replay_inputs) != _json_value(actual_inputs)
+        _json_value(replay_inputs) != _json_value({
+            **actual_inputs,
+            **(
+                {"authority_slot": slot}
+                if slot in {"review", "review:retry"}
+                else {}
+            ),
+        })
         or actual_static != contract.get("renderer_static_identity")
     ):
         raise StrictAuthorityError(

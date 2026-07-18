@@ -399,11 +399,14 @@ def validate_strict_review_attempt_authority(
     *,
     journal: list[dict[str, Any]],
     candidate_dir: str | Path,
+    require_no_other_accepted: bool = True,
 ) -> list[str]:
     """Reopen every strict provider/evidence receipt for the current cycle."""
 
     if not journal:
         return ["strict_review_attempt_journal_empty"]
+    if not isinstance(require_no_other_accepted, bool):
+        return ["strict_review_attempt_extra_authority_policy_invalid"]
     try:
         from strict_authority_workflow import (
             MASTER_SLOTS,
@@ -437,7 +440,7 @@ def validate_strict_review_attempt_authority(
             expected_role_results=expected_results,
             expected_context_bindings=contexts,
             expected_invocation_evidence=expected_evidence,
-            require_no_other_accepted=True,
+            require_no_other_accepted=require_no_other_accepted,
         )
     except Exception as exc:
         errors = getattr(exc, "errors", None)
