@@ -337,6 +337,7 @@ def _read_pipeline_health(status: dict) -> dict:
         identity_fields = (
             "next_v",
             "source_v",
+            "parent2_v",
             "stage",
             "run_id",
             "workflow_run_id",
@@ -345,6 +346,7 @@ def _read_pipeline_health(status: dict) -> dict:
         expected_identity = {
             "next_v": active.get("next_v"),
             "source_v": active.get("source_v"),
+            "parent2_v": active.get("parent2_v"),
             "stage": active.get("stage"),
             "run_id": active.get("run_id"),
             "workflow_run_id": active.get("workflow_run_id"),
@@ -353,6 +355,7 @@ def _read_pipeline_health(status: dict) -> dict:
         observed_identity = {
             "next_v": checkpoint_obj.get("next_v"),
             "source_v": checkpoint_obj.get("source_v"),
+            "parent2_v": checkpoint_obj.get("parent2_v"),
             "stage": checkpoint_obj.get("stage"),
             "run_id": observed_run_id,
             "workflow_run_id": checkpoint_obj.get("workflow_run_id"),
@@ -422,6 +425,7 @@ def _read_pipeline_health(status: dict) -> dict:
         "stage": active.get("stage"),
         "next_v": active.get("next_v"),
         "source_v": active.get("source_v"),
+        "parent2_v": active.get("parent2_v"),
         "generation_attempt": attempt.get("generation"),
         "audit_attempt": attempt.get("audit"),
         "precommit_attempt": attempt.get("precommit"),

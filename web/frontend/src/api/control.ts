@@ -233,6 +233,7 @@ export interface ControlPipelineHealth {
   blocked?: boolean;
   next_v?: number | null;
   source_v?: number | null;
+  parent2_v?: number | null;
   run_id?: string | null;
   workflow_run_id?: string | null;
   checkpoint_revision?: number | null;
@@ -364,6 +365,7 @@ export function controlLaunchBoundaryIssues(
     requireField(Boolean(route), "active.route");
     requireField(pipeline.next_v === active.next_v, "active.next_v");
     requireField(pipeline.source_v === active.source_v, "active.source_v");
+    requireField(pipeline.parent2_v === active.parent2_v, "active.parent2_v");
     requireField(pipeline.stage === active.stage, "active.stage");
     requireField(pipeline.run_id === active.run_id, "active.run_id");
     requireField(pipeline.workflow_run_id === active.workflow_run_id, "active.workflow_run_id");

@@ -1437,6 +1437,7 @@ class TestStatus:
         ("field", "changed"),
         (
             ("source_v", 141),
+            ("parent2_v", 140),
             ("run_id", "143#other"),
             ("checkpoint_revision", 8),
         ),
@@ -1454,6 +1455,7 @@ class TestStatus:
         checkpoint = {
             "next_v": 143,
             "source_v": 142,
+            "parent2_v": None,
             "stage": "direction_audited",
             "run_id": "143#0",
             "workflow_run_id": "generation:143:route-test",
@@ -1466,6 +1468,7 @@ class TestStatus:
             "active_generation": {
                 "next_v": 143,
                 "source_v": 142,
+                "parent2_v": None,
                 "stage": "direction_audited",
                 "run_id": "143#0",
                 "workflow_run_id": "generation:143:route-test",

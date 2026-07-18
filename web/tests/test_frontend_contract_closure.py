@@ -151,6 +151,7 @@ def test_control_observation_pairs_status_health_without_overlapping_polls():
     assert "页面不从 stage 猜测下一工具" in panel
     assert "controlStartBlockedReason(status, health)" in panel
     assert "route.parent2_v === status.active_generation.parent2_v" in panel
+    assert "pipeline.parent2_v === active.parent2_v" in api
     assert "pipeline.handoff_owner_scope" in panel
     assert "clearOrchestratorSession" not in client
     assert "重置会话" not in panel

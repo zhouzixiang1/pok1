@@ -369,6 +369,7 @@ test("Start permission mirrors exact backend launch boundaries", () => {
       blocked: false,
       next_v: active.next_v,
       source_v: active.source_v,
+      parent2_v: active.parent2_v,
       run_id: active.run_id,
       workflow_run_id: active.workflow_run_id,
       checkpoint_revision: active.checkpoint_revision,
@@ -390,6 +391,16 @@ test("Start permission mirrors exact backend launch boundaries", () => {
       pipeline: { ...activeHealth.pipeline, checkpoint_revision: 7 },
     }),
     true,
+  );
+  assert.deepEqual(
+    controlLaunchBoundaryIssues(activeStatus, {
+      ...activeHealth,
+      pipeline: {
+        ...activeHealth.pipeline,
+        parent2_v: 140,
+      },
+    }),
+    ["active.parent2_v"],
   );
   assert.deepEqual(
     controlLaunchBoundaryIssues(activeStatus, {
