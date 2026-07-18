@@ -3806,14 +3806,25 @@ checkpoint was not cleared. This is a safe stopped partial state, not a Bot or
 strength result: both journals are fenced at epoch 1, the candidate and typed
 receipt remain byte-identical, and stable observation remains **0/10**.
 
-Follow-up source work therefore has two mandatory closures before runtime
-resume: (1) prove an already-fenced terminal lifecycle by exact unique final
-Worker/strict abandon events, canonical receipt reason, workflow identity and
-absence of live effects while still revalidating every accepted provider/
-candidate/checkpoint digest; ordinary abandoned journals remain unusable for
-provider recovery; and (2) make the operator CLI resume the existing revision-9
-canonical abandon without accepting or dispatching a role again. An independent
-Worker MCP review also found that terminal gate, reason and failure class were
-independent allowlists; the follow-up closes them to seven legal tuples and an
-exact top-level receipt schema. At this ledger point those follow-ups are under
-test/review and have not yet been synchronized into the stopped runtime.
+The integrated follow-up closes both mandatory recovery gaps before runtime
+resume. An already-fenced terminal lifecycle is accepted only with exact unique
+final Worker/strict events, the real replayed Worker cycle, exact one-key/two-
+key terminal payloads, canonical receipt reason, workflow identity and no live
+effects; it still revalidates every accepted provider/candidate/checkpoint
+digest, while ordinary abandoned journals remain unusable for provider
+recovery. Creating a previously absent strict journal now writes its instance
+and terminal event in one SQLite transaction. The only old empty tombstone that
+can be completed is definition/status/stream/fence exact, has zero event/effect,
+and matches the same terminal outcome and reason.
+
+The operator CLI now reverses the revision-9 projection to an immutable
+revision-8 view, recovers the accepted Reviewer call from the durable journal,
+and compares the complete role result, authority receipt, context, migration,
+bound invocation evidence, effect and invocation identities before it exposes
+the canonical resume. It neither accepts nor binds the role a second time and
+reports a failed abandon as failed. The independent Worker MCP finding is also
+closed: gate/reason/failure is one of seven exact tuples, and a re-digested
+receipt with an extra/missing top-level key is invalid. Combined focused tests
+after integration report 535 passed. At this ledger point final full source
+gates and runtime synchronization of the follow-up are pending; the stopped
+runtime remains at the safe revision-9 fence and **0/10**.

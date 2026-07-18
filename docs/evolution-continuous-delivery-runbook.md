@@ -299,6 +299,18 @@ the rejection-only migration and the resume implementation having no dispatch
 path, and are projected in dry-run/execute output. They are not inferred from a
 new editable checkpoint flag.
 
+An already-fenced resume is not authorized merely by
+`workflow_instances.status=abandoned`. The read-only proof requires the exact
+unique final Worker and strict-authority events, the replayed Worker cycle,
+their closed payload schemas, the canonical outcome reason, matching workflow
+and fence epochs, and zero live effects. It then reopens all accepted provider
+and invocation receipts. Wrong/extra events, a fabricated cycle, partial
+strict-first fencing or a changed reason remain operator reconciliation. A new
+strict terminal journal is created with its first event atomically; the only
+recoverable old empty tombstone must have the exact definition/status/zero
+stream/zero fence and no event or effect before the same canonical event is
+completed.
+
 ### Reviewer semantic modes and quality handoff
 
 Reviewer receives one closed `review_semantic_contract`. A fixed system
