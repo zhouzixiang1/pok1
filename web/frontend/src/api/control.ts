@@ -242,6 +242,19 @@ export interface ControlPipelineHealth {
   issues?: string[];
   identity_changed?: boolean;
   identity_mismatches?: string[];
+  recovery_blocked?: boolean;
+  admission_blocked?: boolean;
+  terminalization_pending?: boolean;
+  gate_outcome?: {
+    schema_version: number;
+    kind: string;
+    gate_name: "quality" | "review" | "critic";
+    terminal_stage: "quality_rejected" | "review_rejected" | "critic_rejected";
+    reason_code: string;
+    failure_class: string;
+    disposition: "abandon_generation";
+    receipt_digest: string;
+  } | null;
   ignored_checkpoint?: IgnoredCheckpoint | null;
   handoff_identity_digest?: string | null;
   handoff_projection_digest?: string | null;

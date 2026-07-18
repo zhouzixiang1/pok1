@@ -545,6 +545,7 @@ async def evolution_state():
             "active_bots": [],
             "pipeline_stage": None,
             "pipeline_checkpoint_revision": None,
+            "pipeline_outcome": None,
             "grand_cost_total": 0.0,
             "gen_cost_total": 0.0,
             "generation_cost_identity": None,
@@ -567,6 +568,22 @@ async def evolution_state():
     state["pipeline_checkpoint_revision"] = (
         checkpoint.get("checkpoint_revision") if checkpoint else None
     )
+    state["pipeline_outcome"] = None
+    if checkpoint and isinstance(checkpoint.get("terminal_gate_outcome"), dict):
+        outcome = checkpoint["terminal_gate_outcome"]
+        state["pipeline_outcome"] = {
+            key: outcome.get(key)
+            for key in (
+                "schema_version",
+                "kind",
+                "gate_name",
+                "terminal_stage",
+                "reason_code",
+                "failure_class",
+                "disposition",
+                "receipt_digest",
+            )
+        }
     state["post_publication_handoff"] = handoff
     status_task = _live_task_snapshot()
     state["transient_status_task"] = _task_owner_projection(status_task)

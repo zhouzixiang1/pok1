@@ -153,6 +153,10 @@ def test_control_observation_pairs_status_health_without_overlapping_polls():
     assert "route.parent2_v === status.active_generation.parent2_v" in panel
     assert "pipeline.parent2_v === active.parent2_v" in api
     assert "pipeline.handoff_owner_scope" in panel
+    assert 'stage.endsWith("_rejected")' in (
+        FRONTEND / "components" / "evolution" / "PipelineStatus.tsx"
+    ).read_text(encoding="utf-8")
+    assert "terminalization_pending" in api
     assert "clearOrchestratorSession" not in client
     assert "重置会话" not in panel
     assert "opaque session ID 不构成恢复权威" in panel

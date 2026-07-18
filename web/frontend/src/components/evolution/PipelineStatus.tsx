@@ -50,7 +50,9 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
   // Worker milestone as active until the repaired bytes re-enter the gates.
   const milestone = isRepair ? "workers_done" : STAGE_TO_MILESTONE[stage];
   const currentIdx = PIPELINE_STAGES.indexOf(milestone);
-  const isFailure = stage.endsWith("_failed") || stage === "official_inconclusive";
+  const isFailure = stage.endsWith("_failed")
+    || stage.endsWith("_rejected")
+    || stage === "official_inconclusive";
 
   return (
     <div>

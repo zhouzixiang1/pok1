@@ -378,6 +378,25 @@ test("Start permission mirrors exact backend launch boundaries", () => {
   };
   assert.equal(controlStartBlocked(activeStatus, activeHealth), false);
   assert.equal(controlStartBlockedReason(activeStatus, activeHealth), null);
+  const terminalActive = { ...active, stage: "review_rejected" };
+  const terminalStatus = { ...activeStatus, active_generation: terminalActive };
+  const terminalRoute = {
+    ...activeRoute,
+    stage: "review_rejected",
+    next_tool: "abandon_generation",
+    allowed_tools: ["abandon_generation"],
+    intent: "terminal_gate_abandon",
+  };
+  assert.equal(controlStartBlocked(terminalStatus, {
+    ...activeHealth,
+    pipeline: {
+      ...activeHealth.pipeline,
+      stage: "review_rejected",
+      admission_blocked: true,
+      terminalization_pending: true,
+      route: terminalRoute,
+    },
+  }), false, "valid terminalization route remains launchable for canonical abandon");
   assert.match(
     controlStartBlockedReason(activeStatus, {
       ...activeHealth,

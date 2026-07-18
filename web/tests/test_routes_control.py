@@ -1495,6 +1495,112 @@ class TestStatus:
         assert "route" not in snapshot
 
     @pytest.mark.parametrize(
+        ("route_intent", "expected_blocked"),
+        (
+            ("terminal_gate_abandon", False),
+            ("operator_reconcile_checkpoint", True),
+        ),
+    )
+    def test_pipeline_health_distinguishes_terminal_admission_from_recovery_block(
+        self,
+        monkeypatch,
+        route_intent,
+        expected_blocked,
+    ):
+        import checkpoint_schema
+        import evolution_infra
+        import pipeline_recovery
+        import pipeline_state
+        import server.routes.control as control
+
+        digest = "a" * 64
+        checkpoint = {
+            "next_v": 143,
+            "source_v": 142,
+            "parent2_v": None,
+            "stage": "review_rejected",
+            "run_id": "143#0",
+            "workflow_run_id": "generation:143:terminal-route-test",
+            "checkpoint_revision": 9,
+            "generation_attempt": 0,
+            "terminal_gate_outcome": {
+                "schema_version": 1,
+                "kind": "pipeline-terminal-gate-outcome-v1",
+                "gate_name": "review",
+                "terminal_stage": "review_rejected",
+                "reason_code": "review_rejected",
+                "failure_class": "strategy_review",
+                "disposition": "abandon_generation",
+                "receipt_digest": digest,
+            },
+        }
+        status = {
+            "epoch_initialized": True,
+            "active_generation": {
+                "next_v": 143,
+                "source_v": 142,
+                "parent2_v": None,
+                "stage": "review_rejected",
+                "run_id": "143#0",
+                "workflow_run_id": "generation:143:terminal-route-test",
+                "checkpoint_revision": 9,
+                "attempt": {"generation": 0, "audit": 0, "precommit": 0},
+            },
+        }
+        monkeypatch.setattr(checkpoint_schema, "checkpoint_epoch_errors", lambda _value: [])
+        monkeypatch.setattr(
+            checkpoint_schema,
+            "live_policy_epoch_reset_receipt_errors",
+            lambda _value, **_kwargs: [],
+        )
+        monkeypatch.setattr(evolution_infra, "read_pipeline_checkpoint", lambda: checkpoint)
+        monkeypatch.setattr(
+            pipeline_recovery,
+            "checkpoint_recovery_diagnostics",
+            lambda _value: {"active": True, "recoverable": True, "issues": []},
+        )
+        route = {
+            "stage": "review_rejected",
+            "next_v": 143,
+            "source_v": 142,
+            "parent2_v": None,
+            "next_tool": (
+                "abandon_generation"
+                if route_intent == "terminal_gate_abandon"
+                else None
+            ),
+            "allowed_tools": (
+                ["abandon_generation"]
+                if route_intent == "terminal_gate_abandon"
+                else []
+            ),
+            "intent": route_intent,
+            "issues": (
+                []
+                if route_intent == "terminal_gate_abandon"
+                else ["terminal_outcome_receipt_digest_invalid"]
+            ),
+            "terminal_gate_outcome_digest": (
+                digest if route_intent == "terminal_gate_abandon" else None
+            ),
+        }
+        monkeypatch.setattr(pipeline_state, "route_policy", lambda _value: route)
+
+        snapshot = control._read_pipeline_health(status)
+
+        assert snapshot["blocked"] is expected_blocked
+        assert snapshot["recovery_blocked"] is expected_blocked
+        if expected_blocked:
+            assert snapshot["error"] == "terminal_gate_outcome_invalid"
+            assert snapshot.get("terminalization_pending") is not True
+            assert "terminal_gate_outcome_requires_operator_reconciliation" in snapshot["issues"]
+        else:
+            assert snapshot["admission_blocked"] is True
+            assert snapshot["terminalization_pending"] is True
+            assert snapshot["gate_outcome"]["receipt_digest"] == digest
+            assert snapshot["route"]["next_tool"] == "abandon_generation"
+
+    @pytest.mark.parametrize(
         ("heartbeat", "expected"),
         (
             (None, "missing"),

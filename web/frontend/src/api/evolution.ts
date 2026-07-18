@@ -29,6 +29,16 @@ export interface EvolutionState {
   ratings: BotRating[];
   pipeline_stage: string | null;
   pipeline_checkpoint_revision: number | null;
+  pipeline_outcome: {
+    schema_version: number;
+    kind: string;
+    gate_name: "quality" | "review" | "critic";
+    terminal_stage: "quality_rejected" | "review_rejected" | "critic_rejected";
+    reason_code: string;
+    failure_class: string;
+    disposition: "abandon_generation";
+    receipt_digest: string;
+  } | null;
   post_publication_handoff: PostPublicationHandoffStatus;
   current_v?: number;
   next_v?: number;

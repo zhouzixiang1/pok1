@@ -415,6 +415,10 @@ def _read_pipeline_health(status: dict) -> dict:
         }
 
     attempt = active.get("attempt") if isinstance(active.get("attempt"), dict) else {}
+    route_operator_reconcile = bool(
+        isinstance(route, dict)
+        and route.get("intent") == "operator_reconcile_checkpoint"
+    )
     snapshot = {
         "exists": True,
         "authority": authority,
@@ -431,10 +435,11 @@ def _read_pipeline_health(status: dict) -> dict:
         "precommit_attempt": attempt.get("precommit"),
         "ignored_checkpoint": None,
         "recovery": recovery,
+        "recovery_blocked": recovery_blocked or route_operator_reconcile,
         "blocked": False,
         "operator_action_required": False,
     }
-    if recovery_blocked or operator_blocked:
+    if recovery_blocked or operator_blocked or route_operator_reconcile:
         snapshot["blocked"] = True
         snapshot["operator_action_required"] = operator_blocked
         snapshot["operator_action"] = operator_action
@@ -444,9 +449,36 @@ def _read_pipeline_health(status: dict) -> dict:
             blocked_issues.append("checkpoint_recovery_not_proven")
         if operator_blocked:
             blocked_issues.append("operator_action_required")
+        if route_operator_reconcile:
+            blocked_issues.extend(str(item) for item in (route.get("issues") or []))
+            blocked_issues.append("terminal_gate_outcome_requires_operator_reconciliation")
+            snapshot["error"] = "terminal_gate_outcome_invalid"
         snapshot["issues"] = list(dict.fromkeys(map(str, blocked_issues)))
+        snapshot["route"] = route
     else:
         snapshot["route"] = route
+        if route.get("intent") == "terminal_gate_abandon":
+            outcome = checkpoint.get("terminal_gate_outcome") or {}
+            if (
+                isinstance(outcome, dict)
+                and outcome.get("receipt_digest")
+                == route.get("terminal_gate_outcome_digest")
+            ):
+                snapshot["admission_blocked"] = True
+                snapshot["terminalization_pending"] = True
+                snapshot["gate_outcome"] = {
+                    key: outcome.get(key)
+                    for key in (
+                        "schema_version",
+                        "kind",
+                        "gate_name",
+                        "terminal_stage",
+                        "reason_code",
+                        "failure_class",
+                        "disposition",
+                        "receipt_digest",
+                    )
+                }
     now = time.time()
     for source_key, target_key in (
         ("last_stage_change_ts", "last_stage_age_sec"),
@@ -557,6 +589,8 @@ def _health_summary(status: dict) -> dict:
         issues.append("pipeline_checkpoint_unreadable")
     if pipeline.get("blocked") is True:
         issues.append("pipeline_blocked")
+    if pipeline.get("admission_blocked") is True:
+        issues.append("pipeline_admission_blocked_terminalization_pending")
     recovery = pipeline.get("recovery") if isinstance(pipeline.get("recovery"), dict) else {}
     for issue in recovery.get("issues") or []:
         issues.append(f"pipeline_{issue}")
@@ -1144,12 +1178,16 @@ def _runtime_launch_barrier_snapshot() -> dict[str, Any]:
                 "stage",
                 "next_v",
                 "source_v",
+                "parent2_v",
                 "run_id",
                 "workflow_run_id",
                 "checkpoint_revision",
                 "handoff_identity_digest",
                 "handoff_projection_digest",
                 "handoff_owner_scope",
+                "admission_blocked",
+                "terminalization_pending",
+                "gate_outcome",
             )
         },
         "recovery": {
