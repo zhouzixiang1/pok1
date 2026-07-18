@@ -3680,3 +3680,88 @@ the published v143 system operates. A1 will receive a new identity and normal
 created by relabeling or mutating the interim v143 artifact. This authorization
 does not make v143 a strength sample, does not manually clear any runtime state,
 and resets stable observation to **0/10** at sync/restart.
+
+## 2026-07-18 — P0 terminal/review/UI/identity closure (source pending runtime)
+
+The stopped workflow-v52 exposed a state-machine contradiction after a real
+Reviewer rejection: its five-file candidate and native quality work existed,
+but the rejected gate had no typed terminal disposition at `quality_passed`.
+Recovery could therefore replay the completed Reviewer effect and request the
+same disallowed cleanup indefinitely. This entry records the source batch that
+closes that contradiction. It does **not** record an operator reconciliation,
+runtime sync/restart, candidate acceptance, certificate, tag, rating row,
+published v143/v144, or strength sample.
+
+The integrated source stack at this documentation freeze contains:
+
+- `b4e30896`, which adds content-bound terminal outcomes and one-way stages for
+  `quality_rejected`, `review_rejected`, and strict Critic authority/receipt
+  `critic_rejected`; a negative advisory Critic verdict remains non-terminal;
+- `9d40ed78` plus `5a71b3d8`, which split fixed-blueprint capability audit from
+  strategy-implementation review, persist
+  `selected_proposal_quality_evidence` in the quality checkpoint CAS, and
+  revalidate the actual selected row/digest/pass/selection/failure and
+  transition/capability projection before Reviewer use;
+- `2e644929`, which publishes sanitized terminal disposition in control health
+  and evolution state, keeps a valid terminal outcome launchable only for
+  canonical abandon, and routes an invalid receipt to operator reconciliation;
+- `5d2a1705` plus `7f4a668e`, which make timeout leases explicit UI states,
+  cross-bind crossover `parent2_v`, explain every Start launch-boundary block,
+  require handoff `owner_scope` in SSE, and require `approved=true` before
+  presenting Critic execution complete;
+- `8fe90331`, which makes `bot_namespace.strict_generation_identity` the sole
+  producer of the UI ordinal/canonical identity tuple. The first strict artifact
+  remains `national_v143` / `national-bot-v143` while it is displayed as
+  generation ordinal 1; workflow-v52 is an attempt label and consumes no Bot
+  ordinal;
+- `07a3b0ba`, a design-only open-agent experiment architecture. Its
+  `ComplianceEnvelope`, `GenerationCharter`, isolated `ExperimentLane`,
+  `PromotionReceipt`, system asset broker/all-launch resolver and
+  replay/parser/evaluation-cycle-bound `GenerationExperienceSnapshot` are
+  planned P1–P5 interfaces with zero current runtime authority. They do not
+  delay P0 v143 and authorize no research-byte or asset transfer.
+
+The source batch also adds a narrow compatibility proof for the completed old
+Reviewer effect. The recorded v52 renderer has exactly the five semantic inputs
+`focus_areas`, `master_plan`, `next_v`, `source_v`, and `strict_bootstrap`; the
+new source-owned renderer has those fields plus
+`review_semantic_contract`. Migration is accepted only when deleting that one
+new field reproduces the old input exactly, the historical producer/template
+and receipt identities remain valid, all non-renderer context remains equal,
+and the stored role result is `approved=false`. Approval, missing/extra input,
+or focus/Master/quality/candidate drift fails closed. The migration emits a
+content-bound `terminal_rejection_only` receipt and is carried into the typed
+gate payload. `scripts/reconcile_terminal_gate.py` first performs a read-only
+inspection; acknowledged execute accepts the existing effect and enters the
+ordinary exact-CAS abandon transaction with
+`provider_dispatch_required=false`. It cannot call the Reviewer provider a
+second time or migrate an approval.
+
+The dashboard/runbook contract now records three deliberately different
+checkpoint shapes (raw `/api/pipeline/checkpoint`, launch-authoritative
+`/api/control/health.pipeline`, and summary-only `/api/evolution/state`), the
+handoff journal revision/owner-scope exception, configuration-intent versus
+live `daemon_enabled`, and certification cancel as API-only. An unexplained
+disabled Start, a missing `parent2_v`, a timeout rendered as an unknown stage,
+or a looser SSE handoff is no longer accepted as product alignment.
+
+Component evidence before this documentation commit includes terminal/state
+focused `207 passed`, Reviewer focused `77 passed`, control/frontend focused
+`129 passed`, the later terminal/control shard `102 passed`, Sever `33 passed`,
+and successful frontend tests, lint and production build. One combined Web run
+reported `3205 passed, 20 skipped, 1 failed`; the sole failure was an old
+control-health fixture missing the new
+`strict_published_bot_identities` field. Commit `38b4954e` updated that fixture
+and the previously failing test passed on rerun. This is not a substitute for
+the required final full Web/Sever/frontend/compile/diff gate after the legacy
+five-to-six bridge and these docs are combined, nor for independent review.
+
+The operational order remains fail-closed: finish the bridge and full source
+gate; review; merge/push `origin/main`; while the autonomous checkout remains
+stopped, run the reconciliation CLI in dry-run and require exact v52 identities
+plus `provider_dispatch_required=false`; execute only with
+`--acknowledge-completed-review-rejection`; prove canonical quarantine and
+checkpoint clearance; then fast-forward the runtime, rebuild/verify frontend
+static identity, and run recovery/evaluation/official diagnostics before a
+fresh v143 workflow. At this ledger point none of those runtime actions has
+occurred and the stable observation remains **0/10**.

@@ -190,6 +190,90 @@ the one-time bootstrap projection is read-only with `cancel_allowed=false` and
 its cancel route returns 404. Do not add a UI cancel button or treat endpoint
 presence as candidate-controlled authority.
 
+Every disabled Start control must also expose the backend launch-boundary
+reason. A missing status/health projection, uninitialized epoch,
+`operator_action`, recovery block, route/scheduler identity mismatch,
+`parent2_v` mismatch or handoff `owner_scope` mismatch must not collapse to an
+unexplained gray button. The browser may render these reasons, but only the
+same-snapshot control-health route authorizes Start. Post-publication SSE uses
+the same owner-scope comparison as HTTP; a looser stream projection is not an
+alternate launch path.
+
+### Typed terminal gates and stopped v52 reconciliation
+
+Quality, Reviewer and strict Critic **authority/evidence** failures have three
+typed pre-publication terminal dispositions: `quality_rejected`,
+`review_rejected` and `critic_rejected`. The last disposition does not mean a
+negative advisory Critic recommendation. A schema-valid Critic execution is
+complete only when `approved=true`; its separate `advisory_approved` value may
+be false and still proceed to native precommit. `critic_rejected` is reserved
+for failure of the strict Critic execution/receipt authority.
+
+A terminal outcome is valid only when its receipt binds the exact checkpoint,
+both parents, candidate artifact, Master/audit/prerequisite gate and accepted
+gate/provider evidence. Free-form reason text, an empty gate, a directory, a
+stored score or a frontend stage cannot create one. A valid outcome makes
+admission blocked but leaves exactly the canonical terminal-abandon route
+launchable; an invalid or unverifiable outcome projects operator reconciliation
+and no Start tool.
+
+The stopped workflow-v52 Reviewer result predates the added
+`review_semantic_contract` field. It may be reconciled only by the narrow
+source-owned migration in
+`strict_authority_workflow.recover_terminal_gate_rejection_call`: the recorded
+Reviewer result must be `approved=false`; the historical semantic input must
+have exactly `focus_areas`, `master_plan`, `next_v`, `source_v` and
+`strict_bootstrap`; the current input must have exactly those five plus
+`review_semantic_contract`; deleting only that new field must reproduce the
+old input byte-for-byte. The checkpoint/candidate/quality/Master context,
+historical renderer/template identities and every receipt digest remain bound.
+An approval, a missing/extra key, or any changed focus, plan, quality or
+candidate identity is not migratable.
+
+Run this only while the autonomous checkout is stopped and still owns the
+recorded v52 checkpoint. First inspect without mutation:
+
+```bash
+python scripts/reconcile_terminal_gate.py
+```
+
+Require one unambiguous completed rejection, the exact workflow/checkpoint/
+candidate/effect/invocation identities, a content-bound terminal semantic
+migration receipt and `provider_dispatch_required=false`. Then execute only
+with the explicit acknowledgement:
+
+```bash
+python scripts/reconcile_terminal_gate.py \
+  --execute --acknowledge-completed-review-rejection
+```
+
+The execute path accepts and binds the already completed effect, dispatches no
+model, creates a typed `review_rejected` outcome and enters the ordinary
+exact-CAS canonical abandon/quarantine/checkpoint-clear transaction. Preserve
+the output in the delivery ledger, then run recovery diagnostics before a
+fresh v143 workflow. At this source freeze the runtime dry-run and execute are
+still pending; no v52 result is accepted as a Bot, certificate, rating or
+strength sample by this documentation.
+
+### Reviewer semantic modes and quality handoff
+
+Reviewer receives one closed `review_semantic_contract`. A fixed system
+blueprint uses `fixed_blueprint_capability_audit_v1`: Reviewer still enforces
+artifact ownership, strict ABI, raw TCP, deadline, sandbox and the real dynamic
+capability row, but does not reject system-supplied fixed bytes merely because
+they omit a proposal's helper name, field spelling or strategy control-flow
+shape. An agent-authored strategy implementation uses
+`strategy_implementation_v1` and additionally must prove the selected reachable
+mechanism delta and attribution.
+
+Quality produces `selected_proposal_quality_evidence` and persists it in the
+same checkpoint CAS as the gate. Before Reviewer rendering and before accepting
+its result, the system reopens the actual selected check row and verifies its
+digest, pass/selection/failure flags, transition/capability aggregate and exact
+projection. Missing or drifted evidence blocks Reviewer; generic “quality
+passed” text cannot reconstruct it. This semantic distinction changes neither
+the raw TCP compliance kernel nor the native/official publication gates.
+
 Models may identify a symptom or propose a falsifiable repair from frozen
 evidence, but only the deterministic gates and native receipts decide
 admission.  Run timing and protocol tests with representative concurrent host
@@ -232,6 +316,17 @@ evaluation/certification. A later combined canonical Bot is itself another new
 five-file artifact with fresh identity, probes, gates, official certification,
 and immutable rating cycle; it inherits neither research evidence nor any
 component's certificate by implication.
+
+The broader target is specified in
+`docs/open-agent-experiment-architecture-v1.md`: a closed
+`ComplianceEnvelope`, frozen `GenerationCharter`, independent lease/worktree
+`ExperimentLane`s, a system-owned `PromotionReceipt`, a versioned asset broker
+and a replay/parser/evaluation-cycle-bound `GenerationExperienceSnapshot`.
+That document is a P1–P5 design, not active authority. P0 v143 recovery remains
+on strict-v1/no-external-assets and must not wait for it; conversely, no lane,
+asset or experience object may enter a later prompt or candidate until its
+producer, consumer, positive/negative regressions and fail-closed activation
+gate are implemented and reviewed.
 
 ## Stopped-runtime epoch reconciliation
 
