@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 11
+MATRIX_SCHEMA_VERSION = 12
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -1031,6 +1031,59 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
     ),
     MatrixRow(
+        rule_id="strict_gate_receipt_append_order",
+        coverage=("strict_gate_receipt_append_order",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("web/core/strict_authority_workflow.py", "validate_receipts"),
+            _ref("web/core/system_strict_bootstrap.py", "validate_master_receipt"),
+            _ref("web/core/system_strict_bootstrap.py", "validate_system_gate_receipt"),
+        ),
+        production_owners=(
+            _ref("web/core/strict_authority_workflow.py", "authority_summary"),
+            _ref("web/core/system_strict_bootstrap.py", "_master_subject"),
+            _ref("web/core/system_strict_bootstrap.py", "_system_gate_subject"),
+            _ref("web/core/system_strict_bootstrap.py", "build_system_gate_receipt"),
+        ),
+        dynamic_gates=(
+            _ref("web/core/strict_authority_workflow.py", "validate_receipts"),
+            _ref("web/core/tool_helpers.py", "_review_gate_ok"),
+            _ref("web/core/tool_helpers.py", "_critic_gate_ok"),
+            _ref("web/core/tool_eval.py", "run_precommit_eval"),
+            _ref("web/core/tool_commit.py", "commit_bot"),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles treat Master, Review, and Critic receipts as append-only "
+            "system evidence: current construction owns one exact accepted prefix, while a "
+            "stored Master or Review receipt may observe only its canonical, strictly later "
+            "Review/Critic suffix; no role may author, reorder, duplicate, or waive it."
+        ),
+        prompt_required_terms=("append-only", "Review receipt", "Critic suffix"),
+        producer_consumer=(
+            "accepted Master events → exact Master receipt → Worker/quality → accepted Review "
+            "and exact Review receipt → accepted Critic → independent historical receipt replay "
+            "plus Review/Critic invocation-evidence gates → native precommit/commit"
+        ),
+        positive_tests=(
+            "web/tests/test_strict_authority_workflow.py::"
+            "test_gate_receipt_replay_allows_only_the_ordered_bound_suffix",
+        ),
+        negative_tests=(
+            "web/tests/test_strict_authority_workflow.py::"
+            "test_permitted_authority_suffix_must_be_canonical",
+            "web/tests/test_strict_authority_workflow.py::"
+            "test_gate_revisions_and_permitted_suffix_event_order_are_strict",
+        ),
+        fail_closed=(
+            "An unknown, skipped, duplicate, same-revision, reverse-event-order, context-, "
+            "provider-, effect-, role-result-, or receipt-drifted event invalidates the receipt. "
+            "A historical allowance never changes current-gate exactness, and precommit/commit "
+            "still require both independently verified Review and Critic authority."
+        ),
+    ),
+    MatrixRow(
         rule_id="first_strict_v143_v144_contract",
         coverage=("first_strict_v143_v144",),
         status=CURRENT_STATUS,
@@ -1319,6 +1372,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         authority=(
             _ref("web/core/output_schema.py", "MASTER_PROPOSAL_FALSIFIER_TESTS"),
             _ref("web/core/agent_master.py", "_validated_master_proposal"),
+            _ref("web/core/strict_authority_workflow.py", "_project_role_result"),
         ),
         production_owners=(
             _ref(
@@ -1327,23 +1381,34 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
             _ref("web/core/agent_master.py", "_proposal_closed_json_shape"),
             _ref("web/core/agent_master.py", "_proposal_schema_repair_guidance"),
+            _ref("web/core/agent_master.py", "_parse_master_proposal_output_with_mode"),
             _ref("web/core/agent_master.py", "_validated_master_proposal"),
+            _ref("web/core/llm_query.py", "render_llm_role_contract_suffix"),
         ),
         dynamic_gates=(
+            _ref("web/core/agent_master.py", "_master_proposal_repair_kind"),
+            _ref("web/core/agent_master.py", "_parse_master_proposal_output_with_mode"),
             _ref("web/core/agent_master.py", "_validated_master_proposal"),
             _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
+            _ref("web/core/strict_authority_workflow.py", "_project_role_result"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
             "All five rendered roles preserve the Master Scout closed falsifier contract: "
             "a falsifier is a closed six-key object, mechanism_target appears only at top level, and "
             "a shared leaf is executable only as a complete owner-qualified literal or an exact "
-            "selected-root allowlisted list."
+            "selected-root allowlisted list. A Scout emits one raw JSON object; only a sealed "
+            "schema/distinctness repair may recover one unambiguous non-JSON prefix followed by "
+            "one object with no trailing prose, while initial Scouts and other roles are unchanged "
+            "and no third attempt exists."
         ),
         prompt_required_terms=(
             "closed six-key",
             "mechanism_target",
             "owner-qualified",
+            "sealed schema/distinctness repair",
+            "unambiguous non-JSON prefix",
+            "no third attempt",
         ),
         producer_consumer=(
             "frozen source/evidence mapping → closed Scout JSON prompt → deterministic proposal "
@@ -1354,17 +1419,27 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges",
             "web/tests/test_master_proposal_ensemble.py::"
             "test_falsifier_schema_repair_explicitly_removes_top_level_target_duplication",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_shared_leaf_scout_v54_prose_prefixed_json_recovers_once",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_strict_projection_requires_the_sealed_repair_actual_role",
         ),
         negative_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
             "test_final_packet_parser_rejects_claim_changed_after_id",
             "web/tests/test_master_proposal_ensemble.py::"
             "test_shared_fold_to_raise_bare_leaf_fails_scout_and_packet_replay",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_v54_eof_object_recovery_is_repair_role_scoped_and_fail_closed",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_v54_recovery_still_requires_full_proposal_semantics",
         ),
         fail_closed=(
             "An extra falsifier key, top-level-target duplication, bare/foreign owner, or exhausted "
-            "schema repair is rejected before critics or Workers; the generation canonically abandons "
-            "rather than silently normalizing provider output."
+            "schema repair is rejected before critics or Workers. The bounded compatibility parser "
+            "requires an exact sealed repair role, a single unambiguous object and unchanged semantic/"
+            "distinctness validation; trailing prose, multiple/malformed objects, arrays, initial-role "
+            "use, or a third attempt fails closed instead of silently normalizing provider output."
         ),
     ),
     MatrixRow(
