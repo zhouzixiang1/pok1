@@ -3896,3 +3896,184 @@ green, and the rebuilt source-bound frontend receipt
 `fcd562e3369c564249fac7581a884a1ca84e9ce69576a7f31b8e16e73be1b3ec`
 verifies. At this ledger point no runtime process has yet been started, no Bot
 or strength row exists, and stable observation remains **0/10**.
+
+## 2026-07-18 — workflow-v53--v55 runtime P0 evidence and source-pending repair
+
+The runtime subsequently started Web PID `2452378` and rating-daemon PID
+`2452533` from `a0f63d5c13d53b216d690523c66ff91451908737`.  The daemon
+bound the `national_native` runtime profile but remained
+`waiting_for_first_published_bot`; it scheduled no rating match.  The
+in-process evolution task ran three fresh v143 attempts and stopped at
+20:25:58 after the exact same-target three-abandon limit.  At the latest
+read-only audit:
+
+- `origin/main` and the runtime checkout are both `a0f63d5c`; runtime is on
+  `main`, with clean tracked/index state.  The sole untracked
+  `web/core/national_arena/storage_owner.lock` is a system-owned lock and was
+  not removed;
+- Web and the idle rating daemon are alive, but evolution `running=false`, its
+  task is absent and the checkpoint endpoint/file are null/absent;
+- checkpoint recovery is `active=false`, `recoverable=true`, `issues=[]`;
+  epoch state is `fresh_bootstrap_ready`, reset receipt
+  `cde5ec5aaa566ca7053dbd4f1e03086a33d43654917dd3fc97bae50cbc9da34d`
+  is valid, the strict pool is empty, and authority remains v142 → v143;
+- official certification has `pending=0`, `running=0`; Arena has no active
+  session; no official, candidate-executor or native-match process is alive;
+- ratings, H2H, bot stats and recent matches are empty.  The evaluation identity
+  manifest `ccac3c81a32aecc0c35db0f22fd5a9b729756b3105a2a7e84611dd4b4846207a`
+  self-validates against current evaluator source, with instance
+  `c5eab2633b7b40699b1b7a2eba4ce1df` and a bound 70-hand/5-match runtime
+  profile;
+- strict blueprint validation is empty, `first_strict_control_v1` is valid and
+  unused (`0/1`), official doctor is `ok=true`, and static frontend receipt
+  `fcd562e3369c564249fac7581a884a1ca84e9ce69576a7f31b8e16e73be1b3ec`
+  still verifies;
+- stability remains **0/10**.  A later P0 sync/restart resets it again.
+
+Nineteen old strict-authority-v1 workflow instances and 21 effects still have
+SQLite status `running`, but their v3--v21 owners and leases expired several
+days earlier.  The outbox has zero undispatched row, current v53--v55 journals
+are fenced/abandoned, and current source has no global pending-outbox consumer.
+They are historical source-owned fencing debt, not an active job queue.  No
+SQLite row was edited or deleted.
+
+### v53
+
+`generation:143:workflow-v53` ran from 19:56:17 to 20:07:56
+(699.199 seconds).  Master completed in 392.63 seconds, the system blueprint
+Worker completed in under a second, and Quality completed in 89.15 seconds.
+Quality passed the complete 70-hand native candidate acceptance.  Candidate
+artifact/code fingerprint was
+`39d623f5cfa3a1792edbc217e34b4f6a244afba9854a815cc79623b84e221fb4`
+and diff hash was
+`7730244256f406803ec0a20560c07595cd5365d7bf9ce06a3414ab2125b4f617`.
+
+Reviewer invocation `3f766bf59b0a4ac89e85095182db8b49` completed in
+208.77 seconds and returned `approved=true`, score 9.  The accepted Review
+event was then visible while the system rebuilt the earlier Master receipt.
+`_master_subject` requested only the Master slots with
+`require_no_other_accepted=true`, so the legal successor was rejected as
+`strict_authority_unexpected_accepted_slots:review`.  The surfaced failure was
+`SYSTEM_STRICT_BOOTSTRAP_REVIEW_RECEIPT_INVALID`; it was not a negative
+Reviewer verdict.  The typed terminal outcome was
+`71f6aab8467fd8cf3755b586d3d1c6fe5687e5d052347c8236006a2209a7ced7`.
+Canonical transaction
+`8c2e1cfa239b2d7171b38be4231af5a1fa1eec1f616c395fc086390234e69d76`
+recorded abandon receipt
+`b1a045cbf389d3ab920b9fc252fe614bf9fd94383027cd1745dc08fbb2ae9cb9`
+and finalize receipt
+`816fcfb2932b724762f8b555cf140e491871319a7efd277ab370fa8217236b4f`.
+This was same-target abandon 1/3.  Unique provider accounting was $1.405095,
+191,374 input and 34,131 output tokens.
+
+### v54
+
+`generation:143:workflow-v54` ran from 20:07:57 to 20:13:34
+(336.946 seconds) and stopped at `direction_audited`, before Worker or Quality.
+The initial mechanism Scout was rejected for the bare shared leaf
+`fold_to_raise`; counterfactual and compute-memory Scouts were accepted.  The
+single permitted mechanism schema-retry effect
+`strict-llm-cbfa0f1104dfdea7a48f1e26b8ef1525620ec367c4338c00db4206cefe1e36f8`
+used invocation `3d23977734854c17b8a581c20a3db589` and raw-output digest
+`f31716c4caf145dba6e1ba214df64bc034a93fc8a83fa64333d6e2d95079dc47`.
+
+Its output was 5,567 Unicode characters: a 930-character prose prefix with no
+`{`, `}`, `[` or `]`, followed by one complete 4,637-character top-level JSON
+object ending at exact EOF.  The object itself satisfied the proposal schema,
+but the ordinary strict parser correctly required the whole output to be the
+object and projected `proposal_json_object_required`.  The packet therefore
+had only two accepted proposals and ended with
+`strict_authority_schema_retry_exhausted:proposal:mechanism`.
+
+Canonical transaction
+`7229deb13d5f280328158b63119709d68708851ee5c564294024be5b44f5e2da`
+recorded abandon receipt
+`f2744a02937d7b8fb6aacb325bc28ffe562e00be63ccd6b611ce542422be17a6`
+and finalize receipt
+`705124ff7f470018c4942f751357624b33e4fda783bb1be4af1f2a621558a04f`.
+This was 2/3.  Unique provider accounting was $0.932187, 133,769 input and
+30,510 output tokens.  Two 0.01-second `llm_role_done` recovery projections
+repeat prior provider cost and must not be billed a second time.
+
+### v55
+
+`generation:143:workflow-v55` ran from 20:13:34 to 20:25:58
+(744.328 seconds).  Master completed in 482.78 seconds, the system blueprint
+Worker completed in under a second, and Quality completed in 98.88 seconds,
+again including a complete 70-hand native candidate acceptance.  The same
+content-bound output artifact passed.  Reviewer invocation
+`612d50a6c9184a178b439ca6d4a6b128` completed in 154.12 seconds and returned
+`approved=true`, score 7; historical Master receipt replay then hit the same
+control-plane error.  Typed terminal outcome was
+`b19780f57989b8234e5119a66464986dc1996144eb00e477dff966fb68f3d6fc`.
+
+Canonical transaction
+`fae4251aa4dab823264d4089a5abbc2e45de5caf6f18f1ab2a70cb6d6c6a4348`
+recorded abandon receipt
+`3d56a64a2d66f99949d79689f737b204214f312097c46bab02082427c6aa8912`
+and finalize receipt
+`a310c357b001e476b718f4497940fbddaf327bbb8e25b8527d3ef0dfdf6c15c7`.
+The 3/3 guard stopped the outer scheduler and prepared no successor.  Unique
+provider accounting was $1.229025, 135,574 input and 52,387 output tokens.
+
+The three attempts consumed $3.566307, 460,717 input and 117,028 output tokens
+after de-duplicating recovery projections.  CPU, memory, provider execution,
+system materialization and 70-hand Quality all made progress.  The immediate
+blockers are deterministic authority/output contracts; this evidence does not
+prove the abandoned policy is strong.
+
+### P0 source contract and pending recovery
+
+The first repair keeps receipt construction exact while separating it from
+historical receipt revalidation.  Historical Master validation may observe only
+the legal ordered Review/Critic suffix; historical Review validation may
+observe only the later Critic.  Every accepted event still reopens its effect,
+provider result, receipt, role result, context and revision.  Invocation
+evidence for the required gate is revalidated by that historical call; a
+permitted later Review/Critic is independently revalidated by the corresponding
+current gate helper, including that gate's invocation evidence.  Unknown,
+missing, duplicate, reversed or drifted slots remain blocking.  The detached
+integration currently contains this ordered-suffix source through
+`1c7e0709fc099bfc8ad500bc5d543b9f1462f0c5`; that is not a merge or runtime
+claim.
+
+The proposal repair keeps the provider-last raw-JSON emission instruction and
+the existing global parser.  Only after that parser fails, and only for a
+sealed proposal `SCHEMA RETRY` or `DISTINCTNESS RETRY`, may a bounded fallback
+accept one unambiguous top-level object whose prefix contains no object/array
+delimiter and whose suffix after the JSON value is JSON whitespace only.
+Existing global-parser success shapes, including historical fenced/raw forms,
+remain compatible.  Trailing non-whitespace prose, multiple candidates,
+malformed JSON, a non-retry or non-proposal role, changed semantics,
+distinctness failure and a third attempt remain rejected.
+
+This combined P0 source is still pending final integration, complete tests,
+independent review, commit/push/merge and runtime synchronization.  No final
+test result is asserted by this entry.  After the exact reviewed SHA reaches
+`origin/main`, the minimal recovery is:
+
+1. re-prove no checkpoint/task/certification/Arena/native/rating job and freeze
+   the exact remote SHA;
+2. preflight the project interpreter and static frontend receipt, then stop the
+   owned Web process; its lifespan must also stop the idle rating daemon;
+3. require both PIDs and port 8000 gone, fast-forward only through Git, and
+   require runtime `HEAD == origin/main` with clean tracked/index state;
+4. require checkpoint recovery green, `fresh_bootstrap_ready`, empty pool,
+   v142 → v143, evaluator identity unchanged, official doctor green, blueprint
+   valid and first control unused 0/1;
+5. perform a full process restart.  `POST /api/control/start` alone is invalid
+   because the existing Web interpreter has cached the old P0 modules;
+6. require new Web/rating identities and one fresh workflow, and observe the
+   real Master → Worker → Quality → Review → Critic path.  The restart resets
+   stability to **0/10**.
+
+Any remote drift, active state, non-fast-forward, dirty tracked path, failed
+stop, recovery/epoch/evaluator/official/blueprint/control/static mismatch or
+LLM availability pause leaves the runtime stopped.  Never repair those
+conditions by copying files, editing SQLite, deleting the Arena lock, rotating
+evaluation identity automatically, or consuming an abandoned candidate.
+
+The v53/v55 70-hand matches remain candidate-quality evidence only.  No
+published artifact/opponent or immutable evaluation cycle exists, so they
+cannot enter strength admission, rating, H2H, selection or later history
+injection.

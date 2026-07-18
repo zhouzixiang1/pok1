@@ -1681,3 +1681,104 @@ as a fresh clean-room candidate under the reviewed R0/directive contract and
 normal 5+3 certification; its version/parent selection must be recorded from
 the then-current immutable state rather than relabeling v143. A source sync or
 restart still resets the verified-observation counter to **0/10**.
+
+## Latest superseding handoff — v53/v54/v55 P0 and checkpoint-free restart boundary
+
+All wording above that describes v49--v51 as the latest runtime state is now
+historical.  Runtime and `origin/main` are
+`a0f63d5c13d53b216d690523c66ff91451908737`.  Web PID `2452378` and its
+idle rating child PID `2452533` remain alive, but the in-process evolution task
+is stopped.  The rating daemon is
+`waiting_for_first_published_bot`; it has no match.  There is no checkpoint,
+active generation, strict Bot, certificate, official job, Arena session,
+rating/H2H row or strength sample.  Read-only recovery reports
+`active=false/recoverable=true/issues=[]`; epoch is
+`fresh_bootstrap_ready`, current/next authority is v142 → v143, the first
+control is valid and unused 0/1, official doctor and evaluator identity are
+green, and stability is **0/10**.
+
+The next Bot is still the delivery-first interim strict-v1 `national_v143`
+(Dashboard generation 1), not A1.  A1/A2/B and the open experiment plane remain
+later clean-room work and do not delay this P0 recovery.  None of the
+quarantined v53/v55 bytes may be restored or relabeled.
+
+The three actual attempts are canonical terminal evidence:
+
+- v53 ran 699.199 seconds, passed Quality including one 70-hand native
+  candidate acceptance, and received Reviewer `approved=true`, score 9.  It
+  then hit `SYSTEM_STRICT_BOOTSTRAP_REVIEW_RECEIPT_INVALID` because historical
+  Master receipt reconstruction rejected the newly accepted legal `review`
+  suffix.  Transaction `8c2e1cfa239b2d7171b38be4231af5a1fa1eec1f616c395fc086390234e69d76`
+  canonically fenced and removed it.
+- v54 ran 336.946 seconds and stopped before Worker.  Two Scouts were valid;
+  mechanism schema retry invocation `3d23977734854c17b8a581c20a3db589`
+  returned 5,567 characters: 930 characters of brace/bracket-free prose plus
+  one complete 4,637-character JSON object through exact EOF.  Strict parsing
+  rejected the mixed output, so proposal distinctness remained two and the
+  canonical reason was
+  `strict_authority_schema_retry_exhausted:proposal:mechanism`.  Transaction
+  `7229deb13d5f280328158b63119709d68708851ee5c564294024be5b44f5e2da`
+  closed it.
+- v55 ran 744.328 seconds, again passed Quality and 70-hand candidate
+  acceptance, and received Reviewer `approved=true`, score 7.  The same
+  receipt replay bug caused canonical transaction
+  `fae4251aa4dab823264d4089a5abbc2e45de5caf6f18f1ab2a70cb6d6c6a4348`.
+  That was the third same-target abandon and stopped the outer scheduler.
+
+Unique provider accounting across the three is $3.566307, 460,717 input and
+117,028 output tokens.  v54 recovery projections duplicate two completed-call
+cost fields and must not be counted twice.  The v53/v55 70-hand matches are
+unpublished candidate-quality/compliance evidence only.  Without a published
+artifact/opponent and immutable evaluation-cycle receipt, they have zero
+strength, rating, H2H, selection and history-injection authority.
+
+The P0 receipt repair keeps current receipt construction exact, while a stored
+Master receipt may observe only the legal ordered later Review/Critic suffix
+and a stored Review receipt only the later Critic.  Every accepted event still
+revalidates effect/provider/receipt/role/context/revision.  The historical call
+revalidates invocation evidence for its required gate; each permitted later
+gate is separately revalidated by the corresponding current Review/Critic
+helper, including that gate's invocation evidence.  Unknown, duplicate,
+missing, reversed or drifted slots still fail closed.  The detached integration
+contains that repair through `1c7e0709fc099bfc8ad500bc5d543b9f1462f0c5`,
+but it is not merged or running.
+
+The proposal repair keeps existing global parser behavior and appends the
+provider-last raw-JSON emission gate.  Only if the global parser fails, and
+only for a sealed proposal `SCHEMA RETRY` or `DISTINCTNESS RETRY`, may the
+bounded fallback accept one unambiguous top-level object from a prefix with no
+object/array delimiter; after the JSON value only JSON whitespace may remain.
+Existing global-parser successes, including historical fenced/raw shapes,
+remain compatible.  Initial Scouts, non-proposal roles, trailing non-whitespace
+prose, multiple candidates, malformed JSON, semantic/distinctness failure and a
+third attempt remain rejected.
+
+The combined source remains pending final integration, full tests, independent
+review, commit/push/merge and runtime sync.  Do not report a final green gate
+from this handoff.  After the exact reviewed SHA is on `origin/main`, the only
+safe order is:
+
+1. re-read checkpoint/task/certification/Arena/native/rating state and require
+   all empty/terminal; freeze the remote SHA;
+2. from `.evolution_pok`, preflight the project interpreter and current static
+   frontend receipt, then use `pokctl.sh stop`; require both old PIDs and port
+   8000 gone and checkpoint still absent;
+3. preserve `web/core/national_arena/storage_owner.lock` and the historical
+   SQLite rows; fast-forward only with `git fetch --tags origin` and
+   `git pull --ff-only --tags`; require `HEAD == origin/main`, `main`, and clean
+   tracked/index state;
+4. rerun checkpoint recovery, epoch/reset/blueprint/first-control validation,
+   `scripts/evaluation_data_identity.py`, official doctor and static receipt.
+   Any mismatch remains stopped; this P0 does not justify automatic evaluator
+   rotation;
+5. fully restart Web and its rating child with the controlled observe helper.
+   `POST /api/control/start` alone is forbidden because the live Web interpreter
+   cached the old strict/LLM modules;
+6. require new process identities, exact merged HEAD, healthy running state and
+   a fresh workflow identity.  Never replay v53--v55.  The restart begins the
+   stability count again at **0/10**.
+
+The checked-in ordered stage contract remains unchanged.  `timed_out` is a
+canonical-abandon lease and `infra_timed_out` is a native-precommit-retry lease;
+neither may be rendered as an unknown success-stage or used to bypass this
+checkpoint-free restart boundary.

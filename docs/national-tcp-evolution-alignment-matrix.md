@@ -491,6 +491,60 @@ and negative coverage lives in `test_terminal_gate_outcome.py`.
 | user-visible strict generation ordinal is backend-owned presentation metadata while canonical artifact/tag identity remains immutable | `AGENTS.md` annotated completion/high-water continuity; strict epoch reset; `open-agent-experiment-architecture-v1.md` identity decision | `bot_namespace.py::strict_generation_identity`; `epoch_authority.py::strict_epoch_projection`; control/bots/evolution API producers; frontend canonical identity validator/presenters | the sole backend mapping rejects bool/non-integer/pre-v143 inputs and projects `generation_ordinal`, `canonical_version`, `canonical_bot_name`, `canonical_tag`; all API/UI consumers cross-bind the four fields and never derive them from directory order, pool filtering or labels | roles and operator views call the first publishable strict artifact “generation 1” while preserving exact `national_v143` / `national-bot-v143`; workflow-attempt labels such as v52 never consume an ordinal | paired annotated namespace + eligible published artifact → backend four-field identity → epoch/active-generation/bot summaries → UI `第1代 · national_v143 · national-bot-v143` | positive: `test_strict_generation_identity_maps_immutable_versions_to_ui_ordinals`, `test_backend_ordinals_survive_sorting_and_pool_filtering`, `frontend validates but never derives canonical generation identity`; negative: pre-epoch/non-integer input, canonical-name/tag mismatch, pool reorder/filter, frontend synthesis guards | malformed or cross-surface identity withholds the row/status or marks it inconsistent; ordinal never enters lineage, certificate, tag, rating, evidence or publication identity | source batch implemented; canonical v143 ordinal 1 remains unpublished |
 | agents gain an isolated open experiment plane without weakening the compliance kernel | `docs/open-agent-experiment-architecture-v1.md`; `AGENTS.md` raw TCP/ABI/evidence/publication hard rules | planned `ComplianceEnvelope`, `GenerationCharter`, fenced `ExperimentLane`, system `PromotionReceipt`, content-bound asset broker/all-launch resolver and `GenerationExperienceSnapshot` producers | planned versioned schemas bind lease/worktree, frozen inputs, budget, exact artifact/asset identities, replay/parser/evaluation-cycle evidence and promotion; current P0 continues on strict-v1/no-external-assets and does not wait for this plane | future Master/Workers may propose multiple strategy architectures and registered tables/models inside isolated lanes; prompts cannot prescribe a fixed strategy or waive compliance, and only bounded content-bound experience may reach a later generation | frozen current evidence + envelope → Charter → independent lane receipts → promotion/materialization → current hard gates/native/official/publication → exact replay-bound experience snapshot → later frozen evidence | planned positives/negatives are specified in the architecture acceptance matrix: distinct legal hypotheses and lane scratch/asset requests versus scope escape, unregistered bytes, changed promotion bytes, missing influence, foreign replay/parser/cycle and direct strength/rating authority | until every producer/consumer/regression is implemented, the plane has zero runtime/candidate authority; research bytes/assets/ratings cannot be copied, and current five-file v143 remains on the no-external-assets profile | planned P1–P5; design only; does not block P0 v143 recovery |
 
+## 2026-07-18 workflow-v53--v55 dynamic P0 evidence
+
+This hand-written overlay supersedes the earlier statement that the next
+runtime action follows the v52 close directly.  It records what the same
+`a0f63d5c` runtime actually did after startup; it does not alter the generated
+registry below.  The Web process and an idle rating daemon remain alive, but
+the evolution task stopped after the third verified canonical abandon.  There
+is no checkpoint, active generation, strict Bot, certificate, rating row or
+strength sample, and the stability observation is **0/10**.
+
+The quality runs in v53 and v55 each executed one complete 70-hand native
+self-play acceptance and passed the candidate quality contract.  Those matches
+belong to an unpublished, later-abandoned candidate and have neither a
+published opponent nor an immutable rating-cycle receipt.  They are compliance
+and candidate-quality evidence only; they are not admission strength, rating,
+H2H, selection, official strength, or a basis for publishing the quarantined
+bytes.
+
+| Rule | Authority | Production owner | Dynamic gate | Rendered prompt contract | Data producer → consumer | Positive / negative regression | Fail-closed behavior | Status |
+|---|---|---|---|---|---|---|---|---|
+| a stored strict Master or Review receipt remains valid after only its legal ordered gate suffix is accepted | strict-authority accepted-event journal; immutable stored receipt subject; pipeline order Master → Review → Critic → precommit/publication | `strict_authority_workflow.py::authority_summary`; `system_strict_bootstrap.py::_master_subject`; `system_strict_bootstrap.py::_system_gate_subject`; `validate_master_receipt`; `validate_system_gate_receipt` | creation of the current receipt still requires its exact accepted prefix; historical revalidation permits only the gate-specific ordered suffix: a stored Master may observe later Review/Critic, and a stored Review may observe later Critic. Every accepted event still reopens effect/provider/receipt/role/context/revision authority. The historical call revalidates invocation evidence for its required gate; each permitted later Review/Critic is independently revalidated by its corresponding current gate helper, including that gate's invocation evidence | Reviewer/Critic prompts remain content-bound to the checkpoint and earlier receipts. A later role is not permission to rewrite an earlier result, accept an unknown slot, reverse gate order, or replay a provider | accepted Master events → exact Master receipt → Worker/quality → accepted Review → exact Review receipt → accepted Critic → precommit/commit revalidation | positive: Master receipt after Review; Master and Review receipts after Critic; review→critic→precommit/commit replay. Negative: unknown, duplicate, missing, reverse-order or wrong-context accepted slot; current receipt built with an extra suffix | any unpermitted slot/order/context/evidence drift rejects the historical receipt and blocks the next gate; the repair does not ignore accepted events or weaken current-gate exactness | ordered-suffix source repair is in the detached P0 integration and awaits the combined source gate/review/merge; runtime remains on old bytes |
+| a Master Scout schema/distinctness retry may deterministically recover one unambiguous JSON object after the existing global parser fails, without relaxing any other role parser | sealed `proposal:*` slot, retry `actual_role`, `master-proposal-v3`, two-attempt authority and three-distinct-proposal packet | `llm_query.py` provider-last proposal emission guard; proposal-scoped strict projection/retry parser in `strict_authority_workflow.py` and `agent_master.py` | only a sealed proposal `SCHEMA RETRY` or `DISTINCTNESS RETRY` call may use the bounded fallback after the ordinary global parser rejects. The prefix may contain no JSON object/array ambiguity, and exactly one complete top-level object may be followed only by JSON whitespace through EOF. Existing global-parser success shapes, including historical fenced/raw forms, remain compatible | the provider-last emission instruction says to output only the closed raw JSON object, with no prose, fence or trailing text. Recovery is a deterministic compatibility boundary, not permission to narrate or add a third attempt | sealed retry call + raw-output digest → global strict parse or proposal-only bounded fallback → unchanged semantic/mechanism/distinctness validation → three-proposal packet → ballots/final Master | positive: exact v54 930-character non-JSON prefix plus one 4,637-character object ending at character 5,567; ordinary raw-object/legacy global-parser success; JSON-only trailing whitespace. Negative: trailing non-whitespace prose, multiple top-level candidates, prefix brace/bracket ambiguity, malformed object, initial Scout, non-proposal role, changed envelope or third attempt | ambiguous output or non-whitespace content after the recovered JSON remains rejected and the generation canonically abandons; no substring search, global parser relaxation, semantic rewrite, evidence synthesis or extra provider call is allowed | prompt hardening and proposal-only recovery are source-pending the final P0 integration; no runtime claim |
+
+The exact runtime attempts were:
+
+- `generation:143:workflow-v53`, 19:56:17--20:07:56, passed Quality
+  in 89.15 seconds including 70 hands; Reviewer invocation
+  `3f766bf59b0a4ac89e85095182db8b49` approved with score 9, then the
+  historical Master-receipt replay treated the newly accepted `review` slot as
+  `strict_authority_unexpected_accepted_slots:review`.  The surfaced result was
+  `SYSTEM_STRICT_BOOTSTRAP_REVIEW_RECEIPT_INVALID`, not a strategy rejection.
+  Canonical transaction `8c2e1cfa239b2d7171b38be4231af5a1fa1eec1f616c395fc086390234e69d76`
+  fenced and removed it.
+- `generation:143:workflow-v54`, 20:07:57--20:13:34, stopped before a
+  Worker.  Two Scouts were accepted.  The mechanism retry invocation
+  `3d23977734854c17b8a581c20a3db589` produced 5,567 characters: a
+  930-character brace/bracket-free prose prefix and one complete 4,637-character
+  JSON object through exact EOF.  The strict projection rejected it as
+  `proposal_json_object_required`, leading to
+  `strict_authority_schema_retry_exhausted:proposal:mechanism` and canonical
+  transaction `7229deb13d5f280328158b63119709d68708851ee5c564294024be5b44f5e2da`.
+- `generation:143:workflow-v55`, 20:13:34--20:25:58, passed Quality in
+  98.88 seconds including 70 hands; Reviewer invocation
+  `612d50a6c9184a178b439ca6d4a6b128` approved with score 7, then hit the
+  same receipt error.  Canonical transaction
+  `fae4251aa4dab823264d4089a5abbc2e45de5caf6f18f1ab2a70cb6d6c6a4348`
+  completed and the exact three-abandon guard stopped the outer scheduler.
+
+Across the three attempts the unique provider accounting is $3.566307,
+460,717 input tokens and 117,028 output tokens.  Replayed `llm_role_done`
+projections in v54 must not be charged twice.  This cost and the completed
+quality work prove that the blocker is a deterministic control-plane contract,
+not that CPU capacity or poker strength was evaluated and found insufficient.
+
 <!-- executable-national-alignment-matrix:begin -->
 ## Executable current-contract registry (generated)
 

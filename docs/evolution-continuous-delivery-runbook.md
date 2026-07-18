@@ -346,6 +346,143 @@ CAS, validate handoff/quarantine/checkpoint clearance, fast-forward only
 through merged `origin/main`, rerun all diagnostics, and start via the
 controlled launcher. Never hand-edit v143 or reuse v38 output.
 
+### workflow-v53--v55 P0 repair and shortest safe restart
+
+The v38 instruction immediately above is historical.  The runtime subsequently
+closed v52, started on `a0f63d5c`, and canonically abandoned v53, v54 and v55.
+At the current boundary the Web process may still serve the Dashboard and the
+rating daemon may remain alive in `waiting_for_first_published_bot`, but the
+in-process evolution task is stopped.  The checkpoint is absent, active
+generation and strict pool are empty, official jobs have zero pending/running
+rows, Arena has no session, and checkpoint recovery is
+`active=false/recoverable=true/issues=[]`.  This is the only state in which the
+following no-checkpoint fast-forward path applies.  Any newly appearing
+checkpoint or job invalidates the observation and requires a fresh audit.
+
+v53 and v55 proved that Master, fixed-blueprint materialization, Quality and a
+complete 70-hand native candidate acceptance can run.  Both Reviewers approved
+the candidate, but revalidating the stored Master receipt after accepting the
+Review event rejected the legal `review` suffix.  v54 proved a separate output
+boundary: its one schema retry ended with a complete valid JSON object, but
+preceded it with 930 characters of prose.  The fixes are deliberately narrow:
+
+1. current Master/Review/Critic receipt construction still requires its exact
+   accepted prefix;
+2. historical receipt validation allows only the legal ordered later-gate
+   suffix and still reopens every accepted event's effect, provider, receipt,
+   role, context and phase revision.  It revalidates invocation evidence for
+   its required gate; a permitted later Review/Critic is separately revalidated
+   by that gate's current helper, including its invocation evidence;
+3. only a sealed proposal `SCHEMA RETRY` or `DISTINCTNESS RETRY` may use the
+   bounded fallback after the ordinary global parser fails.  It may recover an
+   unambiguous complete top-level JSON object from a prefix without JSON braces
+   or brackets, followed only by JSON whitespace through EOF.  Existing
+   global-parser success shapes, including historical fenced/raw forms, remain
+   compatible;
+4. initial Scouts, final Master, Reviewer, Critic and all other parsers stay
+   strict; trailing non-whitespace prose, multiple candidates, malformed JSON, semantic or
+   distinctness failure, and a third call remain fail-closed;
+5. the provider-last proposal emission instruction remains the primary
+   contract: raw JSON only, no prose or fence.
+
+Do not synchronize from the detached repair worktree.  First complete focused
+and full tests, independent review, commit, push and merge, and freeze the exact
+new `origin/main` SHA.  `system_strict_bootstrap.py` and
+`strict_authority_workflow.py` are always-critical bootstrap files;
+`llm_query.py` is part of the full no-checkpoint generation contract.  The Web
+interpreter has already imported these modules, so `POST /api/control/start`
+alone would reuse old Python objects and is forbidden.  A full owned Web
+restart is required.  The rating daemon does not interpret these P0 contracts,
+but the Web lifespan owns it; the same stop/start must retire and replace it.
+
+Immediately before stopping, require all of the following from the live
+runtime checkout:
+
+```text
+branch=main
+tracked worktree and index clean
+HEAD is an ancestor of the frozen origin/main target
+pipeline checkpoint absent
+active_generation=null and runtime task absent
+official pending=0 and running=0
+Arena active_session=null and session_count=0
+rating activity_state=waiting_for_first_published_bot, active_bot_count=0
+```
+
+The untracked `web/core/national_arena/storage_owner.lock` is a system owner
+lock, not candidate debris.  Preserve it; do not delete it to manufacture an
+empty `git status`.  Likewise, old expired strict-authority-v1 rows in
+`workflow/events.sqlite3` are fenced historical debt, not a live queue.  Do not
+edit SQLite.  Require no undispatched outbox row and no current-workflow live
+effect instead.
+
+Use the project interpreter and source-bound frontend preflight before the
+short downtime:
+
+```bash
+cd /home/zzx/project/pok/.evolution_pok
+export POK_PYTHON=/home/zzx/anaconda3/envs/pytorch/bin/python
+./pokctl.sh resolve-python
+./pokctl.sh verify-frontend-static
+./pokctl.sh stop
+```
+
+After stop, require the old Web and rating PIDs to be gone, port 8000 to be
+unowned and the checkpoint still absent.  Then synchronize only through Git:
+
+```bash
+git fetch --tags origin
+git merge-base --is-ancestor HEAD origin/main
+git pull --ff-only --tags
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+git status --porcelain=v1 --untracked-files=no
+```
+
+Stop if the remote SHA changed after source review, the update is not a
+fast-forward, a tracked file is dirty, the branch is not `main`, a process did
+not stop, or a checkpoint/job appeared.  Do not copy, reset, stash, hand-edit,
+or delete runtime state to proceed.
+
+On the exact synchronized source, run the read-only checkpoint diagnostics and
+require `active=false`, `recoverable=true`, and `issues=[]`.  The strict epoch
+projection must be `fresh_bootstrap_ready`, with a valid reset receipt, no
+ignored checkpoint or active Bot, and `current_v=142`, `next_v=143`.  Then run:
+
+```bash
+$POK_PYTHON scripts/evaluation_data_identity.py
+$POK_PYTHON scripts/official_certify.py doctor
+./pokctl.sh verify-frontend-static
+```
+
+The P0 files are not rating evaluator semantic inputs, so an evaluator identity
+rotation is not expected.  If the identity check reports a mismatch, remain
+stopped and investigate; never turn that surprise into an automatic
+`--archive-and-initialize`.  Official doctor, strict blueprint validation and
+`first_strict_control_v1` consumption must all be green, with the one-time
+control still unused (`0/1`).  If the final merged change touches frontend
+source, build and verify it in this exact checkout before using `--no-build`.
+
+Start and observe with the owned helper only after every gate above is green:
+
+```bash
+POK_PYTHON=/home/zzx/anaconda3/envs/pytorch/bin/python \
+  scripts/pok_restart_observe.sh \
+  --no-build --daemon-workers 12 --daemon-pairs 5 \
+  --observe-generations 1 --observe-timeout 21600
+```
+
+The helper's `--dry-run` still creates an ignored restart log and takes the
+restart lock, so it is not a pure read-only audit command.  After launch,
+require new Web/rating PIDs, exact merged HEAD, healthy running control
+projection and one fresh workflow identity; never replay v53--v55.  The next
+workflow number is observed authority rather than a guessed contract.  The
+restart resets the stability observation to **0/10**.
+
+Finally, do not promote the v53/v55 70-hand Quality matches.  Both candidates
+were unpublished and canonically abandoned.  A strength receipt requires a
+published artifact/opponent and the immutable rating-cycle identity; official
+and Arena results remain zero-strength.
+
 ## Future research-to-canonical migration boundary
 
 The isolated A1/A2/B research line is not an active candidate pool and its
