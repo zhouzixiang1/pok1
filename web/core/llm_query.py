@@ -1697,8 +1697,15 @@ def render_llm_role_contract_suffix(
             "Markdown fences, analysis, an acknowledgement, a summary, or "
             "trailing commentary. Apply the closed schema and any system-owned "
             "repair instruction in the rendered prefix, then emit the complete "
-            "object now. A malformed or duplicate object is rejected and does "
-            "not create another attempt."
+            "object now. "
+            + (
+                "A malformed or duplicate repair object is rejected; there is "
+                "no third attempt."
+                if repair_attempt
+                else "If this object is rejected, only the system may authorize "
+                "the single bounded repair attempt; do not self-retry or emit a "
+                "second object."
+            )
         )
     return (
         "\n\n# SYSTEM-OWNED ACTIVE LLM ROLE CONTRACT (FINAL)\n"

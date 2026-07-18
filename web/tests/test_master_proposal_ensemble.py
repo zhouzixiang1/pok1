@@ -14,6 +14,26 @@ class _UI:
         pass
 
 
+_V54_EXACT_PROSE_PREFIX = (
+    "Looking at the prepared fresh-strict-control baseline, I need to identify "
+    "a structural mechanism that replaces a reachable parent behavior in "
+    "`policy.py` without threshold-only tuning, using `opponent.rates` as the "
+    "sole mechanism target.\n\n"
+    "I've reviewed:\n"
+    "- `bots/national_v143/policy.py` (58 lines): equity-only baseline via "
+    "`get_baseline_decision` → `_hole_ids` → `precompute.preflop_equity`; "
+    "never reads `decision_context.opponent`.\n"
+    "- `bots/national_v143/national_bot.py`: `OpponentTracker.snapshot()` "
+    "publishes a rich `opponent.rates` root (`aggression`, `fold_to_raise`, "
+    "`fold_to_allin`) plus confidence/adaptation metadata into "
+    "`decision_context`, but no candidate code consumes it.\n\n"
+    "The structural gap: a complete bounded opponent profile is published but "
+    "causally inert. The mechanism is a confidence-gated action-profile "
+    "consumer that re-routes the baseline intent through `opponent.rates` with "
+    "a byte-identical fallback.\n\n"
+)
+
+
 def _write_source(root):
     root.mkdir(parents=True, exist_ok=True)
     (root / "policy.py").write_text(
@@ -94,6 +114,11 @@ def _proposal(
     return "```json\n" + json.dumps(payload) + "\n```"
 
 
+def _raw_proposal(*args, **kwargs) -> str:
+    fenced = _proposal(*args, **kwargs)
+    return fenced.split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+
+
 def _action_profile_proposal(
     direction: str,
     *,
@@ -101,11 +126,7 @@ def _action_profile_proposal(
 ) -> str:
     """Return a fresh-control proposal on the v54 shared-leaf axis."""
 
-    payload = json.loads(
-        _proposal(direction, fresh=True).split("```json\n", 1)[1].rsplit(
-            "\n```", 1
-        )[0]
-    )
+    payload = json.loads(_raw_proposal(direction, fresh=True))
     label = direction.replace("_", " ")
     payload.update({
         "mechanism_target": "opponent.rates",
@@ -1301,10 +1322,10 @@ async def test_shared_leaf_scout_repair_restores_exactly_three_distinct_proposal
 
 
 @pytest.mark.asyncio
-async def test_shared_leaf_scout_v54_prose_prefixed_json_exhausts_fail_closed(
+async def test_shared_leaf_scout_v54_prose_prefixed_json_recovers_once(
     monkeypatch, tmp_path
 ):
-    """The exact v54 output shape remains invalid and never buys attempt three."""
+    """The exact v54 prefix plus one EOF object recovers only on attempt two."""
 
     import agent_master
 
@@ -1314,17 +1335,20 @@ async def test_shared_leaf_scout_v54_prose_prefixed_json_exhausts_fail_closed(
     snapshot_dir.mkdir()
     roles = []
     valid_suffix = _action_profile_proposal("mechanism")
-    prose_prefix = (
-        "The Scout acknowledged the deterministic schema repair but emitted "
-        "analysis before its otherwise complete object. "
-        + ("x" * 930)
-    )[:930]
-    assert len(prose_prefix) == 930
-    assert not set("{}[]").intersection(prose_prefix)
+    assert len(_V54_EXACT_PROSE_PREFIX) == 930
+    assert hashlib.sha256(_V54_EXACT_PROSE_PREFIX.encode()).hexdigest() == (
+        "f489068be24f9f4713057b6438719f91dc278318daf5fceb9a7c7897b5ec2963"
+    )
+    assert not set("{}[]").intersection(_V54_EXACT_PROSE_PREFIX)
     assert json.loads(valid_suffix)["mechanism_target"] == "opponent.rates"
 
     async def fake_query(prompt, _ctx, _ui, role_name, *_args, **_kwargs):
         roles.append(role_name)
+        if role_name.startswith("MASTER PROPOSAL CRITIC"):
+            ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"', prompt
+            )))
+            return _critic_output(agent_master, ids), 0.0, {}
         if role_name == "MASTER PROPOSAL mechanism":
             return _action_profile_proposal(
                 "mechanism",
@@ -1335,7 +1359,7 @@ async def test_shared_leaf_scout_v54_prose_prefixed_json_exhausts_fail_closed(
                 "The only executable root for this frozen proposal is "
                 "opponent.rates"
             ) in prompt
-            return prose_prefix + valid_suffix, 0.0, {}
+            return _V54_EXACT_PROSE_PREFIX + valid_suffix, 0.0, {}
         direction = next(
             name
             for name in ("counterfactual", "compute_memory")
@@ -1358,13 +1382,128 @@ async def test_shared_leaf_scout_v54_prose_prefixed_json_exhausts_fail_closed(
         allowed_primaries=("action_profile",),
     ))
 
-    assert packet["valid"] is False
-    assert packet["reason"] == (
-        "three_distinct_schema_valid_scout_proposals_required:got_2"
-    )
+    assert packet["valid"] is True
+    assert packet["proposal_count"] == 3
+    assert len(set(packet["allowed_proposal_ids"])) == 3
     assert roles.count("MASTER PROPOSAL mechanism SCHEMA RETRY") == 1
-    assert len(roles) == 4
-    assert not any("CRITIC" in role for role in roles)
+    assert len(roles) == 6
+
+
+def test_v54_eof_object_recovery_is_repair_role_scoped_and_fail_closed():
+    import agent_master
+
+    valid = _action_profile_proposal("mechanism")
+    raw = _V54_EXACT_PROSE_PREFIX + valid
+    parsed, mode = agent_master._parse_master_proposal_output_with_mode(
+        raw,
+        "mechanism",
+        actual_role="MASTER PROPOSAL mechanism SCHEMA RETRY",
+    )
+    assert isinstance(parsed, dict)
+    assert mode == agent_master._PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
+    parsed_with_json_whitespace, whitespace_mode = (
+        agent_master._parse_master_proposal_output_with_mode(
+            raw + " \n\t",
+            "mechanism",
+            actual_role="MASTER PROPOSAL mechanism SCHEMA RETRY",
+        )
+    )
+    assert parsed_with_json_whitespace == parsed
+    assert whitespace_mode == agent_master._PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
+    fenced, fenced_mode = agent_master._parse_master_proposal_output_with_mode(
+        "```json\n" + valid + "\n```",
+        "mechanism",
+        actual_role="MASTER PROPOSAL mechanism SCHEMA RETRY",
+    )
+    assert fenced == parsed
+    assert fenced_mode == "OK"
+
+    # The same bytes from the initial Scout or a different role remain on the
+    # global strict parser and are not recovered.
+    for role in (
+        "MASTER PROPOSAL mechanism",
+        "MASTER PROPOSAL counterfactual SCHEMA RETRY",
+        "MASTER PROPOSAL mechanism SCHEMA RETRY extra",
+        None,
+    ):
+        rejected, _mode = agent_master._parse_master_proposal_output_with_mode(
+            raw,
+            "mechanism",
+            actual_role=role,
+        )
+        assert rejected is None
+
+    invalid_outputs = (
+        raw + " trailing prose",
+        _V54_EXACT_PROSE_PREFIX + valid + valid,
+        "analysis [possible object] " + valid,
+        _V54_EXACT_PROSE_PREFIX + valid[:-1],
+        _V54_EXACT_PROSE_PREFIX + json.dumps([json.loads(valid)]),
+    )
+    for invalid in invalid_outputs:
+        rejected, _mode = agent_master._parse_master_proposal_output_with_mode(
+            invalid,
+            "mechanism",
+            actual_role="MASTER PROPOSAL mechanism DISTINCTNESS RETRY",
+        )
+        assert rejected is None
+
+
+def test_v54_recovery_still_requires_full_proposal_semantics(monkeypatch, tmp_path):
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    incomplete = json.dumps({"mechanism_target": "opponent.rates"})
+    assert agent_master._validated_master_proposal(
+        _V54_EXACT_PROSE_PREFIX + incomplete,
+        "mechanism",
+        source_graph=graph,
+        national_policy_only=True,
+        execution_mode="fixed_blueprint_capability_audit",
+        evidence_mode="fresh_strict_control_no_strength",
+        allowed_primaries=("action_profile",),
+        actual_role="MASTER PROPOSAL mechanism SCHEMA RETRY",
+    ) is None
+
+
+def test_strict_projection_requires_the_sealed_repair_actual_role(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as authority
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    (source_dir / ".protocol_bootstrap_no_strength_evidence").mkdir()
+    _graph, source_digest = agent_master._source_symbol_graph(source_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: source_dir)
+    call = {
+        "slot": "proposal:mechanism",
+        "context_binding": {
+            "allowed_primaries": ["action_profile"],
+            "source_code_digest": source_digest,
+        },
+        "generation_binding": {"next_v": 143},
+        "actual_role": "MASTER PROPOSAL mechanism SCHEMA RETRY",
+    }
+    raw = _V54_EXACT_PROSE_PREFIX + _action_profile_proposal("mechanism")
+
+    projected = authority._project_role_result(call, raw)
+    assert projected["mechanism_target"] == "opponent.rates"
+
+    for actual_role in ("MASTER PROPOSAL mechanism", ""):
+        with pytest.raises(
+            authority.StrictAuthorityError,
+            match="strict_authority_role_projection_rejected:proposal:mechanism",
+        ):
+            authority._project_role_result(
+                {**call, "actual_role": actual_role},
+                raw,
+            )
 
 
 @pytest.mark.asyncio
@@ -1749,7 +1888,10 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
             output = (
                 "not a schema-valid proposal"
                 if compute_calls["count"] == 2
-                else _proposal("compute_memory", fresh=True)
+                else (
+                    _V54_EXACT_PROSE_PREFIX
+                    + _raw_proposal("compute_memory", fresh=True)
+                )
             )
         elif slot.startswith("proposal:"):
             output = _proposal(slot.split(":", 1)[1], fresh=True)
@@ -1864,6 +2006,21 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         path.parent.name == invocation_id
         and path.parent.parent.name == "strict_invocations"
         for invocation_id, path in provider_logs
+    )
+    compute_accept = next(
+        event.payload
+        for event in store.events(authority.authority_run_id(
+            checkpoint["workflow_run_id"]
+        ))
+        if event.event_type == authority.ACCEPTED_EVENT
+        and event.payload["slot"] == "proposal:compute_memory"
+    )
+    compute_effect = store.effect(compute_accept["effect_id"])
+    assert compute_effect["input_payload"]["actual_role"] == (
+        "MASTER PROPOSAL compute_memory SCHEMA RETRY"
+    )
+    assert compute_effect["result_payload"]["raw_output"].startswith(
+        _V54_EXACT_PROSE_PREFIX
     )
 
     _refs, errors = authority.validate_receipts(

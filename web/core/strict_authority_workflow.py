@@ -2580,6 +2580,7 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             execution_mode="fixed_blueprint_capability_audit",
             evidence_mode="fresh_strict_control_no_strength",
             allowed_primaries=allowed_primaries,
+            actual_role=str(call.get("actual_role") or ""),
         )
         if not isinstance(projected, dict):
             hints = _master_proposal_projection_hints(

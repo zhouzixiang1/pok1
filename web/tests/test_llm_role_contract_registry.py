@@ -487,7 +487,35 @@ def test_master_proposal_schema_repair_emission_gate_is_last_provider_instructio
     assert "This is the sole repair attempt (attempt 2 of 2)." in provider_prompt
     assert "one raw JSON object" in provider_prompt
     assert provider_prompt.rstrip().endswith(
-        "A malformed or duplicate object is rejected and does not create another attempt."
+        "A malformed or duplicate repair object is rejected; there is no third attempt."
+    )
+
+
+def test_master_proposal_initial_emission_gate_names_the_bounded_repair():
+    import agent_master
+    import llm_query
+
+    role = "MASTER PROPOSAL mechanism"
+    rendered = llm_query.render_llm_prompt(
+        role,
+        producer=agent_master._render_master_proposal_provider_prompt,
+        renderer_inputs=_renderer_inputs(
+            "master_proposal",
+            "strict initial context",
+        ),
+    )
+    provider_prompt, contract = llm_query.bind_llm_role_provider_prompt(
+        rendered,
+        role,
+        tools=["Read"],
+        allowed_read_dirs=[ROOT / "bots/national_v143"],
+        model="sonnet",
+    )
+
+    assert contract.role_id == "master_proposal"
+    assert "This is the initial attempt (attempt 1 of at most 2)." in provider_prompt
+    assert provider_prompt.rstrip().endswith(
+        "the single bounded repair attempt; do not self-retry or emit a second object."
     )
 
 

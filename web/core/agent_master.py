@@ -635,6 +635,9 @@ _MASTER_PROPOSAL_DIRECTIONS = (
 
 _PROPOSAL_SCHEMA_VERSION = "master-proposal-v3"
 _PROPOSAL_PACKET_SCHEMA_VERSION = "master-proposal-packet-v5"
+_PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE = (
+    "master-proposal-repair-eof-json-object-v1"
+)
 _POLICY_ABI_ENTRYPOINT_SYMBOLS = (
     "policy.py:get_baseline_decision",
     "policy.py:iter_decisions",
@@ -1891,6 +1894,68 @@ def _proposal_identity(proposal: dict) -> str:
     ).hexdigest()[:16]
 
 
+def _master_proposal_repair_kind(
+    direction: str,
+    actual_role: str | None,
+) -> str | None:
+    """Return the sealed repair kind for one exact Scout provider role.
+
+    A provider's prose cannot opt itself into recovery.  The caller must pass
+    the system-owned role used for that invocation; the first attempt and
+    every unrelated role remain on the repository-wide strict parser.
+    """
+
+    base_role = f"MASTER PROPOSAL {str(direction)}"
+    role = str(actual_role or "")
+    if role == base_role + " SCHEMA RETRY":
+        return "schema"
+    if role == base_role + " DISTINCTNESS RETRY":
+        return "distinctness"
+    return None
+
+
+def _parse_master_proposal_output_with_mode(
+    output: str,
+    direction: str,
+    *,
+    actual_role: str | None = None,
+) -> tuple[object | None, str]:
+    """Parse a Scout result without widening the global JSON contract.
+
+    Every output first uses the repository-wide parser, preserving all existing
+    successful raw/fenced shapes.  Only when that parser fails may the one
+    schema/distinctness repair recover the exact v54 failure shape: non-JSON
+    prose followed by one complete JSON object with no trailing non-whitespace
+    bytes.  Braces/brackets in the prefix make the object boundary ambiguous;
+    arrays, multiple objects, malformed JSON, and trailing prose fail closed.
+    """
+
+    from llm_query import parse_json_output_with_mode
+
+    raw = str(output or "")
+    parsed, global_mode = parse_json_output_with_mode(raw)
+    if parsed is not None:
+        return parsed, global_mode
+    if _master_proposal_repair_kind(direction, actual_role) is None:
+        return None, global_mode
+    if not raw.strip():
+        return None, "PROPOSAL_REPAIR_EOF_OBJECT_REJECTED"
+    object_start = raw.find("{")
+    if object_start < 0:
+        return None, "PROPOSAL_REPAIR_EOF_OBJECT_REJECTED"
+    prefix = raw[:object_start]
+    if prefix.strip() and set(prefix).intersection("{}[]"):
+        return None, "PROPOSAL_REPAIR_EOF_OBJECT_AMBIGUOUS_PREFIX"
+    candidate = raw[object_start:]
+    try:
+        parsed, end = json.JSONDecoder().raw_decode(candidate)
+    except (TypeError, ValueError):
+        return None, "PROPOSAL_REPAIR_EOF_OBJECT_REJECTED"
+    if candidate[end:].strip() or not isinstance(parsed, dict):
+        return None, "PROPOSAL_REPAIR_EOF_OBJECT_REJECTED"
+    return parsed, _PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE
+
+
 def _validated_master_proposal(
     output: str,
     direction: str,
@@ -1905,12 +1970,15 @@ def _validated_master_proposal(
     forbidden_measurement_target: str | None = None,
     enforce_bindability: bool = True,
     allowed_primaries: tuple[str, ...] | None = None,
+    actual_role: str | None = None,
 ) -> dict | None:
     """Normalize one evidence-bound proposal before critics or Master see it."""
-    from llm_query import parse_json_output_with_mode
-
     allowed_primaries = _canonical_proposal_primaries(allowed_primaries)
-    data, _mode = parse_json_output_with_mode(output or "")
+    data, _mode = _parse_master_proposal_output_with_mode(
+        output or "",
+        direction,
+        actual_role=actual_role,
+    )
     if not isinstance(data, dict):
         return None
     if any(data.get(key) for key in ("branch_from", "source_override", "source_v_override")):
@@ -3991,6 +4059,17 @@ async def _run_master_proposal_ensemble(
     proposal_provider_errors: list[tuple[str, BaseException]] = []
     invalid_proposal_specs: list[tuple[str, str, dict]] = []
     accepted_proposal_directions: dict[str, str] = {}
+
+    def proposal_actual_role(result: object) -> str | None:
+        if not isinstance(result, dict):
+            return None
+        strict_call = result.get("strict_call")
+        if isinstance(strict_call, dict):
+            # The journal-bound dispatched role is authority.  A missing value
+            # may not fall back to a caller-supplied result label.
+            return str(strict_call.get("actual_role") or "") or None
+        return str(result.get("role") or "") or None
+
     for (direction, _directive), result in zip(_MASTER_PROPOSAL_DIRECTIONS, proposal_results):
         if isinstance(result, BaseException):
             from strict_authority_workflow import StrictAuthorityError
@@ -4016,6 +4095,7 @@ async def _run_master_proposal_ensemble(
                 bot_name(int(next_v)) if require_snapshot_evidence else None
             ),
             allowed_primaries=allowed_primaries,
+            actual_role=proposal_actual_role(result),
         )
         if proposal is None:
             repair = {"kind": "schema"}
@@ -4116,6 +4196,7 @@ async def _run_master_proposal_ensemble(
                     bot_name(int(next_v)) if require_snapshot_evidence else None
                 ),
                 allowed_primaries=allowed_primaries,
+                actual_role=proposal_actual_role(result),
             )
             if proposal is None:
                 continue
