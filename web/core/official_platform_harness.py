@@ -2801,6 +2801,8 @@ def run_official_acceptance_sync(
     candidate_sealed: SealedBotArtifact | None = None
     opponent_sealed: SealedBotArtifact | None = None
     formal_execution: dict[str, Any] | None = None
+    formal_candidate_expected_hash = ""
+    formal_opponent_expected_hash = ""
 
     try:
         formal_requested = job_envelope is not None and target_hands == 70
@@ -2810,7 +2812,11 @@ def run_official_acceptance_sync(
             if isinstance(job_envelope, dict)
             else ""
         )
-        formal_bootstrap = formal_job and bool(bootstrap_control_id)
+        formal_bootstrap = False
+        if formal_job and bootstrap_control_id:
+            from first_strict_control import CONTROL_ID
+
+            formal_bootstrap = bootstrap_control_id == CONTROL_ID
         if round_runner is _PRODUCTION_ROUND_RUNNER:
             candidate_path = _validate_active_diagnostic_bot(candidate_path)
             # A normal opponent must always be an active ``bots/`` artifact.
@@ -2834,7 +2840,6 @@ def run_official_acceptance_sync(
                 # receipt.  Only the one system-owned v143 control, with its
                 # current operator authorization revalidated here, may take
                 # the separate path.
-                from first_strict_control import CONTROL_ID
                 from official_bootstrap import (
                     validate_operator_bootstrap_authorized_selection,
                 )
@@ -2864,7 +2869,44 @@ def run_official_acceptance_sync(
                 authorized_selection = bootstrap_validation.get("selection")
                 if not isinstance(authorized_selection, dict):
                     authorized_selection = selection
+                authorized_candidate = authorized_selection.get(
+                    "candidate_binding"
+                )
                 authorized_opponent = authorized_selection.get("opponent")
+                authorized_candidate_hash = (
+                    str(authorized_candidate.get("candidate_hash") or "")
+                    if isinstance(authorized_candidate, dict)
+                    else ""
+                )
+                authorized_opponent_hash = (
+                    str(authorized_opponent.get("artifact_hash") or "")
+                    if isinstance(authorized_opponent, dict)
+                    else ""
+                )
+                supplied_candidate_hash = str(
+                    job_envelope.get("candidate_hash") or ""
+                )
+                supplied_opponent_hash = str(
+                    job_envelope.get("opponent_hash") or ""
+                )
+                if (
+                    not authorized_candidate_hash
+                    or supplied_candidate_hash != authorized_candidate_hash
+                ):
+                    raise RuntimeError(
+                        "official_formal_bootstrap_authorization_invalid:"
+                        "candidate_hash_mismatch"
+                    )
+                if (
+                    not authorized_opponent_hash
+                    or supplied_opponent_hash != authorized_opponent_hash
+                ):
+                    raise RuntimeError(
+                        "official_formal_bootstrap_authorization_invalid:"
+                        "opponent_hash_mismatch"
+                    )
+                formal_candidate_expected_hash = authorized_candidate_hash
+                formal_opponent_expected_hash = authorized_opponent_hash
                 authorized_path = (
                     str(authorized_opponent.get("path") or "")
                     if isinstance(authorized_opponent, dict)
@@ -2901,6 +2943,12 @@ def run_official_acceptance_sync(
                             + ";".join(str(item) for item in control_issues[:12])
                         )
             else:
+                formal_candidate_expected_hash = str(
+                    job_envelope.get("candidate_hash") or ""
+                )
+                formal_opponent_expected_hash = str(
+                    job_envelope.get("opponent_hash") or ""
+                )
                 expected_admission = (
                     job_envelope.get("quality_admission")
                     if isinstance(job_envelope, dict)
@@ -2943,13 +2991,13 @@ def run_official_acceptance_sync(
             candidate_sealed = seal_bot_artifact(
                 candidate_path,
                 suite_dir / "sealed_artifacts" / "candidate",
-                expected_hash=str(job_envelope.get("candidate_hash") or ""),
+                expected_hash=formal_candidate_expected_hash,
             )
             if opponent_path is not None:
                 opponent_sealed = seal_bot_artifact(
                     opponent_path,
                     suite_dir / "sealed_artifacts" / "opponent",
-                    expected_hash=str(job_envelope.get("opponent_hash") or ""),
+                    expected_hash=formal_opponent_expected_hash,
                 )
         with _official_platform_lock(cfg):
             for index in range(1, self_play_rounds + 1):

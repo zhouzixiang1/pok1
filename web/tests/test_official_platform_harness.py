@@ -1179,8 +1179,14 @@ def test_formal_harness_keeps_v143_bootstrap_on_its_distinct_authorization_path(
             "bootstrap_control_id": first_strict_control.CONTROL_ID,
             "opponent_selection": {
                 "selected": True,
-                "opponent": {"path": str(control)},
+                "candidate_binding": {"candidate_hash": "a" * 64},
+                "opponent": {
+                    "path": str(control),
+                    "artifact_hash": "b" * 64,
+                },
             },
+            "candidate_hash": "a" * 64,
+            "opponent_hash": "b" * 64,
         },
         config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
     )
@@ -1243,8 +1249,14 @@ def test_formal_bootstrap_rejects_outside_path_not_bound_by_authorization(
             "bootstrap_control_id": first_strict_control.CONTROL_ID,
             "opponent_selection": {
                 "selected": True,
-                "opponent": {"path": str(authorized)},
+                "candidate_binding": {"candidate_hash": "a" * 64},
+                "opponent": {
+                    "path": str(authorized),
+                    "artifact_hash": "b" * 64,
+                },
             },
+            "candidate_hash": "a" * 64,
+            "opponent_hash": "b" * 64,
         },
         config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
     )
@@ -1303,8 +1315,14 @@ def test_formal_bootstrap_rejects_symlink_alias_of_authorized_control(
             "bootstrap_control_id": first_strict_control.CONTROL_ID,
             "opponent_selection": {
                 "selected": True,
-                "opponent": {"path": str(authorized)},
+                "candidate_binding": {"candidate_hash": "a" * 64},
+                "opponent": {
+                    "path": str(authorized),
+                    "artifact_hash": "b" * 64,
+                },
             },
+            "candidate_hash": "a" * 64,
+            "opponent_hash": "b" * 64,
         },
         config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
     )
@@ -1359,6 +1377,196 @@ def test_formal_harness_rejects_an_untrusted_bootstrap_label_before_exe(
         "official_formal_bootstrap_authorization_invalid" in issue
         for issue in result.issues
     )
+
+
+def test_untrusted_bootstrap_label_does_not_defer_outside_namespace_gate(
+    tmp_path, monkeypatch
+):
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    outside = tmp_path / "system-controls" / "untrusted"
+    outside.mkdir(parents=True)
+    validated = []
+
+    def validate_active(path):
+        resolved = Path(path).resolve()
+        validated.append(resolved)
+        if resolved == outside:
+            raise RuntimeError("official_acceptance_bot_outside_active_namespace")
+        return resolved
+
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    monkeypatch.setattr(harness, "_validate_active_diagnostic_bot", validate_active)
+    monkeypatch.setattr(
+        harness,
+        "validate_execution_profile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("unknown control reached EXE preflight")
+        ),
+    )
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=outside,
+        self_play_rounds=0,
+        opponent_rounds=1,
+        target_hands=70,
+        round_runner=harness._PRODUCTION_ROUND_RUNNER,
+        job_envelope={"bootstrap_control_id": "not-a-real-control"},
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is False
+    assert validated == [candidate, outside]
+    assert any("outside_active_namespace" in issue for issue in result.issues)
+
+
+def test_formal_bootstrap_cross_binds_envelope_hashes_before_exe(
+    tmp_path, monkeypatch
+):
+    import first_strict_control
+    import official_bootstrap
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    control = tmp_path / "system-controls" / "control"
+    control.mkdir(parents=True)
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        harness,
+        "_validate_active_diagnostic_bot",
+        lambda path: Path(path).resolve(),
+    )
+    selection = {
+        "selected": True,
+        "candidate_binding": {"candidate_hash": "a" * 64},
+        "opponent": {
+            "path": str(control),
+            "artifact_hash": "b" * 64,
+        },
+    }
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_operator_bootstrap_authorized_selection",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "issues": [],
+            "selection": selection,
+        },
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_materialized_control",
+        lambda _path: (_ for _ in ()).throw(
+            AssertionError("hash drift must fail before byte validation")
+        ),
+    )
+    monkeypatch.setattr(
+        harness,
+        "validate_execution_profile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("hash drift reached EXE preflight")
+        ),
+    )
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=control,
+        self_play_rounds=0,
+        opponent_rounds=1,
+        target_hands=70,
+        round_runner=harness._PRODUCTION_ROUND_RUNNER,
+        job_envelope={
+            "bootstrap_control_id": first_strict_control.CONTROL_ID,
+            "opponent_selection": selection,
+            "candidate_hash": "a" * 64,
+            "opponent_hash": "c" * 64,
+        },
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is False
+    assert any(
+        "official_formal_bootstrap_authorization_invalid:opponent_hash_mismatch"
+        in issue
+        for issue in result.issues
+    )
+
+
+def test_formal_bootstrap_keeps_authorized_hash_across_profile_preflight(
+    tmp_path, monkeypatch
+):
+    import first_strict_control
+    import official_bootstrap
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    control = tmp_path / "system-controls" / "control"
+    control.mkdir(parents=True)
+    monkeypatch.setattr(harness, "_PRODUCTION_ROUND_RUNNER", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        harness,
+        "_validate_active_diagnostic_bot",
+        lambda path: Path(path).resolve(),
+    )
+    selection = {
+        "selected": True,
+        "candidate_binding": {"candidate_hash": "a" * 64},
+        "opponent": {
+            "path": str(control),
+            "artifact_hash": "b" * 64,
+        },
+    }
+    envelope = {
+        "bootstrap_control_id": first_strict_control.CONTROL_ID,
+        "opponent_selection": selection,
+        "candidate_hash": "a" * 64,
+        "opponent_hash": "b" * 64,
+    }
+    monkeypatch.setattr(
+        official_bootstrap,
+        "validate_operator_bootstrap_authorized_selection",
+        lambda *_args, **_kwargs: {
+            "valid": True,
+            "issues": [],
+            "selection": selection,
+        },
+    )
+    monkeypatch.setattr(
+        first_strict_control,
+        "validate_materialized_control",
+        lambda _path: [],
+    )
+
+    def preflight(*_args, **_kwargs):
+        envelope["opponent_hash"] = "c" * 64
+        return {"ok": True, "issues": []}
+
+    sealed = []
+
+    def seal(path, _destination, *, expected_hash):
+        sealed.append((Path(path), expected_hash))
+        if Path(path) == control:
+            raise RuntimeError("stop-after-seal-binding")
+        return object()
+
+    monkeypatch.setattr(harness, "validate_execution_profile", preflight)
+    monkeypatch.setattr(harness, "seal_bot_artifact", seal)
+
+    result = run_official_acceptance_sync(
+        candidate,
+        opponent=control,
+        self_play_rounds=0,
+        opponent_rounds=1,
+        target_hands=70,
+        round_runner=harness._PRODUCTION_ROUND_RUNNER,
+        job_envelope=envelope,
+        config=OfficialPlatformConfig(lock_path=tmp_path / "official.lock"),
+    )
+
+    assert result.passed is False
+    assert any("stop-after-seal-binding" in issue for issue in result.issues)
+    assert sealed == [(candidate, "a" * 64), (control, "b" * 64)]
 
 
 def test_harness_exposes_no_archived_runtime_bootstrap_waiver():
