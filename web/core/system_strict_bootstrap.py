@@ -1312,7 +1312,17 @@ def _master_subject(
     *,
     architecture_policy: dict[str, Any],
     candidate_dir: str | Path,
+    permitted_later_accepted_slots: Iterable[str] = (),
 ) -> dict[str, Any]:
+    # The stored Master subject is immutable, but its authority journal is
+    # append-only.  A later Review/Critic may therefore be present while this
+    # exact old subject is replayed.  Admit only the ordered gate prefix; the
+    # caller must separately require that complete current prefix below.
+    permitted_later = tuple(permitted_later_accepted_slots)
+    if permitted_later not in ((), ("review",), ("review", "critic")):
+        raise SystemStrictBootstrapError([
+            "system_bootstrap_master_later_slot_set_invalid"
+        ])
     manifest = load_blueprint_manifest()
     audit = checkpoint.get("audit_context") or {}
     prepared = audit.get("prepared_artifact_contract") or {}
@@ -1336,6 +1346,7 @@ def _master_subject(
         expected_role_results=expected_master_role_results(plan),
         expected_context_bindings=expected_master_contexts(plan),
         require_no_other_accepted=True,
+        permitted_other_accepted_slots=permitted_later,
     )
     return {
         "schema_version": 1,
@@ -1393,6 +1404,7 @@ def validate_master_receipt(
     *,
     candidate_dir: str | Path,
     require_prepared_content: bool = True,
+    permitted_later_accepted_slots: Iterable[str] = (),
 ) -> list[str]:
     audit = checkpoint.get("audit_context") or {}
     receipt = audit.get("system_strict_bootstrap")
@@ -1410,6 +1422,7 @@ def validate_master_receipt(
             plan,
             architecture_policy=plan.get("architecture_policy") or {},
             candidate_dir=candidate_dir,
+            permitted_later_accepted_slots=permitted_later_accepted_slots,
         ))
     except Exception as exc:
         errors.append(f"system_bootstrap_master_subject_error:{type(exc).__name__}:{str(exc)[:300]}")
@@ -1671,8 +1684,17 @@ def _system_gate_subject(
 ) -> tuple[dict[str, Any], list[str]]:
     errors = validate_embedded_system_gate(llm_gate, gate_name=gate_name)
     candidate = Path(candidate_dir)
+    # Re-open the historical Master receipt with only the gate suffix that the
+    # current gate is about to require exactly via ``authority_summary``.
     errors.extend(validate_master_receipt(
-        checkpoint, candidate_dir=candidate, require_prepared_content=False
+        checkpoint,
+        candidate_dir=candidate,
+        require_prepared_content=False,
+        permitted_later_accepted_slots=(
+            ("review",)
+            if gate_name == "review"
+            else ("review", "critic")
+        ),
     ))
     audit = checkpoint.get("audit_context") or {}
     master = audit.get("system_strict_bootstrap") or {}

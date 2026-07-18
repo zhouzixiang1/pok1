@@ -114,6 +114,22 @@ def _strict_log(module, store, call, basename):
     )
 
 
+def _bind_call_evidence(module, store, call):
+    basename = module._invocation_evidence_log_name(
+        call["slot"],
+        call["actual_role"],
+    )
+    log_file = _strict_log(module, store, call, basename)
+    log_file.write_text(
+        f"completed provider log for {call['slot']}\n",
+        encoding="utf-8",
+    )
+    return module.record_bound_invocation_evidence(
+        call,
+        log_file=log_file,
+    )
+
+
 def test_final_master_dispatch_rejects_filesystem_tool(authority):
     module, store = authority
     checkpoint = _checkpoint()
@@ -1749,6 +1765,173 @@ def test_exact_eight_slots_are_distinct_and_stage_ordered(authority):
     assert set(refs) == set(module.ALL_SLOTS)
     assert len({item["effect_id"] for item in receipts}) == 8
     assert len({item["invocation_id"] for item in receipts}) == 8
+
+
+def test_master_receipt_replay_allows_only_the_bound_review_suffix(
+    authority,
+    monkeypatch,
+    tmp_path,
+):
+    """Regression for workflow-v53/v55's approved Review receipt failure."""
+
+    module, store = authority
+    import system_strict_bootstrap as bootstrap
+
+    master_checkpoint = _checkpoint(revision=10)
+    master_checkpoint.update({
+        "workflow_run_id": "generation:143:review-receipt-regression",
+        "next_v": 143,
+    })
+    expected_results = {}
+    expected_contexts = {}
+    for slot in module.MASTER_SLOTS:
+        call, result, _receipt = _call(
+            module,
+            master_checkpoint,
+            slot,
+        )
+        expected_results[slot] = result
+        expected_contexts[slot] = {"slot": slot, "suffix": "one"}
+        if slot in module.INVOCATION_EVIDENCE_SLOTS:
+            _bind_call_evidence(module, store, call)
+
+    plan = {
+        "architecture_policy": {"policy_digest": "d" * 64},
+        "runtime_contract_ledger": {"ledger_digest": "e" * 64},
+        "proposal_binding": {
+            "contract_digest": "f" * 64,
+            "falsifier": {"test_name": "typed-review-regression"},
+        },
+    }
+    monkeypatch.setattr(
+        module,
+        "expected_master_role_results",
+        lambda _plan: deepcopy(expected_results),
+    )
+    monkeypatch.setattr(
+        module,
+        "expected_master_contexts",
+        lambda _plan: deepcopy(expected_contexts),
+    )
+    monkeypatch.setattr(
+        module,
+        "validate_master_final_projection",
+        lambda *_args, **_kwargs: ({"projection_digest": "1" * 64}, []),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "validate_selected_proposal_for_blueprint",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "validate_blueprint_package",
+        lambda *_args, **_kwargs: [],
+    )
+
+    candidate = tmp_path / "national_v143"
+    candidate.mkdir()
+    original_subject = bootstrap._master_subject(
+        master_checkpoint,
+        plan,
+        architecture_policy=plan["architecture_policy"],
+        candidate_dir=candidate,
+    )
+    master_receipt = bootstrap._receipt(original_subject)
+
+    review_checkpoint = deepcopy(master_checkpoint)
+    review_checkpoint.update({
+        "stage": "quality_passed",
+        "checkpoint_revision": 20,
+        "master_plan": plan,
+    })
+    review_checkpoint["audit_context"][
+        "system_strict_bootstrap"
+    ] = master_receipt
+    review_call, review_result, _receipt = _call(
+        module,
+        review_checkpoint,
+        "review",
+        role_result={
+            "approved": True,
+            "quality_score": 9,
+            "feedback": "approved",
+            "change_summary": "bounded review complete",
+            "risk_areas": [],
+        },
+    )
+    review_evidence = _bind_call_evidence(module, store, review_call)
+    expected_results["review"] = review_result
+    expected_contexts["review"] = {"slot": "review", "suffix": "one"}
+
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_unexpected_accepted_slots:review",
+    ):
+        bootstrap._master_subject(
+            review_checkpoint,
+            plan,
+            architecture_policy=plan["architecture_policy"],
+            candidate_dir=candidate,
+        )
+
+    replayed_subject = bootstrap._master_subject(
+        review_checkpoint,
+        plan,
+        architecture_policy=plan["architecture_policy"],
+        candidate_dir=candidate,
+        permitted_later_accepted_slots=("review",),
+    )
+    assert replayed_subject == original_subject
+    assert bootstrap.validate_master_receipt(
+        review_checkpoint,
+        candidate_dir=candidate,
+        require_prepared_content=False,
+        permitted_later_accepted_slots=("review",),
+    ) == []
+
+    review_summary = module.authority_summary(
+        review_checkpoint,
+        required_slots=module.MASTER_SLOTS + ("review",),
+        expected_role_results=expected_results,
+        expected_context_bindings=expected_contexts,
+        expected_invocation_evidence={"review": review_evidence},
+        require_no_other_accepted=True,
+    )
+    assert review_summary["required_slots"][-1] == "review"
+
+    critic_checkpoint = deepcopy(review_checkpoint)
+    critic_checkpoint.update({
+        "stage": "reviewed",
+        "checkpoint_revision": 30,
+    })
+    critic_call, _critic_result, _receipt = _call(
+        module,
+        critic_checkpoint,
+        "critic",
+    )
+    _bind_call_evidence(module, store, critic_call)
+    extra_errors = bootstrap.validate_master_receipt(
+        critic_checkpoint,
+        candidate_dir=candidate,
+        require_prepared_content=False,
+        permitted_later_accepted_slots=("review",),
+    )
+    assert any(
+        "strict_authority_unexpected_accepted_slots:critic" in error
+        for error in extra_errors
+    )
+
+    wrong_slot_errors = bootstrap.validate_master_receipt(
+        review_checkpoint,
+        candidate_dir=candidate,
+        require_prepared_content=False,
+        permitted_later_accepted_slots=("critic",),
+    )
+    assert any(
+        "system_bootstrap_master_later_slot_set_invalid" in error
+        for error in wrong_slot_errors
+    )
 
 
 def _master_plan_for_role_results():

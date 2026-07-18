@@ -3534,16 +3534,32 @@ def validate_receipts(
     expected_role_results: dict[str, Any] | None = None,
     expected_context_bindings: dict[str, dict[str, Any]] | None = None,
     require_no_other_accepted: bool = False,
+    permitted_other_accepted_slots: Iterable[str] = (),
     matching_abandon_reason: str | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[str]]:
-    """Re-read effects/events and validate exact accepted slot identities."""
+    """Re-read effects/events and validate exact accepted slot identities.
+
+    ``permitted_other_accepted_slots`` exists only for replaying an immutable
+    earlier-phase receipt after a named later phase has appended its authority.
+    Every permitted event still traverses the full slot/effect/provider/receipt
+    validation below; callers must also validate the current phase as required
+    authority.  The option therefore cannot turn an unknown slot into evidence.
+    """
 
     required = tuple(required_slots)
+    permitted_other = tuple(permitted_other_accepted_slots)
     expected_role_results = expected_role_results or {}
     expected_context_bindings = expected_context_bindings or {}
     errors: list[str] = []
     if len(set(required)) != len(required) or any(slot not in ALL_SLOTS for slot in required):
         return {}, ["strict_authority_required_slot_set_invalid"]
+    if (
+        len(set(permitted_other)) != len(permitted_other)
+        or any(slot not in ALL_SLOTS for slot in permitted_other)
+        or set(permitted_other) & set(required)
+        or (permitted_other and not require_no_other_accepted)
+    ):
+        return {}, ["strict_authority_permitted_other_slot_set_invalid"]
     try:
         binding = generation_binding(checkpoint)
         run_id = authority_run_id(binding["workflow_run_id"])
@@ -3769,9 +3785,13 @@ def validate_receipts(
         if count != 1:
             errors.append(f"strict_authority_{slot}_accepted_count:{count}")
     if require_no_other_accepted:
-        extras = sorted(set(by_slot) - set(required))
+        extras = sorted(set(by_slot) - set(required) - set(permitted_other))
         if extras:
             errors.append("strict_authority_unexpected_accepted_slots:" + ",".join(extras))
+        for slot in permitted_other:
+            count = len(by_slot.get(slot, []))
+            if count > 1:
+                errors.append(f"strict_authority_{slot}_accepted_count:{count}")
     for phase_name, representative in phase_representatives.items():
         anchor = phase_anchors.get(phase_name)
         if anchor is None:
@@ -4080,6 +4100,7 @@ def authority_summary(
     expected_context_bindings: dict[str, dict[str, Any]] | None = None,
     expected_invocation_evidence: dict[str, dict[str, Any]] | None = None,
     require_no_other_accepted: bool = False,
+    permitted_other_accepted_slots: Iterable[str] = (),
     matching_abandon_reason: str | None = None,
 ) -> dict[str, Any]:
     required_slots = tuple(required_slots)
@@ -4090,6 +4111,7 @@ def authority_summary(
         expected_role_results=expected_role_results,
         expected_context_bindings=expected_context_bindings,
         require_no_other_accepted=require_no_other_accepted,
+        permitted_other_accepted_slots=permitted_other_accepted_slots,
         matching_abandon_reason=matching_abandon_reason,
     )
     required_set = set(required_slots)
