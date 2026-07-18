@@ -2129,6 +2129,136 @@ def test_gate_receipt_replay_allows_only_the_ordered_bound_suffix(
     )
 
 
+def test_permitted_authority_suffix_must_be_canonical(authority):
+    module, _store = authority
+    _refs, errors = module.validate_receipts(
+        _checkpoint(),
+        required_slots=module.MASTER_SLOTS,
+        require_no_other_accepted=True,
+        permitted_other_accepted_slots=("critic",),
+    )
+    assert errors == [
+        "strict_authority_permitted_other_slot_sequence_invalid"
+    ]
+
+    _refs, errors = module.validate_receipts(
+        _checkpoint(),
+        required_slots=module.MASTER_SLOTS,
+        require_no_other_accepted=True,
+        permitted_other_accepted_slots=("critic", "review"),
+    )
+    assert errors == [
+        "strict_authority_permitted_other_slot_sequence_invalid"
+    ]
+
+
+def test_gate_revisions_and_permitted_suffix_event_order_are_strict(authority):
+    module, _store = authority
+
+    skipped_suffix = _checkpoint(revision=10)
+    skipped_suffix["workflow_run_id"] = "strict-gate-skipped-review"
+    for slot in module.MASTER_SLOTS:
+        _call(module, skipped_suffix, slot)
+    _call(
+        module,
+        {**skipped_suffix, "stage": "reviewed", "checkpoint_revision": 30},
+        "critic",
+    )
+    _refs, skipped_suffix_errors = module.validate_receipts(
+        {**skipped_suffix, "stage": "reviewed", "checkpoint_revision": 40},
+        required_slots=module.MASTER_SLOTS,
+        require_no_other_accepted=True,
+        permitted_other_accepted_slots=("review", "critic"),
+    )
+    assert "strict_authority_permitted_other_slot_gap" in skipped_suffix_errors
+
+    review_same_as_master = _checkpoint(revision=10)
+    review_same_as_master[
+        "workflow_run_id"
+    ] = "strict-review-same-master-revision"
+    for slot in module.MASTER_SLOTS:
+        _call(module, review_same_as_master, slot)
+    _call(
+        module,
+        {
+            **review_same_as_master,
+            "stage": "quality_passed",
+            "checkpoint_revision": 10,
+        },
+        "review",
+    )
+    _refs, review_revision_errors = module.validate_receipts(
+        {
+            **review_same_as_master,
+            "stage": "quality_passed",
+            "checkpoint_revision": 20,
+        },
+        required_slots=module.MASTER_SLOTS + ("review",),
+        require_no_other_accepted=True,
+    )
+    assert (
+        "strict_authority_review_revision_precedes_master"
+        in review_revision_errors
+    )
+
+    same_revision = _checkpoint(revision=10)
+    same_revision["workflow_run_id"] = "strict-gate-same-revision"
+    for slot in module.MASTER_SLOTS:
+        _call(module, same_revision, slot)
+    _call(
+        module,
+        {**same_revision, "stage": "quality_passed", "checkpoint_revision": 20},
+        "review",
+    )
+    _call(
+        module,
+        {**same_revision, "stage": "reviewed", "checkpoint_revision": 20},
+        "critic",
+    )
+    _refs, same_revision_errors = module.validate_receipts(
+        {**same_revision, "stage": "reviewed", "checkpoint_revision": 30},
+        required_slots=module.MASTER_SLOTS + ("review",),
+        require_no_other_accepted=True,
+        permitted_other_accepted_slots=("critic",),
+    )
+    assert (
+        "strict_authority_critic_revision_precedes_review"
+        in same_revision_errors
+    )
+
+    reversed_events = _checkpoint(revision=10)
+    reversed_events["workflow_run_id"] = "strict-gate-reversed-events"
+    for slot in module.MASTER_SLOTS:
+        _call(module, reversed_events, slot)
+    # Keep the revisions semantically ordered while deliberately appending the
+    # Critic acceptance before Review.  Revision checks alone cannot prove the
+    # append-only phase boundary.
+    _call(
+        module,
+        {**reversed_events, "stage": "reviewed", "checkpoint_revision": 30},
+        "critic",
+    )
+    _call(
+        module,
+        {
+            **reversed_events,
+            "stage": "quality_passed",
+            "checkpoint_revision": 20,
+        },
+        "review",
+    )
+    _refs, reversed_errors = module.validate_receipts(
+        {**reversed_events, "stage": "reviewed", "checkpoint_revision": 40},
+        required_slots=module.MASTER_SLOTS + ("review",),
+        require_no_other_accepted=True,
+        permitted_other_accepted_slots=("critic",),
+    )
+    assert (
+        "strict_authority_permitted_other_event_order_invalid:critic"
+        in reversed_errors
+    )
+
+
 def _master_plan_for_role_results():
     proposals = [
         {"direction": direction, "proposal_id": f"proposal-{index}", "claim": direction}

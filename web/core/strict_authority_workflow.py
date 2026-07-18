@@ -3560,6 +3560,10 @@ def validate_receipts(
         or (permitted_other and not require_no_other_accepted)
     ):
         return {}, ["strict_authority_permitted_other_slot_set_invalid"]
+    if permitted_other and required + permitted_other != ALL_SLOTS[
+        : len(required) + len(permitted_other)
+    ]:
+        return {}, ["strict_authority_permitted_other_slot_sequence_invalid"]
     try:
         binding = generation_binding(checkpoint)
         run_id = authority_run_id(binding["workflow_run_id"])
@@ -3792,6 +3796,35 @@ def validate_receipts(
             count = len(by_slot.get(slot, []))
             if count > 1:
                 errors.append(f"strict_authority_{slot}_accepted_count:{count}")
+    if permitted_other:
+        # A permitted slot is an append-only suffix, never an unordered
+        # whitelist.  Missing trailing slots are valid while a later phase has
+        # not happened yet, but a suffix cannot skip an earlier permitted slot
+        # and every observed suffix event must be strictly later than the
+        # complete required boundary.  Master slots themselves remain free to
+        # complete concurrently in any event order.
+        present_suffix = [
+            slot for slot in permitted_other if len(by_slot.get(slot, [])) == 1
+        ]
+        if present_suffix != list(permitted_other[: len(present_suffix)]):
+            errors.append("strict_authority_permitted_other_slot_gap")
+        required_events = [
+            by_slot[slot][0]
+            for slot in required
+            if len(by_slot.get(slot, [])) == 1
+        ]
+        suffix_events = [by_slot[slot][0] for slot in present_suffix]
+        if len(required_events) == len(required) and suffix_events:
+            required_boundary = max(int(event.seq) for event in required_events)
+            previous_seq = required_boundary
+            for slot, event in zip(present_suffix, suffix_events):
+                event_seq = int(event.seq)
+                if event_seq <= previous_seq:
+                    errors.append(
+                        "strict_authority_permitted_other_event_order_invalid:"
+                        + slot
+                    )
+                previous_seq = event_seq
     for phase_name, representative in phase_representatives.items():
         anchor = phase_anchors.get(phase_name)
         if anchor is None:
@@ -3813,12 +3846,12 @@ def validate_receipts(
         master_revision = next(iter(master_revisions))
         review_revision = revisions.get("review")
         critic_revision = revisions.get("critic")
-        if review_revision is not None and review_revision < master_revision:
+        if review_revision is not None and review_revision <= master_revision:
             errors.append("strict_authority_review_revision_precedes_master")
         if (
             review_revision is not None
             and critic_revision is not None
-            and critic_revision < review_revision
+            and critic_revision <= review_revision
         ):
             errors.append("strict_authority_critic_revision_precedes_review")
     return refs, list(dict.fromkeys(errors))
