@@ -4301,3 +4301,20 @@ old Web process.  Only after that proof may the runtime fast-forward through
 evaluator/official diagnostics, and start a fresh Contract-40 v143.  No old
 v61 Quality/70-hand/Reviewer evidence migrates to the new artifact, and the
 restart begins stability observation at **0/10**.
+
+The stopped-runtime transition subsequently completed on the recorded old
+HEAD.  Exact-CAS identity was
+`generation:143:workflow-v61` / v143 from v142 / revision 9 /
+`quality_passed`; the forced reason named reviewed pre-transition freeze
+`8c74758c`.  Canonical transaction
+`25da2aa1207fa20772a8913ad95e44006364730a6d4b3f8cefe37266c97b7624`
+published abandon receipt
+`e63f471a3aa4643da1ee7ef1ff7079010276dfa43136dec70faeeea1bff9f393`
+and finalize receipt
+`56093e4957d792908f612c7a12da97b991709b88565c1df6550ddb36ffd3980e`.
+The finalizer reports `checkpoint_cleared=true` and candidate state
+`quarantine`; the active checkpoint and `bots/national_v143` path are absent.
+Both workflow instances (`generation:143:workflow-v61` and its
+`:strict-authority-v3` child) are durably `abandoned`; every provider/Worker
+effect is terminal.  This paragraph is a documentation-only follow-up to the
+named freeze and does not change its evaluation contract.
