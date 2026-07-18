@@ -1787,6 +1787,342 @@ def test_completed_abandon_handoff_reproves_boundary_outer_reason(
     )
 
 
+def _configure_historical_terminal_main(
+    monkeypatch,
+    *,
+    recorded_head="a" * 40,
+    current_head="b" * 40,
+    remote_head=None,
+    branch="main",
+    tracked_status="",
+    ancestor=True,
+):
+    """Model a clean fetched ``main`` descendant without using test Git."""
+
+    remote_head = remote_head if remote_head is not None else current_head
+
+    def fake_git(*args, **_kwargs):
+        values = {
+            ("rev-parse", f"{recorded_head}^{{commit}}"):
+                recorded_head,
+            ("rev-parse", "HEAD"): current_head,
+            ("rev-parse", "refs/remotes/origin/main"): remote_head,
+            ("branch", "--show-current"): branch,
+            ("status", "--porcelain", "--untracked-files=no"):
+                tracked_status,
+        }
+        if args in values:
+            return values[args]
+        raise AssertionError(f"unexpected historical git call: {args!r}")
+
+    monkeypatch.setattr(tbm, "_evolution_git", fake_git)
+    monkeypatch.setattr(
+        tbm,
+        "_historical_head_is_ancestor",
+        lambda old, new: bool(
+            ancestor and old == recorded_head and new == current_head
+        ),
+    )
+
+
+def _completed_historical_reproof_fixture(
+    tmp_path,
+    monkeypatch,
+    *,
+    reason="abandon_generation",
+    inner_reason=None,
+    legacy_causation=False,
+):
+    """Finalize a schema-2 transaction, then model a source-only sync."""
+
+    from worker_workflow import WorkerWorkflow
+    from workflow_kernel import content_digest
+
+    checkpoint, state_file, candidate, claim, transaction_dir = (
+        _schema2_claim_fixture(tmp_path, monkeypatch, reason=reason)
+    )
+    if inner_reason is not None:
+        workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+        workflow.abandon(inner_reason)
+    elif legacy_causation:
+        workflow = WorkerWorkflow.for_checkpoint(checkpoint)
+        workflow.abandon(reason)
+        database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+        connection = __import__("sqlite3").connect(database)
+        try:
+            connection.execute(
+                "UPDATE workflow_events SET causation_id = ? "
+                "WHERE run_id = ? AND event_type = 'WorkerAbandoned'",
+                (
+                    f"worker-abandoned:{workflow.run_id}:cycle-0:"
+                    f"{content_digest(reason)}",
+                    workflow.run_id,
+                ),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def clear(**_kwargs):
+        state_file.unlink()
+        return True
+
+    monkeypatch.setattr(tbm, "clear_pipeline_checkpoint", clear)
+    result = _run(tbm._do_abandon_generation(
+        reason=reason,
+        _bypass_rate_limit=True,
+        **tbm.expected_abandon_identity(checkpoint),
+    ))
+    assert result["abandoned"] is True, result
+    _configure_historical_terminal_main(monkeypatch)
+    return {
+        "checkpoint": checkpoint,
+        "state_file": state_file,
+        "candidate": candidate,
+        "claim": claim,
+        "transaction_dir": transaction_dir,
+        "result": result,
+    }
+
+
+def test_historical_completed_abandon_reproof_allows_clean_main_descendant(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    # The historical path must not try to recreate/read a vanished checkpoint
+    # or invoke the mutating clear primitive.  Its only state input is the
+    # immutable finalized transaction and the fenced journals.
+    monkeypatch.setattr(
+        tbm,
+        "read_pipeline_checkpoint",
+        lambda: (_ for _ in ()).throw(AssertionError("checkpoint read")),
+    )
+    monkeypatch.setattr(
+        tbm,
+        "clear_pipeline_checkpoint",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("checkpoint clear")),
+    )
+
+    proof = tbm.reprove_historical_completed_abandon(
+        state["claim"]["transaction_id"]
+    )
+
+    assert proof["kind"] == "national-policy-historical-completed-abandon-reproof-v1"
+    assert proof["authority"] == "completed_abandon_terminal_evidence_only"
+    assert proof["prepare_authorized"] is False
+    assert proof["next_tool"] is None
+    assert proof["transaction_id"] == state["claim"]["transaction_id"]
+    assert proof["checkpoint_identity"] == state["claim"]["checkpoint"]
+    assert proof["source"] == {
+        "recorded_git_head": "a" * 40,
+        "current_git_head": "b" * 40,
+        "remote_main_ref": "refs/remotes/origin/main",
+        "remote_main_head": "b" * 40,
+        "source_descendant_verified": True,
+    }
+    assert proof["workflow_fences"]["worker"]["terminal_event"] == (
+        "WorkerAbandoned"
+    )
+    assert not state["state_file"].exists()
+    assert not state["candidate"].exists()
+
+
+def test_historical_head_ancestry_accepts_actual_v48_recorded_main_lineage():
+    """The v48 claim records edbf; this source branch is its descendant."""
+
+    import subprocess
+
+    recorded_v48_head = "edbfcbfd9ede858606d4910b8074c90a82aeb6e7"
+    current = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(tbm.PROJECT_ROOT),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert tbm._historical_head_is_ancestor(recorded_v48_head, current)
+
+
+@pytest.mark.parametrize(
+    ("outer_length", "legacy_causation"),
+    ((999, False), (1000, False), (1001, True), (4096, True)),
+)
+def test_historical_completed_abandon_reproof_accepts_bounded_reason_compatibility(
+    tmp_path,
+    monkeypatch,
+    outer_length,
+    legacy_causation,
+):
+    prefix = "worker_terminal_abandon:"
+    outer_reason = prefix + "x" * (outer_length - len(prefix))
+    state = _completed_historical_reproof_fixture(
+        tmp_path,
+        monkeypatch,
+        reason=outer_reason,
+        legacy_causation=legacy_causation,
+    )
+
+    proof = tbm.reprove_historical_completed_abandon(
+        state["claim"]["transaction_id"]
+    )
+
+    assert proof["workflow_fences"]["worker"]["terminal_reason"] == (
+        outer_reason[:1000]
+    )
+    assert proof["workflow_fences"]["strict_authority"]["terminal_reason"] == (
+        outer_reason[:1000]
+    )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error"),
+    (
+        ({"branch": "feature"}, "historical_completed_abandon_not_on_main"),
+        (
+            {"remote_head": "c" * 40},
+            "historical_completed_abandon_main_not_fetched",
+        ),
+        (
+            {"tracked_status": " M web/core/tool_bot_management.py"},
+            "historical_completed_abandon_tracked_worktree_dirty",
+        ),
+        (
+            {"ancestor": False},
+            "historical_completed_abandon_main_not_descendant",
+        ),
+    ),
+)
+def test_historical_completed_abandon_reproof_rejects_untrusted_current_source(
+    tmp_path,
+    monkeypatch,
+    kwargs,
+    error,
+):
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    _configure_historical_terminal_main(monkeypatch, **kwargs)
+
+    with pytest.raises(RuntimeError, match=error):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+
+def test_historical_completed_abandon_reproof_rejects_live_or_unfinalized_paths(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    state["state_file"].write_text("{}", encoding="utf-8")
+
+    with pytest.raises(
+        RuntimeError,
+        match="historical_completed_abandon_terminal_paths_live",
+    ):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+    state["state_file"].unlink()
+    (state["transaction_dir"] / "receipt.json").unlink()
+    with pytest.raises(
+        RuntimeError,
+        match="historical_completed_abandon_finalize_receipt_missing",
+    ):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+
+def test_historical_completed_abandon_reproof_rejects_advanced_ledger(
+    tmp_path,
+    monkeypatch,
+):
+    import evolution_infra
+
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    original = evolution_infra.load_abandoned_version_receipts(
+        path=tbm.RESULTS_DIR / "abandoned_versions.jsonl",
+        project_root=tbm.PROJECT_ROOT,
+    )[-1]
+    later = _strict_checkpoint(
+        145,
+        143,
+        "master_planned",
+        published_high_water=143,
+        abandoned_receipt_floor=144,
+        abandoned_receipt_head_digest=original["receipt_digest"],
+    )
+    evolution_infra.append_abandoned_version_receipt(
+        later,
+        reason="later-legitimate-abandon",
+        timestamp=99.0,
+        path=tbm.RESULTS_DIR / "abandoned_versions.jsonl",
+        project_root=tbm.PROJECT_ROOT,
+    )
+    with pytest.raises(RuntimeError, match="recorded_abandon_active_ledger_advanced"):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+
+def test_historical_completed_abandon_reproof_rejects_tampered_journal(
+    tmp_path,
+    monkeypatch,
+):
+    # A fresh terminal transaction reaches the journal proof; a forged event
+    # with a re-signed payload digest still fails its causal binding.
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    _rewrite_terminal_payload(
+        database,
+        state["checkpoint"]["workflow_run_id"],
+        "WorkerAbandoned",
+        {"reason": "unbound_worker_reason"},
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_WorkerAbandoned_reason_unbound",
+    ):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+
+def test_historical_completed_abandon_reproof_rejects_unbound_strict_reason(
+    tmp_path,
+    monkeypatch,
+):
+    import sqlite3
+
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    database = tbm.RESULTS_DIR / "workflow" / "events.sqlite3"
+    strict_run_id = strict_authority.authority_run_id(
+        state["checkpoint"]["workflow_run_id"]
+    )
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE workflow_events SET causation_id = ? "
+            "WHERE run_id = ? AND event_type = 'StrictAuthorityAbandoned'",
+            ("strict-authority-abandoned:forged", strict_run_id),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        RuntimeError,
+        match="completed_abandon_StrictAuthorityAbandoned_reason_unbound",
+    ):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+
+def test_historical_completed_abandon_reproof_rejects_resurrected_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    state = _completed_historical_reproof_fixture(tmp_path, monkeypatch)
+    quarantine = state["transaction_dir"] / "candidate"
+    quarantine.rename(state["candidate"])
+
+    with pytest.raises(
+        RuntimeError,
+        match="historical_completed_abandon_candidate_not_finalized",
+    ):
+        tbm.reprove_historical_completed_abandon(state["claim"]["transaction_id"])
+
+
 def test_completed_abandon_handoff_allows_monotonic_terminal_revision(
     tmp_path,
     monkeypatch,

@@ -9,6 +9,7 @@ from contextlib import nullcontext
 from pathlib import Path
 import sqlite3
 import stat
+import subprocess
 import time
 from typing import TypedDict
 
@@ -27,6 +28,7 @@ from tool_helpers import (
 from system_log import log_system_event
 
 from evolution_infra import (
+    EVOLUTION_BRANCH,
     MAX_PRECOMMIT_RETRIES,
     BOTS_DIR,
     append_abandoned_version_receipt,
@@ -53,6 +55,7 @@ from epoch_authority import (
 
 # A4 (2026-06-30): rate-limit state for abandon_generation. [timestamp, reason].
 _LAST_ABANDON_TS = [0.0, ""]
+_TERMINAL_REASON_MAX_CHARS = 1000
 
 
 def _fsync_parent_directory(path) -> None:
@@ -496,7 +499,10 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
             if (
                 not isinstance(reason, str)
                 or not reason
-                or len(reason) > 1000
+                # Both terminal producers slice with ``[:1000]``.  Exactly
+                # 1000 characters is a valid immutable legacy/current event;
+                # only a longer payload is malformed.
+                or len(reason) > _TERMINAL_REASON_MAX_CHARS
             ):
                 raise RuntimeError(
                     f"completed_abandon_{event_type}_reason_invalid"
@@ -615,6 +621,14 @@ def _validate_completed_abandon_workflow_fences(claim: dict) -> dict:
             ):
                 raise RuntimeError(
                     "completed_abandon_StrictAuthorityAbandoned_binding_invalid"
+                )
+            if event_type == "StrictAuthorityAbandoned" and (
+                event["causation_id"]
+                != f"strict-authority-abandoned:{run_id}:"
+                f"{content_digest(payload)}"
+            ):
+                raise RuntimeError(
+                    "completed_abandon_StrictAuthorityAbandoned_reason_unbound"
                 )
             live_effects = connection.execute(
                 "SELECT COUNT(*) FROM effects WHERE run_id = ? "
@@ -742,6 +756,177 @@ def validate_completed_abandon_handoff(
         "finalize_receipt_digest": finalize_receipt["receipt_digest"],
         "checkpoint_identity": terminal_identity,
         "workflow_fences": workflow_fences,
+    }
+
+
+def _historical_head_is_ancestor(
+    ancestor_head: str,
+    descendant_head: str,
+) -> bool:
+    """Return whether a recorded commit is in the checked-out main lineage."""
+
+    if not ancestor_head or not descendant_head:
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor_head, descendant_head],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _historical_completed_abandon_source_proof(claim: dict) -> dict:
+    """Bind a finalized abandon to a clean, fetched descendant of its main.
+
+    A completed terminal transaction has no live checkpoint to replay.  The
+    only safe source transition is therefore from the exact commit recorded in
+    the immutable claim to the current, fetched ``origin/main`` descendant.
+    This is deliberately narrower than normal active-checkpoint head drift:
+    it proves historical termination only and cannot resume the cleared plan.
+    """
+
+    recorded_head = str((claim.get("git_state") or {}).get("head") or "")
+    remote_main_ref = f"refs/remotes/origin/{EVOLUTION_BRANCH}"
+    try:
+        resolved_recorded = _evolution_git(
+            "rev-parse", f"{recorded_head}^{{commit}}"
+        )
+        current_head = _evolution_git("rev-parse", "HEAD")
+        remote_main_head = _evolution_git("rev-parse", remote_main_ref)
+        current_branch = _evolution_git("branch", "--show-current")
+        tracked_status = _evolution_git(
+            "status", "--porcelain", "--untracked-files=no"
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "historical_completed_abandon_git_identity_unavailable"
+        ) from exc
+
+    if resolved_recorded != recorded_head:
+        raise RuntimeError("historical_completed_abandon_recorded_head_invalid")
+    if current_branch != EVOLUTION_BRANCH:
+        raise RuntimeError("historical_completed_abandon_not_on_main")
+    if current_head != remote_main_head:
+        raise RuntimeError("historical_completed_abandon_main_not_fetched")
+    if tracked_status:
+        raise RuntimeError("historical_completed_abandon_tracked_worktree_dirty")
+    if not _historical_head_is_ancestor(recorded_head, current_head):
+        raise RuntimeError("historical_completed_abandon_main_not_descendant")
+    return {
+        "recorded_git_head": recorded_head,
+        "current_git_head": current_head,
+        "remote_main_ref": remote_main_ref,
+        "remote_main_head": remote_main_head,
+        "source_descendant_verified": True,
+    }
+
+
+def reprove_historical_completed_abandon(transaction_id: str) -> dict:
+    """Read-only reproof for one finalized, checkpoint-free abandon.
+
+    This recovery path intentionally has no ``checkpoint`` or provider-result
+    argument.  It may consume only the existing schema-2 claim, finalized
+    receipt, append-only ledger, and fenced workflow journals.  It refuses a
+    live/unfinalized transaction, a later ledger head, a resurrected candidate,
+    or a source checkout that is not a clean fetched descendant of the exact
+    recorded main commit.  It never clears, rewrites, or synthesizes runtime
+    state; a caller may use the returned proof solely to authorize a fresh
+    post-terminal prepare on current main.
+    """
+
+    if not _is_autonomous_runtime_checkout():
+        raise RuntimeError(
+            "historical_completed_abandon_requires_autonomous_runtime_checkout"
+        )
+    transaction_id = str(transaction_id or "")
+    if (
+        len(transaction_id) != 64
+        or any(char not in "0123456789abcdef" for char in transaction_id)
+    ):
+        raise RuntimeError("historical_completed_abandon_transaction_id_invalid")
+
+    transaction_dir = (
+        Path(RESULTS_DIR)
+        / "policy_epoch_abandon_transactions"
+        / transaction_id
+    )
+    _assert_safe_existing_transaction_chain(transaction_dir)
+    claim = _read_json_regular(transaction_dir / "claim.json")
+    validate_schema2_abandon_claim_structure(claim)
+    if claim.get("transaction_id") != transaction_id:
+        raise RuntimeError(
+            "historical_completed_abandon_transaction_identity_mismatch"
+        )
+
+    from evolution_core import PIPELINE_STATE_FILE
+
+    live_claim = Path(RESULTS_DIR) / "policy_epoch_reconciliation_claim.json"
+    if os.path.lexists(PIPELINE_STATE_FILE) or os.path.lexists(live_claim):
+        raise RuntimeError("historical_completed_abandon_terminal_paths_live")
+
+    finalize_path = transaction_dir / "receipt.json"
+    if not os.path.lexists(finalize_path):
+        raise RuntimeError("historical_completed_abandon_finalize_receipt_missing")
+    finalize_receipt = _read_json_regular(finalize_path)
+    rows = load_abandoned_version_receipts(
+        path=Path(RESULTS_DIR) / "abandoned_versions.jsonl",
+        project_root=PROJECT_ROOT,
+    )
+    # Unlike generic historical receipt validation, terminal handoff must be
+    # the current ledger tip.  A later abandon means a successor lifecycle has
+    # already consumed this boundary and this reproof is not actionable.
+    abandon_receipt = validate_schema2_abandon_ledger_history(
+        claim,
+        rows,
+        require_active_head=True,
+    )
+    if abandon_receipt is None:
+        raise RuntimeError("historical_completed_abandon_receipt_missing")
+    validate_schema2_abandon_finalize_receipt(
+        claim,
+        finalize_receipt,
+        rows,
+    )
+
+    version = int(claim["checkpoint"]["next_v"])
+    candidate = Path(get_bot_dir(version))
+    _transaction_dir, quarantine = _claim_transaction_paths(claim)
+    candidate_state = _validate_claim_candidate_state(
+        claim,
+        candidate,
+        quarantine,
+    )
+    expected_candidate_state = (
+        "quarantine" if claim["candidate"]["present"] else "absent"
+    )
+    if candidate_state != expected_candidate_state:
+        raise RuntimeError(
+            "historical_completed_abandon_candidate_not_finalized"
+        )
+    if git_dir_is_committed(version) or git_has_publication_ref(version):
+        raise RuntimeError("historical_completed_abandon_candidate_published")
+
+    source = _historical_completed_abandon_source_proof(claim)
+    workflow_fences = _validate_completed_abandon_workflow_fences(claim)
+    return {
+        "kind": "national-policy-historical-completed-abandon-reproof-v1",
+        # This is evidence that a prior workflow is terminal, not a scheduler
+        # capability.  The next generation must still be freshly prepared by
+        # the normal outer loop under the current source/evaluation contract.
+        "authority": "completed_abandon_terminal_evidence_only",
+        "prepare_authorized": False,
+        "next_tool": None,
+        "transaction_id": transaction_id,
+        "checkpoint_identity": dict(claim["checkpoint"]),
+        "abandon_receipt_digest": abandon_receipt["receipt_digest"],
+        "finalize_receipt_digest": finalize_receipt["receipt_digest"],
+        "workflow_fences": workflow_fences,
+        "source": source,
     }
 
 
