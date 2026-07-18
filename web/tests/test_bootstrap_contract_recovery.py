@@ -114,6 +114,33 @@ def test_bootstrap_contract_chain_binds_baseline_parked_authorization_and_contro
     ) == []
 
 
+def test_bootstrap_contract_chain_rejects_self_consistent_old_contract_version():
+    (
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+    ) = _contract_chain()
+    parked["evaluation_contract_version"] = 39
+    authorization["evaluation_contract_version"] = 39
+
+    issues = recovery._bootstrap_contract_chain_issues(
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+        expected_evaluation_contract_version=39,
+        expected_evaluation_contract_hash=OLD_HASH,
+        expected_checkpoint_contract_digest="a" * 64,
+        expected_protocol_bootstrap_receipt_digest="b" * 64,
+        expected_first_strict_control_receipt_digest="c" * 64,
+    )
+
+    assert "bootstrap_contract_evaluation_contract_chain_mismatch" in issues
+
+
 @pytest.mark.parametrize(
     ("target", "field", "issue"),
     [
@@ -339,6 +366,21 @@ def test_build_claim_rejects_wrong_stage_cas_or_publication_state(
         _build(root, checkpoint)
 
     assert issue in exc.value.issues
+
+
+def test_build_claim_rejects_self_consistent_non_v40_baseline(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    checkpoint = _checkpoint()
+    checkpoint["repo_baseline"]["evaluation_contract"]["version"] = 39
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError) as exc:
+        _build(root, checkpoint)
+
+    assert "bootstrap_contract_baseline_contract_invalid" in exc.value.issues
 
 
 def test_publish_and_reload_external_claim_is_idempotent_and_content_bound(

@@ -36,6 +36,7 @@ from bot_namespace import (
 CLAIM_SCHEMA_VERSION = 1
 CLAIM_KIND = "official-bootstrap-contract-change-abandon-claim"
 CLAIM_DIRNAME = "official_bootstrap_contract_change_abandon"
+PARKED_EVALUATION_CONTRACT_VERSION = 40
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _STRICT_FILES = frozenset({
@@ -67,6 +68,8 @@ def _bootstrap_contract_chain_issues(
     expected_first_strict_control_receipt_digest: str,
 ) -> list[str]:
     issues: list[str] = []
+    if expected_evaluation_contract_version != PARKED_EVALUATION_CONTRACT_VERSION:
+        issues.append("bootstrap_contract_evaluation_contract_chain_mismatch")
     if (
         parked.get("evaluation_contract_version")
         != expected_evaluation_contract_version
@@ -558,7 +561,8 @@ def build_claim(
         baseline.get("evaluation_contract"), dict
     ) else {}
     if (
-        old_contract.get("stage") != "official_bootstrap_required"
+        old_contract.get("version") != PARKED_EVALUATION_CONTRACT_VERSION
+        or old_contract.get("stage") != "official_bootstrap_required"
         or not _HEX64.fullmatch(str(old_contract.get("hash") or ""))
         or baseline.get("error")
         or baseline.get("truncated") is True
