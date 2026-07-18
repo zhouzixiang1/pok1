@@ -634,6 +634,7 @@ def _apply_typed_runtime_probe(
         RUNTIME_PROBE_SCHEMA_VERSION,
         runtime_probe_native_template_evidence,
         run_national_runtime_probe,
+        validate_runtime_probe_repeatability_evidence,
     )
 
     static_checks = capabilities.get("checks_by_id") or {}
@@ -680,6 +681,23 @@ def _apply_typed_runtime_probe(
             "managed_isolation_digest": "",
         }
     probe = deepcopy(probe)
+    if static_ready:
+        repeatability_errors = validate_runtime_probe_repeatability_evidence(probe)
+        if repeatability_errors:
+            probe["issues"] = list(dict.fromkeys([
+                *(probe.get("issues") or []),
+                *(
+                    "runtime_probe_repeatability_evidence_invalid:"
+                    f"{item}"
+                    for item in repeatability_errors
+                ),
+            ]))
+            was_successful = probe.get("ok") is True
+            probe["ok"] = False
+            probe["repeatability_ok"] = False
+            probe["evidence_integrity_ok"] = False
+            if was_successful and probe.get("failure_class") == "none":
+                probe["failure_class"] = "probe_infra"
     probe["runtime_contract_ledger_digest"] = runtime_contract_ledger_digest(
         runtime_contract_ledger
     )

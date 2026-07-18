@@ -144,6 +144,29 @@ def test_blueprint_manifest_is_bound_to_runtime_policy_and_complete_oracle_set()
     assert "system_bootstrap_official_oracle_set_mismatch" in errors
 
 
+def test_v143_bootstrap_requires_structural_dynamic_repeatability_receipt():
+    """The special first-strict route shares normal quality's fail-closed gate."""
+
+    import system_strict_bootstrap
+
+    errors = system_strict_bootstrap._quality_repeatability_errors({
+        "all_passed": True,
+        "critical_scenarios_passed": True,
+        "national_capability_contract": {
+            "dynamic_runtime_probe": {
+                "ok": True,
+                "repeatability_ok": True,
+                "evidence_integrity_ok": True,
+            }
+        },
+    })
+
+    assert (
+        "system_bootstrap_quality_repeatability_invalid:"
+        "runtime_probe_repeatability_evidence_missing"
+    ) in errors
+
+
 def test_first_strict_review_records_final_provider_prompt_authority(
     tmp_path,
     monkeypatch,

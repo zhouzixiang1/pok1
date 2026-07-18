@@ -27,11 +27,21 @@ def _allow_tmp_candidate_publication_shape(monkeypatch) -> None:
 def _structural_quality_admission(candidate: Path, *, next_v: int) -> dict:
     from national_native import NATIONAL_DECISION_RUNTIME_VERSION
     from national_runtime_authority import current_system_native_runtime_identity
-    from national_runtime_probe import runtime_probe_native_template_evidence
+    from national_runtime_probe import (
+        RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        RUNTIME_PROBE_IDENTITY_DIGEST,
+        RUNTIME_PROBE_LIMITS_DIGEST,
+        RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION,
+        RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT,
+        RUNTIME_PROBE_SCENARIO_DIGEST,
+        RUNTIME_PROBE_SCHEMA_VERSION,
+        runtime_probe_native_template_evidence,
+    )
+    from official_platform_harness import FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION
 
     runtime_evidence = runtime_probe_native_template_evidence()
     payload = {
-        "schema_version": 1,
+        "schema_version": FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION,
         "kind": "official-formal-quality-admission",
         "candidate_path": str(candidate.resolve()),
         "candidate_hash": "a" * 64,
@@ -46,10 +56,19 @@ def _structural_quality_admission(candidate: Path, *, next_v: int) -> dict:
         "dynamic_probe_digest": "3" * 64,
         "runtime_contract_ledger_digest": "4" * 64,
         "runtime_probe_identity": {
-            "scenario_digest": "5" * 64,
-            "limits_digest": "6" * 64,
-            "probe_identity_digest": "7" * 64,
+            "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+            "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+            "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+            "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+            "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
             "managed_isolation_digest": "8" * 64,
+            "repeatability_schema_version": (
+                RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION
+            ),
+            "repeatability_view_contract": (
+                RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT
+            ),
+            "repeatability_evidence_digest": "9" * 64,
             **runtime_evidence,
         },
         "system_runtime_identity": current_system_native_runtime_identity(),

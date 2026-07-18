@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import subprocess
@@ -30,27 +31,55 @@ from national_runtime_authority import (
     system_native_runtime_identity_structure_issues,
 )
 from national_runtime_probe_scenarios import (
+    DECISION_SCENARIOS,
+    LINE_SCENARIO_PAIRS,
     RUNTIME_PROBE_SCENARIO_DIGEST,
     RUNTIME_PROBE_SCENARIO_VERSION,
 )
 
 
-RUNTIME_PROBE_SCHEMA_VERSION = 17
+RUNTIME_PROBE_SCHEMA_VERSION = 18
 # The probe cache is also a quality-evidence cache.  Its identity must change
 # when the system-owned wire client changes, even when the candidate's five
 # artifact files have not.  Otherwise a changed name/stream/decision path
 # could inherit a result that was exercised against an older native template.
-RUNTIME_PROBE_ORCHESTRATOR_VERSION = 18
-RUNTIME_PROBE_WORKER_VERSION = 18
-RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION = 2
+RUNTIME_PROBE_ORCHESTRATOR_VERSION = 19
+RUNTIME_PROBE_WORKER_VERSION = 19
+RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION = 3
 # Only this bounded, redacted semantic projection participates in repeated-run
 # equality.  A candidate's deadline-dependent refinement trace is evidence of
 # bounded work, but it is not a stable final action contract.
 RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT = (
-    "stable-safety-semantics-no-deadline-trace-v2"
+    "stable-safety-semantics-per-scenario-refinement-v3"
 )
 RUNTIME_PROBE_MAX_REPEAT_VIEW_DIGESTS = 8
 RUNTIME_PROBE_MAX_REPEAT_DIFF_PATHS = 64
+RUNTIME_PROBE_REPEATABILITY_DIGEST_ALGORITHM = "sha256-canonical-json-v1"
+RUNTIME_PROBE_REPEATABILITY_REDACTION = {
+    "repeat_views": "digest-and-json-pointer-only",
+    "candidate_source": "omitted",
+    "raw_context": "omitted",
+    "worker_stdout_stderr": "omitted",
+}
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_JSON_POINTER_RE = re.compile(r"/[A-Za-z0-9_./~\-]*\Z")
+_CANONICAL_WIRE_RE = re.compile(r"(?:fold|call|check|allin|raise [1-9]\d*)\Z")
+_LINE_ACTIVITY_DIMENSIONS = frozenset(
+    str(pair["dimension"]) for pair in LINE_SCENARIO_PAIRS
+)
+_COUNTERFACTUAL_ACTIVITY_DIMENSIONS = frozenset({
+    "action_profile",
+    "terminal_response",
+    "showdown_range",
+})
+_MATCH_CONTROL_ACTIVITY_ROWS = frozenset({
+    "strict_win",
+    "equality_boundary",
+    "malformed_proof",
+})
+_OFFICIAL_TRANSCRIPT_SCENARIO_IDS = frozenset(
+    str(scenario["id"]) for scenario in DECISION_SCENARIOS
+)
 RUNTIME_PROBE_TIMEOUT_SEC = 45.0
 RUNTIME_PROBE_REPEATS = 2
 RUNTIME_PROBE_MAX_IMPORT_MS = 2_500.0
@@ -502,9 +531,9 @@ def _refinement_active(value: dict[str, Any]) -> bool:
             or int(value.get("trusted_refinement_steps") or 0)
         )
     except (TypeError, ValueError, OverflowError):
-        # A malformed system metric must stay visible in the semantic view;
-        # treating it as active prevents a spurious final-action comparison.
-        return True
+        # A malformed system metric must not hide the final action.  Treat it
+        # as inactive so the decision and wire stay in the compared view.
+        return False
 
 
 def _stable_policy_entrypoints(value: Any) -> dict[str, Any]:
@@ -542,12 +571,31 @@ def _stable_policy_entrypoints(value: Any) -> dict[str, Any]:
     }
 
 
-def _stable_line_reachability(
-    value: Any,
+def _stable_action_fields(
+    raw: dict[str, Any],
     *,
-    refinement_active: bool,
+    actions: tuple[tuple[str, str, str], ...],
 ) -> dict[str, Any]:
-    """Keep causal/context truth; omit final trace wire only when active."""
+    """Bind each final action to its exact scenario's refinement status.
+
+    A dedicated budget probe is never authority to omit a wire from another
+    scenario.  Every non-budget observation must carry its own system-owned
+    ``*_refinement_active`` bit; when it is false the final typed decision and
+    wire stay in the repeat view.
+    """
+
+    stable: dict[str, Any] = {}
+    for activity_key, decision_key, wire_key in actions:
+        active = raw.get(activity_key)
+        stable[activity_key] = active
+        if active is not True:
+            stable[decision_key] = raw.get(decision_key)
+            stable[wire_key] = raw.get(wire_key)
+    return stable
+
+
+def _stable_line_reachability(value: Any) -> dict[str, Any]:
+    """Keep causal/context truth and per-scenario action evidence."""
 
     evidence = value if isinstance(value, dict) else {}
     dimensions: dict[str, Any] = {}
@@ -589,20 +637,31 @@ def _stable_line_reachability(
                 "socket_validated",
             )
         }
-        if not refinement_active:
-            stable.update({
-                key: raw.get(key)
-                for key in (
+        stable.update(_stable_action_fields(
+            raw,
+            actions=(
+                (
+                    "positive_refinement_active",
                     "positive_decision",
-                    "negative_decision",
                     "positive_wire",
+                ),
+                (
+                    "negative_refinement_active",
+                    "negative_decision",
                     "negative_wire",
+                ),
+                (
+                    "mixed_identity_refinement_active",
                     "mixed_identity_decision",
                     "mixed_identity_wire",
+                ),
+                (
+                    "matched_control_refinement_active",
                     "matched_control_decision",
                     "matched_control_wire",
-                )
-            })
+                ),
+            ),
+        ))
         dimensions[str(name)] = stable
     return {
         "ok": evidence.get("ok"),
@@ -613,12 +672,8 @@ def _stable_line_reachability(
     }
 
 
-def _stable_counterfactuals(
-    value: Any,
-    *,
-    refinement_active: bool,
-) -> dict[str, Any]:
-    """Keep causal behavior; omit final trace actions only when active."""
+def _stable_counterfactuals(value: Any) -> dict[str, Any]:
+    """Keep causal behavior and per-profile final action evidence."""
 
     evidence = value if isinstance(value, dict) else {}
     dimensions: dict[str, Any] = {}
@@ -643,20 +698,23 @@ def _stable_counterfactuals(
                 "socket_validated",
             )
         }
-        if not refinement_active:
-            stable.update({
-                key: raw.get(key)
-                for key in (
-                    "left_decision",
-                    "right_decision",
-                    "left_wire",
-                    "right_wire",
+        stable.update(_stable_action_fields(
+            raw,
+            actions=(
+                ("left_refinement_active", "left_decision", "left_wire"),
+                ("right_refinement_active", "right_decision", "right_wire"),
+                (
+                    "negative_left_refinement_active",
                     "negative_left_decision",
-                    "negative_right_decision",
                     "negative_left_wire",
+                ),
+                (
+                    "negative_right_refinement_active",
+                    "negative_right_decision",
                     "negative_right_wire",
-                )
-            })
+                ),
+            ),
+        ))
         dimensions[str(name)] = stable
     return {
         "ok": evidence.get("ok"),
@@ -667,12 +725,8 @@ def _stable_counterfactuals(
     }
 
 
-def _stable_match_control(
-    value: Any,
-    *,
-    refinement_active: bool,
-) -> dict[str, Any]:
-    """Compare lock-win safety; omit final action bytes only when active."""
+def _stable_match_control(value: Any) -> dict[str, Any]:
+    """Compare lock-win safety with its exact scenario activity bit."""
 
     evidence = value if isinstance(value, dict) else {}
     rows: dict[str, Any] = {}
@@ -693,9 +747,10 @@ def _stable_match_control(
                 "expectation_met",
             )
         }
-        if not refinement_active:
-            stable["decision"] = raw.get("decision")
-            stable["wire"] = raw.get("wire")
+        stable.update(_stable_action_fields(
+            raw,
+            actions=(("refinement_active", "decision", "wire"),),
+        ))
         rows[str(name)] = stable
     return {
         "ok": evidence.get("ok"),
@@ -712,11 +767,10 @@ def _stable_budget_refinement(value: Any) -> dict[str, Any]:
     """Compare capability truth, while omitting variable budget consumption."""
 
     scaling = value if isinstance(value, dict) else {}
-    active = bool(scaling.get("active"))
-
     def stratum(name: str) -> dict[str, Any]:
         row = scaling.get(name)
         row = row if isinstance(row, dict) else {}
+        active = _refinement_active(row)
         stable = {
             key: row.get(key)
             for key in (
@@ -725,6 +779,7 @@ def _stable_budget_refinement(value: Any) -> dict[str, Any]:
                 "worker_seed",
             )
         }
+        stable["refinement_active"] = active
         # With no active refinement, the final action is a baseline/fallback
         # safety contract.  Once refinement is active it is deadline-variable
         # and the capability booleans below remain the required comparison.
@@ -737,7 +792,7 @@ def _stable_budget_refinement(value: Any) -> dict[str, Any]:
         "probe_kind": scaling.get("probe_kind"),
         "scenario": scaling.get("scenario"),
         "ok": scaling.get("ok"),
-        "active": active,
+        "active": bool(scaling.get("active")),
         "system_issues": scaling.get("system_issues") or [],
         "candidate_issues": scaling.get("candidate_issues") or [],
         "capability_issues": scaling.get("capability_issues") or [],
@@ -785,9 +840,6 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
             decision["decision"] = row.get("decision")
             decision["wire"] = row.get("wire")
         decisions.append(decision)
-    scaling = result.get("budget_scaled_refinement")
-    scaling = scaling if isinstance(scaling, dict) else {}
-    probe_refinement_active = bool(scaling.get("active"))
     return {
         "identity": {
             key: result.get(key)
@@ -815,20 +867,17 @@ def _repeatability_view(result: dict[str, Any]) -> dict[str, Any]:
         },
         "official_transcript_decisions": decisions,
         "line_reachability": _stable_line_reachability(
-            result.get("line_reachability"),
-            refinement_active=probe_refinement_active,
+            result.get("line_reachability")
         ),
         "persistent_memory": result.get("persistent_memory") or {},
         "policy_entrypoints": _stable_policy_entrypoints(
             result.get("policy_entrypoints")
         ),
         "policy_counterfactuals": _stable_counterfactuals(
-            result.get("policy_counterfactuals"),
-            refinement_active=probe_refinement_active,
+            result.get("policy_counterfactuals")
         ),
         "match_control_consumer": _stable_match_control(
-            result.get("match_control_consumer"),
-            refinement_active=probe_refinement_active,
+            result.get("match_control_consumer")
         ),
         "budget_scaled_refinement": _stable_budget_refinement(
             result.get("budget_scaled_refinement")
@@ -859,6 +908,257 @@ def _identity_issues(result: dict[str, Any], spec: dict[str, Any]) -> list[str]:
     ]
 
 
+def _per_scenario_activity_issues(result: dict[str, Any]) -> list[str]:
+    """Require the complete worker-owned action proof before comparison.
+
+    Refinement can make one final action deadline-variable, but it never
+    makes the row or its typed action/wire evidence optional.  The expected
+    fixed dimension sets are part of the worker/orchestrator schema binding:
+    accepting an empty or partial section would let two equally damaged
+    reports erase the comparisons they are meant to prove.
+    """
+
+    issues: list[str] = []
+
+    def valid_typed_intent(value: Any) -> bool:
+        if type(value) is not dict:
+            return False
+        kind = value.get("kind")
+        if kind not in {"fold", "pass", "allin", "raise"}:
+            return False
+        if kind == "raise":
+            return (
+                set(value) == {"kind", "raise_to"}
+                and type(value.get("raise_to")) is int
+                and value["raise_to"] > 0
+            )
+        return set(value) == {"kind"}
+
+    def valid_wire(value: Any) -> bool:
+        return (
+            isinstance(value, str)
+            and _CANONICAL_WIRE_RE.fullmatch(value) is not None
+        )
+
+    def validate_transcripts(value: Any) -> None:
+        if not isinstance(value, list):
+            issues.append("runtime_probe_official_transcript_list_invalid")
+            return
+        rows: dict[str, dict[str, Any]] = {}
+        for index, raw in enumerate(value):
+            if not isinstance(raw, dict):
+                issues.append(
+                    "runtime_probe_official_transcript_row_invalid:"
+                    f"index={index}"
+                )
+                continue
+            scenario_id = raw.get("id")
+            if not isinstance(scenario_id, str):
+                issues.append(
+                    "runtime_probe_official_transcript_id_invalid:"
+                    f"index={index}"
+                )
+                continue
+            if scenario_id in rows:
+                issues.append(
+                    "runtime_probe_official_transcript_id_duplicate:"
+                    f"{scenario_id}"
+                )
+                continue
+            rows[scenario_id] = raw
+        if set(rows) != _OFFICIAL_TRANSCRIPT_SCENARIO_IDS:
+            issues.append("runtime_probe_official_transcript_id_set_mismatch")
+        for scenario_id in sorted(_OFFICIAL_TRANSCRIPT_SCENARIO_IDS):
+            raw = rows.get(scenario_id)
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("ok") is not True:
+                issues.append(
+                    "runtime_probe_official_transcript_not_passed:"
+                    f"{scenario_id}"
+                )
+            row_issues = raw.get("issues")
+            if not isinstance(row_issues, list):
+                issues.append(
+                    "runtime_probe_official_transcript_issues_invalid:"
+                    f"{scenario_id}"
+                )
+            elif row_issues:
+                issues.append(
+                    "runtime_probe_official_transcript_issues_not_clear:"
+                    f"{scenario_id}"
+                )
+            if not valid_typed_intent(raw.get("decision")):
+                issues.append(
+                    "runtime_probe_official_transcript_decision_invalid:"
+                    f"{scenario_id}"
+                )
+            if not valid_wire(raw.get("wire")):
+                issues.append(
+                    "runtime_probe_official_transcript_wire_invalid:"
+                    f"{scenario_id}"
+                )
+            runtime = raw.get("runtime")
+            if not isinstance(runtime, dict):
+                issues.append(
+                    "runtime_probe_official_transcript_runtime_invalid:"
+                    f"{scenario_id}"
+                )
+                continue
+            for metric in (
+                "refinement_messages",
+                "trusted_refinement_steps",
+            ):
+                value = runtime.get(metric)
+                if type(value) is not int or value < 0:
+                    issues.append(
+                        "runtime_probe_official_transcript_refinement_metric_invalid:"
+                        f"{scenario_id}:{metric}"
+                    )
+
+    def validate_actions(
+        raw: Any,
+        *,
+        label: str,
+        actions: tuple[tuple[str, str, str], ...],
+    ) -> None:
+        if not isinstance(raw, dict):
+            issues.append(
+                "runtime_probe_per_scenario_refinement_row_invalid:" + label
+            )
+            return
+        for activity_key, decision_key, wire_key in actions:
+            # The worker owns these rows, so every declared observation must
+            # carry its activity bit even if a broken run omitted the action.
+            # Otherwise a pair of identically malformed reports could erase a
+            # final-action comparison from the repeat view.
+            if type(raw.get(activity_key)) is not bool:
+                issues.append(
+                    "runtime_probe_per_scenario_refinement_activity_invalid:"
+                    f"{label}:{activity_key}"
+                )
+            if not valid_typed_intent(raw.get(decision_key)):
+                issues.append(
+                    "runtime_probe_per_scenario_refinement_decision_invalid:"
+                    f"{label}:{decision_key}"
+                )
+            if not valid_wire(raw.get(wire_key)):
+                issues.append(
+                    "runtime_probe_per_scenario_refinement_wire_invalid:"
+                    f"{label}:{wire_key}"
+                )
+
+    def validate_section(
+        value: Any,
+        *,
+        label: str,
+        rows_key: str,
+        expected_rows: frozenset[str],
+        actions: tuple[tuple[str, str, str], ...],
+        issue_keys: tuple[str, ...],
+    ) -> None:
+        if not isinstance(value, dict):
+            issues.append(
+                "runtime_probe_per_scenario_refinement_section_invalid:" + label
+            )
+            return
+        if value.get("ok") is not True:
+            issues.append(
+                "runtime_probe_per_scenario_refinement_section_not_passed:"
+                + label
+            )
+        for key in issue_keys:
+            section_issues = value.get(key)
+            if not isinstance(section_issues, list):
+                issues.append(
+                    "runtime_probe_per_scenario_refinement_section_issues_invalid:"
+                    f"{label}:{key}"
+                )
+            elif section_issues:
+                issues.append(
+                    "runtime_probe_per_scenario_refinement_section_issues_not_clear:"
+                    f"{label}:{key}"
+                )
+        rows = value.get(rows_key)
+        if not isinstance(rows, dict):
+            issues.append(
+                "runtime_probe_per_scenario_refinement_rows_invalid:"
+                f"{label}:{rows_key}"
+            )
+            return
+        if set(rows) != expected_rows:
+            issues.append(
+                "runtime_probe_per_scenario_refinement_row_set_mismatch:" + label
+            )
+        for name in sorted(expected_rows):
+            validate_actions(
+                rows.get(name),
+                label=f"{label}:{name}",
+                actions=actions,
+            )
+
+    validate_transcripts(result.get("official_transcript_decisions"))
+    validate_section(
+        result.get("line_reachability"),
+        label="line",
+        rows_key="dimensions",
+        expected_rows=_LINE_ACTIVITY_DIMENSIONS,
+        actions=(
+            (
+                "positive_refinement_active",
+                "positive_decision",
+                "positive_wire",
+            ),
+            (
+                "negative_refinement_active",
+                "negative_decision",
+                "negative_wire",
+            ),
+            (
+                "mixed_identity_refinement_active",
+                "mixed_identity_decision",
+                "mixed_identity_wire",
+            ),
+            (
+                "matched_control_refinement_active",
+                "matched_control_decision",
+                "matched_control_wire",
+            ),
+        ),
+        issue_keys=("issues", "system_issues", "candidate_issues"),
+    )
+    validate_section(
+        result.get("policy_counterfactuals"),
+        label="counterfactual",
+        rows_key="dimensions",
+        expected_rows=_COUNTERFACTUAL_ACTIVITY_DIMENSIONS,
+        actions=(
+            ("left_refinement_active", "left_decision", "left_wire"),
+            ("right_refinement_active", "right_decision", "right_wire"),
+            (
+                "negative_left_refinement_active",
+                "negative_left_decision",
+                "negative_left_wire",
+            ),
+            (
+                "negative_right_refinement_active",
+                "negative_right_decision",
+                "negative_right_wire",
+            ),
+        ),
+        issue_keys=("issues", "system_issues", "candidate_issues"),
+    )
+    validate_section(
+        result.get("match_control_consumer"),
+        label="match_control",
+        rows_key="rows",
+        expected_rows=_MATCH_CONTROL_ACTIVITY_ROWS,
+        actions=(("refinement_active", "decision", "wire"),),
+        issue_keys=("system_issues", "candidate_issues"),
+    )
+    return list(dict.fromkeys(issues))
+
+
 def _repeat_validation_issues(
     result: dict[str, Any],
     spec: dict[str, Any],
@@ -873,6 +1173,7 @@ def _repeat_validation_issues(
     else:
         issues = ["runtime_probe_repeat_issues_shape_invalid"]
     issues.extend(_identity_issues(result, spec))
+    issues.extend(_per_scenario_activity_issues(result))
     if result.get("ok") is not True:
         issues.append("runtime_probe_repeat_not_ok")
     if result.get("failure_class") != "none":
@@ -983,7 +1284,7 @@ def _repeatability_evidence(
     return {
         "schema_version": RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION,
         "view_contract": RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT,
-        "view_digest_algorithm": "sha256-canonical-json-v1",
+        "view_digest_algorithm": RUNTIME_PROBE_REPEATABILITY_DIGEST_ALGORITHM,
         "repeat_count": len(views),
         "view_digest_count": len(digests),
         "view_digests": recorded_digests,
@@ -993,13 +1294,162 @@ def _repeatability_evidence(
         "differing_path_count": difference_count,
         "differing_paths": differences,
         "differing_paths_truncated": difference_count > len(differences),
-        "redaction": {
-            "repeat_views": "digest-and-json-pointer-only",
-            "candidate_source": "omitted",
-            "raw_context": "omitted",
-            "worker_stdout_stderr": "omitted",
-        },
+        "redaction": dict(RUNTIME_PROBE_REPEATABILITY_REDACTION),
     }
+
+
+def validate_runtime_probe_repeatability_evidence(
+    probe: dict[str, Any] | None,
+) -> list[str]:
+    """Fail closed unless a persisted repeatability receipt is self-consistent.
+
+    The host records only digest and JSON-pointer metadata, never the repeat
+    views themselves.  Every acceptance boundary calls this validator rather
+    than treating the three top-level success booleans as an authority.  It
+    verifies structural integrity and fenced-writer bindings; it does not
+    claim cryptographic protection from an actor able to replace every durable
+    checkpoint field together.
+    """
+
+    if not isinstance(probe, dict):
+        return ["runtime_probe_repeatability_probe_not_object"]
+    evidence = probe.get("repeatability")
+    if not isinstance(evidence, dict):
+        return ["runtime_probe_repeatability_evidence_missing"]
+
+    managed_isolation = probe.get("managed_isolation")
+    if not isinstance(managed_isolation, dict) or not managed_isolation:
+        issues = ["runtime_probe_repeatability_managed_isolation_missing"]
+    else:
+        issues = []
+    managed_isolation_digest = probe.get("managed_isolation_digest")
+    if (
+        not isinstance(managed_isolation_digest, str)
+        or _SHA256_RE.fullmatch(managed_isolation_digest) is None
+    ):
+        issues.append("runtime_probe_repeatability_managed_isolation_digest_invalid")
+    elif isinstance(managed_isolation, dict) and managed_isolation:
+        if managed_isolation_digest != _canonical_digest(managed_isolation):
+            issues.append(
+                "runtime_probe_repeatability_managed_isolation_digest_mismatch"
+            )
+
+    # Cache/reuse/commit/formal callers receive the persisted first run rather
+    # than the transient ``runs`` list.  Reapply the same fixed worker-row
+    # contract here so a hand-edited receipt cannot omit an action proof after
+    # fresh execution completed.
+    issues.extend(_per_scenario_activity_issues(probe))
+
+    expected_fields = {
+        "schema_version",
+        "view_contract",
+        "view_digest_algorithm",
+        "repeat_count",
+        "view_digest_count",
+        "view_digests",
+        "view_digests_truncated",
+        "differing_path_count",
+        "differing_paths",
+        "differing_paths_truncated",
+        "redaction",
+    }
+    if set(evidence) != expected_fields:
+        issues.append("runtime_probe_repeatability_evidence_fields_invalid")
+    if evidence.get("schema_version") != RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION:
+        issues.append("runtime_probe_repeatability_schema_mismatch")
+    if evidence.get("view_contract") != RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT:
+        issues.append("runtime_probe_repeatability_contract_mismatch")
+    if (
+        evidence.get("view_digest_algorithm")
+        != RUNTIME_PROBE_REPEATABILITY_DIGEST_ALGORITHM
+    ):
+        issues.append("runtime_probe_repeatability_digest_algorithm_mismatch")
+    if evidence.get("redaction") != RUNTIME_PROBE_REPEATABILITY_REDACTION:
+        issues.append("runtime_probe_repeatability_redaction_invalid")
+
+    repeat_count = evidence.get("repeat_count")
+    if type(repeat_count) is not int or repeat_count < 2:
+        issues.append("runtime_probe_repeatability_repeat_count_invalid")
+        repeat_count = 0
+    view_digest_count = evidence.get("view_digest_count")
+    if type(view_digest_count) is not int or view_digest_count != repeat_count:
+        issues.append("runtime_probe_repeatability_view_digest_count_invalid")
+    view_digests = evidence.get("view_digests")
+    if not isinstance(view_digests, list):
+        issues.append("runtime_probe_repeatability_view_digests_not_list")
+        view_digests = []
+    expected_recorded = min(repeat_count, RUNTIME_PROBE_MAX_REPEAT_VIEW_DIGESTS)
+    if len(view_digests) != expected_recorded:
+        issues.append("runtime_probe_repeatability_view_digests_length_invalid")
+    expected_digest_truncation = repeat_count > RUNTIME_PROBE_MAX_REPEAT_VIEW_DIGESTS
+    if evidence.get("view_digests_truncated") is not expected_digest_truncation:
+        issues.append("runtime_probe_repeatability_view_digests_truncation_invalid")
+    for index, item in enumerate(view_digests, start=1):
+        if not isinstance(item, dict) or set(item) != {"repeat", "sha256"}:
+            issues.append("runtime_probe_repeatability_view_digest_shape_invalid")
+            continue
+        if item.get("repeat") != index:
+            issues.append("runtime_probe_repeatability_view_digest_order_invalid")
+        digest = item.get("sha256")
+        if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
+            issues.append("runtime_probe_repeatability_view_digest_invalid")
+
+    differing_path_count = evidence.get("differing_path_count")
+    if type(differing_path_count) is not int or differing_path_count < 0:
+        issues.append("runtime_probe_repeatability_difference_count_invalid")
+        differing_path_count = -1
+    differing_paths = evidence.get("differing_paths")
+    if not isinstance(differing_paths, list):
+        issues.append("runtime_probe_repeatability_difference_paths_not_list")
+        differing_paths = []
+    if len(differing_paths) > RUNTIME_PROBE_MAX_REPEAT_DIFF_PATHS:
+        issues.append("runtime_probe_repeatability_difference_paths_unbounded")
+    if differing_path_count >= 0 and differing_path_count < len(differing_paths):
+        issues.append("runtime_probe_repeatability_difference_count_underflow")
+    expected_difference_truncation = differing_path_count > len(differing_paths)
+    if evidence.get("differing_paths_truncated") is not expected_difference_truncation:
+        issues.append("runtime_probe_repeatability_difference_truncation_invalid")
+    for item in differing_paths:
+        if not isinstance(item, dict) or set(item) != {"repeat", "json_pointer"}:
+            issues.append("runtime_probe_repeatability_difference_path_shape_invalid")
+            continue
+        repeat = item.get("repeat")
+        pointer = item.get("json_pointer")
+        if type(repeat) is not int or not 2 <= repeat <= repeat_count:
+            issues.append("runtime_probe_repeatability_difference_repeat_invalid")
+        if (
+            not isinstance(pointer, str)
+            or len(pointer) > 512
+            or _JSON_POINTER_RE.fullmatch(pointer) is None
+        ):
+            issues.append("runtime_probe_repeatability_difference_pointer_invalid")
+
+    success_flag_names = ("ok", "repeatability_ok", "evidence_integrity_ok")
+    for key in success_flag_names:
+        if type(probe.get(key)) is not bool:
+            issues.append(f"runtime_probe_repeatability_success_flag_invalid:{key}")
+    if not all(probe.get(key) is True for key in success_flag_names):
+        issues.append("runtime_probe_repeatability_not_passed")
+    if differing_path_count != 0 or differing_paths:
+        issues.append("runtime_probe_repeatability_pass_has_differences")
+    if evidence.get("differing_paths_truncated") is not False:
+        issues.append("runtime_probe_repeatability_pass_difference_truncated")
+    if (
+        all(probe.get(key) is True for key in success_flag_names)
+        and len(view_digests) == expected_recorded
+        and view_digests
+        and all(
+            isinstance(item, dict)
+            and _SHA256_RE.fullmatch(str(item.get("sha256") or "")) is not None
+            for item in view_digests
+        )
+    ):
+        first_digest = _canonical_digest(_repeatability_view(probe))
+        if view_digests[0].get("sha256") != first_digest:
+            issues.append("runtime_probe_repeatability_first_view_digest_mismatch")
+        if any(item.get("sha256") != first_digest for item in view_digests[1:]):
+            issues.append("runtime_probe_repeatability_pass_view_digests_diverge")
+    return list(dict.fromkeys(issues))
 
 
 def run_national_runtime_probe(
@@ -1105,4 +1555,5 @@ __all__ = [
     "runtime_probe_native_template_evidence",
     "runtime_probe_native_template_evidence_matches",
     "runtime_probe_limits",
+    "validate_runtime_probe_repeatability_evidence",
 ]

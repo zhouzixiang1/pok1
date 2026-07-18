@@ -1583,6 +1583,25 @@ def _native_runtime_evidence_current(gate: dict | None) -> bool:
     return runtime_probe_native_template_evidence_matches(gate)
 
 
+def _quality_runtime_probe_evidence_current(gate: dict | None) -> bool:
+    """Require a structurally valid dynamic repeatability receipt for reuse."""
+
+    try:
+        from national_runtime_probe import (
+            validate_runtime_probe_repeatability_evidence,
+        )
+    except Exception:
+        return False
+    quality_gate = gate if isinstance(gate, dict) else {}
+    capability = quality_gate.get("national_capability_contract")
+    capability = capability if isinstance(capability, dict) else {}
+    dynamic_probe = capability.get("dynamic_runtime_probe") or {}
+    return bool(
+        _native_runtime_evidence_current(gate)
+        and not validate_runtime_probe_repeatability_evidence(dynamic_probe)
+    )
+
+
 def _gate_matches_active_workflow(gate: dict | None, *, require_native_contract: bool = False) -> bool:
     active_profile_id, active_execution_mode = _active_workflow_profile_info()
     if not active_profile_id:
@@ -1604,7 +1623,7 @@ def _gate_matches_active_workflow(gate: dict | None, *, require_native_contract:
         and active_execution_mode == "native_tcp"
         and (
             gate.get("national_native_contract_ok") is not True
-            or not _native_runtime_evidence_current(gate)
+            or not _quality_runtime_probe_evidence_current(gate)
         )
     ):
         return False

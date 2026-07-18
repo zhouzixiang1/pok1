@@ -2757,6 +2757,7 @@ def test_runtime_guard_blocks_unscheduled_workers_after_quality_passed_head_drif
 def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
     import tool_runtime_guard
     from national_runtime_probe import runtime_probe_native_template_evidence
+    from web.tests.runtime_probe_fixtures import passing_runtime_probe
 
     monkeypatch.setenv("POK_FORCE_TOOL_RUNTIME_GUARD", "1")
     snapshots = iter([
@@ -2776,6 +2777,9 @@ def test_runtime_guard_allows_commit_after_verified_head_drift(monkeypatch):
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                "national_capability_contract": {
+                    "dynamic_runtime_probe": passing_runtime_probe(),
+                },
                 **runtime_probe_native_template_evidence(),
             },
             "precommit_eval": {

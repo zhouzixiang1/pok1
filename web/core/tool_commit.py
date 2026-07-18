@@ -720,6 +720,7 @@ def validate_commit_gate_ledger(
                         RUNTIME_PROBE_SCENARIO_DIGEST,
                         RUNTIME_PROBE_SCHEMA_VERSION,
                         runtime_probe_native_template_evidence,
+                        validate_runtime_probe_repeatability_evidence,
                     )
                     from runtime_architecture_policy import (
                         runtime_contract_ledger_digest,
@@ -761,6 +762,17 @@ def validate_commit_gate_ledger(
                         )
                         or {}
                     )
+                    repeatability_errors = (
+                        validate_runtime_probe_repeatability_evidence(
+                            quality_probe
+                        )
+                    )
+                    if repeatability_errors:
+                        failed_gates.append({
+                            "gate": "runtime_probe_repeatability",
+                            "reason": "runtime probe repeatability evidence is invalid",
+                            "errors": repeatability_errors[:12],
+                        })
                     managed_isolation_digest = str(
                         quality_probe.get("managed_isolation_digest") or ""
                     )

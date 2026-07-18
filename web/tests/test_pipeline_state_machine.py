@@ -23,6 +23,7 @@ from core.pipeline_infrastructure import (
     infrastructure_attempt_key,
 )
 from core.national_runtime_probe import runtime_probe_native_template_evidence
+from web.tests.runtime_probe_fixtures import passing_runtime_probe
 from core.tool_planning import (
     _critic_advisory_rework_refusal,
     _has_legacy_critic_repair_contract,
@@ -784,6 +785,9 @@ def test_verified_native_precommit_routes_to_commit_without_quality_contract_fla
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                "national_capability_contract": {
+                    "dynamic_runtime_probe": passing_runtime_probe(),
+                },
                 **runtime_probe_native_template_evidence(),
             },
             "review": {"approved": True},
@@ -816,6 +820,9 @@ def test_verified_old_adapter_precommit_revalidates_under_native_profile(monkeyp
                 "workflow_profile_id": "national_native",
                 "national_execution_mode": "native_tcp",
                 "national_native_contract_ok": True,
+                "national_capability_contract": {
+                    "dynamic_runtime_probe": passing_runtime_probe(),
+                },
                 **runtime_probe_native_template_evidence(),
             },
             "review": {"approved": True},

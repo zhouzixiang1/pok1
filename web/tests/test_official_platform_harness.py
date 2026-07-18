@@ -9,6 +9,10 @@ import pytest
 from bot_artifact import canonical_digest, hash_path
 from managed_bot_executor import IsolationIdentity
 import official_platform_harness as harness
+from web.tests.runtime_probe_fixtures import (
+    passing_runtime_probe,
+    seal_passing_runtime_probe,
+)
 from official_job_envelope import build_job_envelope, job_envelope_issues
 from official_platform_harness import (
     BotLaunchConfig,
@@ -42,12 +46,21 @@ def _structural_quality_admission(candidate: Path) -> dict:
 
     from national_native import NATIONAL_DECISION_RUNTIME_VERSION
     from national_runtime_authority import current_system_native_runtime_identity
-    from national_runtime_probe import runtime_probe_native_template_evidence
+    from national_runtime_probe import (
+        RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+        RUNTIME_PROBE_IDENTITY_DIGEST,
+        RUNTIME_PROBE_LIMITS_DIGEST,
+        RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION,
+        RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT,
+        RUNTIME_PROBE_SCENARIO_DIGEST,
+        RUNTIME_PROBE_SCHEMA_VERSION,
+        runtime_probe_native_template_evidence,
+    )
 
     runtime_evidence = runtime_probe_native_template_evidence()
 
     payload = {
-        "schema_version": 1,
+        "schema_version": harness.FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION,
         "kind": "official-formal-quality-admission",
         "candidate_path": str(candidate.resolve()),
         "candidate_hash": hash_path(candidate),
@@ -62,10 +75,19 @@ def _structural_quality_admission(candidate: Path) -> dict:
         "dynamic_probe_digest": "3" * 64,
         "runtime_contract_ledger_digest": "4" * 64,
         "runtime_probe_identity": {
-            "scenario_digest": "5" * 64,
-            "limits_digest": "6" * 64,
-            "probe_identity_digest": "7" * 64,
+            "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+            "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+            "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+            "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+            "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
             "managed_isolation_digest": "8" * 64,
+            "repeatability_schema_version": (
+                RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION
+            ),
+            "repeatability_view_contract": (
+                RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT
+            ),
+            "repeatability_evidence_digest": "9" * 64,
             **runtime_evidence,
         },
         "system_runtime_identity": current_system_native_runtime_identity(),
@@ -90,22 +112,13 @@ def _current_formal_quality_checkpoint(tmp_path, monkeypatch):
     candidate_hash = hash_path(candidate)
     ledger = runtime_architecture_policy.build_runtime_contract_ledger({"tasks": []})
     profile = get_workflow_profile()
-    managed_isolation_digest = "a" * 64
-    probe = {
-        "ok": True,
-        "repeatability_ok": True,
-        "evidence_integrity_ok": True,
-        "failure_class": "none",
-        "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
-        "orchestrator_version": national_runtime_probe.RUNTIME_PROBE_ORCHESTRATOR_VERSION,
-        "scenario_digest": national_runtime_probe.RUNTIME_PROBE_SCENARIO_DIGEST,
-        "limits_digest": national_runtime_probe.RUNTIME_PROBE_LIMITS_DIGEST,
-        "probe_identity_digest": national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST,
+    probe = passing_runtime_probe()
+    probe.update({
         "runtime_contract_ledger_digest": ledger["ledger_digest"],
         "code_fingerprint": candidate_hash,
-        "managed_isolation_digest": managed_isolation_digest,
-        **national_runtime_probe.runtime_probe_native_template_evidence(),
-    }
+    })
+    probe = seal_passing_runtime_probe(probe)
+    managed_isolation_digest = probe["managed_isolation_digest"]
     capability = {
         "ok": True,
         "conclusive": True,
@@ -837,6 +850,65 @@ def test_formal_quality_admission_binds_current_candidate_probe_and_runtime(
     assert initial["admission"]["runtime_contract_ledger_digest"] == (
         checkpoint["runtime_contract_ledger"]["ledger_digest"]
     )
+
+
+def test_formal_quality_admission_rejects_missing_repeatability_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    """Normal official admission never trusts the probe success booleans alone."""
+
+    from copy import deepcopy
+
+    repo, candidate, checkpoint = _current_formal_quality_checkpoint(
+        tmp_path, monkeypatch
+    )
+    malformed = deepcopy(checkpoint)
+    probe = malformed["gate_results"]["quality"][
+        "national_capability_contract"
+    ]["dynamic_runtime_probe"]
+    probe.pop("repeatability")
+
+    admitted = harness.build_formal_quality_admission(
+        candidate,
+        checkpoint=malformed,
+        repo_root=repo,
+    )
+
+    assert admitted["valid"] is False
+    assert (
+        "official_formal_quality_dynamic_probe_repeatability_invalid:"
+        "runtime_probe_repeatability_evidence_missing"
+    ) in admitted["issues"]
+
+
+def test_formal_quality_admission_integrity_rejects_stale_repeatability_contract(
+    tmp_path,
+):
+    """A hand-written normal-job receipt cannot downgrade the probe contract."""
+
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    (candidate / "national_bot.py").write_text("candidate\n", encoding="utf-8")
+    admission = _structural_quality_admission(candidate)
+    stale = dict(admission)
+    stale_probe = dict(stale["runtime_probe_identity"])
+    stale_probe["repeatability_schema_version"] = 1
+    stale_probe["repeatability_view_contract"] = "legacy"
+    stale["runtime_probe_identity"] = stale_probe
+    payload = {key: value for key, value in stale.items() if key != "admission_digest"}
+    stale["admission_digest"] = canonical_digest(payload)
+
+    issues = harness.formal_quality_admission_integrity_issues(stale)
+
+    assert (
+        "official_formal_quality_admission_runtime_probe_identity_"
+        "mismatch:repeatability_schema_version"
+    ) in issues
+    assert (
+        "official_formal_quality_admission_runtime_probe_identity_"
+        "mismatch:repeatability_view_contract"
+    ) in issues
 
 
 def test_formal_quality_admission_fails_closed_on_candidate_or_runtime_drift(

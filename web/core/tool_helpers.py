@@ -555,10 +555,18 @@ def _native_runtime_evidence_current(gate):
     try:
         from national_runtime_probe import (
             runtime_probe_native_template_evidence_matches,
+            validate_runtime_probe_repeatability_evidence,
         )
     except Exception:
         return False
-    return runtime_probe_native_template_evidence_matches(gate)
+    quality_gate = gate if isinstance(gate, dict) else {}
+    capability = quality_gate.get("national_capability_contract")
+    capability = capability if isinstance(capability, dict) else {}
+    dynamic_probe = capability.get("dynamic_runtime_probe") or {}
+    return bool(
+        runtime_probe_native_template_evidence_matches(gate)
+        and not validate_runtime_probe_repeatability_evidence(dynamic_probe)
+    )
 
 
 def _gate_matches_active_workflow(checkpoint, gate):

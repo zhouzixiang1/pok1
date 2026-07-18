@@ -1554,6 +1554,39 @@ def validate_embedded_system_gate(gate: Any, *, gate_name: str) -> list[str]:
     return list(dict.fromkeys(errors))
 
 
+def _quality_repeatability_errors(quality: Any) -> list[str]:
+    """Apply the shared dynamic-repeatability admission to v143 quality.
+
+    The first-strict bootstrap has a separate official-control route, but it
+    must not become a route around the same structural quality evidence used
+    by normal formal admission and commit publication.
+    """
+
+    try:
+        from national_runtime_probe import (
+            validate_runtime_probe_repeatability_evidence,
+        )
+
+        gate = quality if isinstance(quality, dict) else {}
+        capability = gate.get("national_capability_contract")
+        capability = capability if isinstance(capability, dict) else {}
+        dynamic_probe = (
+            capability.get(
+                "dynamic_runtime_probe"
+            )
+            or {}
+        )
+        return [
+            "system_bootstrap_quality_repeatability_invalid:" + str(item)
+            for item in validate_runtime_probe_repeatability_evidence(dynamic_probe)
+        ]
+    except Exception as exc:
+        return [
+            "system_bootstrap_quality_repeatability_unavailable:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        ]
+
+
 def _system_gate_subject(
     checkpoint: dict[str, Any],
     *,
@@ -1595,6 +1628,7 @@ def _system_gate_subject(
         errors.append("system_bootstrap_quality_not_passed")
     if quality.get("code_fingerprint") != expected_output:
         errors.append("system_bootstrap_quality_candidate_hash_mismatch")
+    errors.extend(_quality_repeatability_errors(quality))
     from strict_authority_workflow import (
         MASTER_SLOTS, authority_summary, expected_master_contexts, gate_call_context,
     )

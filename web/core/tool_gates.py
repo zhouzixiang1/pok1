@@ -1581,7 +1581,10 @@ async def run_quality_gates(args):
                 },
             )
             return False
-        cached_acceptance = gate.get("national_acceptance") or {}
+        cached_acceptance = gate.get("national_acceptance")
+        cached_acceptance = (
+            cached_acceptance if isinstance(cached_acceptance, dict) else {}
+        )
         if native_tcp_mode and not (
             gate.get("national_acceptance_ok") is True
             and cached_acceptance.get("executed") is True
@@ -1614,12 +1617,19 @@ async def run_quality_gates(args):
                     RUNTIME_PROBE_SCENARIO_DIGEST,
                     RUNTIME_PROBE_SCHEMA_VERSION,
                     runtime_probe_native_template_evidence,
+                    validate_runtime_probe_repeatability_evidence,
                 )
                 from runtime_architecture_policy import RUNTIME_ARCHITECTURE_POLICY_VERSION
             except Exception:
                 return False
-            cached_capability = gate.get("national_capability_contract") or {}
-            cached_transition = gate.get("national_architecture_transition") or {}
+            cached_capability = gate.get("national_capability_contract")
+            cached_capability = (
+                cached_capability if isinstance(cached_capability, dict) else {}
+            )
+            cached_transition = gate.get("national_architecture_transition")
+            cached_transition = (
+                cached_transition if isinstance(cached_transition, dict) else {}
+            )
             if (
                 cached_capability.get("detector_version") != NATIONAL_CAPABILITY_DETECTOR_VERSION
                 or cached_transition.get("policy_version") != RUNTIME_ARCHITECTURE_POLICY_VERSION
@@ -1648,11 +1658,24 @@ async def run_quality_gates(args):
                 **runtime_probe_native_template_evidence(),
             }
             cached_dynamic_probe = (
-                (gate.get("national_capability_contract") or {}).get(
-                    "dynamic_runtime_probe"
-                )
-                or {}
+                cached_capability.get("dynamic_runtime_probe") or {}
             )
+            repeatability_errors = validate_runtime_probe_repeatability_evidence(
+                cached_dynamic_probe
+            )
+            if repeatability_errors:
+                log_system_event(
+                    "pipeline.quality_cache_runtime_probe_repeatability_stale",
+                    "warn",
+                    f"Quality gate cache stale for v{v}; runtime probe "
+                    "repeatability evidence is malformed or stale.",
+                    {
+                        "version": v,
+                        "source_v": source_v,
+                        "errors": repeatability_errors[:12],
+                    },
+                )
+                return False
             managed_isolation_digest = str(
                 cached_dynamic_probe.get("managed_isolation_digest") or ""
             )

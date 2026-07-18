@@ -35,7 +35,7 @@ from national_runtime_probe_scenarios import (
 )
 
 
-PROBE_WORKER_VERSION = 18
+PROBE_WORKER_VERSION = 19
 PHASE_PATH = Path("/output/phase.txt")
 MAX_CAPTURE_CHARS = 64 * 1024
 BASELINE_EVALUATOR_CALL_CAP = 800
@@ -441,6 +441,22 @@ def _runtime_metric_summary(metrics: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _runtime_refinement_active(value: Any) -> bool:
+    """Whether this exact system-owned scenario consumed refinement work."""
+
+    runtime = value if isinstance(value, dict) else {}
+    try:
+        return bool(
+            int(runtime.get("refinement_messages") or 0)
+            or int(runtime.get("trusted_refinement_steps") or 0)
+        )
+    except (TypeError, ValueError, OverflowError):
+        # A malformed metric must not hide the final decision from the host
+        # repeat comparison.  Conservatively report it inactive so the host
+        # keeps the decision/wire in the stable view.
+        return False
+
+
 def _drive_scenario(
     imports: CandidateImports,
     scenario: dict[str, Any],
@@ -729,6 +745,18 @@ def _line_reachability(
             "negative_wire": negative.get("wire"),
             "mixed_identity_decision": mixed.get("decision"),
             "mixed_identity_wire": mixed_wire,
+            "positive_refinement_active": _runtime_refinement_active(
+                positive.get("runtime")
+            ),
+            "negative_refinement_active": _runtime_refinement_active(
+                negative.get("runtime")
+            ),
+            "mixed_identity_refinement_active": _runtime_refinement_active(
+                mixed.get("runtime")
+            ),
+            "matched_control_refinement_active": _runtime_refinement_active(
+                matched.get("runtime")
+            ),
             "mixed_identity_context_digest": mixed.get("context_digest"),
             "positive_without_cards_digest": positive_without_cards_digest,
             "mixed_without_cards_digest": mixed_without_cards_digest,
@@ -1283,6 +1311,9 @@ def _probe_match_control_consumer(
             "expected_system_issues": sorted(expected_system),
             "observed_system_issues": sorted(observed_system),
             "expectation_met": bool(wire and expectation_met),
+            "refinement_active": _runtime_refinement_active(
+                row.get("runtime")
+            ),
         }
     socket_validated = all(row.get("wire") for row in rows.values())
     causal_passed = bool(
@@ -1401,6 +1432,18 @@ def _probe_policy_counterfactuals(
             "negative_right_decision": negative_right["decision"],
             "negative_left_wire": negative_left["wire"],
             "negative_right_wire": negative_right["wire"],
+            "left_refinement_active": _runtime_refinement_active(
+                left.get("runtime")
+            ),
+            "right_refinement_active": _runtime_refinement_active(
+                right.get("runtime")
+            ),
+            "negative_left_refinement_active": _runtime_refinement_active(
+                negative_left.get("runtime")
+            ),
+            "negative_right_refinement_active": _runtime_refinement_active(
+                negative_right.get("runtime")
+            ),
             "changed": positive_changed,
             "positive_wire_effect": positive_wire_effect,
             "negative_control_stable": negative_wire_stable,

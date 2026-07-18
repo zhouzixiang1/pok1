@@ -95,7 +95,7 @@ THP_FOOTER_RE = re.compile(
     r"\[([^\]]+)\]\[([^\]]+)\]\}"
 )
 TERMINAL_COMPLETION_SCHEMA_VERSION = 1
-FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 1
+FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 2
 FORMAL_QUALITY_ADMISSION_KIND = "official-formal-quality-admission"
 
 
@@ -193,8 +193,66 @@ def formal_quality_admission_integrity_issues(
         "probe_identity_digest",
         "managed_isolation_digest",
         "native_runtime_template_digest",
+        "repeatability_evidence_digest",
     )):
         issues.append("official_formal_quality_admission_runtime_probe_digest_invalid")
+    if isinstance(probe, dict):
+        try:
+            from national_runtime_probe import (
+                RUNTIME_PROBE_IDENTITY_DIGEST,
+                RUNTIME_PROBE_LIMITS_DIGEST,
+                RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+                RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION,
+                RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT,
+                RUNTIME_PROBE_SCENARIO_DIGEST,
+                RUNTIME_PROBE_SCHEMA_VERSION,
+                runtime_probe_native_template_evidence,
+            )
+        except Exception as exc:
+            issues.append(
+                "official_formal_quality_admission_runtime_probe_identity_unavailable:"
+                f"{type(exc).__name__}"
+            )
+        else:
+            expected_probe_values = {
+                "schema_version": RUNTIME_PROBE_SCHEMA_VERSION,
+                "orchestrator_version": RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+                "scenario_digest": RUNTIME_PROBE_SCENARIO_DIGEST,
+                "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
+                "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
+                "repeatability_schema_version": (
+                    RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION
+                ),
+                "repeatability_view_contract": (
+                    RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT
+                ),
+                **runtime_probe_native_template_evidence(),
+            }
+            expected_probe_fields = {
+                *expected_probe_values,
+                "managed_isolation_digest",
+                "repeatability_evidence_digest",
+            }
+            if set(probe) != expected_probe_fields:
+                issues.append(
+                    "official_formal_quality_admission_runtime_probe_identity_fields_invalid"
+                )
+            for key, value in expected_probe_values.items():
+                if probe.get(key) != value:
+                    issues.append(
+                        "official_formal_quality_admission_runtime_probe_identity_"
+                        f"mismatch:{key}"
+                    )
+        if type(probe.get("repeatability_schema_version")) is not int:
+            issues.append(
+                "official_formal_quality_admission_repeatability_schema_invalid"
+            )
+        if not isinstance(probe.get("repeatability_view_contract"), str) or not str(
+            probe.get("repeatability_view_contract")
+        ).strip():
+            issues.append(
+                "official_formal_quality_admission_repeatability_contract_invalid"
+            )
     native_template = (
         probe.get("native_runtime_template_identity")
         if isinstance(probe, dict)
@@ -344,10 +402,13 @@ def build_formal_quality_admission(
             RUNTIME_PROBE_IDENTITY_DIGEST,
             RUNTIME_PROBE_LIMITS_DIGEST,
             RUNTIME_PROBE_ORCHESTRATOR_VERSION,
+            RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION,
             RUNTIME_PROBE_SCENARIO_DIGEST,
             RUNTIME_PROBE_SCHEMA_VERSION,
+            RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT,
             runtime_probe_native_template_evidence,
             runtime_probe_native_template_evidence_matches,
+            validate_runtime_probe_repeatability_evidence,
         )
         from runtime_architecture_policy import (
             ACTIVE_EPOCH,
@@ -432,9 +493,17 @@ def build_formal_quality_admission(
     for key, value in required_probe_truths.items():
         if probe.get(key) is not value:
             issues.append(f"official_formal_quality_dynamic_probe_not_passed:{key}")
+    repeatability_errors = validate_runtime_probe_repeatability_evidence(probe)
+    if repeatability_errors:
+        issues.extend(
+            "official_formal_quality_dynamic_probe_repeatability_invalid:"
+            f"{item}"
+            for item in repeatability_errors
+        )
     if probe.get("failure_class") != "none":
         issues.append("official_formal_quality_dynamic_probe_failure_class")
     native_template_evidence = runtime_probe_native_template_evidence()
+    repeatability_evidence = probe.get("repeatability") or {}
     if not runtime_probe_native_template_evidence_matches(probe):
         issues.append("official_formal_quality_dynamic_probe_native_template_mismatch")
     expected_probe_identity = {
@@ -515,6 +584,15 @@ def build_formal_quality_admission(
             "limits_digest": RUNTIME_PROBE_LIMITS_DIGEST,
             "probe_identity_digest": RUNTIME_PROBE_IDENTITY_DIGEST,
             "managed_isolation_digest": managed_isolation_digest,
+            "repeatability_schema_version": (
+                RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION
+            ),
+            "repeatability_view_contract": (
+                RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT
+            ),
+            "repeatability_evidence_digest": canonical_digest(
+                repeatability_evidence
+            ),
             **native_template_evidence,
         },
         "system_runtime_identity": system_runtime_identity,

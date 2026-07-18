@@ -6,6 +6,7 @@ import national_runtime_probe
 import pipeline_state
 import tool_helpers
 import tool_commit
+from web.tests.runtime_probe_fixtures import passing_runtime_probe
 
 
 def _precompute_only_runtime_identity():
@@ -57,12 +58,14 @@ def _install_precompute_only_runtime_identity(monkeypatch):
 
 
 def _native_quality_gate():
+    probe = passing_runtime_probe()
     return {
         "all_passed": True,
         "critical_scenarios_passed": True,
         "workflow_profile_id": "national_native",
         "national_execution_mode": "native_tcp",
         "national_native_contract_ok": True,
+        "national_capability_contract": {"dynamic_runtime_probe": probe},
         **national_runtime_probe.runtime_probe_native_template_evidence(),
     }
 
@@ -112,6 +115,53 @@ def test_native_quality_reuse_requires_exact_template_evidence(monkeypatch):
     assert tool_helpers._quality_gate_ok(checkpoint) is False
 
 
+def test_native_quality_reuse_rejects_tampered_repeatability_receipt(monkeypatch):
+    monkeypatch.setattr(
+        tool_helpers,
+        "_active_workflow_profile_info",
+        lambda: ("national_native", "native_tcp"),
+    )
+    monkeypatch.setattr(
+        pipeline_state,
+        "_active_workflow_profile_info",
+        lambda: ("national_native", "native_tcp"),
+    )
+    quality = _native_quality_gate()
+    malformed = copy.deepcopy(quality)
+    malformed["national_capability_contract"]["dynamic_runtime_probe"][
+        "repeatability"
+    ]["view_contract"] = "tampered"
+
+    assert tool_helpers._quality_gate_ok(
+        {"gate_results": {"quality": malformed}}
+    ) is False
+    assert pipeline_state._quality_gate_matches_active_workflow(
+        {"quality": malformed}
+    ) is False
+
+    raw_row_tampered = _native_quality_gate()
+    raw_row_tampered["national_capability_contract"]["dynamic_runtime_probe"][
+        "line_reachability"
+    ]["dimensions"]["donk"].pop("positive_wire")
+    assert tool_helpers._quality_gate_ok(
+        {"gate_results": {"quality": raw_row_tampered}}
+    ) is False
+    assert pipeline_state._quality_gate_matches_active_workflow(
+        {"quality": raw_row_tampered}
+    ) is False
+
+    nested_failure = _native_quality_gate()
+    nested_failure["national_capability_contract"]["dynamic_runtime_probe"][
+        "official_transcript_decisions"
+    ][0].update({"ok": False, "issues": ["synthetic failure"]})
+    assert tool_helpers._quality_gate_ok(
+        {"gate_results": {"quality": nested_failure}}
+    ) is False
+    assert pipeline_state._quality_gate_matches_active_workflow(
+        {"quality": nested_failure}
+    ) is False
+
+
 def test_pipeline_refreshes_native_quality_and_precommit_on_template_drift(
     monkeypatch,
 ):
@@ -146,10 +196,8 @@ def test_pipeline_refreshes_native_quality_and_precommit_on_template_drift(
 
 def _commit_checkpoint():
     evidence = national_runtime_probe.runtime_probe_native_template_evidence()
-    probe = {
-        "managed_isolation_digest": "a" * 64,
-        **evidence,
-    }
+    probe = passing_runtime_probe()
+    probe.update(evidence)
     quality = {
         "version": 144,
         "source_v": 143,
@@ -175,7 +223,9 @@ def _commit_checkpoint():
         "runtime_probe_identity_digest": (
             national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST
         ),
-        "runtime_probe_managed_isolation_digest": "a" * 64,
+        "runtime_probe_managed_isolation_digest": probe[
+            "managed_isolation_digest"
+        ],
         "national_capability_contract": {"dynamic_runtime_probe": probe},
         **evidence,
     }
@@ -267,6 +317,23 @@ def test_commit_ledger_rejects_precommit_from_another_native_template(
         bot_dir=tmp_path,
     )
     assert accepted["ok"] is True
+
+    malformed = copy.deepcopy(checkpoint)
+    malformed_probe = malformed["gate_results"]["quality"][
+        "national_capability_contract"
+    ]["dynamic_runtime_probe"]
+    malformed_probe["repeatability"]["redaction"] = {"candidate_source": "leak"}
+    rejected_repeatability = tool_commit.validate_commit_gate_ledger(
+        144,
+        143,
+        malformed,
+        bot_dir=tmp_path,
+    )
+    assert rejected_repeatability["ok"] is False
+    assert any(
+        item.get("gate") == "runtime_probe_repeatability"
+        for item in rejected_repeatability["failed_gates"]
+    )
 
     _install_precompute_only_runtime_identity(monkeypatch)
     rejected = tool_commit.validate_commit_gate_ledger(

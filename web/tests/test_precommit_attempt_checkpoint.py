@@ -82,6 +82,7 @@ def _write_basic(stage="prepared", **kwargs):
 
 def _passing_quality_gate():
     from national_runtime_probe import runtime_probe_native_template_evidence
+    from web.tests.runtime_probe_fixtures import passing_runtime_probe
 
     return {
         "all_passed": True,
@@ -89,6 +90,9 @@ def _passing_quality_gate():
         "workflow_profile_id": "national_native",
         "national_execution_mode": "native_tcp",
         "national_native_contract_ok": True,
+        "national_capability_contract": {
+            "dynamic_runtime_probe": passing_runtime_probe(),
+        },
         **runtime_probe_native_template_evidence(),
     }
 

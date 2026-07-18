@@ -237,6 +237,15 @@ def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
     ] is True
     for line in ("donk", "delayed_probe"):
         evidence = result["line_reachability"]["dimensions"][line]
+        assert all(
+            type(evidence[field]) is bool
+            for field in (
+                "positive_refinement_active",
+                "negative_refinement_active",
+                "mixed_identity_refinement_active",
+                "matched_control_refinement_active",
+            )
+        )
         assert evidence["producer_reachable"] is True
         assert evidence["context_ablation_exact"] is True
         assert evidence["positive_without_ablation_digest"] == (
@@ -276,6 +285,10 @@ def test_worker_exercises_typed_context_lines_and_persistent_memory(tmp_path):
     assert match_control["rows"]["strict_win"]["wire"] == "fold"
     assert match_control["rows"]["equality_boundary"]["wire"] != "fold"
     assert match_control["rows"]["malformed_proof"]["wire"] != "fold"
+    assert all(
+        type(row["refinement_active"]) is bool
+        for row in match_control["rows"].values()
+    )
 
 
 def test_worker_rejects_policy_that_drops_match_control_consumer(tmp_path):
@@ -428,6 +441,15 @@ def test_profile_counterfactual_reaches_socket_validated_wire(tmp_path):
     action_profile = result["policy_counterfactuals"]["dimensions"][
         "action_profile"
     ]
+    assert all(
+        type(action_profile[field]) is bool
+        for field in (
+            "left_refinement_active",
+            "right_refinement_active",
+            "negative_left_refinement_active",
+            "negative_right_refinement_active",
+        )
+    )
     assert action_profile["socket_validated"] is True
     assert action_profile["changed"] is True
     assert action_profile["negative_control_stable"] is True
@@ -534,6 +556,34 @@ def test_checked_in_bootstrap_policy_uses_all_bounded_match_signals_on_wire(
 
 
 def _fake_worker_result(spec: dict) -> dict:
+    line_row = {
+        "positive_refinement_active": False,
+        "positive_decision": {"kind": "raise", "raise_to": 300},
+        "positive_wire": "raise 300",
+        "negative_refinement_active": False,
+        "negative_decision": {"kind": "pass"},
+        "negative_wire": "call",
+        "mixed_identity_refinement_active": False,
+        "mixed_identity_decision": {"kind": "pass"},
+        "mixed_identity_wire": "check",
+        "matched_control_refinement_active": False,
+        "matched_control_decision": {"kind": "pass"},
+        "matched_control_wire": "check",
+    }
+    counterfactual_row = {
+        "left_refinement_active": False,
+        "left_decision": {"kind": "raise", "raise_to": 300},
+        "left_wire": "raise 300",
+        "right_refinement_active": False,
+        "right_decision": {"kind": "raise", "raise_to": 400},
+        "right_wire": "raise 400",
+        "negative_left_refinement_active": False,
+        "negative_left_decision": {"kind": "pass"},
+        "negative_left_wire": "check",
+        "negative_right_refinement_active": False,
+        "negative_right_decision": {"kind": "pass"},
+        "negative_right_wire": "check",
+    }
     return {
         "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
         "orchestrator_version": (
@@ -561,10 +611,64 @@ def _fake_worker_result(spec: dict) -> dict:
             "bpf_size": 1,
             "namespaces": ["user", "net"],
         },
-        "official_transcript_decisions": [],
-        "line_reachability": {"ok": True, "issues": [], "dimensions": {}},
+        "official_transcript_decisions": [
+            {
+                "id": scenario["id"],
+                "ok": True,
+                "issues": [],
+                "decision": {"kind": "pass"},
+                "wire": "call",
+                "runtime": {
+                    "refinement_messages": 0,
+                    "trusted_refinement_steps": 0,
+                },
+            }
+            for scenario in DECISION_SCENARIOS
+        ],
+        "line_reachability": {
+            "ok": True,
+            "issues": [],
+            "system_issues": [],
+            "candidate_issues": [],
+            "dimensions": {
+                "donk": copy.deepcopy(line_row),
+                "delayed_probe": copy.deepcopy(line_row),
+            },
+        },
         "persistent_memory": {"ok": True, "issues": []},
-        "policy_counterfactuals": {"ok": True, "issues": [], "dimensions": {}},
+        "policy_counterfactuals": {
+            "ok": True,
+            "issues": [],
+            "system_issues": [],
+            "candidate_issues": [],
+            "dimensions": {
+                "action_profile": copy.deepcopy(counterfactual_row),
+                "terminal_response": copy.deepcopy(counterfactual_row),
+                "showdown_range": copy.deepcopy(counterfactual_row),
+            },
+        },
+        "match_control_consumer": {
+            "ok": True,
+            "system_issues": [],
+            "candidate_issues": [],
+            "rows": {
+                "strict_win": {
+                    "refinement_active": False,
+                    "decision": {"kind": "fold"},
+                    "wire": "fold",
+                },
+                "equality_boundary": {
+                    "refinement_active": False,
+                    "decision": {"kind": "pass"},
+                    "wire": "call",
+                },
+                "malformed_proof": {
+                    "refinement_active": False,
+                    "decision": {"kind": "pass"},
+                    "wire": "call",
+                },
+            },
+        },
         "budget_scaled_refinement": {
             "probe_kind": "trusted_multifidelity_2s_vs_8s",
             "ok": False,
@@ -577,9 +681,70 @@ def _fake_worker_result(spec: dict) -> dict:
     }
 
 
+def _repeatability_evidence_template(view_digest: str) -> dict:
+    return {
+        "schema_version": (
+            national_runtime_probe.RUNTIME_PROBE_REPEATABILITY_SCHEMA_VERSION
+        ),
+        "view_contract": (
+            national_runtime_probe.RUNTIME_PROBE_REPEATABILITY_VIEW_CONTRACT
+        ),
+        "view_digest_algorithm": (
+            national_runtime_probe.RUNTIME_PROBE_REPEATABILITY_DIGEST_ALGORITHM
+        ),
+        "repeat_count": 2,
+        "view_digest_count": 2,
+        "view_digests": [
+            {"repeat": 1, "sha256": view_digest},
+            {"repeat": 2, "sha256": view_digest},
+        ],
+        "view_digests_truncated": False,
+        "differing_path_count": 0,
+        "differing_paths": [],
+        "differing_paths_truncated": False,
+        "redaction": dict(
+            national_runtime_probe.RUNTIME_PROBE_REPEATABILITY_REDACTION
+        ),
+    }
+
+
+def _valid_managed_isolation() -> dict:
+    """Minimal immutable managed-executor identity for host-only fixtures."""
+
+    return {
+        "policy_sha256": "a" * 64,
+        "bpf_sha256": "b" * 64,
+        "bpf_size": 1,
+        "namespaces": ["user", "net"],
+    }
+
+
+def _seal_passing_repeatability_probe(probe: dict) -> dict:
+    """Add a self-consistent successful receipt to a complete raw probe."""
+
+    if not isinstance(probe.get("managed_isolation"), dict):
+        probe["managed_isolation"] = _valid_managed_isolation()
+    probe["managed_isolation_digest"] = national_runtime_probe._canonical_digest(
+        probe["managed_isolation"]
+    )
+    probe["ok"] = True
+    probe["repeatability_ok"] = True
+    probe["evidence_integrity_ok"] = True
+    probe["failure_class"] = "none"
+    probe["issues"] = []
+    # The view deliberately excludes its own receipt, so the placeholder
+    # cannot participate in the digest calculation.
+    probe["repeatability"] = _repeatability_evidence_template("0" * 64)
+    digest = national_runtime_probe._canonical_digest(
+        national_runtime_probe._repeatability_view(probe)
+    )
+    probe["repeatability"] = _repeatability_evidence_template(digest)
+    return probe
+
+
 def _semantic_repeat_result(spec: dict, *, refinement_active: bool) -> dict:
     result = _fake_worker_result(spec)
-    result["official_transcript_decisions"] = [{
+    river = {
         "id": "river_facing_large_bet",
         "ok": True,
         "issues": [],
@@ -603,7 +768,15 @@ def _semantic_repeat_result(spec: dict, *, refinement_active: bool) -> dict:
             "trusted_refinement_elapsed_ms": 1.0,
             "refinement_iterator_exhausted": False,
         },
-    }]
+    }
+    result["official_transcript_decisions"] = [
+        river,
+        *(
+            row
+            for row in result["official_transcript_decisions"]
+            if row.get("id") != river["id"]
+        ),
+    ]
     result["policy_entrypoints"] = {
         "ok": True,
         "issues": [],
@@ -896,6 +1069,276 @@ def test_repeatability_evidence_is_bounded_when_many_views_differ(tmp_path):
     assert evidence["differing_path_count"] >= len(evidence["differing_paths"])
 
 
+def test_repeatability_does_not_use_budget_activity_for_nonbudget_actions(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+
+    cases = (
+        (
+            "line",
+            "/line_reachability/dimensions/donk/positive_wire",
+            lambda result: result["line_reachability"]["dimensions"]["donk"].update(
+                {"positive_wire": "raise 301"}
+            ),
+        ),
+        (
+            "counterfactual",
+            "/policy_counterfactuals/dimensions/action_profile/left_wire",
+            lambda result: result["policy_counterfactuals"]["dimensions"][
+                "action_profile"
+            ].update({"left_wire": "raise 301"}),
+        ),
+        (
+            "match_control",
+            "/match_control_consumer/rows/strict_win/wire",
+            lambda result: result["match_control_consumer"]["rows"][
+                "strict_win"
+            ].update({"wire": "call"}),
+        ),
+    )
+    for _label, pointer, mutate in cases:
+        first = _semantic_repeat_result(spec, refinement_active=True)
+        second = _semantic_repeat_result(spec, refinement_active=True)
+        mutate(second)
+        runs = [first, second]
+        national_runtime_probe.clear_runtime_probe_cache()
+        monkeypatch.setattr(
+            national_runtime_probe,
+            "_run_once",
+            lambda *_args: copy.deepcopy(runs.pop(0)),
+        )
+
+        observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+        assert observed["budget_scaled_refinement"]["active"] is True
+        assert observed["repeatability_ok"] is False
+        assert (2, pointer) in {
+            (item["repeat"], item["json_pointer"])
+            for item in observed["repeatability"]["differing_paths"]
+        }
+
+
+def test_repeatability_allows_only_active_nonbudget_row_action_variation(
+    tmp_path,
+    monkeypatch,
+):
+    """A row may vary only when that row reports actual refinement work."""
+
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    for result, wire in ((first, "raise 300"), (second, "raise 301")):
+        result["line_reachability"]["dimensions"]["donk"].update({
+            "positive_decision": {"kind": "raise", "raise_to": 300},
+            "positive_wire": wire,
+            "positive_refinement_active": True,
+        })
+    runs = [first, second]
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is True, observed["issues"]
+    assert observed["repeatability_ok"] is True
+    assert observed["repeatability"]["differing_path_count"] == 0
+
+
+def test_repeatability_rejects_missing_per_scenario_refinement_activity(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    for result in (first, second):
+        result["match_control_consumer"] = {
+            "ok": True,
+            "system_issues": [],
+            "candidate_issues": [],
+            "rows": {
+                "strict_win": {
+                    "decision": {"kind": "fold"},
+                    "wire": "fold",
+                }
+            },
+        }
+    runs = [first, second]
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert (
+        "runtime_probe_per_scenario_refinement_activity_invalid:"
+        "match_control:strict_win:refinement_active:repeat=1"
+    ) in observed["issues"]
+
+
+def test_repeatability_rejects_missing_required_activity_section(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    for result in (first, second):
+        result.pop("policy_counterfactuals")
+    runs = [first, second]
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert (
+        "runtime_probe_per_scenario_refinement_section_invalid:"
+        "counterfactual:repeat=1"
+    ) in observed["issues"]
+
+
+def test_repeatability_rejects_missing_official_transcript_scenarios(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    for result in (first, second):
+        result["official_transcript_decisions"] = []
+    runs = [first, second]
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert (
+        "runtime_probe_official_transcript_id_set_mismatch:repeat=1"
+        in observed["issues"]
+    )
+
+
+def test_repeatability_rejects_active_row_missing_wire(
+    tmp_path,
+    monkeypatch,
+):
+    bot = _write_typed_bot(tmp_path / "bot")
+    spec = national_runtime_probe.build_runtime_probe_spec(bot)
+    first = _semantic_repeat_result(spec, refinement_active=False)
+    second = _semantic_repeat_result(spec, refinement_active=False)
+    for result in (first, second):
+        row = result["line_reachability"]["dimensions"]["donk"]
+        row["positive_refinement_active"] = True
+        row.pop("positive_wire")
+    runs = [first, second]
+    national_runtime_probe.clear_runtime_probe_cache()
+    monkeypatch.setattr(
+        national_runtime_probe,
+        "_run_once",
+        lambda *_args: copy.deepcopy(runs.pop(0)),
+    )
+
+    observed = national_runtime_probe.run_national_runtime_probe(bot)
+
+    assert observed["ok"] is False
+    assert (
+        "runtime_probe_per_scenario_refinement_wire_invalid:"
+        "line:donk:positive_wire:repeat=1"
+    ) in observed["issues"]
+
+
+def test_repeatability_validator_rejects_missing_malformed_and_tampered_evidence():
+    probe = _seal_passing_repeatability_probe(
+        _semantic_repeat_result(_worker_spec(), refinement_active=False)
+    )
+    assert national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+        probe
+    ) == []
+
+    missing = dict(probe)
+    missing.pop("repeatability")
+    assert "runtime_probe_repeatability_evidence_missing" in (
+        national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+            missing
+        )
+    )
+
+    malformed = copy.deepcopy(probe)
+    malformed["repeatability"]["view_digests"] = [
+        {"repeat": 1, "sha256": "not-a-digest"}
+    ]
+    errors = national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+        malformed
+    )
+    assert "runtime_probe_repeatability_view_digests_length_invalid" in errors
+    assert "runtime_probe_repeatability_view_digest_invalid" in errors
+
+    tampered = copy.deepcopy(probe)
+    tampered["repeatability"].update({
+        "differing_path_count": 1,
+        "differing_paths": [{
+            "repeat": 2,
+            "json_pointer": "/official_transcript_decisions/0/wire",
+        }],
+        "differing_paths_truncated": False,
+    })
+    assert "runtime_probe_repeatability_pass_has_differences" in (
+        national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+            tampered
+        )
+    )
+
+    isolation_tampered = copy.deepcopy(probe)
+    isolation_tampered["managed_isolation"]["bpf_size"] = 2
+    assert (
+        "runtime_probe_repeatability_managed_isolation_digest_mismatch"
+        in national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+            isolation_tampered
+        )
+    )
+
+    failed_flag = copy.deepcopy(probe)
+    failed_flag["ok"] = False
+    assert "runtime_probe_repeatability_not_passed" in (
+        national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+            failed_flag
+        )
+    )
+
+    divergent = copy.deepcopy(probe)
+    divergent["repeatability"]["view_digests"][1]["sha256"] = "f" * 64
+    assert "runtime_probe_repeatability_pass_view_digests_diverge" in (
+        national_runtime_probe.validate_runtime_probe_repeatability_evidence(
+            divergent
+        )
+    )
+
+
 def test_repeatability_identity_change_misses_legacy_cache_entry(tmp_path):
     bot = _write_typed_bot(tmp_path / "bot")
     spec = national_runtime_probe.build_runtime_probe_spec(bot)
@@ -1170,65 +1613,22 @@ def _gate_capabilities() -> dict:
 
 
 def _passing_gate_probe() -> dict:
-    return {
-        "schema_version": national_runtime_probe.RUNTIME_PROBE_SCHEMA_VERSION,
-        "orchestrator_version": (
-            national_runtime_probe.RUNTIME_PROBE_ORCHESTRATOR_VERSION
-        ),
-        "scenario_digest": national_runtime_probe.RUNTIME_PROBE_SCENARIO_DIGEST,
-        "limits_digest": national_runtime_probe.RUNTIME_PROBE_LIMITS_DIGEST,
-        "probe_identity_digest": national_runtime_probe.RUNTIME_PROBE_IDENTITY_DIGEST,
-        **national_runtime_probe.runtime_probe_native_template_evidence(),
-        "managed_isolation_digest": "a" * 64,
-        "ok": True,
-        "failure_class": "none",
-        "issues": [],
-        "official_transcript_decisions": [],
-        "policy_counterfactuals": {
-            "dimensions": {
-                "action_profile": {
-                    "causal_passed": True,
-                    "positive_wire_effect": True,
-                    "negative_control_stable": True,
-                    "negative_control_kind": "authority_weight_removed",
-                    "socket_validated": True,
-                    "left_wire": "raise 300",
-                    "right_wire": "raise 400",
-                    "negative_left_wire": "raise 350",
-                    "negative_right_wire": "raise 350",
-                },
-                "terminal_response": {
-                    "causal_passed": True,
-                    "positive_wire_effect": True,
-                    "negative_control_stable": True,
-                    "negative_control_kind": "authority_weight_removed",
-                    "socket_validated": True,
-                    "left_wire": "raise 310",
-                    "right_wire": "raise 410",
-                    "negative_left_wire": "raise 350",
-                    "negative_right_wire": "raise 350",
-                },
-                "showdown_range": {
-                    "causal_passed": True,
-                    "positive_wire_effect": True,
-                    "negative_control_stable": True,
-                    "negative_control_kind": "selection_bias_guard_removed",
-                    "socket_validated": True,
-                    "left_wire": "raise 320",
-                    "right_wire": "raise 420",
-                    "negative_left_wire": "raise 350",
-                    "negative_right_wire": "raise 350",
-                },
-            }
-        },
-        "line_reachability": {
-            "dimensions": {
-                "donk": {"ok": True, "policy_changed": False},
-                "delayed_probe": {"ok": True, "policy_changed": False},
-            }
-        },
-        "budget_scaled_refinement": {"ok": False, "long": {}},
-    }
+    probe = _semantic_repeat_result(_worker_spec(), refinement_active=False)
+    for name, row in probe["policy_counterfactuals"]["dimensions"].items():
+        row.update({
+            "causal_passed": True,
+            "positive_wire_effect": True,
+            "negative_control_stable": True,
+            "negative_control_kind": (
+                "selection_bias_guard_removed"
+                if name == "showdown_range"
+                else "authority_weight_removed"
+            ),
+            "socket_validated": True,
+        })
+    for row in probe["line_reachability"]["dimensions"].values():
+        row.update({"ok": True, "policy_changed": False})
+    return _seal_passing_repeatability_probe(probe)
 
 
 def test_gate_classifies_candidate_and_system_probe_failures(monkeypatch, tmp_path):
@@ -1435,6 +1835,7 @@ def test_opponent_causal_floor_is_hard_and_selected_profile_adds_primary_gate(
     failing_probe["policy_counterfactuals"]["dimensions"][
         "terminal_response"
     ]["causal_passed"] = False
+    failing_probe = _seal_passing_repeatability_probe(failing_probe)
     monkeypatch.setattr(
         national_runtime_probe,
         "run_national_runtime_probe",
