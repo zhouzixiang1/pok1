@@ -3661,3 +3661,22 @@ combined source. The post-documentation matrix/prompt/full-suite and independent
 pre-merge review remain required before push/merge. This entry does not authorize
 runtime sync, reproof, restart, v143 publication, or any strength claim; all
 remain at **0/10**.
+
+## 2026-07-18 — operator-authorized delivery-first interim v143 bootstrap
+
+The user explicitly authorized the checked-in system `strict_v1` first-strict
+blueprint to create an interim `national_v143` as soon as the P1 source repair
+is merged and the stopped runtime can be safely synchronized. This replaces the
+previous scheduling prohibition, not any protocol or publication guard. v143
+must still use the one-time stopped-checkout execute receipt, terminal-v51
+reproof, checkpoint recovery diagnostics, dynamic runtime quality, native TCP
+precommit, operator-only first-strict control, signed certificate and annotated
+completion tag. It is not A1 and no three-Bot research bytes, assets, receipts,
+strength, rating, H2H, or certification transfer to it.
+
+R0 and the clean-room A1 migration continue as the next architecture work while
+the published v143 system operates. A1 will receive a new identity and normal
+5+3 certification under the future asset/directive contract; it must not be
+created by relabeling or mutating the interim v143 artifact. This authorization
+does not make v143 a strength sample, does not manually clear any runtime state,
+and resets stable observation to **0/10** at sync/restart.

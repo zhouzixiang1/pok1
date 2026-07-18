@@ -1660,3 +1660,24 @@ three generation-directive contract as a separate reviewed main change after
 P1; only then use the stopped-checkout Git sync, v51 terminal reproof, recovery
 diagnostics and a fresh `v143=A1` start. Any source sync/restart continues to
 reset observation to **0/10**.
+
+## Operator supersession — interim strict-v1 bootstrap is authorized before A1
+
+The user subsequently authorized an explicit delivery-first exception: after
+the P1 repair is merged and the stopped runtime has been safely synchronized,
+the existing system-owned `strict_v1` first-strict blueprint may create
+`national_v143` through the one-time `bootstrap-first-strict` control. This is
+an **interim bootstrap Bot**, not A1. Its certificate/tag/identity and any
+future native evidence remain its own; it receives no A1/A2/B research bytes,
+assets, receipts, ratings, H2H rows, or capability claim.
+
+This exception supersedes only the timing constraint in the preceding section.
+It does not relax the exact five-file ABI, stopped-checkout execute receipt,
+terminal-v51 reproof, dynamic runtime quality, native TCP precommit, one-time
+bootstrap control, signed certificate, annotated tag, or fail-closed recovery
+rules. Record the actual v143 identity before assigning a later A1 migration.
+After v143 is published and the system is operating normally, A1 is introduced
+as a fresh clean-room candidate under the reviewed R0/directive contract and
+normal 5+3 certification; its version/parent selection must be recorded from
+the then-current immutable state rather than relabeling v143. A source sync or
+restart still resets the verified-observation counter to **0/10**.
