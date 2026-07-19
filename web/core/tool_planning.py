@@ -5238,6 +5238,30 @@ def _clear_compiled_task_context(next_dir):
     )
 
 
+def _cleanup_worker_transients_before_identity_refresh(next_dir):
+    """Remove host-owned compile caches before rebuilding strict identity.
+
+    The Worker contract permits only an exact-file ``py_compile`` probe and
+    explicitly denies cache cleanup to the model.  ``py_compile`` nevertheless
+    creates ``__pycache__`` beside ``policy.py``.  Snapshot/delta accounting
+    intentionally excludes that transient output, while the strict five-file
+    identity validator correctly rejects it.  Close that work-phase boundary
+    here: after the Worker write audit has passed, the host removes only the
+    centrally defined transient cache surface and deliberately retains the
+    compiler-owned ``.task_context`` until the refreshed identity is bound.
+
+    The shared hygiene helper rejects symlinks and non-regular entries before
+    removing anything.  Arbitrary extra files/directories remain untouched and
+    therefore continue to fail the strict layout check below.
+    """
+    from candidate_hygiene import cleanup_transient_candidate_artifacts
+
+    return cleanup_transient_candidate_artifacts(
+        next_dir,
+        include_task_context=False,
+    )
+
+
 def _full_reset_next_dir(next_dir, source_dir):
     """Restore an invalid-policy candidate exactly from its authoritative source."""
     from evolution_infra import copy_bot_tree_for_candidate
@@ -9653,7 +9677,9 @@ async def _run_durable_worker_effect(
             # The model-facing boundary has now proved that only policy.py was
             # candidate-written (the deterministic v143 bootstrap has already
             # proved its exact three-file blueprint separately).  Only after
-            # that proof may the host rebuild the two digest-bound identities.
+            # that proof may the host remove compiler caches and rebuild the
+            # two digest-bound identities.  Cache cleanup is host-owned because
+            # the Worker is required to leave ``py_compile`` output in place.
             try:
                 from bot_artifact import canonical_digest
                 from bot_namespace import (
@@ -9674,6 +9700,7 @@ async def _run_durable_worker_effect(
                         f"expected={sorted(expected_pre_refresh)}:"
                         f"actual={pre_refresh_changed}"
                     )
+                _cleanup_worker_transients_before_identity_refresh(workspace)
                 lineage_parents = strict_lineage_parent_versions(
                     next_v,
                     source_v,

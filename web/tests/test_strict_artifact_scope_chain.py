@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import py_compile
+import sys
 
 from bot_artifact import canonical_digest, hash_path
 from bot_namespace import (
@@ -106,6 +108,59 @@ def test_prepared_worker_quality_chain_accepts_only_verified_identity_derivation
         SYSTEM_DERIVED_IDENTITY_FILES
     )
     assert quality_scope.violation_files == []
+
+
+def test_worker_pycompile_cache_is_host_cleaned_before_identity_refresh(tmp_path):
+    """The mandatory Worker compile probe must not consume a retry attempt."""
+    import tool_planning
+
+    bot = _strict_bot(tmp_path / "national_v144")
+    task_context = bot / ".task_context"
+    task_context.mkdir()
+    (task_context / "worker.md").write_text(
+        "compiler-owned input\n", encoding="utf-8"
+    )
+    _worker_policy_edit(bot)
+
+    py_compile.compile(str(bot / "policy.py"), doraise=True)
+    cache = bot / "__pycache__"
+    assert cache.is_dir()
+    assert any(cache.glob(f"policy.{sys.implementation.cache_tag}.pyc"))
+
+    removed = tool_planning._cleanup_worker_transients_before_identity_refresh(bot)
+
+    assert "__pycache__" in removed
+    assert not cache.exists()
+    assert task_context.is_dir()
+    refresh_policy_identity_documents(bot, 144, parent_versions=(143,))
+    assert policy_identity_document_errors(
+        bot,
+        144,
+        parent_versions=(143,),
+        allow_working_task_context=True,
+    ) == []
+
+
+def test_worker_pre_identity_cleanup_does_not_hide_extra_artifact(tmp_path):
+    """Only known transient caches are cleaned; other layout drift stays fatal."""
+    import pytest
+    import tool_planning
+
+    bot = _strict_bot(tmp_path / "national_v144")
+    _worker_policy_edit(bot)
+    py_compile.compile(str(bot / "policy.py"), doraise=True)
+    extra = bot / "candidate-owned-table"
+    extra.mkdir()
+    (extra / "payload.bin").write_bytes(b"unbound")
+
+    tool_planning._cleanup_worker_transients_before_identity_refresh(bot)
+
+    assert extra.is_dir()
+    with pytest.raises(
+        ValueError,
+        match="artifact_extra_directory_forbidden:candidate-owned-table",
+    ):
+        refresh_policy_identity_documents(bot, 144, parent_versions=(143,))
 
 
 def test_first_strict_blueprint_three_file_delta_is_not_scope_rejected(tmp_path):
