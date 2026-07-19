@@ -585,13 +585,20 @@ def test_production_entrypoints_do_not_import_inert_slice_modules():
         "producer_consumer_pipeline",
         "producer_consumer_workflow_store",
     )
+    inert_sources = {
+        root / "web" / "core" / "pipeline_job_contract.py",
+        root / "web" / "core" / "producer_consumer_pipeline.py",
+        root / "web" / "core" / "producer_consumer_workflow_store.py",
+    }
     production_entrypoints = [
         root / "web" / "main.py",
-        root / "web" / "core" / "orchestrator.py",
-        root / "web" / "core" / "elo_daemon.py",
-        root / "web" / "core" / "official_certification.py",
-        root / "web" / "server" / "app.py",
-        *sorted((root / "web" / "server" / "routes").glob("*.py")),
+        *sorted(
+            path
+            for path in (root / "web" / "core").rglob("*.py")
+            if path not in inert_sources and "results" not in path.parts
+        ),
+        *sorted((root / "web" / "server").rglob("*.py")),
+        *sorted((root / "scripts").glob("*.py")),
     ]
     assert production_entrypoints
     for path in production_entrypoints:
