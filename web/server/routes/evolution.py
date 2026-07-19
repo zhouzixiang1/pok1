@@ -252,7 +252,7 @@ def _epoch_projection() -> dict:
     try:
         from epoch_authority import strict_epoch_projection
 
-        return strict_epoch_projection()
+        return strict_epoch_projection(ledger_fresh=False)
     except Exception as exc:
         return {
             "evaluation_epoch": "national_tcp_policy_v1",

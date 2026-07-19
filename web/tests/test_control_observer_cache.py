@@ -7,30 +7,82 @@ import time
 import pytest
 
 
-def test_observer_cache_coalesces_concurrent_builds_and_returns_deep_copies():
-    from server.routes.control import _ObserverSingleflightCache
+def test_observer_cache_keeps_one_builder_and_same_key_followers_fail_fast():
+    from server.routes.control import (
+        _ObserverProjectionUnavailable,
+        _ObserverSingleflightCache,
+    )
 
     cache = _ObserverSingleflightCache(ttl_sec=1.0)
     calls = 0
-    lock = threading.Lock()
-    start = threading.Barrier(8)
+    entered = threading.Event()
+    release = threading.Event()
 
     def builder():
         nonlocal calls
-        with lock:
-            calls += 1
-        time.sleep(0.05)
+        calls += 1
+        entered.set()
+        assert release.wait(timeout=2)
         return {"nested": {"value": 1}}
 
-    def read():
-        start.wait()
-        return cache.get(builder, key="same-authority")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        owner = pool.submit(cache.get, builder, key="same-authority")
+        assert entered.wait(timeout=1)
+        started = time.monotonic()
+        with pytest.raises(_ObserverProjectionUnavailable) as follower:
+            cache.get(builder, key="same-authority")
+        assert "refresh_in_progress" in str(follower.value)
+        assert time.monotonic() - started < 0.1
+        release.set()
+        first = owner.result(timeout=2)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-        values = list(pool.map(lambda _index: read(), range(8)))
     assert calls == 1
-    values[0]["nested"]["value"] = 99
-    assert all(value["nested"]["value"] == 1 for value in values[1:])
+    second = cache.get(builder, key="same-authority")
+    first["nested"]["value"] = 99
+    assert second["nested"]["value"] == 1
+
+
+def test_zero_stale_cache_changed_key_never_waits_for_old_builder():
+    from server.routes.control import (
+        _ObserverProjectionUnavailable,
+        _ObserverSingleflightCache,
+    )
+
+    cache = _ObserverSingleflightCache(
+        ttl_sec=1.0,
+        stale_while_revalidate_sec=0.0,
+    )
+    old_entered = threading.Event()
+    old_release = threading.Event()
+    latest_calls = 0
+
+    def old_builder():
+        old_entered.set()
+        assert old_release.wait(timeout=2)
+        return {"revision": 1}
+
+    def latest_builder():
+        nonlocal latest_calls
+        latest_calls += 1
+        return {"revision": 2}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        old = pool.submit(cache.get, old_builder, key="content-a")
+        assert old_entered.wait(timeout=1)
+        started = time.monotonic()
+        with pytest.raises(_ObserverProjectionUnavailable) as changed:
+            cache.get(latest_builder, key="content-b")
+        assert "authority_changed_during_refresh" in str(changed.value)
+        assert time.monotonic() - started < 0.1
+        old_release.set()
+        with pytest.raises(_ObserverProjectionUnavailable):
+            old.result(timeout=2)
+
+    deadline = time.monotonic() + 2
+    while cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert cache.get(latest_builder, key="content-b") == {"revision": 2}
+    assert latest_calls == 1
 
 
 def test_observer_cache_ttl_key_change_and_failure_are_fail_closed():
@@ -69,7 +121,11 @@ def test_observer_cache_ttl_key_change_and_failure_are_fail_closed():
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         names = list(pool.map(lambda _index: failed_read(), range(4)))
     assert failures == 1
-    assert set(names).issubset({"ValueError", "RuntimeError"})
+    assert set(names).issubset({
+        "ValueError",
+        "RuntimeError",
+        "_ObserverProjectionUnavailable",
+    })
 
 
 def test_observer_cache_invalidation_during_build_never_returns_stale_value():
@@ -295,7 +351,7 @@ def test_control_health_remains_responsive_during_slow_status_refresh(
     monkeypatch.setattr(control, "_OBSERVER_STATUS_CACHE", status_cache)
     monkeypatch.setattr(control, "_OBSERVER_HEALTH_CACHE", health_cache)
     monkeypatch.setattr(control, "_observer_cache_key", lambda **_kwargs: "same")
-    monkeypatch.setattr(control, "_fresh_control_status_snapshot", status_builder)
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", status_builder)
     monkeypatch.setattr(
         control,
         "_health_summary",
@@ -349,7 +405,7 @@ def test_control_health_maps_expected_authority_drift_to_retryable_503(
         "_observer_cache_key",
         lambda **_kwargs: current_key[0],
     )
-    monkeypatch.setattr(control, "_fresh_control_status_snapshot", status_builder)
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", status_builder)
     monkeypatch.setattr(
         control,
         "_health_summary",
@@ -385,22 +441,50 @@ def test_control_health_maps_expected_authority_drift_to_retryable_503(
 def test_launch_barrier_uses_fresh_projection_not_observer_cache(monkeypatch):
     from server.routes import control
 
-    calls = 0
+    observer_calls = 0
+    fresh_calls = 0
 
     def fresh():
-        nonlocal calls
-        calls += 1
-        return {"sample": calls}
+        nonlocal fresh_calls
+        fresh_calls += 1
+        return {"sample": f"fresh-{fresh_calls}"}
+
+    def observer():
+        nonlocal observer_calls
+        observer_calls += 1
+        return {"sample": f"observer-{observer_calls}"}
 
     control._invalidate_observer_projection_cache()
     monkeypatch.setattr(control, "_fresh_control_status_snapshot", fresh)
+    monkeypatch.setattr(control, "_observer_control_status_snapshot", observer)
     monkeypatch.setattr(control, "_read_pipeline_health", lambda status: {"sample": status["sample"]})
 
-    assert control._control_status_snapshot()["sample"] == 1
-    assert control._control_status_snapshot()["sample"] == 1
+    assert control._control_status_snapshot()["sample"] == "observer-1"
+    assert control._control_status_snapshot()["sample"] == "observer-1"
     status, pipeline = control._control_launch_authority_snapshot()
-    assert status["sample"] == 2
-    assert pipeline["sample"] == 2
+    assert status["sample"] == "fresh-1"
+    assert pipeline["sample"] == "fresh-1"
+    assert observer_calls == 1
+    assert fresh_calls == 1
+
+
+def test_control_status_builders_separate_fresh_launch_from_cached_observer(
+    monkeypatch,
+):
+    from server.routes import control
+
+    observed = []
+    monkeypatch.setattr(control.app_state, "to_dict", lambda: {"base": True})
+
+    def sync(state, *, ledger_fresh=True):
+        observed.append(ledger_fresh)
+        return {**state, "ledger_fresh": ledger_fresh}
+
+    monkeypatch.setattr(control, "_sync_evolution_fields", sync)
+
+    assert control._fresh_control_status_snapshot()["ledger_fresh"] is True
+    assert control._observer_control_status_snapshot()["ledger_fresh"] is False
+    assert observed == [True, False]
 
 
 def _transition_fixture():

@@ -482,7 +482,9 @@ def _strict_published_active_pool() -> list[str] | None:
         )
         from evolution_infra import get_published_active_bots_read_only
 
-        active = list(get_published_active_bots_read_only())
+        active = list(
+            get_published_active_bots_read_only(ledger_fresh=False)
+        )
     except Exception:
         return None
     if len(active) != len(set(active)):
@@ -548,7 +550,10 @@ def load_strict_strength_snapshot(
         try:
             from evaluation_bundle import load_current_strict_evaluation_bundle
 
-            bundle = load_current_strict_evaluation_bundle(Path(results_dir))
+            bundle = load_current_strict_evaluation_bundle(
+                Path(results_dir),
+                ledger_fresh=False,
+            )
         except Exception:
             return {"available": False, "reason": "evaluation_bundle_unavailable"}
     else:

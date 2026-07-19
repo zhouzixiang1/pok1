@@ -1694,7 +1694,10 @@ def _read_strength_projection_under_cycle_lock() -> tuple[object, dict]:
         }
         return ("preflight_failed", reason), projection
     try:
-        bundle = load_current_strict_evaluation_bundle(RESULTS_DIR)
+        bundle = load_current_strict_evaluation_bundle(
+            RESULTS_DIR,
+            ledger_fresh=False,
+        )
     except Exception as exc:
         bundle = {
             "available": False,

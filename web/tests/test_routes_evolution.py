@@ -95,7 +95,7 @@ class TestEvolutionState:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "reset_required",
                 "initialized": False,
@@ -138,7 +138,7 @@ class TestEvolutionState:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "fresh_bootstrap_ready",
                 "initialized": True,
@@ -174,7 +174,7 @@ class TestEvolutionState:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "fresh_bootstrap_ready",
                 "initialized": True,
@@ -409,7 +409,7 @@ class TestEvolutionStream:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: _active_epoch(),
+            lambda **_kwargs: _active_epoch(),
         )
         monkeypatch.setattr(server.state.app_state, "task_snapshot", _active_task)
         broadcaster = EventBroadcaster()
@@ -536,7 +536,7 @@ class TestEvolutionStream:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: _active_epoch(),
+            lambda **_kwargs: _active_epoch(),
         )
         monkeypatch.setattr(
             server.state.app_state,
@@ -803,7 +803,7 @@ class TestEvolutionStream:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "evaluation_epoch": "national_tcp_policy_v1",
                 "state": "reset_required",
                 "initialized": False,
@@ -850,7 +850,7 @@ class TestEvolutionStream:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: dict(projection),
+            lambda **_kwargs: dict(projection),
         )
 
         def forbidden_subscription(*_args, **_kwargs):

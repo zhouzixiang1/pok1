@@ -669,7 +669,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "current_v": 143,
                 "next_v": 144,
                 "strict_generation_count": 1,
@@ -709,7 +709,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "unpublished_candidate_versions",
-            lambda: [],
+            lambda **_kwargs: [],
         )
 
         resp = client.get("/api/control/status")
@@ -757,7 +757,7 @@ class TestStatus:
             "parked_request_digest": "b" * 64,
             "transition_digest": "c" * 64,
         }
-        monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda: {
+        monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda **_kwargs: {
             "current_v": 142,
             "next_v": 143,
             "strict_generation_count": 0,
@@ -790,7 +790,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "unpublished_candidate_versions",
-            lambda: [143],
+            lambda **_kwargs: [143],
         )
 
         payload = client.get("/api/control/status").json()
@@ -806,7 +806,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "current_v": 142,
                 "next_v": 143,
                 "strict_generation_count": 0,
@@ -835,7 +835,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "unpublished_candidate_versions",
-            lambda: [155],
+            lambda **_kwargs: [155],
         )
 
         resp = client.get("/api/control/status")
@@ -856,7 +856,7 @@ class TestStatus:
 
         app_state.bootstrap(155)
 
-        def unavailable():
+        def unavailable(**_kwargs):
             raise RuntimeError("projection evidence unreadable")
 
         monkeypatch.setattr(epoch_authority, "strict_epoch_projection", unavailable)
@@ -889,7 +889,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "strict_epoch_projection",
-            lambda: {
+            lambda **_kwargs: {
                 "current_v": 143,
                 "next_v": 145,
                 "strict_generation_count": 1,
@@ -917,7 +917,7 @@ class TestStatus:
         monkeypatch.setattr(
             epoch_authority,
             "unpublished_candidate_versions",
-            lambda: [],
+            lambda **_kwargs: [],
         )
 
         resp = client.get("/api/control/status")
@@ -1051,7 +1051,7 @@ class TestStatus:
         monkeypatch.setattr(
             control,
             "_sync_evolution_fields",
-            lambda _state: {
+            lambda _state, **_kwargs: {
                 "running": True,
                 "daemon_enabled": daemon_enabled,
                 "epoch_initialized": True,

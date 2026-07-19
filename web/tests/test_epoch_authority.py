@@ -251,15 +251,25 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
             unpaired_high_water_versions=(),
         ),
     )
+    observed_ledger_fresh = []
+
+    def strict_bots(**kwargs):
+        observed_ledger_fresh.append(kwargs["ledger_fresh"])
+        return ("national_v143",)
+
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda **_kwargs: ("national_v143",),
+        strict_bots,
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
     projection = epoch_authority.strict_epoch_projection(
         include_checkpoint=False,
+    )
+    observer_projection = epoch_authority.strict_epoch_projection(
+        include_checkpoint=False,
+        ledger_fresh=False,
     )
 
     assert state["state"] == "strict_published"
@@ -276,6 +286,8 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     assert state["strict_publication_versions_above_high_water"] == []
     assert projection["active_bots"] == ["national_v143"]
     assert projection["strict_published_versions"] == [143]
+    assert observer_projection["active_bots"] == ["national_v143"]
+    assert observed_ledger_fresh == [True, True, False]
 
 
 def test_reaped_active_pool_subset_does_not_renumber_published_history(

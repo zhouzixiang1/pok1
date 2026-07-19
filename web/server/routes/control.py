@@ -163,24 +163,22 @@ class _ObserverSingleflightCache:
             with self._condition:
                 if self._key != key:
                     if self._inflight:
-                        if self.stale_while_revalidate_sec > 0:
-                            # The in-flight background result belongs to the
-                            # preceding local authority.  Invalidate it now
-                            # and fail this observation quickly; never wait for
-                            # a slow remote proof and never serve the old value
-                            # under the new content key.
-                            self._generation += 1
-                            self._key = key
-                            self._value = None
-                            self._expires_at = 0.0
-                            self._error = None
-                            self._error_expires_at = 0.0
-                            self._pending_builder = builder
-                            raise _ObserverProjectionUnavailable(
-                                "observer_projection_authority_changed_during_refresh"
-                            )
-                        self._condition.wait()
-                        continue
+                        # The in-flight result belongs to the preceding local
+                        # authority.  Invalidate it and hand the one refresh
+                        # slot to the latest key after that builder exits.  A
+                        # zero-stale cache (health) must be just as nonblocking
+                        # as status: waiting here can pin an HTTP request behind
+                        # a many-second signature/Git projection.
+                        self._generation += 1
+                        self._key = key
+                        self._value = None
+                        self._expires_at = 0.0
+                        self._error = None
+                        self._error_expires_at = 0.0
+                        self._pending_builder = builder
+                        raise _ObserverProjectionUnavailable(
+                            "observer_projection_authority_changed_during_refresh"
+                        )
                     self._generation += 1
                     self._key = key
                     self._value = None
@@ -217,16 +215,16 @@ class _ObserverSingleflightCache:
                 if self._error is not None and now < self._error_expires_at:
                     raise RuntimeError(self._error)
                 if self._inflight:
-                    if self.stale_while_revalidate_sec > 0:
-                        self._pending_builder = builder
-                        reason = (
-                            "observer_projection_authority_changed_during_refresh"
-                            if self._inflight_generation != self._generation
-                            else "observer_projection_refresh_in_progress"
-                        )
-                        raise _ObserverProjectionUnavailable(reason)
-                    self._condition.wait()
-                    continue
+                    # A same-key follower receives retryable unavailability;
+                    # it never starts a duplicate builder and never waits on a
+                    # worker thread which HTTP cancellation cannot stop.
+                    self._pending_builder = builder
+                    reason = (
+                        "observer_projection_authority_changed_during_refresh"
+                        if self._inflight_generation != self._generation
+                        else "observer_projection_refresh_in_progress"
+                    )
+                    raise _ObserverProjectionUnavailable(reason)
                 self._inflight = True
                 generation = self._generation
                 self._inflight_generation = generation
@@ -1163,7 +1161,11 @@ def _refined_operator_transition(
     return candidate
 
 
-def _sync_evolution_fields(state: dict) -> dict:
+def _sync_evolution_fields(
+    state: dict,
+    *,
+    ledger_fresh: bool = True,
+) -> dict:
     """Overlay cheap authoritative evolution fields for status reads.
 
     AppState is initialized from the latest completed tag, but the active
@@ -1184,8 +1186,11 @@ def _sync_evolution_fields(state: dict) -> dict:
             stable_epoch_handoff_sample,
         )
 
+        def load_epoch() -> dict[str, Any]:
+            return strict_epoch_projection(ledger_fresh=ledger_fresh)
+
         epoch, handoff, stable_sample = stable_epoch_handoff_sample(
-            strict_epoch_projection,
+            load_epoch,
             lambda value: post_publication_handoff_projection(
                 enabled=bool(value.get("initialized"))
             ),
@@ -1196,7 +1201,7 @@ def _sync_evolution_fields(state: dict) -> dict:
             )
         dynamic_transition = _refined_operator_transition(
             epoch,
-            resample=strict_epoch_projection,
+            resample=load_epoch,
         )
         current_v = int(epoch["current_v"])
         next_v = int(epoch["next_v"])
@@ -1252,7 +1257,9 @@ def _sync_evolution_fields(state: dict) -> dict:
         )
         state["operator_transition"] = dynamic_transition
         state["ignored_checkpoint"] = epoch["ignored_checkpoint"]
-        state["unpublished_candidate_versions"] = unpublished_candidate_versions()
+        state["unpublished_candidate_versions"] = unpublished_candidate_versions(
+            ledger_fresh=ledger_fresh,
+        )
         state["post_publication_handoff"] = handoff
     except Exception as exc:
         # Never fall back to AppState's bootstrap counters: those values may
@@ -1602,14 +1609,28 @@ async def set_config(req: ConfigRequest, request: Request):
 
 
 def _fresh_control_status_snapshot() -> dict[str, Any]:
-    return _sync_evolution_fields(app_state.to_dict())
+    """Return a fresh authority sample for launch and mutation admission."""
+
+    return _sync_evolution_fields(
+        app_state.to_dict(),
+        ledger_fresh=True,
+    )
+
+
+def _observer_control_status_snapshot() -> dict[str, Any]:
+    """Return a content-bound cached-ledger sample for read-only HTTP views."""
+
+    return _sync_evolution_fields(
+        app_state.to_dict(),
+        ledger_fresh=False,
+    )
 
 
 def _control_status_snapshot() -> dict[str, Any]:
     """Short-lived singleflight snapshot for read-only HTTP observers."""
 
     return _OBSERVER_STATUS_CACHE.get(
-        _fresh_control_status_snapshot,
+        _observer_control_status_snapshot,
         key=_observer_cache_key(),
     )
 

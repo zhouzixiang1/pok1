@@ -658,6 +658,44 @@ def test_observer_capture_failure_is_fail_closed(monkeypatch):
     ]
 
 
+def test_observer_does_not_cache_transient_validation_failure(monkeypatch):
+    """Unchanged bytes must recover after a transient verifier outage."""
+
+    captured = {
+        "key": ("stable-ledger-inputs",),
+        "identity_complete": True,
+        "preflight_issues": [],
+        "ledger_raw": b"captured-ledger",
+        "head_raw": b"captured-head",
+    }
+    official_verdict_ledger._invalidate_validated_snapshot_cache()
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_capture_validation_inputs",
+        lambda: dict(captured),
+    )
+    validation = [((), ["transient_verifier_unavailable"])]
+
+    def validate(_captured):
+        if validation:
+            return validation.pop(0)
+        return ([{"sequence": 1, "entry_digest": "a" * 64}], [])
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_validate_captured_snapshot",
+        validate,
+    )
+
+    first = ledger_integrity(fresh=False)
+    recovered = ledger_integrity(fresh=False)
+
+    assert first["valid"] is False
+    assert first["issues"] == ["transient_verifier_unavailable"]
+    assert recovered["valid"] is True
+    assert recovered["entry_count"] == 1
+
+
 def test_partial_suffix_observer_escalates_to_exclusive_recovery(
     tmp_path,
     monkeypatch,

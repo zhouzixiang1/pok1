@@ -1312,7 +1312,10 @@ def _runtime_reconciliation_claim_status(
 
 
 def policy_epoch_initialization(
-    *, results_dir: str | Path | None = None, current_v: int | None = None
+    *,
+    results_dir: str | Path | None = None,
+    current_v: int | None = None,
+    ledger_fresh: bool = True,
 ) -> dict[str, Any]:
     """Describe whether mutable runtime data belongs to the strict epoch."""
 
@@ -1374,7 +1377,7 @@ def policy_epoch_initialization(
     # stray/manual national-bot-v143+ tag from bypassing the one-time reset.
     observed_strict = [
         (str(name), version)
-        for name in strict_published_bot_names(ledger_fresh=False)
+        for name in strict_published_bot_names(ledger_fresh=ledger_fresh)
         if (version := parse_bot_version(str(name))) is not None
     ]
     strict_publication_versions_above_high_water = sorted({
@@ -1574,7 +1577,11 @@ def require_policy_epoch_initialized(operation: str) -> dict[str, Any]:
     return state
 
 
-def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any]:
+def strict_epoch_projection(
+    *,
+    include_checkpoint: bool = True,
+    ledger_fresh: bool = True,
+) -> dict[str, Any]:
     """Return the sole status/scheduling view of versions and checkpoint state.
 
     Published namespace identity and current-epoch allocation are intentionally
@@ -1592,7 +1599,10 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
     )
 
     current_v = int(infra.find_current_v())
-    initialization = policy_epoch_initialization(current_v=current_v)
+    initialization = policy_epoch_initialization(
+        current_v=current_v,
+        ledger_fresh=ledger_fresh,
+    )
     if "strict_published_versions" in initialization:
         raw_published_versions = initialization.get("strict_published_versions")
         published_versions = (
@@ -1925,12 +1935,17 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
     return projection
 
 
-def unpublished_candidate_versions() -> list[int]:
+def unpublished_candidate_versions(*, ledger_fresh: bool = True) -> list[int]:
     """List on-disk strict-numbered directories only as non-authoritative debris."""
 
     import evolution_infra as infra
 
-    active = set(strict_epoch_projection(include_checkpoint=False)["active_bots"])
+    active = set(
+        strict_epoch_projection(
+            include_checkpoint=False,
+            ledger_fresh=ledger_fresh,
+        )["active_bots"]
+    )
     versions: list[int] = []
     root = Path(infra.BOTS_DIR)
     if not root.is_dir() or root.is_symlink():

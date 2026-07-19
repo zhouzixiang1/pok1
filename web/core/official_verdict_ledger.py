@@ -687,7 +687,13 @@ def _validated_ledger_snapshot(
                 and current is not None
                 and current.get("identity_complete") is True
             )
-            if not fresh and content_bound:
+            # Cache only a successful cryptographic validation.  Failures may
+            # be caused by a transient verifier/subprocess/resource outage;
+            # retaining such a result indefinitely under otherwise unchanged
+            # bytes would turn an observer optimization into a durable launch
+            # barrier.  Deterministic invalid input remains fail-closed, but is
+            # revalidated on the next observation.
+            if not fresh and content_bound and not issues:
                 with _VALIDATED_CACHE_CONDITION:
                     _VALIDATED_CACHE_KEY = key
                     _VALIDATED_CACHE_PAYLOAD = payload

@@ -3085,7 +3085,7 @@ def get_active_bots():
     return _discover_active_bots(repair_completed_sentinels=True)
 
 
-def get_active_bots_read_only():
+def get_active_bots_read_only(*, ledger_fresh: bool = True):
     """Return active bots without performing any filesystem repair.
 
     Read-only HTTP/catalog code must use this API so a GET request cannot create
@@ -3094,11 +3094,11 @@ def get_active_bots_read_only():
 
     return _discover_active_bots(
         repair_completed_sentinels=False,
-        ledger_fresh=False,
+        ledger_fresh=ledger_fresh,
     )
 
 
-def get_published_active_bots_read_only():
+def get_published_active_bots_read_only(*, ledger_fresh: bool = True):
     """Return tagged active artifacts without requiring a local sentinel.
 
     View-only clones do not carry the gitignored ``.completed`` cache. Git tag,
@@ -3109,7 +3109,7 @@ def get_published_active_bots_read_only():
     return _discover_active_bots(
         repair_completed_sentinels=False,
         require_completed_sentinel=False,
-        ledger_fresh=False,
+        ledger_fresh=ledger_fresh,
     )
 
 

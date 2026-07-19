@@ -270,7 +270,7 @@ def test_control_status_fails_closed_on_torn_epoch_handoff_sample(monkeypatch):
     monkeypatch.setattr(
         epoch_authority,
         "strict_epoch_projection",
-        lambda: next(projections),
+        lambda **_kwargs: next(projections),
     )
     monkeypatch.setattr(
         post_publication_handoff,
@@ -321,7 +321,7 @@ def test_control_status_rejects_stability_cache_from_another_epoch(monkeypatch):
     monkeypatch.setattr(
         epoch_authority,
         "strict_epoch_projection",
-        lambda: dict(epoch),
+        lambda **_kwargs: dict(epoch),
     )
     monkeypatch.setattr(
         epoch_authority,

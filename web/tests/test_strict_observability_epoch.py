@@ -223,7 +223,7 @@ def test_strength_snapshot_stops_before_old_files_when_reset_is_missing(monkeypa
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: {
+        lambda _root, **_kwargs: {
             "available": False,
             "reason": "policy_epoch_reset_unavailable",
         },
@@ -241,7 +241,7 @@ def test_strength_snapshot_fails_closed_on_malformed_core_result(monkeypatch, tm
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: None,
+        lambda _root, **_kwargs: None,
     )
 
     assert _helpers.load_strict_strength_snapshot(tmp_path) == {
@@ -254,7 +254,7 @@ def test_strength_snapshot_stops_when_published_pool_is_empty(monkeypatch, tmp_p
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: {
+        lambda _root, **_kwargs: {
             "available": False,
             "reason": "strict_published_active_pool_empty",
             "active_bots": [],
@@ -272,7 +272,7 @@ def test_strength_snapshot_rejects_singleton_default_rating(monkeypatch, tmp_pat
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: singleton,
+        lambda _root, **_kwargs: singleton,
     )
 
     snapshot = _helpers.load_strict_strength_snapshot(tmp_path)
@@ -290,7 +290,7 @@ def test_strength_snapshot_rejects_two_bot_zero_sample_cycle(monkeypatch, tmp_pa
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: empty,
+        lambda _root, **_kwargs: empty,
     )
 
     snapshot = _helpers.load_strict_strength_snapshot(tmp_path)
@@ -306,7 +306,7 @@ def test_strength_snapshot_exposes_only_current_identity_and_active_pool(monkeyp
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: _current_bundle(),
+        lambda _root, **_kwargs: _current_bundle(),
     )
 
     snapshot = _helpers.load_strict_strength_snapshot(tmp_path)
@@ -322,7 +322,7 @@ def test_strength_snapshot_rejects_cycle_from_another_active_pool(monkeypatch, t
     monkeypatch.setattr(
         evaluation_bundle,
         "load_current_strict_evaluation_bundle",
-        lambda _root: {
+        lambda _root, **_kwargs: {
             "available": False,
             "reason": "evaluation_active_pool_mismatch",
         },
@@ -376,7 +376,7 @@ def test_core_bundle_authority_rejects_cycle_active_pool_mismatch(
     monkeypatch.setattr(
         evolution_infra,
         "get_published_active_bots_read_only",
-        lambda: ["national_v143", "national_v144"],
+        lambda **_kwargs: ["national_v143", "national_v144"],
     )
     monkeypatch.setattr(
         evaluation_bundle,
@@ -404,7 +404,7 @@ def test_core_bundle_authority_fails_closed_when_cycle_loader_breaks(
     monkeypatch.setattr(
         evolution_infra,
         "get_published_active_bots_read_only",
-        lambda: ["national_v143"],
+        lambda **_kwargs: ["national_v143"],
     )
     monkeypatch.setattr(
         evaluation_bundle,

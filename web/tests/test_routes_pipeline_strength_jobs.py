@@ -671,7 +671,7 @@ class TestPipelineStrengthJobs:
             events.append("preflight")
             return False
 
-        def bundle_loader(root):
+        def bundle_loader(root, **_kwargs):
             assert root == tmp_path
             assert state["locked"] is True
             events.append("bundle")

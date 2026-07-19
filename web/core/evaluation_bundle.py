@@ -652,6 +652,8 @@ def load_published_evaluation_bundle(
 
 def load_current_strict_evaluation_bundle(
     results_dir: str | Path | None = None,
+    *,
+    ledger_fresh: bool = True,
 ) -> dict[str, Any]:
     """Bind the immutable cycle to the live strict epoch and published pool.
 
@@ -678,7 +680,11 @@ def load_current_strict_evaluation_bundle(
         )
         from evolution_infra import get_published_active_bots_read_only
 
-        active_bots = list(get_published_active_bots_read_only())
+        active_bots = list(
+            get_published_active_bots_read_only(
+                ledger_fresh=ledger_fresh,
+            )
+        )
         if len(active_bots) != len(set(active_bots)):
             raise ValueError("duplicate active bot")
         for name in active_bots:
