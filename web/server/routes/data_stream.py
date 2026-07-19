@@ -71,11 +71,11 @@ def _get_daemon_status(snapshot: dict | None = None) -> dict:
 def _get_bots(snapshot: dict | None = None) -> dict:
     from server.routes.bots import (
         _inventory_strength_snapshot,
-        _strict_published_inventory,
+        _strict_published_authority,
         build_bot_listing,
     )
 
-    active_names = _strict_published_inventory()
+    active_names, generation_identities = _strict_published_authority()
     if snapshot is None or set(snapshot.get("active_bots") or []) != set(active_names):
         snapshot = _inventory_strength_snapshot(active_names)
     return build_bot_listing(
@@ -84,6 +84,7 @@ def _get_bots(snapshot: dict | None = None) -> dict:
         snapshot.get("h2h") or {},
         include_history=False,
         active_names=active_names,
+        generation_identities=generation_identities,
         strength_rows_data=snapshot.get("selection_rows") or [],
         strength_evidence_available=bool(snapshot),
     )

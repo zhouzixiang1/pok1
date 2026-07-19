@@ -198,6 +198,15 @@ test("frontend validates but never derives canonical generation identity", () =>
     canonicalGenerationIdentityIssues({ ...identity, generation_ordinal: 0 }, 143),
     ["generation_ordinal"],
   );
+  assert.deepEqual(
+    canonicalGenerationIdentityIssues({
+      ...identity,
+      canonical_version: 142,
+      canonical_bot_name: "national_v142",
+      canonical_tag: "national-bot-v142",
+    }),
+    ["canonical_version"],
+  );
   assert.equal(
     sameCanonicalGenerationIdentity(identity, { ...identity, generation_ordinal: 2 }),
     false,
@@ -731,7 +740,9 @@ function botSummary(name = "national_v143") {
   return {
     name,
     version,
-    generation_ordinal: version - 142,
+    // Ordinal is supplied by backend publication authority; this fixture must
+    // not teach frontend tests to derive it from the canonical version.
+    generation_ordinal: 1,
     canonical_version: version,
     canonical_bot_name: name,
     canonical_tag: `national-bot-v${version}`,

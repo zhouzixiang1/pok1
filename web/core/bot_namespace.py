@@ -222,13 +222,19 @@ def bot_tag(version: int | str) -> str:
     return f"{ACTIVE_TAG_PREFIX}{format_version(version)}"
 
 
-def strict_generation_identity(version: int) -> dict[str, int | str]:
+def strict_generation_identity(
+    version: int,
+    *,
+    generation_ordinal: int,
+) -> dict[str, int | str]:
     """Return the sole user-visible/canonical identity mapping for this epoch.
 
     ``generation_ordinal`` is presentation identity only.  The canonical Bot
     directory, completion tag, certification, rating and checkpoint continue
-    to use the immutable version namespace.  Callers must not duplicate this
-    arithmetic or accept Python's ``bool``-as-``int`` coercion.
+    to use the immutable version namespace.  The ordinal is supplied by the
+    paired publication/checkpoint authority because canonically abandoned
+    labels do not become user-visible Bot generations. Callers must not infer
+    it from a directory name or accept Python's ``bool``-as-``int`` coercion.
     """
 
     if type(version) is not int:
@@ -237,8 +243,12 @@ def strict_generation_identity(version: int) -> dict[str, int | str]:
         raise ValueError(
             "strict generation version precedes national_tcp_policy_v1"
         )
+    if type(generation_ordinal) is not int:
+        raise TypeError("strict generation ordinal must be an integer")
+    if generation_ordinal <= 0:
+        raise ValueError("strict generation ordinal must be positive")
     return {
-        "generation_ordinal": version - FIRST_STRICT_POLICY_VERSION + 1,
+        "generation_ordinal": generation_ordinal,
         "canonical_version": version,
         "canonical_bot_name": bot_name(version),
         "canonical_tag": bot_tag(version),

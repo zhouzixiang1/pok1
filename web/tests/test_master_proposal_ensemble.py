@@ -677,7 +677,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "diagnostic_target_aliases" not in mapping
     assert "required_primary_checks" not in mapping
 
-    normal = agent_master._render_master_proposal_provider_prompt({
+    normal_prompt = agent_master._render_master_proposal_provider_prompt({
         "planning_context": "Frozen snapshot path is evidence data only.",
         "direction": "mechanism",
         "directive": "one structural mechanism",
@@ -690,11 +690,65 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         "projection_hints": [],
         "allowed_primaries": [],
         "invocation_id": "2" * 32,
-    }).text.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
+    }).text
+    assert (
+        "uncertainty=" + agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE
+        in normal_prompt
+    )
+    assert "<W/L/D interval method>" not in normal_prompt
+    normal = normal_prompt.rsplit("SCOUT TOOL/CHAIN SCOPE", 1)[1]
     assert "bots/national_v143/" in normal
     assert "bots/national_v144/" in normal
     assert "one exact supplied frozen evidence snapshot" in normal
     assert "Other web/core/results paths" in normal
+
+    singleton_prompt = agent_master._render_master_proposal_provider_prompt({
+        "planning_context": "Published singleton parent without peer strength.",
+        "direction": "counterfactual",
+        "directive": "one falsifiable structural mechanism",
+        "source_v": 143,
+        "next_v": 144,
+        "protocol_bootstrap_prepared_only": False,
+        "singleton_no_strength": True,
+        "source_symbol_index": "SYSTEM-VERIFIED SOURCE CALL INDEX",
+        "repair_kind": "schema",
+        "projection_hints": ["proposal_measurement_contract_invalid"],
+        "allowed_primaries": [],
+        "invocation_id": "5" * 32,
+    }).text
+    expected_uncertainty = (
+        "uncertainty=" + agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE
+    )
+    assert expected_uncertainty in singleton_prompt
+    assert "use " + expected_uncertainty + " literally" in singleton_prompt
+    assert "<W/L/D interval method>" not in singleton_prompt
+    assert "never replace it with natural-language W/L/D prose" in singleton_prompt
+
+    round_trip_measurement = (
+        "target=national_v143; primary=complete_70_hand_wld; "
+        "expected_delta=0.03; "
+        f"samples={agent_master._PROPOSAL_STRENGTH_SAMPLE_FLOOR}; "
+        f"uncertainty={agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE}; "
+        "secondary=net_chip_ci"
+    )
+    assert agent_master._proposal_measurement_contract_valid(
+        round_trip_measurement,
+        "singleton_parent_no_strength",
+    )
+    assert not agent_master._proposal_measurement_contract_valid(
+        round_trip_measurement.replace(
+            agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE,
+            "W/L/D bootstrap 95% CI",
+        ),
+        "singleton_parent_no_strength",
+    )
+    assert not agent_master._proposal_measurement_contract_valid(
+        round_trip_measurement.replace(
+            agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE,
+            "nonsense_interval",
+        ),
+        "singleton_parent_no_strength",
+    )
 
     many_hints = agent_master._render_master_proposal_provider_prompt({
         "planning_context": "Frozen facts.",

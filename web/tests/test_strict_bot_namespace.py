@@ -47,30 +47,42 @@ def test_parser_accepts_only_canonical_active_namespace():
 
 
 def test_strict_generation_identity_maps_immutable_versions_to_ui_ordinals():
-    assert strict_generation_identity(143) == {
+    assert strict_generation_identity(143, generation_ordinal=1) == {
         "generation_ordinal": 1,
         "canonical_version": 143,
         "canonical_bot_name": "national_v143",
         "canonical_tag": "national-bot-v143",
     }
-    assert strict_generation_identity(144) == {
+    assert strict_generation_identity(147, generation_ordinal=2) == {
         "generation_ordinal": 2,
-        "canonical_version": 144,
-        "canonical_bot_name": "national_v144",
-        "canonical_tag": "national-bot-v144",
+        "canonical_version": 147,
+        "canonical_bot_name": "national_v147",
+        "canonical_tag": "national-bot-v147",
     }
 
 
 @pytest.mark.parametrize("value", [True, False, "143", 143.0, None])
 def test_strict_generation_identity_rejects_non_integer_versions(value):
     with pytest.raises(TypeError):
-        strict_generation_identity(value)
+        strict_generation_identity(value, generation_ordinal=1)
 
 
 @pytest.mark.parametrize("value", [0, 1, 142, -1])
 def test_strict_generation_identity_rejects_pre_epoch_versions(value):
     with pytest.raises(ValueError):
-        strict_generation_identity(value)
+        strict_generation_identity(value, generation_ordinal=1)
+
+
+@pytest.mark.parametrize("value", [True, False, "2", 2.0, None])
+def test_strict_generation_identity_rejects_non_integer_ordinals(value):
+    with pytest.raises(TypeError):
+        strict_generation_identity(147, generation_ordinal=value)
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_strict_generation_identity_rejects_non_positive_ordinals(value):
+    with pytest.raises(ValueError):
+        strict_generation_identity(147, generation_ordinal=value)
 
 
 def test_first_strict_candidate_has_fresh_noninherited_lineage(tmp_path):

@@ -882,7 +882,7 @@ def load_h2h_avg_winrates_with_coverage():
 
 
 def _singleton_bootstrap_precommit_opponent(version, source_v, checkpoint):
-    """Resolve the sole published v143 parent for v144 precommit.
+    """Resolve the sole published v143 parent for the first successor precommit.
 
     The singleton bootstrap deliberately has no rating/generation snapshot:
     with only one published policy bot there is no peer-strength cycle to
@@ -897,8 +897,10 @@ def _singleton_bootstrap_precommit_opponent(version, source_v, checkpoint):
 
     from bot_namespace import FIRST_STRICT_POLICY_VERSION
 
-    target = FIRST_STRICT_POLICY_VERSION + 1
-    if version != target or source_v != FIRST_STRICT_POLICY_VERSION:
+    if (
+        source_v != FIRST_STRICT_POLICY_VERSION
+        or version <= source_v
+    ):
         return None, []
 
     issues = []
@@ -944,6 +946,7 @@ def _singleton_bootstrap_precommit_opponent(version, source_v, checkpoint):
     try:
         from generation_evidence import (
             build_protocol_bootstrap_evidence_identity,
+            live_protocol_bootstrap_allocation_errors,
         )
 
         identity = build_protocol_bootstrap_evidence_identity(
@@ -951,8 +954,14 @@ def _singleton_bootstrap_precommit_opponent(version, source_v, checkpoint):
             version=version,
             source_v=source_v,
         )
-        if identity.get("mode") != "singleton_strict_v144_bootstrap":
+        if identity.get("mode") != "singleton_strict_successor_bootstrap":
             issues.append("singleton_precommit_identity_mode_mismatch")
+        issues.extend(
+            live_protocol_bootstrap_allocation_errors(
+                checkpoint,
+                version=int(version),
+            )
+        )
     except Exception as exc:
         issues.append(
             "singleton_precommit_identity_invalid:"
@@ -993,8 +1002,10 @@ def _select_precommit_opponents(
     Generation preparation owns the evaluation cutoff.  Precommit may run much
     later, so this function must not reopen live ratings, H2H, match history, or
     rolling advisory archives.  Missing or invalid generation evidence fails
-    closed, except for the checkpoint-proven v144 singleton bootstrap whose
-    sole published parent is the only possible ordinary strength opponent.
+    closed, except for the checkpoint-proven singleton successor whose sole
+    published parent is the only possible ordinary strength opponent. Canonical
+    labels skipped by complete abandon receipts do not manufacture peer
+    evidence and therefore do not disable this exact-parent regression gate.
     """
     candidate = active_bot_name(version)
     parent = active_bot_name(source_v)

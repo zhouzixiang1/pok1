@@ -97,8 +97,9 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    validator 认可的 strength-bearing snapshot node，并向 Critic 暴露 digest-bound bounded
    projection；metadata、active_bots、manifest 或 candidate 自身都不是测量对手。measurement
    必须是六个精确字段：冻结发布对手、complete_70_hand_wld、0<数值 delta<=1、至少 30
-   场完整比赛、W/L/D interval 方法、net_chip_ci 次指标。singleton v144 只能以已发布 v143
-   为 target，fresh v143 只能使用 fixed blueprint/official 5+3/no-strength 形式。packet 还要
+   场完整比赛、精确 `wilson_wld_interval`、net_chip_ci 次指标。任一 singleton successor
+   只能以已发布 v143 为 target，并重开实时 allocation/abandon authority；fresh v143 只能
+   使用 fixed blueprint/official 5+3/no-strength 形式。packet 还要
    冻结 named source symbol 的 prepared-baseline AST digest；策略质量必须重证完整 selected
    binding、选中 reachable chain 上的真实 AST delta 和候选 typed check。该结果只证明有界
    mechanism/capability，不得声称自由文本 counterfactual 已执行或 Bot 已变强；强度只能由
@@ -1821,3 +1822,25 @@ shadow branch `codex/producer-consumer-evolution-pipeline@214518888791761ff6d4a3
 with 134 focused tests. It must not be imported or activated by production
 until durable Slice 2 journal/CAS/lease/resolver/migration work is separately
 reviewed after first-Bot recovery.
+
+## Latest superseding handoff: published v143 and recoverable v147
+
+The first strict Bot is now published at canonical `national_v143` / annotated
+`national-bot-v143`, with a signed official-full-v5 certificate covering eight
+complete 70-hand executions and zero protocol issue. Official evidence remains
+zero-strength. The next strategy workflow exposed two system-contract bugs:
+v144 Scouts followed the rendered natural-language W/L/D uncertainty request
+but the validator required a snake_case token; after v144 was governed-abandoned,
+the evidence producer still hard-coded target v144, so v145/v146 were also
+governed-abandoned. These labels are immutable abandon history and cannot be
+reused or displayed as Bot generations.
+
+Runtime is controlled-stopped at `generation:147:workflow-v1`, source v143,
+stage `direction_audited`, revision 5, with recovery diagnostics green. The
+same canonical v147 target must resume after the source repair; it is potential
+Web generation 2 while preserving `national_v147` / `national-bot-v147`.
+The repair must use one exact prompt/validator literal, accept any content- and
+live-allocation-bound successor above v143, classify deterministic Master
+authority defects as recovery-blocked rather than `master_llm`, and derive
+ordinals from immutable paired publication history so abandon/reap never
+renumbers a Bot. Stability remains **0/10** until the controlled restart.

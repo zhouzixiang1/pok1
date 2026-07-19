@@ -220,8 +220,10 @@ stage, run/workflow IDs and checkpoint revision.
 The strict epoch has two simultaneously displayed identities, both produced by
 `bot_namespace.strict_generation_identity`:
 
-- `generation_ordinal` starts at 1 for the first strict-policy artifact and is
-  presentation metadata only;
+- `generation_ordinal` starts at 1 for the first strict-policy publication and
+  is enumerated only from immutable paired completion/high-water history;
+  governed-abandoned labels consume no ordinal, while reaping or temporary
+  executable-pool loss cannot renumber an earlier publication;
 - `canonical_version`, `canonical_bot_name` and `canonical_tag` retain the
   immutable Git/artifact/certificate namespace (`national_v143`,
   `national-bot-v143` for ordinal 1).
@@ -988,9 +990,11 @@ these results do not yet claim recovery, restart or Bot publication.
 
 ## Second bot and rating readiness
 
-v144 and later candidates use normal `official-full-v5`: five 70-hand
+Every post-v143 candidate uses normal `official-full-v5`: five 70-hand
 self-play rounds plus three 70-hand rounds against an eligible strict opponent.
-After v143 and v144 are active, the rating daemon must publish one immutable,
+If canonical labels are governed-abandoned, the first non-abandoned singleton
+successor keeps this exact contract; the current recovery target is v147.
+After v143 and that successor are active, the rating daemon must publish one immutable,
 content-addressed cycle containing admitted complete native matches, Glicko,
 H2H, selection rows, cutoffs, and replay citations under one evaluation
 identity. Official and Arena outcomes remain excluded from strength.

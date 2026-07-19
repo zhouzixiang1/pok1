@@ -1,5 +1,7 @@
 """Logic-level tests for MCP tools — verifies data transformations and invariants."""
 
+import pytest
+
 # ── tool_helpers.py: compute_h2h_avg_winrate() via pure import ──
 
 class TestComputeH2HLogic:
@@ -199,6 +201,121 @@ class TestSelectPrecommitOpponents:
             },
         }
 
+    @staticmethod
+    def _retarget_singleton_checkpoint(checkpoint, version):
+        """Rebind the fixture as a post-abandon singleton successor."""
+
+        from bot_artifact import canonical_digest
+
+        checkpoint["next_v"] = version
+        checkpoint["workflow_run_id"] = f"generation:{version}:singleton-test"
+        receipt = checkpoint["audit_context"]["protocol_bootstrap"]
+        receipt["next_v"] = version
+        receipt["receipt_digest"] = canonical_digest({
+            key: value for key, value in receipt.items()
+            if key != "receipt_digest"
+        })
+        checkpoint["audit_context"]["selection"][
+            "protocol_bootstrap_receipt_digest"
+        ] = receipt["receipt_digest"]
+        binding = checkpoint["epoch_binding"]
+        binding["next_v"] = version
+        binding["protocol_bootstrap_receipt_digest"] = receipt[
+            "receipt_digest"
+        ]
+        if version > 144:
+            binding["published_high_water"] = 143
+            binding["allocation_floor"] = version - 1
+            binding["abandoned_receipt_floor"] = version - 1
+            binding["abandoned_receipt_head_digest"] = "a" * 64
+        binding["binding_digest"] = canonical_digest({
+            key: value for key, value in binding.items()
+            if key != "binding_digest"
+        })
+        return checkpoint
+
+    @pytest.mark.parametrize("version", [144, 147])
+    def test_singleton_evidence_identity_accepts_any_bound_successor(self, version):
+        from generation_evidence import build_protocol_bootstrap_evidence_identity
+
+        checkpoint = self._retarget_singleton_checkpoint(
+            self._singleton_checkpoint(),
+            version,
+        )
+
+        identity = build_protocol_bootstrap_evidence_identity(
+            checkpoint,
+            version=version,
+            source_v=143,
+        )
+
+        assert identity["mode"] == "singleton_strict_successor_bootstrap"
+        assert identity["source_v"] == 143
+        assert identity["strength_evidence_admitted"] is False
+        assert identity["strength_evidence_weight"] == 0
+
+    def test_singleton_evidence_identity_rejects_non_successor_target(self):
+        from generation_evidence import (
+            GenerationEvidenceError,
+            _singleton_successor_identity,
+        )
+
+        checkpoint = self._retarget_singleton_checkpoint(
+            self._singleton_checkpoint(),
+            143,
+        )
+
+        with pytest.raises(
+            GenerationEvidenceError,
+            match="singleton_bootstrap_target_not_successor",
+        ):
+            _singleton_successor_identity(checkpoint, 143, 143)
+
+    def test_singleton_live_allocation_reopens_exact_abandon_chain(self):
+        from generation_evidence import live_protocol_bootstrap_allocation_errors
+
+        checkpoint = self._retarget_singleton_checkpoint(
+            self._singleton_checkpoint(),
+            147,
+        )
+
+        def live_authority(*, expected_next_v):
+            assert expected_next_v == 147
+            return {
+                "published_high_water": 143,
+                "abandoned_receipt_floor": 146,
+                "abandoned_receipt_head_digest": "a" * 64,
+                "allocation_floor": 146,
+            }
+
+        assert live_protocol_bootstrap_allocation_errors(
+            checkpoint,
+            version=147,
+            authority_loader=live_authority,
+        ) == []
+
+    def test_singleton_live_allocation_rejects_redigested_skipped_target(self):
+        from generation_evidence import live_protocol_bootstrap_allocation_errors
+
+        checkpoint = self._retarget_singleton_checkpoint(
+            self._singleton_checkpoint(),
+            999,
+        )
+
+        errors = live_protocol_bootstrap_allocation_errors(
+            checkpoint,
+            version=999,
+            authority_loader=lambda **_kwargs: {
+                "published_high_water": 143,
+                "abandoned_receipt_floor": 146,
+                "abandoned_receipt_head_digest": "a" * 64,
+                "allocation_floor": 146,
+            },
+        )
+
+        assert "protocol_bootstrap_live_allocation:checkpoint_target_skips_live_allocation_floor" in errors
+        assert "protocol_bootstrap_live_allocation:checkpoint_abandoned_receipt_floor_changed" in errors
+
     def test_missing_frozen_snapshot_fails_closed(self, monkeypatch):
         import evidence_snapshot
         import tool_helpers
@@ -278,16 +395,23 @@ class TestSelectPrecommitOpponents:
 
         assert tool_helpers._select_precommit_opponents(147, 143) == []
 
-    def test_v144_singleton_freezes_exact_published_parent_without_snapshot(
+    def test_singleton_successor_freezes_exact_published_parent_without_snapshot(
         self,
         tmp_path,
         monkeypatch,
     ):
         import checkpoint_schema
         import evidence_snapshot
+        import generation_evidence
         import tool_helpers
 
-        checkpoint = self._singleton_checkpoint()
+        checkpoints = [
+            self._singleton_checkpoint(),
+            self._retarget_singleton_checkpoint(
+                self._singleton_checkpoint(),
+                147,
+            ),
+        ]
         parent_entry = tmp_path / "national_v143" / "national_bot.py"
         parent_entry.parent.mkdir()
         parent_entry.write_text("# strict published parent\n", encoding="utf-8")
@@ -302,20 +426,26 @@ class TestSelectPrecommitOpponents:
             lambda *_args, **_kwargs: [],
         )
         monkeypatch.setattr(
+            generation_evidence,
+            "live_protocol_bootstrap_allocation_errors",
+            lambda *_args, **_kwargs: [],
+        )
+        monkeypatch.setattr(
             tool_helpers,
             "get_active_bots",
             lambda: ["national_v143"],
         )
         monkeypatch.setattr(tool_helpers, "_bot_entry", lambda _name: parent_entry)
 
-        assert tool_helpers._select_precommit_opponents(
-            144,
-            143,
-            checkpoint=checkpoint,
-        ) == [{
-            "name": "national_v143",
-            "reason": "singleton_strict_bootstrap_parent",
-        }]
+        for checkpoint in checkpoints:
+            assert tool_helpers._select_precommit_opponents(
+                checkpoint["next_v"],
+                143,
+                checkpoint=checkpoint,
+            ) == [{
+                "name": "national_v143",
+                "reason": "singleton_strict_bootstrap_parent",
+            }]
 
     def test_v144_singleton_fails_closed_on_receipt_binding_drift(
         self,

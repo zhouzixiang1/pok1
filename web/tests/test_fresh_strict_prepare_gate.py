@@ -390,12 +390,14 @@ def test_singleton_receipt_cannot_replace_current_parent_role_eligibility(
     monkeypatch,
 ):
     from bot_artifact import canonical_digest
+    import generation_evidence
     from system_strict_bootstrap import materialize_fresh_candidate
 
     subject = {
         "schema_version": 1,
         "kind": "national-tcp-policy-singleton-bootstrap-v1",
         "mode": "singleton_strict_bootstrap",
+        "epoch": "national_tcp_policy_v1",
         "source_v": 143,
         "next_v": 144,
         "source_artifact_inherited": True,
@@ -414,6 +416,11 @@ def test_singleton_receipt_cannot_replace_current_parent_role_eligibility(
         checkpoint=checkpoint,
         active_bots=[],
         tagged_versions={143},
+    )
+    monkeypatch.setattr(
+        generation_evidence,
+        "live_protocol_bootstrap_allocation_errors",
+        lambda *_args, **_kwargs: [],
     )
     source = bot_dir(143)
     materialize_fresh_candidate(source, version=143, final_policy=True)

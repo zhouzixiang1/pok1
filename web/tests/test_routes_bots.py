@@ -105,6 +105,14 @@ class TestListBots:
             {},
             include_history=True,
             active_names=["national_v143"],
+            generation_identities={
+                "national_v143": {
+                    "generation_ordinal": 1,
+                    "canonical_version": 143,
+                    "canonical_bot_name": "national_v143",
+                    "canonical_tag": "national-bot-v143",
+                },
+            },
         )
 
         assert [row["name"] for row in result["active"]] == ["national_v143"]
@@ -134,6 +142,20 @@ class TestListBots:
             {}, {}, {},
             include_history=False,
             active_names=["national_v144", "national_v143"],
+            generation_identities={
+                "national_v143": {
+                    "generation_ordinal": 1,
+                    "canonical_version": 143,
+                    "canonical_bot_name": "national_v143",
+                    "canonical_tag": "national-bot-v143",
+                },
+                "national_v144": {
+                    "generation_ordinal": 2,
+                    "canonical_version": 144,
+                    "canonical_bot_name": "national_v144",
+                    "canonical_tag": "national-bot-v144",
+                },
+            },
         )["active"]
         assert [(row["canonical_bot_name"], row["generation_ordinal"]) for row in both] == [
             ("national_v143", 1),
@@ -143,6 +165,14 @@ class TestListBots:
             {}, {}, {},
             include_history=False,
             active_names=["national_v144"],
+            generation_identities={
+                "national_v144": {
+                    "generation_ordinal": 2,
+                    "canonical_version": 144,
+                    "canonical_bot_name": "national_v144",
+                    "canonical_tag": "national-bot-v144",
+                },
+            },
         )["active"]
         assert only_second[0]["generation_ordinal"] == 2
         assert only_second[0]["canonical_tag"] == "national-bot-v144"
@@ -154,10 +184,86 @@ class TestListBots:
             ValueError,
             match="published_bot_summary_canonical_name_mismatch",
         ):
-            bots_mod._decorate_published({
-                "name": "national_v143",
-                "version": 144,
-            })
+            bots_mod._decorate_published(
+                {
+                    "name": "national_v143",
+                    "version": 144,
+                },
+                {
+                    "generation_ordinal": 2,
+                    "canonical_version": 144,
+                    "canonical_bot_name": "national_v144",
+                    "canonical_tag": "national-bot-v144",
+                },
+            )
+
+    def test_swapped_backend_ordinals_withhold_entire_publication_projection(
+        self,
+        monkeypatch,
+    ):
+        import epoch_authority
+        from server.routes import bots as bots_mod
+
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda **_kwargs: {
+                "initialized": True,
+                "active_bots": ["national_v143", "national_v147"],
+                "strict_published_bot_identities": [
+                    {
+                        "generation_ordinal": 2,
+                        "canonical_version": 143,
+                        "canonical_bot_name": "national_v143",
+                        "canonical_tag": "national-bot-v143",
+                    },
+                    {
+                        "generation_ordinal": 1,
+                        "canonical_version": 147,
+                        "canonical_bot_name": "national_v147",
+                        "canonical_tag": "national-bot-v147",
+                    },
+                ],
+            },
+        )
+
+        assert bots_mod._strict_published_authority() == ([], {})
+
+    def test_abandoned_version_gap_keeps_contiguous_published_ordinals(
+        self,
+        monkeypatch,
+    ):
+        import epoch_authority
+        from server.routes import bots as bots_mod
+
+        identities = [
+            {
+                "generation_ordinal": 1,
+                "canonical_version": 143,
+                "canonical_bot_name": "national_v143",
+                "canonical_tag": "national-bot-v143",
+            },
+            {
+                "generation_ordinal": 2,
+                "canonical_version": 147,
+                "canonical_bot_name": "national_v147",
+                "canonical_tag": "national-bot-v147",
+            },
+        ]
+        monkeypatch.setattr(
+            epoch_authority,
+            "strict_epoch_projection",
+            lambda **_kwargs: {
+                "initialized": True,
+                "active_bots": ["national_v147"],
+                "strict_published_bot_identities": identities,
+            },
+        )
+
+        names, by_name = bots_mod._strict_published_authority()
+        assert names == ["national_v147"]
+        assert by_name["national_v143"]["generation_ordinal"] == 1
+        assert by_name["national_v147"]["generation_ordinal"] == 2
 
     def test_data_stream_bot_snapshot_uses_active_namespace(
         self, synthetic_published_bot_authority
@@ -182,7 +288,12 @@ class TestBotDetail:
         assert data["canonical_version"] == version
         assert data["canonical_bot_name"] == bot_name(version)
         assert data["canonical_tag"] == f"national-bot-v{version}"
-        assert data["generation_ordinal"] == version - 142
+        expected_identity = next(
+            identity
+            for identity in synthetic_published_bot_authority["identities"]
+            if identity["canonical_version"] == version
+        )
+        assert data["generation_ordinal"] == expected_identity["generation_ordinal"]
         assert "files" in data
         assert "total_lines" in data
         assert "official_certification" in data
@@ -238,6 +349,14 @@ class TestBotDetail:
             {},
             include_history=False,
             active_names=["national_v143"],
+            generation_identities={
+                "national_v143": {
+                    "generation_ordinal": 1,
+                    "canonical_version": 143,
+                    "canonical_bot_name": "national_v143",
+                    "canonical_tag": "national-bot-v143",
+                },
+            },
             strength_evidence_available=False,
         )
 

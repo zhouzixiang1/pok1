@@ -42,6 +42,69 @@ def test_strict_authority_failure_uses_control_plane_abandon(monkeypatch):
     ]
 
 
+def test_master_checkpoint_authority_failure_blocks_without_abandon_or_llm_retry(
+    monkeypatch,
+):
+    from agent_master import MasterAuthorityError
+
+    async def forbidden_abandon(*_args, **_kwargs):
+        raise AssertionError("deterministic authority failure must not spend a label")
+
+    monkeypatch.setattr(
+        tool_planning,
+        "_abandon_master_generation",
+        forbidden_abandon,
+    )
+    result = asyncio.run(tool_planning._block_master_authority(
+        147,
+        143,
+        error=MasterAuthorityError(
+            143,
+            147,
+            "a" * 64,
+            ["protocol_bootstrap_live_allocation:checkpoint_abandoned_receipt_head_changed"],
+        ),
+        ui=None,
+    ))
+    payload = json.loads(result["content"][0]["text"])
+
+    assert payload["error"] == "MASTER_AUTHORITY_RECOVERY_BLOCKED"
+    assert payload["failure_class"] == "control_plane"
+    assert payload["recovery_blocked"] is True
+    assert payload["retryable"] is False
+    assert payload["action"] == "repair_master_authority_contract"
+
+
+def test_orchestrator_preserves_checkpoint_for_typed_authority_block():
+    import orchestrator
+
+    checkpoint = {
+        "next_v": 147,
+        "source_v": 143,
+        "stage": "direction_audited",
+    }
+    classified = orchestrator._classify_recovery_after_deterministic_route(
+        {"action": "resume", "checkpoint": checkpoint},
+        {
+            "result": {
+                "error": "MASTER_AUTHORITY_RECOVERY_BLOCKED",
+                "failure_class": "control_plane",
+                "recovery_blocked": True,
+                "action": "repair_master_authority_contract",
+                "validation_errors": ["live_allocation_drift"],
+            },
+        },
+        {"action": "resume", "checkpoint": checkpoint},
+    )
+
+    assert classified["action"] == "blocked"
+    assert classified["checkpoint"] is checkpoint
+    assert classified["diagnostics"]["issues"] == ["live_allocation_drift"]
+    assert classified["diagnostics"]["operator_action"] == (
+        "repair_master_authority_contract"
+    )
+
+
 def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     tmp_path,
     monkeypatch,

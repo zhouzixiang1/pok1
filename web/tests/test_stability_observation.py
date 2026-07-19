@@ -177,7 +177,7 @@ def live_daemon_identity(monkeypatch):
             if int(version) == 143
             else {
                 "schema_version": 1,
-                "mode": "singleton_strict_v144_bootstrap",
+                "mode": "singleton_strict_successor_bootstrap",
                 "reason": "single_strict_parent_no_peer_pool",
                 "source_v": int(source_v),
                 "strength_evidence_admitted": False,

@@ -1356,6 +1356,14 @@ def policy_epoch_initialization(
         *unpaired_completion_versions,
         *unpaired_high_water_versions,
     })
+    paired_strict_history = sorted({
+        version
+        for version in (
+            getattr(namespace_authority, "paired_versions", ())
+            if namespace_snapshot_matches else ()
+        )
+        if type(version) is int and version >= FIRST_STRICT_POLICY_VERSION
+    })
     receipt_path = root / POLICY_EPOCH_RESET_RECEIPT_FILENAME
     reconciliation_claim_path = root / RUNTIME_RECONCILIATION_CLAIM_FILENAME
     receipt, receipt_errors = load_policy_epoch_reset_receipt(root)
@@ -1403,8 +1411,21 @@ def policy_epoch_initialization(
         if (version := parse_bot_version(str(name))) is not None
         and version >= FIRST_STRICT_POLICY_VERSION
     })
+    # Published ordinals are immutable presentation history.  The executable
+    # active pool may later become a subset through a durable reap or a
+    # temporary eligibility failure, but neither event may renumber a prior
+    # publication.  Production namespace authority always supplies
+    # ``paired_versions``; the fallback preserves explicit test adapters that
+    # predate that field without weakening the production source.
+    strict_published_versions = (
+        paired_strict_history
+        if namespace_authority is not None
+        and hasattr(namespace_authority, "paired_versions")
+        else strict_versions
+    )
     strict_published_bot_identities = [
-        strict_generation_identity(version) for version in strict_versions
+        strict_generation_identity(version, generation_ordinal=ordinal)
+        for ordinal, version in enumerate(strict_published_versions, start=1)
     ]
     strict_published = bool(strict_bots)
     # Numeric namespace authority and executable publication authority are
@@ -1510,7 +1531,7 @@ def policy_epoch_initialization(
         "epoch_initialized": epoch_initialized,
         "strict_published": strict_published,
         "strict_published_bots": strict_bots,
-        "strict_published_versions": strict_versions,
+        "strict_published_versions": strict_published_versions,
         "strict_published_bot_identities": strict_published_bot_identities,
         "namespace_publication_proven": namespace_publication_proven,
         "publication_recovery_ready": partial_publication_recovery,
@@ -1572,12 +1593,29 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
 
     current_v = int(infra.find_current_v())
     initialization = policy_epoch_initialization(current_v=current_v)
-    published_versions = sorted({
-        version
-        for name in initialization.get("strict_published_bots", [])
-        if (version := parse_bot_version(str(name))) is not None
-        and version >= FIRST_STRICT_POLICY_VERSION
-    })
+    if "strict_published_versions" in initialization:
+        raw_published_versions = initialization.get("strict_published_versions")
+        published_versions = (
+            list(raw_published_versions)
+            if isinstance(raw_published_versions, list)
+            and all(type(version) is int for version in raw_published_versions)
+            and raw_published_versions
+            == sorted(set(raw_published_versions))
+            and all(
+                version >= FIRST_STRICT_POLICY_VERSION
+                for version in raw_published_versions
+            )
+            else []
+        )
+    else:
+        # Compatibility for narrow injected test projections. Production
+        # policy_epoch_initialization always emits the durable paired history.
+        published_versions = sorted({
+            version
+            for name in initialization.get("strict_published_bots", [])
+            if (version := parse_bot_version(str(name))) is not None
+            and version >= FIRST_STRICT_POLICY_VERSION
+        })
     allocation_authority_error = None
     try:
         abandoned_authority = infra.abandoned_version_authority(
@@ -1616,7 +1654,8 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
         "active_bots_count": len(active_bots),
         "strict_published_versions": published_versions,
         "strict_published_bot_identities": [
-            strict_generation_identity(version) for version in published_versions
+            strict_generation_identity(version, generation_ordinal=ordinal)
+            for ordinal, version in enumerate(published_versions, start=1)
         ],
         "strict_generation_count": len(published_versions),
         "active_generation": None,
@@ -1823,7 +1862,16 @@ def strict_epoch_projection(*, include_checkpoint: bool = True) -> dict[str, Any
         return projection
 
     generation_attempt = int(checkpoint.get("generation_attempt") or 0)
-    canonical_identity = strict_generation_identity(int(checkpoint["next_v"]))
+    checkpoint_version = int(checkpoint["next_v"])
+    canonical_ordinal = (
+        published_versions.index(checkpoint_version) + 1
+        if checkpoint_version in published_versions
+        else len(published_versions) + 1
+    )
+    canonical_identity = strict_generation_identity(
+        checkpoint_version,
+        generation_ordinal=canonical_ordinal,
+    )
     projection["active_generation"] = {
         **canonical_identity,
         "next_v": int(checkpoint["next_v"]),

@@ -4675,3 +4675,73 @@ handoff tests, 218 official/governance tests and 130 Bot/Rating route tests.
 warning.  At this ledger point the source batch is still detached and not yet
 pushed/synchronized; Web, Orchestrator and Elo remain stopped, v144 has not
 started, and stability remains **0/10**.
+
+## 2026-07-19 — post-v143 successor schema/identity incident and v147 recovery freeze
+
+Runtime HEAD `c43a7e4843470ae413942abdd882fbdfbe639520` began
+`generation:144:workflow-v1` from the sole published strict parent
+`national_v143`. Both permitted Master attempts ended with
+`proposal_packet_invalid:three_distinct_schema_valid_scout_proposals_required:got_0`
+at event timestamps `1784457177.3206942` and `1784457421.9812045`. The rendered
+contract requested `uncertainty=<W/L/D interval method>`, while its validator
+accepted only a lowercase snake_case token containing `interval`, `_ci`, or
+`credible`. Stored provider outputs followed the rendered semantics with values
+including `W/L/D bootstrap 95% CI`, `W/L/D Wilson 95% interval`,
+`W/L/D Agresti-Coull 95% interval`, and `W/L/D exact binomial 95% CI`; all were
+deterministically rejected. This was a prompt/gate contract defect, not weak
+model reasoning.
+
+v144 was canonically abandoned at `direction_audited`, checkpoint revision 6:
+transaction `96a3ae76b706a9ab5d5669b218a64a38bfd55be25282b982c0d172ef3a8d59ab`,
+abandon receipt
+`abd846f4cea3485ef1755f46a8f886ec3b213b493d7bce571cddffc2802a0dfe`,
+and finalize receipt
+`dcc9aed9ec8cb9ba292cd7cc2989fb242eab9987bdfe7b9e26d305defb13a915`.
+
+The outer scheduler then allocated v145 and v146. Their exact singleton
+evidence producer still required target v144, raising
+`GenerationEvidenceError:singleton_bootstrap_target_not_v144`. That
+deterministic authority defect was incorrectly classified as
+`master_llm_unavailable`, retried three times per workflow, and then governed-
+abandoned:
+
+- v145: abandon `c188dbdd6c4baf239feb4fc711a4fc05aab963b5d7ce214befc847f387cd98dc`,
+  finalize `452c82ddf33addf44695532957a6df26baf7c9732a71e3851801a0a7ef364fd6`;
+- v146: abandon `584faecf5f2028216137bf9c9c4485a1e8415b996e2735066eb611e4b98d967d`,
+  finalize `215c0ad7dd454e044569eb32432fc6c412cd8137df3570348afb7e4459dd19ba`.
+
+No v144–v147 completion/high-water tag, `.completed`, certificate, rating,
+H2H, selection row, or admitted strength result exists. v144–v146 are immutable
+abandoned canonical labels and must never be deleted, reused, or presented as
+published Bot generations.
+
+The runtime was controlled-stopped before further deterministic churn. Its
+exact recoverable checkpoint is `generation:147:workflow-v1`, `next_v=147`,
+`source_v=143`, `stage=direction_audited`, revision 5, published high-water
+143, abandon floor 146, abandon-head
+`584faecf5f2028216137bf9c9c4485a1e8415b996e2735066eb611e4b98d967d`,
+and epoch-binding digest
+`ee8f1ad013bca759e539c11ca5f365422e6222a220c62faa87208cb24ba21211`.
+The candidate remains unpublished at `bots/national_v147/`. It is the current
+potential Web generation 2 while retaining canonical identity
+`national_v147` / `national-bot-v147`. Stability remains **0/10**.
+
+The source repair under validation replaces the rendered placeholder and the
+validator's fuzzy token test with one shared exact literal
+`wilson_wld_interval`; generalizes singleton evidence and parent precommit to
+any content-bound successor `version > source_v == 143`; and separately
+reopens live tag/abandon allocation authority before prepare, Master provider
+dispatch and native precommit. A self-consistent re-digested skipped checkpoint
+therefore cannot spend model or match resources. Deterministic Master authority
+defects now return a typed recovery-blocked result which preserves the same
+checkpoint and forbids LLM retry or automatic label consumption; only provider
+transport remains `MasterInfrastructureError`.
+
+Presentation ordinal authority now enumerates immutable paired publication-tag
+history, not canonical-version arithmetic or the mutable executable pool.
+Abandoned labels consume no ordinal, and a reaped/temporarily unavailable
+published Bot cannot renumber its successors. Bot HTTP/SSE and frontend
+validators cross-bind that history with the active subset; pre-epoch, swapped,
+non-contiguous or canonical-name/tag-drifted identities fail closed. Merge,
+runtime synchronization, final recovery diagnostics and live v147 Master
+acceptance remain unproven until recorded in a later entry.

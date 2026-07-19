@@ -30,6 +30,14 @@ from output_schema import (
 from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 
 
+# Keep the rendered strength hypothesis on a validator-known literal.  The
+# former ``<W/L/D interval method>`` placeholder prompted natural-language
+# values such as ``W/L/D bootstrap 95% CI``; all three Scouts and their one
+# schema retry then failed the machine-readable uncertainty contract.
+_PROPOSAL_STRENGTH_SAMPLE_FLOOR = ">=30_complete_matches"
+_PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
+
+
 def _proposal_schema_repair_guidance(
     projection_hints: tuple[str, ...],
     *,
@@ -118,7 +126,11 @@ def _proposal_schema_repair_guidance(
             else "This mode has no strength snapshot; emit no snapshot reference."
         )
     if any("proposal_measurement" in item for item in hints):
-        add("Copy the mode-specific measurement contract exactly.")
+        add(
+            "Copy the mode-specific six-field measurement contract exactly; "
+            f"use uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE} literally "
+            "and never replace it with natural-language W/L/D prose."
+        )
     if any("proposal_falsifier" in item for item in hints):
         add(
             "falsifier is a closed six-key object: test_name, "
@@ -174,15 +186,23 @@ def _render_master_proposal_provider_prompt(inputs):
         else (
             f"measurement MUST use: target=national_v{source_v}; "
             "primary=complete_70_hand_wld; expected_delta=<decimal 0<delta<=1, e.g. 0.03>; "
-            "samples=>=30_complete_matches; uncertainty=<W/L/D interval method>; "
-            "secondary=net_chip_ci. This is an unproven post-publication strength "
+            f"samples={_PROPOSAL_STRENGTH_SAMPLE_FLOOR}; "
+            f"uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE}; "
+            "secondary=net_chip_ci. Copy the exact key order and copy "
+            f"uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE} literally; "
+            "do not emit natural-language W/L/D punctuation. This is an "
+            "unproven post-publication strength "
             "hypothesis; the earlier native precommit is only a regression floor."
             if singleton_no_strength
             else
             "measurement MUST use: target=<one opponent named by the bound snapshot>; "
             "primary=complete_70_hand_wld; expected_delta=<decimal 0<delta<=1, e.g. 0.03>; "
-            "samples=>=30_complete_matches; uncertainty=<W/L/D interval method>; "
-            "secondary=net_chip_ci. Net chips are secondary only."
+            f"samples={_PROPOSAL_STRENGTH_SAMPLE_FLOOR}; "
+            f"uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE}; "
+            "secondary=net_chip_ci. Copy the exact key order and copy "
+            f"uncertainty={_PROPOSAL_UNCERTAINTY_PROMPT_VALUE} literally; "
+            "do not emit natural-language W/L/D punctuation. Net chips are "
+            "secondary only."
         )
     )
     repair_kind = str(inputs["repair_kind"] or "")
@@ -611,6 +631,24 @@ class MasterInfrastructureError(RuntimeError):
         self.next_v = next_v
         self.prompt_digest = prompt_digest
         self.issue = str(issue)[:500]
+        super().__init__(self.issue)
+
+
+class MasterAuthorityError(RuntimeError):
+    """Deterministic checkpoint/evidence authority blocks provider dispatch."""
+
+    def __init__(self, source_v, next_v, prompt_digest, errors):
+        self.source_v = source_v
+        self.next_v = next_v
+        self.prompt_digest = prompt_digest
+        self.errors = tuple(
+            str(item)[:500]
+            for item in (
+                errors if isinstance(errors, (list, tuple)) else [errors]
+            )
+            if str(item)
+        ) or ("master_authority_invalid",)
+        self.issue = ";".join(self.errors)[:500]
         super().__init__(self.issue)
 
 
@@ -1282,9 +1320,8 @@ def _proposal_measurement_contract_valid(value: str, evidence_mode: str) -> bool
         return bool(
             0.0 < expected_delta <= 1.0
             and parsed["primary"] == "complete_70_hand_wld"
-            and parsed["samples"] == ">=30_complete_matches"
-            and re.fullmatch(r"[a-z0-9_]{8,80}", uncertainty)
-            and any(token in uncertainty for token in ("interval", "_ci", "credible"))
+            and parsed["samples"] == _PROPOSAL_STRENGTH_SAMPLE_FLOOR
+            and uncertainty == _PROPOSAL_UNCERTAINTY_PROMPT_VALUE
             and parsed["secondary"] == "net_chip_ci"
         )
     else:
@@ -4684,11 +4721,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         Path(__file__).resolve().parent / "prompts" / "master_prompt.md"
     ).read_text(encoding="utf-8")
     if protocol_bootstrap is not None and not isinstance(protocol_bootstrap, dict):
-        raise MasterInfrastructureError(
+        raise MasterAuthorityError(
             source_v,
             next_v,
             hashlib.sha256(b"protocol-bootstrap-not-object").hexdigest(),
-            "protocol_bootstrap_not_object",
+            ["protocol_bootstrap_not_object"],
         )
     protocol_bootstrap_active = isinstance(protocol_bootstrap, dict)
     protocol_bootstrap_mode = (
@@ -4704,11 +4741,11 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
     )
     protocol_bootstrap_no_strength = fresh_bootstrap or singleton_no_strength
     if protocol_bootstrap_active and not protocol_bootstrap_no_strength:
-        raise MasterInfrastructureError(
+        raise MasterAuthorityError(
             source_v,
             next_v,
             hashlib.sha256(b"protocol-bootstrap-mode-invalid").hexdigest(),
-            f"protocol_bootstrap_mode_invalid:{protocol_bootstrap_mode or 'missing'}",
+            [f"protocol_bootstrap_mode_invalid:{protocol_bootstrap_mode or 'missing'}"],
         )
     strict_checkpoint = None
     if protocol_bootstrap_active:
@@ -4723,7 +4760,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             else None
         )
         if checkpoint_bootstrap != protocol_bootstrap:
-            raise MasterInfrastructureError(
+            raise MasterAuthorityError(
                 source_v,
                 next_v,
                 hashlib.sha256(
@@ -4736,17 +4773,17 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                         separators=(",", ":"),
                     ).encode("utf-8")
                 ).hexdigest(),
-                "protocol_bootstrap_argument_checkpoint_mismatch",
+                ["protocol_bootstrap_argument_checkpoint_mismatch"],
             )
         if fresh_bootstrap:
             from system_strict_bootstrap import is_declared_native_bootstrap
 
             if not is_declared_native_bootstrap(strict_checkpoint):
-                raise MasterInfrastructureError(
+                raise MasterAuthorityError(
                     source_v,
                     next_v,
                     hashlib.sha256(b"strict-checkpoint-missing").hexdigest(),
-                    "strict_authority_checkpoint_not_declared",
+                    ["strict_authority_checkpoint_not_declared"],
                 )
         else:
             singleton_errors = []
@@ -4757,6 +4794,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             try:
                 from generation_evidence import (
                     build_protocol_bootstrap_evidence_identity,
+                    live_protocol_bootstrap_allocation_errors,
                 )
 
                 singleton_identity = build_protocol_bootstrap_evidence_identity(
@@ -4766,11 +4804,17 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                 )
                 if (
                     singleton_identity.get("mode")
-                    != "singleton_strict_v144_bootstrap"
+                    != "singleton_strict_successor_bootstrap"
                 ):
                     singleton_errors.append(
                         "singleton_master_evidence_identity_mode_mismatch"
                     )
+                singleton_errors.extend(
+                    live_protocol_bootstrap_allocation_errors(
+                        strict_checkpoint,
+                        version=int(next_v),
+                    )
+                )
             except Exception as exc:
                 singleton_errors.append(
                     "singleton_master_evidence_identity_invalid:"
@@ -4802,7 +4846,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     f"{type(exc).__name__}"
                 )
             if singleton_errors:
-                raise MasterInfrastructureError(
+                raise MasterAuthorityError(
                     source_v,
                     next_v,
                     hashlib.sha256(
@@ -4812,7 +4856,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                             separators=(",", ":"),
                         ).encode("utf-8")
                     ).hexdigest(),
-                    ";".join(dict.fromkeys(singleton_errors)),
+                    list(dict.fromkeys(singleton_errors)),
                 )
     if fresh_bootstrap:
         from strict_authority_workflow import recover_accepted_master_final_result

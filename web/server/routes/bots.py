@@ -9,15 +9,11 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 
 from server.routes._helpers import build_bot_summary, load_strict_strength_snapshot
-from evolution_infra import (
-    get_published_active_bots_read_only,
-)
 from bot_namespace import (
     ROLE_PARENT_SOURCE,
     bot_name,
     bot_tag,
     resolve_national_bot_spec,
-    strict_generation_identity,
     version_sort_key,
 )
 
@@ -37,21 +33,65 @@ def _strict_snapshot() -> dict:
     return snapshot if snapshot.get("available") is True else {}
 
 
-def _strict_published_inventory() -> list[str]:
-    """Return publication authority independently of daemon-cycle freshness."""
+def _strict_published_authority() -> tuple[list[str], dict[str, dict]]:
+    """Return one cross-bound published inventory/ordinal projection."""
 
     try:
         from epoch_authority import strict_epoch_projection
 
         projection = strict_epoch_projection(include_checkpoint=False)
     except Exception:
-        return []
+        return [], {}
     if not projection.get("initialized"):
-        return []
+        return [], {}
     names = projection.get("active_bots")
     if not isinstance(names, list) or len(names) != len(set(names)):
-        return []
-    return sorted((str(name) for name in names), key=version_sort_key)
+        return [], {}
+    names = sorted((str(name) for name in names), key=version_sort_key)
+    identities = projection.get("strict_published_bot_identities")
+    if not isinstance(identities, list) or len(identities) < len(names):
+        return [], {}
+    by_name: dict[str, dict] = {}
+    required_identity_keys = {
+        "generation_ordinal",
+        "canonical_version",
+        "canonical_bot_name",
+        "canonical_tag",
+    }
+    for raw_identity in identities:
+        if not isinstance(raw_identity, dict):
+            return [], {}
+        identity = dict(raw_identity)
+        if set(identity) != required_identity_keys:
+            return [], {}
+        version = identity.get("canonical_version")
+        ordinal = identity.get("generation_ordinal")
+        name = identity.get("canonical_bot_name")
+        tag = identity.get("canonical_tag")
+        if (
+            type(version) is not int
+            or type(ordinal) is not int
+            or ordinal <= 0
+            or not isinstance(name, str)
+            or name != bot_name(version)
+            or tag != bot_tag(version)
+            or name in by_name
+        ):
+            return [], {}
+        by_name[name] = identity
+    if not set(names).issubset(set(by_name)):
+        return [], {}
+    ordered_history = sorted(by_name, key=version_sort_key)
+    for expected_ordinal, name in enumerate(ordered_history, start=1):
+        if by_name[name]["generation_ordinal"] != expected_ordinal:
+            return [], {}
+    return names, by_name
+
+
+def _strict_published_inventory() -> list[str]:
+    """Compatibility projection of the paired publication authority names."""
+
+    return _strict_published_authority()[0]
 
 
 def _inventory_strength_snapshot(active_names: list[str]) -> dict:
@@ -63,12 +103,15 @@ def _inventory_strength_snapshot(active_names: list[str]) -> dict:
     return snapshot
 
 
-def _decorate_published(summary: dict) -> dict:
+def _decorate_published(summary: dict, identity: dict) -> dict:
     """Project the already-resolved published pool without lifecycle guessing."""
 
-    identity = strict_generation_identity(summary.get("version"))
+    if not isinstance(identity, dict):
+        raise ValueError("published_bot_summary_identity_missing")
     if summary.get("name") != identity["canonical_bot_name"]:
         raise ValueError("published_bot_summary_canonical_name_mismatch")
+    if summary.get("version") != identity.get("canonical_version"):
+        raise ValueError("published_bot_summary_canonical_version_mismatch")
     summary.update({
         **identity,
         "active": True,
@@ -90,14 +133,17 @@ def build_bot_listing(
     *,
     include_history: bool = True,
     active_names: list[str] | tuple[str, ...] | None = None,
+    generation_identities: dict[str, dict] | None = None,
     strength_rows_data: list[dict] | tuple[dict, ...] | None = None,
     strength_evidence_available: bool = True,
 ) -> dict:
     if active_names is None:
-        try:
-            active_names = get_published_active_bots_read_only()
-        except Exception:
-            active_names = []
+        active_names, generation_identities = _strict_published_authority()
+    if generation_identities is None:
+        # Callers may supply a pool only for an isolated test/fixture, but they
+        # must still supply the backend-owned ordinal identity. Never recreate
+        # it from version arithmetic or the filtered pool.
+        generation_identities = {}
     active_names_set = set(active_names)
     active_dirs = [
         BOTS_DIR / name
@@ -118,7 +164,10 @@ def build_bot_listing(
             if strength_evidence_available
             else "awaiting_first_rating_cycle"
         )
-        active.append(_decorate_published(summary))
+        identity = generation_identities.get(path.name)
+        if not isinstance(identity, dict):
+            continue
+        active.append(_decorate_published(summary, identity))
 
     result = {"active": active}
     if include_history:
@@ -141,7 +190,7 @@ async def list_bots(
     include_history: bool = False,
 ):
     """List only bots in the current strict published evaluation pool."""
-    active_names = _strict_published_inventory()
+    active_names, generation_identities = _strict_published_authority()
     snapshot = _inventory_strength_snapshot(active_names)
     return build_bot_listing(
         snapshot.get("ratings") or {},
@@ -149,6 +198,7 @@ async def list_bots(
         snapshot.get("h2h") or {},
         include_history=include_history,
         active_names=active_names,
+        generation_identities=generation_identities,
         strength_rows_data=snapshot.get("selection_rows") or [],
         strength_evidence_available=bool(snapshot),
     )
@@ -182,7 +232,7 @@ def _resolve_bot_dir(
 async def bot_detail(version: int):
     """Get detailed info about a specific bot version."""
     name = bot_name(version)
-    active_names = _strict_published_inventory()
+    active_names, generation_identities = _strict_published_authority()
     snapshot = _inventory_strength_snapshot(active_names)
     bot_dir = _resolve_bot_dir(version, active_names)
 
@@ -217,7 +267,10 @@ async def bot_detail(version: int):
     except Exception:
         pass
 
-    return _decorate_published(summary)
+    identity = generation_identities.get(name)
+    if not isinstance(identity, dict):
+        raise HTTPException(status_code=404, detail=f"Bot v{version} not found")
+    return _decorate_published(summary, identity)
 
 
 @router.get("/{version}/download")

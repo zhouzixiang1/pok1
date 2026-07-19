@@ -482,13 +482,13 @@ def _state_errors(state: Any) -> list[str]:
             errors.append(f"{prefix}_generation_evidence_missing")
         elif evidence.get("mode") in {
             "fresh_strict_v143_bootstrap",
-            "singleton_strict_v144_bootstrap",
+            "singleton_strict_successor_bootstrap",
         }:
             expected_mode = (
                 "fresh_strict_v143_bootstrap"
                 if version == FIRST_STRICT_POLICY_VERSION
-                else "singleton_strict_v144_bootstrap"
-                if version == FIRST_STRICT_POLICY_VERSION + 1
+                else "singleton_strict_successor_bootstrap"
+                if version > FIRST_STRICT_POLICY_VERSION
                 else ""
             )
             if (

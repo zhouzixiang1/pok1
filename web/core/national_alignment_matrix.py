@@ -3,7 +3,7 @@
 The long-form alignment document is useful to operators, but it must not be the
 only place where a rule's ownership and proof are recorded.  This module is the
 machine-readable current view.  It deliberately validates *references*, not
-runtime success: rows such as v143/v144 and the ten-generation observation are
+runtime success: rows such as v143/the first successor and the ten-generation observation are
 current obligations whose ``runtime_pending`` state must not be rendered as a
 completed production claim.
 
@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 14
+MATRIX_SCHEMA_VERSION = 15
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -87,7 +87,8 @@ REQUIRED_COVERAGE = frozenset({
     "five_role_prompts",
     "evidence_history_isolation",
     "frontend_authoritative_status",
-    "first_strict_v143_v144",
+    "first_strict_v143_successor",
+    "strict_generation_ordinal_identity",
     "strict_v1_reviewer_dead_code",
     "immutable_rating_cycle",
     "stability_ten_generations",
@@ -1235,8 +1236,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
     ),
     MatrixRow(
-        rule_id="first_strict_v143_v144_contract",
-        coverage=("first_strict_v143_v144",),
+        rule_id="first_strict_v143_successor_contract",
+        coverage=("first_strict_v143_successor",),
         status=CURRENT_STATUS,
         evidence_state=RUNTIME_PENDING,
         authority=(
@@ -1269,14 +1270,16 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         prompts=_CORE_PROMPTS,
         prompt_statement=(
             "All five rendered roles must keep v143 operator-only and require its certificate; "
-            "v144+ uses official-full-v5 and cannot inherit the bootstrap exception."
+            "every post-v143 canonical successor uses official-full-v5 and cannot inherit "
+            "the bootstrap exception."
         ),
-        prompt_required_terms=("v143", "v144+", "official-full-v5", "certificate"),
+        prompt_required_terms=("v143", "official-full-v5", "certificate"),
         producer_consumer=(
             "stopped-checkout reset receipt → fresh v143 checkpoint/control artifact → "
             "native 8×70 repeat and aggregate results with explicit migration_projection=false → "
             "first-strict result validator → "
-            "operator first-strict bootstrap certificate/tag → published v143 parent → v144 5+3 full certification"
+            "operator first-strict bootstrap certificate/tag → published v143 parent → first "
+            "non-abandoned singleton successor normal 5+3 full certification"
         ),
         positive_tests=(
             "web/tests/test_official_bootstrap.py::"
@@ -1287,6 +1290,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_H1_completed_control_match_recovers_by_same_identity_after_cancel",
             "web/tests/test_checkpoint_epoch_recovery.py::"
             "test_normal_strict_v144_resume_accepts_published_parent_binding",
+            "web/tests/test_logic_mcp.py::"
+            "test_singleton_live_allocation_reopens_exact_abandon_chain",
         ),
         negative_tests=(
             "web/tests/test_official_bootstrap.py::"
@@ -1297,11 +1302,69 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_control_result_rejects_missing_zero_migration_projection",
             "web/tests/test_official_certify_cli.py::"
             "test_cli_first_strict_requires_explicit_one_time_acknowledgement",
+            "web/tests/test_logic_mcp.py::"
+            "test_singleton_live_allocation_rejects_redigested_skipped_target",
         ),
         fail_closed=(
             "No missing control, reset receipt, explicit zero-migration result flag, eligible "
             "parent, certificate, tag, or operator acknowledgement may be inferred; the "
             "checkpoint parks/requires recovery."
+        ),
+    ),
+    MatrixRow(
+        rule_id="strict_generation_ordinal_identity",
+        coverage=("strict_generation_ordinal_identity",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("web/core/bot_namespace.py", "VersionNamespaceAuthority"),
+            _ref("web/core/bot_namespace.py", "strict_generation_identity"),
+            _ref("web/core/epoch_authority.py", "strict_epoch_projection"),
+        ),
+        production_owners=(
+            _ref("web/core/epoch_authority.py", "policy_epoch_initialization"),
+            _ref("web/server/routes/bots.py", "_strict_published_authority"),
+            _ref("web/server/routes/data_stream.py", "_get_bots"),
+            _ref("web/frontend/src/lib/canonicalGenerationIdentity.ts"),
+        ),
+        dynamic_gates=(
+            _ref("web/core/bot_namespace.py", "resolve_version_namespace_authority"),
+            _ref("web/server/routes/bots.py", "_decorate_published"),
+            _ref(
+                "web/frontend/src/lib/canonicalGenerationIdentity.ts",
+                "canonicalGenerationIdentityIssues",
+            ),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles treat generation ordinal as presentation-only metadata "
+            "from immutable paired publication history; canonical versions, parents, "
+            "evidence, certificates and tags remain the only execution identities."
+        ),
+        prompt_required_terms=("generation ordinal", "presentation-only", "canonical"),
+        producer_consumer=(
+            "paired annotated completion/high-water history → contiguous immutable ordinal "
+            "mapping → epoch active-generation and published identity projections → Bot HTTP/SSE "
+            "rows → independent frontend validation and dual ordinal/canonical label"
+        ),
+        positive_tests=(
+            "web/tests/test_strict_bot_namespace.py::"
+            "test_strict_generation_identity_maps_immutable_versions_to_ui_ordinals",
+            "web/tests/test_epoch_authority.py::"
+            "test_reaped_active_pool_subset_does_not_renumber_published_history",
+            "web/tests/test_routes_bots.py::"
+            "test_abandoned_version_gap_keeps_contiguous_published_ordinals",
+        ),
+        negative_tests=(
+            "web/tests/test_strict_bot_namespace.py::"
+            "test_strict_generation_identity_rejects_non_integer_ordinals",
+            "web/tests/test_routes_bots.py::"
+            "test_swapped_backend_ordinals_withhold_entire_publication_projection",
+        ),
+        fail_closed=(
+            "Missing, duplicate, non-contiguous, swapped, pre-epoch or canonical-name/tag-drifted "
+            "identity withholds the Bot projection. Abandoned labels consume no ordinal, while a "
+            "reaped or temporarily unavailable published Bot remains in immutable ordinal history."
         ),
     ),
     MatrixRow(
@@ -1686,6 +1749,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/output_schema.py", "STATE_LEARNING_INTERVENTION_TARGET_ALIASES"),
             _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
             _ref("web/core/agent_master.py", "_FRESH_STRICT_CONTROL_MEASUREMENT"),
+            _ref("web/core/agent_master.py", "_PROPOSAL_UNCERTAINTY_PROMPT_VALUE"),
         ),
         production_owners=(
             _ref("web/core/agent_master.py", "_render_master_proposal_provider_prompt"),
@@ -1699,6 +1763,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         dynamic_gates=(
             _ref("web/core/agent_master.py", "_proposal_mechanism_target_errors"),
             _ref("web/core/agent_master.py", "_system_bound_proposal_measurement"),
+            _ref("web/core/agent_master.py", "_proposal_measurement_contract_valid"),
             _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
@@ -1712,6 +1777,9 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "A shared executable leaf is legal only with a complete owner-qualified literal or an exact "
             "selected-root allowlisted list; every bare, punctuation, compact, foreign, unknown-child, "
             "or identifier-continuation spelling is rejected."
+            " The Scout renderer and validator share the exact "
+            "uncertainty=wilson_wld_interval literal; natural-language or invented "
+            "snake_case uncertainty values are invalid."
         ),
         prompt_required_terms=(
             "selected Master proposal",
@@ -1735,6 +1803,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_strict_projection_binds_duplicate_selected_metadata",
             "web/tests/test_master_success_return.py::"
             "test_v51_10017_char_strict_master_prompt_stays_inline_and_replays",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges",
         ),
         negative_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
@@ -1743,6 +1813,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_shared_leaf_human_poker_phrase_fails_closed_even_beside_owner",
             "web/tests/test_master_proposal_ensemble.py::"
             "test_selected_proposal_budget_boundary_and_primary_mapping_are_exact",
+            "web/tests/test_master_proposal_ensemble.py::"
+            "test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges",
         ),
         fail_closed=(
             "Any ambiguous leaf, foreign or unknown target, malformed fresh measurement, unallowed "
@@ -1844,9 +1916,9 @@ def _validate_ref(
                     }
                     if ref.symbol not in callable_names:
                         errors.append(f"{prefix}:missing_symbol")
-            elif path.suffix in {".js", ".mjs"}:
+            elif path.suffix in {".js", ".mjs", ".ts", ".tsx"}:
                 if not re.search(
-                    rf"(?:async\s+)?function\s+{re.escape(ref.symbol)}\s*\(",
+                    rf"(?:export\s+)?(?:async\s+)?function\s+{re.escape(ref.symbol)}\s*\(",
                     source,
                 ):
                     errors.append(f"{prefix}:missing_symbol")

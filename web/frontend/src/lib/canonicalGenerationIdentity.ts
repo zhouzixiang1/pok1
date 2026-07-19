@@ -2,6 +2,7 @@ import type { CanonicalGenerationIdentity } from "../api/control.js";
 
 const BOT_NAME = /^national_v([1-9][0-9]*)$/;
 const BOT_TAG = /^national-bot-v([1-9][0-9]*)$/;
+const FIRST_STRICT_POLICY_VERSION = 143;
 
 /** Validate backend-owned identity without deriving an ordinal or tag. */
 export function canonicalGenerationIdentityIssues(
@@ -12,7 +13,10 @@ export function canonicalGenerationIdentityIssues(
   if (!Number.isSafeInteger(identity.generation_ordinal) || identity.generation_ordinal <= 0) {
     issues.push("generation_ordinal");
   }
-  if (!Number.isSafeInteger(identity.canonical_version) || identity.canonical_version <= 0) {
+  if (
+    !Number.isSafeInteger(identity.canonical_version)
+    || identity.canonical_version < FIRST_STRICT_POLICY_VERSION
+  ) {
     issues.push("canonical_version");
   }
   if (

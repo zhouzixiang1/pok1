@@ -137,16 +137,16 @@ def _fresh_v143_identity(checkpoint: dict, version: int, source_v: int) -> dict:
     }
 
 
-def _singleton_v144_identity(
+def _singleton_successor_identity(
     checkpoint: dict,
     version: int,
     source_v: int,
 ) -> dict:
     errors: list[str] = []
-    if version != FIRST_STRICT_POLICY_VERSION + 1:
-        errors.append("singleton_bootstrap_target_not_v144")
     if source_v != FIRST_STRICT_POLICY_VERSION:
         errors.append("singleton_bootstrap_source_not_v143")
+    if version <= source_v:
+        errors.append("singleton_bootstrap_target_not_successor")
     audit = checkpoint.get("audit_context") or {}
     receipt = audit.get("protocol_bootstrap") if isinstance(audit, dict) else None
     selection = audit.get("selection") if isinstance(audit, dict) else None
@@ -263,7 +263,7 @@ def _singleton_v144_identity(
         raise GenerationEvidenceError(";".join(dict.fromkeys(errors)))
     return {
         "schema_version": SCHEMA_VERSION,
-        "mode": "singleton_strict_v144_bootstrap",
+        "mode": "singleton_strict_successor_bootstrap",
         "reason": "single_strict_parent_no_peer_pool",
         "strength_evidence_admitted": False,
         "strength_evidence_weight": 0,
@@ -398,7 +398,7 @@ def build_protocol_bootstrap_evidence_identity(
 
     Unlike :func:`build_generation_evidence_identity`, this producer is usable
     before publication.  Master and precommit need to distinguish the fresh
-    v143 control from the inherited singleton-v144 generation while the
+    v143 control from an inherited singleton-successor generation while the
     checkpoint is still active.  It deliberately does not weaken epoch or
     parent bindings; callers that execute against live parent bytes must also
     run the live parent-authority validator at their own stage boundary.
@@ -443,8 +443,62 @@ def build_protocol_bootstrap_evidence_identity(
     if mode == "fresh_national_policy_bootstrap":
         return _fresh_v143_identity(checkpoint, version, source_v)
     if mode == "singleton_strict_bootstrap":
-        return _singleton_v144_identity(checkpoint, version, source_v)
+        return _singleton_successor_identity(checkpoint, version, source_v)
     raise GenerationEvidenceError("generation_bootstrap_mode_invalid")
+
+
+def live_protocol_bootstrap_allocation_errors(
+    checkpoint: Any,
+    *,
+    version: int,
+    authority_loader: Any = None,
+) -> list[str]:
+    """Reopen live allocation authority at an execution boundary.
+
+    The content identity above must remain reproducible after publication, when
+    the live high-water and abandon head have legitimately advanced.  Master,
+    prepare and precommit instead need this separate live check before spending
+    provider or native-match resources.  A self-consistent, re-digested forged
+    checkpoint therefore cannot authorize a skipped canonical target.
+    """
+
+    if not isinstance(checkpoint, dict):
+        return ["protocol_bootstrap_live_checkpoint_missing"]
+    if type(version) is not int:
+        return ["protocol_bootstrap_live_target_type_invalid"]
+    try:
+        if authority_loader is None:
+            from evolution_infra import checkpoint_allocation_authority
+
+            authority_loader = checkpoint_allocation_authority
+        authority = authority_loader(expected_next_v=version)
+    except Exception as exc:
+        return [
+            "protocol_bootstrap_live_allocation_authority_error:"
+            f"{type(exc).__name__}:{str(exc)[:180]}"
+        ]
+    if not isinstance(authority, dict):
+        return ["protocol_bootstrap_live_allocation_authority_invalid"]
+    try:
+        from checkpoint_schema import live_checkpoint_allocation_authority_errors
+
+        errors = live_checkpoint_allocation_authority_errors(
+            checkpoint,
+            published_high_water=authority["published_high_water"],
+            abandoned_receipt_floor=authority["abandoned_receipt_floor"],
+            abandoned_receipt_head_digest=authority[
+                "abandoned_receipt_head_digest"
+            ],
+        )
+    except Exception as exc:
+        return [
+            "protocol_bootstrap_live_allocation_validation_error:"
+            f"{type(exc).__name__}"
+        ]
+    return [
+        f"protocol_bootstrap_live_allocation:{item}"
+        for item in errors
+    ]
 
 
 def build_generation_evidence_identity(
@@ -506,4 +560,5 @@ __all__ = [
     "build_generation_evidence_identity",
     "build_protocol_bootstrap_evidence_identity",
     "generation_evidence_identity_errors",
+    "live_protocol_bootstrap_allocation_errors",
 ]

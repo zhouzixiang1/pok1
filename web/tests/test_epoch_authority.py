@@ -244,6 +244,7 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
         "version_namespace_authority",
         lambda: SimpleNamespace(
             high_water=143,
+            paired_versions=(143,),
             unpaired_completion_versions=(),
             unpaired_high_water_versions=(),
         ),
@@ -273,6 +274,72 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     assert state["strict_publication_versions_above_high_water"] == []
     assert projection["active_bots"] == ["national_v143"]
     assert projection["strict_published_versions"] == [143]
+
+
+def test_reaped_active_pool_subset_does_not_renumber_published_history(
+    tmp_path,
+    monkeypatch,
+):
+    import epoch_authority
+    import evolution_infra
+    import national_runtime_authority
+
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 147)
+    monkeypatch.setattr(
+        evolution_infra,
+        "version_namespace_authority",
+        lambda: SimpleNamespace(
+            high_water=147,
+            paired_versions=(143, 147),
+            unpaired_completion_versions=(),
+            unpaired_high_water_versions=(),
+        ),
+    )
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "strict_published_bot_names",
+        lambda: ("national_v147",),
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "abandoned_version_authority",
+        lambda **_kwargs: {
+            "floor": 0,
+            "head_digest": None,
+            "receipt_count": 0,
+        },
+    )
+    checkpoint = _strict_checkpoint(
+        148,
+        147,
+        published_high_water=147,
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "PIPELINE_STATE_FILE",
+        tmp_path / "pipeline_state.json",
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+
+    state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
+    projection = epoch_authority.strict_epoch_projection()
+
+    assert state["initialized"] is True
+    assert state["strict_published_bots"] == ["national_v147"]
+    assert state["strict_published_versions"] == [143, 147]
+    assert [
+        identity["generation_ordinal"]
+        for identity in state["strict_published_bot_identities"]
+    ] == [1, 2]
+    assert projection["active_bots"] == ["national_v147"]
+    assert projection["strict_generation_count"] == 2
+    assert projection["active_generation"]["canonical_version"] == 148
+    assert projection["active_generation"]["generation_ordinal"] == 3
 
 
 def test_namespace_second_read_failure_does_not_project_active_bot_authority(
@@ -1169,7 +1236,10 @@ def test_valid_active_checkpoint_owns_target_but_not_published_high_water(
     assert projection["active_generation"]["checkpoint_revision"] == 8
     assert projection["active_generation"]["next_v"] == 145
     assert projection["active_generation"]["canonical_version"] == 145
-    assert projection["active_generation"]["generation_ordinal"] == 3
+    # v144 is canonically abandoned and therefore consumes no user-visible
+    # Bot ordinal.  The next candidate remains the second potential Bot while
+    # retaining its immutable canonical v145 identity.
+    assert projection["active_generation"]["generation_ordinal"] == 2
     assert projection["active_generation"]["canonical_bot_name"] == "national_v145"
     assert projection["active_generation"]["canonical_tag"] == "national-bot-v145"
 

@@ -4587,6 +4587,21 @@ def _classify_recovery_after_deterministic_route(
 ):
     """Prove why a deterministic route no longer has a live checkpoint."""
 
+    result = (outcome or {}).get("result")
+    if isinstance(result, dict) and result.get("recovery_blocked") is True:
+        issues = list(result.get("validation_errors") or [])
+        return {
+            "action": "blocked",
+            "reason": str(result.get("error") or "deterministic_authority_blocked"),
+            "checkpoint": (recovery or {}).get("checkpoint"),
+            "diagnostics": {
+                "active": True,
+                "recoverable": False,
+                "issues": issues or ["deterministic_authority_blocked"],
+                "failure_class": result.get("failure_class"),
+                "operator_action": result.get("action"),
+            },
+        }
     if next_recovery is not None:
         return next_recovery
     checkpoint = (recovery or {}).get("checkpoint") or {}
@@ -4677,6 +4692,10 @@ async def _advance_deterministic_recovery(
         not routed
         and next_recovery is not None
         and next_recovery.get("action") == "resume"
+        and not (
+            isinstance(outcome.get("result"), dict)
+            and outcome["result"].get("recovery_blocked") is True
+        )
     ):
         return {
             "routed": False,

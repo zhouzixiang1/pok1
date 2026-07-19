@@ -969,6 +969,7 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
     import agent_master
     import evidence_snapshot
     import evolution_infra
+    import generation_evidence
     import official_certification
     import strict_authority_workflow
     from claude_agent_sdk import ResultMessage
@@ -1246,7 +1247,7 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
 
 
 @pytest.mark.asyncio
-async def test_singleton_v144_master_uses_published_parent_without_strict_journal(
+async def test_post_abandon_singleton_successor_master_uses_published_parent_without_strict_journal(
     monkeypatch,
     tmp_path,
 ):
@@ -1254,13 +1255,17 @@ async def test_singleton_v144_master_uses_published_parent_without_strict_journa
     import checkpoint_schema
     import evidence_snapshot
     import evolution_infra
+    import generation_evidence
     from tests.test_logic_mcp import TestSelectPrecommitOpponents
 
-    checkpoint = TestSelectPrecommitOpponents._singleton_checkpoint()
+    checkpoint = TestSelectPrecommitOpponents._retarget_singleton_checkpoint(
+        TestSelectPrecommitOpponents._singleton_checkpoint(),
+        147,
+    )
     checkpoint["stage"] = "direction_audited"
     receipt = checkpoint["audit_context"]["protocol_bootstrap"]
     source = tmp_path / "national_v143"
-    target = tmp_path / "national_v144"
+    target = tmp_path / "national_v147"
     policy = (
         "def get_baseline_decision(context):\n"
         "    return _choose_intent(context)\n\n"
@@ -1329,6 +1334,11 @@ async def test_singleton_v144_master_uses_published_parent_without_strict_journa
         lambda *_args, **_kwargs: [],
     )
     monkeypatch.setattr(
+        generation_evidence,
+        "live_protocol_bootstrap_allocation_errors",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
         evidence_snapshot,
         "load_generation_snapshot_identity",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
@@ -1338,7 +1348,7 @@ async def test_singleton_v144_master_uses_published_parent_without_strict_journa
 
     result = await agent_master._run_master_analysis(
         source_v=143,
-        next_v=144,
+        next_v=147,
         stagnation_info="caller strength text must be quarantined",
         ui=_MockUI(),
         protocol_bootstrap=receipt,
@@ -1357,6 +1367,64 @@ async def test_singleton_v144_master_uses_published_parent_without_strict_journa
     assert result["proposal_binding"]["execution_mode"] == (
         "strategy_implementation"
     )
+
+
+@pytest.mark.asyncio
+async def test_singleton_master_live_allocation_drift_blocks_before_provider(
+    monkeypatch,
+):
+    import agent_master
+    import checkpoint_schema
+    import evolution_infra
+    import generation_evidence
+    from tests.test_logic_mcp import TestSelectPrecommitOpponents
+
+    checkpoint = TestSelectPrecommitOpponents._retarget_singleton_checkpoint(
+        TestSelectPrecommitOpponents._singleton_checkpoint(),
+        147,
+    )
+    checkpoint["stage"] = "direction_audited"
+    receipt = checkpoint["audit_context"]["protocol_bootstrap"]
+    monkeypatch.setattr(
+        evolution_infra,
+        "read_pipeline_checkpoint",
+        lambda: checkpoint,
+    )
+    monkeypatch.setattr(
+        evolution_infra,
+        "get_active_bots",
+        lambda: ["national_v143"],
+    )
+    monkeypatch.setattr(
+        checkpoint_schema,
+        "live_checkpoint_parent_authority_errors",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        generation_evidence,
+        "live_protocol_bootstrap_allocation_errors",
+        lambda *_args, **_kwargs: [
+            "protocol_bootstrap_live_allocation:checkpoint_abandoned_receipt_head_changed"
+        ],
+    )
+    monkeypatch.setattr(
+        agent_master,
+        "_run_master_proposal_ensemble",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("provider dispatch must not occur")
+        ),
+    )
+
+    with pytest.raises(agent_master.MasterAuthorityError) as caught:
+        await agent_master._run_master_analysis(
+            source_v=143,
+            next_v=147,
+            stagnation_info="",
+            ui=_MockUI(),
+            protocol_bootstrap=receipt,
+        )
+
+    assert "checkpoint_abandoned_receipt_head_changed" in caught.value.errors[0]
 
 
 @pytest.mark.asyncio

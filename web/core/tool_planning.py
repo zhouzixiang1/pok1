@@ -1724,6 +1724,57 @@ async def _abandon_strict_master_authority(
     )
 
 
+async def _block_master_authority(
+    next_v,
+    source_v,
+    *,
+    error,
+    ui,
+):
+    """Stop on deterministic system-authority drift without spending labels."""
+
+    validation_errors = list(getattr(error, "errors", ()) or (str(error),))
+    message = (
+        f"Master authority is recovery-blocked for v{next_v}; provider retry "
+        "and automatic generation abandonment are forbidden"
+    )
+    try:
+        log_system_event(
+            "pipeline.master_authority_recovery_blocked",
+            "error",
+            message,
+            {
+                "next_v": int(next_v),
+                "source_v": int(source_v),
+                "failure_class": "control_plane",
+                "validation_errors": validation_errors,
+            },
+        )
+    except Exception:
+        pass
+    if ui:
+        try:
+            ui.log_history(message, "error")
+        except Exception:
+            pass
+    return _json_tool_result({
+        "error": "MASTER_AUTHORITY_RECOVERY_BLOCKED",
+        "failure_class": "control_plane",
+        "recovery_blocked": True,
+        "retryable": False,
+        "action": "repair_master_authority_contract",
+        "next_v": int(next_v),
+        "source_v": int(source_v),
+        "validation_errors": validation_errors,
+        "directive": (
+            "Preserve this checkpoint and candidate. Repair and validate the "
+            "system-owned checkpoint/evidence/allocation contract, synchronize "
+            "through origin/main, then resume the same canonical target. Do not "
+            "retry an LLM or abandon/allocate another label."
+        ),
+    })
+
+
 async def _force_abandon_official_rework_generation(
     next_v,
     source_v,
@@ -3915,11 +3966,18 @@ async def run_master(args):
         _clear_master_runtime_heartbeat(next_v, source_v)
         raise
     except Exception as exc:
-        from agent_master import MasterInfrastructureError
+        from agent_master import MasterAuthorityError, MasterInfrastructureError
         from strict_authority_workflow import StrictAuthorityError
 
         if isinstance(exc, StrictAuthorityError):
             return await _abandon_strict_master_authority(
+                next_v,
+                source_v,
+                error=exc,
+                ui=ui,
+            )
+        if isinstance(exc, MasterAuthorityError):
+            return await _block_master_authority(
                 next_v,
                 source_v,
                 error=exc,
@@ -4371,11 +4429,21 @@ async def run_master(args):
                 _clear_master_runtime_heartbeat(next_v, source_v)
                 raise
             except Exception as exc:
-                from agent_master import MasterInfrastructureError
+                from agent_master import (
+                    MasterAuthorityError,
+                    MasterInfrastructureError,
+                )
                 from strict_authority_workflow import StrictAuthorityError
 
                 if isinstance(exc, StrictAuthorityError):
                     return await _abandon_strict_master_authority(
+                        next_v,
+                        source_v,
+                        error=exc,
+                        ui=ui,
+                    )
+                if isinstance(exc, MasterAuthorityError):
+                    return await _block_master_authority(
                         next_v,
                         source_v,
                         error=exc,

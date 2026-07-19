@@ -3800,6 +3800,10 @@ async def prepare_next_gen(args):
             ))
         else:
             from bot_artifact import canonical_digest
+            from bot_namespace import EVALUATION_EPOCH
+            from generation_evidence import (
+                live_protocol_bootstrap_allocation_errors,
+            )
 
             unsigned = {
                 key: value for key, value in protocol_bootstrap_receipt.items()
@@ -3809,8 +3813,20 @@ async def prepare_next_gen(args):
                 bootstrap_errors.append("policy_bootstrap_receipt_digest_mismatch")
             if protocol_bootstrap_receipt.get("mode") != "singleton_strict_bootstrap":
                 bootstrap_errors.append("policy_bootstrap_mode_invalid")
+            if protocol_bootstrap_receipt.get("epoch") != EVALUATION_EPOCH:
+                bootstrap_errors.append("policy_bootstrap_epoch_mismatch")
+            if protocol_bootstrap_receipt.get("next_v") != int(next_v):
+                bootstrap_errors.append("policy_bootstrap_target_version_mismatch")
+            if protocol_bootstrap_receipt.get("source_artifact_inherited") is not True:
+                bootstrap_errors.append("policy_bootstrap_inheritance_mismatch")
             if sorted(protocol_bootstrap_receipt.get("active_bots") or []) != sorted(active_bots):
                 bootstrap_errors.append("policy_bootstrap_active_pool_mismatch")
+            bootstrap_errors.extend(
+                live_protocol_bootstrap_allocation_errors(
+                    source_checkpoint,
+                    version=int(next_v),
+                )
+            )
         receipt_source_v = protocol_bootstrap_receipt.get("source_v")
         if receipt_source_v != int(source_v):
             bootstrap_errors.append("policy_bootstrap_source_version_mismatch")

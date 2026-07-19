@@ -174,12 +174,22 @@ def _data_payloads(temp_root: Path) -> dict[str, object]:
         (bot_dir / "policy.py").write_text("def decide(context):\n    return {'intent': 'pass'}\n", encoding="utf-8")
         (bot_dir / ".completed").write_text("complete\n", encoding="utf-8")
     bots_route.BOTS_DIR = bot_root
+    generation_identities = {
+        name: {
+            "generation_ordinal": ordinal,
+            "canonical_version": int(name.removeprefix("national_v")),
+            "canonical_bot_name": name,
+            "canonical_tag": f"national-bot-v{name.removeprefix('national_v')}",
+        }
+        for ordinal, name in enumerate(active, start=1)
+    }
     bot_listing = bots_route.build_bot_listing(
         ratings,
         bot_stats,
         h2h,
         include_history=False,
         active_names=active,
+        generation_identities=generation_identities,
         strength_rows_data=rows,
         strength_evidence_available=True,
     )

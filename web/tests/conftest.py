@@ -637,6 +637,15 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
             raise AssertionError(f"synthetic route Bot already exists: {path}")
         paths.append(_write_synthetic_route_bot(bots_mod.BOTS_DIR, version))
     names = tuple(path.name for path in paths)
+    identities = [
+        {
+            "generation_ordinal": ordinal,
+            "canonical_version": version,
+            "canonical_bot_name": name,
+            "canonical_tag": f"national-bot-v{version}",
+        }
+        for ordinal, (version, name) in enumerate(zip(versions, names), start=1)
+    ]
 
     monkeypatch.setattr(
         epoch_authority,
@@ -650,6 +659,7 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
             "reset_receipt_digest": "a" * 64,
             "version_authority_high_water": versions[-1],
             "strict_published_versions": list(versions),
+            "strict_published_bot_identities": identities,
             "active_bots": list(names),
         },
     )
@@ -680,6 +690,7 @@ def synthetic_published_bot_authority(isolate_state, monkeypatch):
     return {
         "versions": versions,
         "names": names,
+        "identities": tuple(identities),
         "paths": tuple(paths),
         "primary_version": versions[0],
         "primary_name": names[0],
