@@ -5585,9 +5585,36 @@ def _materialize_identity_replan_candidate(
         if recover_persisted_reset
         else _checkpoint_architecture_policy_identity_errors(ckpt)
     ) or []
+    if materialization.installed:
+        materialization_proof = artifact_store.verify_materialization_receipt(
+            materialization.operation_id,
+            destination=next_dir,
+            digest=prepared_hash,
+            expected_destination_digest=current_hash,
+            receipt_digest=materialization.receipt_digest,
+        )
+    else:
+        materialization_proof = (
+            artifact_store.find_installed_materialization_receipt(
+                destination=next_dir,
+                digest=prepared_hash,
+            )
+        )
+        if materialization_proof is None:
+            raise RuntimeError(
+                "identity replan lacks installed materialization proof"
+            )
+
     replan_receipt = {
         "schema_version": 2,
         "kind": "single-parent-architecture-policy-identity-replan-v2",
+        "source_v": source_v,
+        "next_v": next_v,
+        "workflow_run_id": str(ckpt.get("workflow_run_id") or ""),
+        "checkpoint_preimage_revision": int(
+            ckpt.get("checkpoint_revision") or 0
+        ),
+        "checkpoint_preimage_stage": str(ckpt.get("stage") or ""),
         "source_stage": str(
             (prior_audit.get("architecture_policy_identity_replan") or {}).get(
                 "source_stage"
@@ -5602,13 +5629,32 @@ def _materialize_identity_replan_candidate(
         ),
         "identity_errors": [str(item) for item in policy_errors],
         "source_artifact_hash": source_hash,
-        "replaced_artifact_hash": current_hash,
+        "replaced_artifact_hash": materialization_proof[
+            "expected_destination_digest"
+        ],
         "prepared_artifact_hash": prepared_hash,
         "prepared_artifact_contract_digest": prepared_contract["contract_digest"],
         "runtime_manifest_digest": refreshed_identity["runtime_manifest_digest"],
         "epoch_receipt_digest": refreshed_identity["epoch_receipt_digest"],
-        "materialization_operation_id": materialization.operation_id,
-        "materialization_receipt_digest": materialization.receipt_digest,
+        "runtime_manifest_file_sha256": next(
+            str(item.get("sha256") or "")
+            for item in prepared_contract["prepared_artifact_manifest"]["entries"]
+            if item.get("type") == "file"
+            and item.get("path") == "national_runtime_manifest.json"
+        ),
+        "epoch_receipt_file_sha256": next(
+            str(item.get("sha256") or "")
+            for item in prepared_contract["prepared_artifact_manifest"]["entries"]
+            if item.get("type") == "file"
+            and item.get("path") == "policy_epoch_receipt.json"
+        ),
+        "materialization_operation_id": materialization_proof["operation_id"],
+        "materialization_expected_destination_digest": materialization_proof[
+            "expected_destination_digest"
+        ],
+        "materialization_receipt_digest": materialization_proof[
+            "receipt_digest"
+        ],
         "candidate_reset_to_source": True,
         "target_identity_refreshed": True,
         "stale_worker_gate_identity_cleared": True,
@@ -5892,6 +5938,11 @@ def _recover_persisted_architecture_policy_identity_replan(
     if not isinstance(receipt, dict):
         return None
     from prepared_baseline_contract import validate_prepared_artifact_contract
+    from evolution_infra import (
+        RESULTS_DIR,
+        _identity_replan_live_materialization_errors,
+        _identity_replan_replacement_contract_errors,
+    )
 
     prepared = audit.get("prepared_artifact_contract")
     prepared_errors = validate_prepared_artifact_contract(
@@ -5901,8 +5952,53 @@ def _recover_persisted_architecture_policy_identity_replan(
         next_v=ckpt.get("next_v"),
         verify_live_content=True,
     )
-    if receipt.get("schema_version") == 2 and not prepared_errors:
-        return None
+    if receipt.get("schema_version") == 2:
+        try:
+            receipt_revision = int(receipt.get("checkpoint_preimage_revision"))
+        except (TypeError, ValueError):
+            receipt_revision = -1
+        receipt_stage = str(receipt.get("checkpoint_preimage_stage") or "")
+        replan_errors = _identity_replan_replacement_contract_errors(
+            replacement=audit,
+            next_v=ckpt.get("next_v"),
+            source_v=ckpt.get("source_v"),
+            workflow_run_id=str(ckpt.get("workflow_run_id") or ""),
+            checkpoint_revision=receipt_revision,
+            checkpoint_stage=receipt_stage,
+            epoch_binding=ckpt.get("epoch_binding"),
+        )
+        if not replan_errors:
+            replan_errors.extend(
+                _identity_replan_live_materialization_errors(
+                    audit,
+                    candidate_dir=next_dir,
+                    artifact_root=Path(RESULTS_DIR) / "workflow" / "artifacts",
+                )
+            )
+        if int(ckpt.get("checkpoint_revision") or 0) != receipt_revision + 1:
+            replan_errors.append(
+                "identity_replan_checkpoint_projection_revision_mismatch"
+            )
+        if not prepared_errors and not replan_errors:
+            return None
+        return _json_tool_result({
+            "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_RECOVERY_INVALID",
+            "failure_class": "state_migration",
+            "action": "operator_reconcile",
+            "next_v": ckpt.get("next_v"),
+            "source_v": ckpt.get("source_v"),
+            "validation_errors": list(dict.fromkeys([
+                *prepared_errors,
+                *replan_errors,
+            ])),
+            "candidate_overwritten": False,
+            "directive": (
+                "The schema-2 identity-replan projection is not the exact "
+                "closed receipt published by its checkpoint CAS. Preserve all "
+                "bytes and reconcile canonical authority; never rewrite JSON "
+                "or copy a parent by hand."
+            ),
+        })
     return _materialize_identity_replan_candidate(
         ckpt,
         next_dir,

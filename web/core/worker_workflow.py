@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import wraps
 import ctypes
@@ -727,6 +728,81 @@ class WorkerArtifactStore:
             retained_path=str(body.get("retained_path") or ""),
             retained_digest=str(body.get("retained_digest") or ""),
         ), body
+
+    def verify_materialization_receipt(
+        self,
+        operation_id: str,
+        *,
+        destination: str | Path,
+        digest: str,
+        expected_destination_digest: str,
+        receipt_digest: str,
+    ) -> dict[str, Any]:
+        """Return one exact installed content-CAS receipt or fail closed.
+
+        This is the read-only authority boundary used by checkpoint projection:
+        a caller-authored operation id or self-digest is not materialization
+        evidence.  The durable receipt and retained displaced tree must both
+        prove the exact destination, output, and preimage.
+        """
+
+        loaded = self._load_completion_receipt(str(operation_id))
+        if loaded is None:
+            raise RuntimeError("Worker materialization completion receipt missing")
+        receipt, body = loaded
+        destination_path = Path(destination)
+        retained_path = Path(str(body.get("retained_path") or ""))
+        if (
+            receipt.operation != "materialize"
+            or receipt.installed is not True
+            or receipt.digest != str(digest)
+            or receipt.receipt_digest != str(receipt_digest)
+            or Path(str(body.get("destination") or "")) != destination_path
+            or body.get("expected_destination_digest")
+            != str(expected_destination_digest)
+            or receipt.retained_digest != str(expected_destination_digest)
+            or not receipt.retained_path
+            or retained_path != self._retained_path(str(operation_id))
+            or self._tree_digest(retained_path) != str(expected_destination_digest)
+        ):
+            raise RuntimeError("Worker materialization completion receipt scope mismatch")
+        return deepcopy(body)
+
+    def find_installed_materialization_receipt(
+        self,
+        *,
+        destination: str | Path,
+        digest: str,
+    ) -> dict[str, Any] | None:
+        """Find durable installed proof after a crash-before-checkpoint retry."""
+
+        receipt_root = self.root / ".materialization_receipts"
+        destination_path = Path(destination)
+        for path in sorted(receipt_root.glob("*.json")):
+            operation_id = path.stem
+            if not _OPERATION_ID_RE.fullmatch(operation_id):
+                continue
+            try:
+                loaded = self._load_completion_receipt(operation_id)
+            except RuntimeError:
+                continue
+            if loaded is None:
+                continue
+            receipt, body = loaded
+            expected = body.get("expected_destination_digest")
+            if not isinstance(expected, str) or not expected:
+                continue
+            try:
+                return self.verify_materialization_receipt(
+                    operation_id,
+                    destination=destination_path,
+                    digest=str(digest),
+                    expected_destination_digest=expected,
+                    receipt_digest=receipt.receipt_digest,
+                )
+            except RuntimeError:
+                continue
+        return None
 
     def _write_completion_receipt(
         self,

@@ -1318,6 +1318,269 @@ def partial_publication_checkpoint_recovery_allowed(
         return False
 
 
+_IDENTITY_REPLAN_PREPARED_CONTRACT_FIELDS = frozenset({
+    "schema_version",
+    "source_v",
+    "next_v",
+    "prepared_bot",
+    "prepared_artifact_hash",
+    "prepared_artifact_manifest",
+    "contract_digest",
+})
+_IDENTITY_REPLAN_RECEIPT_FIELDS = frozenset({
+    "schema_version",
+    "kind",
+    "source_v",
+    "next_v",
+    "workflow_run_id",
+    "checkpoint_preimage_revision",
+    "checkpoint_preimage_stage",
+    "source_stage",
+    "recovery_mode",
+    "identity_errors",
+    "source_artifact_hash",
+    "replaced_artifact_hash",
+    "prepared_artifact_hash",
+    "prepared_artifact_contract_digest",
+    "runtime_manifest_digest",
+    "epoch_receipt_digest",
+    "runtime_manifest_file_sha256",
+    "epoch_receipt_file_sha256",
+    "materialization_operation_id",
+    "materialization_expected_destination_digest",
+    "materialization_receipt_digest",
+    "candidate_reset_to_source",
+    "target_identity_refreshed",
+    "stale_worker_gate_identity_cleared",
+    "receipt_digest",
+})
+_IDENTITY_REPLAN_OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,160}$")
+
+
+def _identity_replan_replacement_contract_errors(
+    *,
+    replacement,
+    next_v,
+    source_v,
+    workflow_run_id,
+    checkpoint_revision,
+    checkpoint_stage,
+    epoch_binding,
+):
+    """Validate the closed, subject-bound destructive replan contract.
+
+    A canonical digest proves integrity only; it does not grant mutation
+    authority.  This validator binds the replacement to the exact checkpoint
+    CAS subject, parent publication identity, prepared manifest, and journaled
+    materialization shape before any durable field may be cleared.
+    """
+
+    from bot_artifact import canonical_digest
+
+    errors = []
+    if not isinstance(replacement, dict):
+        return ["identity_replan_replacement_not_object"]
+    prepared = replacement.get("prepared_artifact_contract")
+    replan = replacement.get("architecture_policy_identity_replan")
+    if not isinstance(prepared, dict):
+        errors.append("identity_replan_prepared_contract_not_object")
+        prepared = {}
+    if not isinstance(replan, dict):
+        errors.append("identity_replan_receipt_not_object")
+        replan = {}
+    if set(prepared) != _IDENTITY_REPLAN_PREPARED_CONTRACT_FIELDS:
+        errors.append("identity_replan_prepared_contract_fields_mismatch")
+    if set(replan) != _IDENTITY_REPLAN_RECEIPT_FIELDS:
+        errors.append("identity_replan_receipt_fields_mismatch")
+
+    digest_re = re.compile(r"^[0-9a-f]{64}$")
+    prepared_manifest = prepared.get("prepared_artifact_manifest")
+    prepared_hash = str(prepared.get("prepared_artifact_hash") or "")
+    if prepared.get("schema_version") != 1:
+        errors.append("identity_replan_prepared_schema_mismatch")
+    if prepared.get("source_v") != int(source_v):
+        errors.append("identity_replan_prepared_source_mismatch")
+    if prepared.get("next_v") != int(next_v):
+        errors.append("identity_replan_prepared_target_mismatch")
+    if prepared.get("prepared_bot") != bot_name(next_v):
+        errors.append("identity_replan_prepared_bot_mismatch")
+    if not digest_re.fullmatch(prepared_hash):
+        errors.append("identity_replan_prepared_hash_invalid")
+    if (
+        not isinstance(prepared_manifest, dict)
+        or set(prepared_manifest) != {"schema_version", "artifact_type", "entries"}
+        or prepared_manifest.get("artifact_type") != "directory"
+        or not isinstance(prepared_manifest.get("entries"), list)
+    ):
+        errors.append("identity_replan_prepared_manifest_invalid")
+    elif prepared_hash != canonical_digest(prepared_manifest):
+        errors.append("identity_replan_prepared_manifest_hash_mismatch")
+    prepared_unsigned = {
+        key: value for key, value in prepared.items() if key != "contract_digest"
+    }
+    if prepared.get("contract_digest") != canonical_digest(prepared_unsigned):
+        errors.append("identity_replan_prepared_contract_digest_mismatch")
+
+    if replan.get("schema_version") != 2:
+        errors.append("identity_replan_receipt_schema_mismatch")
+    if replan.get("kind") != "single-parent-architecture-policy-identity-replan-v2":
+        errors.append("identity_replan_receipt_kind_mismatch")
+    if replan.get("source_v") != int(source_v):
+        errors.append("identity_replan_receipt_source_mismatch")
+    if replan.get("next_v") != int(next_v):
+        errors.append("identity_replan_receipt_target_mismatch")
+    if replan.get("workflow_run_id") != str(workflow_run_id):
+        errors.append("identity_replan_receipt_workflow_mismatch")
+    if replan.get("checkpoint_preimage_revision") != int(checkpoint_revision):
+        errors.append("identity_replan_receipt_revision_mismatch")
+    if replan.get("checkpoint_preimage_stage") != str(checkpoint_stage):
+        errors.append("identity_replan_receipt_stage_mismatch")
+    if replan.get("source_stage") not in {
+        "quality_failed",
+        "repair_planned",
+        "rework_running",
+    }:
+        errors.append("identity_replan_receipt_source_stage_invalid")
+    expected_mode = (
+        "legacy_parent_copy_recovery"
+        if checkpoint_stage == "direction_audited"
+        else "quality_identity_replan"
+    )
+    if replan.get("recovery_mode") != expected_mode:
+        errors.append("identity_replan_receipt_recovery_mode_mismatch")
+    identity_errors = replan.get("identity_errors")
+    if (
+        not isinstance(identity_errors, list)
+        or not identity_errors
+        or any(not isinstance(item, str) or not item for item in identity_errors)
+    ):
+        errors.append("identity_replan_receipt_identity_errors_invalid")
+    for field in (
+        "source_artifact_hash",
+        "replaced_artifact_hash",
+        "prepared_artifact_hash",
+        "prepared_artifact_contract_digest",
+        "runtime_manifest_digest",
+        "epoch_receipt_digest",
+        "runtime_manifest_file_sha256",
+        "epoch_receipt_file_sha256",
+        "materialization_expected_destination_digest",
+        "materialization_receipt_digest",
+    ):
+        if not digest_re.fullmatch(str(replan.get(field) or "")):
+            errors.append(f"identity_replan_receipt_{field}_invalid")
+    if not _IDENTITY_REPLAN_OPERATION_ID_RE.fullmatch(
+        str(replan.get("materialization_operation_id") or "")
+    ):
+        errors.append("identity_replan_receipt_operation_id_invalid")
+    if replan.get("materialization_expected_destination_digest") != replan.get(
+        "replaced_artifact_hash"
+    ):
+        errors.append("identity_replan_materialization_preimage_mismatch")
+    if replan.get("prepared_artifact_hash") != prepared_hash:
+        errors.append("identity_replan_receipt_prepared_hash_mismatch")
+    if replan.get("prepared_artifact_contract_digest") != prepared.get(
+        "contract_digest"
+    ):
+        errors.append("identity_replan_receipt_prepared_contract_mismatch")
+    for field in (
+        "candidate_reset_to_source",
+        "target_identity_refreshed",
+        "stale_worker_gate_identity_cleared",
+    ):
+        if replan.get(field) is not True:
+            errors.append(f"identity_replan_receipt_{field}_not_true")
+
+    entries = (
+        prepared_manifest.get("entries")
+        if isinstance(prepared_manifest, dict)
+        else []
+    )
+    files = {
+        str(item.get("path") or ""): str(item.get("sha256") or "")
+        for item in entries or []
+        if isinstance(item, dict) and item.get("type") == "file"
+    }
+    if files.get("national_runtime_manifest.json") != replan.get(
+        "runtime_manifest_file_sha256"
+    ):
+        errors.append("identity_replan_runtime_manifest_binding_mismatch")
+    if files.get("policy_epoch_receipt.json") != replan.get(
+        "epoch_receipt_file_sha256"
+    ):
+        errors.append("identity_replan_epoch_receipt_binding_mismatch")
+
+    parent_identities = (
+        (epoch_binding or {}).get("published_parent_identities") or []
+    )
+    source_bindings = [
+        item
+        for item in parent_identities
+        if isinstance(item, dict) and item.get("version") == int(source_v)
+    ]
+    if (
+        len(source_bindings) != 1
+        or source_bindings[0].get("tag_artifact_hash")
+        != replan.get("source_artifact_hash")
+    ):
+        errors.append("identity_replan_source_publication_binding_mismatch")
+
+    replan_unsigned = {
+        key: value for key, value in replan.items() if key != "receipt_digest"
+    }
+    if replan.get("receipt_digest") != canonical_digest(replan_unsigned):
+        errors.append("identity_replan_receipt_digest_mismatch")
+    return list(dict.fromkeys(errors))
+
+
+def _identity_replan_live_materialization_errors(
+    replacement,
+    *,
+    candidate_dir=None,
+    artifact_root=None,
+):
+    """Cross-bind one closed receipt to live bytes and durable CAS evidence."""
+
+    from bot_artifact import hash_path
+    from worker_workflow import WorkerArtifactStore
+
+    if not isinstance(replacement, dict):
+        return ["identity_replan_replacement_not_object"]
+    prepared = replacement.get("prepared_artifact_contract") or {}
+    replan = replacement.get("architecture_policy_identity_replan") or {}
+    next_v = replan.get("next_v")
+    try:
+        target = (
+            Path(candidate_dir)
+            if candidate_dir is not None
+            else BOTS_DIR / bot_name(int(next_v))
+        )
+        prepared_hash = str(prepared.get("prepared_artifact_hash") or "")
+        if hash_path(target) != prepared_hash:
+            return ["identity_replan_live_candidate_hash_mismatch"]
+        WorkerArtifactStore(
+            Path(artifact_root)
+            if artifact_root is not None
+            else RESULTS_DIR / "workflow" / "artifacts"
+        ).verify_materialization_receipt(
+            str(replan.get("materialization_operation_id") or ""),
+            destination=target,
+            digest=prepared_hash,
+            expected_destination_digest=str(
+                replan.get("materialization_expected_destination_digest") or ""
+            ),
+            receipt_digest=str(
+                replan.get("materialization_receipt_digest") or ""
+            ),
+        )
+    except Exception as exc:
+        return [
+            "identity_replan_materialization_receipt_invalid:"
+            + type(exc).__name__
+        ]
+    return []
+
+
 def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                reviewer_feedback="", generation_attempt=0,
                                gate_results=None, worker_failure_count=None,
@@ -1691,35 +1954,46 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                 "precommit_eval_plan",
             }
             try:
-                from bot_artifact import canonical_digest
-
-                replan_unsigned = {
-                    key: value for key, value in (replan or {}).items()
-                    if key != "receipt_digest"
-                }
-                prepared_unsigned = {
-                    key: value for key, value in (prepared or {}).items()
-                    if key != "contract_digest"
-                }
+                explicit_cas = bool(
+                    isinstance(expected_checkpoint_revision, int)
+                    and not isinstance(expected_checkpoint_revision, bool)
+                    and expected_checkpoint_revision > 0
+                    and expected_checkpoint_revision
+                    == existing_checkpoint_revision
+                    and isinstance(expected_checkpoint_stage, str)
+                    and bool(expected_checkpoint_stage.strip())
+                    and expected_checkpoint_stage == old_stage_for_replacement
+                    and isinstance(expected_workflow_run_id, str)
+                    and bool(expected_workflow_run_id.strip())
+                    and expected_workflow_run_id == existing_workflow_run_id
+                )
+                replacement_errors = (
+                    _identity_replan_replacement_contract_errors(
+                        replacement=replacement,
+                        next_v=next_v,
+                        source_v=source_v,
+                        workflow_run_id=existing_workflow_run_id,
+                        checkpoint_revision=existing_checkpoint_revision,
+                        checkpoint_stage=old_stage_for_replacement,
+                        epoch_binding=existing_epoch_binding,
+                    )
+                )
+                if not replacement_errors:
+                    replacement_errors.extend(
+                        _identity_replan_live_materialization_errors(
+                            replacement,
+                            candidate_dir=BOTS_DIR / bot_name(next_v),
+                            artifact_root=(
+                                RESULTS_DIR / "workflow" / "artifacts"
+                            ),
+                        )
+                    )
                 replacement_contract_valid = bool(
-                    replace_audit_context
+                    explicit_cas
+                    and replace_audit_context
                     and clear_repair_baseline_artifact_hash
                     and master_plan == {}
-                    and isinstance(replan, dict)
-                    and replan.get("schema_version") == 2
-                    and replan.get("kind")
-                    == "single-parent-architecture-policy-identity-replan-v2"
-                    and replan.get("receipt_digest")
-                    == canonical_digest(replan_unsigned)
-                    and replan.get("target_identity_refreshed") is True
-                    and replan.get("stale_worker_gate_identity_cleared") is True
-                    and isinstance(prepared, dict)
-                    and prepared.get("contract_digest")
-                    == canonical_digest(prepared_unsigned)
-                    and prepared.get("prepared_artifact_hash")
-                    == replan.get("prepared_artifact_hash")
-                    and prepared.get("contract_digest")
-                    == replan.get("prepared_artifact_contract_digest")
+                    and not replacement_errors
                     and not stale_keys.intersection(replacement)
                     and existing_parent2_v is None
                     and existing_publication_intent is None
@@ -1731,7 +2005,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             if not replacement_contract_valid:
                 log.error(
                     "Checkpoint architecture identity replan replacement "
-                    "contract is invalid"
+                    "contract is invalid: %s",
+                    replacement_errors if 'replacement_errors' in locals() else [],
                 )
                 return False
 

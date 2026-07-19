@@ -186,6 +186,15 @@ def test_existing_bad_direction_replan_recovers_and_is_idempotent(
         "quality_native_match_timing_plan_digest",
     ):
         assert stale_key not in replacement
+    assert evolution_infra._identity_replan_replacement_contract_errors(
+        replacement=replacement,
+        next_v=148,
+        source_v=143,
+        workflow_run_id=checkpoint["workflow_run_id"],
+        checkpoint_revision=checkpoint["checkpoint_revision"],
+        checkpoint_stage=checkpoint["stage"],
+        epoch_binding=checkpoint["epoch_binding"],
+    ) == []
 
     projected = deepcopy(checkpoint)
     projected["checkpoint_revision"] = 11
@@ -472,7 +481,8 @@ def test_checkpoint_identity_replan_replacement_clears_stale_authority(
     monkeypatch,
 ):
     import evolution_infra
-    from bot_artifact import canonical_digest
+    from bot_artifact import artifact_manifest, canonical_digest, hash_path
+    from worker_workflow import WorkerArtifactStore
 
     monkeypatch.setattr(
         evolution_infra,
@@ -513,11 +523,50 @@ def test_checkpoint_identity_replan_replacement_clears_stale_authority(
         repair_baseline_artifact_hash="d" * 64,
     ) is True
     before = evolution_infra.read_pipeline_checkpoint()
+    candidate_dir = tmp_path / "bots" / "national_v300"
+    prepared_dir = tmp_path / "prepared" / "national_v300"
+    candidate_dir.mkdir(parents=True)
+    prepared_dir.mkdir(parents=True)
+    (candidate_dir / "national_runtime_manifest.json").write_text(
+        '{"old":true}\n', encoding="utf-8"
+    )
+    (candidate_dir / "policy_epoch_receipt.json").write_text(
+        '{"old":true}\n', encoding="utf-8"
+    )
+    (prepared_dir / "national_runtime_manifest.json").write_text(
+        '{"prepared":true}\n', encoding="utf-8"
+    )
+    (prepared_dir / "policy_epoch_receipt.json").write_text(
+        '{"prepared":true}\n', encoding="utf-8"
+    )
+    preimage_hash = hash_path(candidate_dir)
+    artifact_root = tmp_path / "results" / "workflow" / "artifacts"
+    store = WorkerArtifactStore(artifact_root)
+    prepared_snapshot = store.capture(prepared_dir)
+    materialization = store.materialize(
+        prepared_snapshot,
+        candidate_dir,
+        expected_destination_digest=preimage_hash,
+        operation_id="identity-replan-test-operation",
+    )
+    assert materialization.installed is True
+    monkeypatch.setattr(evolution_infra, "BOTS_DIR", candidate_dir.parent)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path / "results")
+    runtime_manifest_digest = "5" * 64
+    epoch_receipt_digest = "6" * 64
+    prepared_manifest = artifact_manifest(candidate_dir)
+    prepared_file_hashes = {
+        item["path"]: item["sha256"]
+        for item in prepared_manifest["entries"]
+        if item.get("type") == "file"
+    }
     prepared_replacement = {
         "schema_version": 1,
         "source_v": 299,
         "next_v": 300,
-        "prepared_artifact_hash": "4" * 64,
+        "prepared_bot": "national_v300",
+        "prepared_artifact_hash": canonical_digest(prepared_manifest),
+        "prepared_artifact_manifest": prepared_manifest,
     }
     prepared_replacement["contract_digest"] = canonical_digest(
         prepared_replacement
@@ -525,10 +574,36 @@ def test_checkpoint_identity_replan_replacement_clears_stale_authority(
     replan_replacement = {
         "schema_version": 2,
         "kind": "single-parent-architecture-policy-identity-replan-v2",
-        "prepared_artifact_hash": "4" * 64,
+        "source_v": 299,
+        "next_v": 300,
+        "workflow_run_id": before["workflow_run_id"],
+        "checkpoint_preimage_revision": before["checkpoint_revision"],
+        "checkpoint_preimage_stage": "quality_failed",
+        "source_stage": "quality_failed",
+        "recovery_mode": "quality_identity_replan",
+        "identity_errors": ["architecture_policy_digest_mismatch"],
+        "source_artifact_hash": before["epoch_binding"][
+            "published_parent_identities"
+        ][0]["tag_artifact_hash"],
+        "replaced_artifact_hash": preimage_hash,
+        "prepared_artifact_hash": prepared_replacement[
+            "prepared_artifact_hash"
+        ],
         "prepared_artifact_contract_digest": prepared_replacement[
             "contract_digest"
         ],
+        "runtime_manifest_digest": runtime_manifest_digest,
+        "epoch_receipt_digest": epoch_receipt_digest,
+        "runtime_manifest_file_sha256": prepared_file_hashes[
+            "national_runtime_manifest.json"
+        ],
+        "epoch_receipt_file_sha256": prepared_file_hashes[
+            "policy_epoch_receipt.json"
+        ],
+        "materialization_operation_id": materialization.operation_id,
+        "materialization_expected_destination_digest": preimage_hash,
+        "materialization_receipt_digest": materialization.receipt_digest,
+        "candidate_reset_to_source": True,
         "target_identity_refreshed": True,
         "stale_worker_gate_identity_cleared": True,
     }
@@ -541,24 +616,142 @@ def test_checkpoint_identity_replan_replacement_clears_stale_authority(
         "architecture_policy_identity_replan": replan_replacement,
     }
 
-    assert evolution_infra.write_pipeline_checkpoint(
-        300,
-        299,
-        "direction_audited",
-        master_plan={},
-        audit_context=replacement,
-        replace_audit_context=True,
-        audit_context_replacement_reason="architecture_policy_identity_replan",
-        clear_repair_baseline_artifact_hash=True,
-        reset_runtime_contract_ledger=True,
-        expected_runtime_contract_ledger_digest="",
-        runtime_contract_ledger_reset_reason=(
-            "architecture_policy_identity_replan"
-        ),
-        expected_checkpoint_revision=before["checkpoint_revision"],
-        expected_checkpoint_stage="quality_failed",
-        expected_workflow_run_id=before["workflow_run_id"],
-    ) is True
+    def attempt(candidate_replacement, **cas_overrides):
+        kwargs = {
+            "expected_checkpoint_revision": before["checkpoint_revision"],
+            "expected_checkpoint_stage": "quality_failed",
+            "expected_workflow_run_id": before["workflow_run_id"],
+            **cas_overrides,
+        }
+        return evolution_infra.write_pipeline_checkpoint(
+            300,
+            299,
+            "direction_audited",
+            master_plan={},
+            audit_context=candidate_replacement,
+            replace_audit_context=True,
+            audit_context_replacement_reason=(
+                "architecture_policy_identity_replan"
+            ),
+            clear_repair_baseline_artifact_hash=True,
+            reset_runtime_contract_ledger=True,
+            expected_runtime_contract_ledger_digest="",
+            runtime_contract_ledger_reset_reason=(
+                "architecture_policy_identity_replan"
+            ),
+            **kwargs,
+        )
+
+    before_bytes = (tmp_path / "pipeline_state.json").read_bytes()
+    assert attempt(
+        replacement,
+        expected_checkpoint_revision=None,
+        expected_checkpoint_stage=None,
+        expected_workflow_run_id=None,
+    ) is False
+    assert (tmp_path / "pipeline_state.json").read_bytes() == before_bytes
+
+    minimal_forgery = {
+        "prepared_artifact_contract": {
+            "schema_version": 1,
+            "source_v": 299,
+            "next_v": 300,
+            "prepared_artifact_hash": "4" * 64,
+            "contract_digest": "8" * 64,
+        },
+        "architecture_policy_identity_replan": {
+            "schema_version": 2,
+            "kind": "single-parent-architecture-policy-identity-replan-v2",
+            "prepared_artifact_hash": "4" * 64,
+            "prepared_artifact_contract_digest": "8" * 64,
+            "target_identity_refreshed": True,
+            "stale_worker_gate_identity_cleared": True,
+            "receipt_digest": "9" * 64,
+        },
+    }
+    assert attempt(minimal_forgery) is False
+    assert (tmp_path / "pipeline_state.json").read_bytes() == before_bytes
+
+    foreign_subject = deepcopy(replacement)
+    foreign_subject["prepared_artifact_contract"]["next_v"] = 301
+    foreign_subject["prepared_artifact_contract"]["contract_digest"] = (
+        canonical_digest({
+            key: value
+            for key, value in foreign_subject[
+                "prepared_artifact_contract"
+            ].items()
+            if key != "contract_digest"
+        })
+    )
+    foreign_subject["architecture_policy_identity_replan"].update({
+        "next_v": 301,
+        "workflow_run_id": "generation:301:foreign",
+        "prepared_artifact_contract_digest": foreign_subject[
+            "prepared_artifact_contract"
+        ]["contract_digest"],
+    })
+    foreign_subject["architecture_policy_identity_replan"]["receipt_digest"] = (
+        canonical_digest({
+            key: value
+            for key, value in foreign_subject[
+                "architecture_policy_identity_replan"
+            ].items()
+            if key != "receipt_digest"
+        })
+    )
+    assert attempt(foreign_subject) is False
+    assert (tmp_path / "pipeline_state.json").read_bytes() == before_bytes
+
+    missing_receipt = deepcopy(replacement)
+    missing_receipt["architecture_policy_identity_replan"][
+        "materialization_operation_id"
+    ] = "identity-replan-missing-operation"
+    missing_receipt["architecture_policy_identity_replan"]["receipt_digest"] = (
+        canonical_digest({
+            key: value
+            for key, value in missing_receipt[
+                "architecture_policy_identity_replan"
+            ].items()
+            if key != "receipt_digest"
+        })
+    )
+    assert attempt(missing_receipt) is False
+    assert (tmp_path / "pipeline_state.json").read_bytes() == before_bytes
+
+    tampered_receipt = deepcopy(replacement)
+    tampered_receipt["architecture_policy_identity_replan"][
+        "materialization_receipt_digest"
+    ] = "a" * 64
+    tampered_receipt["architecture_policy_identity_replan"]["receipt_digest"] = (
+        canonical_digest({
+            key: value
+            for key, value in tampered_receipt[
+                "architecture_policy_identity_replan"
+            ].items()
+            if key != "receipt_digest"
+        })
+    )
+    assert attempt(tampered_receipt) is False
+    assert (tmp_path / "pipeline_state.json").read_bytes() == before_bytes
+
+    mismatched_preimage = deepcopy(replacement)
+    mismatched_preimage["architecture_policy_identity_replan"].update({
+        "replaced_artifact_hash": "b" * 64,
+        "materialization_expected_destination_digest": "b" * 64,
+    })
+    mismatched_preimage["architecture_policy_identity_replan"]["receipt_digest"] = (
+        canonical_digest({
+            key: value
+            for key, value in mismatched_preimage[
+                "architecture_policy_identity_replan"
+            ].items()
+            if key != "receipt_digest"
+        })
+    )
+    assert attempt(mismatched_preimage) is False
+    assert (tmp_path / "pipeline_state.json").read_bytes() == before_bytes
+
+    assert attempt(replacement) is True
     after = evolution_infra.read_pipeline_checkpoint()
 
     assert after["stage"] == "direction_audited"
