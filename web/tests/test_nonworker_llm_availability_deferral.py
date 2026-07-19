@@ -100,13 +100,21 @@ def _valid_master_plan():
             "execution_mode": "strategy_implementation",
             "selected_proposal_id": "availability-test-proposal",
             "contract_digest": "a" * 64,
+            "target_files": ["policy.py"],
+            "change_symbol": "policy.py:iter_decisions",
+            "reachable_chain": [
+                "policy.py:get_baseline_decision",
+                "policy.py:iter_decisions",
+            ],
             "falsifier": {"test_name": "availability-typed-check"},
         },
         "tasks": [{
             "worker_id": 1,
             "role": "Algorithmic Logic Architect",
             "target_files": ["policy.py"],
-            "worker_prompt": "Change policy.py in the prepared target bot.",
+            "worker_prompt": (
+                "Modify policy.py:iter_decisions in the prepared target bot."
+            ),
         }],
     }
 
