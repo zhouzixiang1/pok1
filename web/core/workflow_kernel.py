@@ -1482,7 +1482,9 @@ class WorkflowStore:
         """
 
         if (
-            not isinstance(expected_owner, str)
+            not isinstance(effect_id, str)
+            or not effect_id
+            or not isinstance(expected_owner, str)
             or not expected_owner
             or not isinstance(owner, str)
             or not owner
@@ -1804,6 +1806,212 @@ class WorkflowStore:
                 raise
             connection.commit()
         return self.effect(effect_id)
+
+    def interrupt_effect(
+        self,
+        effect_id: str,
+        *,
+        expected_owner: str,
+        lease_epoch: int,
+        claimed_attempt: int,
+        interruption_kind: str,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+        causation_id: str,
+        now: float | None = None,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Fence an interrupted lease and make the same attempt reclaimable.
+
+        Interruption is different from an execution failure and from a
+        provider-availability deferral.  The former consumes an attempt; the
+        latter requires a separate domain resume receipt.  A process-wide,
+        operator-requested shutdown has already stopped dispatch and should be
+        resumed automatically by the next process.  This transition therefore
+        rolls back only the exact claim increment, retains the monotonically
+        increasing lease epoch, and atomically returns the effect to ``retry``.
+
+        Both owner and epoch are required.  A late task from the interrupted
+        process cannot release a replacement owner's lease, and its eventual
+        completion remains rejected by the normal epoch fence.
+        """
+
+        if (
+            not isinstance(expected_owner, str)
+            or not expected_owner
+            or isinstance(lease_epoch, bool)
+            or not isinstance(lease_epoch, int)
+            or lease_epoch < 1
+            or isinstance(claimed_attempt, bool)
+            or not isinstance(claimed_attempt, int)
+            or claimed_attempt < 1
+            or not isinstance(interruption_kind, str)
+            or not interruption_kind.strip()
+            or not isinstance(reason, str)
+            or not reason.strip()
+            or not isinstance(causation_id, str)
+            or not causation_id
+        ):
+            raise ValueError("effect interruption identity is invalid")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise TypeError("effect interruption metadata must be an object")
+        normalized_metadata = json.loads(canonical_json(metadata or {}))
+        restored_attempt = claimed_attempt - 1
+        payload = {
+            "effect_id": effect_id,
+            "claimed_attempt": claimed_attempt,
+            "restored_attempt": restored_attempt,
+            "lease_epoch": lease_epoch,
+            "lease_owner": expected_owner,
+            "interruption_kind": interruption_kind.strip(),
+            "reason": reason[:2000],
+            "metadata": normalized_metadata,
+        }
+        current_time = float(now if now is not None else time.time())
+        if not math.isfinite(current_time):
+            raise ValueError("effect interruption timing is invalid")
+
+        with self._connect(deadline_monotonic=deadline_monotonic) as connection:
+            self._begin_immediate(
+                connection,
+                deadline_monotonic=deadline_monotonic,
+                operation="effect_interrupt_begin",
+            )
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise WorkflowConflict(f"unknown effect: {effect_id}")
+
+            # A retry after an ambiguous COMMIT is idempotent only for the
+            # exact same causal event.  It must never mutate a later lease.
+            duplicate = connection.execute(
+                """
+                SELECT * FROM workflow_events
+                WHERE run_id = ? AND causation_id = ?
+                """,
+                (str(row["run_id"]), causation_id),
+            ).fetchone()
+            if duplicate is not None:
+                if (
+                    str(duplicate["event_type"]) != "EffectInterrupted"
+                    or str(duplicate["payload_digest"]) != content_digest(payload)
+                ):
+                    connection.rollback()
+                    raise WorkflowConflict(
+                        f"causation id reused with different event: {causation_id}"
+                    )
+                current = connection.execute(
+                    "SELECT * FROM effects WHERE effect_id = ?",
+                    (effect_id,),
+                ).fetchone()
+                if (
+                    current is None
+                    or current["status"] != "retry"
+                    or int(current["attempt"] or 0) != restored_attempt
+                    or int(current["lease_epoch"] or 0) != lease_epoch
+                    or current["lease_owner"] is not None
+                    or current["lease_until"] is not None
+                ):
+                    connection.rollback()
+                    raise InvalidCompletion(
+                        f"stale effect interruption replay for {effect_id} "
+                        f"owner={expected_owner} epoch={lease_epoch}"
+                    )
+                outbox = connection.execute(
+                    "SELECT * FROM outbox WHERE effect_id = ?",
+                    (effect_id,),
+                ).fetchone()
+                if (
+                    outbox is None
+                    or outbox["dispatched_at"] is not None
+                    or float(outbox["available_at"]) > current_time
+                ):
+                    connection.rollback()
+                    raise WorkflowConflict(
+                        f"effect interruption replay outbox unavailable: {effect_id}"
+                    )
+                self._commit(
+                    connection,
+                    deadline_monotonic=deadline_monotonic,
+                    operation="effect_interrupt_replay_commit",
+                )
+                return self._effect_from_row(current)
+
+            if (
+                row["status"] != "running"
+                or str(row["lease_owner"] or "") != expected_owner
+                or int(row["lease_epoch"] or 0) != lease_epoch
+                or int(row["attempt"] or 0) != claimed_attempt
+            ):
+                connection.rollback()
+                raise InvalidCompletion(
+                    f"stale effect interruption for {effect_id} "
+                    f"owner={expected_owner} epoch={lease_epoch}"
+                )
+            try:
+                self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectInterrupted",
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET status = 'retry', attempt = ?, lease_owner = NULL,
+                        lease_until = NULL, last_error = ?, updated_at = ?
+                    WHERE effect_id = ? AND status = 'running'
+                      AND lease_owner = ? AND lease_epoch = ? AND attempt = ?
+                    """,
+                    (
+                        restored_attempt,
+                        reason[:4000],
+                        current_time,
+                        effect_id,
+                        expected_owner,
+                        lease_epoch,
+                        claimed_attempt,
+                    ),
+                )
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                if int(changed or 0) != 1:
+                    raise InvalidCompletion(
+                        f"effect interruption CAS failed: {effect_id}"
+                    )
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET dispatched_at = NULL, available_at = ?
+                    WHERE effect_id = ?
+                    """,
+                    (current_time, effect_id),
+                )
+                outbox_changed = connection.execute(
+                    "SELECT changes()"
+                ).fetchone()[0]
+                if int(outbox_changed or 0) != 1:
+                    raise WorkflowConflict(
+                        f"effect interruption outbox missing: {effect_id}"
+                    )
+                updated = connection.execute(
+                    "SELECT * FROM effects WHERE effect_id = ?",
+                    (effect_id,),
+                ).fetchone()
+            except Exception:
+                connection.rollback()
+                raise
+            self._commit(
+                connection,
+                deadline_monotonic=deadline_monotonic,
+                operation="effect_interrupt_commit",
+            )
+        return self._effect_from_row(updated)
 
     def resume_effect(
         self,

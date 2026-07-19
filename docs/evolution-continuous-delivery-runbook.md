@@ -1066,6 +1066,40 @@ do not increment the role count. Current
 Scout defaults are 120 seconds to first activity, 360 seconds idle/stall and a
 900 second total hard ceiling. Provider infrastructure is never evidence that
 the strategy is invalid and cannot by itself consume a canonical Bot label.
+The distinct zero-tool final Master uses 360 seconds for first substantive
+activity, idle and stall, with the same 900-second total ceiling. This v148
+adjustment does not change proposal Scouts or ordinary Master roles; system
+and thinking telemetry remains non-substantive.
+
+An active Worker has a parallel but distinct process-lifecycle rule. A
+controlled operator shutdown may cancel its provider stream only after the
+process-owned `ShutdownManager` edge is set. The durable activity then restores
+the ephemeral workspace, atomically appends `EffectInterrupted` for the exact
+effect/owner/lease epoch/claimed attempt, rolls back that one claim increment,
+clears the lease, and reopens the existing outbox row. On restart, pure replay
+returns `shutdown_interrupted`; `execute_workers` claims the same frozen
+envelope with the same attempt number and a higher lease epoch, so a late old
+completion cannot win. There is no new Worker or recovery state machine and no
+one-hour wait for the old lease.
+
+Lease claims themselves are DB projections rather than journal events. If a
+process hard-crashes, an expired replacement claim may legitimately advance
+the DB attempt beyond the last replayed failure. A later controlled shutdown
+receipt is valid only when its restored attempt does not rewind the replayed
+count, its claimed attempt is exactly restored+1 and stays within the frozen
+maximum, and the same atomic DB owner/epoch/attempt CAS wrote the receipt. The
+continuous and one-generation drivers treat a validated interruption as a
+routed shutdown boundary and must not open another Orchestrator stream.
+
+Do not apply this rule merely because an exception mentions SIGTERM. An
+unexpected provider exit, timeout, ordinary cancellation without the live
+shutdown edge, or other harness failure remains a bounded infrastructure
+failure and consumes an attempt. If the attempt-neutral receipt itself cannot
+be committed during the ten-second shutdown budget, preserve the still-running
+lease and stop at operator reconciliation; never write a guessed interruption,
+convert it into `EffectFailed`, or abandon the generation. Provider
+availability continues to use its separate content-bound `EffectDeferred` /
+explicit-resume contract.
 
 Proposal Scouts receive only the compact proposal contract and the frozen
 semantic facts needed for their slot. Do not embed the complete final-Master

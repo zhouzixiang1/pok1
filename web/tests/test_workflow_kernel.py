@@ -574,6 +574,186 @@ def test_deferred_effect_releases_lease_without_consuming_attempt(tmp_path):
     assert stale["accepted"] is False
 
 
+def test_interrupted_effect_is_attempt_neutral_reclaimable_and_owner_fenced(
+    tmp_path,
+):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="worker_llm",
+        input_payload={"task_digest": "stable"},
+        causation_id="request-worker-149",
+        max_attempts=3,
+    )
+    first = store.claim_effect(
+        "worker-149", owner="pid:101", lease_seconds=3600, now=10
+    )
+    kwargs = {
+        "expected_owner": "pid:101",
+        "lease_epoch": first.lease_epoch,
+        "claimed_attempt": first.attempt,
+        "interruption_kind": "operator_shutdown",
+        "reason": "operator_shutdown",
+        "metadata": {
+            "workflow_run_id": "149#0",
+            "shutdown_requested": True,
+        },
+        "causation_id": "worker-149-operator-shutdown-1",
+        "now": 11,
+    }
+
+    with pytest.raises(InvalidCompletion, match="stale effect interruption"):
+        store.interrupt_effect(
+            "worker-149",
+            **{**kwargs, "expected_owner": "pid:forged"},
+        )
+    assert store.effect("worker-149")["status"] == "running"
+    assert store.effect("worker-149")["attempt"] == 1
+
+    interrupted = store.interrupt_effect("worker-149", **kwargs)
+    replay = store.interrupt_effect("worker-149", **kwargs)
+
+    assert interrupted["status"] == "retry"
+    assert interrupted["attempt"] == 0
+    assert interrupted["lease_epoch"] == 1
+    assert interrupted["lease_owner"] is None
+    assert interrupted["lease_until"] is None
+    assert replay == interrupted
+    assert [row["effect_id"] for row in store.pending_outbox(now=11)] == [
+        "worker-149"
+    ]
+    event = store.events("149#0")[-1]
+    assert event.event_type == "EffectInterrupted"
+    assert event.payload == {
+        "effect_id": "worker-149",
+        "claimed_attempt": 1,
+        "restored_attempt": 0,
+        "lease_epoch": 1,
+        "lease_owner": "pid:101",
+        "interruption_kind": "operator_shutdown",
+        "reason": "operator_shutdown",
+        "metadata": {
+            "workflow_run_id": "149#0",
+            "shutdown_requested": True,
+        },
+    }
+    assert not any(
+        item.event_type == "EffectFailed" for item in store.events("149#0")
+    )
+
+    # Reopening the durable store models process restart.  The exact frozen
+    # effect is immediately claimable with the same attempt and a new epoch.
+    restarted = WorkflowStore(store.path)
+    second = restarted.claim_effect(
+        "worker-149", owner="pid:202", lease_seconds=3600, now=12
+    )
+    assert second.attempt == first.attempt
+    assert second.lease_epoch == first.lease_epoch + 1
+    assert restarted.effect("worker-149")["lease_owner"] == "pid:202"
+
+    stale = restarted.complete_effect(
+        "worker-149",
+        lease_epoch=first.lease_epoch,
+        completion_id="late-old-worker",
+        result_payload={"artifact": "stale"},
+        causation_id="late-old-worker",
+    )
+    assert stale["accepted"] is False
+    with pytest.raises(InvalidCompletion, match="stale effect interruption replay"):
+        restarted.interrupt_effect("worker-149", **kwargs)
+    assert restarted.effect("worker-149")["lease_owner"] == "pid:202"
+
+
+def test_interrupted_effect_missing_outbox_rolls_back_event_and_projection(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="worker_llm",
+        input_payload={"task_digest": "stable"},
+        causation_id="request-worker-149",
+        max_attempts=3,
+    )
+    lease = store.claim_effect(
+        "worker-149",
+        owner="pid:101",
+        lease_seconds=3600,
+    )
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "DELETE FROM outbox WHERE effect_id = ?",
+            (lease.effect_id,),
+        )
+
+    with pytest.raises(WorkflowConflict, match="interruption outbox missing"):
+        store.interrupt_effect(
+            lease.effect_id,
+            expected_owner="pid:101",
+            lease_epoch=lease.lease_epoch,
+            claimed_attempt=lease.attempt,
+            interruption_kind="operator_shutdown",
+            reason="operator_shutdown",
+            metadata={
+                "workflow_run_id": "149#0",
+                "shutdown_requested": True,
+            },
+            causation_id="worker-149-operator-shutdown-1",
+        )
+
+    effect = store.effect(lease.effect_id)
+    assert effect["status"] == "running"
+    assert effect["attempt"] == lease.attempt
+    assert effect["lease_owner"] == "pid:101"
+    assert not any(
+        event.event_type == "EffectInterrupted"
+        for event in store.events("149#0")
+    )
+
+
+def test_interrupted_effect_duplicate_replay_requires_dispatchable_outbox(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="worker-149",
+        kind="worker_llm",
+        input_payload={"task_digest": "stable"},
+        causation_id="request-worker-149",
+        max_attempts=3,
+    )
+    lease = store.claim_effect(
+        "worker-149",
+        owner="pid:101",
+        lease_seconds=3600,
+        now=10,
+    )
+    kwargs = {
+        "expected_owner": "pid:101",
+        "lease_epoch": lease.lease_epoch,
+        "claimed_attempt": lease.attempt,
+        "interruption_kind": "operator_shutdown",
+        "reason": "operator_shutdown",
+        "metadata": {
+            "workflow_run_id": "149#0",
+            "shutdown_requested": True,
+        },
+        "causation_id": "worker-149-operator-shutdown-1",
+        "now": 11,
+    }
+    store.interrupt_effect(lease.effect_id, **kwargs)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE outbox SET dispatched_at = ? WHERE effect_id = ?",
+            (11, lease.effect_id),
+        )
+
+    with pytest.raises(
+        WorkflowConflict,
+        match="interruption replay outbox unavailable",
+    ):
+        store.interrupt_effect(lease.effect_id, **kwargs)
+
+
 def test_stale_failure_cannot_overwrite_new_lease(tmp_path):
     store = _store(tmp_path)
     store.request_effect(

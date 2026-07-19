@@ -4338,12 +4338,14 @@ _ROLE_TIMEOUT_DEFAULTS = {
     "DEFAULT": (240.0, 360.0, 900.0),
     # The final Master is a zero-tool selector/compiler over the frozen three-
     # proposal/two-ballot packet.  Its prompt and output schema are necessarily
-    # large, so give the selection/compiler 240s both for its first substantive
-    # output and for later productive-message silence instead of paying for
-    # three deterministic 132s false stalls.  This is independent from the
-    # Scout/critic MASTER policy below and remains bounded by the same 900s total
-    # ceiling.
-    "MASTER_FINAL": (240.0, 240.0, 900.0),
+    # large. Live v148 emitted only system/thinking telemetry through the old
+    # 240s first-substantive boundary and was killed at 277.5s including owned
+    # cleanup, even though every Scout/ballot input was already durable. Give
+    # this zero-tool selector/compiler 360s for first activity and later
+    # productive-message silence. This is independent from both proposal
+    # Scouts and ordinary Master roles and remains bounded by the same 900s
+    # total ceiling.
+    "MASTER_FINAL": (360.0, 360.0, 900.0),
     # Proposal Scouts are Read-capable mechanism designers.  Live strict runs
     # routinely complete between 155s and 236s after one or more bounded Read
     # round-trips. Live singleton-successor evidence also showed a valid
@@ -4447,8 +4449,8 @@ def _role_timeout_policy(role_name: str) -> dict:
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
     stall_default = (
         360.0
-        if key in {"MASTER_PROPOSAL", "WORKER"}
-        else 240.0 if key == "MASTER_FINAL" else 0.0
+        if key in {"MASTER_PROPOSAL", "MASTER_FINAL", "WORKER"}
+        else 0.0
     )
     if idle > 0 and key not in {
         "MASTER_FINAL",
@@ -4562,6 +4564,17 @@ def _is_shutdown_requested() -> bool:
         return bool(manager and manager.is_shutting_down)
     except Exception:
         return False
+
+
+def is_operator_shutdown_requested() -> bool:
+    """Return the owner-fenced process shutdown edge for activity reducers.
+
+    This is deliberately read-only.  Durable domains may use it only to
+    classify a contemporaneous ``CancelledError``; it is not evidence that an
+    arbitrary provider exception or an old lease was operator-interrupted.
+    """
+
+    return _is_shutdown_requested()
 
 
 def _emit_llm_event(category, severity, message, **fields):

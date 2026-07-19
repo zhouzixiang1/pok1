@@ -4887,3 +4887,62 @@ confirmed: synchronous strict-epoch/remote-publication projection from
 remote cache expires; concurrent live timings reached 10--25 seconds. That
 read path must be isolated/cached without allowing stale evidence to authorize
 Start or publication.
+## 2026-07-19 — Worker operator-shutdown attempt accounting repair candidate
+
+Live v147 Worker evidence exposed a lifecycle/accounting defect after the
+Master recovery above. The durable Worker effect was already on claimed
+attempt 2/3. A controlled `pokctl` stop sent SIGTERM through the owned Claude
+provider process; `run_claude_query` correctly surfaced cancellation, but
+`agent_workers` propagated it to `_run_durable_worker_effect`, whose catch-all
+and final lease-outcome guard could record `EffectFailed`. Thus an operator
+restart could consume the final Worker attempt and abandon a valid generation;
+if the process exited before that write, the running lease could remain fenced
+for its one-hour duration. Neither outcome was a policy-quality observation.
+
+The isolated source candidate adds no schema table and no second state machine.
+The existing schema-1 `WorkflowStore` gains one append-only
+`EffectInterrupted` event and atomic effect projection. It requires the exact
+running effect, owner, lease epoch and claimed attempt; records only
+`interruption_kind=operator_shutdown`; restores the pre-claim attempt number;
+retains the old epoch as a stale-completion fence; clears owner/deadline; and
+reopens the same outbox row. `WorkerWorkflow` replays this as
+`shutdown_interrupted`, and a restarted process claims the same frozen envelope
+with the same attempt and next epoch. The Orchestrator accepts only the complete
+workflow-bound projection while its own shutdown manager is live.
+
+The attempt-neutral branch requires both a contemporaneous
+`asyncio.CancelledError` and the owner-fenced shutdown edge. An unexpected
+provider SIGTERM with no edge continues through `EffectFailed` and consumes the
+normal bounded retry. Wrong-owner, stale-epoch, forged-history and malformed
+projection paths fail closed. If the interruption receipt cannot commit within
+ten seconds, the implementation deliberately leaves the exact running lease
+untouched, emits recovery-blocked operator reconciliation, and suppresses the
+old finalizer's false failure write. No checkpoint, candidate, certification,
+rating, runtime process or `.evolution_pok` state was changed while producing
+this detached candidate; merge, installation and a real controlled restart
+remain pending.
+
+The same live observation window exposed an independent final-Master liveness
+boundary in v148. `MASTER (Try 1)` emitted system/thinking telemetry after
+0.4 seconds but no substantive text before the former 240-second gate; owned
+cleanup completed at 277.5 seconds and the journal correctly replayed all
+partial proposal/ballot roles, but the zero-tool final selector had to be
+started again. The source candidate changes only `MASTER_FINAL` first-activity,
+idle and stall defaults from 240 to 360 seconds. Its total remains 900 seconds;
+`MASTER_PROPOSAL` remains 120/360/360/900 and ordinary `MASTER` remains
+120/240/132/900. The exact default/override regression prevents this measured
+exception from silently widening Scouts or other Master roles.
+
+Final source validation used only explicit temporary official-verdict ledgers;
+no test process opened the live operator ledger. The Worker kernel/workflow/
+driver shutdown shard is `67 passed`; the alignment, LLM timeout and
+Orchestrator driver shard is `197 passed`; exact touched-file `py_compile` and
+`git diff --check` are green. Independent static review confirmed the expired-
+claim journal gap and both continuous/one-generation provider-fallback P1s are
+closed, with no remaining P0/P1. The final hardening also rejects Boolean
+attempt fields, binds the outer projection to the exact `execute_workers`
+route, requires an idempotent interruption replay to retain a dispatchable
+outbox row, and explicitly records that operator shutdown is a system-only
+lifecycle fact rather than model-facing prompt content. The complete Web suite
+is not claimed by this detached handoff. Merge, stopped-runtime synchronization
+and a real controlled restart remain separate operator actions.

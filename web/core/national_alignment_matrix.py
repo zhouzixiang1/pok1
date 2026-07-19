@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 15
+MATRIX_SCHEMA_VERSION = 16
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -1770,6 +1770,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/agent_master.py", "_validated_master_proposal"),
             _ref("web/core/agent_master.py", "_canonicalize_selected_proposal_metadata"),
             _ref("web/core/agent_master.py", "_master_final_emission_guard"),
+            _ref("web/core/llm_query.py", "_role_timeout_policy"),
             _ref("web/core/plan_compiler.py", "compile_master_plan"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
@@ -1779,6 +1780,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/agent_master.py", "_system_bound_proposal_measurement"),
             _ref("web/core/agent_master.py", "_proposal_measurement_contract_valid"),
             _ref("web/core/agent_master.py", "_validate_final_proposal_binding"),
+            _ref("web/core/llm_query.py", "_role_timeout_policy"),
             _ref("web/core/tool_planning.py", "run_master"),
             _ref("web/core/strict_authority_workflow.py", "validate_master_final_projection"),
         ),
@@ -1819,6 +1821,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_v51_10017_char_strict_master_prompt_stays_inline_and_replays",
             "web/tests/test_master_proposal_ensemble.py::"
             "test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges",
+            "web/tests/test_llm_role_observability.py::"
+            "test_final_master_has_independent_bounded_silence_policy",
         ),
         negative_tests=(
             "web/tests/test_master_proposal_ensemble.py::"
@@ -1834,7 +1838,93 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "Any ambiguous leaf, foreign or unknown target, malformed fresh measurement, unallowed "
             "proposal ID, metadata drift after rebinding, unexpected compiler compaction/task brief, "
             "missing guard provenance, or hard-budget overflow blocks Worker dispatch and may only "
-            "canonically abandon at the permitted pre-Worker stage."
+            "canonically abandon at the permitted pre-Worker stage. The zero-tool final Master is "
+            "bounded at 360 seconds for first/idle/stall and 900 seconds total without widening "
+            "proposal-Scout or ordinary-Master budgets."
+        ),
+    ),
+    MatrixRow(
+        rule_id="worker_operator_shutdown_attempt_neutral",
+        coverage=("worker_operator_shutdown_attempt_neutral",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("AGENTS.md", "Dual-checkout runtime"),
+            _ref("web/core/shutdown_manager.py", "ShutdownManager"),
+        ),
+        production_owners=(
+            _ref("web/core/llm_query.py", "is_operator_shutdown_requested"),
+            _ref("web/core/tool_planning.py", "_run_durable_worker_effect"),
+            _ref(
+                "web/core/worker_workflow.py",
+                "operator_shutdown_interrupted",
+            ),
+            _ref("web/core/workflow_kernel.py", "interrupt_effect"),
+            _ref(
+                "web/core/orchestrator.py",
+                "_is_worker_operator_shutdown_interrupted",
+            ),
+        ),
+        dynamic_gates=(
+            _ref("web/core/tool_planning.py", "_run_durable_worker_effect"),
+            _ref(
+                "web/core/worker_workflow.py",
+                "operator_shutdown_interrupted",
+            ),
+            _ref("web/core/workflow_kernel.py", "interrupt_effect"),
+            _ref(
+                "web/core/orchestrator.py",
+                "_is_worker_operator_shutdown_interrupted",
+            ),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "No model-facing shutdown instruction exists: this is a system-only lifecycle fact. "
+            "The five prompt bindings are listed only to prove that their shared typed "
+            "current-generation quality overlay cannot own process lifecycle; no role may "
+            "request, forge, waive, or reinterpret an operator shutdown, Worker attempt, "
+            "lease owner, or lease epoch."
+        ),
+        prompt_required_terms=("typed", "current-generation", "quality"),
+        producer_consumer=(
+            "owner-fenced ShutdownManager edge plus contemporaneous Worker cancellation → "
+            "ephemeral workspace rollback/discard → exact EffectInterrupted receipt → pure "
+            "Worker replay → same frozen-envelope claim with the same attempt and a higher "
+            "lease epoch → ordinary output/failure reducer"
+        ),
+        positive_tests=(
+            "web/tests/test_workflow_kernel.py::"
+            "test_interrupted_effect_is_attempt_neutral_reclaimable_and_owner_fenced",
+            "web/tests/test_worker_workflow.py::"
+            "test_operator_shutdown_interruption_replays_and_reclaims_after_restart",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_controlled_worker_shutdown_is_attempt_neutral_and_restart_claims",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_orchestrator_accepts_exact_worker_shutdown_projection",
+            "web/tests/test_worker_workflow.py::"
+            "test_expired_crash_claim_then_shutdown_replays_without_attempt_rewind",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_one_gen_shutdown_interruption_never_opens_provider_stream",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_continuous_shutdown_interruption_never_opens_provider_stream",
+        ),
+        negative_tests=(
+            "web/tests/test_worker_workflow.py::"
+            "test_worker_replay_rejects_forged_operator_shutdown_receipt",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_unexpected_worker_sigterm_consumes_infrastructure_attempt",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_controlled_shutdown_journal_failure_preserves_running_lease_fail_closed",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_orchestrator_rejects_malformed_worker_shutdown_projection",
+            "web/tests/test_worker_operator_shutdown.py::"
+            "test_advance_blocks_malformed_shutdown_without_provider_fallback",
+        ),
+        fail_closed=(
+            "Unexpected provider SIGTERM, timeout, cancellation without the live shutdown edge, "
+            "or ordinary harness failure remains EffectFailed and consumes its bounded attempt. "
+            "Owner/epoch/attempt drift cannot release a lease; an uncommitted interruption "
+            "preserves the running lease and requires operator reconciliation without abandon."
         ),
     ),
     MatrixRow(

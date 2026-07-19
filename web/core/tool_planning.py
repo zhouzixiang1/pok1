@@ -9307,9 +9307,10 @@ async def _run_durable_worker_effect(
                 ),
             })
 
+    lease_owner = f"pid:{os.getpid()}"
     try:
         lease = worker_workflow.request_or_claim(
-            owner=f"pid:{os.getpid()}",
+            owner=lease_owner,
             lease_seconds=3600,
         )
     except Exception as exc:
@@ -9324,6 +9325,7 @@ async def _run_durable_worker_effect(
 
     workspace = None
     availability_defer_failed = False
+    operator_shutdown_observed = False
     try:
         if _worker_uses_llm:
             try:
@@ -9473,6 +9475,89 @@ async def _run_durable_worker_effect(
                 rollback_error = (
                     f"{type(rollback_exc).__name__}: {str(rollback_exc)[:300]}"
                 )
+            # Only a contemporaneous cancellation plus the owner-fenced
+            # process shutdown edge is attempt-neutral.  An unexpected Claude
+            # SIGTERM is also surfaced as CancelledError, but with no shutdown
+            # edge it continues through the ordinary failure path below.
+            import asyncio as _asyncio
+            from llm_query import is_operator_shutdown_requested
+
+            if (
+                isinstance(exc, _asyncio.CancelledError)
+                and is_operator_shutdown_requested()
+            ):
+                operator_shutdown_observed = True
+                try:
+                    shutdown_deadline = time.monotonic() + 10.0
+                    with worker_workflow.store.command_lock(
+                        worker_workflow.run_id,
+                        blocking=True,
+                        deadline_monotonic=shutdown_deadline,
+                    ):
+                        interrupted_state = (
+                            worker_workflow.operator_shutdown_interrupted(
+                                lease,
+                                owner=lease_owner,
+                                deadline_monotonic=shutdown_deadline,
+                            )
+                        )
+                except Exception as interrupt_exc:
+                    return _json_tool_result({
+                        "error": "WORKER_OPERATOR_SHUTDOWN_PERSIST_FAILED",
+                        "success": False,
+                        "failure_class": "control_plane",
+                        "action": "operator_reconcile",
+                        "recovery_blocked": True,
+                        "checkpoint_preserved": True,
+                        "attempt_neutral_persisted": False,
+                        "next_v": next_v,
+                        "source_v": source_v,
+                        "workflow_run_id": worker_workflow.run_id,
+                        "effect_id": lease.effect_id,
+                        "lease_epoch": lease.lease_epoch,
+                        "claimed_attempt": lease.attempt,
+                        "message": (
+                            f"{type(interrupt_exc).__name__}: "
+                            f"{str(interrupt_exc)[:300]}"
+                        ),
+                        "rollback_error": rollback_error,
+                        "validation_errors": [
+                            "worker_operator_shutdown_receipt_not_durable"
+                        ],
+                        "directive": (
+                            "The process shutdown edge was observed, but its exact "
+                            "attempt-neutral Worker receipt was not durable. Preserve "
+                            "the running lease and reconcile it; never translate this "
+                            "ambiguity into EffectFailed or abandon the generation."
+                        ),
+                    })
+                return _json_tool_result({
+                    "error": "WORKER_OPERATOR_SHUTDOWN_INTERRUPTED",
+                    "success": False,
+                    "failure_class": "operator_shutdown",
+                    "action": "retry_same_tool",
+                    "pending": True,
+                    "shutdown_requested": True,
+                    "checkpoint_preserved": True,
+                    "attempt_consumed": False,
+                    "attempt_neutral_persisted": True,
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "workflow_run_id": worker_workflow.run_id,
+                    "effect_id": lease.effect_id,
+                    "lease_epoch": lease.lease_epoch,
+                    "claimed_attempt": lease.attempt,
+                    "restored_attempt": int(
+                        interrupted_state.get("attempt") or 0
+                    ),
+                    "max_attempts": lease.max_attempts,
+                    "rollback_error": rollback_error,
+                    "directive": (
+                        "The operator stopped this process. The exact Worker lease "
+                        "was fenced and returned to the same frozen envelope without "
+                        "consuming an attempt; a fresh process may claim it."
+                    ),
+                })
             if isinstance(exc, LLMAvailabilityBlocked):
                 pause_state = exc.pause_state()
                 # Fence and release the Worker lease *before* publishing the
@@ -9967,6 +10052,7 @@ async def _run_durable_worker_effect(
             effect = worker_workflow.store.effect(lease.effect_id)
             if (
                 not availability_defer_failed
+                and not operator_shutdown_observed
                 and effect.get("status") == "running"
                 and int(effect.get("lease_epoch") or 0) == int(lease.lease_epoch)
             ):

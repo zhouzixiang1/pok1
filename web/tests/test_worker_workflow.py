@@ -15,6 +15,7 @@ from worker_workflow import (
     next_worker_command,
     reduce_worker_event,
     replay_worker,
+    replay_worker_events,
     validate_worker_envelope,
 )
 from workflow_kernel import WorkflowEvent, WorkflowStore, content_digest, reduce_events
@@ -259,6 +260,171 @@ def test_availability_deferral_is_replayable_and_attempt_neutral(tmp_path):
     second = workflow.request_or_claim(owner="worker-b", lease_seconds=60)
     assert second.attempt == 1
     assert second.lease_epoch == first.lease_epoch + 1
+
+
+def test_operator_shutdown_interruption_replays_and_reclaims_after_restart(
+    tmp_path,
+):
+    workflow = _workflow(tmp_path)
+    candidate = tmp_path / "candidate-shutdown"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("value = 1\n")
+    snapshot = workflow.artifacts.capture(candidate)
+    workflow.prepare(_envelope(snapshot), max_attempts=3)
+    first = workflow.request_or_claim(owner="pid:101", lease_seconds=3600)
+
+    interrupted = workflow.operator_shutdown_interrupted(
+        first,
+        owner="pid:101",
+    )
+
+    assert interrupted["status"] == "shutdown_interrupted"
+    assert interrupted["attempt"] == 0
+    assert interrupted["failure_class"] == ""
+    assert interrupted["interruption"] == {
+        "kind": "operator_shutdown",
+        "reason": "operator_shutdown",
+        "lease_epoch": first.lease_epoch,
+        "lease_owner": "pid:101",
+        "metadata": {
+            "workflow_run_id": workflow.run_id,
+            "shutdown_requested": True,
+        },
+    }
+    assert next_worker_command(interrupted) == {
+        "command": "claim_worker",
+        "effect_id": interrupted["effect_id"],
+        "attempt": 1,
+    }
+    assert "EffectFailed" not in [
+        event.event_type for event in workflow.store.events(workflow.run_id)
+    ]
+
+    restarted = WorkerWorkflow(
+        store=WorkflowStore(workflow.store.path),
+        artifacts=WorkerArtifactStore(workflow.artifacts.root),
+        run_id=workflow.run_id,
+    )
+    replayed = restarted.state()
+    assert replayed["status"] == interrupted["status"]
+    assert replayed["attempt"] == interrupted["attempt"]
+    assert replayed["effect_id"] == interrupted["effect_id"]
+    assert replayed["interruption"] == interrupted["interruption"]
+    second = restarted.request_or_claim(
+        owner="pid:202",
+        lease_seconds=3600,
+    )
+    assert second.attempt == first.attempt
+    assert second.lease_epoch == first.lease_epoch + 1
+
+
+def test_expired_crash_claim_then_shutdown_replays_without_attempt_rewind(
+    tmp_path,
+):
+    workflow = _workflow(tmp_path)
+    candidate = tmp_path / "candidate-crash-shutdown"
+    candidate.mkdir()
+    (candidate / "policy.py").write_text("value = 1\n")
+    snapshot = workflow.artifacts.capture(candidate)
+    workflow.prepare(_envelope(snapshot), max_attempts=3)
+    crashed = workflow.request_or_claim(owner="pid:crashed", lease_seconds=1)
+    replacement = workflow.store.claim_effect(
+        crashed.effect_id,
+        owner="pid:replacement",
+        lease_seconds=3600,
+        now=crashed.lease_until + 1,
+    )
+    assert replacement.attempt == 2
+    assert replacement.lease_epoch == 2
+
+    interrupted = workflow.operator_shutdown_interrupted(
+        replacement,
+        owner="pid:replacement",
+    )
+    replayed = workflow.state()
+
+    assert interrupted["attempt"] == 1
+    assert replayed["status"] == "shutdown_interrupted"
+    assert replayed["attempt"] == 1
+    assert replayed["interruption"]["lease_epoch"] == 2
+    assert not any(
+        event.event_type == "EffectFailed"
+        for event in workflow.store.events(workflow.run_id)
+    )
+
+    reopened = WorkerWorkflow(
+        store=WorkflowStore(workflow.store.path),
+        artifacts=WorkerArtifactStore(workflow.artifacts.root),
+        run_id=workflow.run_id,
+    )
+    third = reopened.request_or_claim(
+        owner="pid:restart",
+        lease_seconds=3600,
+    )
+    assert third.attempt == replacement.attempt
+    assert third.lease_epoch == replacement.lease_epoch + 1
+
+
+def test_worker_replay_rejects_forged_operator_shutdown_receipt():
+    effect_id = "worker:149#0:deadbeef"
+    event = WorkflowEvent(
+        run_id="149#0",
+        seq=1,
+        event_type="EffectInterrupted",
+        schema_version=1,
+        payload={
+            "effect_id": effect_id,
+            "claimed_attempt": 1,
+            "restored_attempt": 0,
+            "lease_epoch": 1,
+            "lease_owner": "pid:101",
+            "interruption_kind": "operator_shutdown",
+            "reason": "operator_shutdown",
+            "metadata": {
+                "workflow_run_id": "foreign-run",
+                "shutdown_requested": True,
+            },
+        },
+        payload_digest=_sha("forged"),
+        causation_id="forged-shutdown",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="invalid EffectInterrupted operator shutdown receipt",
+    ):
+        replay_worker_events("149#0", [event])
+
+
+def test_worker_replay_rejects_boolean_restored_attempt():
+    effect_id = "worker:149#0:deadbeef"
+    event = WorkflowEvent(
+        run_id="149#0",
+        seq=1,
+        event_type="EffectInterrupted",
+        schema_version=1,
+        payload={
+            "effect_id": effect_id,
+            "claimed_attempt": 2,
+            "restored_attempt": True,
+            "lease_epoch": 1,
+            "lease_owner": "pid:101",
+            "interruption_kind": "operator_shutdown",
+            "reason": "operator_shutdown",
+            "metadata": {
+                "workflow_run_id": "149#0",
+                "shutdown_requested": True,
+            },
+        },
+        payload_digest=_sha("forged-bool"),
+        causation_id="forged-shutdown-bool",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="invalid EffectInterrupted operator shutdown receipt",
+    ):
+        replay_worker_events("149#0", [event])
 
 
 def test_semantic_failure_waits_for_projection_before_new_cycle(tmp_path):

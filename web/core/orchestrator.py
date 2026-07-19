@@ -4218,6 +4218,41 @@ def _is_worker_terminal_abandon_result(data):
     )
 
 
+def _is_worker_operator_shutdown_interrupted(data, checkpoint):
+    """Validate the complete attempt-neutral Worker shutdown projection."""
+
+    if not isinstance(data, dict) or not isinstance(checkpoint, dict):
+        return False
+    if not (
+        data.get("error") == "WORKER_OPERATOR_SHUTDOWN_INTERRUPTED"
+        and data.get("success") is False
+        and data.get("failure_class") == "operator_shutdown"
+        and data.get("action") == "retry_same_tool"
+        and data.get("pending") is True
+        and data.get("shutdown_requested") is True
+        and data.get("checkpoint_preserved") is True
+        and data.get("attempt_consumed") is False
+        and data.get("attempt_neutral_persisted") is True
+        and data.get("workflow_run_id")
+        == checkpoint.get("workflow_run_id")
+    ):
+        return False
+    for field in ("lease_epoch", "claimed_attempt", "restored_attempt", "max_attempts"):
+        value = data.get(field)
+        if isinstance(value, bool) or not isinstance(value, int):
+            return False
+    claimed = int(data["claimed_attempt"])
+    restored = int(data["restored_attempt"])
+    return bool(
+        isinstance(data.get("effect_id"), str)
+        and data.get("effect_id")
+        and int(data["lease_epoch"]) >= 1
+        and claimed >= 1
+        and restored == claimed - 1
+        and int(data["max_attempts"]) >= claimed
+    )
+
+
 def _worker_terminal_abandon_reason(data):
     error = str(data.get("error") or "")
     if error == "WORKER_INFRASTRUCTURE_EXHAUSTED":
@@ -4519,6 +4554,41 @@ async def _try_deterministic_checkpoint_route(
             pass
         await asyncio.sleep(wait_sec)
         return True
+    if (
+        next_tool == "execute_workers"
+        and _is_worker_operator_shutdown_interrupted(data, checkpoint)
+        and shutdown_mgr is not None
+        and shutdown_mgr.is_shutting_down
+    ):
+        try:
+            log_system_event(
+                "pipeline.worker_operator_shutdown_interrupted",
+                "info",
+                (
+                    f"Worker lease for v{next_v} was fenced attempt-neutrally "
+                    "during operator shutdown"
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": stage,
+                    "workflow_run_id": data.get("workflow_run_id"),
+                    "effect_id": data.get("effect_id"),
+                    "lease_epoch": data.get("lease_epoch"),
+                    "claimed_attempt": data.get("claimed_attempt"),
+                    "restored_attempt": data.get("restored_attempt"),
+                    "checkpoint_preserved": True,
+                },
+            )
+        except Exception:
+            pass
+        if ui:
+            ui.log_history(
+                "[Recovery] Worker stopped at the operator shutdown edge; "
+                "the same frozen activity will be reclaimed after restart.",
+                "info",
+            )
+        return False
     if error or worker_terminal_abandon:
         if next_tool == "execute_workers" and (
             _is_worker_circuit_breaker_result(data)
@@ -4779,6 +4849,57 @@ async def _advance_deterministic_recovery(
         log_level=log_level,
         label=label,
     )
+    result = outcome.get("result") if isinstance(outcome, dict) else None
+    shutdown_edge = bool(
+        shutdown_mgr is not None and shutdown_mgr.is_shutting_down
+    )
+    if (
+        shutdown_edge
+        and isinstance(result, dict)
+        and result.get("error") == "WORKER_OPERATOR_SHUTDOWN_INTERRUPTED"
+    ):
+        outcome_route = outcome.get("route") if isinstance(outcome, dict) else None
+        route_is_worker = bool(
+            isinstance(outcome_route, dict)
+            and outcome_route.get("next_tool") == "execute_workers"
+        )
+        if (
+            route_is_worker
+            and _is_worker_operator_shutdown_interrupted(
+                result,
+                (recovery or {}).get("checkpoint") or {},
+            )
+        ):
+            # This is a routed process-lifecycle boundary, not an invitation
+            # to fall through to a new Orchestrator provider stream. Keep the
+            # exact checkpoint recovery for the next process; both continuous
+            # and one-gen drivers observe routed=True, loop once, and stop on
+            # their shutdown edge before any provider dispatch.
+            return {
+                "routed": True,
+                "recovery": next_recovery or recovery,
+                "outcome": outcome,
+                "terminal_action": "operator_shutdown_interrupted",
+                "terminal_proof": None,
+            }
+        return {
+            "routed": True,
+            "recovery": {
+                "action": "blocked",
+                "reason": "worker_operator_shutdown_projection_invalid",
+                "checkpoint": (recovery or {}).get("checkpoint"),
+                "diagnostics": {
+                    "active": True,
+                    "recoverable": False,
+                    "issues": [
+                        "worker_operator_shutdown_projection_invalid"
+                    ],
+                },
+            },
+            "outcome": outcome,
+            "terminal_action": "operator_shutdown_projection_invalid",
+            "terminal_proof": None,
+        }
     if (
         not routed
         and next_recovery is not None

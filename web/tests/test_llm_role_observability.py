@@ -1268,9 +1268,9 @@ def test_final_master_has_independent_bounded_silence_policy(monkeypatch):
 
     assert final_policy == {
         "policy_key": "MASTER_FINAL",
-        "first_activity_timeout": 240.0,
-        "idle_timeout": 240.0,
-        "stall_timeout": 240.0,
+        "first_activity_timeout": 360.0,
+        "idle_timeout": 360.0,
+        "stall_timeout": 360.0,
         "total_timeout": 900.0,
     }
     assert proposal_policy == {
@@ -1278,6 +1278,13 @@ def test_final_master_has_independent_bounded_silence_policy(monkeypatch):
         "first_activity_timeout": 120.0,
         "idle_timeout": 360.0,
         "stall_timeout": 360.0,
+        "total_timeout": 900.0,
+    }
+    assert llm_query._role_timeout_policy("MASTER planning") == {
+        "policy_key": "MASTER",
+        "first_activity_timeout": 120.0,
+        "idle_timeout": 240.0,
+        "stall_timeout": 132.0,
         "total_timeout": 900.0,
     }
 

@@ -229,6 +229,7 @@ def initial_worker_state(run_id: str) -> dict[str, Any]:
         "max_attempts": 0,
         "failure_class": "",
         "availability": None,
+        "interruption": None,
         "output_artifact_hash": "",
         "output_snapshot_hash": "",
         "projected_stage": "",
@@ -259,6 +260,7 @@ def reduce_worker_event(
             "max_attempts": int(payload.get("max_attempts") or 3),
             "failure_class": "",
             "availability": None,
+            "interruption": None,
         })
     elif event.event_type == "WorkerCycleOpened":
         result.update({
@@ -275,6 +277,7 @@ def reduce_worker_event(
             "projection": None,
             "failure_projection": None,
             "abandon_reason": "",
+            "interruption": None,
         })
     elif event.event_type == "WorkerSuperseded":
         result.update({
@@ -299,6 +302,7 @@ def reduce_worker_event(
             "status": "retry_wait" if payload.get("retryable") else "exhausted",
             "attempt": int(payload.get("attempt") or result["attempt"]),
             "failure_class": "infrastructure",
+            "interruption": None,
         })
     elif event.event_type == "EffectDeferred" and payload.get("effect_id") == result["effect_id"]:
         result.update({
@@ -308,6 +312,21 @@ def reduce_worker_event(
             "availability": (payload.get("metadata") or {}).get(
                 "availability"
             ) or {},
+            "interruption": None,
+        })
+    elif event.event_type == "EffectInterrupted" and payload.get("effect_id") == result["effect_id"]:
+        result.update({
+            "status": "shutdown_interrupted",
+            "attempt": int(payload.get("restored_attempt") or 0),
+            "failure_class": "",
+            "availability": None,
+            "interruption": {
+                "kind": str(payload.get("interruption_kind") or ""),
+                "reason": str(payload.get("reason") or ""),
+                "lease_epoch": int(payload.get("lease_epoch") or 0),
+                "lease_owner": str(payload.get("lease_owner") or ""),
+                "metadata": payload.get("metadata") or {},
+            },
         })
     elif event.event_type == "EffectResumed" and payload.get("effect_id") == result["effect_id"]:
         result.update({
@@ -315,6 +334,7 @@ def reduce_worker_event(
             "attempt": int(payload.get("attempt") or 0),
             "failure_class": "",
             "availability": None,
+            "interruption": None,
         })
     elif event.event_type == "WorkerSemanticFailed":
         result.update({
@@ -324,6 +344,7 @@ def reduce_worker_event(
             "effect_id": str(payload["next_effect_id"]),
             "failure_class": "semantic",
             "failure_projection": payload.get("projection") or {},
+            "interruption": None,
         })
     elif event.event_type == "WorkerFailureProjected":
         result.update({
@@ -339,6 +360,7 @@ def reduce_worker_event(
             "output_snapshot_hash": str(payload["snapshot_hash"]),
             "failure_class": "",
             "projection": payload.get("projection") or {},
+            "interruption": None,
         })
     elif event.event_type == "WorkerProjected":
         result.update({
@@ -364,7 +386,7 @@ def next_worker_command(state: dict[str, Any]) -> dict[str, Any]:
             "effect_id": state.get("effect_id"),
             "attempt": int(state.get("attempt") or 0) + 1,
         }
-    if status in {"requested", "retry_wait"}:
+    if status in {"requested", "retry_wait", "shutdown_interrupted"}:
         return {
             "command": "claim_worker",
             "effect_id": state.get("effect_id"),
@@ -429,6 +451,7 @@ def replay_worker_events(
         "EffectRequested",
         "EffectFailed",
         "EffectDeferred",
+        "EffectInterrupted",
         "EffectResumed",
         "EffectCompleted",
         "WorkerSemanticFailed",
@@ -437,6 +460,7 @@ def replay_worker_events(
         "WorkerProjected",
         "WorkerAbandoned",
     }
+    state = initial_worker_state(run_id)
     for event in events:
         if event.schema_version != 1 or event.event_type not in allowed:
             raise RuntimeError(
@@ -461,11 +485,56 @@ def replay_worker_events(
                 raise RuntimeError(
                     f"unsupported {event.event_type} projection schema"
                 )
-    return reduce_events(
-        initial_worker_state(run_id),
-        events,
-        reduce_worker_event,
-    )
+        if event.event_type == "EffectInterrupted":
+            payload = event.payload
+            expected_fields = {
+                "effect_id",
+                "claimed_attempt",
+                "restored_attempt",
+                "lease_epoch",
+                "lease_owner",
+                "interruption_kind",
+                "reason",
+                "metadata",
+            }
+            if (
+                set(payload) != expected_fields
+                or payload.get("interruption_kind") != "operator_shutdown"
+                or payload.get("reason") != "operator_shutdown"
+                or not isinstance(payload.get("effect_id"), str)
+                or not payload.get("effect_id")
+                or isinstance(payload.get("claimed_attempt"), bool)
+                or not isinstance(payload.get("claimed_attempt"), int)
+                or int(payload.get("claimed_attempt") or 0) < 1
+                or isinstance(payload.get("restored_attempt"), bool)
+                or not isinstance(payload.get("restored_attempt"), int)
+                or payload.get("restored_attempt")
+                != payload.get("claimed_attempt") - 1
+                or isinstance(payload.get("lease_epoch"), bool)
+                or not isinstance(payload.get("lease_epoch"), int)
+                or int(payload.get("lease_epoch") or 0) < 1
+                or not isinstance(payload.get("lease_owner"), str)
+                or not payload.get("lease_owner")
+                or not isinstance(payload.get("metadata"), dict)
+                or payload["metadata"].get("workflow_run_id") != run_id
+                or payload["metadata"].get("shutdown_requested") is not True
+                or payload.get("effect_id") != state.get("effect_id")
+                or state.get("status")
+                not in {"requested", "retry_wait", "shutdown_interrupted"}
+                # Claim rows are DB projections, not journal events. A hard
+                # crash followed by an expired-lease claim can therefore put
+                # the DB attempt ahead of the last replayed failure. The
+                # interruption receipt is written in the exact owner/epoch/
+                # attempt CAS transaction, so it may advance that count but
+                # can never rewind or exceed the frozen attempt budget.
+                or int(payload.get("restored_attempt") or 0)
+                < int(state.get("attempt") or 0)
+                or int(payload.get("claimed_attempt") or 0)
+                > int(state.get("max_attempts") or 0)
+            ):
+                raise RuntimeError("invalid EffectInterrupted operator shutdown receipt")
+        state = reduce_worker_event(state, event)
+    return state
 
 
 def replay_worker(store: WorkflowStore, run_id: str) -> dict[str, Any]:
@@ -1168,7 +1237,12 @@ class WorkerWorkflow:
         lease_seconds: float,
     ) -> EffectLease:
         state = self.state()
-        if state.get("status") not in {"prepared", "requested", "retry_wait"}:
+        if state.get("status") not in {
+            "prepared",
+            "requested",
+            "retry_wait",
+            "shutdown_interrupted",
+        }:
             raise RuntimeError(
                 f"cannot claim Worker effect from {state.get('status')}"
             )
@@ -1236,6 +1310,69 @@ class WorkerWorkflow:
             ),
         )
         return self.state()
+
+    def operator_shutdown_interrupted(
+        self,
+        lease: EffectLease,
+        *,
+        owner: str,
+        deadline_monotonic: float | None = None,
+    ) -> dict[str, Any]:
+        """Release one exact Worker lease for a controlled process shutdown."""
+
+        if lease.run_id != self.run_id:
+            raise ValueError("Worker shutdown interruption run identity mismatch")
+        if not isinstance(owner, str) or not owner:
+            raise ValueError("Worker shutdown interruption owner is invalid")
+        effect = self.store.interrupt_effect(
+            lease.effect_id,
+            expected_owner=owner,
+            lease_epoch=lease.lease_epoch,
+            claimed_attempt=lease.attempt,
+            interruption_kind="operator_shutdown",
+            reason="operator_shutdown",
+            metadata={
+                "workflow_run_id": self.run_id,
+                "shutdown_requested": True,
+            },
+            causation_id=(
+                f"worker-operator-shutdown-interrupted:{lease.effect_id}:"
+                f"{lease.lease_epoch}"
+            ),
+            deadline_monotonic=deadline_monotonic,
+        )
+        if (
+            effect.get("status") != "retry"
+            or int(effect.get("attempt") or 0) != lease.attempt - 1
+            or int(effect.get("lease_epoch") or 0) != lease.lease_epoch
+            or effect.get("lease_owner") is not None
+            or effect.get("lease_until") is not None
+        ):
+            raise RuntimeError("Worker shutdown interruption effect projection mismatch")
+        # Do not perform a second SQLite read after COMMIT. A post-commit read
+        # failure must not misreport the already durable transition as a
+        # persistence failure. The next process independently replays and
+        # validates the journal before it can claim this effect.
+        return {
+            "run_id": self.run_id,
+            "status": "shutdown_interrupted",
+            "effect_id": lease.effect_id,
+            "attempt": lease.attempt - 1,
+            "max_attempts": lease.max_attempts,
+            "failure_class": "",
+            "availability": None,
+            "lease_epoch": lease.lease_epoch,
+            "interruption": {
+                "kind": "operator_shutdown",
+                "reason": "operator_shutdown",
+                "lease_epoch": lease.lease_epoch,
+                "lease_owner": owner,
+                "metadata": {
+                    "workflow_run_id": self.run_id,
+                    "shutdown_requested": True,
+                },
+            },
+        }
 
     def resume_availability_deferred(self) -> dict[str, Any]:
         state = self.state()
