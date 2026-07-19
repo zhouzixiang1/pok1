@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+import pytest
+
 from output_schema import (
     MASTER_PLAN_MAX_TASKS,
     MATCH_MEMORY_ALLOWED_UPDATE_EVENTS,
@@ -826,7 +828,7 @@ def test_explicit_lower_compaction_cap_preserves_dynamic_focus_terms(tmp_path):
 
 def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
     proposal = {
-        "schema_version": "master-proposal-v3",
+        "schema_version": "master-proposal-v4",
         "direction": "mechanism",
         "targeted_failure": (
             "A reachable parent decision branch ignores the selected bounded state."
@@ -854,6 +856,7 @@ def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
         ],
+        "change_symbol": "policy.py:_choose_intent",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
@@ -880,6 +883,94 @@ def _proposal_contract_fixture(agent_master) -> tuple[dict, dict, str]:
     contract = agent_master._selected_proposal_contract(proposal)
     block = agent_master._selected_proposal_worker_block(proposal)
     return proposal, contract, block
+
+
+def test_change_symbol_cannot_be_preserved_or_prohibited_by_master_plan(tmp_path):
+    import plan_compiler
+
+    change_symbol = "policy.py:_polarized_raise_fraction"
+    chain = [
+        "policy.py:_decision_from_equity",
+        "policy.py:_candidate_raise_fractions",
+        change_symbol,
+    ]
+    plan = {
+        "do_not_touch": [
+            "policy.py:_decision_from_equity",
+            "policy.py:_candidate_raise_fractions",
+        ],
+        "tasks": [{
+            "worker_id": 1,
+            "target_files": ["policy.py"],
+            "files_allowed": ["policy.py"],
+            "read_only_dependencies": ["national_bot.py", "precompute.py"],
+            "prohibited_files": ["national_bot.py", "precompute.py"],
+            "worker_prompt": (
+                "Modify policy.py:_polarized_raise_fraction for the selected "
+                "bounded mechanism. Preserve the other reachable callers."
+            ),
+        }],
+    }
+    assert plan_compiler.selected_proposal_change_contract_errors(
+        plan,
+        change_symbol=change_symbol,
+        reachable_chain=chain,
+        target_files=["policy.py"],
+    ) == []
+
+    do_not_touch = deepcopy(plan)
+    do_not_touch["do_not_touch"].append(change_symbol)
+    assert any(
+        item.startswith("selected_proposal_change_symbol_do_not_touch_conflict:")
+        for item in plan_compiler.selected_proposal_change_contract_errors(
+            do_not_touch,
+            change_symbol=change_symbol,
+            reachable_chain=chain,
+            target_files=["policy.py"],
+        )
+    )
+
+    preserved = deepcopy(plan)
+    preserved["tasks"][0]["worker_prompt"] = (
+        "Preserve policy.py:_polarized_raise_fraction byte-identical."
+    )
+    assert (
+        "selected_proposal_change_symbol_worker_preserve_conflict:worker=1"
+        in plan_compiler.selected_proposal_change_contract_errors(
+            preserved,
+            change_symbol=change_symbol,
+            reachable_chain=chain,
+            target_files=["policy.py"],
+        )
+    )
+
+    prohibited = deepcopy(plan)
+    prohibited["tasks"][0]["prohibited_files"].append(change_symbol)
+    assert any(
+        item.startswith(
+            "selected_proposal_change_symbol_prohibited_files_conflict:worker=1:"
+        )
+        for item in plan_compiler.selected_proposal_change_contract_errors(
+            prohibited,
+            change_symbol=change_symbol,
+            reachable_chain=chain,
+            target_files=["policy.py"],
+        )
+    )
+
+    compile_blocked = deepcopy(do_not_touch)
+    compile_blocked["proposal_binding"] = {
+        "change_symbol": change_symbol,
+        "reachable_chain": chain,
+        "target_files": ["policy.py"],
+    }
+    with pytest.raises(ValueError, match="change_symbol_do_not_touch_conflict"):
+        plan_compiler.compile_master_plan(
+            compile_blocked,
+            next_v=148,
+            target_dir=tmp_path / "national_v148",
+            project_root=tmp_path,
+        )
 
 
 def test_system_owned_contract_reserve_bounds_all_closed_terms():
@@ -915,9 +1006,12 @@ def test_compiler_externalizes_long_prompt_without_losing_selected_contract(tmp_
     proposal, contract, selected_block = _proposal_contract_fixture(agent_master)
     falsifier = proposal["falsifier"]["test_name"]
     plan = {
+        "do_not_touch": [],
         "proposal_binding": {
             "contract_digest": contract["contract_digest"],
             "target_files": ["policy.py"],
+            "change_symbol": proposal["change_symbol"],
+            "reachable_chain": list(proposal["reachable_chain"]),
             "falsifier": deepcopy(proposal["falsifier"]),
         },
         "tasks": [{
@@ -926,7 +1020,8 @@ def test_compiler_externalizes_long_prompt_without_losing_selected_contract(tmp_
             "target_files": ["policy.py"],
             "files_allowed": ["policy.py"],
             "worker_prompt": (
-                ("bounded implementation context before contract. " * 140)
+                "Modify policy.py:_choose_intent. "
+                + ("bounded implementation context before contract. " * 140)
                 + "\n\n"
                 + selected_block
                 + "\n\n"
@@ -1048,6 +1143,7 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_ta
         explicit_compaction_cap + 1 - len(selected_block),
     )
     plan = {
+        "do_not_touch": [],
         "selected_proposal_id": selected["proposal_id"],
         "proposal_binding": binding,
         "proposal_ensemble": packet,
@@ -1058,7 +1154,8 @@ def test_system_bootstrap_reuses_canonical_selected_proposal_contract_without_ta
             "files_allowed": ["policy.py"],
             "worker_prompt": (
                 padding
-                + "\n\nImplement only the typed, bounded selected mechanism.\n\n"
+                + "\n\nModify policy.py:_choose_intent for only the typed, "
+                "bounded selected mechanism.\n\n"
                 + selected_block
             ),
         }],

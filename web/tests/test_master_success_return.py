@@ -20,7 +20,7 @@ BOUND_TARGETED_FAILURE = (
     "The selected evidence-bound mechanism fixes one reachable parent decision failure."
 )
 BOUND_PROPOSAL = {
-    "schema_version": "master-proposal-v3",
+    "schema_version": "master-proposal-v4",
     "targeted_failure": BOUND_TARGETED_FAILURE,
     "structural_change": "Replace one reachable parent branch with a deadline-bounded mechanism.",
     "counterfactual": "Hold cards, seed, state, and legality fixed while toggling only the mechanism.",
@@ -37,6 +37,7 @@ BOUND_PROPOSAL = {
         "policy.py:get_baseline_decision",
         "policy.py:_choose_intent",
     ],
+    "change_symbol": "policy.py:_choose_intent",
     "reachable_chain": [
         "policy.py:get_baseline_decision",
         "policy.py:_choose_intent",
@@ -122,7 +123,8 @@ def _valid_proposal_packet(
         proposal["structural_change"] = structural_change
         if index > 1:
             proposal["expected_diff"] = (
-                f"Independent alternative {index} reaches the existing decision consumer."
+                f"Independent alternative {index} changes "
+                f"{proposal['change_symbol']} as the existing decision consumer."
             )
             proposal["falsifier"]["test_name"] = (
                 "incremental_opponent_model"
@@ -246,7 +248,7 @@ def _valid_proposal_packet(
             for proposal in proposals
         }
     return {
-        "schema_version": "master-proposal-packet-v5",
+        "schema_version": "master-proposal-packet-v6",
         "valid": True,
         "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
@@ -269,6 +271,9 @@ def _strict_prompt_plan() -> dict:
     plan = json.loads(prompt[start:end])
     plan["targeted_failure"] = BOUND_TARGETED_FAILURE
     plan["selected_proposal_id"] = PROPOSAL_ID
+    plan["tasks"][0]["worker_prompt"] += (
+        " Modify the fixture-selected policy.py:_choose_intent AST body."
+    )
     return plan
 
 
@@ -1526,8 +1531,8 @@ async def test_master_binds_valid_structured_contract_without_lexical_retry(monk
     structured_plan["selected_proposal_id"] = PROPOSAL_ID
     structured_plan["measurement_plan"] = BOUND_PROPOSAL["measurement"]
     structured_plan["tasks"][0]["worker_prompt"] = (
-        "Implement the selected valid structured runtime mechanism in policy.py "
-        "and run only the declared checks."
+        "Implement the selected valid structured runtime mechanism by changing "
+        "policy.py:_choose_intent and run only the declared checks."
     )
     call_count = {"n": 0}
 

@@ -372,13 +372,15 @@ def test_real_strict_proposal_projection_enforces_frozen_allowed_primary(
             ),
             "mechanism_target": target,
             "expected_diff": (
-                f"The paired typed intent changes only when {leaf} changes."
+                f"policy.py:_choose_intent changes the paired typed intent only "
+                f"when {leaf} changes."
             ),
             "target_files": ["policy.py"],
             "source_symbols": [
                 "policy.py:get_baseline_decision",
                 "policy.py:_choose_intent",
             ],
+            "change_symbol": "policy.py:_choose_intent",
             "reachable_chain": [
                 "policy.py:get_baseline_decision",
                 "policy.py:_choose_intent",
@@ -1443,12 +1445,13 @@ def test_proposal_projection_error_is_durable_and_repairs_once(
         "measurement_plan": "This wrong field name must not satisfy measurement.",
         "why_not_threshold_tuning": "This changes state flow and its consumer, not one threshold.",
         "mechanism_target": "deadline",
-        "expected_diff": "The existing entrypoint still reaches the changed intent consumer before the deadline.",
+        "expected_diff": "Change policy.py:_choose_intent; the existing entrypoint still reaches that intent consumer before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
         ],
+        "change_symbol": "policy.py:_choose_intent",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
@@ -2497,7 +2500,7 @@ def test_pre_contract_33_proposal_parse_contract_cannot_be_replayed(authority):
         accept=False,
     )
 
-    assert module.SLOT_PARSE_CONTRACTS["proposal:mechanism"] == "master-proposal-v3"
+    assert module.SLOT_PARSE_CONTRACTS["proposal:mechanism"] == "master-proposal-v4"
     with pytest.raises(module.StrictAuthorityError, match="parse_contract"):
         module.accept_role_result(
             call,

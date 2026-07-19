@@ -153,7 +153,7 @@ SLOT_STAGES = {
     "critic": "reviewed",
 }
 SLOT_PARSE_CONTRACTS = {
-    **{slot: "master-proposal-v3" for slot in MASTER_SLOTS[:3]},
+    **{slot: "master-proposal-v4" for slot in MASTER_SLOTS[:3]},
     **{slot: "master-proposal-ballot-v1" for slot in MASTER_SLOTS[3:5]},
     "master:final": "master-plan-schema-v1",
     "review": "reviewer-output-schema-v1",

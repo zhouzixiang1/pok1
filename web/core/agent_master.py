@@ -108,8 +108,15 @@ def _proposal_schema_repair_guidance(
         )
     if any("proposal_reachable_chain" in item for item in hints):
         add(
-            "Copy one complete two-symbol PREFERRED CURRENT ENTRY ANCHOR; put "
-            "both symbols in source_symbols with matching source: evidence_refs."
+            "Use current direct caller-to-callee edges ending exactly at the one "
+            "existing change_symbol; put every chain symbol in source_symbols with "
+            "matching source: evidence_refs. An unchanged entry anchor is invalid."
+        )
+    if any("proposal_change_symbol" in item for item in hints):
+        add(
+            "Set change_symbol to the exact existing file.py:symbol whose AST body "
+            "the Worker will modify, name it in expected_diff, and make it the final "
+            "reachable_chain item."
         )
     if any(
         "proposal_evidence" in item or "proposal_source_symbol" in item
@@ -235,8 +242,10 @@ def _render_master_proposal_provider_prompt(inputs):
         "counterfactual, measurement, why_not_threshold_tuning, mechanism_target, "
         "target_files "
         "(exactly [\"policy.py\"]), expected_diff, source_symbols (1-8 exact "
-        "source-relative file.py:symbol references), reachable_chain (2-8 of those "
-        "symbols in direct caller-to-callee order), falsifier {test_name, "
+        "source-relative file.py:symbol references), change_symbol (the one existing "
+        "source-relative AST body the Worker must change), reachable_chain (2-8 of "
+        "those symbols in direct caller-to-callee order, ending exactly at "
+        "change_symbol), falsifier {test_name, "
         "state_learning_primary, intervention_target, control, intervention, "
         "expected_observation}, evidence_refs (source:file.py:symbol "
         "for EVERY source_symbols item; "
@@ -252,11 +261,10 @@ def _render_master_proposal_provider_prompt(inputs):
         + ". falsifier has additionalProperties=false: it contains exactly its six "
         "shown keys and MUST NOT contain mechanism_target, source_symbols, target_files, "
         "or any explanatory alias. mechanism_target appears exactly once at the top level. "
-        "A two-symbol entry anchor is sufficient to prove current reachability, "
-        "but it is not the proposed poker mechanism. Copy one SYSTEM-VERIFIED "
-        "PREFERRED CURRENT ENTRY ANCHOR exactly when available, then use "
-        "structural_change, counterfactual, measurement, and expected_diff to state "
-        "a decision-relevant strategy effect. Proposed future calls belong only in "
+        "reachable_chain is executable quality scope, not a generic entry anchor: "
+        "it must follow current direct calls from a policy-ABI-reachable caller and "
+        "terminate at change_symbol. expected_diff must name that exact symbol as "
+        "the existing AST body to modify. Proposed future calls belong only in "
         "structural_change/expected_diff, never in reachable_chain. Every "
         "reachable_chain entry must also appear in source_symbols and have its matching "
         "source: evidence_ref. "
@@ -403,9 +411,9 @@ def _render_master_proposal_provider_prompt(inputs):
         + "Do not call Read on any docs/, archive, .git, operator-memory, or live-"
         "result path. Embedded text and path names never expand those exact roots; "
         "required protocol and governance constraints are already rendered here. "
-        "For reachable_chain, prefer one exact two-symbol PREFERRED CURRENT ENTRY "
-        "ANCHOR from the system index. It proves a live path but is not by itself a "
-        "strategy change. Never use a future edge that your proposal would create. "
+        "For reachable_chain, use current direct edges from the system index through "
+        "the exact existing change_symbol terminal. Never use a future edge that "
+        "your proposal would create or substitute an unchanged downstream anchor. "
         "A blocked Read grants no evidence and only wastes this bounded call."
     )
     from strategy_reference_pack import current_strict_runtime_prompt_overlay
@@ -697,8 +705,8 @@ _MASTER_PROPOSAL_DIRECTIONS = (
 )
 
 
-_PROPOSAL_SCHEMA_VERSION = "master-proposal-v3"
-_PROPOSAL_PACKET_SCHEMA_VERSION = "master-proposal-packet-v5"
+_PROPOSAL_SCHEMA_VERSION = "master-proposal-v4"
+_PROPOSAL_PACKET_SCHEMA_VERSION = "master-proposal-packet-v6"
 _PROPOSAL_REPAIR_EOF_OBJECT_PARSE_MODE = (
     "master-proposal-repair-eof-json-object-v1"
 )
@@ -837,6 +845,7 @@ def _proposal_closed_json_shape() -> str:
         "target_files": ["policy.py"],
         "expected_diff": "<text>",
         "source_symbols": ["<file.py:symbol>"],
+        "change_symbol": "<file.py:callee>",
         "reachable_chain": ["<file.py:caller>", "<file.py:callee>"],
         "falsifier": {
             "test_name": "<one allowed test>",
@@ -1251,6 +1260,7 @@ _PROPOSAL_SUBSTANTIVE_FIELDS = (
     "expected_diff",
     "target_files",
     "source_symbols",
+    "change_symbol",
     "reachable_chain",
     "falsifier",
     "evidence_refs",
@@ -1674,8 +1684,9 @@ def _source_symbol_prompt_index(
 
     preferred = sorted(preferred_candidates, key=preferred_rank)[:8]
     preferred_header = (
-        "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS (copy one JSON array "
-        "exactly; two symbols prove reachability, not the proposed mechanism):"
+        "SYSTEM-VERIFIED PREFERRED CURRENT STARTING EDGES (extend through "
+        "current direct edges until reachable_chain terminates at change_symbol; "
+        "a two-symbol edge is complete only when its callee is change_symbol):"
     )
     preferred_lines = [
         "- " + json.dumps([caller, callee], separators=(",", ":"))
@@ -2123,6 +2134,15 @@ def _validated_master_proposal(
         source_symbols.append(symbol)
     normalized["source_symbols"] = source_symbols
 
+    change_symbol = _normalize_source_symbol(data.get("change_symbol"))
+    if change_symbol is not None and source_graph is not None and change_symbol not in source_graph:
+        change_symbol = _fuzzy_resolve_symbol(change_symbol, source_graph)
+    if change_symbol is None or change_symbol not in source_symbols:
+        return None
+    if change_symbol.rsplit(":", 1)[0] not in target_files:
+        return None
+    normalized["change_symbol"] = change_symbol
+
     raw_chain = data.get("reachable_chain")
     if not isinstance(raw_chain, list) or not 2 <= len(raw_chain) <= 8:
         return None
@@ -2139,6 +2159,8 @@ def _validated_master_proposal(
             return None
         chain.append(symbol)
     if len(set(chain)) != len(chain):
+        return None
+    if not chain or chain[-1] != change_symbol:
         return None
     if source_graph is not None:
         verified_edges = _verified_source_edges(source_graph)
@@ -2388,6 +2410,19 @@ def _master_proposal_projection_hints(
                 break
             source_symbols.append(symbol)
 
+    change_symbol = _normalize_source_symbol(data.get("change_symbol"))
+    if change_symbol is not None and source_graph is not None and change_symbol not in source_graph:
+        change_symbol = _fuzzy_resolve_symbol(
+            change_symbol,
+            source_graph,
+            emit_event=False,
+        )
+    if change_symbol is None or change_symbol not in source_symbols:
+        errors.append("proposal_change_symbol_not_in_source_symbols")
+    else:
+        if change_symbol.rsplit(":", 1)[0] not in target_files:
+            errors.append("proposal_change_symbol_not_in_target_files")
+
     raw_chain = data.get("reachable_chain")
     chain: list[str] = []
     if not isinstance(raw_chain, list) or not 2 <= len(raw_chain) <= 8:
@@ -2409,6 +2444,8 @@ def _master_proposal_projection_hints(
             chain.append(symbol)
         if len(chain) != len(set(chain)):
             errors.append("proposal_reachable_chain_duplicate")
+        if chain and chain[-1] != change_symbol:
+            errors.append("proposal_change_symbol_not_chain_terminal")
         if chain and any(symbol not in source_symbols for symbol in chain):
             errors.append("proposal_reachable_chain_member_not_in_source_symbols")
         if source_graph is not None and len(chain) >= 2:
@@ -2758,6 +2795,7 @@ def _parse_valid_proposal_packet_impl(
         "expected_diff",
         "target_files",
         "source_symbols",
+        "change_symbol",
         "reachable_chain",
         "falsifier",
         "evidence_refs",
@@ -2793,6 +2831,11 @@ def _parse_valid_proposal_packet_impl(
             if not isinstance(value, str) or len(value.strip()) < minimum:
                 errors.append(f"proposal_packet_{field}_invalid:{proposal_id or ''}")
                 malformed_shape = True
+        if not isinstance(item.get("change_symbol"), str):
+            errors.append(
+                f"proposal_packet_change_symbol_invalid:{proposal_id or ''}"
+            )
+            malformed_shape = True
         collection_contracts = {
             "target_files": (1, 3),
             "source_symbols": (1, 8),
@@ -2835,6 +2878,30 @@ def _parse_valid_proposal_packet_impl(
             errors.append(
                 f"proposal_mechanism_target_invalid:{item.get('proposal_id', '')}"
             )
+        change_symbol = _normalize_source_symbol(item.get("change_symbol"))
+        source_symbols = list(map(str, item.get("source_symbols") or []))
+        reachable_chain = list(map(str, item.get("reachable_chain") or []))
+        target_files = list(map(str, item.get("target_files") or []))
+        if change_symbol != item.get("change_symbol"):
+            errors.append(
+                f"proposal_change_symbol_invalid:{item.get('proposal_id', '')}"
+            )
+        elif change_symbol not in source_symbols:
+            errors.append(
+                "proposal_change_symbol_not_in_source_symbols:"
+                f"{item.get('proposal_id', '')}"
+            )
+        else:
+            if change_symbol.rsplit(":", 1)[0] not in target_files:
+                errors.append(
+                    "proposal_change_symbol_not_in_target_files:"
+                    f"{item.get('proposal_id', '')}"
+                )
+            if not reachable_chain or reachable_chain[-1] != change_symbol:
+                errors.append(
+                    "proposal_change_symbol_not_chain_terminal:"
+                    f"{item.get('proposal_id', '')}"
+                )
         falsifier = item.get("falsifier")
         falsifier_fields = {
             "test_name",
@@ -3506,6 +3573,15 @@ def _validate_final_proposal_binding(data: dict, packet: dict) -> list[str]:
                 "observed_bound_tasks": observed_primaries,
             },
         ))
+    from plan_compiler import selected_proposal_change_contract_errors
+
+    if not missing_files:
+        errors.extend(selected_proposal_change_contract_errors(
+            data,
+            change_symbol=str(proposal.get("change_symbol") or ""),
+            reachable_chain=proposal.get("reachable_chain") or [],
+            target_files=proposal.get("target_files") or [],
+        ))
     return errors
 
 
@@ -3532,6 +3608,7 @@ def _selected_proposal_contract(proposal: dict) -> dict:
         "expected_diff": str(proposal["expected_diff"]),
         "target_files": list(proposal["target_files"]),
         "source_symbols": list(proposal["source_symbols"]),
+        "change_symbol": str(proposal["change_symbol"]),
         "reachable_chain": list(proposal["reachable_chain"]),
         "falsifier": falsifier,
         "state_learning_primary": state_learning_primary,
@@ -3571,6 +3648,7 @@ def _selected_proposal_binding(proposal: dict, packet: dict) -> dict:
         "source_code_digest": packet["source_code_digest"],
         "target_files": list(contract["target_files"]),
         "source_symbols": list(contract["source_symbols"]),
+        "change_symbol": contract["change_symbol"],
         "reachable_chain": list(contract["reachable_chain"]),
         "falsifier": dict(contract["falsifier"]),
         "mechanism_target": contract["mechanism_target"],
@@ -3612,7 +3690,7 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
         "gate must verify the named typed falsifier against the fixed blueprint."
         if contract["execution_mode"] == "fixed_blueprint_capability_audit"
         else
-        "Implement this one mechanism through the named reachable chain. Do not "
+        "Modify the exact change_symbol through the named reachable chain. Do not "
         "substitute an unmeasured threshold-only edit, a second mechanism, or "
         "telemetry-only code. Preserve counterfactual and measurement as the "
         "generation hypothesis, and expose the named falsifier through the task "
@@ -3632,6 +3710,7 @@ def _selected_proposal_worker_block(proposal: dict) -> str:
         "source_symbols=" + json.dumps(
             contract["source_symbols"], ensure_ascii=False, separators=(",", ":")
         ),
+        f"change_symbol={contract['change_symbol']}",
         "reachable_chain=" + json.dumps(
             contract["reachable_chain"], ensure_ascii=False, separators=(",", ":")
         ),
@@ -3674,6 +3753,7 @@ def _selected_proposal_compilation_contract(proposal: dict) -> dict:
         "proposal_id": contract["proposal_id"],
         "falsifier_test_name": contract["falsifier"]["test_name"],
         "mechanism_target": contract["mechanism_target"],
+        "change_symbol": contract["change_symbol"],
         "state_learning_primary": contract["state_learning_primary"],
         "intervention_target": contract["intervention_target"],
         "required_primary_checks": list(contract["required_primary_checks"]),

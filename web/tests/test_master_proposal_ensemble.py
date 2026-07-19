@@ -89,6 +89,7 @@ def _proposal(
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
         ],
+        "change_symbol": "policy.py:_choose_intent",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
@@ -135,7 +136,8 @@ def _action_profile_proposal(
             "bounded live decision consumer."
         ),
         "expected_diff": (
-            f"{label} changes the paired typed intent only when "
+            f"{label} changes policy.py:_choose_intent so the paired typed intent "
+            "changes only when "
             "opponent.rates.fold_to_raise changes."
         ),
     })
@@ -230,7 +232,7 @@ async def test_proposal_ensemble_validates_evidence_and_blind_criterion_reviews(
     packet = json.loads(packet_text)
 
     assert packet["valid"] is True
-    assert packet["schema_version"] == "master-proposal-packet-v5"
+    assert packet["schema_version"] == "master-proposal-packet-v6"
     assert packet["proposal_count"] == 3
     assert packet["valid_critic_count"] == 2
     assert len(packet["allowed_proposal_ids"]) == 3
@@ -327,7 +329,7 @@ def test_source_symbol_prompt_index_is_deterministic_and_line_bounded(tmp_path):
         '- ["policy.py:get_baseline_decision","policy.py:_choose_intent"]'
         in first
     )
-    assert "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS" in first
+    assert "SYSTEM-VERIFIED PREFERRED CURRENT STARTING EDGES" in first
     assert "policy.py:get_baseline_decision -> policy.py:_choose_intent" in first
     assert all(len(line) <= 130 for line in bounded.splitlines())
     assert len(bounded) <= 130
@@ -345,7 +347,7 @@ def test_preferred_current_chains_exclude_unreachable_policy_helpers():
     }
     prompt = agent_master._source_symbol_prompt_index(graph)
     preferred = prompt.split(
-        "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS", 1
+        "SYSTEM-VERIFIED PREFERRED CURRENT STARTING EDGES", 1
     )[1].split("FULL VALIDATED EDGE INDEX", 1)[0]
 
     assert "policy.py:get_baseline_decision" in preferred
@@ -388,7 +390,7 @@ def test_preferred_anchors_prioritize_decision_mechanism_over_many_utilities():
 
     prompt = agent_master._source_symbol_prompt_index(graph)
     preferred = prompt.split(
-        "SYSTEM-VERIFIED PREFERRED CURRENT ENTRY ANCHORS", 1
+        "SYSTEM-VERIFIED PREFERRED CURRENT STARTING EDGES", 1
     )[1].split("FULL VALIDATED EDGE INDEX", 1)[0]
     anchors = [line for line in preferred.splitlines() if line.startswith("- [")]
 
@@ -443,6 +445,7 @@ def test_unreachable_dead_helper_chain_is_rejected_by_validator_and_hints(tmp_pa
         _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
     )
     payload["source_symbols"] = ["policy.py:_dead", "policy.py:_live"]
+    payload["change_symbol"] = "policy.py:_live"
     payload["reachable_chain"] = ["policy.py:_dead", "policy.py:_live"]
     payload["evidence_refs"] = [
         "source:policy.py:_dead",
@@ -466,6 +469,71 @@ def test_unreachable_dead_helper_chain_is_rejected_by_validator_and_hints(tmp_pa
             national_policy_only=True,
         )
     )
+
+
+def test_change_symbol_must_terminate_the_direct_reachable_chain(tmp_path):
+    """The v148 shape cannot bind an unchanged downstream anchor as quality scope."""
+
+    import agent_master
+
+    graph = {
+        "policy.py:get_baseline_decision": {"_decision_from_equity"},
+        "policy.py:iter_decisions": set(),
+        "policy.py:_decision_from_equity": {
+            "_candidate_raise_fractions",
+            "_raise_intent",
+        },
+        "policy.py:_candidate_raise_fractions": {"_polarized_raise_fraction"},
+        "policy.py:_polarized_raise_fraction": set(),
+        "policy.py:_raise_intent": set(),
+    }
+    payload = json.loads(_raw_proposal("counterfactual"))
+    payload["source_symbols"] = [
+        "policy.py:_decision_from_equity",
+        "policy.py:_candidate_raise_fractions",
+        "policy.py:_polarized_raise_fraction",
+        "policy.py:_raise_intent",
+    ]
+    payload["change_symbol"] = "policy.py:_polarized_raise_fraction"
+    payload["evidence_refs"] = [
+        f"source:{symbol}" for symbol in payload["source_symbols"]
+    ]
+    payload["reachable_chain"] = [
+        "policy.py:_decision_from_equity",
+        "policy.py:_raise_intent",
+    ]
+    raw = json.dumps(payload)
+
+    assert agent_master._validated_master_proposal(
+        raw,
+        "counterfactual",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    ) is None
+    assert "proposal_change_symbol_not_chain_terminal" in (
+        agent_master._master_proposal_projection_hints(
+            raw,
+            source_graph=graph,
+            snapshot_dir=tmp_path,
+            national_policy_only=True,
+        )
+    )
+
+    payload["reachable_chain"] = [
+        "policy.py:_decision_from_equity",
+        "policy.py:_candidate_raise_fractions",
+        "policy.py:_polarized_raise_fraction",
+    ]
+    accepted = agent_master._validated_master_proposal(
+        json.dumps(payload),
+        "counterfactual",
+        source_graph=graph,
+        snapshot_dir=tmp_path,
+        national_policy_only=True,
+    )
+    assert accepted is not None
+    assert accepted["change_symbol"] == "policy.py:_polarized_raise_fraction"
 
 
 def test_normal_proposal_requires_strength_snapshot_reference(tmp_path):
@@ -647,7 +715,7 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
     assert "Use Read only inside the prepared target bots/national_v143/" in scope
     assert "Never use a future edge" in scope
     assert "A blocked Read grants no evidence" in scope
-    assert "Copy one complete two-symbol PREFERRED CURRENT ENTRY ANCHOR" in prompt
+    assert "ending exactly at the one existing change_symbol" in prompt
     assert "Every reachable_chain entry must also appear in source_symbols" in prompt
     assert "precise rejection in its immutable audit record" in prompt
     assert "proposal_reachable_chain_edge_not_current" not in prompt
@@ -1097,6 +1165,7 @@ def test_same_leaf_in_two_files_is_not_accepted_as_reachability(tmp_path):
         "policy.py:get_baseline_decision",
         "policy.py:AlternatePolicy._choose_intent",
     ]
+    payload["change_symbol"] = "policy.py:AlternatePolicy._choose_intent"
     payload["reachable_chain"] = list(payload["source_symbols"])
     payload["evidence_refs"] = [
         "source:policy.py:get_baseline_decision",
@@ -1770,7 +1839,7 @@ async def test_strict_duplicate_rejection_restarts_as_distinctness_repair(
 
     def fake_accept(call, *, role_result, parse_contract):
         assert parse_contract in {
-            "master-proposal-v3",
+            "master-proposal-v4",
             "master-proposal-ballot-v1",
         }
         accepted_by_slot[call["slot"]] = role_result
@@ -2736,7 +2805,7 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
             "the selected mechanism."
         ),
         "mechanism_target": "deadline",
-        "expected_diff": "Wire that mechanism through the existing sanitized action path before the deadline.",
+        "expected_diff": "Change policy.py:_choose_intent to wire that mechanism through the existing sanitized action path before the deadline.",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
@@ -2745,6 +2814,7 @@ def test_final_master_binding_rejects_missing_id_and_unbound_files():
             "policy.py:get_baseline_decision",
             "policy.py:_choose_intent",
         ],
+        "change_symbol": "policy.py:_choose_intent",
         "falsifier": {
             "test_name": "fast_policy_baseline",
             "state_learning_primary": "sample_counted_candidate_batch",
@@ -3710,7 +3780,10 @@ def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_pat
     })
     compilation = agent_master._selected_proposal_compilation_contract(proposal)
     exact_limit = compilation["max_provider_chars"]
-    plan["tasks"][0]["worker_prompt"] = "x" * exact_limit
+    target_prefix = proposal["change_symbol"] + " "
+    plan["tasks"][0]["worker_prompt"] = (
+        target_prefix + "x" * (exact_limit - len(target_prefix))
+    )
 
     assert agent_master._validate_final_proposal_binding(plan, packet) == []
 
@@ -3718,10 +3791,14 @@ def test_selected_proposal_budget_boundary_and_primary_mapping_are_exact(tmp_pat
     # the pre-bind arithmetic counted it.  The validator must use the same
     # lossless canonical text as the binder: whitespace cannot create a false
     # overflow, and no non-whitespace provider text is trimmed to make room.
-    plan["tasks"][0]["worker_prompt"] = "x" * exact_limit + " \t\n"
+    plan["tasks"][0]["worker_prompt"] = (
+        target_prefix + "x" * (exact_limit - len(target_prefix)) + " \t\n"
+    )
     assert agent_master._validate_final_proposal_binding(plan, packet) == []
     bound = agent_master._bind_selected_proposal_workers(plan, proposal)
-    assert bound["tasks"][0]["worker_prompt"].startswith("x" * exact_limit + "\n\n")
+    assert bound["tasks"][0]["worker_prompt"].startswith(
+        target_prefix + "x" * (exact_limit - len(target_prefix)) + "\n\n"
+    )
 
     plan["tasks"][0]["worker_prompt"] = "x" * (exact_limit + 1)
     errors = agent_master._validate_final_proposal_binding(plan, packet)
@@ -3834,6 +3911,9 @@ def test_final_binding_rejects_wrong_primary_and_missing_typed_check(tmp_path):
         "measurement_plan": proposal["measurement"],
     })
     task = plan["tasks"][0]
+    task["worker_prompt"] += (
+        " Modify the selected policy.py:_choose_intent AST body."
+    )
     state_learning = task["runtime_contract"]["state_learning"]
     state_learning.update({
         "work_primitive": None,
@@ -4063,7 +4143,7 @@ def test_final_packet_parser_rejects_claim_changed_after_id(tmp_path):
     ]
     assert all(proposal is not None for proposal in proposals)
     packet = {
-        "schema_version": "master-proposal-packet-v5",
+        "schema_version": "master-proposal-packet-v6",
         "valid": True,
         "context_digest": "c" * 64,
         "source_code_digest": source_digest,

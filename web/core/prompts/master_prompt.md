@@ -73,7 +73,8 @@ Never read `web/core/results/head_to_head.json` for this planning step when
 Every plan must include:
 - `targeted_failure`: the single failure pattern this generation targets, with H2H/replay/evidence
 - `expected_behavior_change`: what concrete decisions should change at the table
-- `do_not_touch`: files/functions/subsystems workers must avoid
+- `do_not_touch`: files/functions/subsystems workers must avoid; it must never
+  include the selected proposal's system-bound `change_symbol`
 - `measurement_plan`: how to verify this is not a regression
 </attribution>
 
@@ -635,6 +636,11 @@ Required schema (emit exactly this structure as raw JSON):
 
 - Do NOT include `branch_from` or any source-override field — the evolution source is chosen automatically by the system.
 - Each task should involve modifying 1-3 specific functions. Split tasks smaller if previous generations had worker failures.
+- Every task that writes the selected proposal target file must explicitly
+  instruct the Worker to modify its `change_symbol`. Do not put that symbol in
+  `do_not_touch`, `read_only_dependencies`, `prohibited_files`, or any Preserve /
+  unchanged / byte-identical clause. Other call-chain symbols may remain
+  unchanged when the proposal does not select them as its change point.
 - Do not mix unrelated preflop/postflop/sizing rewrites in one generation — the next evaluation must attribute win/loss movement to this plan.
 
 FINAL CHECK before you emit: is your response a ```json fence wrapping a single

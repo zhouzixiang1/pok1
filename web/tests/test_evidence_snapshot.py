@@ -165,7 +165,7 @@ def _valid_proposal_packet(
         }
     )
     return {
-        "schema_version": "master-proposal-packet-v5",
+        "schema_version": "master-proposal-packet-v6",
         "valid": True,
         "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
@@ -1002,7 +1002,7 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
     captured = {}
     targeted_failure = "The selected frozen-evidence mechanism fixes one reachable leak."
     proposal = {
-        "schema_version": "master-proposal-v3",
+        "schema_version": "master-proposal-v4",
         "targeted_failure": targeted_failure,
         "structural_change": "Replace one reachable frozen-evidence branch with a deadline-bounded mechanism.",
         "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
@@ -1013,12 +1013,13 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
         ),
         "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
         "mechanism_target": "deadline",
-        "expected_diff": "The strategy decision path consumes the selected structural mechanism before the deadline.",
+        "expected_diff": "Change policy.py:iter_decisions so the strategy decision path consumes the selected structural mechanism before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": [
             "policy.py:get_baseline_decision",
             "policy.py:iter_decisions",
         ],
+        "change_symbol": "policy.py:iter_decisions",
         "reachable_chain": [
             "policy.py:get_baseline_decision",
             "policy.py:iter_decisions",
@@ -1043,8 +1044,8 @@ def test_master_prompt_uses_generation_h2h_snapshot(monkeypatch, tmp_path):
 
     worker_task = _strict_prompt_plan()["tasks"][0]
     worker_task["worker_prompt"] = (
-        "Change policy.py in the target bot while preserving the typed runtime "
-        "contract and executing all declared checks."
+        "Change policy.py:iter_decisions in the target bot. Preserve the typed "
+        "runtime contract and execute all declared checks."
     )
     valid_plan = {
         "analysis": "use stable snapshot",

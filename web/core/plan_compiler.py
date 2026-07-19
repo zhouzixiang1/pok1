@@ -61,6 +61,159 @@ _SELECTED_PROPOSAL_RE = re.compile(
 )
 
 
+def _symbol_literal_present(text: Any, symbol: str) -> bool:
+    """Return whether *text* names one exact source symbol or its leaf.
+
+    Master exclusion lists commonly use either ``policy.py:_helper`` or the
+    shorter ``_helper``.  Identifier boundaries keep similarly prefixed
+    helpers from colliding.
+    """
+
+    value = str(text or "")
+    leaf = symbol.rsplit(":", 1)[-1]
+    return symbol in value or re.search(
+        r"(?<![A-Za-z0-9_])" + re.escape(leaf) + r"(?![A-Za-z0-9_])",
+        value,
+    ) is not None
+
+
+def _symbol_has_preserve_directive(text: str, symbol: str) -> bool:
+    """Recognize an explicit directive that preserves the whole AST symbol.
+
+    Do not treat nearby constraints such as "modify _target while preserving
+    the legal clamp" as a conflict.  Only a preserve/unchanged phrase directly
+    governing the selected symbol is authority.
+    """
+
+    leaf = symbol.rsplit(":", 1)[-1]
+    symbol_pattern = (
+        "(?:"
+        + re.escape(symbol)
+        + r"|(?<![A-Za-z0-9_])"
+        + re.escape(leaf)
+        + r"(?![A-Za-z0-9_]))"
+    )
+    prefix = (
+        r"(?:preserve|leave unchanged|keep unchanged|no change to|"
+        r"without changing|do not (?:edit|change|modify|touch)|"
+        r"must not (?:edit|change|modify|touch))"
+        r"\s*(?:[:=,\[\]`'\"]\s*)*"
+        + symbol_pattern
+    )
+    suffix = (
+        symbol_pattern
+        + r"\s*(?:must\s+)?(?:remain|stay|be|is)\s+"
+        r"(?:strictly\s+)?(?:unchanged|byte[- ]identical)"
+    )
+    return re.search(prefix + "|" + suffix, text, re.IGNORECASE) is not None
+
+
+def selected_proposal_change_contract_errors(
+    plan: dict[str, Any],
+    *,
+    change_symbol: str,
+    reachable_chain: list[str] | tuple[str, ...],
+    target_files: list[str] | tuple[str, ...],
+) -> list[str]:
+    """Cross-check one proposal's writable AST target against its Master plan.
+
+    ``reachable_chain`` is quality evidence, so its terminal symbol must be the
+    exact existing AST body the Worker is instructed to change.  A plan that
+    simultaneously places that symbol in an exclusion/preserve contract is
+    impossible by construction and must fail before a Worker lease is issued.
+    """
+
+    errors: list[str] = []
+    chain = [str(item) for item in reachable_chain]
+    targets = {Path(str(item)).name for item in target_files}
+    if not change_symbol or not chain or chain[-1] != change_symbol:
+        errors.append("selected_proposal_change_symbol_not_chain_terminal")
+        return errors
+    change_file = Path(change_symbol.rsplit(":", 1)[0]).name
+    if change_file not in targets:
+        errors.append("selected_proposal_change_symbol_not_target_file")
+
+    do_not_touch = plan.get("do_not_touch")
+    if do_not_touch is None:
+        do_not_touch = []
+    elif not isinstance(do_not_touch, list):
+        errors.append("selected_proposal_do_not_touch_not_list")
+        do_not_touch = []
+    conflicting_do_not_touch = sorted({
+        str(item)
+        for item in do_not_touch
+        if _symbol_literal_present(item, change_symbol)
+    })
+    if conflicting_do_not_touch:
+        errors.append(
+            "selected_proposal_change_symbol_do_not_touch_conflict:"
+            + ",".join(conflicting_do_not_touch)
+        )
+
+    bound_tasks = 0
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list):
+        return [*errors, "selected_proposal_change_tasks_not_list"]
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        writable = {
+            Path(str(value)).name
+            for field in ("target_files", "files_allowed")
+            for value in (
+                task.get(field) if isinstance(task.get(field), list) else []
+            )
+        }
+        if change_file not in writable:
+            continue
+        bound_tasks += 1
+        worker_id = str(task.get("worker_id") or bound_tasks)
+        for field in ("read_only_dependencies", "prohibited_files"):
+            values = task.get(field)
+            if not isinstance(values, list):
+                continue
+            conflicts = sorted({
+                str(item)
+                for item in values
+                if _symbol_literal_present(item, change_symbol)
+            })
+            if conflicts:
+                errors.append(
+                    "selected_proposal_change_symbol_"
+                    + field
+                    + "_conflict:worker="
+                    + worker_id
+                    + ":"
+                    + ",".join(conflicts)
+                )
+        prompt = task.get("worker_prompt")
+        provider_prompt = (
+            _SELECTED_PROPOSAL_RE.sub("", prompt)
+            if isinstance(prompt, str)
+            else prompt
+        )
+        if not isinstance(provider_prompt, str) or not _symbol_literal_present(
+            provider_prompt,
+            change_symbol,
+        ):
+            errors.append(
+                "selected_proposal_change_symbol_worker_prompt_missing:worker="
+                + worker_id
+            )
+            continue
+        # A preserve clause is intentionally scoped to one line/sentence.  This
+        # catches "Preserve: _target" without treating a later, unrelated
+        # preservation list as authority over the actual edit instruction.
+        if _symbol_has_preserve_directive(provider_prompt, change_symbol):
+            errors.append(
+                "selected_proposal_change_symbol_worker_preserve_conflict:worker="
+                + worker_id
+            )
+    if bound_tasks == 0:
+        errors.append("selected_proposal_change_symbol_has_no_worker")
+    return list(dict.fromkeys(errors))
+
+
 def _system_owned_contract_binding_block(terms: tuple[str, ...]) -> str:
     """Render the bounded deterministic block appended to one Worker prompt."""
 
@@ -376,6 +529,21 @@ def compile_master_plan(
         plan
     )
     compiled, contract_binding = bind_system_owned_worker_contract_terms(compiled)
+    proposal_binding = (
+        compiled.get("proposal_binding") if isinstance(compiled, dict) else None
+    )
+    if isinstance(proposal_binding, dict):
+        change_errors = selected_proposal_change_contract_errors(
+            compiled,
+            change_symbol=str(proposal_binding.get("change_symbol") or ""),
+            reachable_chain=proposal_binding.get("reachable_chain") or [],
+            target_files=proposal_binding.get("target_files") or [],
+        )
+        if change_errors:
+            raise ValueError(
+                "selected proposal change contract invalid: "
+                + "; ".join(change_errors)
+            )
     tasks = compiled.get("tasks", []) if isinstance(compiled, dict) else []
     meta = {
         # ``compiled`` is the durable marker for prompt externalization only.

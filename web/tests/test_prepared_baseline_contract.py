@@ -153,7 +153,7 @@ def _valid_proposal_packet(
         }
     )
     return {
-        "schema_version": "master-proposal-packet-v5",
+        "schema_version": "master-proposal-packet-v6",
         "valid": True,
         "authority": "ballots_rank_and_unanimous_reject_vetoes",
         "context_digest": "c" * 64,
@@ -543,7 +543,7 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
     captured = []
     targeted_failure = "The selected prepared-child mechanism fixes one reachable failure."
     proposal = {
-        "schema_version": "master-proposal-v3",
+        "schema_version": "master-proposal-v4",
         "targeted_failure": targeted_failure,
         "structural_change": "Replace one reachable prepared-child branch with a deadline-bounded mechanism.",
         "counterfactual": "Hold cards, state, seed, and legality fixed while toggling only this mechanism.",
@@ -554,9 +554,10 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
         ),
         "why_not_threshold_tuning": "The mechanism replaces reachable state flow instead of changing one cutoff.",
         "mechanism_target": "deadline",
-        "expected_diff": "The prepared strategy path consumes the selected structural mechanism before the deadline.",
+        "expected_diff": "Change policy.py:choose_action so the prepared strategy path consumes the selected structural mechanism before the deadline.",
         "target_files": ["policy.py"],
         "source_symbols": ["policy.py:get_action", "policy.py:choose_action"],
+        "change_symbol": "policy.py:choose_action",
         "reachable_chain": ["policy.py:get_action", "policy.py:choose_action"],
         "falsifier": {
             "test_name": "fast_policy_baseline",
@@ -578,8 +579,8 @@ async def test_master_uses_prepared_child_for_runtime_context_and_line_budget(
 
     worker_task = _strict_prompt_plan()["tasks"][0]
     worker_task["worker_prompt"] = (
-        "Change one prepared-child SPR decision in policy.py while preserving "
-        "the complete typed runtime contract and declared checks."
+        "Change policy.py:choose_action for one prepared-child SPR decision. "
+        "Preserve the complete typed runtime contract and declared checks."
     )
     plan = {
         "analysis": "Use the prepared child baseline.",
