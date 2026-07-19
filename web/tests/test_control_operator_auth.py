@@ -236,8 +236,16 @@ def test_health_uses_only_canonical_ignored_checkpoint_summary(
         "ignored_checkpoint": ignored,
         "max_committed_v": 142,
     }
-    monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda: projection)
-    monkeypatch.setattr(epoch_authority, "unpublished_candidate_versions", lambda: [155])
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: projection,
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "unpublished_candidate_versions",
+        lambda **_kwargs: [155],
+    )
     raw_path = control.RESULTS_DIR / "pipeline_state.json"
     raw_path.write_text(
         '{"next_v":155,"run_id":"retired-secret-run",'

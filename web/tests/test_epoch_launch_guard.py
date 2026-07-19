@@ -132,8 +132,16 @@ def test_pre_reset_read_only_control_calls_do_not_persist_events(
         "ignored_checkpoint": None,
     }
     monkeypatch.setattr(epoch_authority, "require_policy_epoch_initialized", _deny)
-    monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda: projection)
-    monkeypatch.setattr(epoch_authority, "unpublished_candidate_versions", lambda: [])
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: projection,
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "unpublished_candidate_versions",
+        lambda **_kwargs: [],
+    )
     monkeypatch.setattr(
         system_log,
         "log_system_event",
@@ -331,8 +339,16 @@ def test_view_only_lifespan_can_read_reset_required_status(monkeypatch):
     app_state.stop_running()
     monkeypatch.setenv("POK_WEB_VIEW_ONLY", "1")
     monkeypatch.setattr(epoch_authority, "require_policy_epoch_initialized", _deny)
-    monkeypatch.setattr(epoch_authority, "strict_epoch_projection", lambda: projection)
-    monkeypatch.setattr(epoch_authority, "unpublished_candidate_versions", lambda: [])
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: projection,
+    )
+    monkeypatch.setattr(
+        epoch_authority,
+        "unpublished_candidate_versions",
+        lambda **_kwargs: [],
+    )
     monkeypatch.setattr(app_module, "configure_logging", lambda **_kwargs: None)
     monkeypatch.setattr(app_module.arena_manager, "startup", noop)
     monkeypatch.setattr(app_module.arena_manager, "shutdown", noop)
