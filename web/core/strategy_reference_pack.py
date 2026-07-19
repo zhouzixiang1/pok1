@@ -20,7 +20,7 @@ import json
 from typing import Any
 
 
-REFERENCE_PACK_VERSION = "national-tcp-policy-reference-pack-v6"
+REFERENCE_PACK_VERSION = "national-tcp-policy-reference-pack-v8"
 UNAVAILABLE_PRIMARY_INNOVATIONS = {
     "bounded_precompute_lookup": (
         "system precompute is admitted only as a read-only consumer dependency, "
@@ -50,6 +50,12 @@ def current_strict_runtime_prompt_overlay() -> str:
         "- `call` and `check` may occur only as reducer-provided public-state input. "
         "Candidate policy returns a typed intent object (`pass`, `fold`, `allin`, "
         "or `raise` with `raise_to`); never return a bare wire string or integer.\n"
+        "- After a called all-in, policy never acts again. The official 2021 EXE may "
+        "present an omitted runout and make settlement/showdown the next wire boundary. "
+        "Only complementary cross-wire actions, exact all-in net settlement, and "
+        "strict THP five-card board/blind/hole/prefix/earnings binding may close that terminal "
+        "proof. This is the exact cross-connection proof, with internal/THP as the "
+        "complete-board authority; no role may fabricate unseen public cards.\n"
         "- The baseline uses the direct system evaluator only. Imported, "
         "closure, default, or value aliases; `itertools.combinations`; and "
         "nested deck-pair sweeps are rejected from that path. Full `C(45,2)` "

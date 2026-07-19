@@ -7,7 +7,7 @@
   - Preflop SB 先表态，Flop/Turn/River BB 先表态
   - raise-to-total 语义（raise X = 加注到阶段总额 X）
   - 非法行为 → fold
-  - allin + call 后自动发完剩余公共牌，直接 showdown
+  - allin + call 后内部发完剩余公共牌并写 THP；正式 wire 直接结算/showdown
 """
 from __future__ import annotations
 import logging
@@ -236,27 +236,27 @@ class GameEngine:
             community = result.community
 
             if result.allin_settled:
-                # allin+call 后自动发完剩余公共牌（无下注），直接 showdown
+                # The 2021 EXE deals the remaining board internally after a
+                # called all-in but does not relay those future streets on the
+                # TCP wire.  Keep the complete board for evaluator/THP truth;
+                # the clients receive settlement and showdown only.
                 # 已发的阶段数：preflop=0, flop=1, turn=2, river=3
                 stages_done = i + 1  # 当前阶段也完成了
                 if stages_done < 2:  # 还没发 flop
                     flop_cards = deck.deal(3)
                     community.extend(flop_cards)
-                    await self._send_stage_cards("flop", flop_cards)
                     if self.recorder:
                         self.recorder.on_stage_cards("flop", [(c.suit, c.rank) for c in flop_cards])
                     stages_done = 2
                 if stages_done < 3:  # 还没发 turn
                     turn_card = deck.deal(1)
                     community.extend(turn_card)
-                    await self._send_stage_cards("turn", turn_card)
                     if self.recorder:
                         self.recorder.on_stage_cards("turn", [(c.suit, c.rank) for c in turn_card])
                     stages_done = 3
                 if stages_done < 4:  # 还没发 river
                     river_card = deck.deal(1)
                     community.extend(river_card)
-                    await self._send_stage_cards("river", river_card)
                     if self.recorder:
                         self.recorder.on_stage_cards("river", [(c.suit, c.rank) for c in river_card])
                 return await self._showdown(sb_idx, bb_idx, community, pot)
@@ -271,7 +271,7 @@ class GameEngine:
 
         返回 BettingResult：
           - folded=True: 有人弃牌，winner_idx 有效
-          - allin_settled=True: allin+call，需要自动发剩余牌
+          - allin_settled=True: allin+call，需要内部发剩余牌但不发到 wire
           - 否则正常结束，pot/community 已更新
         """
         bets = {first_idx: first_bet, second_idx: second_bet}
@@ -558,15 +558,12 @@ class GameEngine:
                           is_showdown=False, earnings=earnings)
 
     async def _showdown(self, sb_idx, bb_idx, community, pot):
-        """比牌结算。如果 community 不足 5 张，自动补发。"""
+        """使用内部完整 community 比牌并按正式 wire 边界结算。"""
         sb = self.players[sb_idx]
         bb = self.players[bb_idx]
 
-        # 如果因为 allin+call 导致 community 不足 5 张，补发
-        # (此场景下 _run_hand 不会走到这里，因为 allin_settled 后
-        #  会自动发牌再调用 _showdown，但做防御性处理)
-        deck = Deck()  # 此 deck 不会用到，仅为防御
-        # 实际上 community 已由 _run_hand 逐阶段补发完毕
+        # Called-all-in runout is already complete internally even when those
+        # future public streets were intentionally omitted from the wire.
 
         sb_all = sb.hand_cards + community
         bb_all = bb.hand_cards + community

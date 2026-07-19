@@ -116,6 +116,13 @@ relative. `betting.call_closes_allin_runout` is the closure authority. Missing
 or malformed fields must stay neutral. Penalize any change that silently
 removes a producer, consumer, positive/negative regression, or socket-visible
 effect even if its isolated equity helper looks plausible.
+The 2021 EXE may omit every remaining public street after a called all-in and
+go directly to settlement/`oppo_hands`. Treat later policy action or invented
+unseen board cards as a defect; only complementary cross-wire actions, exact
+all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings binding
+may close that terminal boundary.
+The exact authority is
+`docs/official-allin-runout-wire-oracle-2026-07-19.md`.
 
 The baseline itself must remain publishable under its strict time budget. The
 current 192/256/96 flop/turn/river schedule is fixed deterministic bounded

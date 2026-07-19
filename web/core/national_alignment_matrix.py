@@ -21,7 +21,7 @@ import re
 from typing import Iterable, Sequence
 
 
-MATRIX_SCHEMA_VERSION = 13
+MATRIX_SCHEMA_VERSION = 14
 CURRENT_STATUS = "current"
 SUPERSEDED_STATUS = "superseded"
 SOURCE_CONTRACT = "source_contract"
@@ -77,6 +77,7 @@ ROOT = Path(__file__).resolve().parents[2]
 REQUIRED_COVERAGE = frozenset({
     "raw_tcp_delimiter_stream",
     "raw_tcp_name_handshake",
+    "official_called_allin_runout",
     "raise_terminal_hand70",
     "strict_abi_context_fallback_deadline",
     "system_asset_boundary",
@@ -341,6 +342,98 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "evidence becomes a native compliance issue; precommit blocks publication "
             "rather than inferring worker readiness, resetting the first-decision clock, "
             "or accepting a synthetic prewarm."
+        ),
+    ),
+    MatrixRow(
+        rule_id="official_called_allin_runout_omission",
+        coverage=("official_called_allin_runout",),
+        status=CURRENT_STATUS,
+        evidence_state=SOURCE_CONTRACT,
+        authority=(
+            _ref("docs/official-allin-runout-wire-oracle-2026-07-19.md"),
+            _ref("AGENTS.md", "may omit every not-yet-sent public street"),
+        ),
+        production_owners=(
+            _ref("sever/engine/game.py", "allin_settled"),
+            _ref(
+                "web/core/official_wire_probe.py",
+                "_showdown_terminal_boundary",
+            ),
+            _ref(
+                "web/core/official_wire_probe.py",
+                "_cross_bound_showdown_records",
+            ),
+            _ref(
+                "web/core/official_platform_harness.py",
+                "_omitted_allin_thp_bindings",
+            ),
+        ),
+        dynamic_gates=(
+            _ref(
+                "web/core/official_wire_probe.py",
+                "_showdown_terminal_boundary",
+            ),
+            _ref(
+                "web/core/official_certification.py",
+                "_full_v5_completion_issues",
+            ),
+            _ref(
+                "web/core/official_platform_harness.py",
+                "round_completion_issues",
+            ),
+        ),
+        prompts=_CORE_PROMPTS,
+        prompt_statement=(
+            "All five rendered roles must preserve the called all-in terminal "
+            "contract: the official EXE may present an omitted runout followed by "
+            "settlement/showdown, only exact cross-connection proof is accepted, no "
+            "role may fabricate unseen public cards, and internal/THP remains the "
+            "complete-board authority with complementary cross-wire actions, exact "
+            "all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings "
+            "binding."
+        ),
+        prompt_required_terms=(
+            "called all-in",
+            "omitted runout",
+            "settlement/showdown",
+            "cross-connection",
+            "fabricate unseen public cards",
+            "internal/THP",
+            "complementary cross-wire actions",
+            "exact all-in net settlement",
+            "strict THP five-card board/blind/hole/prefix/earnings",
+        ),
+        producer_consumer=(
+            "official EXE allin/call plus legal board prefix → two connection-local "
+            "terminal records → finalized cross-wire action/exact-settlement/reveal "
+            "proof → strict THP five-card board/blind/hole/prefix binding → formal "
+            "completion gate"
+        ),
+        positive_tests=(
+            "web/tests/test_official_wire_probe.py::"
+            "test_replay_accepts_cross_connection_settled_called_allin_without_runout",
+            "web/tests/test_official_wire_probe.py::"
+            "test_replay_defers_cross_socket_settlement_order_until_final_binding",
+            "web/tests/test_official_wire_probe.py::"
+            "test_replay_accepts_only_exact_called_allin_net_settlements",
+            "web/tests/test_official_platform_harness.py::"
+            "test_terminal_hand_completion_requires_exact_wire_boundary_and_thp",
+            "sever/tests/test_national_platform_alignment.py::"
+            "test_allin_runout_is_internal_thp_truth_but_omitted_from_wire",
+        ),
+        negative_tests=(
+            "web/tests/test_official_wire_probe.py::"
+            "test_replay_rejects_unproved_missing_runout_showdown",
+            "web/tests/test_official_wire_probe.py::"
+            "test_replay_rejects_showdown_cross_seat_mismatch_and_non_showdown_reveal",
+            "web/tests/test_official_wire_probe.py::"
+            "test_replay_keeps_unpaired_called_allin_reveal_provisional_until_finalized",
+        ),
+        fail_closed=(
+            "A malformed prefix, unfinished/folded all-in, nonterminal reveal, "
+            "cross-wire action mismatch, impossible all-in settlement, or any omitted "
+            "hand lacking a complete THP board/blind/hole/prefix binding remains an "
+            "official wire/certification failure; no missing public card is synthesized."
         ),
     ),
     MatrixRow(

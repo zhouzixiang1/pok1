@@ -278,6 +278,30 @@ def test_causal_evidence_rejects_stored_summary_mismatch(tmp_path):
     )
 
 
+def test_causal_evidence_rejects_fabricated_omitted_runout_boundary(tmp_path):
+    report, _events, stored, _wire_events, replay_summary = (
+        _causal_evidence_fixture(tmp_path)
+    )
+    tampered = dict(stored)
+    tampered["omitted_allin_runout_boundaries"] = [{
+        "conn": "A",
+        "hand": 1,
+        "stage": "preflop",
+        "public_cards_observed": 0,
+        "natural_hand_70": False,
+    }]
+    replay_summary.write_text(json.dumps(tampered), encoding="utf-8")
+
+    replay = build_official_evidence_bundle(report)["rounds"][0][
+        "wire_replay_summary"
+    ]
+
+    assert any(
+        issue.get("kind") == "wire_replay_stored_summary_mismatch"
+        for issue in replay["issues"]
+    )
+
+
 def test_causal_evidence_rejects_receipt_marker_stripping(tmp_path):
     report, _events, _stored, _wire_events, _replay_summary = (
         _causal_evidence_fixture(tmp_path)

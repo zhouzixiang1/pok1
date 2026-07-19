@@ -182,7 +182,7 @@ def test_operator_probe_passes_with_mocked_production_wrapper():
     )
 
     assert receipt["status"] == "pass"
-    assert receipt["trace_summary"]["read_count"] == 3
+    assert receipt["trace_summary"]["read_count"] == len(probe.READ_RELATIVE_PATHS)
     assert receipt["trace_summary"]["bash_count"] == 2
     assert receipt["sdk_contract"]["mcp_servers"] == {}
 

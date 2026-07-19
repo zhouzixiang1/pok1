@@ -630,6 +630,7 @@ def test_master_plan_rejects_two_generation_state_learning_primaries():
         "oracle_refs": [
             "docs/official-raise-boundary-oracle-2026-07-11.md",
             "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            "docs/official-allin-runout-wire-oracle-2026-07-19.md",
         ],
     }
     second["runtime_contract"]["reference_pack_id"] = ""

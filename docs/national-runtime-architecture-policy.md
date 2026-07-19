@@ -75,6 +75,12 @@ Every formal native bot must preserve these boundaries:
    lock-win fold only for a strict lead. The latter is the sole authority for
    whether a call ends all future action. Candidate consumers fail neutral on
    missing or inconsistent fields and never reconstruct either value.
+11. A called all-in ends candidate action even when the 2021 EXE omits every
+   remaining public street and makes settlement/showdown the next wire
+   boundary. Replay accepts only complementary cross-wire actions and exact
+   all-in net settlement, never fabricates unseen board cards, and requires
+   every omitted hand to bind the strict THP five-card board, blind/name order,
+   revealed holes, observed prefix, and earnings.
 
 ## Local References And Space-Time Tradeoff
 

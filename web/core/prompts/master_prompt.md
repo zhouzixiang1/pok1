@@ -101,6 +101,11 @@ and each re-raise is at least exact 2x the previous raise-to. Exact 2x is legal;
 `2x+1` is optional strategy headroom. A stack-consuming raise becomes `allin`.
 The second postflop pass after a check is wire `call`; BB's pass after an SB
 limp is wire `check`. After an all-in the peer may only call or fold.
+Once called, no policy action remains: the 2021 EXE may omit every future board
+street and make settlement/`oppo_hands` the next wire boundary. Never invent
+unseen public cards; only finalized complementary cross-wire actions, exact
+all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings binding
+own that terminal proof.
 
 The socket reducer owns state, not policy. It repairs only a boundary-proven
 omitted closing call/check, exactly once, before resetting street
@@ -159,9 +164,10 @@ At natural hand 70, 69 TCP settlement pairs are sufficient only with starts
 1..70, no pending/wire issue, and a fresh strict THP proving `STATE:0..69`, the
 cross-bound first 69 earnings, final zero-sum earnings, and footer. Never
 synthesize hand-70 `earnChips`. Official and
-Arena chips have zero strength weight. The two exact authoritative inputs are
-`docs/official-raise-boundary-oracle-2026-07-11.md` and
-`docs/official-terminal-settlement-oracle-2026-07-11.md`.
+Arena chips have zero strength weight. The three exact authoritative inputs are
+`docs/official-raise-boundary-oracle-2026-07-11.md`,
+`docs/official-terminal-settlement-oracle-2026-07-11.md`, and
+`docs/official-allin-runout-wire-oracle-2026-07-19.md`.
 </game_rules>
 
 <poker_theory_reference>
@@ -314,7 +320,7 @@ and do not require a worker unless quality evidence says they still fail.
 - `state_learning`: required for the active national policy focus. Set exactly one of
   `work_primitive` (`sample_counted_candidate_batch`), `profile_dimensions` (`action_profile`,
   `terminal_response`, or `showdown_range`), or `line_controls` (`donk` or
-  `delayed_probe`). Include both exact oracle document paths in `oracle_refs`.
+  `delayed_probe`). Include all three exact oracle document paths in `oracle_refs`.
   `work_primitive` is a scalar string or `null`, never an array; unused scalar
   fields must remain `null`/omitted while the two list fields remain arrays.
   Do not add unrelated primary dimensions merely because their shadow evidence
@@ -614,7 +620,7 @@ Required schema (emit exactly this structure as raw JSON):
           "work_primitive": "sample_counted_candidate_batch",
           "profile_dimensions": [],
           "line_controls": [],
-          "oracle_refs": ["docs/official-raise-boundary-oracle-2026-07-11.md", "docs/official-terminal-settlement-oracle-2026-07-11.md"]
+          "oracle_refs": ["docs/official-raise-boundary-oracle-2026-07-11.md", "docs/official-terminal-settlement-oracle-2026-07-11.md", "docs/official-allin-runout-wire-oracle-2026-07-19.md"]
         },
         "reference_pack_id": "range_weighted_candidate_batch_v1",
         "official_feedback_refs": [],

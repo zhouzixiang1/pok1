@@ -24,6 +24,11 @@ enter Glicko, H2H, source selection, planning evidence, or precommit strength.
 - Postflop first pass is `check`; after the first postflop action a pass is
   `call`. After an SB limp, BB passes with `check`. After an all-in, the peer
   may only call or fold and the bot must not act during the runout.
+- The 2021 EXE may omit the remaining called-all-in board and proceed directly
+  to settlement/`oppo_hands`. Never fabricate those unseen cards; the
+  system-owned replay must cross-bind complementary actions and exact all-in
+  net settlement, while strict THP must bind the full five-card board, blinds,
+  holes, observed prefix, and earnings.
 - Preserve the system wire throttle: `POK_OFFICIAL_ACTION_DELAY`, default near
   0.30 seconds, is applied by `_send_wire_action`. Policy code never sleeps or
   sends bytes.
@@ -45,8 +50,9 @@ enter Glicko, H2H, source selection, planning evidence, or precommit strength.
   `STATE:0..69`, cross-bound first-69 earnings, final zero-sum earnings, and the
   footer. Never synthesize hand-70 `earnChips`.
 - Exact oracle inputs are
-  `docs/official-raise-boundary-oracle-2026-07-11.md` and
-  `docs/official-terminal-settlement-oracle-2026-07-11.md`.
+  `docs/official-raise-boundary-oracle-2026-07-11.md`,
+  `docs/official-terminal-settlement-oracle-2026-07-11.md`, and
+  `docs/official-allin-runout-wire-oracle-2026-07-19.md`.
 </national_tcp_contract>
 
 <policy_abi>

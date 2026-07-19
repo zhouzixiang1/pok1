@@ -501,10 +501,11 @@ ACTIVE_LLM_ROLE_CONTRACTS = (
         fixed_read_files=(
             "docs/official-raise-boundary-oracle-2026-07-11.md",
             "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            "docs/official-allin-runout-wire-oracle-2026-07-19.md",
             "sever/server/transport.py",
         ),
         fixed_bash_commands=(
-            "sha256sum docs/official-raise-boundary-oracle-2026-07-11.md docs/official-terminal-settlement-oracle-2026-07-11.md sever/server/transport.py",
+            "sha256sum docs/official-raise-boundary-oracle-2026-07-11.md docs/official-terminal-settlement-oracle-2026-07-11.md docs/official-allin-runout-wire-oracle-2026-07-19.md sever/server/transport.py",
             "rg -n 'writer.write\\(payload\\)|invalid_server_message_delimiter|take_client_action|idle_flush_sec' sever/server/transport.py",
         ),
     ),

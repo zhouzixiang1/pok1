@@ -182,6 +182,13 @@ nonclosing-only position realization, current-board opponent range weighting,
 and authoritative `betting.call_closes_allin_runout`. Missing/malformed
 controls must be neutral, and every mechanism needs positive/negative
 production-runtime regression plus a socket-visible typed-intent effect.
+After a called all-in, the 2021 EXE may omit the future board and make
+settlement/`oppo_hands` the next wire boundary. Never route another policy
+decision or synthesize unseen cards; require complementary cross-wire actions,
+exact all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings
+binding before closure.
+The exact authority is
+`docs/official-allin-runout-wire-oracle-2026-07-19.md`.
 code_changed=false, declared-scope
 violation, runtime import contract failure, py_compile failure, protected-contract
 regression, smoke failure, national protocol/acceptance regression, decision test

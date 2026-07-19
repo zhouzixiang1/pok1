@@ -72,6 +72,7 @@ StateLearningLineControl = Literal["donk", "delayed_probe"]
 StateLearningOracleRef = Literal[
     "docs/official-raise-boundary-oracle-2026-07-11.md",
     "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    "docs/official-allin-runout-wire-oracle-2026-07-19.md",
 ]
 STATE_LEARNING_WORK_PRIMITIVES = tuple(get_args(StateLearningWorkPrimitive))
 STATE_LEARNING_PROFILE_DIMENSIONS = tuple(get_args(StateLearningProfileDimension))
@@ -371,7 +372,7 @@ class StateLearningRuntimeContract(BaseModel):
         default_factory=list,
         max_length=1,
     )
-    oracle_refs: list[StateLearningOracleRef] = Field(min_length=2, max_length=2)
+    oracle_refs: list[StateLearningOracleRef] = Field(min_length=3, max_length=3)
 
     @field_validator("profile_dimensions", "line_controls")
     @classmethod
@@ -382,11 +383,11 @@ class StateLearningRuntimeContract(BaseModel):
 
     @field_validator("oracle_refs")
     @classmethod
-    def _complete_oracle_pair(cls, value: list[str]) -> list[str]:
+    def _complete_oracle_set(cls, value: list[str]) -> list[str]:
         if set(value) != set(STATE_LEARNING_ORACLE_REFS):
             raise ValueError(
-                "oracle_refs must contain the exact raise-boundary and "
-                "terminal-settlement oracle documents"
+                "oracle_refs must contain the exact raise-boundary, "
+                "terminal-settlement, and called-allin-runout oracle documents"
             )
         return list(STATE_LEARNING_ORACLE_REFS)
 

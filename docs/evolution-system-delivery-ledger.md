@@ -4487,3 +4487,43 @@ Independent review returned APPROVE with no remaining P0/P1/P2.  Verification:
 passed`; active-source compile and `git diff --check` green.  Merge, runtime
 sync, the final-HEAD dry-run claim and acknowledged execute remain pending.
 This entry therefore still does not claim v143 recovery or publication.
+
+## 2026-07-19 — workflow-v64 official called-all-in runout discovery
+
+The governed v63 recovery was merged as `e16d49ad` plus documentation
+`8e3fa0a1`, synchronized into the stopped autonomous checkout, and executed
+through the schema-2 abandon/finalize transaction. Fresh
+`generation:143:workflow-v64` then completed Master, Worker, Quality,
+Reviewer, advisory Critic and native precommit. Its first Master result exceeded
+the Worker prompt cap by 120 characters; the existing state machine retried and
+the second result succeeded. The candidate remains unpublished at artifact
+`f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+
+Operator bootstrap job
+`37bc2c6555b516b6568f45c85cdf8b9e23b0c06e6bbca207d5367a561759dae6`
+naturally completed all 8 rounds. Five complete 70-hand rounds passed. Three
+rounds stopped at preflop/flop/turn called-all-in showdowns because the replay
+required five observed public cards even though the official EXE emitted
+`allin → call → earnChips(A/B) → oppo_hands(A/B)` and omitted every remaining
+street. The full raw event identities are fixed in
+`docs/official-allin-runout-wire-oracle-2026-07-19.md`. The terminal job result
+digest is `c055966f5385fd921ece46920202a70477522d700bea106dd45cc1bae3196f9a`;
+attribution is non-blocking `harness`, candidate verdict `inconclusive`, no
+certificate exists, and successful first-control consumption remains zero.
+
+This evidence is dynamic contract discovery, not a candidate failure or a
+strength sample. The repair keeps the harness fail-fast rule, accepts only a
+legal board prefix plus adjacent opposing-actor allin/call, terminal
+stack/bet/pot state, complementary cross-wire action provenance, exact all-in
+net settlement and finalized reveal proof, then binds every omitted hand to a
+strict THP five-card board/blind/hole/prefix/earnings record without synthesizing
+cards. Natural hand 70 remains provisional until strict THP state 69 with
+complete board/blind/hole/prefix/earnings binding and footer
+proof. The local server now deals the complete remaining board internally for
+evaluator/THP but omits future street messages on TCP, matching the EXE.
+
+Because probe, local mirror, pinned oracle and architecture policy identities
+change, the old workflow/job cannot be resumed or certified. After source
+tests/review/merge, recovery must use controlled abandon/re-prepare on the new
+main identity and rerun all gates plus a fresh 5+3 official suite. Stability is
+still 0/10. This ledger entry makes no publication claim.

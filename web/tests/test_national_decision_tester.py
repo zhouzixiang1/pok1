@@ -346,9 +346,11 @@ def test_exact_official_two_x_raise_boundary_reaches_real_wire(tmp_path):
     assert result["action"] == "raise 400"
 
 
+@pytest.mark.parametrize("relay_runout", [False, True])
 def test_called_allin_runout_never_reenters_policy_or_socket_send(
     monkeypatch,
     tmp_path,
+    relay_runout,
 ):
     bot_dir = tmp_path / "bot"
     bot_dir.mkdir()
@@ -384,9 +386,12 @@ def test_called_allin_runout_never_reenters_policy_or_socket_send(
         assert bot._in_allin_runout is True
         assert bot._pot == 40_000
         assert bot._my_chips == bot._opponent_chips == 0
-        bot.handle("flop|<0,4><1,5><2,6>", wire)
-        bot.handle("turn|<3,7>", wire)
-        bot.handle("river|<0,8>", wire)
+        if relay_runout:
+            # Compatibility with a complete local transcript.  The formal
+            # 2021 EXE may instead jump directly to settlement/showdown.
+            bot.handle("flop|<0,4><1,5><2,6>", wire)
+            bot.handle("turn|<3,7>", wire)
+            bot.handle("river|<0,8>", wire)
         bot.handle("earnChips 0", wire)
         bot.handle("oppo_hands|<2,2><3,3>", wire)
     finally:

@@ -39,8 +39,10 @@ docs/evolution-system-delivery-ledger.md。根目录 archive/ 是 legacy-untrust
    每决策全历史扫描或未批准资产。
 4. wire 动作为无分隔符 raw string，绝不追加换行；recv 边界不是消息边界。
    raise X 是本街总投入，精确 2x 边界合法；postflop 首动作 call 非法，已有动作后
-   check 非法；called all-in 后不得再次行动；唯一可证明的省略 closer 必须先计入
-   contribution/stack/pot 再清街；oppo_hands 只在 showdown；自然第 70 手由 69 对
+   check 非法；called all-in 后不得再次行动，2021 EXE 可省略尚未发送的 board
+   并直接进入 settlement/oppo_hands，系统不得伪造缺牌；唯一可证明的省略 closer
+   必须先计入 contribution/stack/pot 再清街；oppo_hands 只在 terminal showdown；
+   自然第 70 手由 69 对
    wire settlement 加严格 THP state 69/footer 证明，不得伪造第 70 对 earnChips。
 5. Critic 仅 advisory；本地 native TCP precommit 是策略硬门。任何 required gate 的
    skipped/pending/inconclusive/env-disable 都不是 pass。不得放宽 validator、探针、

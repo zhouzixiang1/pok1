@@ -76,8 +76,10 @@ active `national_tcp_policy_v1` architecture.
   is valid, unused, and `0/1`. Even then, only
   `official_bootstrap_required` unlocks the operator action.
 - Arena and official EXE chip output have zero strength authority.
-- The official raise-boundary and terminal-settlement oracle files are exact,
-  pinned evaluation inputs.
+- The official raise-boundary, terminal-settlement, and called-all-in runout
+  wire oracle files are exact, pinned evaluation inputs. The last permits no
+  fabricated public cards and requires complementary cross-wire actions, exact
+  all-in net settlement, and strict THP five-card board/blind/hole/prefix proof.
 
 ## Generation stages
 

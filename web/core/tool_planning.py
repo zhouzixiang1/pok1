@@ -6910,6 +6910,7 @@ _ARCHITECTURE_CHECK_FILES = {
 _STATE_LEARNING_ORACLE_REFS = [
     "docs/official-raise-boundary-oracle-2026-07-11.md",
     "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    "docs/official-allin-runout-wire-oracle-2026-07-19.md",
 ]
 
 

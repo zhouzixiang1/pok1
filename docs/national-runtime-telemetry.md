@@ -110,11 +110,18 @@ tree-aware termination was confirmed, so multi-core refinement cannot escape
 timeout cleanup or accumulate across decisions.
 
 These local runtime probes are not formal completion or strength evidence.
-Formal profile `official-full-v5` and the content-pinned 2026-07-11 official
-oracles remain authoritative:
+Formal profile `official-full-v5` and the content-pinned official oracles
+remain authoritative:
 `docs/official-raise-boundary-oracle-2026-07-11.md` proves exact consecutive 2x
 is legal, and `docs/official-terminal-settlement-oracle-2026-07-11.md` proves a
 natural hand-70 finish may have 70 starts but only 69 paired TCP settlements.
-That terminal form passes only through the strict, hash-bound THP cross-proof
+The third oracle,
+`docs/official-allin-runout-wire-oracle-2026-07-19.md`, proves that a called
+all-in may omit the remaining board on wire and proceed to settlement/showdown;
+the missing cards are never synthesized. Complementary cross-wire actions and
+exact all-in net settlement are required, and every omitted hand must bind the
+strict THP five-card board, blind/name order, revealed holes, observed prefix,
+and earnings.
+The natural-hand-70 form passes only through the strict, hash-bound THP cross-proof
 for `STATE:0..69`. Official/THP outcomes retain zero weight in ratings, H2H,
 source selection, precommit strength, and prompt evidence.

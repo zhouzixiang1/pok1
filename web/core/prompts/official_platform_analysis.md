@@ -24,6 +24,12 @@ Analyze only:
   suspiciously fast resend loops that may race the EXE
 - state-machine correctness: pending-action tracking, allin runout behavior,
   postflop first-action call/check rules, raise-to total semantics
+- called-all-in omission: preflop/flop/turn may legally jump to
+  settlement/`oppo_hands` without future board messages only when the frozen
+  complementary cross-wire action/exact-settlement proof and strict THP
+  five-card board/blind/hole/prefix/earnings binding are complete; do not attribute that
+  official boundary to candidate strategy and never infer missing card identities
+  (authority: `docs/official-allin-runout-wire-oracle-2026-07-19.md`)
 - harness/platform ambiguity: Wine/Xvfb/EXE startup, THP export, port lock, UI
   automation, platform race
 - obvious decision errors only when deterministic classification identifies a

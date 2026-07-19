@@ -552,19 +552,33 @@ def test_game_engine_observer_hole_cards_do_not_change_tcp_payloads():
     assert all("hole_cards" not in message for _idx, message in sent)
 
 
-def test_allin_runout_records_public_cards_in_thp():
+def _run_called_allin_hand(stage, *, hand_num=1):
     async def run():
         sent = []
-        actions = {0: ["allin"], 1: ["call"]}
+        sb_idx = (hand_num - 1) % 2
+        bb_idx = 1 - sb_idx
+        action_scripts = {
+            "preflop": {
+                sb_idx: ["allin"],
+                bb_idx: ["call"],
+            },
+            "flop": {
+                sb_idx: ["call", "call"],
+                bb_idx: ["check", "allin"],
+            },
+            "turn": {
+                sb_idx: ["call", "call", "call"],
+                bb_idx: ["check", "check", "allin"],
+            },
+        }
+        actions = action_scripts[stage]
         recorder = THPRecorder("A", "B")
 
         async def send(player_idx, msg):
             sent.append((player_idx, msg))
 
-        engine = GameEngine(
-            send_func=send,
-            recorder=recorder,
-        )
+        engine = GameEngine(send_func=send, recorder=recorder)
+        engine.hand_num = hand_num
         engine.players[0].name = "A"
         engine.players[1].name = "B"
 
@@ -572,21 +586,63 @@ def test_allin_runout_records_public_cards_in_thp():
             return actions[player_idx].pop(0)
 
         engine._recv_action = recv_action
-        result = await engine._run_hand(1)
+        result = await engine._run_hand(hand_num)
         return result, sent, recorder
 
-    result, sent, recorder = asyncio.run(run())
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "stage,expected_wire_stages",
+    [
+        ("preflop", []),
+        ("flop", ["flop", "flop"]),
+        ("turn", ["flop", "flop", "turn", "turn"]),
+    ],
+)
+def test_allin_runout_is_internal_thp_truth_but_omitted_from_wire(
+    stage,
+    expected_wire_stages,
+):
+    result, sent, recorder = _run_called_allin_hand(stage)
 
     assert result.is_showdown
     assert result.pot == 40_000
-    assert any(msg.startswith("flop|") for _, msg in sent)
-    assert any(msg.startswith("turn|") for _, msg in sent)
-    assert any(msg.startswith("river|") for _, msg in sent)
+    assert [
+        msg.split("|", 1)[0]
+        for _, msg in sent
+        if msg.startswith(("flop|", "turn|", "river|"))
+    ] == expected_wire_stages
+    assert [
+        msg.split("|", 1)[0].split(" ", 1)[0]
+        for _, msg in sent
+        if msg.startswith(("earnChips", "oppo_hands|"))
+    ] == ["earnChips", "earnChips", "oppo_hands", "oppo_hands"]
 
     rec = recorder.records[0]
     assert len(rec.flop_cards) == 3
     assert rec.turn_card is not None
     assert rec.river_card is not None
+    cards_field = recorder.format_hand(rec).split(":")[2]
+    assert len(cards_field.split("/")) == 4
+
+
+def test_allin_runout_hand70_omits_settlement_but_keeps_complete_thp():
+    result, sent, recorder = _run_called_allin_hand("preflop", hand_num=70)
+
+    assert result.is_showdown
+    assert not any(msg.startswith("earnChips") for _, msg in sent)
+    assert [
+        msg.split("|", 1)[0]
+        for _, msg in sent
+        if msg.startswith("oppo_hands|")
+    ] == ["oppo_hands", "oppo_hands"]
+    rec = recorder.records[0]
+    assert rec.hand_num == 70
+    assert len(rec.flop_cards) == 3
+    assert rec.turn_card is not None
+    assert rec.river_card is not None
+    assert len(recorder.format_hand(rec).split(":")[2].split("/")) == 4
 
 
 def test_match_manager_auto_starts_after_second_client_connects():

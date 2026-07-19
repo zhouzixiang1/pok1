@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from pathlib import Path
 import importlib.util
 import json
@@ -24,6 +25,13 @@ TERMINAL_ORACLE_FIXTURE = (
     / "tests"
     / "fixtures"
     / "official_terminal_settlement_oracle_20260711.json"
+)
+ALLIN_RUNOUT_ORACLE_FIXTURE = (
+    ROOT
+    / "sever"
+    / "tests"
+    / "fixtures"
+    / "official_allin_runout_wire_oracle_20260719.json"
 )
 
 
@@ -978,6 +986,32 @@ def test_replay_does_not_create_runout_actions_after_allin_is_called():
     assert summary["seats"]["A"]["opponent_chips"] == 0
 
 
+def test_called_allin_wire_oracle_fixture_is_exact_and_zero_strength():
+    raw = ALLIN_RUNOUT_ORACLE_FIXTURE.read_bytes()
+    oracle = json.loads(raw)
+
+    assert hashlib.sha256(raw).hexdigest() == (
+        "c17f9b1908031ce3d85abb5f995581a5a049449ed8c6bb94da0cf9c954646440"
+    )
+    assert oracle["authority_scope"] == "official_exe_wire_compliance_only"
+    assert oracle["strength_weight"] == 0
+    assert {
+        (item["stage"], item["public_cards_observed"])
+        for item in oracle["observations"]
+    } == {("preflop", 0), ("flop", 3), ("turn", 4)}
+    assert oracle["accepted_board_prefixes"] == {
+        "preflop": 0,
+        "flop": 3,
+        "turn": 4,
+    }
+    assert oracle["natural_hand_70"] == {
+        "wire_settlement_expected": False,
+        "dual_showdown_reveal_required_for_called_allin": True,
+        "wire_boundary_is_provisional": True,
+        "strict_thp_state_69_and_footer_required_for_certification": True,
+    }
+
+
 def test_replay_reports_unparseable_client_tail_at_eof():
     event = _event(0, "A", "bot_to_server", [])
     event.update({
@@ -1089,6 +1123,92 @@ def _showdown_events(*, a_reveal="<2,2><3,3>"):
     ]
 
 
+def _called_allin_without_runout_events(
+    *,
+    stage="preflop",
+    include_a_settlement=True,
+    include_b_settlement=True,
+    include_call=True,
+    fold_instead=False,
+    reorder_peer_settlement=False,
+    a_settlement_amount=20000,
+    b_settlement_amount=-20000,
+    malformed_prefix=False,
+    duplicate_allin_response_on_a=False,
+):
+    response = "fold" if fold_instead else "call"
+    a_blind = "SMALLBLIND" if stage == "preflop" else "BIGBLIND"
+    b_blind = "BIGBLIND" if stage == "preflop" else "SMALLBLIND"
+    events = [
+        _event(0, "A", "server_to_bot", [f"preflop|{a_blind}|<0,0><1,1>"]),
+        _event(0.1, "B", "server_to_bot", [f"preflop|{b_blind}|<2,2><3,3>"]),
+    ]
+    if stage != "preflop":
+        events.extend([
+            _event(0.11, "B", "bot_to_server", ["call"]),
+            _event(0.12, "A", "server_to_bot", ["call"]),
+            _event(0.13, "A", "bot_to_server", ["check"]),
+            _event(0.14, "B", "server_to_bot", ["check"]),
+        ])
+    board = {
+        "flop": ["flop|<0,4><1,5><2,6>"],
+        "turn": [
+            *( [] if malformed_prefix else ["flop|<0,4><1,5><2,6>"] ),
+            "turn|<3,7>",
+        ],
+    }.get(stage, [])
+    for index, message in enumerate(board, 1):
+        events.extend([
+            _event(0.1 + index * 0.1, "A", "server_to_bot", [message]),
+            _event(0.15 + index * 0.1, "B", "server_to_bot", [message]),
+        ])
+        if stage == "turn" and message.startswith("flop|"):
+            events.extend([
+                _event(0.26, "A", "bot_to_server", ["check"]),
+                _event(0.27, "B", "server_to_bot", ["check"]),
+                _event(0.28, "B", "bot_to_server", ["call"]),
+            ])
+    events.extend([
+        _event(1, "A", "bot_to_server", ["allin"]),
+        _event(1.1, "B", "server_to_bot", ["allin"]),
+    ])
+    if duplicate_allin_response_on_a:
+        events.extend([
+            _event(1.11, "A", "server_to_bot", ["allin"]),
+            _event(1.12, "A", "bot_to_server", ["call"]),
+        ])
+    if include_call:
+        events.append(_event(1.2, "B", "bot_to_server", [response]))
+    a_settlement = _event(
+        2,
+        "A",
+        "server_to_bot",
+        [f"earnChips {a_settlement_amount}"],
+    )
+    b_settlement = _event(
+        2.1,
+        "B",
+        "server_to_bot",
+        [f"earnChips {b_settlement_amount}"],
+    )
+    a_reveal = _event(3, "A", "server_to_bot", ["oppo_hands|<2,2><3,3>"])
+    b_reveal = _event(3.1, "B", "server_to_bot", ["oppo_hands|<0,0><1,1>"])
+    if reorder_peer_settlement:
+        if include_a_settlement:
+            events.append(a_settlement)
+        events.append(a_reveal)
+        if include_b_settlement:
+            events.append(b_settlement)
+        events.append(b_reveal)
+    else:
+        if include_a_settlement:
+            events.append(a_settlement)
+        if include_b_settlement:
+            events.append(b_settlement)
+        events.extend([a_reveal, b_reveal])
+    return events
+
+
 def _cross_seat_board_events(*, b_overrides=None, a_hole=None, b_hole=None):
     board_a = {
         "flop": "flop|<0,4><1,5><2,6>",
@@ -1110,6 +1230,9 @@ def _cross_seat_board_events(*, b_overrides=None, a_hole=None, b_hole=None):
             "server_to_bot",
             [f"preflop|BIGBLIND|{b_hole or '<2,2><3,3>'}"],
         ),
+        _event(0.2, "A", "bot_to_server", ["call"]),
+        _event(0.21, "B", "server_to_bot", ["call"]),
+        _event(0.22, "B", "bot_to_server", ["check"]),
     ]
     timestamp = 1.0
     for stage in ("flop", "turn", "river"):
@@ -1119,6 +1242,12 @@ def _cross_seat_board_events(*, b_overrides=None, a_hole=None, b_hole=None):
         events.append(
             _event(timestamp + 0.1, "B", "server_to_bot", [board_b[stage]])
         )
+        if stage in {"flop", "turn"}:
+            events.extend([
+                _event(timestamp + 0.2, "B", "bot_to_server", ["check"]),
+                _event(timestamp + 0.21, "A", "server_to_bot", ["check"]),
+                _event(timestamp + 0.22, "A", "bot_to_server", ["call"]),
+            ])
         timestamp += 1.0
     return events
 
@@ -1354,6 +1483,206 @@ def test_replay_binds_showdown_cards_to_the_other_connection_hole_cards():
         "hand": 1,
         "opponent_cards": [[0, 0], [1, 1]],
     }]
+
+
+@pytest.mark.parametrize(
+    "stage, public_cards_observed",
+    [("preflop", 0), ("flop", 3), ("turn", 4)],
+)
+def test_replay_accepts_cross_connection_settled_called_allin_without_runout(
+    stage,
+    public_cards_observed,
+):
+    summary = replay_events(
+        _called_allin_without_runout_events(stage=stage),
+        finalized=True,
+    )
+
+    assert summary["issues"] == []
+    warnings = [
+        item
+        for item in summary["warnings"]
+        if item["kind"] == "showdown_runout_omitted_after_called_allin"
+    ]
+    assert {item["conn"] for item in warnings} == {"A", "B"}
+    assert {item["public_cards_observed"] for item in warnings} == {
+        public_cards_observed
+    }
+    assert {
+        item["public_cards_observed"]
+        for item in summary["omitted_allin_runout_boundaries"]
+    } == {public_cards_observed}
+
+
+@pytest.mark.parametrize(
+    "a_amount,b_amount",
+    [(20000, -20000), (-20000, 20000), (0, 0)],
+)
+def test_replay_accepts_only_exact_called_allin_net_settlements(
+    a_amount,
+    b_amount,
+):
+    summary = replay_events(
+        _called_allin_without_runout_events(
+            a_settlement_amount=a_amount,
+            b_settlement_amount=b_amount,
+        ),
+        finalized=True,
+    )
+
+    assert summary["issues"] == []
+    assert len(summary["omitted_allin_runout_boundaries"]) == 2
+
+
+def test_replay_defers_cross_socket_settlement_order_until_final_binding():
+    events = _called_allin_without_runout_events(reorder_peer_settlement=True)
+    provisional = replay_events(events, finalized=False)
+    summary = replay_events(
+        events,
+        finalized=True,
+    )
+
+    assert provisional["issues"] == []
+    assert provisional["omitted_allin_runout_boundaries"] == []
+    assert len(
+        provisional["provisional_omitted_allin_runout_boundaries"]
+    ) == 2
+    assert summary["issues"] == []
+    assert len(summary["omitted_allin_runout_boundaries"]) == 2
+    assert summary["provisional_omitted_allin_runout_boundaries"] == []
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"include_a_settlement": False},
+        {"include_b_settlement": False},
+        {"include_call": False},
+        {"fold_instead": True},
+        {"stage": "turn", "malformed_prefix": True},
+        {"b_settlement_amount": -19999},
+        {"a_settlement_amount": 19999, "b_settlement_amount": -19999},
+        {"a_settlement_amount": 20001, "b_settlement_amount": -20001},
+        {"duplicate_allin_response_on_a": True},
+    ],
+)
+def test_replay_rejects_unproved_missing_runout_showdown(overrides):
+    summary = replay_events(
+        _called_allin_without_runout_events(**overrides),
+        finalized=True,
+    )
+
+    assert any(
+        issue["kind"] == "showdown_boundary_invalid"
+        or issue["kind"] == "showdown_cross_connection_boundary_mismatch"
+        for issue in summary["issues"]
+    )
+
+
+def test_replay_keeps_unpaired_called_allin_reveal_provisional_until_finalized():
+    events = [
+        event
+        for event in _called_allin_without_runout_events()
+        if not (
+            event["conn"] == "B"
+            and event["messages"][0].startswith("oppo_hands|")
+        )
+    ]
+
+    provisional = replay_events(events, finalized=False)
+    finalized = replay_events(events, finalized=True)
+
+    assert provisional["omitted_allin_runout_boundaries"] == []
+    assert not any(
+        issue["kind"] == "showdown_cross_connection_boundary_unproved"
+        for issue in provisional["issues"]
+    )
+    assert any(
+        issue["kind"] == "showdown_cross_connection_boundary_unproved"
+        for issue in finalized["issues"]
+    )
+
+
+def test_replay_rejects_prior_street_allin_call_as_current_street_omission():
+    events = _called_allin_without_runout_events()
+    settlement_index = next(
+        index
+        for index, event in enumerate(events)
+        if event["messages"][0].startswith("earnChips")
+    )
+    events[settlement_index:settlement_index] = [
+        _event(1.3, "A", "server_to_bot", ["flop|<0,4><1,5><2,6>"]),
+        _event(1.4, "B", "server_to_bot", ["flop|<0,4><1,5><2,6>"]),
+    ]
+
+    summary = replay_events(events, finalized=True)
+
+    assert summary["omitted_allin_runout_boundaries"] == []
+    assert any(
+        issue["kind"] == "showdown_boundary_invalid"
+        for issue in summary["issues"]
+    )
+
+
+def test_replay_rejects_turn_after_unclosed_flop_before_called_allin():
+    events = [
+        event
+        for event in _called_allin_without_runout_events(stage="turn")
+        if not 0.25 < float(event["t"]) < 0.3
+    ]
+
+    summary = replay_events(events, finalized=True)
+
+    assert summary["omitted_allin_runout_boundaries"] == []
+    assert any(
+        issue["kind"] == "street_boundary_unproved"
+        and issue["previous_stage"] == "flop"
+        and issue["observed_stage"] == "turn"
+        for issue in summary["issues"]
+    )
+
+
+def test_replay_accepts_hand70_omission_only_as_cross_bound_provisional_wire_proof():
+    events = []
+    t = 0.0
+    for _hand in range(1, 70):
+        a_is_small = _hand % 2 == 1
+        a_blind = "SMALLBLIND" if a_is_small else "BIGBLIND"
+        b_blind = "BIGBLIND" if a_is_small else "SMALLBLIND"
+        folder = "A" if a_is_small else "B"
+        peer = "B" if a_is_small else "A"
+        a_earn = -50 if a_is_small else 50
+        b_earn = 50 if a_is_small else -50
+        events.extend([
+            _event(t, "A", "server_to_bot", [f"preflop|{a_blind}|<0,0><1,1>"]),
+            _event(t + 0.01, "B", "server_to_bot", [f"preflop|{b_blind}|<2,2><3,3>"]),
+            _event(t + 0.02, folder, "bot_to_server", ["fold"]),
+            _event(t + 0.03, peer, "server_to_bot", ["fold"]),
+            _event(t + 0.04, "A", "server_to_bot", [f"earnChips {a_earn}"]),
+            _event(t + 0.05, "B", "server_to_bot", [f"earnChips {b_earn}"]),
+        ])
+        t += 0.1
+    events.extend([
+        _event(t, "A", "server_to_bot", ["preflop|BIGBLIND|<0,0><1,1>"]),
+        _event(t + 0.01, "B", "server_to_bot", ["preflop|SMALLBLIND|<2,2><3,3>"]),
+        _event(t + 0.02, "B", "bot_to_server", ["allin"]),
+        _event(t + 0.03, "A", "server_to_bot", ["allin"]),
+        _event(t + 0.04, "A", "bot_to_server", ["call"]),
+        _event(t + 0.05, "A", "server_to_bot", ["oppo_hands|<2,2><3,3>"]),
+        _event(t + 0.06, "B", "server_to_bot", ["oppo_hands|<0,0><1,1>"]),
+    ])
+
+    summary = replay_events(events, finalized=True)
+
+    assert summary["issues"] == []
+    assert summary["hands_started_min"] == 70
+    assert summary["settlements_min"] == 69
+    assert len(summary["omitted_allin_runout_boundaries"]) == 2
+    assert all(
+        item["natural_hand_70"] is True
+        and item["settlement_amount"] is None
+        for item in summary["omitted_allin_runout_boundaries"]
+    )
 
 
 def test_replay_rejects_showdown_cross_seat_mismatch_and_non_showdown_reveal():

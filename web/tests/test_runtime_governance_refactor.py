@@ -1729,6 +1729,7 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
             "sever/国赛平台/通信协议.docx",
             "docs/official-raise-boundary-oracle-2026-07-11.md",
             "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            "docs/official-allin-runout-wire-oracle-2026-07-19.md",
             "docs/notes.md",
         ],
         contract,
@@ -1745,6 +1746,9 @@ def test_evaluation_contract_classifies_dynamic_bot_versions(monkeypatch):
         "contract_paths"
     ]
     assert "docs/official-terminal-settlement-oracle-2026-07-11.md" in scope[
+        "contract_paths"
+    ]
+    assert "docs/official-allin-runout-wire-oracle-2026-07-19.md" in scope[
         "contract_paths"
     ]
     assert "web/core/master_context_contract.py" in scope["contract_paths"]
@@ -1772,12 +1776,14 @@ def test_official_oracle_docs_override_docs_non_contract_prefix(monkeypatch):
         [
             "docs/official-raise-boundary-oracle-2026-07-11.md",
             "docs/official-terminal-settlement-oracle-2026-07-11.md",
+            "docs/official-allin-runout-wire-oracle-2026-07-19.md",
             "docs/ordinary-note.md",
         ],
         contract,
     )
 
     assert scope["contract_paths"] == [
+        "docs/official-allin-runout-wire-oracle-2026-07-19.md",
         "docs/official-raise-boundary-oracle-2026-07-11.md",
         "docs/official-terminal-settlement-oracle-2026-07-11.md",
     ]

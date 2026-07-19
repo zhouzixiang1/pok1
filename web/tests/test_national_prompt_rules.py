@@ -280,7 +280,7 @@ def test_native_prompts_reject_fake_refinement_and_threshold_only_innovation():
     assert "unreachable refinement facade" in master
 
 
-def test_native_prompts_preserve_both_20260711_official_oracles():
+def test_native_prompts_preserve_all_three_official_oracles():
     master = _prompt("master_prompt.md")
     worker = _prompt("worker_profile_national_native.md")
     reviewer = _prompt("reviewer_prompt.md")
@@ -298,6 +298,9 @@ def test_native_prompts_preserve_both_20260711_official_oracles():
         )
         assert "hand-70 `earnChips`" in normalized
         assert "official-full-v5" in normalized
+        assert "official-allin-runout-wire-oracle-2026-07-19.md" in normalized
+        assert "settlement/`oppo_hands`" in normalized
+        assert "unseen" in normalized and "cards" in normalized
 
     assert "H2H" in master
     for prompt in (worker, reviewer):
@@ -305,6 +308,17 @@ def test_native_prompts_preserve_both_20260711_official_oracles():
 
     assert "Official EXE Compliance Feedback (compliance-only, not strength)" in master
     assert "National Runtime Architecture Feedback (planning signal, not legality)" in master
+
+    for prompt_name in (
+        "master_prompt.md",
+        "worker_profile_national_native.md",
+        "reviewer_prompt.md",
+        "critic_prompt.md",
+        "orchestrator.md",
+    ):
+        prompt = _prompt(prompt_name)
+        assert "official-allin-runout-wire-oracle-2026-07-19.md" in prompt
+        assert "unseen" in prompt and "card" in prompt
 
 
 def test_all_pipeline_roles_share_normal_and_first_strict_certification_boundary():

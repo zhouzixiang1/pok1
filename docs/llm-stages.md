@@ -92,7 +92,8 @@ official EXE / local national server
 
 The official Windows EXE is the protocol authority. The local `sever/` stack is
 for deterministic development and native strength matches; disagreement is
-resolved in favor of the official captures and the two pinned oracle documents.
+resolved in favor of the official captures and the three pinned oracle documents,
+including the 2026-07-19 called-all-in wire-runout omission oracle.
 
 ## Frozen planning evidence
 

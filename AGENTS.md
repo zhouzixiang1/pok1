@@ -106,8 +106,12 @@ Restart decisions are governed by the exact active-stage contract in
 - Postflop opening `call` is illegal. After a first postflop action, `check` is
   illegal. When the first player checks, the second closes the street with
   `call`.
-- After a called all-in, clients receive runout/settlement only and must not
-  act again before the next hand.
+- After a called all-in, clients must not act again before the next hand. The
+  2021 EXE may omit every not-yet-sent public street and jump directly to
+  settlement/`oppo_hands`; the system must not fabricate the unseen board.
+  Formal replay requires complementary cross-wire actions and exact all-in net
+  settlement, then binds every omitted hand to the strict THP five-card board,
+  blind/name order, revealed holes, observed prefix, and earnings.
 - TCP cards use `<suit,rank>`, with suit 0=Spade, 1=Heart, 2=Diamond, 3=Club and
   rank 0=2 through 12=Ace.
 - `earnChips` is the receiving seat's signed per-hand net. `oppo_hands` appears
@@ -121,8 +125,10 @@ Terminal peer fold/call and showdown cards must update the connection-lived
 opponent tracker before the next hand.
 
 `sever/engine/game.py` deliberately mirrors that proven wire omission, rather
-than relaying easier local-only terminal tokens. It also keeps the authoritative
-internal/THP result while omitting the natural hand-70 wire settlement below.
+than relaying easier local-only terminal tokens or a called-all-in future board.
+It keeps the complete board as authoritative internal/THP state while omitting
+those future street messages, and also omits the natural hand-70 wire settlement
+below.
 
 At natural hand 70 the 2021 EXE omits the last `earnChips` pair. Formal v5
 certification cross-binds wire settlements for hands 1..69 to THP states 0..68,
@@ -133,6 +139,7 @@ are pinned by `runtime_architecture_policy.py`:
 
 - `docs/official-raise-boundary-oracle-2026-07-11.md`
 - `docs/official-terminal-settlement-oracle-2026-07-11.md`
+- `docs/official-allin-runout-wire-oracle-2026-07-19.md`
 
 Do not edit or reinterpret them casually. Control-plane changes verify their
 hashes; they do not rerun the official EXE.

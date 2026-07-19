@@ -246,6 +246,7 @@ def test_active_document_tree_has_no_retired_operator_credentials_or_commands():
     excluded = {
         ROOT / "docs" / "official-raise-boundary-oracle-2026-07-11.md",
         ROOT / "docs" / "official-terminal-settlement-oracle-2026-07-11.md",
+        ROOT / "docs" / "official-allin-runout-wire-oracle-2026-07-19.md",
     }
     active_docs = [
         path

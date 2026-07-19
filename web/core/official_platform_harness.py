@@ -94,7 +94,10 @@ THP_FOOTER_RE = re.compile(
     r"\{\[THP\]\[([^\]]+)\]\[([^\]]+)\]\[([^\]]+)\]"
     r"\[([^\]]+)\]\[([^\]]+)\]\}"
 )
-TERMINAL_COMPLETION_SCHEMA_VERSION = 1
+THP_CARD_RE = re.compile(r"[2-9TJQKA][shdc]")
+THP_RANK_TO_TCP = {rank: index for index, rank in enumerate("23456789TJQKA")}
+THP_SUIT_TO_TCP = {"s": 0, "h": 1, "d": 2, "c": 3}
+TERMINAL_COMPLETION_SCHEMA_VERSION = 2
 FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 2
 FORMAL_QUALITY_ADMISSION_KIND = "official-formal-quality-admission"
 FORMAL_WIRE_CAUSAL_ORDER_SCHEMA_VERSION = 1
@@ -1782,6 +1785,9 @@ def _strict_thp_match(
         players = [match.group(6), match.group(7)]
         if not match.group(2) or not match.group(3):
             issues.append(f"thp_record_payload_empty:{index}")
+        _parsed_cards, card_issue = _parse_thp_card_payload(match.group(3))
+        if card_issue:
+            issues.append(f"thp_record_cards_invalid:{index}:{card_issue}")
         if sum(earnings) != 0:
             issues.append(f"thp_record_earnings_not_zero_sum:{index}")
         if set(players) != set(expected_names) or len(set(players)) != 2:
@@ -1841,6 +1847,421 @@ def _strict_thp_match(
     }, []
 
 
+def _parse_thp_card_group(
+    payload: str,
+    *,
+    expected_count: int,
+) -> tuple[list[list[int]] | None, str]:
+    tokens = THP_CARD_RE.findall(payload)
+    if len(tokens) != expected_count or "".join(tokens) != payload:
+        return None, f"expected_{expected_count}_cards"
+    cards = [
+        [THP_SUIT_TO_TCP[token[1]], THP_RANK_TO_TCP[token[0]]]
+        for token in tokens
+    ]
+    if len({tuple(card) for card in cards}) != len(cards):
+        return None, "duplicate_cards"
+    return cards, ""
+
+
+def _parse_thp_card_payload(
+    payload: str,
+) -> tuple[dict[str, Any] | None, str]:
+    parts = payload.split("/")
+    if not 1 <= len(parts) <= 4:
+        return None, "street_shape"
+    hole_parts = parts[0].split("|")
+    if len(hole_parts) != 2:
+        return None, "hole_shape"
+    big_blind, issue = _parse_thp_card_group(
+        hole_parts[0],
+        expected_count=2,
+    )
+    if issue:
+        return None, f"big_blind_{issue}"
+    small_blind, issue = _parse_thp_card_group(
+        hole_parts[1],
+        expected_count=2,
+    )
+    if issue:
+        return None, f"small_blind_{issue}"
+    public_by_stage: dict[str, list[list[int]]] = {}
+    for stage, expected_count, stage_payload in zip(
+        ("flop", "turn", "river"),
+        (3, 1, 1),
+        parts[1:],
+    ):
+        cards, issue = _parse_thp_card_group(
+            stage_payload,
+            expected_count=expected_count,
+        )
+        if issue:
+            return None, f"{stage}_{issue}"
+        assert cards is not None
+        public_by_stage[stage] = cards
+    assert big_blind is not None and small_blind is not None
+    all_cards = [
+        *big_blind,
+        *small_blind,
+        *(card for cards in public_by_stage.values() for card in cards),
+    ]
+    if len({tuple(card) for card in all_cards}) != len(all_cards):
+        return None, "cross_field_card_collision"
+    return {
+        "hole_cards_by_position": {
+            "BIGBLIND": big_blind,
+            "SMALLBLIND": small_blind,
+        },
+        "public_cards_by_stage": public_by_stage,
+        "public_cards": [
+            card
+            for stage in ("flop", "turn", "river")
+            for card in public_by_stage.get(stage, [])
+        ],
+    }, ""
+
+
+def _single_hand_record(
+    records: Any,
+    *,
+    hand: int,
+) -> dict[str, Any] | None:
+    if not isinstance(records, list):
+        return None
+    matches = [
+        item
+        for item in records
+        if isinstance(item, dict) and item.get("hand") == hand
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _normalize_wire_cards(value: Any) -> list[list[int]] | None:
+    if not isinstance(value, list):
+        return None
+    normalized: list[list[int]] = []
+    for card in value:
+        if (
+            not isinstance(card, (list, tuple))
+            or len(card) != 2
+            or type(card[0]) is not int
+            or type(card[1]) is not int
+            or not 0 <= card[0] <= 3
+            or not 0 <= card[1] <= 12
+        ):
+            return None
+        normalized.append([card[0], card[1]])
+    return normalized
+
+
+def _omitted_allin_thp_bindings(
+    strict_match: dict[str, Any],
+    wire_summary: dict[str, Any],
+    *,
+    expected_hands: int,
+    expected_names: tuple[str, str],
+    allow_provisional_wire: bool = False,
+) -> tuple[list[dict[str, Any]] | None, list[str]]:
+    """Bind every verified omitted wire runout to complete official THP truth."""
+
+    omissions = wire_summary.get("omitted_allin_runout_boundaries", [])
+    provisional = wire_summary.get(
+        "provisional_omitted_allin_runout_boundaries",
+        [],
+    )
+    if not isinstance(provisional, list):
+        return None, ["provisional_omitted_allin_runout_boundaries_invalid"]
+    if provisional and not allow_provisional_wire:
+        return None, ["omitted_allin_runout_wire_not_finalized"]
+    if not omissions and allow_provisional_wire:
+        omissions = provisional
+    if not isinstance(omissions, list):
+        return None, ["omitted_allin_runout_boundaries_invalid"]
+    if not omissions:
+        return [], []
+    seats = wire_summary.get("seats")
+    if not isinstance(seats, dict) or len(seats) != 2:
+        return None, ["omitted_allin_runout_seats_invalid"]
+    seat_names = {
+        str(label): str(seat.get("name") or "")
+        for label, seat in seats.items()
+        if isinstance(seat, dict)
+    }
+    if (
+        len(seat_names) != 2
+        or set(seat_names.values()) != set(expected_names)
+        or len(set(seat_names.values())) != 2
+    ):
+        return None, ["omitted_allin_runout_player_identity_invalid"]
+
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for item in omissions:
+        if not isinstance(item, dict) or type(item.get("hand")) is not int:
+            return None, ["omitted_allin_runout_boundary_invalid"]
+        hand = item["hand"]
+        if not 1 <= hand <= expected_hands:
+            return None, [f"omitted_allin_runout_hand_invalid:{hand}"]
+        grouped.setdefault(hand, []).append(item)
+
+    bindings: list[dict[str, Any]] = []
+    records = strict_match.get("records")
+    if not isinstance(records, list) or len(records) != expected_hands:
+        return None, ["omitted_allin_runout_thp_records_invalid"]
+    stage_counts = {"preflop": 0, "flop": 3, "turn": 4}
+    for hand, boundaries in sorted(grouped.items()):
+        labels = {str(item.get("conn") or "") for item in boundaries}
+        if len(boundaries) != 2 or labels != set(seat_names):
+            return None, [f"omitted_allin_runout_peer_boundary_invalid:{hand}"]
+        stage_values = {str(item.get("stage") or "") for item in boundaries}
+        count_values = {item.get("public_cards_observed") for item in boundaries}
+        if len(stage_values) != 1 or len(count_values) != 1:
+            return None, [f"omitted_allin_runout_boundary_mismatch:{hand}"]
+        stage = next(iter(stage_values))
+        observed_count = next(iter(count_values))
+        if stage not in stage_counts or observed_count != stage_counts[stage]:
+            return None, [f"omitted_allin_runout_prefix_invalid:{hand}"]
+        if any(
+            item.get("natural_hand_70") is not (hand == expected_hands)
+            for item in boundaries
+        ):
+            return None, [f"omitted_allin_runout_terminal_flag_invalid:{hand}"]
+
+        record = records[hand - 1]
+        if record.get("index") != hand - 1:
+            return None, [f"omitted_allin_runout_thp_hand_invalid:{hand}"]
+        parsed_cards, card_issue = _parse_thp_card_payload(
+            str(record.get("cards") or "")
+        )
+        if card_issue or parsed_cards is None:
+            return None, [
+                f"omitted_allin_runout_thp_cards_invalid:{hand}:{card_issue}"
+            ]
+        full_board = parsed_cards["public_cards"]
+        if len(full_board) != 5:
+            return None, [f"omitted_allin_runout_thp_board_incomplete:{hand}"]
+        earnings = record.get("earnings")
+        if (
+            not isinstance(earnings, list)
+            or sorted(earnings) not in ([-20000, 20000], [0, 0])
+        ):
+            return None, [f"omitted_allin_runout_thp_earnings_invalid:{hand}"]
+
+        players = record.get("players")
+        if not isinstance(players, list) or len(players) != 2:
+            return None, [f"omitted_allin_runout_thp_players_invalid:{hand}"]
+        holes_by_name = {
+            players[0]: parsed_cards["hole_cards_by_position"]["BIGBLIND"],
+            players[1]: parsed_cards["hole_cards_by_position"]["SMALLBLIND"],
+        }
+        seat_binding_digests: dict[str, str] = {}
+        for label in sorted(seat_names):
+            seat = seats[label]
+            name = seat_names[label]
+            blind_record = _single_hand_record(
+                seat.get("blind_records"),
+                hand=hand,
+            )
+            if (
+                blind_record is None
+                or blind_record.get("blind") not in {"BIGBLIND", "SMALLBLIND"}
+                or players[0 if blind_record.get("blind") == "BIGBLIND" else 1]
+                != name
+            ):
+                return None, [f"omitted_allin_runout_blind_binding_invalid:{hand}:{label}"]
+
+            peer_name = next(
+                candidate for candidate in expected_names if candidate != name
+            )
+            showdown = _single_hand_record(
+                seat.get("showdown_records"),
+                hand=hand,
+            )
+            revealed = _normalize_wire_cards(
+                showdown.get("opponent_cards") if showdown else None
+            )
+            if (
+                not isinstance(revealed, list)
+                or sorted(tuple(card) for card in revealed)
+                != sorted(tuple(card) for card in holes_by_name[peer_name])
+            ):
+                return None, [f"omitted_allin_runout_showdown_binding_invalid:{hand}:{label}"]
+
+            public_record = _single_hand_record(
+                seat.get("public_card_records"),
+                hand=hand,
+            )
+            observed: list[list[int]] = []
+            if public_record is not None:
+                streets = public_record.get("streets")
+                if not isinstance(streets, dict):
+                    return None, [f"omitted_allin_runout_public_binding_invalid:{hand}:{label}"]
+                for street in ("flop", "turn", "river"):
+                    cards = _normalize_wire_cards(streets.get(street, []))
+                    if cards is None:
+                        return None, [f"omitted_allin_runout_public_binding_invalid:{hand}:{label}"]
+                    observed.extend(cards)
+            if observed != full_board[:observed_count]:
+                return None, [f"omitted_allin_runout_public_prefix_mismatch:{hand}:{label}"]
+            seat_binding_digests[label] = canonical_digest({
+                "name": name,
+                "blind": blind_record["blind"],
+                "revealed_peer_hole": revealed,
+                "observed_public_prefix": observed,
+            })
+
+        binding = {
+            "hand": hand,
+            "stage": stage,
+            "public_cards_observed": observed_count,
+            "thp_record_index": hand - 1,
+            "thp_public_cards": full_board,
+            "thp_holes_by_player": holes_by_name,
+            "thp_earnings": earnings,
+            "seat_binding_digests": seat_binding_digests,
+        }
+        bindings.append({**binding, "binding_digest": canonical_digest(binding)})
+    return bindings, []
+
+
+def _terminal_thp_wire_binding(
+    strict_match: dict[str, Any],
+    wire_summary: dict[str, Any],
+    *,
+    expected_hands: int,
+    expected_names: tuple[str, str],
+    omitted_runout_bindings: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Bind the THP terminal action to fold or exact dual-wire showdown proof."""
+
+    records = strict_match.get("records")
+    if not isinstance(records, list) or len(records) != expected_hands:
+        return None, ["terminal_thp_records_invalid"]
+    record = records[-1]
+    hand = expected_hands
+    actions = str(record.get("actions") or "")
+    action_tokens = re.findall(r"r\d+|[cf]", actions)
+    terminal_action = action_tokens[-1][0] if action_tokens else ""
+    seats = wire_summary.get("seats")
+    if not isinstance(seats, dict) or len(seats) != 2:
+        return None, ["terminal_thp_wire_seats_invalid"]
+    seat_names = {
+        str(label): str(seat.get("name") or "")
+        for label, seat in seats.items()
+        if isinstance(seat, dict)
+    }
+    if (
+        len(seat_names) != 2
+        or set(seat_names.values()) != set(expected_names)
+        or len(set(seat_names.values())) != 2
+    ):
+        return None, ["terminal_thp_wire_player_identity_invalid"]
+    terminal_omissions = [
+        item
+        for item in omitted_runout_bindings
+        if item.get("hand") == hand
+    ]
+    terminal_showdowns = {
+        label: _single_hand_record(seat.get("showdown_records"), hand=hand)
+        for label, seat in seats.items()
+    }
+    if terminal_action == "f":
+        if terminal_omissions or any(
+            item is not None for item in terminal_showdowns.values()
+        ):
+            return None, ["terminal_thp_fold_showdown_conflict"]
+        payload = {
+            "hand": hand,
+            "terminal_kind": "fold",
+            "thp_actions": actions,
+            "thp_earnings": record.get("earnings"),
+        }
+        return {**payload, "binding_digest": canonical_digest(payload)}, []
+    if terminal_action != "c":
+        return None, ["terminal_thp_action_invalid"]
+    if len(terminal_omissions) > 1:
+        return None, ["terminal_thp_omission_binding_duplicate"]
+    if len(terminal_omissions) == 1:
+        payload = {
+            "hand": hand,
+            "terminal_kind": "omitted_allin_showdown",
+            "thp_actions": actions,
+            "omitted_runout_binding_digest": terminal_omissions[0].get(
+                "binding_digest"
+            ),
+        }
+        return {**payload, "binding_digest": canonical_digest(payload)}, []
+
+    parsed_cards, card_issue = _parse_thp_card_payload(
+        str(record.get("cards") or "")
+    )
+    if card_issue or parsed_cards is None:
+        return None, [f"terminal_thp_showdown_cards_invalid:{card_issue}"]
+    full_board = parsed_cards["public_cards"]
+    if len(full_board) != 5:
+        return None, ["terminal_thp_showdown_board_incomplete"]
+    players = record.get("players")
+    if not isinstance(players, list) or len(players) != 2:
+        return None, ["terminal_thp_showdown_players_invalid"]
+    holes_by_name = {
+        players[0]: parsed_cards["hole_cards_by_position"]["BIGBLIND"],
+        players[1]: parsed_cards["hole_cards_by_position"]["SMALLBLIND"],
+    }
+    seat_binding_digests: dict[str, str] = {}
+    for label in sorted(seat_names):
+        seat = seats[label]
+        name = seat_names[label]
+        blind = _single_hand_record(seat.get("blind_records"), hand=hand)
+        if (
+            blind is None
+            or blind.get("blind") not in {"BIGBLIND", "SMALLBLIND"}
+            or players[0 if blind.get("blind") == "BIGBLIND" else 1] != name
+        ):
+            return None, [f"terminal_thp_showdown_blind_invalid:{label}"]
+        peer_name = next(
+            candidate for candidate in expected_names if candidate != name
+        )
+        showdown = terminal_showdowns[label]
+        revealed = _normalize_wire_cards(
+            showdown.get("opponent_cards") if showdown else None
+        )
+        if (
+            revealed is None
+            or sorted(tuple(card) for card in revealed)
+            != sorted(tuple(card) for card in holes_by_name[peer_name])
+        ):
+            return None, [f"terminal_thp_showdown_holes_invalid:{label}"]
+        public = _single_hand_record(
+            seat.get("public_card_records"),
+            hand=hand,
+        )
+        streets = public.get("streets") if public else None
+        if not isinstance(streets, dict):
+            return None, [f"terminal_thp_showdown_public_invalid:{label}"]
+        observed: list[list[int]] = []
+        for street in ("flop", "turn", "river"):
+            cards = _normalize_wire_cards(streets.get(street, []))
+            if cards is None:
+                return None, [f"terminal_thp_showdown_public_invalid:{label}"]
+            observed.extend(cards)
+        if observed != full_board:
+            return None, [f"terminal_thp_showdown_public_mismatch:{label}"]
+        seat_binding_digests[label] = canonical_digest({
+            "name": name,
+            "blind": blind["blind"],
+            "revealed_peer_hole": revealed,
+            "public_board": observed,
+        })
+    payload = {
+        "hand": hand,
+        "terminal_kind": "full_board_showdown",
+        "thp_actions": actions,
+        "thp_public_cards": full_board,
+        "thp_holes_by_player": holes_by_name,
+        "seat_binding_digests": seat_binding_digests,
+    }
+    return {**payload, "binding_digest": canonical_digest(payload)}, []
+
+
 def _wire_settlement_prefix(
     wire_summary: dict[str, Any],
     *,
@@ -1891,6 +2312,7 @@ def _terminal_thp_observation(
     expected_hands: int,
     expected_names: tuple[str, str],
     wire_summary: dict[str, Any],
+    allow_provisional_wire: bool = False,
 ) -> tuple[dict[str, Any] | None, list[str]]:
     """Read, but do not move, a new exact official THP terminal artifact."""
     paths = _changed_thp_paths(platform_dirs, before=before)
@@ -1921,6 +2343,24 @@ def _terminal_thp_observation(
     )
     if wire_prefix is None or wire_issues:
         return None, wire_issues
+    omitted_runout_bindings, omitted_runout_issues = _omitted_allin_thp_bindings(
+        strict_match,
+        wire_summary,
+        expected_hands=expected_hands,
+        expected_names=expected_names,
+        allow_provisional_wire=allow_provisional_wire,
+    )
+    if omitted_runout_bindings is None or omitted_runout_issues:
+        return None, omitted_runout_issues
+    terminal_wire_binding, terminal_wire_issues = _terminal_thp_wire_binding(
+        strict_match,
+        wire_summary,
+        expected_hands=expected_hands,
+        expected_names=expected_names,
+        omitted_runout_bindings=omitted_runout_bindings,
+    )
+    if terminal_wire_binding is None or terminal_wire_issues:
+        return None, terminal_wire_issues
     thp_prefix = [
         {
             "hand": record["index"] + 1,
@@ -1947,6 +2387,14 @@ def _terminal_thp_observation(
         "final_hand": final_hand,
         "match_totals": strict_match["match_totals"],
         "footer_result": strict_match["footer_result"],
+        "omitted_allin_runout_bindings": omitted_runout_bindings,
+        "omitted_allin_runout_bindings_digest": canonical_digest(
+            omitted_runout_bindings
+        ),
+        "terminal_wire_binding": terminal_wire_binding,
+        "terminal_wire_binding_digest": terminal_wire_binding[
+            "binding_digest"
+        ],
     }
     return {**payload, "observation_digest": canonical_digest(payload)}, []
 
@@ -1987,6 +2435,16 @@ def _build_terminal_completion_evidence(
         "final_hand": observation.get("final_hand"),
         "match_totals": observation.get("match_totals"),
         "footer_result": str(observation.get("footer_result") or ""),
+        "omitted_allin_runout_bindings": observation.get(
+            "omitted_allin_runout_bindings"
+        ),
+        "omitted_allin_runout_bindings_digest": observation.get(
+            "omitted_allin_runout_bindings_digest"
+        ),
+        "terminal_wire_binding": observation.get("terminal_wire_binding"),
+        "terminal_wire_binding_digest": observation.get(
+            "terminal_wire_binding_digest"
+        ),
         "terminal_observation_digest": str(observation.get("observation_digest") or ""),
         "strength_evaluation": "not_applicable",
     }
@@ -2162,6 +2620,56 @@ def round_completion_issues(
                 issues.append("official_terminal_completion_match_totals_mismatch")
             if evidence.get("footer_result") != strict_match["footer_result"]:
                 issues.append("official_terminal_completion_footer_result_mismatch")
+            omitted_bindings, omitted_issues = _omitted_allin_thp_bindings(
+                strict_match,
+                wire_summary,
+                expected_hands=70,
+                expected_names=expected_name_order,
+            )
+            if omitted_bindings is None or omitted_issues:
+                issues.extend(
+                    f"official_terminal_completion_{issue}"
+                    for issue in omitted_issues
+                )
+            else:
+                if (
+                    evidence.get("omitted_allin_runout_bindings")
+                    != omitted_bindings
+                ):
+                    issues.append(
+                        "official_terminal_completion_omitted_runout_bindings_mismatch"
+                    )
+                if (
+                    evidence.get("omitted_allin_runout_bindings_digest")
+                    != canonical_digest(omitted_bindings)
+                ):
+                    issues.append(
+                        "official_terminal_completion_omitted_runout_digest_mismatch"
+                    )
+                terminal_binding, terminal_issues = _terminal_thp_wire_binding(
+                    strict_match,
+                    wire_summary,
+                    expected_hands=70,
+                    expected_names=expected_name_order,
+                    omitted_runout_bindings=omitted_bindings,
+                )
+                if terminal_binding is None or terminal_issues:
+                    issues.extend(
+                        f"official_terminal_completion_{issue}"
+                        for issue in terminal_issues
+                    )
+                else:
+                    if evidence.get("terminal_wire_binding") != terminal_binding:
+                        issues.append(
+                            "official_terminal_completion_terminal_wire_binding_mismatch"
+                        )
+                    if (
+                        evidence.get("terminal_wire_binding_digest")
+                        != terminal_binding.get("binding_digest")
+                    ):
+                        issues.append(
+                            "official_terminal_completion_terminal_wire_digest_mismatch"
+                        )
     except (OSError, ValueError, TypeError) as exc:
         issues.append(
             "official_terminal_completion_thp_read_error:"
@@ -2180,6 +2688,16 @@ def round_completion_issues(
         "final_hand": final_hand,
         "match_totals": evidence.get("match_totals"),
         "footer_result": evidence.get("footer_result"),
+        "omitted_allin_runout_bindings": evidence.get(
+            "omitted_allin_runout_bindings"
+        ),
+        "omitted_allin_runout_bindings_digest": evidence.get(
+            "omitted_allin_runout_bindings_digest"
+        ),
+        "terminal_wire_binding": evidence.get("terminal_wire_binding"),
+        "terminal_wire_binding_digest": evidence.get(
+            "terminal_wire_binding_digest"
+        ),
     }
     if evidence.get("terminal_observation_digest") != canonical_digest(observation_payload):
         issues.append("official_terminal_completion_observation_digest_mismatch")
@@ -2463,6 +2981,7 @@ def run_official_round(
                         expected_hands=target_hands,
                         expected_names=(bot_a.name, bot_b.name),
                         wire_summary=wire_summary,
+                        allow_provisional_wire=True,
                     )
                     terminal_probe_issues = probe_issues
                     if observation is not None:

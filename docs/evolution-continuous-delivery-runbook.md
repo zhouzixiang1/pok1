@@ -61,7 +61,10 @@ checkpoint, result, log, or certificate files are never copied by hand.
     recovery. Never delete, copy back, or edit a checkpoint/candidate to make
     either path appear clean.
 
-## Current Contract-40 source freeze gate
+## Historical Contract-40 source freeze gate
+
+This section records the v61/v63 recovery identity and is superseded for new
+work by the Contract-41 gate below.
 
 Before the stopped-runtime reconciliation route is used, require the **live
 source** Contract 40 identities, not any older contract text or cached
@@ -92,7 +95,28 @@ checkpoint, Reviewer journal, Quality/native result or candidate bytes as the
 corrected `600133...` / `f4e7b8...` blueprint. After the old-HEAD abandon and
 source synchronization, prepare a fresh v143; observation remains `0/10`.
 Later workflow-specific sections are retained as historical diagnostics and do
-not supersede this current transition.
+not alter this Contract-40 recovery record.
+
+## Current Contract-41 called-all-in runout gate
+
+Contract 41 adds the pinned
+`docs/official-allin-runout-wire-oracle-2026-07-19.md`, runtime architecture
+policy 5.2/schema 15, three-oracle Master/Worker/Reviewer schema, exact
+cross-wire action/settlement replay plus strict THP full-board binding, and a
+local server that keeps the full board only in evaluator/THP state. The terminal workflow-v64 official job
+`37bc2c65…` is immutable inconclusive harness evidence: 5/8 complete rounds
+passed, three early-street called-all-in rounds false-failed, no certificate was
+created, and first-control consumption remains 0/1.
+
+The workflow-v64 candidate instance, checkpoint, job and gate receipts belong
+to Contract 40 and are not reusable. The unchanged system blueprint may
+fresh-materialize the same `f4e7b845…` content hash under Contract 41, but only
+with a new checkpoint/evaluator/oracle receipt chain and every gate rerun.
+After Contract 41 is tested, reviewed and merged, stop the runtime, synchronize
+only through `origin/main`, run recovery diagnostics, and use the canonical
+abandon/re-prepare route. Never edit/delete the checkpoint, reuse the old job,
+or mark its partial rounds passed. The new v143 must rerun planning, gates,
+native precommit and a fresh operator 5+3 suite under the three-oracle identity.
 
 The fixed `192/256/96` baseline, full river refinement only, and 800-call
 cap are hard gates.  The 200 ms native quality target is a stricter local

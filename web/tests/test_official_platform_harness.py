@@ -2161,9 +2161,12 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
     thp.write_text(
         "".join(
             f"STATE:{index}:f:AhKh|QsQd:50|-50:BotA|BotB;"
-            for index in range(70)
+            for index in range(69)
         )
-        + "{[THP][BotA][BotB][BotA赢得3500个筹码][2026-07-11 17:22 合肥][2018 CCGC]}",
+        + "STATE:69:r20000c:AhKh|QsQd/2s3h4d/5c/6s:"
+        "20000|-20000:BotA|BotB;"
+        + "{[THP][BotA][BotB][BotA赢得23450个筹码]"
+        "[2026-07-11 17:22 合肥][2018 CCGC]}",
         encoding="gb2312",
     )
     log_summary = {"hands_started_min": 70, "settlements_min": 69}
@@ -2171,6 +2174,17 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
         "hands_started_min": 70,
         "settlements_min": 69,
         "pending_expected_actions": [],
+        "omitted_allin_runout_boundaries": [
+            {
+                "conn": conn,
+                "hand": 70,
+                "stage": "turn",
+                "public_cards_observed": 4,
+                "settlement_amount": None,
+                "natural_hand_70": True,
+            }
+            for conn in ("A", "B")
+        ],
         "seats": {
             "A": {
                 "name": "BotA",
@@ -2181,6 +2195,18 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
                     for hand in range(1, 70)
                 ],
                 "pending_expected_action": False,
+                "blind_records": [{"hand": 70, "blind": "BIGBLIND"}],
+                "public_card_records": [{
+                    "hand": 70,
+                    "streets": {
+                        "flop": [[0, 0], [1, 1], [2, 2]],
+                        "turn": [[3, 3]],
+                    },
+                }],
+                "showdown_records": [{
+                    "hand": 70,
+                    "opponent_cards": [[0, 10], [2, 10]],
+                }],
             },
             "B": {
                 "name": "BotB",
@@ -2191,11 +2217,34 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
                     for hand in range(1, 70)
                 ],
                 "pending_expected_action": False,
+                "blind_records": [{"hand": 70, "blind": "SMALLBLIND"}],
+                "public_card_records": [{
+                    "hand": 70,
+                    "streets": {
+                        "flop": [[0, 0], [1, 1], [2, 2]],
+                        "turn": [[3, 3]],
+                    },
+                }],
+                "showdown_records": [{
+                    "hand": 70,
+                    "opponent_cards": [[1, 12], [1, 11]],
+                }],
             },
         },
     }
 
     assert _terminal_socket_boundary(log_summary, wire_summary, 70) is True
+    missing_thp_dir = tmp_path / "missing-thp"
+    missing_thp_dir.mkdir()
+    missing_observation, missing_issues = _terminal_thp_observation(
+        missing_thp_dir,
+        before=_snapshot_platform_thp_files(missing_thp_dir),
+        expected_hands=70,
+        expected_names=("BotA", "BotB"),
+        wire_summary=wire_summary,
+    )
+    assert missing_observation is None
+    assert "thp_missing_for_full_70_hand_round" in missing_issues
     observation, issues = _terminal_thp_observation(
         platform_dir,
         before=before,
@@ -2229,6 +2278,120 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
     )
 
     assert round_completion_issues(receipt, 70) == []
+
+    def observe_variant(
+        label,
+        thp_text,
+        summary,
+        *,
+        allow_provisional_wire=False,
+    ):
+        variant_dir = tmp_path / label
+        variant_dir.mkdir()
+        variant_before = _snapshot_platform_thp_files(variant_dir)
+        (variant_dir / f"THP-{label}.txt").write_text(
+            thp_text,
+            encoding="gb2312",
+        )
+        return _terminal_thp_observation(
+            variant_dir,
+            before=variant_before,
+            expected_hands=70,
+            expected_names=("BotA", "BotB"),
+            wire_summary=summary,
+            allow_provisional_wire=allow_provisional_wire,
+        )
+
+    valid_thp_text = thp.read_text(encoding="gb2312")
+    provisional_summary = json.loads(json.dumps(wire_summary))
+    provisional_summary[
+        "provisional_omitted_allin_runout_boundaries"
+    ] = provisional_summary.pop("omitted_allin_runout_boundaries")
+    unfinalized, unfinalized_issues = observe_variant(
+        "unfinalized-wire",
+        valid_thp_text,
+        provisional_summary,
+    )
+    assert unfinalized is None
+    assert unfinalized_issues == ["omitted_allin_runout_wire_not_finalized"]
+    live_observation, live_issues = observe_variant(
+        "live-provisional-wire",
+        valid_thp_text,
+        provisional_summary,
+        allow_provisional_wire=True,
+    )
+    assert live_issues == []
+    assert live_observation is not None
+    assert (
+        live_observation["omitted_allin_runout_bindings"]
+        == observation["omitted_allin_runout_bindings"]
+    )
+
+    missing_terminal_wire = json.loads(json.dumps(wire_summary))
+    missing_terminal_wire["omitted_allin_runout_boundaries"] = []
+    for seat in missing_terminal_wire["seats"].values():
+        seat["showdown_records"] = []
+    missing_terminal, missing_terminal_issues = observe_variant(
+        "missing-terminal-wire",
+        valid_thp_text,
+        missing_terminal_wire,
+    )
+    assert missing_terminal is None
+    assert missing_terminal_issues == [
+        "terminal_thp_showdown_holes_invalid:A"
+    ]
+
+    full_board_wire = json.loads(json.dumps(wire_summary))
+    full_board_wire["omitted_allin_runout_boundaries"] = []
+    for seat in full_board_wire["seats"].values():
+        seat["public_card_records"][0]["streets"]["river"] = [[0, 4]]
+    full_board_observation, full_board_issues = observe_variant(
+        "full-board-terminal-wire",
+        valid_thp_text,
+        full_board_wire,
+    )
+    assert full_board_issues == []
+    assert full_board_observation is not None
+    assert full_board_observation["terminal_wire_binding"][
+        "terminal_kind"
+    ] == "full_board_showdown"
+
+    missing_runout, missing_runout_issues = observe_variant(
+        "missing-runout",
+        valid_thp_text.replace(
+            "AhKh|QsQd/2s3h4d/5c/6s",
+            "AhKh|QsQd",
+        ),
+        wire_summary,
+    )
+    assert missing_runout is None
+    assert missing_runout_issues == [
+        "omitted_allin_runout_thp_board_incomplete:70"
+    ]
+
+    changed_prefix, changed_prefix_issues = observe_variant(
+        "changed-prefix",
+        valid_thp_text.replace("2s3h4d", "2s3h7d"),
+        wire_summary,
+    )
+    assert changed_prefix is None
+    assert changed_prefix_issues == [
+        "omitted_allin_runout_public_prefix_mismatch:70:A"
+    ]
+
+    reveal_mismatch_summary = json.loads(json.dumps(wire_summary))
+    reveal_mismatch_summary["seats"]["A"]["showdown_records"][0][
+        "opponent_cards"
+    ] = [[0, 9], [2, 10]]
+    reveal_mismatch, reveal_mismatch_issues = observe_variant(
+        "reveal-mismatch",
+        valid_thp_text,
+        reveal_mismatch_summary,
+    )
+    assert reveal_mismatch is None
+    assert reveal_mismatch_issues == [
+        "omitted_allin_runout_showdown_binding_invalid:70:A"
+    ]
 
     missing = {key: value for key, value in receipt.items() if key != "completion_evidence"}
     assert round_completion_issues(missing, 70) == [

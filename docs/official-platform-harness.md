@@ -42,6 +42,18 @@ the same terminal behavior. Together they prove the following wire behavior:
   [official-terminal-settlement-oracle-2026-07-11.md](official-terminal-settlement-oracle-2026-07-11.md);
 - `oppo_hands|...` is sent only at showdown. The 68 messages represented 34
   showdowns, and every exposed hand matched the peer's actual hole cards;
+- after a called all-in, the EXE may omit every not-yet-sent public street and
+  go directly to `earnChips` and `oppo_hands`. The replay accepts no invented
+  board: it requires the exact legal board prefix, adjacent opposing-actor
+  `allin → call`, terminal stack/bet/pot state, connection-local settlement,
+  complementary cross-wire action provenance, exact all-in net settlement, and
+  finalized cross-connection reveal proof. Every omitted hand must then bind a
+  strict THP five-card board, blind/name order, revealed holes, observed prefix,
+  and earnings. See
+  [official-allin-runout-wire-oracle-2026-07-19.md](official-allin-runout-wire-oracle-2026-07-19.md).
+  Natural hand 70 remains provisional until strict THP state 69 with complete
+  board/blind/hole/prefix/earnings binding and footer closes the independently
+  known missing-settlement boundary;
 - the EXE relayed all 696 raises, 526 folds, and 13 all-ins in the capture, but
   only 211 of 550 calls and 309 of 443 checks. The missing 339 calls and 134
   checks were terminal street-closing actions followed directly by a street or

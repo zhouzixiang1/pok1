@@ -34,7 +34,7 @@ Analyze the Master plan systematically:
    `bet`, raise-by-increment instead of raise-to-total, stack-consuming raises
    instead of all-in, postflop TCP `check-check`, BB calling after an SB limp,
    or re-raises below the official inclusive exact-2x minimum. Full rules live
-   in `sever/国赛平台/` and the two pinned 2026-07-11 oracle documents.
+   in `sever/国赛平台/` and all three pinned official oracle documents.
 </analysis>
 
 <data>

@@ -37,7 +37,7 @@ from evolution_scope import (
     normalize_repo_path,
 )
 
-CONTRACT_VERSION = 40
+CONTRACT_VERSION = 41
 _BOT_NAME_RE = re.compile(rf"^{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)$")
 _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+)(?:/|$)")
 
@@ -46,6 +46,7 @@ _BOT_PATH_RE = re.compile(rf"^bots/{re.escape(ACTIVE_BOT_PREFIX)}(?P<version>\d+
 ALWAYS_CRITICAL_EXACT = frozenset({
     "docs/official-raise-boundary-oracle-2026-07-11.md",
     "docs/official-terminal-settlement-oracle-2026-07-11.md",
+    "docs/official-allin-runout-wire-oracle-2026-07-19.md",
     "web/core/blocking_runtime.py",
     "web/core/bootstrap_contract_recovery.py",
     "web/core/bot_artifact.py",
@@ -525,7 +526,7 @@ def is_contract_path(path: str, contract: dict[str, Any]) -> bool:
     if not path or _is_runtime_path(path, contract.get("runtime_prefixes") or RUNTIME_PREFIXES):
         return False
     # Explicit exact-file contracts override broad convenience exclusions such
-    # as docs/. The two byte-pinned official oracle documents live there and
+    # as docs/. The three byte-pinned official oracle documents live there and
     # must remain restart-critical even though ordinary notes are neutral.
     if path in set(contract.get("path_exact") or []):
         return True

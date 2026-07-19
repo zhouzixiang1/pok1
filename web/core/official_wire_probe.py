@@ -33,6 +33,7 @@ CARD_RE = re.compile(r"<(\d+),(\d+)>")
 SMALL_BLIND = 50
 BIG_BLIND = 100
 INITIAL_CHIPS = 20000
+HANDS_PER_MATCH = 70
 WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION = 1
 MAX_WIRE_EVENT_RECORD_LAG_SEC = 1.0
 
@@ -251,6 +252,7 @@ class OfficialWireReplay:
         self._last_event_brief: dict[str, Any] | None = None
         self._card_integrity_issue_keys: set[tuple[Any, ...]] = set()
         self._blind_integrity_issue_keys: set[tuple[Any, ...]] = set()
+        self._showdown_boundaries: list[dict[str, Any]] = []
 
     def _seat(self, label: str) -> SeatReplay:
         if label not in self.seats:
@@ -424,7 +426,12 @@ class OfficialWireReplay:
             return
         if message.startswith(("flop|", "turn|", "river|")):
             stage, payload = message.split("|", 1)
-            self._infer_omitted_closer(seat, f"street:{stage}")
+            self._validate_street_transition(
+                seat,
+                next_stage=stage,
+                message=message,
+                event=event,
+            )
             expected_cards = 3 if stage == "flop" else 1
             cards, card_issue = _parse_protocol_cards(payload, expected=expected_cards)
             seat.reset_street(stage)
@@ -797,6 +804,92 @@ class OfficialWireReplay:
         )
         return inferred
 
+    def _called_allin_runout_proven(self, seat: SeatReplay) -> bool:
+        hand_actions = [
+            item
+            for item in seat.hand_actions
+            if item.get("hand") == seat.hand_num
+        ]
+        suffix = hand_actions[-2:]
+        return (
+            seat.allin_occurred
+            and len(suffix) == 2
+            and [item.get("action_type") for item in suffix]
+            == ["allin", "call"]
+            and suffix[0].get("actor") != suffix[1].get("actor")
+            and suffix[0].get("stage") == suffix[1].get("stage")
+            and seat.player_chips == 0
+            and seat.opponent_chips == 0
+            and seat.player_bet == seat.opponent_bet
+            and seat.pot == 2 * INITIAL_CHIPS
+        )
+
+    def _validate_street_transition(
+        self,
+        seat: SeatReplay,
+        *,
+        next_stage: str,
+        message: str,
+        event: dict[str, Any],
+    ) -> None:
+        if seat.hand_num <= 0:
+            return
+        previous_stage = seat.stage
+        expected_next = {
+            "preflop": "flop",
+            "flop": "turn",
+            "turn": "river",
+        }.get(previous_stage)
+        if expected_next != next_stage:
+            self._add_issue(
+                "public_street_sequence_invalid",
+                seat,
+                message,
+                event,
+                previous_stage=previous_stage,
+                expected_stage=expected_next,
+                observed_stage=next_stage,
+            )
+        self._infer_omitted_closer(seat, f"street:{next_stage}")
+        if self._called_allin_runout_proven(seat):
+            return
+        stage_actions = [
+            item
+            for item in seat.hand_actions
+            if item.get("hand") == seat.hand_num
+            and item.get("stage") == previous_stage
+        ]
+        closed = (
+            seat.expected_since is None
+            and len(stage_actions) >= 2
+            and stage_actions[-1].get("action_type") in {"call", "check"}
+            and not seat.fold_occurred
+            and seat.player_bet == seat.opponent_bet
+        )
+        if not closed:
+            self._add_issue(
+                "street_boundary_unproved",
+                seat,
+                message,
+                event,
+                previous_stage=previous_stage,
+                observed_stage=next_stage,
+                pending_expected_action=seat.expected_since is not None,
+                action_suffix=[
+                    {
+                        "actor": item.get("actor"),
+                        "action_type": item.get("action_type"),
+                        "stage": item.get("stage"),
+                        "inferred": item.get("inferred") is True,
+                    }
+                    for item in stage_actions[-2:]
+                ],
+                reason=(
+                    "next public street requires an exact completed prior street "
+                    "or a previously proved called-all-in runout"
+                ),
+            )
+
     def _consume_showdown(
         self,
         seat: SeatReplay,
@@ -814,14 +907,37 @@ class OfficialWireReplay:
                 reason=card_issue,
             )
             return
-        if seat.hand_num <= 0 or len(seat.public_cards) != 5 or seat.fold_occurred:
+        boundary = self._showdown_terminal_boundary(seat)
+        full_board_showdown = boundary["kind"] == "full_board"
+        omitted_called_allin_runout = boundary["kind"] == "omitted_allin_runout"
+        if omitted_called_allin_runout:
+            self._add_warning(
+                "showdown_runout_omitted_after_called_allin",
+                seat,
+                message,
+                event,
+                public_cards_observed=len(seat.public_cards),
+                reason=(
+                    "the official EXE omitted the remaining called-all-in board; "
+                    "cross-connection terminal proof remains required"
+                ),
+            )
+        if (
+            not (full_board_showdown or omitted_called_allin_runout)
+        ):
             self._add_issue(
                 "showdown_boundary_invalid",
                 seat,
                 message,
                 event,
-                reason="oppo_hands is valid only at a five-card non-fold showdown",
+                reason=(
+                    "oppo_hands requires a terminal call plus local settlement "
+                    "(except natural hand 70), and either five public cards or "
+                    "an exact called-all-in board-prefix omission"
+                ),
             )
+        else:
+            self._showdown_boundaries.append(boundary)
         if set(cards) & set(seat.hole_cards + seat.public_cards):
             self._add_issue(
                 "showdown_cards_collision",
@@ -861,6 +977,208 @@ class OfficialWireReplay:
                 revealed=[list(card) for card in cards],
                 actual=[list(card) for card in peer_hole],
             )
+
+    def _showdown_terminal_boundary(self, seat: SeatReplay) -> dict[str, Any]:
+        """Capture one locally proven terminal reveal for later cross-binding."""
+
+        hand_actions = [
+            item
+            for item in seat.hand_actions
+            if item.get("hand") == seat.hand_num
+        ]
+        stage_actions = [
+            item
+            for item in hand_actions
+            if item.get("stage") == seat.stage
+        ]
+        action_suffix = stage_actions[-2:]
+        settlement = next(
+            (
+                item
+                for item in seat.settlement_records
+                if item.get("hand") == seat.hand_num
+            ),
+            None,
+        )
+        common_terminal = (
+            seat.hand_num > 0
+            and not seat.fold_occurred
+            and (settlement is not None or seat.hand_num == HANDS_PER_MATCH)
+        )
+        full_board_terminal = (
+            common_terminal
+            and bool(hand_actions)
+            and hand_actions[-1].get("action_type") == "call"
+        )
+        omitted_runout_terminal = (
+            common_terminal
+            and bool(stage_actions)
+            and stage_actions[-1].get("action_type") == "call"
+        )
+        kind = "invalid"
+        if full_board_terminal and len(seat.public_cards) == 5:
+            kind = "full_board"
+        else:
+            expected_prefix = {"preflop": 0, "flop": 3, "turn": 4}.get(
+                seat.stage
+            )
+            exact_allin_call = (
+                len(action_suffix) == 2
+                and [item.get("action_type") for item in action_suffix]
+                == ["allin", "call"]
+                and action_suffix[0].get("actor")
+                != action_suffix[1].get("actor")
+            )
+            if (
+                omitted_runout_terminal
+                and expected_prefix is not None
+                and len(seat.public_cards) == expected_prefix
+                and seat.allin_occurred
+                and exact_allin_call
+                and seat.player_chips == 0
+                and seat.opponent_chips == 0
+                and seat.player_bet == seat.opponent_bet
+                and seat.pot == 2 * INITIAL_CHIPS
+            ):
+                kind = "omitted_allin_runout"
+        return {
+            "kind": kind,
+            "conn": seat.label,
+            "hand": seat.hand_num,
+            "stage": seat.stage,
+            "public_cards_observed": len(seat.public_cards),
+            "settlement_amount": (
+                int(settlement["amount"]) if settlement is not None else None
+            ),
+            "natural_hand_70": seat.hand_num == HANDS_PER_MATCH,
+            "action_suffix": [
+                {
+                    "actor": item.get("actor"),
+                    "action_type": item.get("action_type"),
+                    "stage": item.get("stage"),
+                    "inferred": item.get("inferred") is True,
+                }
+                for item in action_suffix
+            ],
+            "player_chips": seat.player_chips,
+            "opponent_chips": seat.opponent_chips,
+            "player_bet": seat.player_bet,
+            "opponent_bet": seat.opponent_bet,
+            "pot": seat.pot,
+        }
+
+    def _cross_bound_showdown_records(
+        self,
+        *,
+        finalized: bool,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Close provisional reveal records without depending on socket order."""
+
+        issues: list[dict[str, Any]] = []
+        verified_omissions: list[dict[str, Any]] = []
+        for boundary in self._showdown_boundaries:
+            peers = [
+                item
+                for item in self._showdown_boundaries
+                if item["hand"] == boundary["hand"]
+                and item["conn"] != boundary["conn"]
+            ]
+            if len(peers) != 1:
+                if finalized:
+                    issues.append({
+                        "kind": "showdown_cross_connection_boundary_unproved",
+                        "conn": boundary["conn"],
+                        "hand": boundary["hand"],
+                        "stage": boundary["stage"],
+                        "message": "oppo_hands",
+                        "reason": "terminal reveal requires exactly one peer reveal",
+                    })
+                continue
+            peer = peers[0]
+            same_boundary = (
+                peer["kind"] == boundary["kind"]
+                and peer["stage"] == boundary["stage"]
+                and peer["public_cards_observed"]
+                == boundary["public_cards_observed"]
+            )
+            action_provenance_bound = True
+            if boundary["kind"] == "omitted_allin_runout":
+                suffixes = (boundary["action_suffix"], peer["action_suffix"])
+                initiators = [
+                    suffix
+                    for suffix in suffixes
+                    if [item.get("actor") for item in suffix]
+                    == ["player", "opponent"]
+                ]
+                responders = [
+                    suffix
+                    for suffix in suffixes
+                    if [item.get("actor") for item in suffix]
+                    == ["opponent", "player"]
+                ]
+                action_provenance_bound = (
+                    len(initiators) == 1
+                    and len(responders) == 1
+                    and all(
+                        [item.get("action_type") for item in suffix]
+                        == ["allin", "call"]
+                        for suffix in suffixes
+                    )
+                    and initiators[0][0].get("inferred") is False
+                    and responders[0][0].get("inferred") is False
+                    and responders[0][1].get("inferred") is False
+                )
+            if boundary["natural_hand_70"]:
+                settlement_bound = (
+                    peer["natural_hand_70"]
+                    and boundary["settlement_amount"] is None
+                    and peer["settlement_amount"] is None
+                )
+            else:
+                amounts = (
+                    boundary["settlement_amount"],
+                    peer["settlement_amount"],
+                )
+                settlement_bound = (
+                    all(type(value) is int for value in amounts)
+                    and sum(amounts) == 0
+                )
+                if boundary["kind"] == "omitted_allin_runout":
+                    settlement_bound = settlement_bound and sorted(amounts) in (
+                        [-INITIAL_CHIPS, INITIAL_CHIPS],
+                        [0, 0],
+                    )
+            if (
+                not same_boundary
+                or not action_provenance_bound
+                or not settlement_bound
+            ):
+                issues.append({
+                    "kind": "showdown_cross_connection_boundary_mismatch",
+                    "conn": boundary["conn"],
+                    "hand": boundary["hand"],
+                    "stage": boundary["stage"],
+                    "message": "oppo_hands",
+                    "reason": (
+                        "peer reveal must bind the same terminal board boundary, "
+                        "cross-wire action provenance, and legal settlement; "
+                        "called-all-in requires +/-20000 or 0/0, while hand 70 "
+                        "requires the known dual settlement omission"
+                    ),
+                })
+                continue
+            hand_has_wire_issue = any(
+                issue.get("hand") == boundary["hand"]
+                for issue in self.issues
+            )
+            if (
+                boundary["kind"] == "omitted_allin_runout"
+                and not hand_has_wire_issue
+            ):
+                verified_omissions.append(dict(boundary))
+        verified_omissions.sort(key=lambda item: (item["hand"], item["conn"]))
+        return _dedupe_dicts(issues), verified_omissions
+
     def _opponent_action_requires_response(self, seat: SeatReplay, action_type: str) -> bool:
         if action_type == "fold":
             return False
@@ -1013,7 +1331,12 @@ class OfficialWireReplay:
         )
         return committed
 
-    def summary(self, *, now: float | None = None) -> dict[str, Any]:
+    def summary(
+        self,
+        *,
+        now: float | None = None,
+        finalized: bool = False,
+    ) -> dict[str, Any]:
         current = time.time() if now is None else float(now)
         pending: list[dict[str, Any]] = []
         for seat in self.seats.values():
@@ -1078,13 +1401,22 @@ class OfficialWireReplay:
         }
         hands = [item["hands_started"] for item in seat_summaries.values()]
         settlements = [item["settlements"] for item in seat_summaries.values()]
+        showdown_issues, cross_bound_omissions = self._cross_bound_showdown_records(
+            finalized=finalized,
+        )
         return {
             "events_seen": self.events_seen,
             "hands_started_min": min(hands) if hands else 0,
             "settlements_min": min(settlements) if settlements else 0,
             "seats": seat_summaries,
-            "issues": _dedupe_dicts(self.issues),
+            "issues": _dedupe_dicts([*self.issues, *showdown_issues]),
             "warnings": _dedupe_dicts(self.warnings),
+            "omitted_allin_runout_boundaries": (
+                cross_bound_omissions if finalized else []
+            ),
+            "provisional_omitted_allin_runout_boundaries": (
+                [] if finalized else cross_bound_omissions
+            ),
             "pending_expected_actions": pending,
             "max_platform_silent_gap_sec": round(self.max_platform_silent_gap_sec, 3),
         }
@@ -1956,7 +2288,7 @@ def replay_events(
             "message": "",
             "reason": causal_issue,
         })
-        return replay.summary(now=now)
+        return replay.summary(now=now, finalized=finalized)
     for event in ordered:
         consumed = event
         if "observation_seq" in event:
@@ -1972,7 +2304,7 @@ def replay_events(
             summary_now = max(float(event["observation_t"]) for event in ordered)
         else:
             summary_now = max(float(event.get("t", 0.0) or 0.0) for event in ordered)
-    return replay.summary(now=summary_now)
+    return replay.summary(now=summary_now, finalized=finalized)
 
 
 def load_events(path: str | Path) -> list[dict[str, Any]]:

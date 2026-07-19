@@ -77,6 +77,10 @@ Full national legality checklist from `sever/国赛平台/非法行为说明.doc
 - Postflop first action cannot be call; postflop after any first action, check is illegal.
 - Preflop BB cannot call after SB limps/calls; BB should check, raise, or fold.
 - After one all-in, the opponent may only call or fold; consecutive all-ins are illegal.
+- A called all-in may jump directly to settlement/`oppo_hands` with future
+  board streets omitted by the 2021 EXE. Reject any policy that acts again or
+  fabricates unseen cards; require complementary cross-wire actions, exact
+  all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings proof.
 - Verify the strict baseline's system-to-policy controls: the calibrated
   169-class preflop table remains system-owned and content-bound; each
   `line.preflop_spot` uses a raise-to-total sizing band and an exact stack
@@ -234,7 +238,7 @@ You check ONLY these five areas:
    migration is system-owned preparation and must never appear as a Worker
    strategy task.
 
-   **Official oracle alignment** — Formal policy `official-full-v5` and both
+   **Official oracle alignment** — Formal policy `official-full-v5` and all three
    content-pinned oracle documents are authoritative. Normal candidates require
    five complete 70-hand self-play rounds plus three complete 70-hand rounds
    against an eligible published strict-policy opponent. Only v143 while the
@@ -250,8 +254,9 @@ You check ONLY these five areas:
    Reject fabricated hand-70 `earnChips`, acceptance of 69 settlements alone,
    or any use of official/THP winners or chips in Glicko, H2H, source selection,
    precommit strength, or planning authority.
-   Treat `docs/official-raise-boundary-oracle-2026-07-11.md` and
-   `docs/official-terminal-settlement-oracle-2026-07-11.md` as the exact,
+   Treat `docs/official-raise-boundary-oracle-2026-07-11.md`,
+   `docs/official-terminal-settlement-oracle-2026-07-11.md`, and
+   `docs/official-allin-runout-wire-oracle-2026-07-19.md` as the exact,
    non-negotiable evaluation sources.
 
 4. **No dead code** — No unreachable code, unused imports, or commented-out blocks left behind.
