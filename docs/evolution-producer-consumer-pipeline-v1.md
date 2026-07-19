@@ -437,7 +437,10 @@ and owner, atomically appends `EffectCancelled`, fences the effect and rejects
 late completion. Restart recovery claims requested/retry work; expired running
 work requires a content-bound owner-death proof before the existing kernel
 reclaim transaction increments attempt and lease epoch. These primitives are
-present but no production dispatcher invokes them yet.
+present but no production dispatcher invokes them yet. Recovery returns both
+durably acquired leases and explicit per-effect concurrent-conflict rows, so a
+mid-loop CAS loss cannot hide earlier committed claims or appear as silent
+success.
 
 ## 11. Resource broker and backpressure
 

@@ -50,14 +50,14 @@ class ProducerConsumerStoreError(RuntimeError):
 
 
 def effect_id_for_envelope(envelope: Mapping[str, Any]) -> str:
-    """Return the durable identity for one run-scoped idempotency key."""
+    """Return the durable identity for one run-scoped logical job id."""
 
     issues = job_envelope_issues(envelope)
     if issues:
         raise ProducerConsumerStoreError(issues)
     return "producer-consumer-job:" + canonical_digest({
         "run_id": envelope["run_id"],
-        "idempotency_key": envelope["idempotency_key"],
+        "job_id": envelope["job_id"],
     })
 
 
@@ -162,33 +162,56 @@ class ProducerConsumerWorkflowAdapter:
             definition_version=ADAPTER_DEFINITION_VERSION,
         )
 
-        # This read is only an early diagnostic.  The deterministic effect id
-        # and WorkflowStore.request_effect input-digest check are the atomic
-        # idempotency fence under concurrent callers.
-        existing = self.store.effect(effect_id)
-        if existing:
-            payload = existing.get("input_payload")
-            prior = payload.get("envelope") if isinstance(payload, dict) else None
+        # The kernel's run-scoped command lock makes the two uniqueness axes
+        # atomic: neither a logical job id nor an idempotency key may name two
+        # envelopes, including under concurrent submitters.  The effect id is
+        # derived from job_id, while this scan fences key reuse.
+        with self.store.command_lock(frozen["run_id"], blocking=True):
+            for observed in self.store.effects_for_run(frozen["run_id"]):
+                if not str(observed.get("kind") or "").startswith(
+                    EFFECT_KIND_PREFIX
+                ):
+                    continue
+                payload = observed.get("input_payload")
+                prior = (
+                    payload.get("envelope") if isinstance(payload, dict) else None
+                )
+                if not isinstance(prior, dict):
+                    raise ProducerConsumerStoreError(
+                        "producer_consumer_existing_effect_unverifiable"
+                    )
+                same_job = prior.get("job_id") == frozen["job_id"]
+                same_key = (
+                    prior.get("idempotency_key") == frozen["idempotency_key"]
+                )
+                if not same_job and not same_key:
+                    continue
+                try:
+                    exact = assert_idempotent_job_replay(prior, frozen)
+                except (JobContractError, TypeError) as exc:
+                    raise ProducerConsumerStoreError(
+                        "producer_consumer_idempotency_conflict"
+                    ) from exc
+                if not exact or not same_job or not same_key:
+                    raise ProducerConsumerStoreError(
+                        "producer_consumer_idempotency_conflict"
+                    )
             try:
-                assert_idempotent_job_replay(prior, frozen)
-            except (JobContractError, TypeError) as exc:
+                effect = self.store.request_effect(
+                    run_id=frozen["run_id"],
+                    effect_id=effect_id,
+                    kind=EFFECT_KIND_PREFIX + frozen["job_kind"],
+                    input_payload=_effect_input(frozen),
+                    causation_id=(
+                        "producer-consumer-submit:" + frozen["idempotency_key"]
+                    ),
+                    max_attempts=frozen["retry_policy"]["max_attempts"],
+                    available_at=frozen["deadline"]["not_before_epoch"],
+                )
+            except WorkflowConflict as exc:
                 raise ProducerConsumerStoreError(
-                    "producer_consumer_idempotency_conflict"
+                    "producer_consumer_submit_conflict"
                 ) from exc
-        try:
-            effect = self.store.request_effect(
-                run_id=frozen["run_id"],
-                effect_id=effect_id,
-                kind=EFFECT_KIND_PREFIX + frozen["job_kind"],
-                input_payload=_effect_input(frozen),
-                causation_id="producer-consumer-submit:" + frozen["idempotency_key"],
-                max_attempts=frozen["retry_policy"]["max_attempts"],
-                available_at=frozen["deadline"]["not_before_epoch"],
-            )
-        except WorkflowConflict as exc:
-            raise ProducerConsumerStoreError(
-                "producer_consumer_submit_conflict"
-            ) from exc
         _, validated = self._validated_effect(effect_id)
         return {
             "effect_id": effect_id,
@@ -383,7 +406,7 @@ class ProducerConsumerWorkflowAdapter:
         death_proof_resolver: (
             Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
         ) = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, list[dict[str, Any]]]:
         """Claim queued work and reclaim expired work after proven owner death."""
 
         pending = self.store.pending_outbox(now=now)
@@ -417,6 +440,7 @@ class ProducerConsumerWorkflowAdapter:
             prepared.append((effect, proof))
 
         leases: list[dict[str, Any]] = []
+        conflicts: list[dict[str, Any]] = []
         for index, (effect, proof) in enumerate(prepared):
             effect_id = str(effect["effect_id"])
             _, envelope = self._validated_effect(effect_id)
@@ -425,26 +449,33 @@ class ProducerConsumerWorkflowAdapter:
                 now=now,
                 requested=lease_seconds,
             )
-            if effect["status"] == "running":
-                assert proof is not None
-                lease = self.store.reclaim_effect_lease(
-                    effect_id,
-                    expected_owner=str(effect["lease_owner"]),
-                    expected_lease_epoch=int(effect["lease_epoch"]),
-                    owner=owner,
-                    lease_seconds=bounded_seconds,
-                    causation_id=(
-                        f"producer-consumer-recovery:{recovery_id}:{index}"
-                    ),
-                    proof=proof,
-                    now=now,
-                )
-            else:
-                lease = self.store.claim_effect(
-                    effect_id,
-                    owner=owner,
-                    lease_seconds=bounded_seconds,
-                    now=now,
-                )
+            try:
+                if effect["status"] == "running":
+                    assert proof is not None
+                    lease = self.store.reclaim_effect_lease(
+                        effect_id,
+                        expected_owner=str(effect["lease_owner"]),
+                        expected_lease_epoch=int(effect["lease_epoch"]),
+                        owner=owner,
+                        lease_seconds=bounded_seconds,
+                        causation_id=(
+                            f"producer-consumer-recovery:{recovery_id}:{index}"
+                        ),
+                        proof=proof,
+                        now=now,
+                    )
+                else:
+                    lease = self.store.claim_effect(
+                        effect_id,
+                        owner=owner,
+                        lease_seconds=bounded_seconds,
+                        now=now,
+                    )
+            except (WorkflowConflict, InvalidCompletion):
+                conflicts.append({
+                    "effect_id": effect_id,
+                    "issue": "producer_consumer_recovery_concurrent_conflict",
+                })
+                continue
             leases.append(_lease_projection(lease, envelope))
-        return leases
+        return {"leases": leases, "conflicts": conflicts}

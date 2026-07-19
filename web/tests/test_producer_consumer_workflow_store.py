@@ -1,6 +1,7 @@
 """Durable Slice-2 adapter regressions; the adapter remains production-inert."""
 
 from copy import deepcopy
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,43 @@ def test_submit_is_durable_and_same_key_changed_candidate_conflicts(tmp_path):
     ):
         adapter.submit(changed)
 
+    same_job_new_key = _envelope(
+        idempotency_key="draft-1:quality-static:v2",
+    )
+    with pytest.raises(
+        ProducerConsumerStoreError,
+        match="producer_consumer_idempotency_conflict",
+    ):
+        adapter.submit(same_job_new_key)
+
+
+def test_concurrent_submit_has_one_job_and_idempotency_cas_winner(tmp_path):
+    adapter = _adapter(tmp_path)
+    first = _envelope()
+    second = _envelope(
+        job_id="job:draft-1:quality-static-alternate",
+        candidate_id="candidate-2",
+        artifact_digest=DIGESTS["c"],
+    )
+    barrier = __import__("threading").Barrier(2)
+
+    def submit(envelope):
+        barrier.wait()
+        try:
+            return ("submitted", adapter.submit(envelope)["envelope"]["candidate_id"])
+        except ProducerConsumerStoreError:
+            return ("conflict", None)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(submit, (first, second)))
+    assert sorted(result[0] for result in results) == ["conflict", "submitted"]
+    effects = adapter.store.effects_for_run(first["run_id"])
+    assert len(effects) == 1
+    assert effects[0]["input_payload"]["envelope"]["candidate_id"] in {
+        "candidate-1",
+        "candidate-2",
+    }
+
 
 def test_claim_and_heartbeat_are_bounded_by_frozen_envelope_deadline(tmp_path):
     adapter = _adapter(tmp_path)
@@ -277,8 +315,9 @@ def test_restart_recovery_requires_death_proof_and_reclaims_exact_epoch(tmp_path
         recovery_id="restart-1",
         death_proof_resolver=death_proof,
     )
-    assert len(recovered) == 1
-    second = recovered[0]
+    assert recovered["conflicts"] == []
+    assert len(recovered["leases"]) == 1
+    second = recovered["leases"][0]
     assert second["attempt"] == first["attempt"] + 1
     assert second["lease_epoch"] == first["lease_epoch"] + 1
     assert second["lease_until"] == 140
@@ -330,9 +369,58 @@ def test_infrastructure_retry_and_fresh_restart_claim_preserve_envelope(tmp_path
         now=131,
         recovery_id="restart-2",
     )
-    assert len(recovered) == 1
-    assert recovered[0]["attempt"] == 2
-    assert recovered[0]["envelope_digest"] == envelope["envelope_digest"]
+    assert recovered["conflicts"] == []
+    assert len(recovered["leases"]) == 1
+    assert recovered["leases"][0]["attempt"] == 2
+    assert recovered["leases"][0]["envelope_digest"] == envelope["envelope_digest"]
+
+
+def test_recovery_reports_partial_concurrent_conflict_without_hiding_claim(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _adapter(tmp_path)
+    first = _envelope()
+    second = _envelope(
+        job_id="job:draft-1:quality-dynamic",
+        job_kind="quality-dynamic",
+        idempotency_key="draft-1:quality-dynamic:v1",
+        candidate_id="candidate-2",
+        artifact_digest=DIGESTS["c"],
+    )
+    first_effect_id = adapter.submit(first)["effect_id"]
+    second_effect_id = adapter.submit(second)["effect_id"]
+    original_claim = adapter.store.claim_effect
+    calls = 0
+
+    def one_winner(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise WorkflowConflict("concurrent claimant won")
+        return original_claim(*args, **kwargs)
+
+    monkeypatch.setattr(adapter.store, "claim_effect", one_winner)
+    recovered = adapter.recover(
+        owner="consumer-a",
+        lease_seconds=30,
+        now=101,
+        recovery_id="concurrent-recovery",
+    )
+    assert len(recovered["leases"]) == 1
+    assert len(recovered["conflicts"]) == 1
+    assert recovered["conflicts"][0]["effect_id"] in {
+        first_effect_id,
+        second_effect_id,
+    }
+    assert recovered["conflicts"][0]["issue"] == (
+        "producer_consumer_recovery_concurrent_conflict"
+    )
+    statuses = sorted(
+        effect["status"]
+        for effect in adapter.store.effects_for_run(first["run_id"])
+    )
+    assert statuses == ["requested", "running"]
 
 
 def test_infrastructure_failure_cannot_be_recorded_after_lease_expiry(tmp_path):
@@ -382,7 +470,7 @@ def test_fenced_cancel_survives_restart_and_late_receipt_cannot_complete(tmp_pat
         lease_seconds=30,
         now=106,
         recovery_id="after-cancel",
-    ) == []
+    ) == {"leases": [], "conflicts": []}
     with pytest.raises(ProducerConsumerStoreError) as caught:
         restarted.complete(
             effect_id,
