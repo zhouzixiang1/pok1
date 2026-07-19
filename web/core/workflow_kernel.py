@@ -1133,6 +1133,333 @@ class WorkflowStore:
             status="running",
         )
 
+    def renew_effect_lease(
+        self,
+        effect_id: str,
+        *,
+        owner: str,
+        lease_epoch: int,
+        lease_seconds: float,
+        causation_id: str,
+        now: float | None = None,
+    ) -> EffectLease:
+        """Heartbeat one exact live lease without consuming an attempt.
+
+        Renewal is an owner/epoch/status compare-and-swap.  It never revives an
+        expired or terminal lease, never changes the attempt or lease epoch,
+        and records the heartbeat and new boundary in the same transaction as
+        the effect row update.  The caller freezes ``now`` for idempotent
+        command retries; reusing a causation id with different timing fails.
+        """
+
+        if (
+            not isinstance(owner, str)
+            or not owner
+            or not isinstance(causation_id, str)
+            or not causation_id
+            or isinstance(lease_epoch, bool)
+            or not isinstance(lease_epoch, int)
+            or lease_epoch < 1
+        ):
+            raise ValueError("effect lease heartbeat identity is invalid")
+        current_time = float(now if now is not None else time.time())
+        lease_duration = float(lease_seconds)
+        if (
+            not math.isfinite(current_time)
+            or not math.isfinite(lease_duration)
+            or lease_duration <= 0
+        ):
+            raise ValueError("effect lease heartbeat timing is invalid")
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise WorkflowConflict(f"unknown effect: {effect_id}")
+
+            duplicate = connection.execute(
+                "SELECT * FROM workflow_events WHERE run_id = ? AND causation_id = ?",
+                (str(row["run_id"]), causation_id),
+            ).fetchone()
+            if duplicate is not None:
+                payload = json.loads(str(duplicate["payload"]))
+                exact_retry = bool(
+                    str(duplicate["event_type"]) == "EffectLeaseHeartbeat"
+                    and payload.get("effect_id") == effect_id
+                    and payload.get("lease_owner") == owner
+                    and payload.get("lease_epoch") == lease_epoch
+                    and payload.get("heartbeat_at") == current_time
+                    and payload.get("lease_seconds") == lease_duration
+                )
+                if not exact_retry:
+                    connection.rollback()
+                    raise WorkflowConflict(
+                        f"causation id reused with different event: {causation_id}"
+                    )
+                if (
+                    row["status"] != "running"
+                    or str(row["lease_owner"] or "") != owner
+                    or int(row["lease_epoch"] or 0) != lease_epoch
+                    or row["lease_until"] is None
+                    or float(row["lease_until"]) < float(payload["lease_until"])
+                ):
+                    connection.rollback()
+                    raise InvalidCompletion(
+                        f"stale effect lease heartbeat for {effect_id} "
+                        f"epoch={lease_epoch}"
+                    )
+                connection.commit()
+                return EffectLease(
+                    effect_id=effect_id,
+                    run_id=str(row["run_id"]),
+                    kind=str(row["kind"]),
+                    input_digest=str(row["input_digest"]),
+                    attempt=int(row["attempt"]),
+                    max_attempts=int(row["max_attempts"]),
+                    lease_epoch=int(row["lease_epoch"]),
+                    lease_until=float(row["lease_until"]),
+                    status="running",
+                )
+
+            previous_until = row["lease_until"]
+            if (
+                row["status"] != "running"
+                or str(row["lease_owner"] or "") != owner
+                or int(row["lease_epoch"] or 0) != lease_epoch
+                or previous_until is None
+                or float(previous_until) <= current_time
+            ):
+                connection.rollback()
+                raise InvalidCompletion(
+                    f"stale effect lease heartbeat for {effect_id} "
+                    f"epoch={lease_epoch}"
+                )
+            expires = max(float(previous_until), current_time + lease_duration)
+            payload = {
+                "effect_id": effect_id,
+                "attempt": int(row["attempt"]),
+                "lease_epoch": lease_epoch,
+                "lease_owner": owner,
+                "heartbeat_at": current_time,
+                "lease_seconds": lease_duration,
+                "previous_lease_until": float(previous_until),
+                "lease_until": expires,
+            }
+            try:
+                self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectLeaseHeartbeat",
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET lease_until = ?, updated_at = ?
+                    WHERE effect_id = ? AND status = 'running'
+                      AND lease_owner = ? AND lease_epoch = ?
+                      AND lease_until = ?
+                    """,
+                    (
+                        expires,
+                        current_time,
+                        effect_id,
+                        owner,
+                        lease_epoch,
+                        float(previous_until),
+                    ),
+                )
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                if int(changed or 0) != 1:
+                    raise WorkflowConflict(
+                        f"effect lease heartbeat CAS failed: {effect_id}"
+                    )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+        return EffectLease(
+            effect_id=effect_id,
+            run_id=str(row["run_id"]),
+            kind=str(row["kind"]),
+            input_digest=str(row["input_digest"]),
+            attempt=int(row["attempt"]),
+            max_attempts=int(row["max_attempts"]),
+            lease_epoch=lease_epoch,
+            lease_until=expires,
+            status="running",
+        )
+
+    def cancel_effect(
+        self,
+        effect_id: str,
+        *,
+        expected_status: str,
+        expected_attempt: int,
+        expected_lease_epoch: int,
+        expected_owner: str | None,
+        reason: str,
+        causation_id: str,
+        now: float | None = None,
+    ) -> dict[str, Any]:
+        """Cancel one exact non-terminal effect and fence late completions.
+
+        The caller must bind the status, lease epoch and owner it observed.
+        Running effects require their exact owner; unowned queue/deferred
+        states require ``expected_owner=None``.  This is deliberately narrower
+        than the run-wide :meth:`terminal_transition`.
+        """
+
+        if (
+            expected_status not in {"requested", "retry", "deferred", "running"}
+            or isinstance(expected_attempt, bool)
+            or not isinstance(expected_attempt, int)
+            or expected_attempt < 0
+            or isinstance(expected_lease_epoch, bool)
+            or not isinstance(expected_lease_epoch, int)
+            or expected_lease_epoch < 0
+            or (expected_owner is not None and (
+                not isinstance(expected_owner, str) or not expected_owner
+            ))
+            or not isinstance(reason, str)
+            or not reason.strip()
+            or not isinstance(causation_id, str)
+            or not causation_id
+        ):
+            raise ValueError("effect cancellation identity is invalid")
+        if (expected_status == "running") != (expected_owner is not None):
+            raise ValueError("running effect cancellation owner is invalid")
+        current_time = float(now if now is not None else time.time())
+        if not math.isfinite(current_time):
+            raise ValueError("effect cancellation timing is invalid")
+        normalized_reason = reason.strip()[:2000]
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM effects WHERE effect_id = ?",
+                (effect_id,),
+            ).fetchone()
+            if row is None:
+                connection.rollback()
+                raise WorkflowConflict(f"unknown effect: {effect_id}")
+
+            duplicate = connection.execute(
+                "SELECT * FROM workflow_events WHERE run_id = ? AND causation_id = ?",
+                (str(row["run_id"]), causation_id),
+            ).fetchone()
+            if duplicate is not None:
+                payload = json.loads(str(duplicate["payload"]))
+                if not (
+                    str(duplicate["event_type"]) == "EffectCancelled"
+                    and payload.get("effect_id") == effect_id
+                    and payload.get("previous_status") == expected_status
+                    and payload.get("attempt") == expected_attempt
+                    and payload.get("lease_epoch") == expected_lease_epoch
+                    and payload.get("lease_owner") == expected_owner
+                    and payload.get("reason") == normalized_reason
+                    and payload.get("cancelled_at") == current_time
+                ):
+                    connection.rollback()
+                    raise WorkflowConflict(
+                        f"causation id reused with different event: {causation_id}"
+                    )
+                if row["status"] != "abandoned":
+                    connection.rollback()
+                    raise WorkflowConflict(
+                        f"cancelled effect changed state: {effect_id}"
+                    )
+                connection.commit()
+                return self._effect_from_row(row)
+
+            observed_owner = (
+                str(row["lease_owner"]) if row["lease_owner"] is not None else None
+            )
+            if (
+                str(row["status"]) != expected_status
+                or int(row["attempt"] or 0) != expected_attempt
+                or int(row["lease_epoch"] or 0) != expected_lease_epoch
+                or observed_owner != expected_owner
+                or (
+                    expected_status == "running"
+                    and (
+                        row["lease_until"] is None
+                        or float(row["lease_until"]) <= current_time
+                    )
+                )
+            ):
+                connection.rollback()
+                raise WorkflowConflict(
+                    f"stale effect cancellation for {effect_id}"
+                )
+            payload = {
+                "effect_id": effect_id,
+                "previous_status": expected_status,
+                "attempt": expected_attempt,
+                "lease_epoch": expected_lease_epoch,
+                "lease_owner": expected_owner,
+                "reason": normalized_reason,
+                "cancelled_at": current_time,
+            }
+            try:
+                self._append_event_locked(
+                    connection,
+                    run_id=str(row["run_id"]),
+                    event_type="EffectCancelled",
+                    payload=payload,
+                    causation_id=causation_id,
+                    expected_version=None,
+                    schema_version=KERNEL_SCHEMA_VERSION,
+                )
+                connection.execute(
+                    """
+                    UPDATE effects
+                    SET status = 'abandoned', lease_owner = NULL,
+                        lease_until = NULL, last_error = ?, updated_at = ?
+                    WHERE effect_id = ? AND status = ? AND attempt = ?
+                      AND lease_epoch = ?
+                      AND (
+                          (lease_owner IS NULL AND ? IS NULL)
+                          OR lease_owner = ?
+                      )
+                    """,
+                    (
+                        normalized_reason,
+                        current_time,
+                        effect_id,
+                        expected_status,
+                        expected_attempt,
+                        expected_lease_epoch,
+                        expected_owner,
+                        expected_owner,
+                    ),
+                )
+                changed = connection.execute("SELECT changes()").fetchone()[0]
+                if int(changed or 0) != 1:
+                    raise WorkflowConflict(
+                        f"effect cancellation CAS failed: {effect_id}"
+                    )
+                connection.execute(
+                    """
+                    UPDATE outbox
+                    SET dispatched_at = COALESCE(dispatched_at, ?)
+                    WHERE effect_id = ?
+                    """,
+                    (current_time, effect_id),
+                )
+            except Exception:
+                connection.rollback()
+                raise
+            connection.commit()
+        return self.effect(effect_id)
+
     def reclaim_effect_lease(
         self,
         effect_id: str,
@@ -1334,8 +1661,11 @@ class WorkflowStore:
         error: str,
         retryable: bool,
         causation_id: str,
+        now: float | None = None,
     ) -> dict[str, Any]:
-        now = time.time()
+        current_time = float(now if now is not None else time.time())
+        if not math.isfinite(current_time):
+            raise ValueError("effect failure timing is invalid")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -1376,7 +1706,7 @@ class WorkflowStore:
                         last_error = ?, updated_at = ?
                     WHERE effect_id = ?
                     """,
-                    (status, str(error)[:4000], now, effect_id),
+                    (status, str(error)[:4000], current_time, effect_id),
                 )
                 if status == "retry":
                     connection.execute(
@@ -1385,7 +1715,7 @@ class WorkflowStore:
                         SET dispatched_at = NULL, available_at = ?
                         WHERE effect_id = ?
                         """,
-                        (now, effect_id),
+                        (current_time, effect_id),
                     )
             except Exception:
                 connection.rollback()
