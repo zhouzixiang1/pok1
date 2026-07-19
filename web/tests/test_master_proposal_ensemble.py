@@ -749,6 +749,13 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         ),
         "singleton_parent_no_strength",
     )
+    assert not agent_master._proposal_measurement_contract_valid(
+        round_trip_measurement.replace(
+            agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE,
+            agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE.upper(),
+        ),
+        "singleton_parent_no_strength",
+    )
 
     many_hints = agent_master._render_master_proposal_provider_prompt({
         "planning_context": "Frozen facts.",

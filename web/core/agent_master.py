@@ -1286,8 +1286,13 @@ def _parsed_proposal_measurement(value: str) -> dict[str, str] | None:
         if "=" not in part:
             return None
         key, item = part.split("=", 1)
-        key = key.strip().lower()
-        item = item.strip().lower()
+        # The provider prompt publishes a canonical machine value, not a
+        # case-insensitive prose vocabulary. Preserve bytes after surrounding
+        # whitespace so keys and enum-like values must match that contract
+        # exactly; otherwise an output can look compliant while storing a
+        # different non-canonical measurement identity.
+        key = key.strip()
+        item = item.strip()
         if not key or not item or key in parsed:
             return None
         parsed[key] = item
