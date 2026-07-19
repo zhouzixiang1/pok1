@@ -198,23 +198,43 @@ GET / /pipeline /agents /evidence /bots-inventory /failures /strength  → 全 H
 所有端点在无运行进化系统时正确 fail-closed，不伪造健康数据。**未调用任何写接口**
 （Start/Stop/Abandon/Cancel/Certification/Publish）。
 
-## 9. 桌面 / 宽屏截图
+## 9. 桌面 / 宽屏截图（三档分辨率 × 双主题 × 7 视图）
 
-7 张 1920×1080 深色截图位于 `docs/dashboard-redesign-shots/`：
-- `command-center-1920.png`（视觉验收：epoch reset 告警横幅 + fail-closed 空状态）
-- `pipeline-map-1920.png`、`agent-activity-1920.png`、`evidence-gates-1920.png`
-- `bot-inventory-1920.png`、`failures-recovery-1920.png`、`background-strength-1920.png`
+42 张截图位于 `docs/dashboard-redesign-shots/`，覆盖任务第七节要求的 **1366×768 /
+1920×1080 / 宽屏 2560×1440 三档分辨率 × 深色/浅色双主题 × 7 个新视图**。命名规则
+`<view>-<resolution>-<theme>.png`，例如：
 
-Playwright headless（google-chrome）console/pageerror 检查：**0 错误**。
+- `command-center-1920-dark.png`、`command-center-1920-light.png`
+- `command-center-1366-dark.png`、`command-center-2560-light.png`
+- 同理 `pipeline-map-*`、`agent-activity-*`、`evidence-gates-*`、
+  `bot-inventory-*`、`failures-recovery-*`、`background-strength-*`
 
-1366×768 未单独截图，但布局用响应式 grid（`grid-cols-1 lg:grid-cols-2/3`），小屏自动
-降级为单列。
+**验收方法**：Playwright headless（`/usr/bin/google-chrome`，`--no-sandbox`），对每个
+组合导航到路由 → 设 `localStorage["theme"]` + `.dark` class → 等 networkidle + 1s →
+截图；同时收集 `console.error` 与 `pageerror`。
+
+**结果**：
+- 截图数：**42/42**（3 分辨率 × 2 主题 × 7 视图，全部生成）
+- 浏览器 console/pageerror：**0 错误**
+- 主题切换验证：dark 21/21 正确应用（中心像素 `rgb(16,24,40)` 深背景）、
+  light 21/21 正确应用（中心像素 `rgb(249,250,251)` 近白）
+- 视觉抽查（analyze_image）：1920-light Command Center（白底/侧栏/中文/无对比度问题，
+  生产质量 ✓）、1366-dark Pipeline Map（侧栏 collapse 为图标态、卡片堆叠、无溢出、
+  文本可读 ✓）
+
+**布局响应式**：所有视图用 `grid-cols-1 lg:grid-cols-2/3`，1366 小屏自动降级为单列，
+侧栏 collapse；1920/2560 双列或三列。深色与浅色主题均达到生产质量。
+
+**关于"有数据"态截图**：本 worktree 是干净的 `origin/main`，无运行的进化系统（任务
+第一节"绝对禁止：启动、停止或重启扑克进化系统"），`.evolution_pok` 在本机不存在。
+所有截图显示的是 **fail-closed 空状态**（如"严格国赛 epoch 尚未初始化"、
+"无 strict workflow"），这是权威要求的正确行为而非 UI bug。"有数据"的真实运行态
+截图需在主任务的真实 `.evolution_pok` 环境补做，不在本分支范围内。
 
 ## 10. 已知限制
 
-1. **截图分辨率**：仅 1920×1080 深色；1366×768 与浅色主题未单独截图（响应式 CSS
-   已覆盖，但未做视觉验收）。截图显示 fail-closed 空状态（worktree 无运行的进化系统），
-   这是预期行为，但未截图"有数据"的真实运行态。
+1. **"有数据"态截图**：见 §9 末段——需真实运行的进化系统，本分支环境无法实现；
+   所有截图是 fail-closed 空状态（权威正确行为）。
 2. **Bot Inventory 的 `parent` 字段**：`BotSummary` 类型无 `parent`（只在 `BotDetail`），
    该视图暂不显示 parent；如需展示需调 `api.botDetail(version)`（未做以避免 N+1）。
 3. **Agent Activity 对话流**：复用 `useEvolutionSSE`，与旧 `EvolutionMonitor` 行为
