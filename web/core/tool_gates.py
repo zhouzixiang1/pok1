@@ -1405,6 +1405,7 @@ def _selected_proposal_quality_evidence(
     strategy_implementation = (
         expected_binding.get("execution_mode") == "strategy_implementation"
     )
+    change_symbol = str(expected_binding.get("change_symbol") or "")
     result["reachable_symbol_diff_required"] = strategy_implementation
     if strategy_implementation:
         result["reachable_symbol_diff_ok"] = False
@@ -1441,7 +1442,8 @@ def _selected_proposal_quality_evidence(
                 row["symbol"] for row in diff_rows if row["changed"]
             ]
             result["changed_reachable_symbols"] = changed_symbols
-            if changed_symbols and len(diff_rows) == len(
+            change_symbol_changed = change_symbol in changed_symbols
+            if change_symbol_changed and len(diff_rows) == len(
                 selected.get("reachable_chain") or []
             ):
                 from bot_artifact import canonical_digest
@@ -1451,7 +1453,13 @@ def _selected_proposal_quality_evidence(
                     diff_rows
                 )
             else:
-                errors.append("proposal_quality_reachable_chain_unchanged")
+                if not changed_symbols:
+                    errors.append("proposal_quality_reachable_chain_unchanged")
+                if not change_symbol_changed:
+                    errors.append(
+                        "proposal_quality_change_symbol_unchanged:"
+                        + change_symbol
+                    )
     check_id = str((selected.get("falsifier") or {}).get("test_name") or "")
     result["check_id"] = check_id
     if check_id not in selected_checks:

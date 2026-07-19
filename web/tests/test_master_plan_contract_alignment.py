@@ -1363,6 +1363,77 @@ def test_selected_proposal_quality_requires_executed_typed_check(tmp_path):
     assert unchanged["ok"] is False
     assert unchanged["changed_reachable_symbols"] == []
     assert "proposal_quality_reachable_chain_unchanged" in unchanged["errors"]
+    assert (
+        "proposal_quality_change_symbol_unchanged:"
+        + selected["change_symbol"]
+    ) in unchanged["errors"]
+
+    # A caller-only delta cannot stand in for the proposal's exact writable
+    # AST target.  The previous gate accepted any changed chain member, so a
+    # Worker could leave change_symbol untouched and still pass quality.
+    caller_only_packet = deepcopy(packet)
+    caller_only_packet["proposal_source_symbol_digests"][
+        selected["proposal_id"]
+    ][selected["change_symbol"]] = agent_master._source_symbol_ast_digest(
+        candidate_dir,
+        selected["change_symbol"],
+    )
+    caller_only_plan = deepcopy(master_plan)
+    caller_only_plan["proposal_ensemble"] = caller_only_packet
+    caller_only_plan["proposal_binding"] = agent_master._selected_proposal_binding(
+        selected,
+        caller_only_packet,
+    )
+    caller_only = tool_gates._selected_proposal_quality_evidence(
+        caller_only_plan,
+        transition,
+        candidate_dir=candidate_dir,
+    )
+    assert caller_only["ok"] is False
+    assert caller_only["changed_reachable_symbols"] == [
+        selected["reachable_chain"][0]
+    ]
+    assert caller_only["reachable_symbol_diff_ok"] is False
+    assert caller_only["reachable_symbol_diff_digest"] == ""
+    assert caller_only["errors"] == [
+        "proposal_quality_change_symbol_unchanged:"
+        + selected["change_symbol"]
+    ]
+
+    # Comments and formatting are deliberately excluded by the AST digest and
+    # therefore cannot manufacture a change to the selected mechanism.
+    formatting_only = tmp_path / "formatting_only_candidate"
+    formatting_only.mkdir()
+    (formatting_only / "policy.py").write_text(
+        (candidate_dir / "policy.py").read_text(encoding="utf-8")
+        + "\n# formatting-only evidence is not executable\n",
+        encoding="utf-8",
+    )
+    formatting_packet = deepcopy(packet)
+    for symbol in selected["reachable_chain"]:
+        formatting_packet["proposal_source_symbol_digests"][
+            selected["proposal_id"]
+        ][symbol] = agent_master._source_symbol_ast_digest(
+            candidate_dir,
+            symbol,
+        )
+    formatting_plan = deepcopy(master_plan)
+    formatting_plan["proposal_ensemble"] = formatting_packet
+    formatting_plan["proposal_binding"] = agent_master._selected_proposal_binding(
+        selected,
+        formatting_packet,
+    )
+    formatting_result = tool_gates._selected_proposal_quality_evidence(
+        formatting_plan,
+        transition,
+        candidate_dir=formatting_only,
+    )
+    assert formatting_result["ok"] is False
+    assert formatting_result["changed_reachable_symbols"] == []
+    assert (
+        "proposal_quality_change_symbol_unchanged:"
+        + selected["change_symbol"]
+    ) in formatting_result["errors"]
 
     # The proposal prose and measurement remain a hypothesis: without a typed
     # check row they are not executable quality evidence.
