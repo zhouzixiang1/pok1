@@ -293,6 +293,62 @@ def test_wire_probe_replays_idle_action_at_last_raw_observation(tmp_path):
         recorder.events[flush_index]["observation_seq"]
         == recorder.events[raw_index]["observation_seq"]
     )
+    live_prefix = replay_events(
+        recorder.events[: flop_index + 1],
+        finalized=False,
+    )
+    assert not any(
+        issue["kind"] == "street_boundary_unproved"
+        for issue in live_prefix["issues"]
+    )
+    assert any(
+        warning["kind"] == "provisional_street_boundary_unproved"
+        and warning["strict_issue_kind"] == "street_boundary_unproved"
+        for warning in live_prefix["warnings"]
+    )
+    unresolved_finalized = json.loads(json.dumps(
+        recorder.events[: flop_index + 1]
+    ))
+    epoch = float(unresolved_finalized[0]["t"]) - float(
+        unresolved_finalized[0]["dt"]
+    )
+    marker_t = max(
+        float(unresolved_finalized[-1]["t"]),
+        float(unresolved_finalized[-1]["observation_t"]),
+    ) + 0.001
+    unresolved_finalized.append({
+        "ts": unresolved_finalized[-1]["ts"],
+        "t": marker_t,
+        "dt": marker_t - epoch,
+        "causal_order_schema_version": 1,
+        "record_seq": len(unresolved_finalized) + 1,
+        "observation_seq": max(
+            event["observation_seq"] for event in unresolved_finalized
+        ) + 1,
+        "observation_t": marker_t,
+        "observation_dt": marker_t - epoch,
+        "conn": "*",
+        "direction": "probe_lifecycle",
+        "event_type": "capture_finalized",
+        "raw_repr": "",
+        "raw_hex": "",
+        "messages": [],
+        "remaining": "",
+        "details": {},
+    })
+    unresolved_summary = replay_events(
+        unresolved_finalized,
+        finalized=True,
+    )
+    assert any(
+        issue["kind"] == "wire_event_causal_order_invalid"
+        and issue["reason"] == "causal_wire_event_pending_buffer_unresolved"
+        for issue in unresolved_summary["issues"]
+    )
+    assert not any(
+        warning["kind"] == "provisional_street_boundary_unproved"
+        for warning in replay_events(recorder.events)["warnings"]
+    )
     assert replay_events(recorder.events)["issues"] == []
 
     causal_fields = {
@@ -309,6 +365,231 @@ def test_wire_probe_replays_idle_action_at_last_raw_observation(tmp_path):
     assert any(
         issue["kind"] == "unsolicited_client_action"
         for issue in replay_events(legacy_append_order)["issues"]
+    )
+
+
+def test_deferred_invalid_action_becomes_strict_after_idle_flush(tmp_path):
+    class Reader:
+        def __init__(self):
+            self.queue = asyncio.Queue()
+
+        async def read(self, _size):
+            return await self.queue.get()
+
+    class Writer:
+        def __init__(self, recorder):
+            self.recorder = recorder
+            self.drains = 0
+
+        def write(self, _payload):
+            return None
+
+        async def drain(self):
+            self.drains += 1
+            message = (
+                "flop|<0,3><1,4><2,5>"
+                if self.drains == 1
+                else "turn|<3,6>"
+            )
+            self.recorder.record(
+                conn="A",
+                direction="server_to_bot",
+                raw=message.encode("utf-8"),
+                messages=[message],
+                remaining="",
+            )
+
+    async def exercise(probe, reader, writer):
+        async def feed():
+            await reader.queue.put(b"call")
+            await asyncio.sleep(0.07)
+            await reader.queue.put(b"call")
+            await asyncio.sleep(0.07)
+            await reader.queue.put(b"")
+
+        feeder = asyncio.create_task(feed())
+        await probe._pipe("A", "bot_to_server", reader, writer)
+        await feeder
+
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    recorder.record(
+        conn="A",
+        direction="server_to_bot",
+        raw=b"preflop|SMALLBLIND|<0,1><1,2>",
+        messages=["preflop|SMALLBLIND|<0,1><1,2>"],
+        remaining="",
+    )
+    probe = TcpWireProbe(
+        platform_host="127.0.0.1",
+        platform_port=1,
+        recorder=recorder,
+    )
+    probe._awaiting_name["A"] = False
+    try:
+        asyncio.run(exercise(probe, Reader(), Writer(recorder)))
+    finally:
+        recorder.close()
+
+    turn_index = next(
+        index
+        for index, event in enumerate(recorder.events)
+        if event["messages"] == ["turn|<3,6>"]
+    )
+    second_flush_index = [
+        index
+        for index, event in enumerate(recorder.events)
+        if event["event_type"] == "idle_flush"
+    ][1]
+    prefix = recorder.events[: turn_index + 1]
+    live = replay_events(
+        prefix,
+        now=max(float(event["observation_t"]) for event in prefix),
+    )
+    assert live["issues"] == []
+    assert any(
+        warning["kind"] == "provisional_street_boundary_unproved"
+        for warning in live["warnings"]
+    )
+    flushed = replay_events(
+        recorder.events[: second_flush_index + 1],
+        now=float(recorder.events[second_flush_index]["t"]),
+    )
+    assert any(
+        issue["kind"] in {"illegal_call", "unsolicited_client_action"}
+        for issue in flushed["issues"]
+    )
+    assert not any(
+        warning["kind"] == "provisional_street_boundary_unproved"
+        for warning in flushed["warnings"]
+    )
+
+
+def test_pending_client_buffer_does_not_hide_older_same_connection_boundary(tmp_path):
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    try:
+        for direction, raw, messages, remaining in (
+            (
+                "server_to_bot",
+                b"preflop|SMALLBLIND|<0,1><1,2>",
+                ["preflop|SMALLBLIND|<0,1><1,2>"],
+                "",
+            ),
+            (
+                "server_to_bot",
+                b"flop|<0,3><1,4><2,5>",
+                ["flop|<0,3><1,4><2,5>"],
+                "",
+            ),
+            ("bot_to_server", b"call", [], "call"),
+            ("server_to_bot", b"turn|<3,6>", ["turn|<3,6>"], ""),
+        ):
+            recorder.record(
+                conn="A",
+                direction=direction,
+                raw=raw,
+                messages=messages,
+                remaining=remaining,
+            )
+    finally:
+        recorder.close()
+
+    summary = replay_events(
+        recorder.events,
+        now=max(float(event["observation_t"]) for event in recorder.events),
+    )
+    strict_boundaries = [
+        issue
+        for issue in summary["issues"]
+        if issue["kind"] == "street_boundary_unproved"
+    ]
+    provisional_boundaries = [
+        warning
+        for warning in summary["warnings"]
+        if warning["kind"] == "provisional_street_boundary_unproved"
+    ]
+    assert [issue["message"] for issue in strict_boundaries] == [
+        "flop|<0,3><1,4><2,5>"
+    ]
+    assert [warning["message"] for warning in provisional_boundaries] == [
+        "turn|<3,6>"
+    ]
+
+
+@pytest.mark.parametrize("pending_text", ["garbage", "rai", "BotName"])
+def test_noncanonical_pending_buffer_never_downgrades_live_boundary(
+    tmp_path,
+    pending_text,
+):
+    recorder = WireEventRecorder(tmp_path / "wire.jsonl")
+    try:
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"preflop|SMALLBLIND|<0,1><1,2>",
+            messages=["preflop|SMALLBLIND|<0,1><1,2>"],
+            remaining="",
+        )
+        source = recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=b"call",
+            messages=[],
+            remaining="call",
+        )
+        recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=b"",
+            messages=["call"],
+            remaining="",
+            event_type="idle_flush",
+            observation_seq=source["observation_seq"],
+            observation_t=source["observation_t"],
+            deferred_parser_mode="client_action",
+        )
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"flop|<0,3><1,4><2,5>",
+            messages=["flop|<0,3><1,4><2,5>"],
+            remaining="",
+        )
+        pending_messages, pending_remaining = split_client_messages(
+            pending_text,
+            allow_name=False,
+            flush_numeric=False,
+        )
+        assert pending_messages == []
+        assert pending_remaining == pending_text
+        recorder.record(
+            conn="A",
+            direction="bot_to_server",
+            raw=pending_text.encode("utf-8"),
+            messages=[],
+            remaining=pending_text,
+        )
+        recorder.record(
+            conn="A",
+            direction="server_to_bot",
+            raw=b"turn|<3,6>",
+            messages=["turn|<3,6>"],
+            remaining="",
+        )
+    finally:
+        recorder.close()
+
+    summary = replay_events(
+        recorder.events,
+        now=max(float(event["observation_t"]) for event in recorder.events),
+    )
+    assert any(
+        issue["kind"] == "street_boundary_unproved"
+        and issue["message"] == "turn|<3,6>"
+        for issue in summary["issues"]
+    )
+    assert not any(
+        warning["kind"] == "provisional_street_boundary_unproved"
+        for warning in summary["warnings"]
     )
 
 
@@ -991,8 +1272,9 @@ def test_called_allin_wire_oracle_fixture_is_exact_and_zero_strength():
     oracle = json.loads(raw)
 
     assert hashlib.sha256(raw).hexdigest() == (
-        "c17f9b1908031ce3d85abb5f995581a5a049449ed8c6bb94da0cf9c954646440"
+        "a81c804d1940437fb259d0119c7bc1b06e968fcd5f20eb4364ab3f594156ef48"
     )
+    assert oracle["schema_version"] == 2
     assert oracle["authority_scope"] == "official_exe_wire_compliance_only"
     assert oracle["strength_weight"] == 0
     assert {
@@ -1004,6 +1286,20 @@ def test_called_allin_wire_oracle_fixture_is_exact_and_zero_strength():
         "flop": 3,
         "turn": 4,
     }
+    assert {
+        (item["stage"], item["public_cards_observed"], item["thp_public_cards"])
+        for item in oracle["thp_prefix_observations"]
+    } == {("flop", 3, 3), ("turn", 4, 4)}
+    assert oracle["required_strict_thp_proof"][
+        "allowed_public_board_shapes"
+    ] == "exact_wire_prefix_or_complete_five"
+    assert oracle["required_strict_thp_proof"]["bind_terminal_action"] is True
+    assert len(oracle["live_deferred_action_observations"]) == 4
+    assert all(
+        item["live_issue"] == "street_boundary_unproved"
+        and item["finalized_issues"] == []
+        for item in oracle["live_deferred_action_observations"]
+    )
     assert oracle["natural_hand_70"] == {
         "wire_settlement_expected": False,
         "dual_showdown_reveal_required_for_called_allin": True,
@@ -1631,8 +1927,13 @@ def test_replay_rejects_turn_after_unclosed_flop_before_called_allin():
         if not 0.25 < float(event["t"]) < 0.3
     ]
 
+    provisional = replay_events(events, finalized=False)
     summary = replay_events(events, finalized=True)
 
+    assert any(
+        issue["kind"] == "street_boundary_unproved"
+        for issue in provisional["issues"]
+    )
     assert summary["omitted_allin_runout_boundaries"] == []
     assert any(
         issue["kind"] == "street_boundary_unproved"

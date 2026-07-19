@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 from contextlib import nullcontext
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -366,6 +367,123 @@ def _called_allin_failure_diagnosis():
     return {**payload, "proof_digest": canonical_digest(payload)}
 
 
+def _v65_failure_diagnosis():
+    rounds = [copy.deepcopy(item) for item in recovery._V65_ROUND_IDENTITIES]
+    round_ids = {item["slot"]: item["round_id"] for item in rounds}
+    live = [
+        {
+            **copy.deepcopy(item),
+            "round_id": round_ids[item["slot"]],
+        }
+        for item in recovery._V65_LIVE_RACE_FAILURES
+    ]
+    thp = [
+        {
+            **copy.deepcopy(item),
+            "round_id": round_ids[item["slot"]],
+        }
+        for item in recovery._V65_THP_PREFIX_FAILURES
+    ]
+    payload = {
+        "schema_version": 1,
+        "kind": recovery._V65_DIAGNOSIS_KIND,
+        "profile_id": recovery._V65_PROFILE_ID,
+        "defect_ids": list(recovery._V65_DEFECT_IDS),
+        "incident_identity": recovery._expected_v65_incident_identity(),
+        "baseline_wire_probe_sha256": (
+            recovery._V65_BASELINE_WIRE_PROBE_SHA256
+        ),
+        "repair_wire_probe_sha256": "a" * 64,
+        "baseline_harness_sha256": recovery._V65_BASELINE_HARNESS_SHA256,
+        "repair_harness_sha256": "b" * 64,
+        "baseline_oracle_document_sha256": (
+            recovery._V65_BASELINE_ORACLE_DOC_SHA256
+        ),
+        "repair_oracle_document_sha256": (
+            recovery._V65_REPAIR_ORACLE_DOC_SHA256
+        ),
+        "baseline_oracle_fixture_sha256": (
+            recovery._V65_BASELINE_ORACLE_FIXTURE_SHA256
+        ),
+        "repair_oracle_fixture_sha256": (
+            recovery._V65_REPAIR_ORACLE_FIXTURE_SHA256
+        ),
+        "evidence_sha256": "e" * 64,
+        "evidence_archive_sha256": "f" * 64,
+        "evidence_archive_manifest_digest": "1" * 64,
+        "suite_summary_sha256": "2" * 64,
+        "attribution_digest": "3" * 64,
+        "round_receipts": rounds,
+        "live_deferred_failures": live,
+        "thp_prefix_failures": thp,
+        "authority_absence": copy.deepcopy(
+            recovery._CALLED_ALLIN_AUTHORITY_ABSENCE
+        ),
+        "strength_evaluation": "not_applicable",
+        "disposition": "abandon_and_reprepare_only_without_evidence_reuse",
+    }
+    return {**payload, "proof_digest": canonical_digest(payload)}
+
+
+def _build_v65_live_archive_diagnosis(monkeypatch):
+    runtime_value = os.environ.get("POK_V65_RECOVERY_RUNTIME_ROOT")
+    if not runtime_value:
+        pytest.skip("set POK_V65_RECOVERY_RUNTIME_ROOT for the read-only canary")
+    runtime = Path(runtime_value).resolve()
+    root = Path(__file__).resolve().parents[2]
+    job = (
+        runtime
+        / "web/core/results/official_certification/jobs"
+        / recovery._V65_JOB_ID
+    )
+    status_path = (
+        runtime
+        / "web/core/results/official_certification/status/national_v143.json"
+    )
+    assert job.is_dir() and not job.is_symlink()
+    assert status_path.is_file() and not status_path.is_symlink()
+    request = json.loads((job / "request.json").read_text())
+    state = json.loads((job / "state.json").read_text())
+    status = json.loads(status_path.read_text())
+    original_git = recovery._git
+    repair_head = "f" * 40
+
+    def git(base, *args, binary=False):
+        head, relative = args[1].split(":", 1)
+        if head == repair_head:
+            return (root / relative).read_bytes()
+        return original_git(base, *args, binary=binary)
+
+    monkeypatch.setattr(recovery, "_git", git)
+    return recovery._v65_contract_failure_diagnosis(
+        root,
+        job,
+        request=request,
+        state=state,
+        status=status,
+        candidate_hash=recovery._V65_CANDIDATE_HASH,
+        workflow_run_id=recovery._V65_WORKFLOW_RUN_ID,
+        checkpoint_revision=recovery._V65_CHECKPOINT_REVISION,
+        job_result_digest=recovery._V65_JOB_RESULT_DIGEST,
+        expected_evaluation_contract_version=(
+            recovery._V65_BASELINE_CONTRACT_VERSION
+        ),
+        expected_evaluation_contract_hash=(
+            recovery._V65_BASELINE_CONTRACT_HASH
+        ),
+        expected_repair_contract_version=(
+            recovery._V65_REPAIR_CONTRACT_VERSION
+        ),
+        expected_baseline_head=recovery._V65_BASELINE_HEAD,
+        expected_repair_head=repair_head,
+        control_consumption={
+            "successful_count": 0,
+            "max_successful_consumptions": 1,
+        },
+        require_live_repair_source=False,
+    )
+
+
 def _resign_diagnosis(value):
     value["proof_digest"] = canonical_digest({
         key: item for key, item in value.items()
@@ -431,6 +549,81 @@ def _called_allin_claim_envelope():
             },
             "contract_failure_diagnosis": diagnosis,
             "recovery_profile": recovery._CALLED_ALLIN_PROFILE_ID,
+        },
+        "first_strict_execution_success": {
+            **success_payload,
+            "proof_digest": canonical_digest(success_payload),
+        },
+        "disposition": (
+            "canonical_abandon_and_quarantine_without_evidence_migration"
+        ),
+    }
+    return {**payload, "claim_digest": canonical_digest(payload)}
+
+
+def _v65_claim_envelope():
+    scope = {
+        **_execution_scope(),
+        "workflow_run_id": recovery._V65_WORKFLOW_RUN_ID,
+        "checkpoint_revision": 12,
+        "candidate_artifact_hash": recovery._V65_CANDIDATE_HASH,
+    }
+    terminal = {
+        **_execution_terminal(),
+        "scope_digest": canonical_digest(scope),
+    }
+    success_payload = {
+        "scope": scope,
+        "expected_receipts": _execution_receipts(),
+        "terminal_receipt": terminal,
+    }
+    diagnosis = _v65_failure_diagnosis()
+    incident = diagnosis["incident_identity"]
+    payload = {
+        "schema_version": recovery.CLAIM_SCHEMA_VERSION,
+        "kind": recovery.CLAIM_KIND,
+        "evaluation_epoch": recovery.EVALUATION_EPOCH,
+        "old_checkpoint": {
+            "digest": "a" * 64,
+            "workflow_run_id": incident["workflow_run_id"],
+            "next_v": 143,
+            "source_v": 142,
+            "stage": "official_bootstrap_required",
+            "checkpoint_revision": incident["checkpoint_revision"],
+        },
+        "git_contract_migration": {
+            "baseline_head": incident["baseline_head"],
+            "baseline_contract_hash": incident["baseline_contract_hash"],
+            "current_head": NEW_HEAD,
+            "current_contract_hash": "b" * 64,
+            "changed_paths": [
+                "web/core/official_wire_probe.py",
+                "web/core/official_platform_harness.py",
+            ],
+            "contract_paths": [
+                "web/core/official_wire_probe.py",
+                "web/core/official_platform_harness.py",
+            ],
+        },
+        "candidate": {
+            "path": "bots/national_v143",
+            "artifact_hash": incident["candidate_artifact_hash"],
+            "files": sorted(recovery._STRICT_FILES),
+        },
+        "parked_request_digest": "c" * 64,
+        "terminal_job": {
+            "job_id": incident["job_id"],
+            "result_digest": incident["job_result_digest"],
+            "rounds_requested": incident["rounds_requested"],
+            "rounds_completed": incident["rounds_completed"],
+            "rounds_run": incident["rounds_run"],
+            "control_consumption": {
+                "valid": True,
+                "successful_count": 0,
+                "max_successful_consumptions": 1,
+            },
+            "contract_failure_diagnosis": diagnosis,
+            "recovery_profile": recovery._V65_PROFILE_ID,
         },
         "first_strict_execution_success": {
             **success_payload,
@@ -646,6 +839,171 @@ def test_called_allin_failure_diagnosis_is_exact_contract_40_to_41_profile():
     ]
 
 
+def test_v65_failure_diagnosis_is_exact_contract_41_to_42_profile():
+    diagnosis = _v65_failure_diagnosis()
+
+    assert recovery._validate_v65_failure_diagnosis_envelope(
+        diagnosis
+    ) == diagnosis
+    assert recovery._validate_contract_failure_diagnosis_envelope(
+        diagnosis
+    ) == diagnosis
+    assert diagnosis["incident_identity"] == {
+        "baseline_head": recovery._V65_BASELINE_HEAD,
+        "baseline_contract_version": 41,
+        "baseline_contract_hash": recovery._V65_BASELINE_CONTRACT_HASH,
+        "repair_contract_version": 42,
+        "workflow_run_id": "generation:143:workflow-v65",
+        "checkpoint_revision": 21,
+        "candidate_artifact_hash": recovery._V65_CANDIDATE_HASH,
+        "job_id": recovery._V65_JOB_ID,
+        "job_result_digest": recovery._V65_JOB_RESULT_DIGEST,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "passed_rounds": 2,
+        "failed_rounds": 6,
+    }
+    assert [item["slot"] for item in diagnosis["round_receipts"]] == list(
+        recovery._V65_EXPECTED_SLOTS
+    )
+    assert len(diagnosis["live_deferred_failures"]) == 4
+    assert len(diagnosis["thp_prefix_failures"]) == 2
+
+
+@pytest.mark.parametrize("corrupt_artifact", (None, "receipt", "wire", "thp"))
+def test_v65_live_archive_builder_reopens_only_exact_raw_artifacts(
+    monkeypatch,
+    corrupt_artifact,
+):
+    original_read = recovery._read_regular_exact
+    target_fragments = {
+        "receipt": ("/self_play_02/executions/", "/receipt.json"),
+        "wire": ("/self_play_02/executions/", "/wire_events.jsonl"),
+        "thp": ("/self_play_03/executions/", "/thp/"),
+    }
+    if corrupt_artifact is not None:
+        fragments = target_fragments[corrupt_artifact]
+
+        def corrupt_read(path, *, max_bytes):
+            raw = original_read(path, max_bytes=max_bytes)
+            path_text = Path(path).as_posix()
+            if all(fragment in path_text for fragment in fragments):
+                assert raw
+                return raw[:-1] + bytes([raw[-1] ^ 1])
+            return raw
+
+        monkeypatch.setattr(recovery, "_read_regular_exact", corrupt_read)
+
+    if corrupt_artifact is not None:
+        with pytest.raises(
+            ValueError,
+            match="official evidence artifact bytes changed",
+        ):
+            _build_v65_live_archive_diagnosis(monkeypatch)
+        return
+
+    diagnosis = _build_v65_live_archive_diagnosis(monkeypatch)
+    round_ids = {
+        item["slot"]: item["round_id"]
+        for item in recovery._V65_ROUND_IDENTITIES
+    }
+    assert diagnosis["round_receipts"] == list(
+        recovery._V65_ROUND_IDENTITIES
+    )
+    assert diagnosis["live_deferred_failures"] == [
+        {**item, "round_id": round_ids[item["slot"]]}
+        for item in recovery._V65_LIVE_RACE_FAILURES
+    ]
+    assert diagnosis["thp_prefix_failures"] == [
+        {**item, "round_id": round_ids[item["slot"]]}
+        for item in recovery._V65_THP_PREFIX_FAILURES
+    ]
+    assert diagnosis["repair_oracle_document_sha256"] == (
+        recovery._V65_REPAIR_ORACLE_DOC_SHA256
+    )
+    assert diagnosis["repair_oracle_fixture_sha256"] == (
+        recovery._V65_REPAIR_ORACLE_FIXTURE_SHA256
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    tuple(recovery._V65_INCIDENT_IDENTITY_FIELDS),
+)
+def test_v65_diagnosis_rejects_every_incident_identity_drift(field):
+    diagnosis = _v65_failure_diagnosis()
+    identity = diagnosis["incident_identity"]
+    identity[field] = (
+        identity[field] + 1
+        if type(identity[field]) is int
+        else ("0" * len(identity[field]))
+    )
+    _resign_diagnosis(diagnosis)
+
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="v65_diagnosis_invalid",
+    ):
+        recovery._validate_v65_failure_diagnosis_envelope(diagnosis)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value.update(profile_id="forged"),
+        lambda value: value.update(defect_ids=["forged"]),
+        lambda value: value.update(repair_wire_probe_sha256=(
+            value["baseline_wire_probe_sha256"]
+        )),
+        lambda value: value.update(repair_harness_sha256=(
+            value["baseline_harness_sha256"]
+        )),
+        lambda value: value.update(repair_oracle_document_sha256=(
+            value["baseline_oracle_document_sha256"]
+        )),
+        lambda value: value.update(repair_oracle_document_sha256="c" * 64),
+        lambda value: value.update(repair_oracle_fixture_sha256=(
+            value["baseline_oracle_fixture_sha256"]
+        )),
+        lambda value: value.update(repair_oracle_fixture_sha256="d" * 64),
+        lambda value: value["round_receipts"][0].update(passed=False),
+        lambda value: value["round_receipts"][1].update(
+            wire_events_sha256="0" * 64
+        ),
+        lambda value: value["live_deferred_failures"][0].update(
+            source_record_seq=13
+        ),
+        lambda value: value["live_deferred_failures"][1].update(
+            flush_observation_seq=12
+        ),
+        lambda value: value["thp_prefix_failures"][0].update(
+            thp_cards_payload="forged"
+        ),
+        lambda value: value["thp_prefix_failures"][1].update(
+            prefix_binding_digest="0" * 64
+        ),
+        lambda value: value["authority_absence"].update(
+            certificate_present=True
+        ),
+        lambda value: value["authority_absence"].update(
+            control_successful_count=1
+        ),
+        lambda value: value.update(strength_evaluation="candidate_strength"),
+        lambda value: value.update(
+            disposition="reuse_old_rounds_as_certification"
+        ),
+    ),
+)
+def test_v65_diagnosis_rejects_resigned_scope_or_evidence_drift(mutation):
+    diagnosis = _v65_failure_diagnosis()
+    mutation(diagnosis)
+    _resign_diagnosis(diagnosis)
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError):
+        recovery._validate_v65_failure_diagnosis_envelope(diagnosis)
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -721,22 +1079,103 @@ def test_terminal_job_profile_matches_only_exact_v64_five_three_shape(
         assert observed is None
 
 
-def test_called_allin_oracle_identity_reopens_pinned_git_and_live_bytes(
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        None,
+        lambda progress, _status, _verdict: progress.update(
+            rounds_requested=7
+        ),
+        lambda progress, _status, _verdict: progress.update(
+            rounds_completed=7
+        ),
+        lambda progress, _status, _verdict: progress.update(rounds_passed=3),
+        lambda _progress, status, _verdict: status.update(
+            status="official-inconclusive"
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            passed_rounds=3
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            failed_rounds=5
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            resumed_rounds=1
+        ),
+        lambda _progress, _status, verdict: verdict.update(
+            inconclusive=True
+        ),
+        lambda _progress, _status, verdict: verdict.update(blocking=False),
+        lambda _progress, _status, verdict: verdict.update(violation=False),
+        lambda _progress, _status, verdict: verdict.update(
+            classification="harness"
+        ),
+    ),
+)
+def test_terminal_job_profile_matches_only_exact_v65_two_six_shape(mutation):
+    progress = {
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_passed": 2,
+    }
+    status = {
+        "status": "official-failed",
+        "summary": {
+            "rounds_run": 8,
+            "passed_rounds": 2,
+            "failed_rounds": 6,
+            "resumed_rounds": 0,
+        },
+    }
+    verdict = {
+        "inconclusive": False,
+        "blocking": True,
+        "violation": True,
+        "classification": "protocol",
+    }
+    if mutation is not None:
+        mutation(progress, status, verdict)
+
+    observed = recovery._terminal_job_recovery_profile(
+        progress,
+        status,
+        verdict,
+    )
+    if mutation is None:
+        assert observed == recovery._V65_PROFILE_ID
+    else:
+        assert observed is None
+
+
+def test_called_allin_oracle_identity_reopens_pinned_historical_git_bytes(
     monkeypatch,
 ):
     root = Path(__file__).resolve().parents[2]
+    original_git = recovery._git
+    blobs = {
+        relative: original_git(
+            root,
+            "show",
+            f"{recovery._V65_BASELINE_HEAD}:{relative}",
+            binary=True,
+        )
+        for relative in (
+            recovery._CALLED_ALLIN_ORACLE_DOC,
+            recovery._CALLED_ALLIN_ORACLE_FIXTURE,
+        )
+    }
 
     def git(_root, *args, binary=False):
         assert binary is True
         assert args[:1] == ("show",)
         relative = args[1].split(":", 1)[1]
-        return (root / relative).read_bytes()
+        return blobs[relative]
 
     monkeypatch.setattr(recovery, "_git", git)
     observed = recovery._called_allin_oracle_identity(
         root,
-        expected_repair_head=NEW_HEAD,
-        require_live_repair_source=True,
+        expected_repair_head=recovery._V65_BASELINE_HEAD,
+        require_live_repair_source=False,
     )
 
     assert observed == {
@@ -866,6 +1305,9 @@ def test_called_allin_diagnosis_rejects_oracle_raw_outcome_or_authority_drift(
     "mutation",
     (
         None,
+        lambda claim: claim["terminal_job"].pop(
+            "contract_failure_diagnosis"
+        ),
         lambda claim: claim["terminal_job"].update(
             recovery_profile="forged"
         ),
@@ -908,6 +1350,72 @@ def test_called_allin_claim_crossbinds_terminal_authority_and_migration(
     )
     if mutation is not None:
         mutation(claim)
+        _resign_claim(claim)
+
+    if mutation is None:
+        assert recovery._validate_claim_envelope(
+            claim,
+            claim["claim_digest"],
+        ) == claim
+    else:
+        with pytest.raises(recovery.BootstrapContractRecoveryError):
+            recovery._validate_claim_envelope(
+                claim,
+                claim["claim_digest"],
+            )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        None,
+        lambda claim: claim["terminal_job"].pop(
+            "contract_failure_diagnosis"
+        ),
+        lambda claim: claim["terminal_job"].update(
+            recovery_profile="forged"
+        ),
+        lambda claim: claim["terminal_job"].update(job_id="0" * 64),
+        lambda claim: claim["terminal_job"].update(
+            result_digest="0" * 64
+        ),
+        lambda claim: claim["terminal_job"].update(rounds_completed=7),
+        lambda claim: claim["terminal_job"]["control_consumption"].update(
+            successful_count=1
+        ),
+        lambda claim: claim["candidate"].update(
+            artifact_hash="0" * 64
+        ),
+        lambda claim: claim["git_contract_migration"].update(
+            baseline_head="0" * 40
+        ),
+        lambda claim: claim["git_contract_migration"].update(
+            baseline_contract_hash="0" * 64
+        ),
+        lambda claim: claim["terminal_job"][
+            "contract_failure_diagnosis"
+        ]["incident_identity"].update(repair_contract_version=43),
+    ),
+)
+def test_v65_claim_crossbinds_terminal_authority_and_migration(
+    monkeypatch,
+    mutation,
+):
+    claim = _v65_claim_envelope()
+    monkeypatch.setattr(
+        recovery,
+        "_read_succeeded_first_strict_execution",
+        lambda _scope, *, expected_receipts, expected_terminal_receipt: (
+            expected_terminal_receipt
+        ),
+    )
+    if mutation is not None:
+        diagnosis = claim["terminal_job"].get(
+            "contract_failure_diagnosis"
+        )
+        mutation(claim)
+        if isinstance(diagnosis, dict):
+            _resign_diagnosis(diagnosis)
         _resign_claim(claim)
 
     if mutation is None:
@@ -1203,6 +1711,135 @@ def test_historical_called_allin_failure_reopens_exact_raw_oracle_profile(
     )
 
 
+def test_historical_v65_failure_reopens_exact_raw_thp_profile(
+    tmp_path,
+    monkeypatch,
+):
+    import official_bootstrap
+
+    directory = tmp_path / recovery._V65_JOB_ID
+    directory.mkdir()
+    diagnosis = _v65_failure_diagnosis()
+    entry = {
+        "entry_digest": "9" * 64,
+        "sequence": 5,
+        "outcome": "official-failed",
+        "classification": "protocol",
+        "authoritative": True,
+        "blocking": True,
+        "certificate_digest": "",
+        "strength_evaluation": "not_applicable",
+    }
+    status = {
+        "status": "official-failed",
+        "summary": {"rounds_run": 8},
+        "official_verdict_ledger_entry": entry,
+    }
+    request = {"request_digest": "6" * 64}
+    state = {
+        "revision": 948,
+        "attempt": 1,
+        "result_digest": recovery._V65_JOB_RESULT_DIGEST,
+    }
+    result = {
+        "result_digest": recovery._V65_JOB_RESULT_DIGEST,
+        "status": status,
+    }
+    public = {
+        "state": "completed",
+        "pending": False,
+        "progress": {"rounds_requested": 8, "rounds_completed": 8},
+    }
+    expected = {
+        "job_id": recovery._V65_JOB_ID,
+        "request_digest": request["request_digest"],
+        "state_revision": state["revision"],
+        "result_digest": result["result_digest"],
+        "status_digest": canonical_digest(status),
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "ledger_entry_digest": entry["entry_digest"],
+        "ledger_sequence": entry["sequence"],
+        "control_consumption": {
+            "valid": True,
+            "successful_count": 0,
+            "max_successful_consumptions": 1,
+        },
+        "contract_failure_diagnosis": diagnosis,
+        "recovery_profile": recovery._V65_PROFILE_ID,
+    }
+    claim = {
+        "old_checkpoint": {
+            "workflow_run_id": recovery._V65_WORKFLOW_RUN_ID,
+            "checkpoint_revision": recovery._V65_CHECKPOINT_REVISION,
+        },
+        "terminal_job": expected,
+        "candidate": {"artifact_hash": recovery._V65_CANDIDATE_HASH},
+        "git_contract_migration": {
+            "baseline_head": recovery._V65_BASELINE_HEAD,
+            "baseline_contract_hash": recovery._V65_BASELINE_CONTRACT_HASH,
+            "current_head": NEW_HEAD,
+        },
+    }
+    monkeypatch.setattr(
+        official_certification_job,
+        "_job_lock",
+        lambda *_a: nullcontext(),
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_read_json",
+        lambda path: request if path.name == "request.json" else state,
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_validate_request",
+        lambda _r: [],
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_public_state",
+        lambda *_a: public,
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_result_payload",
+        lambda *_a: result,
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_validated_ledger_entries",
+        lambda: ([entry], []),
+    )
+    observed = {"value": diagnosis, "kwargs": None}
+
+    def rebuild_diagnosis(*_args, **kwargs):
+        observed["kwargs"] = kwargs
+        return observed["value"]
+
+    monkeypatch.setattr(
+        recovery,
+        "_v65_contract_failure_diagnosis",
+        rebuild_diagnosis,
+    )
+
+    assert recovery._historical_terminal_job_matches(
+        claim,
+        directory,
+        root=tmp_path,
+    )
+    assert observed["kwargs"]["require_live_repair_source"] is False
+    assert observed["kwargs"]["expected_evaluation_contract_version"] == 41
+    assert observed["kwargs"]["expected_repair_contract_version"] == 42
+    observed["value"] = {**diagnosis, "proof_digest": "0" * 64}
+    assert not recovery._historical_terminal_job_matches(
+        claim,
+        directory,
+        root=tmp_path,
+    )
+
+
 def test_historical_terminal_job_rejects_symlinked_job_directory(tmp_path):
     real = tmp_path / "real-job"
     real.mkdir()
@@ -1232,6 +1869,35 @@ def test_bootstrap_contract_chain_binds_baseline_parked_authorization_and_contro
         candidate_binding,
         control_receipt,
         expected_evaluation_contract_version=40,
+        expected_evaluation_contract_hash=OLD_HASH,
+        expected_checkpoint_contract_digest="a" * 64,
+        expected_protocol_bootstrap_receipt_digest="b" * 64,
+        expected_first_strict_control_receipt_digest="c" * 64,
+        expected_protocol_bootstrap_receipt=parked[
+            "protocol_bootstrap_receipt"
+        ],
+        expected_first_strict_control_receipt=control_receipt,
+    ) == []
+
+
+def test_bootstrap_contract_chain_accepts_only_known_v65_contract_41():
+    (
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+    ) = _contract_chain()
+    parked["evaluation_contract_version"] = 41
+    authorization["evaluation_contract_version"] = 41
+
+    assert recovery._bootstrap_contract_chain_issues(
+        parked,
+        authorization,
+        bootstrap_receipt,
+        candidate_binding,
+        control_receipt,
+        expected_evaluation_contract_version=41,
         expected_evaluation_contract_hash=OLD_HASH,
         expected_checkpoint_contract_digest="a" * 64,
         expected_protocol_bootstrap_receipt_digest="b" * 64,
@@ -1601,6 +2267,77 @@ def test_called_allin_profile_requires_repair_contract_41(
     )
     assert _build(root)["terminal_job"]["recovery_profile"] == (
         recovery._CALLED_ALLIN_PROFILE_ID
+    )
+
+
+def test_v65_profile_requires_exact_contract_41_to_42_transition(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    checkpoint = _checkpoint()
+    checkpoint["repo_baseline"]["evaluation_contract"]["version"] = 41
+    v65_job = {
+        "job_id": JOB_ID,
+        "request_digest": "6" * 64,
+        "state_revision": 4,
+        "result_digest": "7" * 64,
+        "status_digest": "8" * 64,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "ledger_entry_digest": "9" * 64,
+        "ledger_sequence": 2,
+        "control_consumption": {
+            "valid": True,
+            "successful_count": 0,
+            "max_successful_consumptions": 1,
+        },
+        "recovery_profile": recovery._V65_PROFILE_ID,
+    }
+    monkeypatch.setattr(
+        recovery,
+        "_terminal_job_facts",
+        lambda *_a, **_k: v65_job,
+    )
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError) as exc:
+        _build(root, checkpoint)
+    assert "bootstrap_contract_v65_contract_42_required" in exc.value.issues
+
+    monkeypatch.setattr(
+        evaluation_contract,
+        "build_evaluation_contract",
+        lambda *_a, **_k: {
+            "version": 42,
+            "stage": "official_bootstrap_required",
+            "path_exact": ["web/core/official_platform_harness.py"],
+            "path_prefixes": [],
+            "runtime_prefixes": [],
+            "non_contract_prefixes": [],
+            "hash": "a" * 64,
+        },
+    )
+    assert _build(root, checkpoint)["terminal_job"]["recovery_profile"] == (
+        recovery._V65_PROFILE_ID
+    )
+
+
+def test_contract_41_baseline_cannot_use_a_non_v65_recovery_profile(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    checkpoint = _checkpoint()
+    checkpoint["repo_baseline"]["evaluation_contract"]["version"] = 41
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError) as exc:
+        _build(root, checkpoint)
+    assert (
+        "bootstrap_contract_non_v65_baseline_contract_invalid"
+        in exc.value.issues
     )
 
 

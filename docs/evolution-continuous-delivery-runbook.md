@@ -118,6 +118,30 @@ abandon/re-prepare route. Never edit/delete the checkpoint, reuse the old job,
 or mark its partial rounds passed. The new v143 must rerun planning, gates,
 native precommit and a fresh operator 5+3 suite under the three-oracle identity.
 
+## Current Contract-42 live-causal/THP-prefix recovery
+
+Workflow-v65 is parked at `official_bootstrap_required` under Contract 41.
+Operator job `b4575bb7163f551cb586f6391f728c1e6dc1671b11a279a4392504af8a4c7ebf`
+naturally completed all eight rounds with result digest
+`fb7846b74c7c237226b99d2b4e8647c8b82ad9801917e59baceadd8d83424ce1`.
+Its 2 pass / 6 fail result is immutable old-contract evidence: four failures
+are live deferred-action races whose finalized causal replay is clean; two are
+complete 70-hand rounds whose THP contains the exact 3/4-card wire prefix. It
+must not be relabelled, partially resumed, certified or used for strength.
+
+Contract 42 permits a provisional live street-boundary warning only for a
+same-connection raw action awaiting its bounded idle/EOF flush; final replay,
+legacy captures and boundaries without that source remain strict. Called-all-in
+THP evidence accepts only the exact legal wire prefix (0/3/4 cards) or a full
+five-card board, with all existing cross-wire, THP-action, blind/name, hole, earnings,
+70-state and footer bindings. Before synchronization, require the dedicated
+v65 recovery diagnosis to reopen all eight receipts/raw captures, both exact
+THP artifacts, terminal job/result, checkpoint/workflow CAS, certificate
+absence, tag/`.completed` absence and first-control consumption 0/1. Execute
+only canonical abandon/quarantine while stopped, then fast-forward through
+`origin/main`, rerun recovery diagnostics and prepare a fresh workflow. No v65
+round, gate receipt or equal candidate hash transfers into Contract 42.
+
 The fixed `192/256/96` baseline, full river refinement only, and 800-call
 cap are hard gates.  The 200 ms native quality target is a stricter local
 admission target; it does not replace the formal 250 ms policy budget.  The

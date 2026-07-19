@@ -110,8 +110,13 @@ Restart decisions are governed by the exact active-stage contract in
   2021 EXE may omit every not-yet-sent public street and jump directly to
   settlement/`oppo_hands`; the system must not fabricate the unseen board.
   Formal replay requires complementary cross-wire actions and exact all-in net
-  settlement, then binds every omitted hand to the strict THP five-card board,
-  blind/name order, revealed holes, observed prefix, and earnings.
+  settlement, then binds every omitted hand to a strict THP board that is
+  either the exact observed wire prefix (0/3/4 cards) or a complete five-card
+  board, plus the THP terminal action, blind/name order, revealed holes, and
+  earnings. During live causal capture only a same-connection raw action
+  awaiting its bounded flush
+  may make `street_boundary_unproved` provisional; finalized replay remains
+  strict and never invents a missing card or action.
 - TCP cards use `<suit,rank>`, with suit 0=Spade, 1=Heart, 2=Diamond, 3=Club and
   rank 0=2 through 12=Ace.
 - `earnChips` is the receiving seat's signed per-hand net. `oppo_hands` appears

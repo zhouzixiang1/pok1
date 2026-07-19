@@ -79,8 +79,11 @@ Every formal native bot must preserve these boundaries:
    remaining public street and makes settlement/showdown the next wire
    boundary. Replay accepts only complementary cross-wire actions and exact
    all-in net settlement, never fabricates unseen board cards, and requires
-   every omitted hand to bind the strict THP five-card board, blind/name order,
-   revealed holes, observed prefix, and earnings.
+   every omitted hand to bind either the exact strict THP wire prefix or a
+   complete five-card board, plus terminal THP action, blind/name order,
+   revealed holes, and earnings. Only a causal raw action awaiting its bounded
+   flush is provisional during live capture; finalized replay remains
+   fail-closed.
 
 ## Local References And Space-Time Tradeoff
 

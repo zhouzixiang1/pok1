@@ -361,6 +361,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             ),
             _ref(
                 "web/core/official_wire_probe.py",
+                "replay_events",
+            ),
+            _ref(
+                "web/core/official_wire_probe.py",
                 "_cross_bound_showdown_records",
             ),
             _ref(
@@ -372,6 +376,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref(
                 "web/core/official_wire_probe.py",
                 "_showdown_terminal_boundary",
+            ),
+            _ref(
+                "web/core/official_wire_probe.py",
+                "replay_events",
             ),
             _ref(
                 "web/core/official_certification.py",
@@ -387,10 +395,12 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "All five rendered roles must preserve the called all-in terminal "
             "contract: the official EXE may present an omitted runout followed by "
             "settlement/showdown, only exact cross-connection proof is accepted, no "
-            "role may fabricate unseen public cards, and internal/THP remains the "
-            "complete-board authority with complementary cross-wire actions, exact "
-            "all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings "
-            "binding."
+            "role may fabricate unseen public cards, and strict THP must carry either "
+            "the exact observed wire prefix or a complete board, with complementary "
+            "cross-wire actions, exact all-in net settlement, and strict THP "
+            "exact-prefix-or-five-card board/action/blind/hole/earnings binding. Only a "
+            "same-connection raw action awaiting its bounded causal flush is "
+            "provisional during live replay; finalized replay is strict."
         ),
         prompt_required_terms=(
             "called all-in",
@@ -398,15 +408,15 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "settlement/showdown",
             "cross-connection",
             "fabricate unseen public cards",
-            "internal/THP",
             "complementary cross-wire actions",
             "exact all-in net settlement",
-            "strict THP five-card board/blind/hole/prefix/earnings",
+            "strict THP exact-prefix-or-five-card board/action/blind/hole/earnings",
         ),
         producer_consumer=(
             "official EXE allin/call plus legal board prefix → two connection-local "
             "terminal records → finalized cross-wire action/exact-settlement/reveal "
-            "proof → strict THP five-card board/blind/hole/prefix binding → formal "
+            "proof → strict THP exact-prefix-or-five-card board/action/blind/hole/earnings "
+            "binding → formal "
             "completion gate"
         ),
         positive_tests=(
@@ -416,6 +426,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_replay_defers_cross_socket_settlement_order_until_final_binding",
             "web/tests/test_official_wire_probe.py::"
             "test_replay_accepts_only_exact_called_allin_net_settlements",
+            "web/tests/test_official_wire_probe.py::"
+            "test_wire_probe_replays_idle_action_at_last_raw_observation",
             "web/tests/test_official_platform_harness.py::"
             "test_terminal_hand_completion_requires_exact_wire_boundary_and_thp",
             "sever/tests/test_national_platform_alignment.py::"
@@ -432,8 +444,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         fail_closed=(
             "A malformed prefix, unfinished/folded all-in, nonterminal reveal, "
             "cross-wire action mismatch, impossible all-in settlement, or any omitted "
-            "hand lacking a complete THP board/blind/hole/prefix binding remains an "
-            "official wire/certification failure; no missing public card is synthesized."
+            "hand lacking an exact-prefix-or-complete THP board/action/blind/hole/earnings "
+            "binding remains an official wire/certification failure. A finalized or "
+            "source-less street boundary is never downgraded and no missing public "
+            "card is synthesized."
         ),
     ),
     MatrixRow(

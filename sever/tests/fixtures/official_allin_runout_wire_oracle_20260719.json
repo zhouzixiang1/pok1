@@ -1,11 +1,13 @@
 {
-  "schema_version": 1,
-  "oracle_id": "official-2021-called-allin-wire-runout-omission-v1",
+  "schema_version": 2,
+  "oracle_id": "official-2021-called-allin-wire-runout-omission-v2",
   "authority_scope": "official_exe_wire_compliance_only",
   "strength_weight": 0,
   "official_exe_sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a",
   "job_id": "37bc2c6555b516b6568f45c85cdf8b9e23b0c06e6bbca207d5367a561759dae6",
   "job_result_digest": "c055966f5385fd921ece46920202a70477522d700bea106dd45cc1bae3196f9a",
+  "correction_job_id": "b4575bb7163f551cb586f6391f728c1e6dc1671b11a279a4392504af8a4c7ebf",
+  "correction_job_result_digest": "fb7846b74c7c237226b99d2b4e8647c8b82ad9801917e59baceadd8d83424ce1",
   "candidate_artifact_sha256": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
   "control_artifact_sha256": "1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2",
   "observations": [
@@ -40,6 +42,58 @@
       "semantic_sequence": ["allin", "call", "earnChips", "earnChips", "oppo_hands", "oppo_hands"]
     }
   ],
+  "thp_prefix_observations": [
+    {
+      "round": "self_play_03",
+      "hand": 6,
+      "stage": "turn",
+      "public_cards_observed": 4,
+      "thp_public_cards": 4,
+      "thp_cards_payload": "4h5s|4s8d/AcAd3s/4d",
+      "wire_events_sha256": "e9882362fd1113ec4e5d219a41a364b14785332a1b63280ec853cbf8d689ad54",
+      "thp_sha256": "a9516d06d7e7b093c24468e35376f519cb51df83166a128902049050860e1aab",
+      "hand_records": 70,
+      "earnings": [-20000, 20000]
+    },
+    {
+      "round": "opponent_01",
+      "hand": 1,
+      "stage": "flop",
+      "public_cards_observed": 3,
+      "thp_public_cards": 3,
+      "thp_cards_payload": "AcTh|TdKd/9sAdKh",
+      "wire_events_sha256": "a9f2f11940313dff15e8a23328d2748a0a717e8e6da1542e6046a02958a4ee56",
+      "thp_sha256": "3e8fd8ab81e6e96fedb10c67474851d8bb4bb59bf9ffc372a469ea6eae514d59",
+      "hand_records": 70,
+      "earnings": [20000, -20000]
+    }
+  ],
+  "live_deferred_action_observations": [
+    {
+      "round": "self_play_02",
+      "wire_events_sha256": "ce317f8d80e285b4a617734f874bd1efb68b4155f297c9726fc3e1e036012c50",
+      "live_issue": "street_boundary_unproved",
+      "finalized_issues": []
+    },
+    {
+      "round": "self_play_05",
+      "wire_events_sha256": "9b188502ec9c7e9952fa22f2cf4dfd2700f6eac5bdf1a5c5826a9c69ad504984",
+      "live_issue": "street_boundary_unproved",
+      "finalized_issues": []
+    },
+    {
+      "round": "opponent_02",
+      "wire_events_sha256": "791b554938cd1c31e9fdb76fe4a568157c47a7c41e3ee16efd7d3668cbcd72c8",
+      "live_issue": "street_boundary_unproved",
+      "finalized_issues": []
+    },
+    {
+      "round": "opponent_03",
+      "wire_events_sha256": "fa590230143b97b6f6074d6b18bdda7568336b82a95ef79cc4b6dfa02933a361",
+      "live_issue": "street_boundary_unproved",
+      "finalized_issues": []
+    }
+  ],
   "accepted_board_prefixes": {
     "preflop": 0,
     "flop": 3,
@@ -66,7 +120,10 @@
   },
   "required_strict_thp_proof": {
     "scope": "every verified omitted-allin hand",
+    "allowed_public_board_shapes": "exact_wire_prefix_or_complete_five",
+    "wire_prefix_card_counts": [0, 3, 4],
     "complete_public_board_cards": 5,
+    "bind_terminal_action": true,
     "bind_blind_order_and_player_names": true,
     "bind_revealed_peer_holes": true,
     "bind_observed_public_prefix": true,
@@ -87,7 +144,7 @@
     "accept_actions_from_a_prior_street_as_the_terminal_suffix",
     "accept_an_unclosed_prior_street_before_the_allin_street",
     "accept_called_allin_hand70_without_dual_showdown_reveal",
-    "accept_omitted_runout_without_complete_bound_thp_board",
+    "accept_omitted_runout_without_exact_prefix_or_complete_bound_thp_board",
     "treat_official_exe_oracle_as_strength"
   ]
 }

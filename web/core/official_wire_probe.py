@@ -2304,7 +2304,117 @@ def replay_events(
             summary_now = max(float(event["observation_t"]) for event in ordered)
         else:
             summary_now = max(float(event.get("t", 0.0) or 0.0) for event in ordered)
-    return replay.summary(now=summary_now, finalized=finalized)
+    summary = replay.summary(now=summary_now, finalized=finalized)
+    if not finalized:
+        # A no-delimiter client action may be present in raw bytes while its
+        # semantic token is awaiting the recorder's bounded idle flush.  Only
+        # that exact causal-envelope state may make a same-connection street
+        # boundary provisional.  Legacy captures and genuinely unclosed
+        # streets remain immediate issues, and finalized replay remains
+        # fail-closed if the matching flush never arrives.
+        provisional_boundary_keys = _pending_deferred_street_boundary_keys(events)
+        provisional = [
+            issue
+            for issue in list(summary.get("issues") or [])
+            if issue.get("kind") == "street_boundary_unproved"
+            and (
+                str(issue.get("conn") or ""),
+                float(issue.get("dt", -1.0) or -1.0),
+                str(issue.get("message") or ""),
+            ) in provisional_boundary_keys
+        ]
+        if provisional:
+            summary["issues"] = [
+                issue
+                for issue in list(summary.get("issues") or [])
+                if issue not in provisional
+            ]
+            summary["warnings"] = _dedupe_dicts([
+                *list(summary.get("warnings") or []),
+                *[
+                    {
+                        **issue,
+                        "kind": "provisional_street_boundary_unproved",
+                        "strict_issue_kind": "street_boundary_unproved",
+                    }
+                    for issue in provisional
+                ],
+            ])
+    return summary
+
+
+def _pending_deferred_street_boundary_keys(
+    events: list[dict[str, Any]],
+) -> set[tuple[str, float, str]]:
+    """Bind each pending client buffer to its first later public boundary."""
+
+    if not events or not all(
+        _CAUSAL_EVENT_FIELDS.issubset(event)
+        for event in events
+    ):
+        return set()
+    pending: dict[tuple[str, str], int] = {}
+    sources: dict[int, dict[str, Any]] = {}
+    for event in events:
+        observation_seq = event.get("observation_seq")
+        if type(observation_seq) is not int:
+            return set()
+        key = (
+            str(event.get("conn") or ""),
+            str(event.get("direction") or ""),
+        )
+        if observation_seq not in sources:
+            sources[observation_seq] = event
+            if event.get("raw_hex") not in {"", None}:
+                if event.get("remaining"):
+                    pending[key] = observation_seq
+                else:
+                    pending.pop(key, None)
+            continue
+        if (
+            event.get("event_type") in {"idle_flush", "eof_flush"}
+            and pending.get(key) == observation_seq
+        ):
+            if event.get("remaining"):
+                pending[key] = observation_seq
+            else:
+                pending.pop(key, None)
+    boundary_keys: set[tuple[str, float, str]] = set()
+    for (conn, direction), source_observation_seq in pending.items():
+        if direction != "bot_to_server" or not conn:
+            continue
+        source = sources.get(source_observation_seq) or {}
+        pending_messages, pending_remaining = split_client_messages(
+            str(source.get("remaining") or ""),
+            allow_name=False,
+            flush_numeric=True,
+        )
+        if (
+            len(pending_messages) != 1
+            or pending_remaining
+            or classify_client_action(pending_messages[0])[2] is not None
+        ):
+            continue
+        candidates: list[tuple[int, float, str]] = []
+        for event in events:
+            if (
+                event.get("conn") != conn
+                or event.get("direction") != "server_to_bot"
+                or type(event.get("observation_seq")) is not int
+                or int(event["observation_seq"]) <= source_observation_seq
+            ):
+                continue
+            for message in event.get("messages") or []:
+                if str(message).startswith(("flop|", "turn|", "river|")):
+                    candidates.append((
+                        int(event["observation_seq"]),
+                        float(event.get("observation_dt", -1.0) or -1.0),
+                        str(message),
+                    ))
+        if candidates:
+            _observation_seq, boundary_dt, message = min(candidates)
+            boundary_keys.add((conn, boundary_dt, message))
+    return boundary_keys
 
 
 def load_events(path: str | Path) -> list[dict[str, Any]]:

@@ -119,8 +119,10 @@ effect even if its isolated equity helper looks plausible.
 The 2021 EXE may omit every remaining public street after a called all-in and
 go directly to settlement/`oppo_hands`. Treat later policy action or invented
 unseen board cards as a defect; only complementary cross-wire actions, exact
-all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings binding
-may close that terminal boundary.
+all-in net settlement, and strict THP exact-prefix-or-five-card
+board/action/blind/hole/earnings binding may close that terminal boundary. A live
+deferred raw-action warning is provisional only; finalized evidence stays
+fail-closed.
 The exact authority is
 `docs/official-allin-runout-wire-oracle-2026-07-19.md`.
 

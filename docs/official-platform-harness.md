@@ -48,11 +48,14 @@ the same terminal behavior. Together they prove the following wire behavior:
   `allin → call`, terminal stack/bet/pot state, connection-local settlement,
   complementary cross-wire action provenance, exact all-in net settlement, and
   finalized cross-connection reveal proof. Every omitted hand must then bind a
-  strict THP five-card board, blind/name order, revealed holes, observed prefix,
+  strict THP board that is either the exact observed wire prefix or a complete
+  five-card board, plus terminal THP action, blind/name order, revealed holes,
   and earnings. See
   [official-allin-runout-wire-oracle-2026-07-19.md](official-allin-runout-wire-oracle-2026-07-19.md).
-  Natural hand 70 remains provisional until strict THP state 69 with complete
-  board/blind/hole/prefix/earnings binding and footer closes the independently
+  A live next-street boundary is only provisional when the same connection has
+  exact raw action bytes awaiting its bounded idle/EOF flush; final replay is
+  never relaxed. Natural hand 70 remains provisional until strict THP state 69
+  with exact-prefix-or-complete-board/blind/hole/earnings binding and footer closes the independently
   known missing-settlement boundary;
 - the EXE relayed all 696 raises, 526 folds, and 13 all-ins in the capture, but
   only 211 of 550 calls and 309 of 443 checks. The missing 339 calls and 134

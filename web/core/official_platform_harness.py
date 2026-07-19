@@ -95,9 +95,10 @@ THP_FOOTER_RE = re.compile(
     r"\[([^\]]+)\]\[([^\]]+)\]\}"
 )
 THP_CARD_RE = re.compile(r"[2-9TJQKA][shdc]")
+THP_ACTION_TOKEN_RE = re.compile(r"r[1-9]\d*|[cf]")
 THP_RANK_TO_TCP = {rank: index for index, rank in enumerate("23456789TJQKA")}
 THP_SUIT_TO_TCP = {"s": 0, "h": 1, "d": 2, "c": 3}
-TERMINAL_COMPLETION_SCHEMA_VERSION = 2
+TERMINAL_COMPLETION_SCHEMA_VERSION = 3
 FORMAL_QUALITY_ADMISSION_SCHEMA_VERSION = 2
 FORMAL_QUALITY_ADMISSION_KIND = "official-formal-quality-admission"
 FORMAL_WIRE_CAUSAL_ORDER_SCHEMA_VERSION = 1
@@ -1785,6 +1786,9 @@ def _strict_thp_match(
         players = [match.group(6), match.group(7)]
         if not match.group(2) or not match.group(3):
             issues.append(f"thp_record_payload_empty:{index}")
+        _parsed_actions, action_issue = _parse_thp_action_payload(match.group(2))
+        if action_issue:
+            issues.append(f"thp_record_actions_invalid:{index}:{action_issue}")
         _parsed_cards, card_issue = _parse_thp_card_payload(match.group(3))
         if card_issue:
             issues.append(f"thp_record_cards_invalid:{index}:{card_issue}")
@@ -1862,6 +1866,31 @@ def _parse_thp_card_group(
     if len({tuple(card) for card in cards}) != len(cards):
         return None, "duplicate_cards"
     return cards, ""
+
+
+def _parse_thp_action_payload(
+    payload: str,
+) -> tuple[list[list[str]] | None, str]:
+    """Parse exact per-street THP actions without accepting garbage suffixes."""
+
+    streets = payload.split("/")
+    if not payload or not 1 <= len(streets) <= 4:
+        return None, "street_shape"
+    parsed: list[list[str]] = []
+    for index, street in enumerate(streets):
+        if not street:
+            return None, f"street_{index}_empty"
+        tokens = THP_ACTION_TOKEN_RE.findall(street)
+        if not tokens or "".join(tokens) != street:
+            return None, f"street_{index}_token_shape"
+        if "f" in tokens[:-1]:
+            return None, f"street_{index}_fold_not_terminal"
+        if tokens[-1] not in {"c", "f"}:
+            return None, f"street_{index}_terminal_missing"
+        if index < len(streets) - 1 and tokens[-1] != "c":
+            return None, f"street_{index}_not_closed"
+        parsed.append(tokens)
+    return parsed, ""
 
 
 def _parse_thp_card_payload(
@@ -1962,7 +1991,7 @@ def _omitted_allin_thp_bindings(
     expected_names: tuple[str, str],
     allow_provisional_wire: bool = False,
 ) -> tuple[list[dict[str, Any]] | None, list[str]]:
-    """Bind every verified omitted wire runout to complete official THP truth."""
+    """Bind each omitted runout to action-bound exact-prefix-or-complete THP truth."""
 
     omissions = wire_summary.get("omitted_allin_runout_boundaries", [])
     provisional = wire_summary.get(
@@ -2029,6 +2058,24 @@ def _omitted_allin_thp_bindings(
         record = records[hand - 1]
         if record.get("index") != hand - 1:
             return None, [f"omitted_allin_runout_thp_hand_invalid:{hand}"]
+        thp_actions = str(record.get("actions") or "")
+        thp_action_streets, thp_action_issue = _parse_thp_action_payload(
+            thp_actions
+        )
+        expected_action_streets = {
+            "preflop": 1,
+            "flop": 2,
+            "turn": 3,
+        }[stage]
+        if (
+            thp_action_issue
+            or thp_action_streets is None
+            or len(thp_action_streets) != expected_action_streets
+            or len(thp_action_streets[-1]) < 2
+            or not thp_action_streets[-1][-2].startswith("r")
+            or thp_action_streets[-1][-1] != "c"
+        ):
+            return None, [f"omitted_allin_runout_thp_action_invalid:{hand}"]
         parsed_cards, card_issue = _parse_thp_card_payload(
             str(record.get("cards") or "")
         )
@@ -2036,9 +2083,18 @@ def _omitted_allin_thp_bindings(
             return None, [
                 f"omitted_allin_runout_thp_cards_invalid:{hand}:{card_issue}"
             ]
-        full_board = parsed_cards["public_cards"]
-        if len(full_board) != 5:
-            return None, [f"omitted_allin_runout_thp_board_incomplete:{hand}"]
+        thp_public_cards = parsed_cards["public_cards"]
+        thp_board_count = len(thp_public_cards)
+        if thp_board_count not in {observed_count, 5}:
+            return None, [
+                "omitted_allin_runout_thp_board_shape_invalid:"
+                f"{hand}:observed={observed_count}:thp={thp_board_count}"
+            ]
+        thp_board_scope = (
+            "complete_runout"
+            if thp_board_count == 5
+            else "observed_wire_prefix"
+        )
         earnings = record.get("earnings")
         if (
             not isinstance(earnings, list)
@@ -2100,7 +2156,7 @@ def _omitted_allin_thp_bindings(
                     if cards is None:
                         return None, [f"omitted_allin_runout_public_binding_invalid:{hand}:{label}"]
                     observed.extend(cards)
-            if observed != full_board[:observed_count]:
+            if observed != thp_public_cards[:observed_count]:
                 return None, [f"omitted_allin_runout_public_prefix_mismatch:{hand}:{label}"]
             seat_binding_digests[label] = canonical_digest({
                 "name": name,
@@ -2114,7 +2170,11 @@ def _omitted_allin_thp_bindings(
             "stage": stage,
             "public_cards_observed": observed_count,
             "thp_record_index": hand - 1,
-            "thp_public_cards": full_board,
+            "thp_actions": thp_actions,
+            "thp_action_streets": thp_action_streets,
+            "thp_public_cards": thp_public_cards,
+            "thp_public_card_count": thp_board_count,
+            "thp_board_scope": thp_board_scope,
             "thp_holes_by_player": holes_by_name,
             "thp_earnings": earnings,
             "seat_binding_digests": seat_binding_digests,

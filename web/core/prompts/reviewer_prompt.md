@@ -80,7 +80,9 @@ Full national legality checklist from `sever/国赛平台/非法行为说明.doc
 - A called all-in may jump directly to settlement/`oppo_hands` with future
   board streets omitted by the 2021 EXE. Reject any policy that acts again or
   fabricates unseen cards; require complementary cross-wire actions, exact
-  all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings proof.
+  all-in net settlement, and strict THP exact-prefix-or-five-card
+  board/action/blind/hole/earnings proof. Distinguish a causal raw action awaiting its
+  bounded live flush from finalized replay; never relax the latter.
 - Verify the strict baseline's system-to-policy controls: the calibrated
   169-class preflop table remains system-owned and content-bound; each
   `line.preflop_spot` uses a raise-to-total sizing band and an exact stack

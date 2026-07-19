@@ -27,8 +27,10 @@ enter Glicko, H2H, source selection, planning evidence, or precommit strength.
 - The 2021 EXE may omit the remaining called-all-in board and proceed directly
   to settlement/`oppo_hands`. Never fabricate those unseen cards; the
   system-owned replay must cross-bind complementary actions and exact all-in
-  net settlement, while strict THP must bind the full five-card board, blinds,
-  holes, observed prefix, and earnings.
+  net settlement, while strict THP exact-prefix-or-five-card
+  board/action/blind/hole/earnings binding must cover either the exact observed wire
+  prefix or a full board. A live
+  deferred-action warning never changes final policy legality.
 - Preserve the system wire throttle: `POK_OFFICIAL_ACTION_DELAY`, default near
   0.30 seconds, is applied by `_send_wire_action`. Policy code never sleeps or
   sends bytes.

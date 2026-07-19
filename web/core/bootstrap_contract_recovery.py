@@ -1,14 +1,15 @@
 """Operator-only recovery authority for a parked first-strict bootstrap.
 
-This owner exists for three explicitly tagged forms of one narrow crash-safe
+This owner exists for four explicitly tagged forms of one narrow crash-safe
 case: an unpublished v143 is parked at ``official_bootstrap_required`` and a
 reviewed descendant HEAD changes the official evaluation contract.  The
 terminal job is either the original zero-round harness-inconclusive profile or
 the content-proven eight-round legacy wire causal-order false-failure profile,
 or the one exact workflow-v64 five-pass/three-inconclusive called-all-in
-runout profile.  The checkpoint and old verdict are never rewritten under the
-new contract.  Instead an external, content-bound claim freezes the old
-checkpoint/job/verdict identities and the canonical abandon transaction
+runout profile, or the one exact workflow-v65 two-pass/six-fail live-deferred
+and THP-prefix profile.  The checkpoint and old verdict are never rewritten
+under the new contract.  Instead an external, content-bound claim freezes the
+old checkpoint/job/verdict identities and the canonical abandon transaction
 consumes that claim.  No profile turns old rounds into pass, strength,
 certification, or rating evidence.
 
@@ -44,6 +45,7 @@ CLAIM_KIND = "official-bootstrap-contract-change-abandon-claim"
 CLAIM_DIRNAME = "official_bootstrap_contract_change_abandon"
 ABANDON_REASON_PREFIX = "official_bootstrap_contract_change:"
 PARKED_EVALUATION_CONTRACT_VERSION = 40
+SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS = frozenset({40, 41})
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _STRICT_FILES = frozenset({
@@ -337,6 +339,265 @@ _CALLED_ALLIN_AUTHORITY_ABSENCE = {
 }
 
 
+# Contract-41 workflow-v65 reached a second, independently content-bound
+# official-harness incident.  Four rounds were stopped by a live projection
+# that observed a next-street message during the approximately 50 ms between a
+# raw delimiter-free client action and its causal idle-flush record.  Two more
+# complete rounds were rejected because the official THP, like the wire, kept
+# only the already-published called-all-in board prefix.  These constants do
+# not turn any old round into a pass.  They identify the one immutable job that
+# may be canonically abandoned after the Contract-42 repair.
+_V65_PROFILE_ID = (
+    "workflow-v65-live-deferred-thp-prefix-harness-false-failure-v1"
+)
+_V65_DIAGNOSIS_KIND = (
+    "official-bootstrap-live-deferred-thp-prefix-failure-diagnosis"
+)
+_V65_DEFECT_IDS = (
+    "causal-live-deferred-street-boundary-provisional-v1",
+    "official-thp-called-allin-prefix-v1",
+)
+_V65_BASELINE_HEAD = (
+    "3d3162844e42cae72905e15d2a297c0dd2b0e93a"
+)
+_V65_BASELINE_CONTRACT_VERSION = 41
+_V65_BASELINE_CONTRACT_HASH = (
+    "d630466f867805abc7eaa0272e5d94f587caceca433ac617e8aae9643b08ce41"
+)
+_V65_REPAIR_CONTRACT_VERSION = 42
+_V65_WORKFLOW_RUN_ID = "generation:143:workflow-v65"
+_V65_CHECKPOINT_REVISION = 21
+_V65_CANDIDATE_HASH = (
+    "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50"
+)
+_V65_CONTROL_HASH = (
+    "1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2"
+)
+_V65_JOB_ID = (
+    "b4575bb7163f551cb586f6391f728c1e6dc1671b11a279a4392504af8a4c7ebf"
+)
+_V65_JOB_RESULT_DIGEST = (
+    "fb7846b74c7c237226b99d2b4e8647c8b82ad9801917e59baceadd8d83424ce1"
+)
+_V65_BASELINE_WIRE_PROBE_SHA256 = (
+    "19d1f9396cbd4df691f0b3c387dbf25d97e78bc422e7f4ed1fdb2e78bba36339"
+)
+_V65_BASELINE_HARNESS_SHA256 = (
+    "0ef7a9baa1f77c8a305884ec3f00807f2fb71cbe65527bd206b8fc1e0fb97e94"
+)
+_V65_BASELINE_ORACLE_DOC_SHA256 = _CALLED_ALLIN_ORACLE_DOC_SHA256
+_V65_BASELINE_ORACLE_FIXTURE_SHA256 = _CALLED_ALLIN_ORACLE_FIXTURE_SHA256
+_V65_REPAIR_ORACLE_DOC_SHA256 = (
+    "e6a0ef58656bd80ffdc2828a12920911e264a29de85ab61fb180332026dbb7e7"
+)
+_V65_REPAIR_ORACLE_FIXTURE_SHA256 = (
+    "a81c804d1940437fb259d0119c7bc1b06e968fcd5f20eb4364ab3f594156ef48"
+)
+_V65_EXPECTED_SLOTS = _CALLED_ALLIN_EXPECTED_SLOTS
+_V65_PASS_PATTERN = (
+    True, False, False, True, False, False, False, False,
+)
+
+_V65_ROUND_IDENTITIES = (
+    {
+        "slot": "self_play_01",
+        "round_id": "self_play_01_20260719_121934",
+        "passed": True,
+        "receipt_sha256": "81efa6f36dd5742023bfd36a4a270c0b856937354db6438f5fb4a09fd7ad878f",
+        "wire_events_sha256": "932ae4dca9c77c3f3d19c24c63c1d97942471239c38dec235f476dbe02b614f0",
+        "replay_summary_sha256": "ee8e0cc3f9aab3c5dfbc58c26f174c489875b7a08a6fb54d04e31fadc7a879b5",
+        "event_count": 819,
+        "hands_started": 70,
+        "settlements": 69,
+    },
+    {
+        "slot": "self_play_02",
+        "round_id": "self_play_02_20260719_122513",
+        "passed": False,
+        "receipt_sha256": "65ee969fb4b2472a4b782377517f7cb85084dee8c138862a7766256740816a39",
+        "wire_events_sha256": "ce317f8d80e285b4a617734f874bd1efb68b4155f297c9726fc3e1e036012c50",
+        "replay_summary_sha256": "695ba6dd22450ebd2eccb552a2023a2ff86c70683671c82aa62e5c707126357a",
+        "event_count": 18,
+        "hands_started": 1,
+        "settlements": 0,
+    },
+    {
+        "slot": "self_play_03",
+        "round_id": "self_play_03_20260719_122522",
+        "passed": False,
+        "receipt_sha256": "8537e4e05390a80c13e2dc6d5d06b7d94747da5e7997eb16bc47fa8631f81242",
+        "wire_events_sha256": "e9882362fd1113ec4e5d219a41a364b14785332a1b63280ec853cbf8d689ad54",
+        "replay_summary_sha256": "a60c4aa9cff006ce51299497a292ad8612a38c10c08f5c9edd9cdc4f4be901f0",
+        "event_count": 865,
+        "hands_started": 70,
+        "settlements": 69,
+    },
+    {
+        "slot": "self_play_04",
+        "round_id": "self_play_04_20260719_123151",
+        "passed": True,
+        "receipt_sha256": "94eb8e2b9bd7f297344e75c19e187410f530e79a40268da10d408d7ddc736b0b",
+        "wire_events_sha256": "3f87a3c4c326a9197945b8264fce96668b630b99d008b57c59bfccd36e146df9",
+        "replay_summary_sha256": "efce92ce3090a092af2566cfc432beb4c1aeb362da78e2ccf06d101f88b143ad",
+        "event_count": 828,
+        "hands_started": 70,
+        "settlements": 69,
+    },
+    {
+        "slot": "self_play_05",
+        "round_id": "self_play_05_20260719_123741",
+        "passed": False,
+        "receipt_sha256": "1143852bf3a4b2809d5dd9ccb57cb8f6bcff743d1db19846dee37cd1d22b6d68",
+        "wire_events_sha256": "9b188502ec9c7e9952fa22f2cf4dfd2700f6eac5bdf1a5c5826a9c69ad504984",
+        "replay_summary_sha256": "54f15ac3179e30ca49319aa24bf63dbe6aea9937de69b1be631fef8c6c79dd85",
+        "event_count": 22,
+        "hands_started": 1,
+        "settlements": 0,
+    },
+    {
+        "slot": "opponent_01",
+        "round_id": "opponent_01_20260719_123754",
+        "passed": False,
+        "receipt_sha256": "c938be98346c94376a0b74febb4d23ec0e42bce79ad226441aabc4b9ab52efb5",
+        "wire_events_sha256": "a9f2f11940313dff15e8a23328d2748a0a717e8e6da1542e6046a02958a4ee56",
+        "replay_summary_sha256": "cc35ec881440c22c217b2db1fe0e27ebde247082689799c59efd8f9274889350",
+        "event_count": 752,
+        "hands_started": 70,
+        "settlements": 69,
+    },
+    {
+        "slot": "opponent_02",
+        "round_id": "opponent_02_20260719_124241",
+        "passed": False,
+        "receipt_sha256": "49618fc54ee6259e7ded3b120cead85cefafa8a92d5fe2629c274d54c260a1ce",
+        "wire_events_sha256": "791b554938cd1c31e9fdb76fe4a568157c47a7c41e3ee16efd7d3668cbcd72c8",
+        "replay_summary_sha256": "b2fd38ab2f85f7d703603d7e2d68fc3a19b2c41184c3cce2eef4030290b234b7",
+        "event_count": 60,
+        "hands_started": 2,
+        "settlements": 1,
+    },
+    {
+        "slot": "opponent_03",
+        "round_id": "opponent_03_20260719_124301",
+        "passed": False,
+        "receipt_sha256": "183ff21e8a794a5b38ab920d2ebb63d1d323563b258ac3adfac39d931c3b0a8a",
+        "wire_events_sha256": "fa590230143b97b6f6074d6b18bdda7568336b82a95ef79cc4b6dfa02933a361",
+        "replay_summary_sha256": "b84a4230953d36c583c6d0f47e458765ffc6a629ea2114c081d6833305d2c214",
+        "event_count": 97,
+        "hands_started": 3,
+        "settlements": 2,
+    },
+)
+
+_V65_LIVE_RACE_FAILURES = (
+    {
+        "slot": "self_play_02", "conn": "A", "hand": 1,
+        "stage": "preflop", "action": "check",
+        "source_record_seq": 12, "source_observation_seq": 9,
+        "boundary_record_seq": 13, "boundary_observation_seq": 10,
+        "boundary_message": "flop|<1,11><3,9><2,12>",
+        "flush_record_seq": 15, "flush_observation_seq": 9,
+        "stored_summary_digest": "fd0145f3afc5933339c4a300032ce39aee607fc8648ebe52239f284207a56391",
+        "finalized_summary_digest": "fd0145f3afc5933339c4a300032ce39aee607fc8648ebe52239f284207a56391",
+        "provisional_summary_digest": "4f84c16dba2ea6cbd1a784d97232d20fc60661c364fec00f3d39acb32a7f1051",
+    },
+    {
+        "slot": "self_play_05", "conn": "B", "hand": 1,
+        "stage": "preflop", "action": "call",
+        "source_record_seq": 16, "source_observation_seq": 11,
+        "boundary_record_seq": 18, "boundary_observation_seq": 13,
+        "boundary_message": "flop|<1,5><0,2><2,10>",
+        "flush_record_seq": 19, "flush_observation_seq": 11,
+        "stored_summary_digest": "7c50d9eb926f5124a918391beb366fec940961ff8d54bb5082f896bdf34e3588",
+        "finalized_summary_digest": "7c50d9eb926f5124a918391beb366fec940961ff8d54bb5082f896bdf34e3588",
+        "provisional_summary_digest": "33e2d95205bccd4fdc0016ad5fb0ab6daf40198eaddbc1a48b2b8f89c8c1c27f",
+    },
+    {
+        "slot": "opponent_02", "conn": "A", "hand": 2,
+        "stage": "flop", "action": "call",
+        "source_record_seq": 54, "source_observation_seq": 38,
+        "boundary_record_seq": 55, "boundary_observation_seq": 39,
+        "boundary_message": "turn|<0,3>",
+        "flush_record_seq": 57, "flush_observation_seq": 38,
+        "stored_summary_digest": "b333968d20af47cb9becfe2dfa551a30a898a3032a6c4e9e9cfe14b5936cd65c",
+        "finalized_summary_digest": "b333968d20af47cb9becfe2dfa551a30a898a3032a6c4e9e9cfe14b5936cd65c",
+        "provisional_summary_digest": "bed4dc30d07b55aaefe4d15289975ce6bfe339cec60d3394d238fe9217884d8c",
+    },
+    {
+        "slot": "opponent_03", "conn": "B", "hand": 3,
+        "stage": "flop", "action": "call",
+        "source_record_seq": 91, "source_observation_seq": 64,
+        "boundary_record_seq": 93, "boundary_observation_seq": 66,
+        "boundary_message": "turn|<1,4>",
+        "flush_record_seq": 94, "flush_observation_seq": 64,
+        "stored_summary_digest": "eed993b81d3cdf6ef7d379bd2f3efeefb5c7db653b6011b5b2a72d4f7b244e85",
+        "finalized_summary_digest": "eed993b81d3cdf6ef7d379bd2f3efeefb5c7db653b6011b5b2a72d4f7b244e85",
+        "provisional_summary_digest": "6320756f79e969dad510a281e899b17829692c65654156aeb77656b2b4b0ed14",
+    },
+)
+
+_V65_THP_PREFIX_FAILURES = (
+    {
+        "slot": "self_play_03", "hand": 6, "stage": "turn",
+        "public_cards_observed": 4, "thp_record_index": 5,
+        "thp_cards_payload": "4h5s|4s8d/AcAd3s/4d",
+        "thp_sha256": "a9516d06d7e7b093c24468e35376f519cb51df83166a128902049050860e1aab",
+        "thp_bytes": 2998,
+        "wire_omissions_digest": "cfc0192c3e28981dea562ce29818865634bbe6c36ce183053b1ce0386b0db048",
+        "strict_match_digest": "e2dd59a8fcefd6b92e31ee24db5e02eefe71948ee7c9a9e7295a91389f7ba385",
+        "prefix_binding_digest": "c74bb00ac329eb9200cbe5580afc0001ac16807ffcebded38a085bdc12111717",
+    },
+    {
+        "slot": "opponent_01", "hand": 1, "stage": "flop",
+        "public_cards_observed": 3, "thp_record_index": 0,
+        "thp_cards_payload": "AcTh|TdKd/9sAdKh",
+        "thp_sha256": "3e8fd8ab81e6e96fedb10c67474851d8bb4bb59bf9ffc372a469ea6eae514d59",
+        "thp_bytes": 3496,
+        "wire_omissions_digest": "02284d01b7ecce0a6508f4695f4d654abb34587a39affc36eb873f048b812073",
+        "strict_match_digest": "5d03200fee62a521a2c45c39a0c21bcc5b94cf37c7ba424fbb9ddcc8b6050f6a",
+        "prefix_binding_digest": "3fb1a2349463e49f432faf9e95579d6defe87399fb7cd54970abd7f292acda5f",
+    },
+)
+
+_V65_DIAGNOSIS_FIELDS = frozenset({
+    "schema_version", "kind", "profile_id", "defect_ids",
+    "incident_identity", "baseline_wire_probe_sha256",
+    "repair_wire_probe_sha256", "baseline_harness_sha256",
+    "repair_harness_sha256", "baseline_oracle_document_sha256",
+    "repair_oracle_document_sha256", "baseline_oracle_fixture_sha256",
+    "repair_oracle_fixture_sha256", "evidence_sha256",
+    "evidence_archive_sha256", "evidence_archive_manifest_digest",
+    "suite_summary_sha256", "attribution_digest", "round_receipts",
+    "live_deferred_failures", "thp_prefix_failures",
+    "authority_absence", "strength_evaluation", "disposition",
+    "proof_digest",
+})
+_V65_INCIDENT_IDENTITY_FIELDS = frozenset({
+    "baseline_head", "baseline_contract_version", "baseline_contract_hash",
+    "repair_contract_version", "workflow_run_id", "checkpoint_revision",
+    "candidate_artifact_hash", "job_id", "job_result_digest",
+    "rounds_requested", "rounds_completed", "rounds_run", "passed_rounds",
+    "failed_rounds",
+})
+_V65_ROUND_RECEIPT_FIELDS = frozenset({
+    "slot", "round_id", "passed", "receipt_sha256",
+    "wire_events_sha256", "replay_summary_sha256", "event_count",
+    "hands_started", "settlements",
+})
+_V65_LIVE_FAILURE_FIELDS = frozenset({
+    "slot", "round_id", "conn", "hand", "stage", "action",
+    "source_record_seq", "source_observation_seq", "boundary_record_seq",
+    "boundary_observation_seq", "boundary_message", "flush_record_seq",
+    "flush_observation_seq", "stored_summary_digest",
+    "finalized_summary_digest", "provisional_summary_digest",
+})
+_V65_THP_FAILURE_FIELDS = frozenset({
+    "slot", "round_id", "hand", "stage", "public_cards_observed",
+    "thp_record_index", "thp_cards_payload", "thp_sha256", "thp_bytes",
+    "wire_omissions_digest", "strict_match_digest", "prefix_binding_digest",
+})
+
+
 class BootstrapContractRecoveryError(RuntimeError):
     def __init__(self, issues: list[str]):
         self.issues = list(dict.fromkeys(str(item) for item in issues if str(item)))
@@ -495,7 +756,9 @@ def _bootstrap_contract_chain_issues(
     expected_first_strict_control_receipt: dict[str, Any],
 ) -> list[str]:
     issues: list[str] = []
-    if expected_evaluation_contract_version != PARKED_EVALUATION_CONTRACT_VERSION:
+    if expected_evaluation_contract_version not in (
+        SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS
+    ):
         issues.append("bootstrap_contract_evaluation_contract_chain_mismatch")
     if (
         parked.get("evaluation_contract_version")
@@ -1348,9 +1611,180 @@ def _validate_called_allin_failure_diagnosis_envelope(
     return value
 
 
+def _expected_v65_incident_identity() -> dict[str, Any]:
+    return {
+        "baseline_head": _V65_BASELINE_HEAD,
+        "baseline_contract_version": _V65_BASELINE_CONTRACT_VERSION,
+        "baseline_contract_hash": _V65_BASELINE_CONTRACT_HASH,
+        "repair_contract_version": _V65_REPAIR_CONTRACT_VERSION,
+        "workflow_run_id": _V65_WORKFLOW_RUN_ID,
+        "checkpoint_revision": _V65_CHECKPOINT_REVISION,
+        "candidate_artifact_hash": _V65_CANDIDATE_HASH,
+        "job_id": _V65_JOB_ID,
+        "job_result_digest": _V65_JOB_RESULT_DIGEST,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "passed_rounds": 2,
+        "failed_rounds": 6,
+    }
+
+
+def _validate_v65_failure_diagnosis_envelope(
+    value: Any,
+) -> dict[str, Any]:
+    """Validate only the exact workflow-v65 Contract-41 incident proof."""
+
+    if not isinstance(value, dict) or set(value) != _V65_DIAGNOSIS_FIELDS:
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_v65_diagnosis_fields_invalid"
+        ])
+    payload = {
+        key: item for key, item in value.items() if key != "proof_digest"
+    }
+    incident = value.get("incident_identity")
+    rounds = value.get("round_receipts")
+    live_failures = value.get("live_deferred_failures")
+    thp_failures = value.get("thp_prefix_failures")
+    digest_fields = (
+        "baseline_wire_probe_sha256",
+        "repair_wire_probe_sha256",
+        "baseline_harness_sha256",
+        "repair_harness_sha256",
+        "baseline_oracle_document_sha256",
+        "repair_oracle_document_sha256",
+        "baseline_oracle_fixture_sha256",
+        "repair_oracle_fixture_sha256",
+        "evidence_sha256",
+        "evidence_archive_sha256",
+        "evidence_archive_manifest_digest",
+        "suite_summary_sha256",
+        "attribution_digest",
+    )
+    invalid = bool(
+        value.get("schema_version") != 1
+        or value.get("kind") != _V65_DIAGNOSIS_KIND
+        or value.get("profile_id") != _V65_PROFILE_ID
+        or tuple(value.get("defect_ids") or ()) != _V65_DEFECT_IDS
+        or not isinstance(incident, dict)
+        or set(incident) != _V65_INCIDENT_IDENTITY_FIELDS
+        or incident != _expected_v65_incident_identity()
+        or value.get("proof_digest") != canonical_digest(payload)
+        or value.get("strength_evaluation") != "not_applicable"
+        or value.get("disposition")
+        != "abandon_and_reprepare_only_without_evidence_reuse"
+        or value.get("authority_absence") != _CALLED_ALLIN_AUTHORITY_ABSENCE
+        or any(
+            not _HEX64.fullmatch(str(value.get(field) or ""))
+            for field in digest_fields
+        )
+        or value.get("baseline_wire_probe_sha256")
+        != _V65_BASELINE_WIRE_PROBE_SHA256
+        or value.get("baseline_harness_sha256")
+        != _V65_BASELINE_HARNESS_SHA256
+        or value.get("baseline_oracle_document_sha256")
+        != _V65_BASELINE_ORACLE_DOC_SHA256
+        or value.get("baseline_oracle_fixture_sha256")
+        != _V65_BASELINE_ORACLE_FIXTURE_SHA256
+        or value.get("repair_oracle_document_sha256")
+        != _V65_REPAIR_ORACLE_DOC_SHA256
+        or value.get("repair_oracle_fixture_sha256")
+        != _V65_REPAIR_ORACLE_FIXTURE_SHA256
+        or value.get("repair_wire_probe_sha256")
+        == value.get("baseline_wire_probe_sha256")
+        or value.get("repair_harness_sha256")
+        == value.get("baseline_harness_sha256")
+        or value.get("repair_oracle_document_sha256")
+        == value.get("baseline_oracle_document_sha256")
+        or value.get("repair_oracle_fixture_sha256")
+        == value.get("baseline_oracle_fixture_sha256")
+        or not isinstance(rounds, list)
+        or len(rounds) != len(_V65_ROUND_IDENTITIES)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != _V65_ROUND_RECEIPT_FIELDS
+            for item in (rounds or [])
+        )
+        or not isinstance(live_failures, list)
+        or len(live_failures) != len(_V65_LIVE_RACE_FAILURES)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != _V65_LIVE_FAILURE_FIELDS
+            for item in (live_failures or [])
+        )
+        or not isinstance(thp_failures, list)
+        or len(thp_failures) != len(_V65_THP_PREFIX_FAILURES)
+        or any(
+            not isinstance(item, dict)
+            or set(item) != _V65_THP_FAILURE_FIELDS
+            for item in (thp_failures or [])
+        )
+    )
+    if not invalid:
+        for observed, expected in zip(rounds, _V65_ROUND_IDENTITIES):
+            if any(observed.get(key) != expected[key] for key in expected):
+                invalid = True
+                break
+    if not invalid:
+        round_ids = {item["slot"]: item["round_id"] for item in rounds}
+        for observed, expected in zip(
+            live_failures,
+            _V65_LIVE_RACE_FAILURES,
+        ):
+            if (
+                observed.get("round_id") != round_ids[expected["slot"]]
+                or any(
+                    observed.get(key) != expected[key]
+                    for key in expected
+                )
+                or any(
+                    not _HEX64.fullmatch(str(observed.get(field) or ""))
+                    for field in (
+                        "stored_summary_digest",
+                        "finalized_summary_digest",
+                        "provisional_summary_digest",
+                    )
+                )
+            ):
+                invalid = True
+                break
+    if not invalid:
+        round_ids = {item["slot"]: item["round_id"] for item in rounds}
+        for observed, expected in zip(
+            thp_failures,
+            _V65_THP_PREFIX_FAILURES,
+        ):
+            if (
+                observed.get("round_id") != round_ids[expected["slot"]]
+                or any(
+                    observed.get(key) != expected[key]
+                    for key in expected
+                )
+                or any(
+                    not _HEX64.fullmatch(str(observed.get(field) or ""))
+                    for field in (
+                        "wire_omissions_digest",
+                        "strict_match_digest",
+                        "prefix_binding_digest",
+                    )
+                )
+            ):
+                invalid = True
+                break
+    if invalid:
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_v65_diagnosis_invalid"
+        ])
+    return value
+
+
 def _validate_contract_failure_diagnosis_envelope(
     value: Any,
 ) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("kind") == (
+        _V65_DIAGNOSIS_KIND
+    ):
+        return _validate_v65_failure_diagnosis_envelope(value)
     if isinstance(value, dict) and value.get("kind") == (
         _CALLED_ALLIN_DIAGNOSIS_KIND
     ):
@@ -2626,6 +3060,622 @@ def _called_allin_runout_failure_diagnosis(
     })
 
 
+def _v65_contract_failure_diagnosis(
+    root: Path,
+    directory: Path,
+    *,
+    request: dict[str, Any],
+    state: dict[str, Any],
+    status: dict[str, Any],
+    candidate_hash: str,
+    workflow_run_id: str,
+    checkpoint_revision: int,
+    job_result_digest: str,
+    expected_evaluation_contract_version: int,
+    expected_evaluation_contract_hash: str,
+    expected_repair_contract_version: int,
+    expected_baseline_head: str,
+    expected_repair_head: str,
+    control_consumption: dict[str, Any],
+    require_live_repair_source: bool = True,
+) -> dict[str, Any]:
+    """Reopen only the v65 four-live-race/two-THP-prefix incident."""
+
+    from official_evidence_archive import validate_evidence_archive
+    from official_platform_harness import (
+        THP_RECORD_RE,
+        _omitted_allin_thp_bindings,
+        _parse_thp_card_payload,
+        _strict_thp_match,
+        _wire_settlement_prefix,
+    )
+    from official_wire_probe import replay_events
+
+    incident_identity = {
+        "baseline_head": expected_baseline_head,
+        "baseline_contract_version": expected_evaluation_contract_version,
+        "baseline_contract_hash": expected_evaluation_contract_hash,
+        "repair_contract_version": expected_repair_contract_version,
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": checkpoint_revision,
+        "candidate_artifact_hash": candidate_hash,
+        "job_id": directory.name,
+        "job_result_digest": job_result_digest,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "passed_rounds": 2,
+        "failed_rounds": 6,
+    }
+    if incident_identity != _expected_v65_incident_identity():
+        raise ValueError("v65 incident identity is not exact")
+    if (
+        state.get("attempt") != 1
+        or state.get("revision") != 948
+        or state.get("result_digest") != _V65_JOB_RESULT_DIGEST
+        or state.get("worker_restart_count") != 0
+    ):
+        raise ValueError("v65 job attempt/result identity changed")
+
+    identity = request.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    platform = identity.get("platform")
+    platform = platform if isinstance(platform, dict) else {}
+    if (
+        request.get("job_id") != _V65_JOB_ID
+        or identity.get("candidate_hash") != _V65_CANDIDATE_HASH
+        or identity.get("opponent_hash") != _V65_CONTROL_HASH
+        or platform.get("exe_sha256") != _CALLED_ALLIN_EXE_SHA256
+    ):
+        raise ValueError("v65 request identity changed")
+
+    source_specs = (
+        (
+            "wire_probe",
+            "web/core/official_wire_probe.py",
+            _V65_BASELINE_WIRE_PROBE_SHA256,
+            None,
+        ),
+        (
+            "harness",
+            "web/core/official_platform_harness.py",
+            _V65_BASELINE_HARNESS_SHA256,
+            None,
+        ),
+        (
+            "oracle_document",
+            _CALLED_ALLIN_ORACLE_DOC,
+            _V65_BASELINE_ORACLE_DOC_SHA256,
+            _V65_REPAIR_ORACLE_DOC_SHA256,
+        ),
+        (
+            "oracle_fixture",
+            _CALLED_ALLIN_ORACLE_FIXTURE,
+            _V65_BASELINE_ORACLE_FIXTURE_SHA256,
+            _V65_REPAIR_ORACLE_FIXTURE_SHA256,
+        ),
+    )
+    source_identities: dict[str, str] = {}
+    for (
+        label,
+        relative,
+        expected_baseline_sha256,
+        expected_repair_sha256,
+    ) in source_specs:
+        baseline_raw = _git(
+            root,
+            "show",
+            f"{expected_baseline_head}:{relative}",
+            binary=True,
+        )
+        repair_raw = _git(
+            root,
+            "show",
+            f"{expected_repair_head}:{relative}",
+            binary=True,
+        )
+        if not isinstance(baseline_raw, bytes) or not isinstance(
+            repair_raw, bytes
+        ):
+            raise ValueError(f"v65 {label} source is unavailable")
+        baseline_sha256 = _sha256_bytes(baseline_raw)
+        repair_sha256 = _sha256_bytes(repair_raw)
+        if (
+            baseline_sha256 != expected_baseline_sha256
+            or repair_sha256 == baseline_sha256
+            or (
+                expected_repair_sha256 is not None
+                and repair_sha256 != expected_repair_sha256
+            )
+        ):
+            raise ValueError(f"v65 {label} contract change is unproven")
+        if require_live_repair_source:
+            max_bytes = 4 * 1024 * 1024
+            live_raw = _read_regular_exact(
+                root / relative,
+                max_bytes=max_bytes,
+            )
+            if live_raw != repair_raw:
+                raise ValueError(f"live {label} is not the reviewed repair")
+        source_identities[f"baseline_{label}_sha256"] = baseline_sha256
+        source_identities[f"repair_{label}_sha256"] = repair_sha256
+
+    candidate = root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
+    authority_absence = _called_allin_authority_absence(
+        root,
+        candidate=candidate,
+        control_consumption=control_consumption,
+        require_live=require_live_repair_source,
+    )
+
+    suite = directory / "suite_attempt_01"
+    _require_regular_directory(suite)
+    status_summary = status.get("summary")
+    status_summary = status_summary if isinstance(status_summary, dict) else {}
+    if Path(str(status_summary.get("suite_dir") or "")) != suite:
+        raise ValueError("v65 suite path is not job-owned")
+    evidence_path = suite / "official_evidence.json"
+    if Path(str(status.get("official_evidence_path") or "")) != evidence_path:
+        raise ValueError("v65 evidence path is not canonical")
+    summary_raw, suite_report = _regular_json(
+        suite / "summary.json",
+        max_bytes=4 * 1024 * 1024,
+    )
+    evidence_raw, evidence = _regular_json(
+        evidence_path,
+        max_bytes=4 * 1024 * 1024,
+    )
+    evidence_sha256 = _sha256_bytes(evidence_raw)
+    deterministic = status.get("official_deterministic_status_receipt")
+    deterministic = deterministic if isinstance(deterministic, dict) else {}
+    archive = status.get("official_evidence_archive")
+    archive = archive if isinstance(archive, dict) else {}
+    archive_validation = validate_evidence_archive(
+        archive,
+        expected_evidence_sha256=evidence_sha256,
+    )
+    if (
+        deterministic.get("evidence_sha256") != evidence_sha256
+        or archive.get("evidence_sha256") != evidence_sha256
+        or archive_validation.get("valid") is not True
+        or evidence.get("schema_version") != 1
+        or evidence.get("purpose") != "official_platform_compliance"
+        or evidence.get("strength_evaluation") != "not_applicable"
+    ):
+        raise ValueError("v65 evidence/archive identity changed")
+
+    expected_summary = {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "rounds_requested": 8,
+        "rounds_run": 8,
+        "passed_rounds": 2,
+        "failed_rounds": 6,
+        "resumed_rounds": 0,
+        "official_platform": True,
+    }
+    report_summary = suite_report.get("summary")
+    report_summary = report_summary if isinstance(report_summary, dict) else {}
+    evidence_summary = evidence.get("summary")
+    evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+    if any(
+        status_summary.get(key) != expected
+        or report_summary.get(key) != expected
+        or evidence_summary.get(key) != expected
+        for key, expected in expected_summary.items()
+    ):
+        raise ValueError("v65 suite is not exact 2-pass/6-fail")
+    attribution = status_summary.get("attribution")
+    attribution = attribution if isinstance(attribution, dict) else {}
+    attribution_rounds = attribution.get("rounds")
+    if (
+        status.get("status") != "official-failed"
+        or report_summary.get("attribution") != attribution
+        or evidence_summary.get("attribution") != attribution
+        or report_summary.get("formal_execution")
+        != status_summary.get("formal_execution")
+        or evidence_summary.get("formal_execution")
+        != status_summary.get("formal_execution")
+        or not isinstance(status_summary.get("formal_execution"), dict)
+        or status_summary["formal_execution"].get("ok") is not True
+        or status_summary["formal_execution"].get("issues") != []
+        or evidence_summary.get("passed") is not False
+        or evidence_summary.get("raw_passed") is not False
+        or attribution.get("schema_version") != 1
+        or attribution.get("policy_id") != "official-attribution-v1"
+        or attribution.get("candidate_verdict") != "fail"
+        or attribution.get("candidate_blocking") is not True
+        or attribution.get("inconclusive") is not False
+        or attribution.get("countable_rounds") != 2
+        or not isinstance(attribution_rounds, list)
+        or len(attribution_rounds) != 8
+    ):
+        raise ValueError("v65 suite/attribution crossbinding changed")
+
+    report_rounds = suite_report.get("rounds")
+    evidence_rounds = evidence.get("rounds")
+    if (
+        not isinstance(report_rounds, list)
+        or len(report_rounds) != 8
+        or not isinstance(evidence_rounds, list)
+        or len(evidence_rounds) != 8
+    ):
+        raise ValueError("v65 suite round set is incomplete")
+
+    expected_by_slot = {
+        item["slot"]: item for item in _V65_ROUND_IDENTITIES
+    }
+    race_by_slot = {
+        item["slot"]: item for item in _V65_LIVE_RACE_FAILURES
+    }
+    thp_by_slot = {
+        item["slot"]: item for item in _V65_THP_PREFIX_FAILURES
+    }
+    round_receipts: list[dict[str, Any]] = []
+    live_failures: list[dict[str, Any]] = []
+    thp_failures: list[dict[str, Any]] = []
+
+    for offset, slot in enumerate(_V65_EXPECTED_SLOTS):
+        expected = expected_by_slot[slot]
+        receipt = report_rounds[offset]
+        evidence_round = evidence_rounds[offset]
+        attribution_round = attribution_rounds[offset]
+        if not all(
+            isinstance(item, dict)
+            for item in (receipt, evidence_round, attribution_round)
+        ):
+            raise ValueError("v65 round evidence shape is invalid")
+        kind = "self_play" if slot.startswith("self_play") else "opponent"
+        index = int(slot.rsplit("_", 1)[1])
+        if (
+            receipt.get("round_id") != expected["round_id"]
+            or receipt.get("round_kind") != kind
+            or receipt.get("round_index") != index
+            or receipt.get("target_hands") != 70
+            or receipt.get("passed") is not expected["passed"]
+            or evidence_round.get("round_id") != expected["round_id"]
+            or evidence_round.get("round_kind") != kind
+            or evidence_round.get("round_index") != index
+            or evidence_round.get("passed") is not expected["passed"]
+            or attribution_round.get("countable") is not expected["passed"]
+        ):
+            raise ValueError("v65 round outcome identity changed")
+        _require_exact_round_job_envelope(
+            receipt.get("job_envelope"),
+            status.get("official_job_envelope"),
+            job_id=directory.name,
+            candidate_hash=candidate_hash,
+        )
+        wire_probe = receipt.get("wire_probe")
+        wire_probe = wire_probe if isinstance(wire_probe, dict) else {}
+        if wire_probe.get("enabled") is not True or wire_probe.get("issues") != []:
+            raise ValueError("v65 wire probe failed independently")
+
+        artifacts = evidence_round.get("artifacts")
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
+        receipt_item = artifacts.get("receipt")
+        archive_path = str((receipt_item or {}).get("archive_path") or "")
+        pure_receipt = PurePosixPath(archive_path)
+        if (
+            len(pure_receipt.parts) != 4
+            or pure_receipt.parts[0] != slot
+            or pure_receipt.parts[1] != "executions"
+            or re.fullmatch(
+                r"run_[0-9]+_[0-9]+",
+                pure_receipt.parts[2],
+            ) is None
+            or pure_receipt.parts[3] != "receipt.json"
+        ):
+            raise ValueError("v65 round execution path is invalid")
+        execution_prefix = "/".join(pure_receipt.parts[:-1])
+        receipt_raw = _strict_artifact_bytes(
+            suite,
+            receipt_item,
+            expected_archive_path=f"{execution_prefix}/receipt.json",
+            max_bytes=2 * 1024 * 1024,
+        )
+        wire_raw = _strict_artifact_bytes(
+            suite,
+            artifacts.get("wire_events"),
+            expected_archive_path=f"{execution_prefix}/wire_events.jsonl",
+            max_bytes=2 * 1024 * 1024,
+        )
+        replay_raw = _strict_artifact_bytes(
+            suite,
+            artifacts.get("replay_summary"),
+            expected_archive_path=f"{execution_prefix}/replay_summary.json",
+            max_bytes=2 * 1024 * 1024,
+        )
+        if (
+            json.loads(receipt_raw.decode("utf-8")) != receipt
+            or _sha256_bytes(receipt_raw) != expected["receipt_sha256"]
+            or _sha256_bytes(wire_raw) != expected["wire_events_sha256"]
+            or _sha256_bytes(replay_raw)
+            != expected["replay_summary_sha256"]
+        ):
+            raise ValueError("v65 exact round bytes changed")
+        slot_dir = suite / slot
+        executions = slot_dir / "executions"
+        execution_dir = executions / pure_receipt.parts[2]
+        for owned_directory in (slot_dir, executions, execution_dir):
+            _require_regular_directory(owned_directory)
+        if (
+            sorted(item.name for item in slot_dir.iterdir())
+            != ["executions", "receipt.json"]
+            or sorted(item.name for item in executions.iterdir())
+            != [pure_receipt.parts[2]]
+            or _read_regular_exact(
+                slot_dir / "receipt.json",
+                max_bytes=2 * 1024 * 1024,
+            ) != receipt_raw
+        ):
+            raise ValueError("v65 round was resumed or duplicated")
+
+        stored_replay = receipt.get("wire_replay_summary")
+        if (
+            not isinstance(stored_replay, dict)
+            or evidence_round.get("wire_replay_summary") != stored_replay
+            or json.loads(replay_raw.decode("utf-8")) != stored_replay
+        ):
+            raise ValueError("v65 stored replay is not cross-bound")
+        events = [
+            json.loads(line)
+            for line in wire_raw.decode("utf-8").splitlines()
+            if line.strip()
+        ]
+        if (
+            any(not isinstance(event, dict) for event in events)
+            or len(events) != expected["event_count"]
+            or stored_replay.get("events_seen") != len(events)
+            or stored_replay.get("hands_started_min")
+            != expected["hands_started"]
+            or stored_replay.get("settlements_min")
+            != expected["settlements"]
+        ):
+            raise ValueError("v65 raw event vector changed")
+        finalized = replay_events(events, finalized=True)
+        if finalized != stored_replay or finalized.get("issues") != []:
+            raise ValueError("v65 finalized causal replay changed")
+        round_receipts.append({
+            key: expected[key]
+            for key in _V65_ROUND_RECEIPT_FIELDS
+        })
+
+        if expected["passed"]:
+            if (
+                receipt.get("issues") != []
+                or stored_replay.get("warnings") != []
+                or not isinstance(receipt.get("completion_evidence"), dict)
+            ):
+                raise ValueError("v65 passing round is not intact")
+            continue
+
+        race = race_by_slot.get(slot)
+        if race is not None:
+            expected_wire_issue = (
+                "wire_street_boundary_unproved: "
+                f"conn={race['conn']} hand={race['hand']} "
+                f"stage={race['stage']} msg={race['boundary_message']!r} "
+                "reason=next public street requires an exact completed prior "
+                "street or a previously proved called-all-in runout"
+            )
+            if receipt.get("issues") != [
+                expected_wire_issue,
+                "thp_missing_for_full_70_hand_round",
+                "official_terminal_socket_boundary_invalid",
+            ]:
+                raise ValueError("v65 live-race receipt has another failure")
+            source = events[race["source_record_seq"] - 1]
+            boundary = events[race["boundary_record_seq"] - 1]
+            flush = events[race["flush_record_seq"] - 1]
+            if (
+                source.get("record_seq") != race["source_record_seq"]
+                or source.get("observation_seq")
+                != race["source_observation_seq"]
+                or source.get("conn") != race["conn"]
+                or source.get("direction") != "bot_to_server"
+                or source.get("raw_repr") != race["action"]
+                or source.get("remaining") != race["action"]
+                or source.get("messages") != []
+                or boundary.get("record_seq")
+                != race["boundary_record_seq"]
+                or boundary.get("observation_seq")
+                != race["boundary_observation_seq"]
+                or boundary.get("conn") != race["conn"]
+                or boundary.get("direction") != "server_to_bot"
+                or boundary.get("messages") != [race["boundary_message"]]
+                or flush.get("record_seq") != race["flush_record_seq"]
+                or flush.get("observation_seq")
+                != race["flush_observation_seq"]
+                or flush.get("conn") != race["conn"]
+                or flush.get("event_type") != "idle_flush"
+                or flush.get("messages") != [race["action"]]
+                or not (
+                    race["source_record_seq"]
+                    < race["boundary_record_seq"]
+                    < race["flush_record_seq"]
+                )
+            ):
+                raise ValueError("v65 live-race causal envelope changed")
+            provisional = replay_events(
+                events[: race["boundary_record_seq"]],
+                now=float(boundary["observation_t"]),
+                finalized=False,
+            )
+            warnings = provisional.get("warnings")
+            warnings = warnings if isinstance(warnings, list) else []
+            matching_warnings = [
+                item for item in warnings
+                if isinstance(item, dict)
+                and item.get("kind")
+                == "provisional_street_boundary_unproved"
+                and item.get("strict_issue_kind")
+                == "street_boundary_unproved"
+                and item.get("conn") == race["conn"]
+                and item.get("hand") == race["hand"]
+                and item.get("stage") == race["stage"]
+            ]
+            if provisional.get("issues") != [] or len(matching_warnings) != 1:
+                raise ValueError("v65 live-race repair is not exact")
+            live_failures.append({
+                **race,
+                "round_id": expected["round_id"],
+                "stored_summary_digest": canonical_digest(stored_replay),
+                "finalized_summary_digest": canonical_digest(finalized),
+                "provisional_summary_digest": canonical_digest(provisional),
+            })
+            continue
+
+        thp_expected = thp_by_slot.get(slot)
+        if thp_expected is None:
+            raise ValueError("v65 unsupported failed-round slot")
+        expected_timeout = (
+            "terminal_thp_timeout: waited=20s detail="
+            "omitted_allin_runout_thp_board_incomplete:"
+            f"{thp_expected['hand']}"
+        )
+        if receipt.get("issues") != [
+            expected_timeout,
+            "official_terminal_completion_evidence_missing",
+        ] or receipt.get("completion_evidence") is not None:
+            raise ValueError("v65 THP-prefix receipt has another failure")
+        thp_items = artifacts.get("thp_files")
+        if not isinstance(thp_items, list) or len(thp_items) != 1:
+            raise ValueError("v65 THP-prefix artifact set changed")
+        thp_item = thp_items[0]
+        thp_archive_path = str((thp_item or {}).get("archive_path") or "")
+        thp_pure = PurePosixPath(thp_archive_path)
+        if (
+            len(thp_pure.parts) != 5
+            or "/".join(thp_pure.parts[:3]) != execution_prefix
+            or thp_pure.parts[3] != "thp"
+        ):
+            raise ValueError("v65 THP-prefix archive path changed")
+        thp_raw = _strict_artifact_bytes(
+            suite,
+            thp_item,
+            expected_archive_path=thp_archive_path,
+            max_bytes=512 * 1024,
+        )
+        if (
+            _sha256_bytes(thp_raw) != thp_expected["thp_sha256"]
+            or len(thp_raw) != thp_expected["thp_bytes"]
+        ):
+            raise ValueError("v65 THP-prefix bytes changed")
+        thp_text = thp_raw.decode("gb2312", errors="replace")
+        expected_names = (
+            str((receipt.get("bot_a") or {}).get("name") or ""),
+            str((receipt.get("bot_b") or {}).get("name") or ""),
+        )
+        strict_match, strict_issues = _strict_thp_match(
+            thp_text,
+            expected_hands=70,
+            expected_names=expected_names,
+        )
+        if strict_match is None or strict_issues:
+            raise ValueError("v65 THP-prefix strict match changed")
+        matches = [
+            match for match in THP_RECORD_RE.finditer(thp_text)
+            if int(match.group(1)) == thp_expected["thp_record_index"]
+        ]
+        if (
+            len(matches) != 1
+            or matches[0].group(3) != thp_expected["thp_cards_payload"]
+        ):
+            raise ValueError("v65 THP-prefix state identity changed")
+        parsed_cards, card_issue = _parse_thp_card_payload(
+            matches[0].group(3)
+        )
+        if (
+            card_issue
+            or parsed_cards is None
+            or len(parsed_cards["public_cards"])
+            != thp_expected["public_cards_observed"]
+        ):
+            raise ValueError("v65 THP-prefix card shape changed")
+        omissions = stored_replay.get("omitted_allin_runout_boundaries")
+        if (
+            not isinstance(omissions, list)
+            or len(omissions) != 2
+            or {item.get("conn") for item in omissions} != {"A", "B"}
+            or any(
+                item.get("hand") != thp_expected["hand"]
+                or item.get("stage") != thp_expected["stage"]
+                or item.get("public_cards_observed")
+                != thp_expected["public_cards_observed"]
+                for item in omissions
+            )
+        ):
+            raise ValueError("v65 wire omission identity changed")
+        bindings, binding_issues = _omitted_allin_thp_bindings(
+            strict_match,
+            stored_replay,
+            expected_hands=70,
+            expected_names=expected_names,
+        )
+        wire_prefix, wire_prefix_issues = _wire_settlement_prefix(
+            stored_replay,
+            expected_hands=70,
+            expected_names=expected_names,
+        )
+        thp_prefix = [
+            {
+                "hand": record["index"] + 1,
+                "earnings_by_player": {
+                    name: record["earnings_by_player"][name]
+                    for name in expected_names
+                },
+            }
+            for record in strict_match["records"][:-1]
+        ]
+        if (
+            bindings is None
+            or binding_issues
+            or len(bindings) != 1
+            or bindings[0].get("hand") != thp_expected["hand"]
+            or bindings[0].get("thp_board_scope")
+            != "observed_wire_prefix"
+            or bindings[0].get("thp_public_card_count")
+            != thp_expected["public_cards_observed"]
+            or wire_prefix is None
+            or wire_prefix_issues
+            or wire_prefix != thp_prefix
+        ):
+            raise ValueError("v65 THP-prefix repair is not exact")
+        thp_failures.append({
+            **thp_expected,
+            "round_id": expected["round_id"],
+            "wire_omissions_digest": canonical_digest(omissions),
+            "strict_match_digest": canonical_digest(strict_match),
+            "prefix_binding_digest": canonical_digest(bindings),
+        })
+
+    payload = {
+        "schema_version": 1,
+        "kind": _V65_DIAGNOSIS_KIND,
+        "profile_id": _V65_PROFILE_ID,
+        "defect_ids": list(_V65_DEFECT_IDS),
+        "incident_identity": incident_identity,
+        **source_identities,
+        "evidence_sha256": evidence_sha256,
+        "evidence_archive_sha256": archive["archive_sha256"],
+        "evidence_archive_manifest_digest": archive["manifest_digest"],
+        "suite_summary_sha256": _sha256_bytes(summary_raw),
+        "attribution_digest": canonical_digest(attribution),
+        "round_receipts": round_receipts,
+        "live_deferred_failures": live_failures,
+        "thp_prefix_failures": thp_failures,
+        "authority_absence": authority_absence,
+        "strength_evaluation": "not_applicable",
+        "disposition": "abandon_and_reprepare_only_without_evidence_reuse",
+    }
+    return _validate_v65_failure_diagnosis_envelope({
+        **payload,
+        "proof_digest": canonical_digest(payload),
+    })
+
+
 def _terminal_job_recovery_profile(
     progress: Any,
     status: Any,
@@ -2674,6 +3724,21 @@ def _terminal_job_recovery_profile(
         and verdict.get("classification") == "inconclusive"
     ):
         return _CALLED_ALLIN_PROFILE_ID
+    if (
+        progress.get("rounds_requested") == 8
+        and progress.get("rounds_completed") == 8
+        and progress.get("rounds_passed") == 2
+        and status.get("status") == "official-failed"
+        and summary.get("rounds_run") == 8
+        and summary.get("passed_rounds") == 2
+        and summary.get("failed_rounds") == 6
+        and summary.get("resumed_rounds") == 0
+        and verdict.get("inconclusive") is False
+        and verdict.get("blocking") is True
+        and verdict.get("violation") is True
+        and verdict.get("classification") == "protocol"
+    ):
+        return _V65_PROFILE_ID
     return None
 
 
@@ -2765,13 +3830,19 @@ def _terminal_job_facts(
     called_allin_harness_failure = (
         recovery_profile == _CALLED_ALLIN_PROFILE_ID
     )
+    v65_harness_false_failure = recovery_profile == _V65_PROFILE_ID
     if not any((
         zero_round_inconclusive,
         legacy_causal_failure,
         called_allin_harness_failure,
+        v65_harness_false_failure,
     )):
         issues.append("bootstrap_contract_terminal_job_profile_unsupported")
-    if legacy_causal_failure or called_allin_harness_failure:
+    if (
+        legacy_causal_failure
+        or called_allin_harness_failure
+        or v65_harness_false_failure
+    ):
         issues.extend(_deterministic_status_receipt_issues(
             status,
             candidate=candidate,
@@ -2940,7 +4011,7 @@ def _terminal_job_facts(
         if entry.get("candidate_hash") == candidate_hash
         and entry.get("outcome") == (
             "official-failed"
-            if legacy_causal_failure
+            if legacy_causal_failure or v65_harness_false_failure
             else "official-inconclusive"
         )
         and entry.get("deterministic_status_receipt_digest") == deterministic.get("receipt_digest")
@@ -2955,7 +4026,7 @@ def _terminal_job_facts(
             issues.append("bootstrap_contract_status_ledger_entry_mismatch")
         expected_ledger = (
             (True, True, "protocol")
-            if legacy_causal_failure
+            if legacy_causal_failure or v65_harness_false_failure
             else (False, False, "harness")
         )
         if (
@@ -3026,6 +4097,36 @@ def _terminal_job_facts(
                 "bootstrap_contract_called_allin_failure_unproven:"
                 f"{type(exc).__name__}:{str(exc)[:160]}"
             )
+    elif v65_harness_false_failure:
+        try:
+            diagnosis = _v65_contract_failure_diagnosis(
+                root,
+                directory,
+                request=request,
+                state=state,
+                status=status,
+                candidate_hash=candidate_hash,
+                workflow_run_id=workflow_run_id,
+                checkpoint_revision=expected_checkpoint_revision,
+                job_result_digest=str(result.get("result_digest") or ""),
+                expected_evaluation_contract_version=(
+                    expected_evaluation_contract_version
+                ),
+                expected_evaluation_contract_hash=(
+                    expected_evaluation_contract_hash
+                ),
+                expected_repair_contract_version=(
+                    expected_repair_contract_version
+                ),
+                expected_baseline_head=expected_baseline_head,
+                expected_repair_head=expected_current_head,
+                control_consumption=consumption,
+            )
+        except Exception as exc:
+            issues.append(
+                "bootstrap_contract_v65_failure_unproven:"
+                f"{type(exc).__name__}:{str(exc)[:160]}"
+            )
     certificate_path = (
         root / "official_certificates" / f"{bot_name(FIRST_STRICT_POLICY_VERSION)}.json"
     )
@@ -3048,12 +4149,20 @@ def _terminal_job_facts(
         "rounds_requested": 8,
         "rounds_completed": (
             8
-            if legacy_causal_failure or called_allin_harness_failure
+            if (
+                legacy_causal_failure
+                or called_allin_harness_failure
+                or v65_harness_false_failure
+            )
             else 0
         ),
         "rounds_run": (
             8
-            if legacy_causal_failure or called_allin_harness_failure
+            if (
+                legacy_causal_failure
+                or called_allin_harness_failure
+                or v65_harness_false_failure
+            )
             else 0
         ),
         "ledger_entry_digest": ledger_entry["entry_digest"],
@@ -3075,6 +4184,11 @@ def _terminal_job_facts(
         **(
             {"recovery_profile": _CALLED_ALLIN_PROFILE_ID}
             if called_allin_harness_failure
+            else {}
+        ),
+        **(
+            {"recovery_profile": _V65_PROFILE_ID}
+            if v65_harness_false_failure
             else {}
         ),
     }
@@ -3127,7 +4241,8 @@ def build_claim(
         baseline.get("evaluation_contract"), dict
     ) else {}
     if (
-        old_contract.get("version") != PARKED_EVALUATION_CONTRACT_VERSION
+        old_contract.get("version")
+        not in SUPPORTED_PARKED_EVALUATION_CONTRACT_VERSIONS
         or old_contract.get("stage") != "official_bootstrap_required"
         or not _HEX64.fullmatch(str(old_contract.get("hash") or ""))
         or baseline.get("error")
@@ -3266,6 +4381,16 @@ def build_claim(
         and new_contract.get("version") != 41
     ):
         issues.append("bootstrap_contract_called_allin_contract_41_required")
+    if (
+        old_contract.get("version") != PARKED_EVALUATION_CONTRACT_VERSION
+        and job_facts.get("recovery_profile") != _V65_PROFILE_ID
+    ):
+        issues.append("bootstrap_contract_non_v65_baseline_contract_invalid")
+    if job_facts.get("recovery_profile") == _V65_PROFILE_ID and (
+        old_contract.get("version") != _V65_BASELINE_CONTRACT_VERSION
+        or new_contract.get("version") != _V65_REPAIR_CONTRACT_VERSION
+    ):
+        issues.append("bootstrap_contract_v65_contract_42_required")
     try:
         from official_certification import official_full_certified, status_payload
         status = status_payload(root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION))
@@ -3538,6 +4663,39 @@ def _validate_claim_envelope(
             "bootstrap_contract_claim_terminal_job_invalid"
         ])
     diagnosis = terminal_job.get("contract_failure_diagnosis")
+    recovery_profile = terminal_job.get("recovery_profile")
+    diagnosis_kind = (
+        diagnosis.get("kind") if isinstance(diagnosis, dict) else None
+    )
+    rounds_completed = terminal_job.get("rounds_completed")
+    rounds_run = terminal_job.get("rounds_run")
+    if (
+        terminal_job.get("rounds_requested") != 8
+        or (rounds_completed, rounds_run) not in {(0, 0), (8, 8)}
+        or (rounds_completed == 0 and diagnosis is not None)
+        or (rounds_completed == 8 and not isinstance(diagnosis, dict))
+        or recovery_profile
+        not in {None, _CALLED_ALLIN_PROFILE_ID, _V65_PROFILE_ID}
+        or (
+            recovery_profile == _CALLED_ALLIN_PROFILE_ID
+            and diagnosis_kind != _CALLED_ALLIN_DIAGNOSIS_KIND
+        )
+        or (
+            diagnosis_kind == _CALLED_ALLIN_DIAGNOSIS_KIND
+            and recovery_profile != _CALLED_ALLIN_PROFILE_ID
+        )
+        or (
+            recovery_profile == _V65_PROFILE_ID
+            and diagnosis_kind != _V65_DIAGNOSIS_KIND
+        )
+        or (
+            diagnosis_kind == _V65_DIAGNOSIS_KIND
+            and recovery_profile != _V65_PROFILE_ID
+        )
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_claim_recovery_profile_invalid"
+        ])
     if diagnosis is not None:
         _validate_contract_failure_diagnosis_envelope(diagnosis)
     if (
@@ -3620,6 +4778,41 @@ def _validate_claim_envelope(
         ):
             raise BootstrapContractRecoveryError([
                 "bootstrap_contract_called_allin_claim_crossbinding_invalid"
+            ])
+    if diagnosis is not None and diagnosis.get("kind") == (
+        _V65_DIAGNOSIS_KIND
+    ):
+        incident = diagnosis.get("incident_identity") or {}
+        consumption = terminal_job.get("control_consumption") or {}
+        if (
+            terminal_job.get("recovery_profile") != _V65_PROFILE_ID
+            or terminal_job.get("job_id") != incident.get("job_id")
+            or terminal_job.get("result_digest")
+            != incident.get("job_result_digest")
+            or terminal_job.get("rounds_requested")
+            != incident.get("rounds_requested")
+            or terminal_job.get("rounds_completed")
+            != incident.get("rounds_completed")
+            or terminal_job.get("rounds_run")
+            != incident.get("rounds_run")
+            or old.get("workflow_run_id") != incident.get("workflow_run_id")
+            or old.get("checkpoint_revision")
+            != incident.get("checkpoint_revision")
+            or candidate.get("artifact_hash")
+            != incident.get("candidate_artifact_hash")
+            or migration.get("baseline_head") != incident.get("baseline_head")
+            or migration.get("baseline_contract_hash")
+            != incident.get("baseline_contract_hash")
+            or incident.get("baseline_contract_version")
+            != _V65_BASELINE_CONTRACT_VERSION
+            or incident.get("repair_contract_version")
+            != _V65_REPAIR_CONTRACT_VERSION
+            or consumption.get("valid") is not True
+            or consumption.get("successful_count") != 0
+            or consumption.get("max_successful_consumptions") != 1
+        ):
+            raise BootstrapContractRecoveryError([
+                "bootstrap_contract_v65_claim_crossbinding_invalid"
             ])
     return claim
 
@@ -3824,10 +5017,13 @@ def _historical_terminal_job_matches(
         called_allin_profile = diagnosis_kind == (
             _CALLED_ALLIN_DIAGNOSIS_KIND
         )
+        v65_profile = diagnosis_kind == _V65_DIAGNOSIS_KIND
         if diagnosis is not None:
             _validate_contract_failure_diagnosis_envelope(diagnosis)
         expected_rounds = (
-            8 if legacy_causal_profile or called_allin_profile else 0
+            8
+            if legacy_causal_profile or called_allin_profile or v65_profile
+            else 0
         )
         if (
             public.get("state") != "completed"
@@ -3842,13 +5038,17 @@ def _historical_terminal_job_matches(
             != expected_rounds
             or status.get("status") != (
                 "official-failed"
-                if legacy_causal_profile
+                if legacy_causal_profile or v65_profile
                 else "official-inconclusive"
             )
             or (
                 called_allin_profile
                 and expected.get("recovery_profile")
                 != _CALLED_ALLIN_PROFILE_ID
+            )
+            or (
+                v65_profile
+                and expected.get("recovery_profile") != _V65_PROFILE_ID
             )
         ):
             return False
@@ -3928,6 +5128,59 @@ def _historical_terminal_job_matches(
             )
             if rebuilt_diagnosis != diagnosis:
                 return False
+        elif v65_profile:
+            project_root = (
+                Path(root).resolve()
+                if root is not None
+                else directory.parents[5]
+            )
+            incident = diagnosis.get("incident_identity") or {}
+            rebuilt_diagnosis = _v65_contract_failure_diagnosis(
+                project_root,
+                directory,
+                request=request,
+                state=state,
+                status=status,
+                candidate_hash=str(
+                    (claim.get("candidate") or {}).get("artifact_hash") or ""
+                ),
+                workflow_run_id=str(
+                    (claim.get("old_checkpoint") or {}).get(
+                        "workflow_run_id"
+                    ) or ""
+                ),
+                checkpoint_revision=int(
+                    (claim.get("old_checkpoint") or {}).get(
+                        "checkpoint_revision", 0
+                    ) or 0
+                ),
+                job_result_digest=str(result.get("result_digest") or ""),
+                expected_evaluation_contract_version=int(
+                    incident.get("baseline_contract_version", 0) or 0
+                ),
+                expected_evaluation_contract_hash=str(
+                    (claim.get("git_contract_migration") or {}).get(
+                        "baseline_contract_hash"
+                    ) or ""
+                ),
+                expected_repair_contract_version=int(
+                    incident.get("repair_contract_version", 0) or 0
+                ),
+                expected_baseline_head=str(
+                    (claim.get("git_contract_migration") or {}).get(
+                        "baseline_head"
+                    ) or ""
+                ),
+                expected_repair_head=str(
+                    (claim.get("git_contract_migration") or {}).get(
+                        "current_head"
+                    ) or ""
+                ),
+                control_consumption=expected.get("control_consumption") or {},
+                require_live_repair_source=False,
+            )
+            if rebuilt_diagnosis != diagnosis:
+                return False
         entries, issues = _validated_ledger_entries()
         if issues:
             return False
@@ -3942,14 +5195,18 @@ def _historical_terminal_job_matches(
             entry.get("sequence") == expected.get("ledger_sequence")
             and entry.get("outcome") == (
                 "official-failed"
-                if legacy_causal_profile
+                if legacy_causal_profile or v65_profile
                 else "official-inconclusive"
             )
             and entry.get("classification") == (
-                "protocol" if legacy_causal_profile else "harness"
+                "protocol"
+                if legacy_causal_profile or v65_profile
+                else "harness"
             )
-            and entry.get("authoritative") is legacy_causal_profile
-            and entry.get("blocking") is legacy_causal_profile
+            and entry.get("authoritative")
+            is (legacy_causal_profile or v65_profile)
+            and entry.get("blocking")
+            is (legacy_causal_profile or v65_profile)
             and entry.get("certificate_digest") in {None, ""}
             and entry.get("strength_evaluation") == "not_applicable"
         )

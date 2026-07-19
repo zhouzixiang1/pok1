@@ -79,7 +79,9 @@ active `national_tcp_policy_v1` architecture.
 - The official raise-boundary, terminal-settlement, and called-all-in runout
   wire oracle files are exact, pinned evaluation inputs. The last permits no
   fabricated public cards and requires complementary cross-wire actions, exact
-  all-in net settlement, and strict THP five-card board/blind/hole/prefix proof.
+  all-in net settlement, and strict THP exact-prefix-or-five-card
+  board/action/blind/hole/earnings proof. A live deferred raw action may be a
+  provisional warning; finalized replay is always strict.
 
 ## Generation stages
 

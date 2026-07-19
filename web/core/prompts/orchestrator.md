@@ -185,8 +185,10 @@ production-runtime regression plus a socket-visible typed-intent effect.
 After a called all-in, the 2021 EXE may omit the future board and make
 settlement/`oppo_hands` the next wire boundary. Never route another policy
 decision or synthesize unseen cards; require complementary cross-wire actions,
-exact all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings
-binding before closure.
+exact all-in net settlement, and strict THP exact-prefix-or-five-card
+board/action/blind/hole/earnings binding before closure. Only exact raw action bytes
+awaiting their bounded causal flush may be provisional during live capture;
+finalized replay is never relaxed.
 The exact authority is
 `docs/official-allin-runout-wire-oracle-2026-07-19.md`.
 code_changed=false, declared-scope

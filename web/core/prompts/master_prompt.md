@@ -104,8 +104,10 @@ limp is wire `check`. After an all-in the peer may only call or fold.
 Once called, no policy action remains: the 2021 EXE may omit every future board
 street and make settlement/`oppo_hands` the next wire boundary. Never invent
 unseen public cards; only finalized complementary cross-wire actions, exact
-all-in net settlement, and strict THP five-card board/blind/hole/prefix/earnings binding
-own that terminal proof.
+all-in net settlement, and strict THP exact-prefix-or-five-card
+board/action/blind/hole/earnings binding own that terminal proof. A live recorder may
+temporarily warn only for exact raw action bytes awaiting their bounded causal
+flush; never treat that warning as finalized authority.
 
 The socket reducer owns state, not policy. It repairs only a boundary-proven
 omitted closing call/check, exactly once, before resetting street

@@ -26,10 +26,13 @@ Analyze only:
   postflop first-action call/check rules, raise-to total semantics
 - called-all-in omission: preflop/flop/turn may legally jump to
   settlement/`oppo_hands` without future board messages only when the frozen
-  complementary cross-wire action/exact-settlement proof and strict THP
-  five-card board/blind/hole/prefix/earnings binding are complete; do not attribute that
+  complementary cross-wire action/exact-settlement proof and strict THP exact-prefix-or-five-card
+  board/action/blind/hole/earnings binding are complete; do not attribute that
   official boundary to candidate strategy and never infer missing card identities
   (authority: `docs/official-allin-runout-wire-oracle-2026-07-19.md`)
+- causal live capture: an exact same-connection raw action awaiting its bounded
+  idle/EOF flush is a provisional warning; finalized replay, legacy capture and
+  boundaries without that pending source remain strict
 - harness/platform ambiguity: Wine/Xvfb/EXE startup, THP export, port lock, UI
   automation, platform race
 - obvious decision errors only when deterministic classification identifies a

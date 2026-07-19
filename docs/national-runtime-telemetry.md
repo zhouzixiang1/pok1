@@ -119,9 +119,12 @@ The third oracle,
 `docs/official-allin-runout-wire-oracle-2026-07-19.md`, proves that a called
 all-in may omit the remaining board on wire and proceed to settlement/showdown;
 the missing cards are never synthesized. Complementary cross-wire actions and
-exact all-in net settlement are required, and every omitted hand must bind the
-strict THP five-card board, blind/name order, revealed holes, observed prefix,
-and earnings.
+exact all-in net settlement are required, and every omitted hand must bind a
+strict THP board that is either the exact observed wire prefix or a complete
+five-card board, plus terminal THP action, blind/name order, revealed holes,
+and earnings. A live deferred raw action is only provisional until its bounded
+causal flush;
+finalized replay remains strict.
 The natural-hand-70 form passes only through the strict, hash-bound THP cross-proof
 for `STATE:0..69`. Official/THP outcomes retain zero weight in ratings, H2H,
 source selection, precommit strength, and prompt evidence.

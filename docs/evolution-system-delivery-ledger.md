@@ -4527,3 +4527,51 @@ change, the old workflow/job cannot be resumed or certified. After source
 tests/review/merge, recovery must use controlled abandon/re-prepare on the new
 main identity and rerun all gates plus a fresh 5+3 official suite. Stability is
 still 0/10. This ledger entry makes no publication claim.
+
+## 2026-07-19 — workflow-v65 Contract-41 live/THP evidence correction
+
+After Contract 41 was merged and the stopped runtime migrated canonically,
+fresh `generation:143:workflow-v65` ran Master, Workers, Quality, Reviewer,
+advisory Critic and eight complete native 70-hand precommit matches. It parked
+at `official_bootstrap_required`, checkpoint revision 21, with unpublished
+candidate `f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+No certificate, `.completed`, completion tag, rating row or successful
+first-control consumption exists.
+
+Operator job
+`b4575bb7163f551cb586f6391f728c1e6dc1671b11a279a4392504af8a4c7ebf`
+naturally completed all eight 5+3 executions, attempt 1, terminal state revision
+948, with result digest
+`fb7846b74c7c237226b99d2b4e8647c8b82ad9801917e59baceadd8d83424ce1`.
+It recorded two passes and six failures. The signed old-contract ledger entry
+remains immutable `official-failed/protocol/authoritative/blocking`; it is not
+rewritten or granted certificate/strength authority.
+
+Four failures are a live observer race. Delimiter-free raw `check`/`call` bytes
+reached the EXE before the recorder's approximately 50 ms idle flush emitted
+their semantic token, so the EXE's next street temporarily appeared to cross an
+unclosed boundary. In all four captures the later flush reuses the exact source
+observation and finalized causal replay has zero issue. Two other failures ran
+all 70 hands and 69 wire settlements. Their exact official THP records contain
+the same called-all-in board prefix as wire—turn/4 cards in `self_play_03`,
+flop/3 cards in `opponent_01`—plus 70 ordered states, named ±20000 earnings and
+the footer. This disproves Contract 41's unobserved assumption that official
+THP always retains a complete five-card runout.
+
+Contract 42 therefore changes only the evidence interpretation boundary. A
+live `street_boundary_unproved` is provisional solely when the same connection
+has exact raw action bytes awaiting its bounded causal flush; legacy,
+source-less and finalized boundaries remain strict. Called-all-in THP boards
+must be either the exact legal wire prefix (0/3/4 cards) or a complete five-card
+board. Intermediate/shorter/mismatched shapes, illegal flushed actions, missing
+peer/action/stack/pot/THP-action/blind/name/hole/earnings/state/footer proof all fail
+closed. No missing card/action is synthesized, and the local mirror may retain
+complete internal board truth without claiming the official THP did so.
+
+The current job and both passed rounds remain Contract-41 audit history only.
+The dedicated v65 diagnosis must reopen all eight raw/receipt/replay identities
+and both THP artifacts before canonical abandon/quarantine. Workflow-v65,
+checkpoint, native receipts and official rounds are not resumed or migrated;
+even equal candidate bytes must fresh-materialize under a new workflow and rerun
+every gate plus a new 5+3. Stability remains **0/10** and this entry makes no
+publication claim.

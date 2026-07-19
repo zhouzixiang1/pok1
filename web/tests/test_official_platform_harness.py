@@ -29,6 +29,8 @@ from official_platform_harness import (
     _summarize_thp_files,
     _terminal_socket_boundary,
     _terminal_thp_observation,
+    _omitted_allin_thp_bindings,
+    _parse_thp_action_payload,
     _build_terminal_completion_evidence,
     _read_issue_file,
     _target_reached,
@@ -39,6 +41,133 @@ from official_platform_harness import (
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        "cc/cc/r216r443r925r1896r3537r17561c",
+        "cr350c/r19550c",
+        "r19950c",
+        "f",
+    ],
+)
+def test_strict_thp_action_grammar_accepts_exact_official_shapes(actions):
+    parsed, issue = _parse_thp_action_payload(actions)
+
+    assert issue == ""
+    assert parsed is not None
+
+
+@pytest.mark.parametrize(
+    ("actions", "expected_issue"),
+    [
+        ("garbagec", "street_0_token_shape"),
+        ("fc", "street_0_fold_not_terminal"),
+        ("c-only", "street_0_token_shape"),
+        ("cc//cc", "street_1_empty"),
+        ("r0c", "street_0_token_shape"),
+        ("r200", "street_0_terminal_missing"),
+        ("f/cc", "street_0_not_closed"),
+    ],
+)
+def test_strict_thp_action_grammar_rejects_garbage_and_open_streets(
+    actions,
+    expected_issue,
+):
+    parsed, issue = _parse_thp_action_payload(actions)
+
+    assert parsed is None
+    assert issue == expected_issue
+
+
+@pytest.mark.parametrize(
+    ("stage", "public_by_stage", "thp_cards", "actions", "expected_count"),
+    [
+        ("preflop", {}, "AhKh|QsQd", "r19950c", 0),
+        (
+            "flop",
+            {"flop": [[0, 0], [1, 1], [2, 2]]},
+            "AhKh|QsQd/2s3h4d",
+            "cc/r19950c",
+            3,
+        ),
+        (
+            "turn",
+            {"flop": [[0, 0], [1, 1], [2, 2]], "turn": [[3, 3]]},
+            "AhKh|QsQd/2s3h4d/5c",
+            "cc/cc/r19950c",
+            4,
+        ),
+    ],
+)
+def test_nonterminal_called_allin_accepts_exact_thp_wire_prefix(
+    stage,
+    public_by_stage,
+    thp_cards,
+    actions,
+    expected_count,
+):
+    hand = 6
+    records = [{"index": index} for index in range(70)]
+    records[hand - 1] = {
+        "index": hand - 1,
+        "actions": actions,
+        "cards": thp_cards,
+        "earnings": [-20000, 20000],
+        "players": ["BotA", "BotB"],
+    }
+    boundaries = [
+        {
+            "conn": conn,
+            "hand": hand,
+            "stage": stage,
+            "public_cards_observed": expected_count,
+            "natural_hand_70": False,
+        }
+        for conn in ("A", "B")
+    ]
+    wire_summary = {
+        "omitted_allin_runout_boundaries": boundaries,
+        "seats": {
+            "A": {
+                "name": "BotA",
+                "blind_records": [{"hand": hand, "blind": "BIGBLIND"}],
+                "public_card_records": [{
+                    "hand": hand,
+                    "streets": public_by_stage,
+                }],
+                "showdown_records": [{
+                    "hand": hand,
+                    "opponent_cards": [[0, 10], [2, 10]],
+                }],
+            },
+            "B": {
+                "name": "BotB",
+                "blind_records": [{"hand": hand, "blind": "SMALLBLIND"}],
+                "public_card_records": [{
+                    "hand": hand,
+                    "streets": public_by_stage,
+                }],
+                "showdown_records": [{
+                    "hand": hand,
+                    "opponent_cards": [[1, 12], [1, 11]],
+                }],
+            },
+        },
+    }
+
+    bindings, issues = _omitted_allin_thp_bindings(
+        {"records": records},
+        wire_summary,
+        expected_hands=70,
+        expected_names=("BotA", "BotB"),
+    )
+
+    assert issues == []
+    assert bindings is not None
+    assert bindings[0]["thp_public_card_count"] == expected_count
+    assert bindings[0]["thp_board_scope"] == "observed_wire_prefix"
 
 
 def _structural_quality_admission(candidate: Path) -> dict:
@@ -1759,6 +1888,15 @@ def test_format_wire_issues_preserves_replay_context():
         "msg='check' reason=postflop check is illegal after the first action"
     ]
 
+    assert _format_wire_issues({
+        "issues": [],
+        "warnings": [{
+            "kind": "provisional_street_boundary_unproved",
+            "strict_issue_kind": "street_boundary_unproved",
+            "conn": "A",
+        }],
+    }) == []
+
 
 def test_acceptance_scheduler_runs_self_and_opponent_rounds(tmp_path):
     candidate = tmp_path / "candidate"
@@ -2163,7 +2301,7 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
             f"STATE:{index}:f:AhKh|QsQd:50|-50:BotA|BotB;"
             for index in range(69)
         )
-        + "STATE:69:r20000c:AhKh|QsQd/2s3h4d/5c/6s:"
+        + "STATE:69:cc/cc/r20000c:AhKh|QsQd/2s3h4d/5c/6s:"
         "20000|-20000:BotA|BotB;"
         + "{[THP][BotA][BotB][BotA赢得23450个筹码]"
         "[2026-07-11 17:22 合肥][2018 CCGC]}",
@@ -2327,6 +2465,29 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
         == observation["omitted_allin_runout_bindings"]
     )
 
+    omitted_thp_suffix, omitted_thp_suffix_issues = observe_variant(
+        "official-omitted-thp-suffix",
+        valid_thp_text.replace(
+            "AhKh|QsQd/2s3h4d/5c/6s",
+            "AhKh|QsQd/2s3h4d/5c",
+        ),
+        wire_summary,
+    )
+    assert omitted_thp_suffix_issues == []
+    assert omitted_thp_suffix is not None
+    assert omitted_thp_suffix["omitted_allin_runout_bindings"][0][
+        "thp_public_cards"
+    ] == [[0, 0], [1, 1], [2, 2], [3, 3]]
+    assert omitted_thp_suffix["omitted_allin_runout_bindings"][0][
+        "thp_public_card_count"
+    ] == 4
+    assert omitted_thp_suffix["omitted_allin_runout_bindings"][0][
+        "thp_board_scope"
+    ] == "observed_wire_prefix"
+    assert observation["omitted_allin_runout_bindings"][0][
+        "thp_board_scope"
+    ] == "complete_runout"
+
     missing_terminal_wire = json.loads(json.dumps(wire_summary))
     missing_terminal_wire["omitted_allin_runout_boundaries"] = []
     for seat in missing_terminal_wire["seats"].values():
@@ -2366,7 +2527,49 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
     )
     assert missing_runout is None
     assert missing_runout_issues == [
-        "omitted_allin_runout_thp_board_incomplete:70"
+        "omitted_allin_runout_thp_board_shape_invalid:70:observed=4:thp=0"
+    ]
+
+    partial_extra_summary = json.loads(json.dumps(wire_summary))
+    for boundary in partial_extra_summary["omitted_allin_runout_boundaries"]:
+        boundary["stage"] = "flop"
+        boundary["public_cards_observed"] = 3
+    for seat in partial_extra_summary["seats"].values():
+        seat["public_card_records"][0]["streets"].pop("turn")
+    partial_extra, partial_extra_issues = observe_variant(
+        "partial-extra-thp-board",
+        valid_thp_text.replace(
+            "AhKh|QsQd/2s3h4d/5c/6s",
+            "AhKh|QsQd/2s3h4d/5c",
+        ).replace("cc/cc/r20000c", "cc/r20000c"),
+        partial_extra_summary,
+    )
+    assert partial_extra is None
+    assert partial_extra_issues == [
+        "omitted_allin_runout_thp_board_shape_invalid:70:observed=3:thp=4"
+    ]
+
+    contradictory_action, contradictory_action_issues = observe_variant(
+        "contradictory-thp-action",
+        valid_thp_text.replace("STATE:69:cc/cc/r20000c:", "STATE:69:f:"),
+        wire_summary,
+    )
+    assert contradictory_action is None
+    assert contradictory_action_issues == [
+        "omitted_allin_runout_thp_action_invalid:70"
+    ]
+
+    garbage_action, garbage_action_issues = observe_variant(
+        "garbage-thp-action",
+        valid_thp_text.replace(
+            "STATE:69:cc/cc/r20000c:",
+            "STATE:69:garbagec:",
+        ),
+        wire_summary,
+    )
+    assert garbage_action is None
+    assert garbage_action_issues == [
+        "thp_record_actions_invalid:69:street_0_token_shape"
     ]
 
     changed_prefix, changed_prefix_issues = observe_variant(
@@ -2403,6 +2606,24 @@ def test_terminal_hand_completion_requires_exact_wire_boundary_and_thp(tmp_path)
         tampered,
         70,
     )
+    resigned_binding = json.loads(json.dumps(receipt))
+    resigned_binding["completion_evidence"][
+        "omitted_allin_runout_bindings"
+    ][0]["thp_board_scope"] = "observed_wire_prefix"
+    resigned_payload = {
+        key: value
+        for key, value in resigned_binding["completion_evidence"].items()
+        if key != "evidence_digest"
+    }
+    resigned_binding["completion_evidence"]["evidence_digest"] = canonical_digest(
+        resigned_payload
+    )
+    resigned_issues = round_completion_issues(resigned_binding, 70)
+    assert (
+        "official_terminal_completion_omitted_runout_bindings_mismatch"
+        in resigned_issues
+    )
+    assert "official_terminal_completion_observation_digest_mismatch" in resigned_issues
 
 
 def test_natural_terminal_mode_rejects_paired_70_wire_settlements():

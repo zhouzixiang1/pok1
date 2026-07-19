@@ -1784,3 +1784,40 @@ The checked-in ordered stage contract remains unchanged.  `timed_out` is a
 canonical-abandon lease and `infra_timed_out` is a native-precommit-retry lease;
 neither may be rendered as an unknown success-stage or used to bypass this
 checkpoint-free restart boundary.
+
+## Latest superseding handoff: workflow-v65 and Contract 42
+
+The source/run state above has advanced. `origin/main` reached
+`3d3162844e42cae72905e15d2a297c0dd2b0e93a`; the stopped autonomous checkout
+was migrated through canonical Contract-40→41 abandon plus atomic empty
+evaluation-identity rotation. Fresh `generation:143:workflow-v65` then ran
+Master, Workers, Quality, Reviewer, advisory Critic and eight native 70-hand
+precommit matches. It remains unpublished at `official_bootstrap_required`.
+
+The operator 5+3 job
+`b4575bb7163f551cb586f6391f728c1e6dc1671b11a279a4392504af8a4c7ebf`
+naturally completed all eight rounds (2 pass / 6 old-contract fail), result
+digest `fb7846b74c7c237226b99d2b4e8647c8b82ad9801917e59baceadd8d83424ce1`.
+It produced no certificate/tag/rating and did not consume
+`first_strict_control_v1`. Four failures are delimiter-free live-capture races:
+the exact raw action awaited its bounded idle flush while the EXE had already
+emitted the next street; finalized causal replay is clean. Two complete
+70-hand failures prove official THP may contain the exact 3/4-card wire prefix
+after called all-in rather than five public cards.
+
+Contract 42 is the required successor. Only a same-connection raw action
+awaiting its exact causal flush may project a provisional live warning;
+legacy/source-less/finalized boundaries remain strict. Called-all-in THP must
+be either the exact legal wire prefix (0/3/4) or a full five-card board with all
+existing cross-wire/THP-action/blind/name/hole/earnings/state/footer bindings. Never infer
+missing bytes/cards/actions. Workflow-v65, its 2 passed rounds and all gate
+receipts remain immutable Contract-41 history. After source tests/review/merge,
+use the dedicated v65 diagnosis and canonical abandon/quarantine, synchronize
+only through `origin/main`, then fresh-materialize and rerun every gate plus a
+new 5+3. Stability remains **0/10**.
+
+The separate producer/consumer Slice 1 is an inert, independently reviewed
+shadow branch `codex/producer-consumer-evolution-pipeline@214518888791761ff6d4a3319b97e02e5f10eb46`
+with 134 focused tests. It must not be imported or activated by production
+until durable Slice 2 journal/CAS/lease/resolver/migration work is separately
+reviewed after first-Bot recovery.
