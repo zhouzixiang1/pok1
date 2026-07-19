@@ -33,15 +33,18 @@ def _strict_snapshot() -> dict:
     return snapshot if snapshot.get("available") is True else {}
 
 
-def _strict_published_authority() -> tuple[list[str], dict[str, dict]]:
+def _strict_published_authority(
+    projection: dict | None = None,
+) -> tuple[list[str], dict[str, dict]]:
     """Return one cross-bound published inventory/ordinal projection."""
 
-    try:
-        from epoch_authority import strict_epoch_projection
+    if projection is None:
+        try:
+            from epoch_authority import strict_epoch_projection
 
-        projection = strict_epoch_projection(include_checkpoint=False)
-    except Exception:
-        return [], {}
+            projection = strict_epoch_projection(include_checkpoint=False)
+        except Exception:
+            return [], {}
     if not projection.get("initialized"):
         return [], {}
     names = projection.get("active_bots")

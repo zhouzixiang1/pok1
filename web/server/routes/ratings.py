@@ -25,7 +25,11 @@ def _snapshot() -> dict:
     return load_strict_strength_snapshot(RESULTS_DIR)
 
 
-def strict_daemon_status(snapshot: dict | None = None) -> dict:
+def strict_daemon_status(
+    snapshot: dict | None = None,
+    *,
+    epoch: dict | None = None,
+) -> dict:
     """Project daemon observability from the same strict epoch authority.
 
     ``daemon_enabled`` means effective availability in the current epoch. The
@@ -36,16 +40,17 @@ def strict_daemon_status(snapshot: dict | None = None) -> dict:
     from server.state import app_state
 
     configured = bool(app_state.get_config()["daemon_enabled"])
-    try:
-        from epoch_authority import strict_epoch_projection
+    if epoch is None:
+        try:
+            from epoch_authority import strict_epoch_projection
 
-        epoch = strict_epoch_projection(include_checkpoint=False)
-    except Exception:
-        epoch = {
-            "evaluation_epoch": "national_tcp_policy_v1",
-            "state": "epoch_authority_unavailable",
-            "initialized": False,
-        }
+            epoch = strict_epoch_projection(include_checkpoint=False)
+        except Exception:
+            epoch = {
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "state": "epoch_authority_unavailable",
+                "initialized": False,
+            }
     if not epoch.get("initialized"):
         return {
             "status": "blocked",

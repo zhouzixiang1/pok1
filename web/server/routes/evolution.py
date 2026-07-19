@@ -390,7 +390,9 @@ async def evolution_stream(request: Request):
         # Another request observed a different receipt between projection and
         # subscription. Reopen authority and fail closed instead of replaying a
         # ring owned by either snapshot.
-        live_epoch = _epoch_projection()
+        live_epoch, _live_handoff, _live_digest = (
+            await _stable_stream_projection_async()
+        )
 
         async def moved_stream():
             yield {

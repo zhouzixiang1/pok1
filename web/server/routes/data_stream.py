@@ -8,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from sse_starlette.sse import EventSourceResponse
+from blocking_runtime import run_blocking_isolated
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 BOTS_DIR = PROJECT_ROOT / "bots"
@@ -27,26 +28,33 @@ def _event(event_type: str, data: Any) -> dict:
 
 
 def _epoch_projection() -> dict:
-    """Return the live authority used to fence one SSE connection."""
+    """Return the shared content-bound observer authority for one SSE tick.
+
+    The control observer owns the complete strict projection singleflight.
+    Reusing it here prevents a single data-stream tick from reopening every
+    official certificate/verdict ledger once per emitted event.  This helper
+    is read-only; launch and mutation paths bypass the observer cache.
+    """
 
     try:
-        from epoch_authority import (
-            epoch_stream_authority_digest,
-            strict_epoch_projection,
-        )
+        from server.routes.control import control_observer_epoch_projection
 
-        value = strict_epoch_projection(include_checkpoint=False)
-        stream_authority_digest = epoch_stream_authority_digest(value)
+        return control_observer_epoch_projection()
     except Exception:
-        value = {}
-        stream_authority_digest = None
-    return {
-        "evaluation_epoch": "national_tcp_policy_v1",
-        "epoch_state": str(value.get("state") or "epoch_authority_unavailable"),
-        "epoch_initialized": value.get("initialized") is True,
-        "epoch_reset_receipt_digest": value.get("reset_receipt_digest"),
-        "stream_authority_digest": stream_authority_digest,
-    }
+        return {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "epoch_authority_unavailable",
+            "initialized": False,
+            "reset_receipt_valid": False,
+            "reset_receipt_digest": None,
+            "version_authority_high_water": None,
+            "active_bots": [],
+            "strict_published_bot_identities": [],
+            "epoch_state": "epoch_authority_unavailable",
+            "epoch_initialized": False,
+            "epoch_reset_receipt_digest": None,
+            "stream_authority_digest": None,
+        }
 
 
 def _strict_snapshot() -> dict:
@@ -61,21 +69,27 @@ def _get_ratings(snapshot: dict | None = None) -> list[dict]:
     return list(snapshot.get("selection_rows") or [])
 
 
-def _get_daemon_status(snapshot: dict | None = None) -> dict:
+def _get_daemon_status(
+    snapshot: dict | None = None,
+    epoch: dict | None = None,
+) -> dict:
     from server.routes.ratings import strict_daemon_status
 
     snapshot = snapshot if snapshot is not None else _strict_snapshot()
-    return strict_daemon_status(snapshot)
+    return strict_daemon_status(snapshot, epoch=epoch)
 
 
-def _get_bots(snapshot: dict | None = None) -> dict:
+def _get_bots(
+    snapshot: dict | None = None,
+    epoch: dict | None = None,
+) -> dict:
     from server.routes.bots import (
         _inventory_strength_snapshot,
         _strict_published_authority,
         build_bot_listing,
     )
 
-    active_names, generation_identities = _strict_published_authority()
+    active_names, generation_identities = _strict_published_authority(epoch)
     if snapshot is None or set(snapshot.get("active_bots") or []) != set(active_names):
         snapshot = _inventory_strength_snapshot(active_names)
     return build_bot_listing(
@@ -147,6 +161,117 @@ def _get_generations() -> list[dict]:
 _log = logging.getLogger("data_stream")
 
 
+def _data_tick_content_key() -> tuple:
+    """Return the local content identity which fences one complete SSE tick."""
+
+    from server.routes.control import _observer_authority_content_key
+    from server.routes.pipeline import _path_stat_token
+
+    return (
+        _observer_authority_content_key(),
+        _path_stat_token(RESULTS_DIR / "evaluation_cycle_manifest.json"),
+        _path_stat_token(RESULTS_DIR / "pipeline_state.json"),
+    )
+
+
+def _build_data_tick(
+    tick: int,
+    expected_authority_digest: str,
+    expected_identity_valid: bool,
+) -> tuple[dict, list[dict]]:
+    """Build one content-bound dashboard tick outside the ASGI loop.
+
+    All events in the returned batch share one complete epoch and strength
+    observation.  Local authority movement during the build withholds the
+    whole batch, so no individual event can escape from a torn observation.
+    """
+
+    before = _data_tick_content_key()
+    epoch = _epoch_projection()
+    events: list[dict] = []
+    if (
+        not epoch.get("epoch_initialized")
+        or not expected_identity_valid
+        or epoch.get("stream_authority_digest") != expected_authority_digest
+    ):
+        return epoch, events
+
+    needs_snapshot = tick % 3 == 0 or tick % 10 == 0 or tick % 15 == 0
+    snapshot = _strict_snapshot() if needs_snapshot else {}
+    if tick % 3 == 0:
+        try:
+            events.extend((
+                _event("ratings", _get_ratings(snapshot)),
+                _event("daemon", _get_daemon_status(snapshot, epoch)),
+                _event("bots", _get_bots(snapshot, epoch)),
+                _event("stats", _get_match_stats(snapshot)),
+            ))
+            try:
+                from rate_limiter import rate_limiter
+
+                if rate_limiter.is_blocked():
+                    events.append(_event("rate_limit", {
+                        "blocked": True,
+                        "reset_time": rate_limiter.reset_time_str(),
+                        "wait_seconds": round(rate_limiter.wait_seconds(), 0),
+                    }))
+                else:
+                    events.append(_event("rate_limit", {"blocked": False}))
+            except Exception:
+                pass
+        except Exception as exc:
+            _log.warning("SSE data fetch error (3s): %s", exc)
+    if tick % 10 == 0:
+        try:
+            events.extend((
+                _event("matches", _get_recent_matches(100, snapshot)),
+                _event("generations", _get_generations()),
+            ))
+        except Exception as exc:
+            _log.warning("SSE data fetch error (10s): %s", exc)
+    if tick % 15 == 0:
+        try:
+            events.extend((
+                _event("matrix", _get_match_matrix(snapshot)),
+                _event("h2h", _get_h2h(snapshot)),
+                _event("bot_stats", _get_bot_stats(snapshot)),
+                _event("history", _downsample(_get_history(snapshot))),
+            ))
+        except Exception as exc:
+            _log.warning("SSE data fetch error (15s): %s", exc)
+    if tick % 30 == 0:
+        events.append({"event": "ping", "data": "{}"})
+
+    after = _data_tick_content_key()
+    if after != before:
+        return {
+            **epoch,
+            "state": "epoch_authority_unavailable",
+            "initialized": False,
+            "epoch_state": "epoch_authority_unavailable",
+            "epoch_initialized": False,
+            "stream_authority_digest": None,
+            "authority_issue": "data_tick_authority_changed_during_build",
+        }, []
+    return epoch, events
+
+
+async def _build_data_tick_async(
+    tick: int,
+    expected_authority_digest: str,
+    expected_identity_valid: bool,
+) -> tuple[dict, list[dict]]:
+    """Run the complete content-bound tick outside the shared ASGI loop."""
+
+    return await run_blocking_isolated(
+        _build_data_tick,
+        tick,
+        expected_authority_digest,
+        expected_identity_valid,
+        thread_name_prefix="data-stream-tick",
+    )
+
+
 @router.get("/data/stream")
 async def data_stream(request: Request):
     expected_authority_digest = str(
@@ -163,7 +288,11 @@ async def data_stream(request: Request):
             while True:
                 if await request.is_disconnected():
                     break
-                epoch = _epoch_projection()
+                epoch, events = await _build_data_tick_async(
+                    tick,
+                    expected_authority_digest,
+                    expected_identity_valid,
+                )
                 authority_digest = epoch.get("stream_authority_digest")
                 if (
                     not epoch["epoch_initialized"]
@@ -175,100 +304,13 @@ async def data_stream(request: Request):
                     # it to a different reset/publication identity.
                     yield _event("epoch_blocked", epoch)
                     break
-                snapshot = _strict_snapshot()
-                if tick % 3 == 0:
+                # The complete batch was bracketed by one local content key;
+                # every row carries the connection's already-matched epoch.
+                for evt in events:
                     try:
-                        events = [
-                            _event("ratings", _get_ratings(snapshot)),
-                            _event("daemon", _get_daemon_status(snapshot)),
-                            _event("bots", _get_bots(snapshot)),
-                            _event("stats", _get_match_stats(snapshot)),
-                        ]
-                        # 429 rate-limit status (push alongside daemon every 3s)
-                        try:
-                            from rate_limiter import rate_limiter
-                            if rate_limiter.is_blocked():
-                                events.append(_event("rate_limit", {
-                                    "blocked": True,
-                                    "reset_time": rate_limiter.reset_time_str(),
-                                    "wait_seconds": round(rate_limiter.wait_seconds(), 0),
-                                }))
-                            else:
-                                events.append(_event("rate_limit", {"blocked": False}))
-                        except Exception:
-                            pass
-                    except Exception as e:
-                        _log.warning("SSE data fetch error (3s): %s", e)
-                        events = []
-                    for evt in events:
-                        delivery_epoch = _epoch_projection()
-                        if (
-                            not delivery_epoch["epoch_initialized"]
-                            or delivery_epoch.get("stream_authority_digest")
-                            != expected_authority_digest
-                        ):
-                            yield _event("epoch_blocked", delivery_epoch)
-                            return
-                        try:
-                            yield evt
-                        except Exception as e:
-                            _log.warning("SSE event error: %s", e)
-                if tick % 10 == 0:
-                    try:
-                        events = [
-                            _event("matches", _get_recent_matches(100, snapshot)),
-                            _event("generations", _get_generations()),
-                        ]
-                    except Exception as e:
-                        _log.warning("SSE data fetch error (10s): %s", e)
-                        events = []
-                    for evt in events:
-                        delivery_epoch = _epoch_projection()
-                        if (
-                            not delivery_epoch["epoch_initialized"]
-                            or delivery_epoch.get("stream_authority_digest")
-                            != expected_authority_digest
-                        ):
-                            yield _event("epoch_blocked", delivery_epoch)
-                            return
-                        try:
-                            yield evt
-                        except Exception as e:
-                            _log.warning("SSE event error: %s", e)
-                if tick % 15 == 0:
-                    try:
-                        events = [
-                            _event("matrix", _get_match_matrix(snapshot)),
-                            _event("h2h", _get_h2h(snapshot)),
-                            _event("bot_stats", _get_bot_stats(snapshot)),
-                            _event("history", _downsample(_get_history(snapshot))),
-                        ]
-                    except Exception as e:
-                        _log.warning("SSE data fetch error (15s): %s", e)
-                        events = []
-                    for evt in events:
-                        delivery_epoch = _epoch_projection()
-                        if (
-                            not delivery_epoch["epoch_initialized"]
-                            or delivery_epoch.get("stream_authority_digest")
-                            != expected_authority_digest
-                        ):
-                            yield _event("epoch_blocked", delivery_epoch)
-                            return
-                        try:
-                            yield evt
-                        except Exception as e:
-                            _log.warning("SSE event error: %s", e)
-                if tick % 30 == 0:
-                    delivery_epoch = _epoch_projection()
-                    if (
-                        not delivery_epoch["epoch_initialized"]
-                        or delivery_epoch.get("stream_authority_digest")
-                        != expected_authority_digest
-                    ):
-                        yield _event("epoch_blocked", delivery_epoch)
-                        return
-                    yield {"event": "ping", "data": "{}"}
+                        yield evt
+                    except Exception as exc:
+                        _log.warning("SSE event error: %s", exc)
                 await asyncio.sleep(1)
                 tick += 1
         except asyncio.CancelledError:

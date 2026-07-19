@@ -1445,7 +1445,11 @@ async def _set_config_transaction(req: ConfigRequest) -> dict[str, Any]:
     updates = req.safe_updates
     if not updates:
         return app_state.get_config()
-    _require_initialized_epoch("control_config_update")
+    await run_blocking_isolated(
+        _require_initialized_epoch,
+        "control_config_update",
+        thread_name_prefix="control-config-epoch-authority",
+    )
     _require_runtime_stopped("control_config_update")
     previous_config = app_state.get_config()
     desired = {**previous_config, **updates}
@@ -1555,6 +1559,44 @@ def _control_status_snapshot() -> dict[str, Any]:
         _fresh_control_status_snapshot,
         key=_observer_cache_key(),
     )
+
+
+def control_observer_epoch_projection() -> dict[str, Any]:
+    """Return the epoch slice of the shared read-only control observation.
+
+    Dashboard readers which only need publication/stream identity must share
+    the same content-keyed singleflight as ``/control/status``. Reopening the
+    complete strict projection for every SSE event also reopens each signed
+    official verdict ledger and can stall the ASGI loop while certification
+    holds those locks. Mutation and launch code deliberately do not call this
+    helper; their fresh barriers remain in ``_fresh_control_status_snapshot``.
+    """
+
+    status = _control_status_snapshot()
+    initialized = status.get("epoch_initialized") is True
+    state = str(status.get("epoch_state") or "epoch_authority_unavailable")
+    return {
+        "evaluation_epoch": str(
+            status.get("evaluation_epoch") or "national_tcp_policy_v1"
+        ),
+        # Strict-style fields are consumed by existing projection helpers.
+        "state": state,
+        "initialized": initialized,
+        "reset_receipt_valid": status.get("reset_receipt_valid") is True,
+        "reset_receipt_digest": status.get("reset_receipt_digest"),
+        "version_authority_high_water": status.get(
+            "version_authority_high_water"
+        ),
+        "active_bots": list(status.get("active_bots") or []),
+        "strict_published_bot_identities": list(
+            status.get("strict_published_bot_identities") or []
+        ),
+        # Public data-stream aliases remain backwards compatible.
+        "epoch_state": state,
+        "epoch_initialized": initialized,
+        "epoch_reset_receipt_digest": status.get("reset_receipt_digest"),
+        "stream_authority_digest": status.get("stream_authority_digest"),
+    }
 
 
 def _control_launch_authority_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -1797,7 +1839,11 @@ async def get_decisions(limit: int = 50):
 
 
 async def _start_evolution_transaction() -> dict[str, str]:
-    _require_initialized_epoch("control_start_evolution")
+    await run_blocking_isolated(
+        _require_initialized_epoch,
+        "control_start_evolution",
+        thread_name_prefix="control-start-epoch-authority",
+    )
     reservation = await _reserve_runtime_launch_owner()
     if reservation.get("acquired") is not True:
         if reservation.get("reason") == "already_owned":
@@ -1990,7 +2036,11 @@ async def retired_tool_executor(tool_name: str):
 
 @router.get("/tools")
 async def list_tools():
-    epoch = _epoch_access_state("control_tools_catalog")
+    epoch = await run_blocking_isolated(
+        _epoch_access_state,
+        "control_tools_catalog",
+        thread_name_prefix="control-tools-epoch-authority",
+    )
     initialized = bool(epoch.get("initialized"))
     capabilities = []
     for definition in _CONTROL_CAPABILITIES:
@@ -2036,7 +2086,11 @@ async def get_orchestrator_session():
     Pipeline recovery is owned only by the validated checkpoint.  The opaque
     provider session id is neither persisted nor rendered as active authority.
     """
-    epoch = _epoch_access_state("control_orchestrator_session_read")
+    epoch = await run_blocking_isolated(
+        _epoch_access_state,
+        "control_orchestrator_session_read",
+        thread_name_prefix="control-session-epoch-authority",
+    )
     return {
         "session_id": None,
         "active": False,
