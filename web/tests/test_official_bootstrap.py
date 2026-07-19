@@ -286,11 +286,20 @@ def test_completed_authorization_accepts_production_normalized_selection(
         "official_job_envelope": {"opponent_selection": stable_selection},
         "official_verdict_ledger_entry": ledger_entry,
     }
-    checkpoint = {"audit_context": {"official_bootstrap_request": {}}}
+    checkpoint = {
+        "stage": "official_bootstrap_required",
+        "audit_context": {"official_bootstrap_request": {}},
+    }
+    observed_fact_stages = []
+
+    def current_facts(*_args, checkpoint, expected_stage, **_kwargs):
+        observed_fact_stages.append((checkpoint.get("stage"), expected_stage))
+        return {}, []
+
     monkeypatch.setattr(
         official_bootstrap,
         "_current_operator_bootstrap_facts",
-        lambda *_a, **_k: ({}, []),
+        current_facts,
     )
     monkeypatch.setattr(
         official_bootstrap,
@@ -321,6 +330,106 @@ def test_completed_authorization_accepts_production_normalized_selection(
 
     assert result["valid"] is True
     assert result["issues"] == []
+    assert observed_fact_stages[-1] == (
+        "official_bootstrap_required",
+        "official_bootstrap_required",
+    )
+
+    for post_certificate_stage in ("verified", "publishing"):
+        persisted = deepcopy(checkpoint)
+        persisted["stage"] = post_certificate_stage
+        persisted["gate_results"] = {
+            "official_full": {
+                "passed": True,
+                "bootstrap_certificate": True,
+                "status": deepcopy(status),
+                "certificate_digest": status["certificate_digest"],
+                "certification_identity": deepcopy(
+                    status["certification_identity"]
+                ),
+                "completed_bootstrap_authorization": deepcopy(result),
+            }
+        }
+        rebound = (
+            official_bootstrap.validate_completed_operator_bootstrap_authorization(
+                status,
+                candidate,
+                checkpoint=persisted,
+            )
+        )
+        assert rebound == result
+        assert observed_fact_stages[-1] == (
+            "official_bootstrap_required",
+            "official_bootstrap_required",
+        )
+
+    unbound_verified = deepcopy(checkpoint)
+    unbound_verified["stage"] = "verified"
+    rejected_unbound = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status,
+            candidate,
+            checkpoint=unbound_verified,
+        )
+    )
+    assert rejected_unbound["valid"] is False
+    assert (
+        "official_bootstrap_completed_checkpoint_gate_missing"
+        in rejected_unbound["issues"]
+    )
+
+    drifted_verified = deepcopy(persisted)
+    drifted_verified["stage"] = "verified"
+    drifted_verified["gate_results"]["official_full"][
+        "certificate_digest"
+    ] = "9" * 64
+    rejected_drift = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status,
+            candidate,
+            checkpoint=drifted_verified,
+        )
+    )
+    assert rejected_drift["valid"] is False
+    assert (
+        "official_bootstrap_completed_checkpoint_gate_certificate_mismatch"
+        in rejected_drift["issues"]
+    )
+
+    authorization_drift = deepcopy(persisted)
+    authorization_drift["stage"] = "verified"
+    authorization_drift["gate_results"]["official_full"][
+        "completed_bootstrap_authorization"
+    ]["ledger_entry_digest"] = "8" * 64
+    rejected_authorization = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status,
+            candidate,
+            checkpoint=authorization_drift,
+        )
+    )
+    assert rejected_authorization["valid"] is False
+    assert (
+        "official_bootstrap_completed_checkpoint_authorization_mismatch"
+        in rejected_authorization["issues"]
+    )
+
+    wrong_stage = deepcopy(checkpoint)
+    wrong_stage["stage"] = "reviewed"
+    rejected_stage = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            status,
+            candidate,
+            checkpoint=wrong_stage,
+        )
+    )
+    assert rejected_stage["valid"] is False
+    assert any(
+        issue.startswith(
+            "official_bootstrap_completed_checkpoint_stage_mismatch:"
+        )
+        for issue in rejected_stage["issues"]
+    )
 
     envelope_drift = deepcopy(status)
     envelope_drift["official_job_envelope"]["opponent_selection"] = (

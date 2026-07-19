@@ -1363,7 +1363,60 @@ def validate_completed_operator_bootstrap_authorization(
             issues.append("official_bootstrap_completed_envelope_selection_mismatch")
     selection = raw_selection if isinstance(raw_selection, dict) else {}
 
-    ckpt = checkpoint if isinstance(checkpoint, dict) else _current_pipeline_checkpoint()
+    ckpt = (
+        checkpoint
+        if isinstance(checkpoint, dict)
+        else _current_pipeline_checkpoint()
+    )
+    actual_stage = str((ckpt or {}).get("stage") or "")
+    post_certificate_gate: dict[str, Any] | None = None
+    if actual_stage not in {
+        "official_bootstrap_required",
+        "verified",
+        "publishing",
+    }:
+        issues.append(
+            "official_bootstrap_completed_checkpoint_stage_mismatch:"
+            f"actual={actual_stage or 'missing'}"
+        )
+    elif actual_stage in {"verified", "publishing"}:
+        raw_gate = ((ckpt or {}).get("gate_results") or {}).get("official_full")
+        if not isinstance(raw_gate, dict):
+            issues.append(
+                "official_bootstrap_completed_checkpoint_gate_missing"
+            )
+        else:
+            post_certificate_gate = raw_gate
+            if raw_gate.get("passed") is not True:
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_not_passed"
+                )
+            if raw_gate.get("bootstrap_certificate") is not True:
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_not_bootstrap"
+                )
+            if raw_gate.get("status") != status:
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_status_mismatch"
+                )
+            if raw_gate.get("certificate_digest") != status.get(
+                "certificate_digest"
+            ):
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_certificate_mismatch"
+                )
+            if raw_gate.get("certification_identity") != identity:
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_identity_mismatch"
+                )
+
+        # The parked request deliberately binds the pre-certificate stage.  A
+        # successful certificate is then persisted by a verified transition
+        # before publication.  Re-evaluate the immutable parked authority in
+        # memory; never rewrite the durable checkpoint backwards merely to
+        # make the stage-bound validator pass.
+        ckpt = deepcopy(ckpt)
+        ckpt["stage"] = "official_bootstrap_required"
     parked = (
         ((ckpt or {}).get("audit_context") or {}).get("official_bootstrap_request")
         if isinstance((ckpt or {}).get("audit_context"), dict)
@@ -1418,6 +1471,39 @@ def validate_completed_operator_bootstrap_authorization(
             issues.append("official_bootstrap_completed_status_ledger_entry_mismatch")
         if ledger_entry.get("certificate_digest") != status.get("certificate_digest"):
             issues.append("official_bootstrap_completed_certificate_digest_mismatch")
+
+    completed_projection = {
+        "valid": not issues,
+        "reason": "ok" if not issues else _unique(issues)[0],
+        "issues": _unique(issues),
+        "bootstrap_control_id": control_id,
+        "candidate_hash": str(identity.get("candidate_hash") or ""),
+        "certificate_digest": str(status.get("certificate_digest") or ""),
+        "ledger_entry_digest": (
+            str((ledger_entry or {}).get("entry_digest") or "")
+            if ledger_entry is not None
+            else None
+        ),
+    }
+    if post_certificate_gate is not None:
+        recorded = post_certificate_gate.get(
+            "completed_bootstrap_authorization"
+        )
+        if not isinstance(recorded, dict) or any(
+            recorded.get(field) != completed_projection.get(field)
+            for field in (
+                "valid",
+                "reason",
+                "issues",
+                "bootstrap_control_id",
+                "candidate_hash",
+                "certificate_digest",
+                "ledger_entry_digest",
+            )
+        ):
+            issues.append(
+                "official_bootstrap_completed_checkpoint_authorization_mismatch"
+            )
 
     issues = _unique(issues)
     return {
