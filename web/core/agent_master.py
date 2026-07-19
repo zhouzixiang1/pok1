@@ -634,6 +634,32 @@ class MasterInfrastructureError(RuntimeError):
         super().__init__(self.issue)
 
 
+class MasterEnsembleInfrastructureParked(MasterInfrastructureError):
+    """One journaled Scout/Ballot is missing; preserve all accepted siblings."""
+
+    def __init__(
+        self,
+        source_v,
+        next_v,
+        prompt_digest,
+        issue,
+        *,
+        slot,
+        retry_state,
+    ):
+        super().__init__(source_v, next_v, prompt_digest, issue)
+        self.slot = str(slot)
+        self.role_attempt = int((retry_state or {}).get("role_attempt") or 1)
+        self.accepted_slots = tuple((retry_state or {}).get("accepted_slots") or ())
+        self.pending_slots = tuple((retry_state or {}).get("pending_slots") or ())
+        self.authority_run_id = str((retry_state or {}).get("run_id") or "")
+        self.retry_after_sec = min(
+            60.0,
+            max(5.0, 5.0 * (2 ** min(self.role_attempt - 1, 4))),
+        )
+        self.needs_attention = self.role_attempt >= 3
+
+
 class MasterAuthorityError(RuntimeError):
     """Deterministic checkpoint/evidence authority blocks provider dispatch."""
 
@@ -3959,10 +3985,59 @@ async def _run_master_proposal_ensemble(
                 source_code_digest=source_code_digest,
             )
         source_symbol_index += "\n\n" + snapshot_reference_index
+    # Every no-strength protocol-bootstrap generation has a checkpoint-owned
+    # identity and must retain successful Scout/Ballot work across transport
+    # retries and process restarts. Restricting the durable authority journal
+    # to the one-time fresh v143 bootstrap caused singleton successors to lose
+    # two valid Scout results whenever the third provider stalled.
     strict_authority_enabled = (
-        protocol_bootstrap_prepared_only
+        (protocol_bootstrap_prepared_only or singleton_no_strength)
         and isinstance(strict_checkpoint, dict)
     )
+
+    def raise_provider_failure(
+        phase: str,
+        role_name: str,
+        error: BaseException,
+        *,
+        slot: str,
+    ) -> None:
+        issue = (
+            f"{phase}:{role_name}:"
+            f"{type(error).__name__}:{str(error)[:300]}"
+        )
+        if strict_authority_enabled:
+            from strict_authority_workflow import master_provider_retry_state
+
+            retry_state = master_provider_retry_state(
+                strict_checkpoint,
+                failed_slot=slot,
+            )
+            # Only a fenced provider effect may enter the attempt-neutral park
+            # path. Renderer/log/local control errors that occur before an
+            # exact dispatch have no durable provider-failure proof and must
+            # retain the ordinary bounded infrastructure classification.
+            if not retry_state.get("failed_effect_ids"):
+                raise MasterInfrastructureError(
+                    source_v,
+                    next_v,
+                    context_digest,
+                    issue,
+                ) from error
+            raise MasterEnsembleInfrastructureParked(
+                source_v,
+                next_v,
+                context_digest,
+                issue,
+                slot=slot,
+                retry_state=retry_state,
+            ) from error
+        raise MasterInfrastructureError(
+            source_v,
+            next_v,
+            context_digest,
+            issue,
+        ) from error
     proposal_read_dirs = (
         [get_bot_dir(int(next_v))]
         if protocol_bootstrap_prepared_only
@@ -3987,6 +4062,14 @@ async def _run_master_proposal_ensemble(
                     source_code_digest=source_code_digest,
                     direction=direction,
                     allowed_primaries=allowed_primaries,
+                    # Preserve byte-for-byte compatibility with published
+                    # fresh-v143 receipts. Only the newly admitted singleton
+                    # successor projection needs an explicit mode marker.
+                    evidence_mode=(
+                        "singleton_parent_no_strength"
+                        if singleton_no_strength
+                        else None
+                    ),
                 ),
             )
             invocation_id = strict_call["invocation_id"]
@@ -4194,13 +4277,12 @@ async def _run_master_proposal_ensemble(
         proposals.append(proposal)
     if proposal_provider_errors:
         direction, error = proposal_provider_errors[0]
-        raise MasterInfrastructureError(
-            source_v,
-            next_v,
-            context_digest,
-            "proposal_scout:"
-            f"{direction}:{type(error).__name__}:{str(error)[:300]}",
-        ) from error
+        raise_provider_failure(
+            "proposal_scout",
+            direction,
+            error,
+            slot=f"proposal:{direction}",
+        )
     if invalid_proposal_specs:
         retry_results = await gather_llm_fail_fast(
             *(
@@ -4268,13 +4350,12 @@ async def _run_master_proposal_ensemble(
             proposals.append(proposal)
         if retry_provider_errors:
             direction, error = retry_provider_errors[0]
-            raise MasterInfrastructureError(
-                source_v,
-                next_v,
-                context_digest,
-                "proposal_scout_repair:"
-                f"{direction}:{type(error).__name__}:{str(error)[:300]}",
-            ) from error
+            raise_provider_failure(
+                "proposal_scout_repair",
+                direction,
+                error,
+                slot=f"proposal:{direction}",
+            )
     if len(proposals) != len(_MASTER_PROPOSAL_DIRECTIONS):
         return _proposal_packet_error(
             "three_distinct_schema_valid_scout_proposals_required:"
@@ -4452,13 +4533,12 @@ async def _run_master_proposal_ensemble(
 
     if critic_provider_errors:
         critic_id, error = critic_provider_errors[0]
-        raise MasterInfrastructureError(
-            source_v,
-            next_v,
-            context_digest,
-            "proposal_critic:"
-            f"{critic_id}:{type(error).__name__}:{str(error)[:300]}",
-        ) from error
+        raise_provider_failure(
+            "proposal_critic",
+            critic_id,
+            error,
+            slot=f"ballot:{critic_id}",
+        )
     if invalid_critics:
         retry_results = await gather_llm_fail_fast(
             *(
@@ -4507,13 +4587,12 @@ async def _run_master_proposal_ensemble(
                 critiques.append(critique_row)
         if retry_critic_provider_errors:
             critic_id, error = retry_critic_provider_errors[0]
-            raise MasterInfrastructureError(
-                source_v,
-                next_v,
-                context_digest,
-                "proposal_critic_repair:"
-                f"{critic_id}:{type(error).__name__}:{str(error)[:300]}",
-            ) from error
+            raise_provider_failure(
+                "proposal_critic_repair",
+                critic_id,
+                error,
+                slot=f"ballot:{critic_id}",
+            )
 
     if len(critiques) != 2:
         return _proposal_packet_error(
@@ -4863,7 +4942,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
                     ).hexdigest(),
                     list(dict.fromkeys(singleton_errors)),
                 )
-    if fresh_bootstrap:
+    if protocol_bootstrap_no_strength:
         from strict_authority_workflow import recover_accepted_master_final_result
 
         recovered_final = recover_accepted_master_final_result(
@@ -5391,7 +5470,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         strict_final_call = None
         final_log_file = master_log_file
         final_role = f"MASTER (Try {attempt+1})"
-        if fresh_bootstrap:
+        if protocol_bootstrap_no_strength:
             from strict_authority_workflow import (
                 final_master_call_context,
                 new_call,
@@ -5696,7 +5775,7 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
             # with the selected plan.  The deterministic Worker envelope then
             # binds the actual governance evidence, not merely an invocation bit.
             data["proposal_ensemble"] = proposal_packet
-            if fresh_bootstrap:
+            if protocol_bootstrap_no_strength:
                 from strict_authority_workflow import accept_role_result
 
                 accept_role_result(

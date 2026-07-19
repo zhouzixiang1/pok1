@@ -452,6 +452,26 @@ def test_run_claude_query_exit143_during_shutdown_is_cancelled(monkeypatch, tmp_
     assert fields["shutdown_requested"] is True
 
 
+def test_strict_shutdown_failure_is_attempt_neutral():
+    shutdown = Exception("Command failed with exit code 143 (exit code: 143)")
+    ordinary = RuntimeError("provider stream stalled")
+
+    assert llm_query._strict_provider_failure_error(
+        shutdown,
+        shutdown_requested=True,
+    ) == (
+        "asyncio.CancelledError"
+    )
+    assert llm_query._strict_provider_failure_error(
+        shutdown,
+        shutdown_requested=False,
+    ) is shutdown
+    assert llm_query._strict_provider_failure_error(
+        ordinary,
+        shutdown_requested=True,
+    ) is ordinary
+
+
 def test_run_claude_query_exit143_without_shutdown_is_process_terminated(monkeypatch, tmp_path):
     events = []
 
@@ -1256,8 +1276,8 @@ def test_final_master_has_independent_bounded_silence_policy(monkeypatch):
     assert proposal_policy == {
         "policy_key": "MASTER_PROPOSAL",
         "first_activity_timeout": 120.0,
-        "idle_timeout": 240.0,
-        "stall_timeout": 240.0,
+        "idle_timeout": 360.0,
+        "stall_timeout": 360.0,
         "total_timeout": 900.0,
     }
 

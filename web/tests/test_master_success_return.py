@@ -1155,16 +1155,10 @@ async def test_protocol_bootstrap_master_never_loads_or_injects_strength_history
         / "master_io.txt"
     )
 
-    replayed = await agent_master._run_master_analysis(
-        source_v=142,
-        next_v=143,
-        ui=_MockUI(),
-        protocol_bootstrap=bootstrap_receipt,
-        architecture_policy=architecture_policy,
-        **sentinels,
-    )
-    assert replayed is not None
-    assert replayed == result
+    # ``fresh_ensemble`` deliberately bypasses the real five role dispatches
+    # so this strength-quarantine test owns only final-Master rendering.  It
+    # cannot be replayed as a complete authority packet; full six-slot replay
+    # is exercised by the strict workflow/ensemble recovery regressions.
     assert len(captured_strict_logs) == 1
 
 
@@ -1247,7 +1241,7 @@ def test_master_official_feedback_requires_exact_current_artifact_identity(
 
 
 @pytest.mark.asyncio
-async def test_post_abandon_singleton_successor_master_uses_published_parent_without_strict_journal(
+async def test_post_abandon_singleton_successor_master_uses_durable_strict_journal(
     monkeypatch,
     tmp_path,
 ):
@@ -1256,13 +1250,21 @@ async def test_post_abandon_singleton_successor_master_uses_published_parent_wit
     import evidence_snapshot
     import evolution_infra
     import generation_evidence
+    import strict_authority_workflow
+    from claude_agent_sdk import ResultMessage
+    from runtime_architecture_policy import native_policy_runtime_contract
     from tests.test_logic_mcp import TestSelectPrecommitOpponents
+    from workflow_kernel import WorkflowStore
 
     checkpoint = TestSelectPrecommitOpponents._retarget_singleton_checkpoint(
         TestSelectPrecommitOpponents._singleton_checkpoint(),
         147,
     )
     checkpoint["stage"] = "direction_audited"
+    checkpoint["audit_context"]["prepared_artifact_contract"] = {
+        "contract_digest": "b" * 64,
+        "prepared_artifact_hash": "c" * 64,
+    }
     receipt = checkpoint["audit_context"]["protocol_bootstrap"]
     source = tmp_path / "national_v143"
     target = tmp_path / "national_v147"
@@ -1298,15 +1300,58 @@ async def test_post_abandon_singleton_successor_master_uses_published_parent_wit
         ensemble_kwargs.update(kwargs)
         return json.dumps(packet)
 
-    async def final_query(_prompt, *_args, **kwargs):
+    store = WorkflowStore(tmp_path / "singleton-strict-authority.sqlite3")
+    monkeypatch.setattr(strict_authority_workflow, "_store", lambda: store)
+    results_dir = tmp_path / "results"
+    singleton_logs = results_dir / "v147" / "logs"
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+
+    async def final_query(prompt, *_args, **kwargs):
         final_kwargs.append(kwargs)
-        return "```json\n" + json.dumps(plan) + "\n```", 0.0, {}
+        output = "```json\n" + json.dumps(plan) + "\n```"
+        strict_call = kwargs.get("strict_authority")
+        assert strict_call is not None
+        strict_authority_workflow.dispatch_call(
+            strict_call,
+            full_prompt=str(prompt),
+            tools=kwargs["tools"],
+            owner="pytest-singleton-master-final",
+            actual_role=str(_args[2]),
+        )
+        if strict_call.get("replay_provider"):
+            return (
+                strict_call["replay_raw_output"],
+                float(strict_call.get("replay_cost_usd") or 0.0),
+                strict_call.get("replay_usage") or {},
+            )
+        provider_result = ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="singleton-master-final",
+            total_cost_usd=0.0,
+            usage={},
+            result=output,
+        )
+        strict_authority_workflow._observe_provider_result(
+            provider_result,
+            invocation_id=strict_call["invocation_id"],
+            effect_id=strict_call["effect_id"],
+        )
+        strict_authority_workflow.complete_provider_call(
+            strict_call,
+            raw_output=output,
+            provider_results=[provider_result],
+        )
+        return output, 0.0, {}
 
     def bot_dir(version):
         return source if int(version) == 143 else target
 
     monkeypatch.setattr(agent_master, "get_bot_dir", bot_dir)
-    monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: tmp_path)
+    monkeypatch.setattr(agent_master, "get_logs_dir", lambda _v: singleton_logs)
     monkeypatch.setattr(
         agent_master,
         "_run_master_proposal_ensemble",
@@ -1346,18 +1391,24 @@ async def test_post_abandon_singleton_successor_master_uses_published_parent_wit
         ),
     )
 
+    architecture_policy = {
+        "epoch": "national_tcp_policy_v1",
+        "policy_abi": native_policy_runtime_contract()["policy_abi"],
+    }
     result = await agent_master._run_master_analysis(
         source_v=143,
         next_v=147,
         stagnation_info="caller strength text must be quarantined",
         ui=_MockUI(),
         protocol_bootstrap=receipt,
+        architecture_policy=architecture_policy,
     )
 
     assert result is not None
     assert ensemble_kwargs["protocol_bootstrap_prepared_only"] is False
     assert ensemble_kwargs["singleton_no_strength"] is True
-    assert final_kwargs and final_kwargs[0]["strict_authority"] is None
+    assert final_kwargs and final_kwargs[0]["strict_authority"] is not None
+    assert final_kwargs[0]["strict_authority"]["slot"] == "master:final"
     assert final_kwargs[0]["tools"] == []
     assert final_kwargs[0].get("allowed_read_dirs") is None
     assert final_kwargs[0].get("allowed_evidence_snapshot_dir") is None

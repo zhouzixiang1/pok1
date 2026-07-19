@@ -105,6 +105,185 @@ def test_orchestrator_preserves_checkpoint_for_typed_authority_block():
     )
 
 
+def test_master_llm_transport_uses_bounded_six_attempt_recovery_budget(
+    monkeypatch,
+):
+    captured = {}
+
+    monkeypatch.setattr(
+        tool_planning,
+        "_matching_checkpoint",
+        lambda *_args: {"runtime_contract_ledger": {"ledger_digest": "d" * 64}},
+    )
+    monkeypatch.setattr(
+        tool_planning,
+        "_complete_artifact_fingerprint",
+        lambda *_args: "candidate-fingerprint",
+    )
+    monkeypatch.setattr(
+        tool_planning,
+        "_master_source_fingerprint",
+        lambda *_args: "source-fingerprint",
+    )
+
+    async def fake_record(*_args, **kwargs):
+        captured.update(kwargs)
+        return {
+            "action": "retry_same_tool",
+            "abandoned": False,
+            "infra_failure": {"attempt": 3, "max_attempts": kwargs["max_attempts"]},
+        }
+
+    monkeypatch.setattr(
+        tool_planning,
+        "_record_infrastructure_failure",
+        fake_record,
+    )
+
+    payload = json.loads(asyncio.run(
+        tool_planning._handle_master_llm_infrastructure(
+            147,
+            143,
+            None,
+            component="master_llm",
+            issue="proposal_scout:counterfactual:stall",
+            prompt_digest="a" * 64,
+        )
+    )["content"][0]["text"])
+
+    assert captured["max_attempts"] == 6
+    assert captured["owner_tool"] == "run_master"
+    assert captured["resume_stage"] == "direction_audited"
+    assert payload["action"] == "retry_same_tool"
+    assert payload["abandoned"] is False
+
+
+def test_journaled_master_role_park_is_attempt_neutral(monkeypatch):
+    from agent_master import MasterEnsembleInfrastructureParked
+
+    cleared = []
+    record_calls = []
+    monkeypatch.setattr(
+        tool_planning,
+        "_clear_master_runtime_heartbeat",
+        lambda *args: cleared.append(args),
+    )
+    monkeypatch.setattr(
+        tool_planning,
+        "_record_infrastructure_failure",
+        lambda *_args, **_kwargs: record_calls.append(True),
+    )
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *_a, **_k: None)
+    error = MasterEnsembleInfrastructureParked(
+        143,
+        147,
+        "a" * 64,
+        "proposal_scout:counterfactual:stall",
+        slot="proposal:counterfactual",
+        retry_state={
+            "run_id": "generation:147:test:strict-authority-v3",
+            "role_attempt": 2,
+            "accepted_slots": [
+                "proposal:mechanism",
+                "proposal:compute_memory",
+            ],
+            "pending_slots": [
+                "proposal:counterfactual",
+                "ballot:falsification",
+                "ballot:scope",
+            ],
+        },
+    )
+
+    payload = json.loads(
+        tool_planning._handle_master_ensemble_provider_parked(
+            147,
+            143,
+            None,
+            error,
+        )["content"][0]["text"]
+    )
+
+    assert cleared == [(147, 143)]
+    assert record_calls == []
+    assert payload["error"] == "MASTER_ENSEMBLE_PROVIDER_PARKED"
+    assert payload["pending"] is True
+    assert payload["action"] == "retry_same_tool"
+    assert payload["checkpoint_preserved"] is True
+    assert payload["abandoned"] is False
+    assert payload["role_attempt"] == 2
+    assert payload["retry_after_sec"] == 10.0
+
+    exhausted_role = MasterEnsembleInfrastructureParked(
+        143,
+        147,
+        "a" * 64,
+        "proposal_scout:counterfactual:stall",
+        slot="proposal:counterfactual",
+        retry_state={
+            "run_id": "generation:147:test:strict-authority-v3",
+            "role_attempt": 3,
+            "accepted_slots": [
+                "proposal:mechanism",
+                "proposal:compute_memory",
+            ],
+            "pending_slots": [
+                "proposal:counterfactual",
+                "ballot:falsification",
+                "ballot:scope",
+            ],
+        },
+    )
+    attention = json.loads(
+        tool_planning._handle_master_ensemble_provider_parked(
+            147,
+            143,
+            None,
+            exhausted_role,
+        )["content"][0]["text"]
+    )
+    assert attention["error"] == (
+        "MASTER_ENSEMBLE_PROVIDER_ATTENTION_REQUIRED"
+    )
+    assert attention["pending"] is False
+    assert attention["action"] == "operator_attention_required"
+    assert attention["checkpoint_preserved"] is True
+    assert attention["abandoned"] is False
+    assert attention["needs_attention"] is True
+    assert attention["recovery_blocked"] is True
+    assert attention["validation_errors"] == [
+        "master_ensemble_provider_role_retry_exhausted:"
+        "proposal:counterfactual:attempt_3"
+    ]
+
+    classified = __import__("orchestrator")._classify_recovery_after_deterministic_route(
+        {
+            "action": "resume",
+            "checkpoint": {
+                "workflow_run_id": "generation:147:test",
+                "next_v": 147,
+                "source_v": 143,
+                "stage": "direction_audited",
+            },
+        },
+        {"result": attention},
+        {
+            "action": "resume",
+            "checkpoint": {
+                "workflow_run_id": "generation:147:test",
+                "next_v": 147,
+                "source_v": 143,
+                "stage": "direction_audited",
+            },
+        },
+    )
+    assert classified["action"] == "blocked"
+    assert classified["checkpoint"]["next_v"] == 147
+    assert classified["diagnostics"]["operator_action"] == (
+        "operator_attention_required"
+    )
+
+
 def test_fresh_v143_architecture_policy_uses_live_prepared_baseline(
     tmp_path,
     monkeypatch,

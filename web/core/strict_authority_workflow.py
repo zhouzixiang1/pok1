@@ -1,10 +1,15 @@
-"""Fenced provider and schema receipts for the first strict generation.
+"""Fenced provider and schema receipts for strict bootstrap generations.
 
-The first strict generation is a one-time trust bootstrap.  A checkpoint flag
-or an ``*_io.txt`` file cannot prove that its Master/Reviewer/Critic was really
-executed.  This module therefore records each provider dispatch as a
+The first strict generation and a singleton-parent successor both run without
+a normal frozen strength snapshot. A checkpoint flag or an ``*_io.txt`` file
+cannot prove that their Master/Reviewer/Critic was really executed. This
+module therefore records each provider dispatch as a
 ``WorkflowStore`` effect and records deterministic schema acceptance as a
 separate domain event.
+
+Several on-disk kind strings retain the historical ``first-strict`` name for
+schema compatibility with already published v143 receipts. That spelling is
+an immutable storage identity, not a restriction on generation scope.
 
 The authority stream deliberately uses a run id distinct from the Worker
 stream while sharing ``RESULTS_DIR/workflow/events.sqlite3``::
@@ -478,6 +483,7 @@ def proposal_call_context(
     source_code_digest: str,
     direction: str,
     allowed_primaries: Iterable[str] | None = None,
+    evidence_mode: str | None = None,
 ) -> dict[str, Any]:
     context = {
         "phase": "proposal",
@@ -503,6 +509,16 @@ def proposal_call_context(
                 "strict_authority_proposal_allowed_primaries_invalid"
             )
         context["allowed_primaries"] = list(values)
+    # Omit this key for the historical fresh-v143 contract so already
+    # published receipts retain their exact context digest. A singleton
+    # successor uses the same prepared-child source graph but a different
+    # strategy/measurement projection, so its mode must be explicit.
+    if evidence_mode is not None:
+        if evidence_mode != "singleton_parent_no_strength":
+            raise StrictAuthorityError(
+                "strict_authority_proposal_evidence_mode_invalid"
+            )
+        context["evidence_mode"] = evidence_mode
     return context
 
 
@@ -600,6 +616,12 @@ def expected_master_contexts(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
             direction=direction,
             allowed_primaries=_architecture_proposal_primaries(
                 (plan or {}).get("architecture_policy")
+            ),
+            evidence_mode=(
+                "singleton_parent_no_strength"
+                if packet.get("evidence_mode")
+                == "singleton_parent_no_strength"
+                else None
             ),
         )
         for direction in ("mechanism", "counterfactual", "compute_memory")
@@ -1316,6 +1338,53 @@ def recover_accepted_master_final_result(
         raise StrictAuthorityError(
             "strict_authority_master_final_recovery_packet_missing"
         )
+    # ``architecture_policy`` is a system-owned dispatch input.  It is bound
+    # into the final call context but intentionally is not copied into the
+    # provider's accepted role result.  Reattach the current policy before
+    # rebuilding all six expected contexts; otherwise a complete, valid
+    # journal is spuriously rejected as a final-context mismatch on recovery.
+    projection_plan = deepcopy(role_result)
+    projection_plan["architecture_policy"] = deepcopy(architecture_policy)
+    _refs, packet_errors = validate_receipts(
+        checkpoint,
+        required_slots=MASTER_SLOTS,
+        expected_role_results=expected_master_role_results(projection_plan),
+        expected_context_bindings=expected_master_contexts(projection_plan),
+        require_no_other_accepted=True,
+    )
+    if packet_errors:
+        raise StrictAuthorityError(packet_errors)
+    try:
+        expected_invocations = expected_master_invocation_evidence(
+            projection_plan
+        )
+        accepted_events = [
+            event
+            for event in store.events(run_id)
+            if event.event_type == ACCEPTED_EVENT
+        ]
+        for slot in MASTER_SLOTS[:5]:
+            slot_events = [
+                event
+                for event in accepted_events
+                if event.payload.get("slot") == slot
+            ]
+            if len(slot_events) != 1:
+                raise StrictAuthorityError(
+                    f"strict_authority_{slot}_accepted_count:{len(slot_events)}"
+                )
+            bound = bound_invocation_evidence(dict(slot_events[0].payload))
+            if _json_value(bound) != _json_value(expected_invocations[slot]):
+                raise StrictAuthorityError(
+                    f"strict_authority_{slot}_invocation_evidence_mismatch"
+                )
+    except StrictAuthorityError:
+        raise
+    except Exception as exc:
+        raise StrictAuthorityError(
+            "strict_authority_master_final_recovery_invocation_evidence_"
+            f"unavailable:{type(exc).__name__}"
+        ) from exc
     descriptor = new_call(
         checkpoint,
         slot="master:final",
@@ -2594,16 +2663,37 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
             raise StrictAuthorityError(
                 "strict_authority_projection_source_digest_mismatch"
             )
+        evidence_mode = str(
+            context.get("evidence_mode")
+            or "fresh_strict_control_no_strength"
+        )
+        if evidence_mode == "fresh_strict_control_no_strength":
+            execution_mode = "fixed_blueprint_capability_audit"
+            expected_measurement_target = None
+        elif evidence_mode == "singleton_parent_no_strength":
+            execution_mode = "strategy_implementation"
+            from bot_namespace import bot_name
+
+            expected_measurement_target = bot_name(int(binding.get("source_v")))
+        else:
+            raise StrictAuthorityError(
+                "strict_authority_projection_evidence_mode_invalid"
+            )
         projected = _validated_master_proposal(
             raw_output,
             direction,
             source_graph=source_graph,
             snapshot_dir=(
                 candidate_dir / ".protocol_bootstrap_no_strength_evidence"
+                if evidence_mode == "fresh_strict_control_no_strength"
+                else None
             ),
             national_policy_only=True,
-            execution_mode="fixed_blueprint_capability_audit",
-            evidence_mode="fresh_strict_control_no_strength",
+            require_snapshot_evidence=False,
+            execution_mode=execution_mode,
+            evidence_mode=evidence_mode,
+            expected_measurement_target=expected_measurement_target,
+            forbidden_measurement_target=None,
             allowed_primaries=allowed_primaries,
             actual_role=str(call.get("actual_role") or ""),
         )
@@ -2613,9 +2703,11 @@ def _project_role_result(call: dict[str, Any], raw_output: str) -> Any:
                 source_graph=source_graph,
                 snapshot_dir=(
                     candidate_dir / ".protocol_bootstrap_no_strength_evidence"
+                    if evidence_mode == "fresh_strict_control_no_strength"
+                    else None
                 ),
                 national_policy_only=True,
-                evidence_mode="fresh_strict_control_no_strength",
+                evidence_mode=evidence_mode,
                 allowed_primaries=allowed_primaries,
             ) or ["proposal_contract_invalid"]
             projection_detail_errors = [
@@ -3555,6 +3647,77 @@ def _accepted_events(checkpoint: dict[str, Any]) -> tuple[list[Any], list[str]]:
     return accepted, []
 
 
+def master_provider_retry_state(
+    checkpoint: dict[str, Any],
+    *,
+    failed_slot: str,
+) -> dict[str, Any]:
+    """Project durable, role-local retry state for a partial Master packet.
+
+    This is diagnostic/control input only; accepted receipts remain the sole
+    proposal/ballot authority. Provider availability pauses and controlled
+    cancellations are attempt-neutral and therefore excluded from the local
+    failure count.
+    """
+
+    if failed_slot not in MASTER_SLOTS[:5]:
+        raise StrictAuthorityError(
+            f"strict_authority_master_retry_slot_invalid:{failed_slot}"
+        )
+    binding = generation_binding(checkpoint)
+    binding_digest = content_digest(binding)
+    run_id = authority_run_id(binding["workflow_run_id"])
+    store = _store()
+    try:
+        effects = store.effects_for_run(run_id)
+        events = store.events(run_id)
+    except Exception as exc:
+        raise StrictAuthorityError(
+            "strict_authority_master_retry_journal_unavailable:"
+            f"{type(exc).__name__}"
+        ) from exc
+
+    ignored_error_prefixes = (
+        "LLMAvailabilityBlocked:",
+        "CancelledError:",
+        "asyncio.CancelledError:",
+        "str: asyncio.CancelledError",
+        "str: controlled shutdown",
+    )
+    failed_effect_ids: list[str] = []
+    for effect in effects:
+        input_payload = effect.get("input_payload") or {}
+        last_error = str(effect.get("last_error") or "")
+        if (
+            effect.get("kind") != EFFECT_KIND
+            or input_payload.get("generation_binding_digest") != binding_digest
+            or input_payload.get("slot") != failed_slot
+            or effect.get("status") not in {"failed", "exhausted"}
+            or last_error.startswith(ignored_error_prefixes)
+        ):
+            continue
+        failed_effect_ids.append(str(effect.get("effect_id") or ""))
+
+    accepted_slots = sorted({
+        str(event.payload.get("slot") or "")
+        for event in events
+        if event.event_type == ACCEPTED_EVENT
+        and event.payload.get("generation_binding_digest") == binding_digest
+        and event.payload.get("slot") in MASTER_SLOTS[:5]
+    })
+    pending_slots = [
+        slot for slot in MASTER_SLOTS[:5] if slot not in accepted_slots
+    ]
+    return {
+        "run_id": run_id,
+        "failed_slot": failed_slot,
+        "role_attempt": max(1, len(failed_effect_ids)),
+        "failed_effect_ids": sorted(failed_effect_ids),
+        "accepted_slots": accepted_slots,
+        "pending_slots": pending_slots,
+    }
+
+
 def validate_receipts(
     checkpoint: dict[str, Any],
     *,
@@ -3900,6 +4063,7 @@ def validate_master_final_projection(
     *,
     candidate_dir: str | Path,
     project_root: str | Path,
+    require_no_other_accepted: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     """Replay the deterministic post-Master compiler and bind it to the journal.
 
@@ -3933,6 +4097,7 @@ def validate_master_final_projection(
         required_slots=MASTER_SLOTS,
         expected_role_results=expected_roles,
         expected_context_bindings=expected_master_contexts(plan),
+        require_no_other_accepted=bool(require_no_other_accepted),
     )
     if errors:
         return {}, errors

@@ -130,6 +130,85 @@ def _bind_call_evidence(module, store, call):
     )
 
 
+def test_singleton_proposal_context_is_explicit_without_changing_fresh_shape(
+    authority,
+):
+    module, _store = authority
+    fresh = module.proposal_call_context(
+        context_digest="1" * 64,
+        source_code_digest="2" * 64,
+        direction="mechanism",
+        allowed_primaries=("action_profile",),
+    )
+    singleton = module.proposal_call_context(
+        context_digest="1" * 64,
+        source_code_digest="2" * 64,
+        direction="mechanism",
+        allowed_primaries=("action_profile",),
+        evidence_mode="singleton_parent_no_strength",
+    )
+
+    assert "evidence_mode" not in fresh
+    assert singleton == {
+        **fresh,
+        "evidence_mode": "singleton_parent_no_strength",
+    }
+    with pytest.raises(
+        module.StrictAuthorityError,
+        match="strict_authority_proposal_evidence_mode_invalid",
+    ):
+        module.proposal_call_context(
+            context_digest="1" * 64,
+            source_code_digest="2" * 64,
+            direction="mechanism",
+            evidence_mode="frozen_strength_snapshot",
+        )
+
+
+def test_master_provider_retry_state_is_role_local_and_cancel_neutral(authority):
+    module, _store = authority
+    checkpoint = _checkpoint()
+    context = {"slot": "proposal:mechanism", "suffix": "stable"}
+
+    def fail(error):
+        call = module.new_call(
+            checkpoint,
+            slot="proposal:mechanism",
+            context_binding=context,
+        )
+        module.dispatch_call(
+            call,
+            full_prompt="stable singleton proposal prompt",
+            tools=["Read"],
+            owner="pytest-provider-retry-state",
+        )
+        module.fail_provider_call(call, error)
+
+    fail(RuntimeError("provider transport stalled"))
+    fail("asyncio.CancelledError")
+    fail(RuntimeError("provider transport stalled again"))
+    _call(
+        module,
+        checkpoint,
+        "proposal:compute_memory",
+        suffix="accepted",
+    )
+
+    state = module.master_provider_retry_state(
+        checkpoint,
+        failed_slot="proposal:mechanism",
+    )
+    assert state["role_attempt"] == 2
+    assert len(state["failed_effect_ids"]) == 2
+    assert state["accepted_slots"] == ["proposal:compute_memory"]
+    assert state["pending_slots"] == [
+        "proposal:mechanism",
+        "proposal:counterfactual",
+        "ballot:falsification",
+        "ballot:scope",
+    ]
+
+
 def test_final_master_dispatch_rejects_filesystem_tool(authority):
     module, store = authority
     checkpoint = _checkpoint()
@@ -153,7 +232,7 @@ def test_final_master_dispatch_rejects_filesystem_tool(authority):
     assert store.instance(call["run_id"]) == {}
 
 
-def test_recover_accepted_final_master_skips_duplicate_scout_rebuild(authority):
+def test_recover_accepted_final_master_rejects_incomplete_packet(authority):
     module, store = authority
     checkpoint = _checkpoint()
     policy = {"policy_digest": "d" * 64, "focus": "action_profile"}
@@ -205,31 +284,15 @@ def test_recover_accepted_final_master_skips_duplicate_scout_rebuild(authority):
         parse_contract="master-plan-schema-v1",
     )
 
-    assert module.recover_accepted_master_final_result(
-        checkpoint,
-        architecture_policy=policy,
-    ) == role_result
-    assert len([
-        event for event in store.events(call["run_id"])
-        if event.event_type == "EffectRequested"
-    ]) == 1
+    # A final-only receipt was enough for the former shallow recovery path.
+    # Recovery now reopens the full six-slot authority packet, so an accepted
+    # final without its three Scout and two ballot receipts must fail closed.
     with pytest.raises(
         module.StrictAuthorityError,
-        match="strict_authority_phase_slot_context_drift:master:master:final",
+        match="strict_authority_master_role_proposals_invalid",
     ):
         module.recover_accepted_master_final_result(
             checkpoint,
-            architecture_policy={"policy_digest": "changed"},
-        )
-
-    # A same-phase revision may legitimately replay a sealed effect, but a
-    # later stage is a new state-machine boundary, never a duplicate entry.
-    with pytest.raises(
-        module.StrictAuthorityError,
-        match="strict_authority_checkpoint_stage_invalid:master:final:master_plan_ready",
-    ):
-        module.recover_accepted_master_final_result(
-            {**checkpoint, "checkpoint_revision": 11, "stage": "master_plan_ready"},
             architecture_policy=policy,
         )
     assert len([

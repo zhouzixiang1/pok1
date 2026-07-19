@@ -1950,7 +1950,13 @@ async def _handle_master_llm_infrastructure(
         code=f"{component}_unavailable",
         attempt_key=attempt_key,
         issues=[issue],
-        max_attempts=3,
+        # A transport/stall failure is not evidence that the candidate or its
+        # strategy direction is invalid. Six bounded outer attempts give the
+        # generation-scoped role journal enough opportunities to fill only its
+        # missing slots while avoiding an unbounded paid retry loop. Existing
+        # attempt=2/3 overlays upgrade in place to attempt=3/6; they are never
+        # reset or hand-edited.
+        max_attempts=6,
         metadata={
             "prompt_digest": prompt_digest,
             "backend_contract": backend_contract,
@@ -1966,6 +1972,75 @@ async def _handle_master_llm_infrastructure(
         ),
         "logs": ui.get_output() if ui else "",
     })
+
+
+def _handle_master_ensemble_provider_parked(next_v, source_v, ui, error):
+    """Return an attempt-neutral retry for one missing journaled Master role."""
+
+    _clear_master_runtime_heartbeat(next_v, source_v)
+    needs_attention = bool(error.needs_attention)
+    payload = {
+        "error": (
+            "MASTER_ENSEMBLE_PROVIDER_ATTENTION_REQUIRED"
+            if needs_attention
+            else "MASTER_ENSEMBLE_PROVIDER_PARKED"
+        ),
+        "failure_class": "infrastructure",
+        "pending": not needs_attention,
+        "action": (
+            "operator_attention_required"
+            if needs_attention
+            else "retry_same_tool"
+        ),
+        "retry_after_sec": float(error.retry_after_sec),
+        "abandoned": False,
+        "checkpoint_preserved": True,
+        "slot": error.slot,
+        "role_attempt": int(error.role_attempt),
+        "accepted_slots": list(error.accepted_slots),
+        "pending_slots": list(error.pending_slots),
+        "authority_run_id": error.authority_run_id,
+        "needs_attention": needs_attention,
+        "recovery_blocked": needs_attention,
+        "validation_errors": (
+            [
+                "master_ensemble_provider_role_retry_exhausted:"
+                f"{error.slot}:attempt_{error.role_attempt}"
+            ]
+            if needs_attention
+            else []
+        ),
+        "issue": error.issue,
+        "directive": (
+            (
+                "The same journaled role failed three or more provider "
+                "attempts. Preserve this generation and inspect provider health; "
+                "do not abandon or allocate a successor label."
+                if needs_attention
+                else "Retry run_master for the same generation after the bounded "
+                "cooldown. Reuse accepted journal slots and dispatch only missing "
+                "roles; do not abandon or allocate a successor label."
+            )
+        ),
+        "logs": ui.get_output() if ui else "",
+    }
+    try:
+        log_system_event(
+            "pipeline.master_ensemble_provider_parked",
+            "warn" if not error.needs_attention else "error",
+            (
+                f"Master v{next_v} parked missing role {error.slot} "
+                f"(role attempt {error.role_attempt})"
+            ),
+            {
+                key: value
+                for key, value in payload.items()
+                if key not in {"logs", "directive"}
+            },
+        )
+    except Exception:
+        pass
+    return _json_tool_result(payload)
 
 
 def _normalize_master_plan_paths(plan, source_v, next_v):
@@ -3966,7 +4041,11 @@ async def run_master(args):
         _clear_master_runtime_heartbeat(next_v, source_v)
         raise
     except Exception as exc:
-        from agent_master import MasterAuthorityError, MasterInfrastructureError
+        from agent_master import (
+            MasterAuthorityError,
+            MasterEnsembleInfrastructureParked,
+            MasterInfrastructureError,
+        )
         from strict_authority_workflow import StrictAuthorityError
 
         if isinstance(exc, StrictAuthorityError):
@@ -3982,6 +4061,13 @@ async def run_master(args):
                 source_v,
                 error=exc,
                 ui=ui,
+            )
+        if isinstance(exc, MasterEnsembleInfrastructureParked):
+            return _handle_master_ensemble_provider_parked(
+                next_v,
+                source_v,
+                ui,
+                exc,
             )
         if not isinstance(exc, MasterInfrastructureError):
             raise
@@ -4431,6 +4517,7 @@ async def run_master(args):
             except Exception as exc:
                 from agent_master import (
                     MasterAuthorityError,
+                    MasterEnsembleInfrastructureParked,
                     MasterInfrastructureError,
                 )
                 from strict_authority_workflow import StrictAuthorityError
@@ -4448,6 +4535,13 @@ async def run_master(args):
                         source_v,
                         error=exc,
                         ui=ui,
+                    )
+                if isinstance(exc, MasterEnsembleInfrastructureParked):
+                    return _handle_master_ensemble_provider_parked(
+                        next_v,
+                        source_v,
+                        ui,
+                        exc,
                     )
                 if not isinstance(exc, MasterInfrastructureError):
                     raise
@@ -4505,6 +4599,62 @@ async def run_master(args):
                 json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
             ).hexdigest(),
         )
+
+    # A singleton no-strength successor now uses the same six-slot durable
+    # Master journal as the fresh bootstrap. Before projecting master_planned,
+    # re-open all three Scouts, both Ballots, final Master and all five bound
+    # invocation logs, then replay the production compiler. A sealed final role
+    # alone is insufficient authority if any sibling receipt/log was lost or
+    # changed across a crash.
+    if protocol_bootstrap_no_strength and not _system_bootstrap_master:
+        from agent_master import MasterAuthorityError
+        from strict_authority_workflow import (
+            StrictAuthorityError,
+            validate_master_final_projection,
+        )
+
+        _projection_checkpoint = (
+            _matching_checkpoint(next_v, source_v) or _master_entry_ckpt
+        )
+        try:
+            _projection_proof, _projection_errors = (
+                validate_master_final_projection(
+                    _projection_checkpoint,
+                    data,
+                    candidate_dir=get_bot_dir(next_v),
+                    project_root=PROJECT_ROOT,
+                    require_no_other_accepted=True,
+                )
+            )
+        except StrictAuthorityError as exc:
+            _projection_errors = list(exc.errors)
+        except Exception as exc:
+            _projection_errors = [
+                "singleton_master_projection_unavailable:"
+                f"{type(exc).__name__}:{str(exc)[:240]}"
+            ]
+        if _projection_errors:
+            return await _block_master_authority(
+                next_v,
+                source_v,
+                error=MasterAuthorityError(
+                    source_v,
+                    next_v,
+                    hashlib.sha256(
+                        json.dumps(
+                            {
+                                "plan": data,
+                                "errors": _projection_errors,
+                            },
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest(),
+                    _projection_errors,
+                ),
+                ui=ui,
+            )
 
     # Persist master plan to checkpoint so it survives crashes between master and workers
     _ckpt = _matching_checkpoint(next_v, source_v)

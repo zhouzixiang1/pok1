@@ -65,6 +65,20 @@ class LLMRoleContractError(RuntimeError):
     """Raised before provider dispatch when an active role drifts from policy."""
 
 
+def _strict_provider_failure_error(
+    error: BaseException,
+    *,
+    shutdown_requested: bool,
+) -> BaseException | str:
+    """Normalize controlled process termination to attempt-neutral evidence."""
+
+    return (
+        "asyncio.CancelledError"
+        if is_shutdown_cancel_error(error) and shutdown_requested
+        else error
+    )
+
+
 @dataclass(frozen=True)
 class LLMRoleContract:
     """One provider-facing capability and evidence contract.
@@ -4332,11 +4346,14 @@ _ROLE_TIMEOUT_DEFAULTS = {
     "MASTER_FINAL": (240.0, 240.0, 900.0),
     # Proposal Scouts are Read-capable mechanism designers.  Live strict runs
     # routinely complete between 155s and 236s after one or more bounded Read
-    # round-trips.  Keep the pre-output gate at 120s, but give an already
-    # productive Scout the full 240s silence budget rather than deriving the
-    # generic 132s mid-loop ceiling.  System/thinking telemetry remains
-    # nonproductive and the 900s total ceiling is unchanged.
-    "MASTER_PROPOSAL": (120.0, 240.0, 900.0),
+    # round-trips. Live singleton-successor evidence also showed a valid
+    # counterfactual role still computing at the former 240s boundary. Keep the
+    # pre-output gate at 120s, but give an already productive Scout 360s of
+    # silence. Successful roles are now journaled separately, so this larger
+    # per-role bound no longer multiplies into whole-ensemble redispatch.
+    # System/thinking telemetry remains nonproductive and the 900s total
+    # ceiling is unchanged.
+    "MASTER_PROPOSAL": (120.0, 360.0, 900.0),
     # Master is the highest leverage failure point: it plans, reads evidence,
     # and can otherwise burn the whole orchestrator cycle before any code exists.
     "MASTER": (120.0, 240.0, 900.0),
@@ -4426,7 +4443,9 @@ def _role_timeout_policy(role_name: str) -> dict:
     # caught well before the full idle ceiling while still tolerating legit
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
     stall_default = (
-        240.0 if key in {"MASTER_FINAL", "MASTER_PROPOSAL"} else 0.0
+        360.0
+        if key == "MASTER_PROPOSAL"
+        else 240.0 if key == "MASTER_FINAL" else 0.0
     )
     if idle > 0 and key not in {"MASTER_FINAL", "MASTER_PROPOSAL"}:
         stall_default = max(60.0, min(180.0, idle * 0.55))
@@ -7144,12 +7163,21 @@ async def run_claude_query(
         )
         raise
     except Exception as e:
+        shutdown_cancel_error = is_shutdown_cancel_error(e)
+        shutdown_requested = bool(
+            shutdown_cancel_error and _is_shutdown_requested()
+        )
         if strict_authority is not None:
             from strict_authority_workflow import fail_provider_call
 
-            fail_provider_call(strict_authority, e)
-        if is_shutdown_cancel_error(e):
-            shutdown_requested = _is_shutdown_requested()
+            fail_provider_call(
+                strict_authority,
+                _strict_provider_failure_error(
+                    e,
+                    shutdown_requested=shutdown_requested,
+                ),
+            )
+        if shutdown_cancel_error:
             event_type = (
                 "pipeline.llm_role_shutdown_cancelled"
                 if shutdown_requested

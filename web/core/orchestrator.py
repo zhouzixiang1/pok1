@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -4252,6 +4253,64 @@ def _is_crossover_llm_exhausted_result(data):
     return str(data.get("error") or "") == "CROSSOVER_LLM_EXHAUSTED"
 
 
+def _is_master_ensemble_pending_retry(data, checkpoint):
+    """Validate the complete journaled-Master join partition before retry."""
+
+    if not isinstance(data, dict) or not isinstance(checkpoint, dict):
+        return False
+    if not (
+        data.get("error") == "MASTER_ENSEMBLE_PROVIDER_PARKED"
+        and data.get("pending") is True
+        and data.get("action") == "retry_same_tool"
+        and data.get("checkpoint_preserved") is True
+        and data.get("abandoned") is False
+        and data.get("needs_attention") is False
+    ):
+        return False
+    master_slots = (
+        "proposal:mechanism",
+        "proposal:counterfactual",
+        "proposal:compute_memory",
+        "ballot:falsification",
+        "ballot:scope",
+    )
+    accepted = data.get("accepted_slots")
+    pending = data.get("pending_slots")
+    slot = data.get("slot")
+    if (
+        not isinstance(accepted, list)
+        or not isinstance(pending, list)
+        or any(not isinstance(item, str) for item in accepted + pending)
+        or len(set(accepted)) != len(accepted)
+        or len(set(pending)) != len(pending)
+        or set(accepted) & set(pending)
+        or set(accepted) | set(pending) != set(master_slots)
+        or slot not in pending
+    ):
+        return False
+    role_attempt = data.get("role_attempt")
+    if (
+        isinstance(role_attempt, bool)
+        or not isinstance(role_attempt, int)
+        or role_attempt < 1
+        or role_attempt >= 3
+    ):
+        return False
+    try:
+        retry_after = float(data.get("retry_after_sec"))
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(retry_after) or not 5.0 <= retry_after <= 60.0:
+        return False
+    try:
+        from strict_authority_workflow import authority_run_id
+
+        expected_run_id = authority_run_id(checkpoint.get("workflow_run_id"))
+    except Exception:
+        return False
+    return data.get("authority_run_id") == expected_run_id
+
+
 async def _try_deterministic_checkpoint_route(
     recovery,
     ui=None,
@@ -4422,6 +4481,38 @@ async def _try_deterministic_checkpoint_route(
                     "stage": stage,
                     "next_tool": next_tool,
                     "retry_after_sec": wait_sec,
+                },
+            )
+        except Exception:
+            pass
+        await asyncio.sleep(wait_sec)
+        return True
+    if next_tool == "run_master" and _is_master_ensemble_pending_retry(
+        data,
+        checkpoint,
+    ):
+        wait_sec = max(
+            5.0,
+            min(60.0, float(data.get("retry_after_sec", 5) or 5)),
+        )
+        try:
+            log_system_event(
+                "pipeline.deterministic_master_role_retry_pending",
+                "warn" if not data.get("needs_attention") else "error",
+                (
+                    f"Journaled Master role {data.get('slot')} remains pending "
+                    f"for v{next_v}; retrying in {wait_sec:g}s"
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": stage,
+                    "slot": data.get("slot"),
+                    "role_attempt": data.get("role_attempt"),
+                    "accepted_slots": data.get("accepted_slots"),
+                    "pending_slots": data.get("pending_slots"),
+                    "retry_after_sec": wait_sec,
+                    "needs_attention": bool(data.get("needs_attention")),
                 },
             )
         except Exception:

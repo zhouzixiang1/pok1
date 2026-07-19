@@ -2160,6 +2160,167 @@ def test_actionable_recovery_deterministically_calls_execute_workers(monkeypatch
     assert stage in ui.events[0][1]
 
 
+def test_deterministic_master_partial_role_park_waits_and_reroutes(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import orchestrator
+
+    sleeps = []
+    events = []
+    fake_master = SimpleNamespace(
+        handler=AsyncMock(
+            return_value={
+                "content": [{
+                    "type": "text",
+                    "text": json.dumps({
+                        "error": "MASTER_ENSEMBLE_PROVIDER_PARKED",
+                        "pending": True,
+                        "action": "retry_same_tool",
+                        "checkpoint_preserved": True,
+                        "abandoned": False,
+                        "retry_after_sec": 10,
+                        "slot": "proposal:counterfactual",
+                        "role_attempt": 2,
+                        "needs_attention": False,
+                        "authority_run_id": (
+                            "generation:147:workflow-v1:strict-authority-v3"
+                        ),
+                        "accepted_slots": [
+                            "proposal:mechanism",
+                            "proposal:compute_memory",
+                        ],
+                        "pending_slots": [
+                            "proposal:counterfactual",
+                            "ballot:falsification",
+                            "ballot:scope",
+                        ],
+                    }),
+                }],
+            }
+        )
+    )
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(orchestrator, "_load_orchestrator_session", lambda: None)
+    monkeypatch.setattr(orchestrator, "_honor_active_llm_pause", AsyncMock(return_value=True))
+    monkeypatch.setattr(orchestrator.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(
+        orchestrator,
+        "_resolve_recovery_route",
+        lambda checkpoint: {
+            "next_tool": "run_master",
+            "next_v": checkpoint["next_v"],
+            "source_v": checkpoint["source_v"],
+            "parent2_v": checkpoint.get("parent2_v"),
+            "stage": checkpoint["stage"],
+            "route": {"next_tool": "run_master"},
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "log_system_event",
+        lambda event_type, severity, message, data=None: events.append(
+            (event_type, severity, message, data or {})
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "pipeline_state",
+        SimpleNamespace(route_policy=lambda _ckpt: {"next_tool": "run_master"}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tool_planning",
+        SimpleNamespace(run_master=fake_master),
+    )
+    recovery = {
+        "action": "resume",
+        "checkpoint": {
+            "workflow_run_id": "generation:147:workflow-v1",
+            "stage": "direction_audited",
+            "next_v": 147,
+            "source_v": 143,
+        },
+    }
+
+    handled = asyncio.new_event_loop().run_until_complete(
+        orchestrator._try_deterministic_checkpoint_route(
+            recovery,
+            _FakeUI(),
+        )
+    )
+
+    assert handled is True
+    fake_master.handler.assert_awaited_once_with({
+        "next_v": 147,
+        "source_v": 143,
+    })
+    assert sleeps == [10.0]
+    assert any(
+        event[0] == "pipeline.deterministic_master_role_retry_pending"
+        for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda data: data.update(slot="proposal:mechanism"),
+        lambda data: data["pending_slots"].append("proposal:mechanism"),
+        lambda data: data["accepted_slots"].append("unknown:slot"),
+        lambda data: data.update(role_attempt=True),
+        lambda data: data.update(needs_attention=True),
+        lambda data: data.update(retry_after_sec=float("nan")),
+        lambda data: data.update(authority_run_id="wrong-run"),
+    ),
+)
+def test_master_partial_pending_validator_rejects_malformed_partition(mutation):
+    import copy
+    import orchestrator
+
+    checkpoint = {
+        "workflow_run_id": "generation:147:workflow-v1",
+        "stage": "direction_audited",
+        "next_v": 147,
+        "source_v": 143,
+    }
+    data = {
+        "error": "MASTER_ENSEMBLE_PROVIDER_PARKED",
+        "pending": True,
+        "action": "retry_same_tool",
+        "checkpoint_preserved": True,
+        "abandoned": False,
+        "retry_after_sec": 10.0,
+        "slot": "proposal:counterfactual",
+        "role_attempt": 2,
+        "needs_attention": False,
+        "authority_run_id": "generation:147:workflow-v1:strict-authority-v3",
+        "accepted_slots": [
+            "proposal:mechanism",
+            "proposal:compute_memory",
+        ],
+        "pending_slots": [
+            "proposal:counterfactual",
+            "ballot:falsification",
+            "ballot:scope",
+        ],
+    }
+
+    assert orchestrator._is_master_ensemble_pending_retry(
+        copy.deepcopy(data),
+        checkpoint,
+    )
+    malformed = copy.deepcopy(data)
+    mutation(malformed)
+    assert not orchestrator._is_master_ensemble_pending_retry(
+        malformed,
+        checkpoint,
+    )
+
+
 def test_deterministic_execute_workers_passes_checkpoint_feedback(monkeypatch):
     """Reviewer/precommit rework routes pass exact checkpoint feedback to workers."""
     from types import SimpleNamespace

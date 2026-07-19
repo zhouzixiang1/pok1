@@ -2090,6 +2090,7 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
         require_no_other_accepted=True,
     )
     assert errors == []
+
     accepted_revisions = {
         event.payload["checkpoint_revision"]
         for event in store.events(authority.authority_run_id(
@@ -2263,6 +2264,369 @@ async def test_strict_partial_packet_replays_accepted_slots_across_revision(
             **kwargs,
         )
     assert len(provider_slots) == provider_count_before_full_replay
+
+
+@pytest.mark.asyncio
+async def test_singleton_successor_partial_packet_replays_only_missing_scout(
+    monkeypatch,
+    tmp_path,
+):
+    """A slow singleton Scout cannot discard two accepted sibling results."""
+
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as authority
+    from claude_agent_sdk import ResultMessage
+    from workflow_kernel import WorkflowStore
+
+    candidate_dir = tmp_path / "national_v147"
+    _write_source(candidate_dir)
+    no_strength_dir = candidate_dir / ".protocol_bootstrap_no_strength_evidence"
+    no_strength_dir.mkdir()
+    results_dir = tmp_path / "results"
+    log_dir = results_dir / "v147" / "logs"
+    store = WorkflowStore(tmp_path / "singleton-authority.sqlite3")
+    monkeypatch.setattr(authority, "_store", lambda: store)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: candidate_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: candidate_dir)
+
+    provider_slots = []
+    counterfactual_calls = {"count": 0}
+    falsification_calls = {"count": 0}
+    provider_counter = {"value": 0}
+
+    async def fake_query(prompt, _ctx, _ui, role_name, *_args, **kwargs):
+        call = kwargs["strict_authority"]
+        log_file = Path(_args[0])
+        authority.dispatch_call(
+            call,
+            full_prompt=str(prompt),
+            tools=kwargs["tools"],
+            owner="pytest-singleton-partial",
+            actual_role=role_name,
+        )
+        if call.get("replay_provider"):
+            return (
+                call["replay_raw_output"],
+                float(call.get("replay_cost_usd") or 0.0),
+                call.get("replay_usage") or {},
+            )
+
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"provider call for {role_name}\n")
+
+        slot = call["slot"]
+        provider_slots.append(slot)
+        if slot == "proposal:counterfactual":
+            counterfactual_calls["count"] += 1
+            if counterfactual_calls["count"] == 1:
+                error = RuntimeError("simulated singleton Scout stall")
+                authority.fail_provider_call(call, error)
+                raise error
+        if slot == "ballot:falsification":
+            falsification_calls["count"] += 1
+            if falsification_calls["count"] == 1:
+                error = RuntimeError("simulated singleton Ballot stall")
+                authority.fail_provider_call(call, error)
+                raise error
+        if slot.startswith("proposal:"):
+            output = _proposal(slot.split(":", 1)[1])
+        else:
+            proposal_ids = list(dict.fromkeys(re.findall(
+                r'"proposal_id":"([0-9a-f]{16})"',
+                str(prompt),
+            )))
+            output = _critic_output(agent_master, proposal_ids)
+
+        provider_counter["value"] += 1
+        result = ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id=f"singleton-partial-{provider_counter['value']}",
+            total_cost_usd=0.01,
+            usage={"input_tokens": 1, "output_tokens": 1},
+            result=output,
+        )
+        authority._observe_provider_result(
+            result,
+            invocation_id=call["invocation_id"],
+            effect_id=call["effect_id"],
+        )
+        authority.complete_provider_call(
+            call,
+            raw_output=output,
+            provider_results=[result],
+        )
+        return output, 0.01, result.usage
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fake_query)
+    checkpoint = {
+        "workflow_run_id": "generation:147:workflow-v-test",
+        "source_v": 143,
+        "next_v": 147,
+        "stage": "direction_audited",
+        "checkpoint_revision": 7,
+        "audit_context": {
+            "protocol_bootstrap": {"receipt_digest": "a" * 64},
+            "prepared_artifact_contract": {
+                "contract_digest": "b" * 64,
+                "prepared_artifact_hash": "c" * 64,
+            },
+        },
+    }
+    kwargs = {
+        "planning_context": "frozen singleton successor context",
+        "source_v": 143,
+        "next_v": 147,
+        "ui": _UI(),
+        "log_dir": log_dir,
+        "allowed_evidence_snapshot_dir": str(no_strength_dir),
+        "baseline_v": 147,
+        "protocol_bootstrap_prepared_only": False,
+        "singleton_no_strength": True,
+    }
+
+    with pytest.raises(agent_master.MasterInfrastructureError) as first:
+        await agent_master._run_master_proposal_ensemble(
+            strict_checkpoint=checkpoint,
+            **kwargs,
+        )
+    assert isinstance(
+        first.value,
+        agent_master.MasterEnsembleInfrastructureParked,
+    )
+    assert "proposal_scout:counterfactual:RuntimeError" in first.value.issue
+    assert first.value.slot == "proposal:counterfactual"
+    assert first.value.role_attempt == 1
+    assert set(first.value.accepted_slots) == {
+        "proposal:mechanism",
+        "proposal:compute_memory",
+    }
+    assert first.value.pending_slots == (
+        "proposal:counterfactual",
+        "ballot:falsification",
+        "ballot:scope",
+    )
+    accepted_before = {
+        event.payload["slot"]
+        for event in store.events(authority.authority_run_id(
+            checkpoint["workflow_run_id"]
+        ))
+        if event.event_type == authority.ACCEPTED_EVENT
+    }
+    assert accepted_before == {
+        "proposal:mechanism",
+        "proposal:compute_memory",
+    }
+
+    before_retry = len(provider_slots)
+    resumed = {
+        **checkpoint,
+        "checkpoint_revision": 8,
+        "infra_failure": {"diagnostic": "outer retry metadata is not identity"},
+    }
+    with pytest.raises(agent_master.MasterEnsembleInfrastructureParked) as ballot:
+        await agent_master._run_master_proposal_ensemble(
+            strict_checkpoint=resumed,
+            **kwargs,
+        )
+    assert ballot.value.slot == "ballot:falsification"
+    assert ballot.value.role_attempt == 1
+    assert set(ballot.value.accepted_slots) == {
+        "proposal:mechanism",
+        "proposal:counterfactual",
+        "proposal:compute_memory",
+        "ballot:scope",
+    }
+    assert ballot.value.pending_slots == ("ballot:falsification",)
+    first_retry_slots = provider_slots[before_retry:]
+    assert first_retry_slots.count("proposal:counterfactual") == 1
+    assert "proposal:mechanism" not in first_retry_slots
+    assert "proposal:compute_memory" not in first_retry_slots
+    assert first_retry_slots.count("ballot:falsification") == 1
+    assert first_retry_slots.count("ballot:scope") == 1
+
+    before_ballot_retry = len(provider_slots)
+    packet = json.loads(await agent_master._run_master_proposal_ensemble(
+        strict_checkpoint={**resumed, "checkpoint_revision": 9},
+        **kwargs,
+    ))
+
+    assert packet["valid"] is True
+    assert packet["evidence_mode"] == "singleton_parent_no_strength"
+    ballot_retry_slots = provider_slots[before_ballot_retry:]
+    assert ballot_retry_slots == ["ballot:falsification"]
+    _refs, errors = authority.validate_receipts(
+        resumed,
+        required_slots=authority.MASTER_SLOTS[:5],
+        require_no_other_accepted=True,
+        expected_role_results=authority.expected_master_role_results({
+            "proposal_ensemble": packet,
+        }),
+        expected_context_bindings=authority.expected_master_contexts({
+            "proposal_ensemble": packet,
+        }),
+    )
+    assert errors == []
+
+    from runtime_architecture_policy import native_policy_runtime_contract
+    from tests.test_master_success_return import _strict_prompt_plan
+
+    architecture_policy = {
+        "epoch": "national_tcp_policy_v1",
+        "policy_abi": native_policy_runtime_contract()["policy_abi"],
+    }
+    selected = next(
+        item
+        for item in packet["ordered_proposals"]
+        if item["falsifier"]["test_name"] == "fast_policy_baseline"
+    )
+    final_plan = _strict_prompt_plan()
+    final_plan["selected_proposal_id"] = selected["proposal_id"]
+    final_plan["targeted_failure"] = selected["targeted_failure"]
+    final_plan["measurement_plan"] = selected["measurement"]
+    final_output = "```json\n" + json.dumps(final_plan) + "\n```\n"
+    final_checkpoint = {**resumed, "checkpoint_revision": 10}
+    final_call = authority.new_call(
+        final_checkpoint,
+        slot="master:final",
+        role="MASTER (Try 1)",
+        context_binding=authority.final_master_call_context(
+            packet,
+            architecture_policy,
+        ),
+    )
+    authority.dispatch_call(
+        final_call,
+        full_prompt="sealed singleton final Master prompt",
+        tools=[],
+        owner="pytest-singleton-final",
+        actual_role="MASTER (Try 1)",
+    )
+    final_result = ResultMessage(
+        subtype="success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=False,
+        num_turns=1,
+        session_id="singleton-final",
+        total_cost_usd=0.01,
+        usage={"input_tokens": 1, "output_tokens": 1},
+        result=final_output,
+    )
+    authority._observe_provider_result(
+        final_result,
+        invocation_id=final_call["invocation_id"],
+        effect_id=final_call["effect_id"],
+    )
+    authority.complete_provider_call(
+        final_call,
+        raw_output=final_output,
+        provider_results=[final_result],
+    )
+    accepted_final = final_call["projected_role_result"]
+    authority.accept_role_result(
+        final_call,
+        role_result=accepted_final,
+        parse_contract="master-plan-schema-v1",
+    )
+    with pytest.raises(
+        authority.StrictAuthorityError,
+        match="strict_authority_master:final_context_binding_mismatch",
+    ):
+        authority.recover_accepted_master_final_result(
+            final_checkpoint,
+            architecture_policy={
+                **architecture_policy,
+                "epoch": "drifted-policy",
+            },
+        )
+    assert authority.recover_accepted_master_final_result(
+        final_checkpoint,
+        architecture_policy=architecture_policy,
+    ) == accepted_final
+
+    ballot_log = Path(packet["critic_reviews"][0]["invocation_evidence"][
+        "io_log_path"
+    ])
+    with ballot_log.open("a", encoding="utf-8") as handle:
+        handle.write("\npost-binding ballot corruption\n")
+    with pytest.raises(
+        authority.StrictAuthorityError,
+        match="system_bootstrap_llm_invocation_log_digest_mismatch",
+    ):
+        authority.recover_accepted_master_final_result(
+            final_checkpoint,
+            architecture_policy=architecture_policy,
+        )
+
+
+@pytest.mark.asyncio
+async def test_singleton_predispatch_failure_cannot_claim_attempt_neutral_park(
+    monkeypatch,
+    tmp_path,
+):
+    import agent_master
+    import evolution_infra
+    import strict_authority_workflow as authority
+    from workflow_kernel import WorkflowStore
+
+    candidate_dir = tmp_path / "national_v147"
+    _write_source(candidate_dir)
+    no_strength_dir = candidate_dir / ".protocol_bootstrap_no_strength_evidence"
+    no_strength_dir.mkdir()
+    results_dir = tmp_path / "results"
+    log_dir = results_dir / "v147" / "logs"
+    store = WorkflowStore(tmp_path / "predispatch-authority.sqlite3")
+    monkeypatch.setattr(authority, "_store", lambda: store)
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    monkeypatch.setattr(agent_master, "get_bot_dir", lambda _v: candidate_dir)
+    monkeypatch.setattr(evolution_infra, "get_bot_dir", lambda _v: candidate_dir)
+
+    async def fail_before_dispatch(*_args, **_kwargs):
+        raise RuntimeError("renderer-local failure before provider dispatch")
+
+    monkeypatch.setattr(agent_master, "run_claude_query", fail_before_dispatch)
+    checkpoint = {
+        "workflow_run_id": "generation:147:predispatch-test",
+        "source_v": 143,
+        "next_v": 147,
+        "stage": "direction_audited",
+        "checkpoint_revision": 7,
+        "audit_context": {
+            "protocol_bootstrap": {"receipt_digest": "a" * 64},
+            "prepared_artifact_contract": {
+                "contract_digest": "b" * 64,
+                "prepared_artifact_hash": "c" * 64,
+            },
+        },
+    }
+
+    with pytest.raises(agent_master.MasterInfrastructureError) as caught:
+        await agent_master._run_master_proposal_ensemble(
+            planning_context="frozen singleton predispatch context",
+            source_v=143,
+            next_v=147,
+            ui=_UI(),
+            log_dir=log_dir,
+            allowed_evidence_snapshot_dir=str(no_strength_dir),
+            baseline_v=147,
+            singleton_no_strength=True,
+            strict_checkpoint=checkpoint,
+        )
+
+    assert not isinstance(
+        caught.value,
+        agent_master.MasterEnsembleInfrastructureParked,
+    )
+    assert store.effects_for_run(authority.authority_run_id(
+        checkpoint["workflow_run_id"]
+    )) == []
 
 
 def test_proposal_id_is_stable_and_not_scout_identity(monkeypatch, tmp_path):

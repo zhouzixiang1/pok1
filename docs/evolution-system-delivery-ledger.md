@@ -4759,3 +4759,76 @@ validators cross-bind that history with the active subset; pre-epoch, swapped,
 non-contiguous or canonical-name/tag-drifted identities fail closed. Merge,
 runtime synchronization, final recovery diagnostics and live v147 Master
 acceptance remain unproven until recorded in a later entry.
+
+## 2026-07-19 — live v147 partial-ensemble loss and role-local recovery repair
+
+`origin/main=f8873da827dcc2b08b911ba6e09ba5d14ffb4a57` was safely
+fast-forwarded into the stopped autonomous checkout and all recovery,
+allocation, parent, prepared-artifact and repository-drift checks passed for
+the unchanged `generation:147:workflow-v1`. Runtime was then started without
+changing the candidate or checkpoint identity. The first repaired Master
+ensemble completed `mechanism` in about 100 seconds while `compute_memory` and
+`counterfactual` crossed the former 240-second productive-silence boundary.
+The second ensemble completed `mechanism` in 130.46 seconds and
+`compute_memory` in 193.20 seconds; only `counterfactual` required exceptional
+cleanup after the 240-second stall boundary (256.42 seconds including bounded
+cleanup). Exact child exit was confirmed in each case. This was model/provider
+latency, not a proposal schema, protocol, candidate or authority failure.
+
+The old singleton path kept successful Scout results only in the Python stack.
+Any one provider exception raised `MasterInfrastructureError`, discarded two
+valid sibling results and advanced the generation-level `master_llm` overlay.
+After two occurrences the checkpoint was revision 7 with `attempt=2/3`; the
+third whole-ensemble dispatch was controlled-stopped before it could consume
+the final attempt and automatically abandon v147. Web, Elo and provider child
+processes were confirmed absent. The checkpoint remains
+`direction_audited`, has no `master_plan`, no abandon transition, and the
+candidate remains unpublished.
+
+The source repair extends the existing append-only `strict-authority-v3`
+Master journal to `singleton_parent_no_strength` without changing historical
+fresh-v143 context bytes. Each Scout and ballot now binds the exact workflow,
+prepared artifact, source graph, planning context, allowed primary and mode;
+successful slots are accepted and log-bound immediately. Across a checkpoint
+revision or process restart, accepted slots replay and only missing slots may
+dispatch. Deterministic projection uses the prepared `next_v` graph, strategy
+execution mode, no strength snapshot and exact `national_v<source_v>`
+measurement target. Unknown mode or any binding drift fails before provider
+work.
+
+A role provider failure now raises typed
+`MASTER_ENSEMBLE_PROVIDER_PARKED`. It does not call the generation-level
+infrastructure recorder, does not change checkpoint bytes/revision, and cannot
+abandon or allocate another version. It clears the Master heartbeat and
+returns accepted/pending slots, a cancel/availability-neutral role-local count,
+and a bounded 5–60 second retry for the first two exact role failures. The
+deterministic Orchestrator route waits and re-enters the same `run_master`;
+repeated calls recover journal slots instead of rerunning successful roles. A
+third same-role failure stops with explicit operator attention while preserving
+the checkpoint and accepted receipts; it does not become an infinite paid
+retry loop. A pre-dispatch local exception with no failed effect stays on the
+ordinary bounded infrastructure path, and shutdown/cancel effects are excluded
+from role attempts. Scout first-activity remains 120 seconds, the
+observed productive idle/stall budget is now 360 seconds, and total time stays
+hard-bounded at 900 seconds. Non-journaled normal two-plus-Bot generations
+remain outside this specific extension and must not be reported as closed.
+
+Sealed final-Master recovery now reopens the complete six-slot packet, binds
+all five Scout/ballot invocation-evidence logs, rejects any additional accepted
+slot, reattaches the current system-owned architecture policy before rebuilding
+the expected final context, and replays the deterministic compiler before the
+checkpoint may enter `master_planned`. Missing slots, policy/context drift,
+log mutation or compiler drift fail closed without changing the journal or
+candidate.
+
+Focused validation after this change is `369 passed` across Master
+proposal/final, infrastructure overlay, LLM observability, strict-authority
+and deterministic Orchestrator suites, including separate partial Scout and
+partial ballot restart paths. Matrix/read-scope closure is `80 passed`; the
+complete Web suite is `3811 passed, 5 skipped` with only the existing
+Starlette/httpx dependency deprecation warning. Independent review,
+including the complete singleton recovery, policy drift, corrupt log, missing
+slot and extra-slot negatives, found no remaining P0/P1. Commit/push,
+stopped-runtime sync, recovery diagnostics and the resumed live v147 result
+remain pending and will be recorded in a later entry. Stability is still
+**0/10**.

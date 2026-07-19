@@ -1027,9 +1027,10 @@ dead owner. Background stability verification follows the same progress rule:
 every thread exit, including cancellation-class exceptions, releases the
 single-flight slot and projects a failed refresh before a later retry.
 
-First-strict Master recovery has a second immutable boundary. The first
-durable proposal effect freezes the authority-phase checkpoint revision for
-all three proposals, both anonymous ballots, and final Master output. A
+No-strength strict-bootstrap Master recovery has a second immutable boundary.
+It covers both the one-time fresh first-strict generation and a singleton-parent
+successor. The first durable proposal effect freezes the authority-phase
+checkpoint revision for all three proposals, both anonymous ballots, and final Master output. A
 partial packet may advance checkpoint retry metadata, but a restart must
 replay already accepted slots, continue only a missing slot's remaining schema
 budget, and keep every later Master receipt on the frozen revision. Before
@@ -1039,6 +1040,32 @@ per-slot context binding. Multiple phase revisions, a checkpoint revision
 rollback, same-slot context drift, or any other binding mismatch is a
 control-plane failure, never provider unavailability and never permission to
 open a second authority budget.
+
+Published v143 receipts retain their historical context bytes and on-disk
+`first-strict-*` kind names. A singleton successor adds only the explicit
+`evidence_mode=singleton_parent_no_strength` context field; deterministic
+projection then reopens the prepared `next_v` source graph, uses strategy mode
+with no strength snapshot, and binds the measurement target to the published
+`source_v`. Unknown modes, target drift, or source digest drift fail before a
+provider dispatch. This is intentionally not yet a claim that normal
+two-or-more-Bot generations use the same journal.
+
+Each accepted Scout or ballot is a completed join input, not transient memory.
+If another role's transport stalls, the tool returns
+`MASTER_ENSEMBLE_PROVIDER_PARKED`, clears the liveness heartbeat, preserves the
+checkpoint and existing generation-level infrastructure overlay, and exposes
+the exact accepted/pending slots plus a role-local attempt count. The
+deterministic Orchestrator route waits 5–60 seconds and calls `run_master` for
+the same workflow on the first two exact role failures; journal replay
+dispatches only missing roles. A third same-role failure returns explicit
+operator-attention-required and stops automation while preserving the
+checkpoint, candidate and accepted receipts. A local renderer/log/control
+exception with no exact failed provider effect is never allowed to claim this
+attempt-neutral path. Availability pauses and controlled shutdown/cancellation
+do not increment the role count. Current
+Scout defaults are 120 seconds to first activity, 360 seconds idle/stall and a
+900 second total hard ceiling. Provider infrastructure is never evidence that
+the strategy is invalid and cannot by itself consume a canonical Bot label.
 
 Proposal Scouts receive only the compact proposal contract and the frozen
 semantic facts needed for their slot. Do not embed the complete final-Master
