@@ -276,6 +276,7 @@ def test_completed_authorization_accepts_production_normalized_selection(
         "policy_id": "official-full-v5",
         "certificate_digest": "1" * 64,
         "certification_identity": {
+            "schema_version": 1,
             "candidate_hash": "a" * 64,
             "spec": {
                 "bootstrap_control_id": CONTROL_ID,
@@ -330,11 +331,16 @@ def test_completed_authorization_accepts_production_normalized_selection(
 
     assert result["valid"] is True
     assert result["issues"] == []
+    assert checkpoint == {
+        "stage": "official_bootstrap_required",
+        "audit_context": {"official_bootstrap_request": {}},
+    }
     assert observed_fact_stages[-1] == (
         "official_bootstrap_required",
         "official_bootstrap_required",
     )
 
+    persisted_by_stage = {}
     for post_certificate_stage in ("verified", "publishing"):
         persisted = deepcopy(checkpoint)
         persisted["stage"] = post_certificate_stage
@@ -350,6 +356,7 @@ def test_completed_authorization_accepts_production_normalized_selection(
                 "completed_bootstrap_authorization": deepcopy(result),
             }
         }
+        before_rebind = deepcopy(persisted)
         rebound = (
             official_bootstrap.validate_completed_operator_bootstrap_authorization(
                 status,
@@ -358,6 +365,8 @@ def test_completed_authorization_accepts_production_normalized_selection(
             )
         )
         assert rebound == result
+        assert persisted == before_rebind
+        persisted_by_stage[post_certificate_stage] = persisted
         assert observed_fact_stages[-1] == (
             "official_bootstrap_required",
             "official_bootstrap_required",
@@ -378,8 +387,7 @@ def test_completed_authorization_accepts_production_normalized_selection(
         in rejected_unbound["issues"]
     )
 
-    drifted_verified = deepcopy(persisted)
-    drifted_verified["stage"] = "verified"
+    drifted_verified = deepcopy(persisted_by_stage["verified"])
     drifted_verified["gate_results"]["official_full"][
         "certificate_digest"
     ] = "9" * 64
@@ -396,8 +404,7 @@ def test_completed_authorization_accepts_production_normalized_selection(
         in rejected_drift["issues"]
     )
 
-    authorization_drift = deepcopy(persisted)
-    authorization_drift["stage"] = "verified"
+    authorization_drift = deepcopy(persisted_by_stage["verified"])
     authorization_drift["gate_results"]["official_full"][
         "completed_bootstrap_authorization"
     ]["ledger_entry_digest"] = "8" * 64
@@ -413,6 +420,150 @@ def test_completed_authorization_accepts_production_normalized_selection(
         "official_bootstrap_completed_checkpoint_authorization_mismatch"
         in rejected_authorization["issues"]
     )
+
+    def reject_gate_drift(
+        drifted_checkpoint,
+        expected_issue,
+    ):
+        unchanged = deepcopy(drifted_checkpoint)
+        rejected = (
+            official_bootstrap.validate_completed_operator_bootstrap_authorization(
+                status,
+                candidate,
+                checkpoint=drifted_checkpoint,
+            )
+        )
+        assert rejected["valid"] is False
+        assert expected_issue in rejected["issues"]
+        assert drifted_checkpoint == unchanged
+
+    not_passed = deepcopy(persisted_by_stage["verified"])
+    not_passed["gate_results"]["official_full"]["passed"] = False
+    reject_gate_drift(
+        not_passed,
+        "official_bootstrap_completed_checkpoint_gate_not_passed",
+    )
+
+    not_bootstrap = deepcopy(persisted_by_stage["verified"])
+    not_bootstrap["gate_results"]["official_full"][
+        "bootstrap_certificate"
+    ] = False
+    reject_gate_drift(
+        not_bootstrap,
+        "official_bootstrap_completed_checkpoint_gate_not_bootstrap",
+    )
+
+    status_drift = deepcopy(persisted_by_stage["verified"])
+    status_drift["gate_results"]["official_full"]["status"][
+        "certificate_digest"
+    ] = "2" * 64
+    reject_gate_drift(
+        status_drift,
+        "official_bootstrap_completed_checkpoint_gate_status_mismatch",
+    )
+
+    identity_drift = deepcopy(persisted_by_stage["verified"])
+    identity_drift["gate_results"]["official_full"][
+        "certification_identity"
+    ]["candidate_hash"] = "2" * 64
+    reject_gate_drift(
+        identity_drift,
+        "official_bootstrap_completed_checkpoint_gate_identity_mismatch",
+    )
+
+    status_boolean_type_drift = deepcopy(persisted_by_stage["verified"])
+    status_boolean_type_drift["gate_results"]["official_full"]["status"][
+        "opponent_selection"
+    ]["selected"] = 1
+    reject_gate_drift(
+        status_boolean_type_drift,
+        "official_bootstrap_completed_checkpoint_gate_status_mismatch",
+    )
+
+    identity_number_type_drift = deepcopy(persisted_by_stage["verified"])
+    identity_number_type_drift["gate_results"]["official_full"][
+        "certification_identity"
+    ]["schema_version"] = 1.0
+    reject_gate_drift(
+        identity_number_type_drift,
+        "official_bootstrap_completed_checkpoint_gate_identity_mismatch",
+    )
+
+    malformed_gate_results = deepcopy(persisted_by_stage["verified"])
+    malformed_gate_results["gate_results"] = []
+    reject_gate_drift(
+        malformed_gate_results,
+        "official_bootstrap_completed_checkpoint_gate_results_malformed",
+    )
+
+    malformed_gate = deepcopy(persisted_by_stage["verified"])
+    malformed_gate["gate_results"]["official_full"] = []
+    reject_gate_drift(
+        malformed_gate,
+        "official_bootstrap_completed_checkpoint_gate_malformed",
+    )
+
+    authorization_unknown_field = deepcopy(persisted_by_stage["verified"])
+    authorization_unknown_field["gate_results"]["official_full"][
+        "completed_bootstrap_authorization"
+    ]["unknown_field"] = "must-fail-closed"
+    reject_gate_drift(
+        authorization_unknown_field,
+        "official_bootstrap_completed_checkpoint_authorization_mismatch",
+    )
+
+    authorization_missing_field = deepcopy(persisted_by_stage["verified"])
+    authorization_missing_field["gate_results"]["official_full"][
+        "completed_bootstrap_authorization"
+    ].pop("reason")
+    reject_gate_drift(
+        authorization_missing_field,
+        "official_bootstrap_completed_checkpoint_authorization_mismatch",
+    )
+
+    authorization_type_drift = deepcopy(persisted_by_stage["verified"])
+    authorization_type_drift["gate_results"]["official_full"][
+        "completed_bootstrap_authorization"
+    ]["valid"] = 1
+    reject_gate_drift(
+        authorization_type_drift,
+        "official_bootstrap_completed_checkpoint_authorization_mismatch",
+    )
+
+    malformed_identity_status = deepcopy(status)
+    malformed_identity_status["certification_identity"] = []
+    malformed_identity = (
+        official_bootstrap.validate_completed_operator_bootstrap_authorization(
+            malformed_identity_status,
+            candidate,
+            checkpoint=checkpoint,
+        )
+    )
+    assert malformed_identity["valid"] is False
+    assert (
+        "official_bootstrap_completed_identity_malformed"
+        in malformed_identity["issues"]
+    )
+
+    for malformed_spec in (["not-an-object"], 1):
+        malformed_spec_status = deepcopy(status)
+        malformed_spec_status["certification_identity"]["spec"] = (
+            malformed_spec
+        )
+        before_malformed_spec = deepcopy(malformed_spec_status)
+        malformed_spec_result = (
+            official_bootstrap.validate_completed_operator_bootstrap_authorization(
+                malformed_spec_status,
+                candidate,
+                checkpoint=checkpoint,
+            )
+        )
+        assert malformed_spec_result["valid"] is False
+        assert (
+            "official_bootstrap_completed_identity_spec_malformed"
+            in malformed_spec_result["issues"]
+        )
+        assert malformed_spec_status == before_malformed_spec
 
     wrong_stage = deepcopy(checkpoint)
     wrong_stage["stage"] = "reviewed"

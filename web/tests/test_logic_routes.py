@@ -4,33 +4,32 @@ import json
 import time
 from pathlib import Path
 
-import pytest
-from bot_namespace import bot_name
-
-
 # ── ratings.py: Ranking logic ──
 
 class TestRatingsRanking:
-    @pytest.mark.requires_active_bot
-    def test_sorted_by_selection_score_descending(self, client):
+    def test_sorted_by_selection_score_descending(
+        self, client, synthetic_strength_projection
+    ):
         resp = client.get("/api/ratings")
         assert resp.status_code == 200
         data = resp.json()
+        assert len(data) == 2
         scores = [r["selection_score"] for r in data]
         assert scores == sorted(scores, reverse=True)
         assert "leaderboard_score" in data[0]
         assert "h2h_avg_wr" in data[0]
         assert "h2h_coverage" in data[0]
 
-    def test_ranks_sequential_from_1(self, client):
+    def test_ranks_sequential_from_1(self, client, synthetic_strength_projection):
         resp = client.get("/api/ratings")
         data = resp.json()
         ranks = [r["rank"] for r in data]
         assert ranks == list(range(1, len(data) + 1))
 
-    def test_conservative_rating_formula(self, client):
+    def test_conservative_rating_formula(self, client, synthetic_strength_projection):
         resp = client.get("/api/ratings")
         data = resp.json()
+        assert len(data) == 2
         for row in data:
             # Formula: round(r - 2*rd, 1) using raw values
             # We can't perfectly reconstruct raw r/rd from rounded values,
@@ -38,9 +37,10 @@ class TestRatingsRanking:
             expected = row["rating"] - 2 * row["rd"]
             assert abs(row["conservative_rating"] - expected) < 0.2
 
-    def test_confidence_matches_rd(self, client):
+    def test_confidence_matches_rd(self, client, synthetic_strength_projection):
         resp = client.get("/api/ratings")
         data = resp.json()
+        assert len(data) == 2
         for row in data:
             rd = row["rd"]
             conf = row["confidence"]
@@ -92,12 +92,14 @@ class TestRetiredExperienceRouteLogic:
 # ── ratings.py: H2H filtering ──
 
 class TestH2HFilterLogic:
-    @pytest.mark.requires_active_bot
-    def test_filtered_contains_only_specified_bot(self, client, active_bot_version):
-        name = bot_name(active_bot_version)
+    def test_filtered_contains_only_specified_bot(
+        self, client, synthetic_strength_projection
+    ):
+        name = synthetic_strength_projection["active_bots"][0]
         resp = client.get(f"/api/h2h?bot_name={name}")
         assert resp.status_code == 200
         data = resp.json()
+        assert data
         for key in data:
             assert name in key
 
@@ -114,18 +116,22 @@ class TestMatchReplaySecurity:
 # ── bots.py: Sorting and filtering ──
 
 class TestBotsSorting:
-    @pytest.mark.requires_active_bot
-    def test_numerical_sorting(self, client):
+    def test_numerical_sorting(self, client, synthetic_published_bot_authority):
         resp = client.get("/api/bots")
         data = resp.json()
         active = data.get("active", [])
+        assert len(active) == 2
         versions = [b["version"] for b in active]
         assert versions == sorted(versions)
 
-    def test_active_bots_have_completed_sentinel(self, client):
+    def test_active_bots_have_completed_sentinel(
+        self, client, synthetic_published_bot_authority
+    ):
         resp = client.get("/api/bots")
         data = resp.json()
-        for bot in data.get("active", []):
+        active = data.get("active", [])
+        assert len(active) == 2
+        for bot in active:
             assert bot.get("completed") is True
 
     def test_archive_is_not_exposed_by_compatibility_query(self, client):
@@ -137,20 +143,24 @@ class TestBotsSorting:
 # ── bots.py: Code reading ──
 
 class TestBotCodeLogic:
-    @pytest.mark.requires_active_bot
-    def test_returns_python_source(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/policy.py")
+    def test_returns_python_source(
+        self, client, synthetic_published_bot_authority
+    ):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/policy.py")
         assert resp.status_code == 200
         assert "def " in resp.text or "import " in resp.text
 
-    @pytest.mark.requires_active_bot
-    def test_non_py_rejected(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/policy.txt")
+    def test_non_py_rejected(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/policy.txt")
         assert resp.status_code == 400
 
-    @pytest.mark.requires_active_bot
-    def test_path_separator_rejected(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/sub/dir/policy.py")
+    def test_path_separator_rejected(
+        self, client, synthetic_published_bot_authority
+    ):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/sub/dir/policy.py")
         assert resp.status_code in (400, 404)
 
 

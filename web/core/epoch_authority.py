@@ -1364,18 +1364,39 @@ def policy_epoch_initialization(
     # complete strict artifact, tag/tree binding, and signed full-v5
     # certificate resolved by ``strict_published_bot_names``.  This prevents a
     # stray/manual national-bot-v143+ tag from bypassing the one-time reset.
-    observed_strict_bots = [
-        name
+    observed_strict = [
+        (str(name), version)
         for name in strict_published_bot_names()
         if (version := parse_bot_version(str(name))) is not None
-        and version <= authority_high_water
+    ]
+    strict_publication_versions_above_high_water = sorted({
+        version
+        for _name, version in observed_strict
+        if version > authority_high_water
+    })
+    observed_strict_bots = [
+        name
+        for name, version in observed_strict
+        if version <= authority_high_water
     ]
     # A strict artifact scan is not independently active-bot authority.  If
     # the paired completion/high-water namespace snapshot is unavailable or
     # disagrees with the first high-water read, fail closed at this projection
     # boundary so the scheduler, prompts and UI cannot inject an otherwise
     # eligible artifact while version authority is transiently ambiguous.
-    strict_bots = observed_strict_bots if namespace_snapshot_matches else []
+    # The namespace and executable-artifact reads are necessarily separate Git
+    # observations.  A publication may land between them: in that case the
+    # second scan can see an eligible vN+1 while the paired namespace snapshot
+    # still ends at vN.  Silently filtering the newer artifact would expose vN
+    # as an apparently coherent active pool during a split publication view.
+    # Withhold all active authority until the next read observes one paired
+    # namespace (or the explicit partial-publication recovery path takes over).
+    strict_bots = (
+        observed_strict_bots
+        if namespace_snapshot_matches
+        and not strict_publication_versions_above_high_water
+        else []
+    )
     strict_versions = sorted({
         version
         for name in strict_bots
@@ -1395,6 +1416,7 @@ def policy_epoch_initialization(
     # allocate the same label again.
     namespace_publication_proven = bool(
         namespace_snapshot_matches
+        and not strict_publication_versions_above_high_water
         and (
             (
                 authority_high_water < FIRST_STRICT_POLICY_VERSION
@@ -1494,6 +1516,9 @@ def policy_epoch_initialization(
         "publication_recovery_ready": partial_publication_recovery,
         "unpaired_completion_versions": unpaired_completion_versions,
         "unpaired_high_water_versions": unpaired_high_water_versions,
+        "strict_publication_versions_above_high_water": (
+            strict_publication_versions_above_high_water
+        ),
         "reset_receipt_valid": reset_valid,
         "reset_receipt_digest": (
             str(receipt.get("receipt_digest")) if receipt is not None else None

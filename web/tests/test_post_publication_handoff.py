@@ -1103,3 +1103,166 @@ def test_external_reproof_reopens_housekeeping_instead_of_trusting_booleans(
     ):
         module._test_original_reprove_external_steps(forged)
     module.release_post_publication_handoff_claim(143, 142, claim_id)
+
+
+def _install_archivist_dirty_fixture(
+    tool_commit,
+    monkeypatch,
+    tmp_path,
+    porcelain,
+):
+    monkeypatch.setattr(tool_commit, "PROJECT_ROOT", tmp_path)
+
+    def git(*args, **_kwargs):
+        if args[:2] == ("status", "--porcelain"):
+            return porcelain
+        if args[:2] == ("rev-parse", "HEAD"):
+            return "a" * 40
+        return ""
+
+    monkeypatch.setattr(tool_commit, "_git", git)
+    monkeypatch.setattr(tool_commit, "_git_ensure_main_branch", lambda: None)
+    lock = tmp_path / "web/core/national_arena/storage_owner.lock"
+    lock.parent.mkdir(parents=True)
+    return lock
+
+
+def test_archivist_ignores_exact_validated_storage_owner_lock(
+    tmp_path, monkeypatch
+):
+    import tool_commit
+
+    lock = _install_archivist_dirty_fixture(
+        tool_commit,
+        monkeypatch,
+        tmp_path,
+        "?? web/core/national_arena/storage_owner.lock\n",
+    )
+    lock.touch(mode=0o600)
+    lock.chmod(0o600)
+
+    assert tool_commit._git_dirty_paths() == set()
+    assert tool_commit._verify_post_publication_worktree(
+        expected_head="a" * 40,
+        expected_dirty=set(),
+    )["worktree_status_digest"] == hashlib.sha256(b"").hexdigest()
+
+
+@pytest.mark.parametrize("status", [" M", "M ", "MM", "A ", "D "])
+def test_archivist_never_ignores_tracked_or_staged_owner_lock_shape(
+    status, tmp_path, monkeypatch
+):
+    import tool_commit
+
+    lock = _install_archivist_dirty_fixture(
+        tool_commit,
+        monkeypatch,
+        tmp_path,
+        f"{status} web/core/national_arena/storage_owner.lock\n",
+    )
+    lock.touch(mode=0o600)
+    lock.chmod(0o600)
+
+    assert tool_commit._git_dirty_paths() == {
+        "web/core/national_arena/storage_owner.lock"
+    }
+    with pytest.raises(RuntimeError, match="post_publication_worktree_changed"):
+        tool_commit._verify_post_publication_worktree(
+            expected_head="a" * 40,
+            expected_dirty=set(),
+        )
+
+
+@pytest.mark.parametrize(
+    "invalid_kind",
+    [
+        "symlink",
+        "directory",
+        "wrong_owner",
+        "wrong_mode",
+        "nonempty",
+        "multiple_links",
+        "inode_mismatch",
+    ],
+)
+def test_archivist_owner_lock_validation_fails_closed(
+    invalid_kind, tmp_path, monkeypatch
+):
+    import tool_commit
+
+    lock = _install_archivist_dirty_fixture(
+        tool_commit,
+        monkeypatch,
+        tmp_path,
+        "?? web/core/national_arena/storage_owner.lock\n",
+    )
+    if invalid_kind == "symlink":
+        target = tmp_path / "owner-lock-target"
+        target.touch(mode=0o600)
+        target.chmod(0o600)
+        lock.symlink_to(target)
+    elif invalid_kind == "directory":
+        lock.mkdir(mode=0o600)
+    else:
+        lock.touch(mode=0o600)
+        lock.chmod(0o600)
+        if invalid_kind == "wrong_owner":
+            real_lstat = os.lstat
+
+            def foreign_lstat(path):
+                current = real_lstat(path)
+                fields = list(current)
+                fields[4] += 1
+                return os.stat_result(fields)
+
+            monkeypatch.setattr(tool_commit.os, "lstat", foreign_lstat)
+        elif invalid_kind == "wrong_mode":
+            lock.chmod(0o640)
+        elif invalid_kind == "nonempty":
+            lock.write_bytes(b"owner")
+        elif invalid_kind == "multiple_links":
+            os.link(lock, tmp_path / "second-owner-lock-link")
+        elif invalid_kind == "inode_mismatch":
+            real_fstat = os.fstat
+
+            def mismatched_fstat(fd):
+                current = real_fstat(fd)
+                fields = list(current)
+                fields[1] += 1
+                return os.stat_result(fields)
+
+            monkeypatch.setattr(tool_commit.os, "fstat", mismatched_fstat)
+
+    assert tool_commit._git_dirty_paths() == {
+        "web/core/national_arena/storage_owner.lock"
+    }
+    with pytest.raises(RuntimeError, match="post_publication_worktree_changed"):
+        tool_commit._verify_post_publication_worktree(
+            expected_head="a" * 40,
+            expected_dirty=set(),
+        )
+
+
+def test_archivist_preserves_other_dirty_paths_even_with_valid_owner_lock(
+    tmp_path, monkeypatch
+):
+    import tool_commit
+
+    lock = _install_archivist_dirty_fixture(
+        tool_commit,
+        monkeypatch,
+        tmp_path,
+        "?? web/core/national_arena/storage_owner.lock\n"
+        "?? web/core/unrelated-runtime-state\n",
+    )
+    lock.touch(mode=0o600)
+    lock.chmod(0o600)
+
+    assert tool_commit._git_dirty_paths() == {
+        "web/core/unrelated-runtime-state"
+    }
+    with pytest.raises(RuntimeError, match="post_publication_worktree_changed"):
+        tool_commit._verify_post_publication_worktree(
+            expected_head="a" * 40,
+            expected_dirty=set(),
+        )

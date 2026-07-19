@@ -97,6 +97,27 @@ def _unique(issues: Iterable[object]) -> list[str]:
     return list(dict.fromkeys(str(item) for item in issues if str(item)))
 
 
+def _canonical_json_exact_equal(left: object, right: object) -> bool:
+    """Compare persisted JSON evidence without Python's bool/number coercion."""
+
+    try:
+        return json.dumps(
+            left,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ) == json.dumps(
+            right,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def _read_policy(path: Path) -> dict[str, Any]:
     if path.is_symlink() or not path.is_file():
         raise BootstrapControlConfigurationError(
@@ -1327,8 +1348,14 @@ def validate_completed_operator_bootstrap_authorization(
         }
     issues: list[str] = []
     candidate = Path(candidate_path).expanduser().resolve()
-    identity = status.get("certification_identity") or {}
-    spec = identity.get("spec") if isinstance(identity, dict) else {}
+    raw_identity = status.get("certification_identity")
+    identity = raw_identity if isinstance(raw_identity, dict) else {}
+    if not isinstance(raw_identity, dict):
+        issues.append("official_bootstrap_completed_identity_malformed")
+    raw_spec = identity.get("spec")
+    spec = raw_spec if isinstance(raw_spec, dict) else {}
+    if not isinstance(raw_spec, dict):
+        issues.append("official_bootstrap_completed_identity_spec_malformed")
     control_id = str((spec or {}).get("bootstrap_control_id") or "")
     if control_id != CONTROL_ID:
         issues.append("official_bootstrap_completed_control_id_mismatch")
@@ -1380,13 +1407,29 @@ def validate_completed_operator_bootstrap_authorization(
             f"actual={actual_stage or 'missing'}"
         )
     elif actual_stage in {"verified", "publishing"}:
-        raw_gate = ((ckpt or {}).get("gate_results") or {}).get("official_full")
-        if not isinstance(raw_gate, dict):
+        gate_results = (ckpt or {}).get("gate_results")
+        raw_gate: Any = None
+        if gate_results is None:
             issues.append(
                 "official_bootstrap_completed_checkpoint_gate_missing"
             )
+        elif not isinstance(gate_results, dict):
+            issues.append(
+                "official_bootstrap_completed_checkpoint_gate_results_malformed"
+            )
         else:
-            post_certificate_gate = raw_gate
+            raw_gate = gate_results.get("official_full")
+            if raw_gate is None:
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_missing"
+                )
+            elif not isinstance(raw_gate, dict):
+                issues.append(
+                    "official_bootstrap_completed_checkpoint_gate_malformed"
+                )
+            else:
+                post_certificate_gate = raw_gate
+        if post_certificate_gate is not None:
             if raw_gate.get("passed") is not True:
                 issues.append(
                     "official_bootstrap_completed_checkpoint_gate_not_passed"
@@ -1395,7 +1438,7 @@ def validate_completed_operator_bootstrap_authorization(
                 issues.append(
                     "official_bootstrap_completed_checkpoint_gate_not_bootstrap"
                 )
-            if raw_gate.get("status") != status:
+            if not _canonical_json_exact_equal(raw_gate.get("status"), status):
                 issues.append(
                     "official_bootstrap_completed_checkpoint_gate_status_mismatch"
                 )
@@ -1405,7 +1448,9 @@ def validate_completed_operator_bootstrap_authorization(
                 issues.append(
                     "official_bootstrap_completed_checkpoint_gate_certificate_mismatch"
                 )
-            if raw_gate.get("certification_identity") != identity:
+            if not _canonical_json_exact_equal(
+                raw_gate.get("certification_identity"), identity
+            ):
                 issues.append(
                     "official_bootstrap_completed_checkpoint_gate_identity_mismatch"
                 )
@@ -1467,7 +1512,9 @@ def validate_completed_operator_bootstrap_authorization(
         ledger_entry = None
     else:
         ledger_entry = successful[0]
-        if status.get("official_verdict_ledger_entry") != ledger_entry:
+        if not _canonical_json_exact_equal(
+            status.get("official_verdict_ledger_entry"), ledger_entry
+        ):
             issues.append("official_bootstrap_completed_status_ledger_entry_mismatch")
         if ledger_entry.get("certificate_digest") != status.get("certificate_digest"):
             issues.append("official_bootstrap_completed_certificate_digest_mismatch")
@@ -1489,18 +1536,10 @@ def validate_completed_operator_bootstrap_authorization(
         recorded = post_certificate_gate.get(
             "completed_bootstrap_authorization"
         )
-        if not isinstance(recorded, dict) or any(
-            recorded.get(field) != completed_projection.get(field)
-            for field in (
-                "valid",
-                "reason",
-                "issues",
-                "bootstrap_control_id",
-                "candidate_hash",
-                "certificate_digest",
-                "ledger_entry_digest",
-            )
-        ):
+        recorded_exact = isinstance(
+            recorded, dict
+        ) and _canonical_json_exact_equal(recorded, completed_projection)
+        if not recorded_exact:
             issues.append(
                 "official_bootstrap_completed_checkpoint_authorization_mismatch"
             )

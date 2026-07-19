@@ -742,6 +742,11 @@ def test_runtime_code_has_no_local_absolute_project_paths():
         "archive/",
         "docs/",
         "web/tests/",
+        # Signed publication evidence intentionally records the exact
+        # operator/runtime paths used by the official execution.  It is
+        # content-bound data, not executable runtime source; certificate and
+        # tag integrity tests own its tamper boundary.
+        "official_certificates/",
         "bots/neural_national_lab/data/",
         "ladder_results/",
         "results/",

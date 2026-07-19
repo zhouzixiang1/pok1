@@ -1060,6 +1060,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "→ source-fingerprint-bound static receipt before --no-build launch/restart → health/status presentation"
         ),
         positive_tests=(
+            "web/tests/test_epoch_authority.py::"
+            "test_full_eligible_publication_can_initialize_clean_clone",
             "web/tests/test_routes_evolution.py::TestEvolutionState::"
             "test_state_exposes_transient_status_only_for_current_active_task",
             "web/tests/test_routes_evolution.py::TestEvolutionStream::"
@@ -1076,6 +1078,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_valid_no_build_receipt_reaches_uvicorn_only_after_preflight",
         ),
         negative_tests=(
+            "web/tests/test_epoch_authority.py::"
+            "test_strict_publication_must_match_paired_namespace_high_water",
+            "web/tests/test_epoch_authority.py::"
+            "test_namespace_high_water_drift_withholds_active_bot_authority",
             "web/tests/test_routes_evolution.py::TestEvolutionState::"
             "test_state_drops_stale_or_inactive_transient_master_status",
             "web/tests/test_routes_evolution.py::TestEvolutionState::"
@@ -1092,6 +1098,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_no_build_launcher_refuses_receipt_failure_before_server_import",
         ),
         fail_closed=(
+            "A split namespace/strict-artifact read, including a higher eligible publication seen "
+            "after the frozen high-water, withholds all active Bot projection until one paired view. "
             "Stale, replaced-owner, shutdown, lower-revision, equal-revision-conflicting, torn, or "
             "unverified/expired status identity is dropped; HTTP cannot revive a phrase. A stale/malformed "
             "static receipt refuses --no-build before importing the app, starting Uvicorn, or stopping/"
@@ -1238,6 +1246,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         production_owners=(
             _ref("web/core/system_strict_bootstrap.py", "validate_bootstrap_checkpoint"),
+            _ref(
+                "web/core/official_bootstrap.py",
+                "validate_completed_operator_bootstrap_authorization",
+            ),
             _ref("web/core/national_native.py", "run_native_precommit"),
             _ref("web/core/first_strict_control.py", "validate_control_result"),
             _ref("web/core/tool_eval.py", "_build_first_strict_control_execution_scope"),
@@ -1246,6 +1258,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
         ),
         dynamic_gates=(
             _ref("web/core/system_strict_bootstrap.py", "is_declared_native_bootstrap"),
+            _ref(
+                "web/core/official_bootstrap.py",
+                "validate_completed_operator_bootstrap_authorization",
+            ),
             _ref("web/core/first_strict_control.py", "control_gate_blockers"),
             _ref("web/core/official_certification.py", "official_full_certified"),
             _ref("web/core/epoch_authority.py", "require_policy_epoch_initialized"),
@@ -1263,6 +1279,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "operator first-strict bootstrap certificate/tag → published v143 parent → v144 5+3 full certification"
         ),
         positive_tests=(
+            "web/tests/test_official_bootstrap.py::"
+            "test_completed_authorization_accepts_production_normalized_selection",
             "web/tests/test_first_strict_control.py::"
             "test_control_is_a_direct_content_bound_policy_artifact",
             "web/tests/test_hidden_fixes.py::"
@@ -1271,6 +1289,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_normal_strict_v144_resume_accepts_published_parent_binding",
         ),
         negative_tests=(
+            "web/tests/test_official_bootstrap.py::"
+            "test_completed_authorization_accepts_production_normalized_selection",
             "web/tests/test_first_strict_control.py::"
             "test_control_receipt_rejects_pool_or_authority_escalation",
             "web/tests/test_first_strict_control.py::"
@@ -1428,6 +1448,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "frontend projection → N/10 only for consecutive verified generations"
         ),
         positive_tests=(
+            "web/tests/test_post_publication_handoff.py::"
+            "test_archivist_ignores_exact_validated_storage_owner_lock",
             "web/tests/test_stability_observation.py::"
             "test_ten_consecutive_publications_complete_and_duplicate_is_idempotent",
             "web/tests/test_stability_observation.py::"
@@ -1436,6 +1458,10 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_orchestrator_stability_maintenance_is_lifecycle_bound",
         ),
         negative_tests=(
+            "web/tests/test_post_publication_handoff.py::"
+            "test_archivist_owner_lock_validation_fails_closed",
+            "web/tests/test_post_publication_handoff.py::"
+            "test_archivist_never_ignores_tracked_or_staged_owner_lock_shape",
             "web/tests/test_stability_observation.py::"
             "test_process_restart_resets_existing_streak",
             "web/tests/test_stability_observation.py::"

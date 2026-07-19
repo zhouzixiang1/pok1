@@ -48,11 +48,14 @@ class TestListBots:
         assert "history" not in data
         assert isinstance(data["active"], list)
 
-    def test_retired_graveyard_query_has_no_catalog_surface(self, client):
+    def test_retired_graveyard_query_has_no_catalog_surface(
+        self, client, synthetic_published_bot_authority
+    ):
         resp = client.get("/api/bots?include_graveyard=true")
         assert resp.status_code == 200
         data = resp.json()
         assert "graveyard" not in data
+        assert len(data["active"]) == 2
         for bot in data["active"]:
             assert "name" in bot
             assert "version" in bot
@@ -60,7 +63,7 @@ class TestListBots:
             assert "files" in bot
             assert "lifecycle_status" in bot
 
-    def test_with_history(self, client):
+    def test_with_history(self, client, synthetic_published_bot_authority):
         resp = client.get("/api/bots?include_history=true")
         assert resp.status_code == 200
         data = resp.json()
@@ -68,6 +71,7 @@ class TestListBots:
         assert "counts" in data
         assert isinstance(data["history"], list)
         assert isinstance(data["counts"], dict)
+        assert len(data["history"]) == 2
         for bot in data["history"][:5]:
             assert "lifecycle_status" in bot
             assert "status_label" in bot
@@ -155,48 +159,35 @@ class TestListBots:
                 "version": 144,
             })
 
-    @pytest.mark.requires_active_bot
-    def test_data_stream_bot_snapshot_uses_active_namespace(self, monkeypatch):
-        import evolution_infra
+    def test_data_stream_bot_snapshot_uses_active_namespace(
+        self, synthetic_published_bot_authority
+    ):
         from server.routes.data_stream import _get_bots
 
-        # The global isolation fixture exposes read-only bots through symlinks.
-        # Formal artifact identity rejects symlink roots and the current
-        # protocol quarantine rejects the historical fixture versions. This
-        # route test verifies namespace projection, not either eligibility
-        # authority, so both filters are replaced explicitly.
-        monkeypatch.setattr(
-            evolution_infra,
-            "_official_parent_eligible",
-            lambda _bot_dir: True,
-        )
-        monkeypatch.setattr(
-            evolution_infra,
-            "is_active_bot_protocol_eligible",
-            lambda _version: True,
-        )
         data = _get_bots()
-        assert data["active"]
+        assert [row["name"] for row in data["active"]] == list(
+            synthetic_published_bot_authority["names"]
+        )
         assert all(bot["name"].startswith(ACTIVE_BOT_PREFIX) for bot in data["active"])
 
 
 class TestBotDetail:
-    @pytest.mark.requires_active_bot
-    def test_found(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}")
+    def test_found(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["name"] == bot_name(active_bot_version)
-        assert data["version"] == active_bot_version
-        assert data["canonical_version"] == active_bot_version
-        assert data["canonical_bot_name"] == bot_name(active_bot_version)
-        assert data["canonical_tag"] == f"national-bot-v{active_bot_version}"
-        assert data["generation_ordinal"] == active_bot_version - 142
+        assert data["name"] == bot_name(version)
+        assert data["version"] == version
+        assert data["canonical_version"] == version
+        assert data["canonical_bot_name"] == bot_name(version)
+        assert data["canonical_tag"] == f"national-bot-v{version}"
+        assert data["generation_ordinal"] == version - 142
         assert "files" in data
         assert "total_lines" in data
         assert "official_certification" in data
 
-    def test_404(self, client):
+    def test_404(self, client, synthetic_published_bot_authority):
         resp = client.get("/api/bots/9999")
         assert resp.status_code == 404
 
@@ -293,18 +284,18 @@ class TestCertificationRoutes:
         assert response.json()["normal_entrypoint"] == "commit_bot"
 
 
-@pytest.mark.requires_active_bot
 class TestBotDownload:
-    def test_zip_archive(self, client, active_bot_version):
+    def test_zip_archive(self, client, synthetic_published_bot_authority):
         import io
         import zipfile
 
-        resp = client.get(f"/api/bots/{active_bot_version}/download")
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/download")
         assert resp.status_code == 200
         assert resp.headers["content-type"] == "application/zip"
         cd = resp.headers["content-disposition"]
         assert "attachment" in cd
-        assert f"{bot_name(active_bot_version)}.zip" in cd
+        assert f"{bot_name(version)}.zip" in cd
 
         with zipfile.ZipFile(io.BytesIO(resp.content)) as zf:
             names = zf.namelist()
@@ -316,7 +307,7 @@ class TestBotDownload:
             # Content is readable
             assert zf.read("national_bot.py").decode("utf-8", "replace")
 
-    def test_404(self, client):
+    def test_404(self, client, synthetic_published_bot_authority):
         resp = client.get("/api/bots/9999/download")
         assert resp.status_code == 404
 
@@ -337,31 +328,40 @@ class TestBotDownloadSymlinkDefense:
         (bot_dir / "link_to_secret.py").symlink_to(secret)
 
         monkeypatch.setattr(bots_mod, "BOTS_DIR", tmp_path / "bots")
+        monkeypatch.setattr(
+            bots_mod,
+            "_strict_published_inventory",
+            lambda: ["national_v9999"],
+        )
         resp = client.get("/api/bots/9999/download")
         assert resp.status_code == 404
         assert b"TOP_SECRET_LEAK" not in resp.content
 
 
 
-@pytest.mark.requires_active_bot
 class TestBotCode:
-    def test_read_native_entry(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/national_bot.py")
+    def test_read_native_entry(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/national_bot.py")
         assert resp.status_code == 200
         assert "def " in resp.text or "import " in resp.text
 
-    def test_invalid_filename(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/../etc/passwd")
+    def test_invalid_filename(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/../etc/passwd")
         assert resp.status_code == 404
 
-    def test_non_py_file(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/main.txt")
+    def test_non_py_file(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/main.txt")
         assert resp.status_code == 400
 
-    def test_404(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/nonexistent.py")
+    def test_404(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/nonexistent.py")
         assert resp.status_code == 404
 
-    def test_backslash_blocked(self, client, active_bot_version):
-        resp = client.get(f"/api/bots/{active_bot_version}/code/..\\etc")
+    def test_backslash_blocked(self, client, synthetic_published_bot_authority):
+        version = synthetic_published_bot_authority["primary_version"]
+        resp = client.get(f"/api/bots/{version}/code/..\\etc")
         assert resp.status_code == 400

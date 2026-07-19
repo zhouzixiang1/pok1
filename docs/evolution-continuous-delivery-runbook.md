@@ -502,7 +502,15 @@ rating activity_state=waiting_for_first_published_bot, active_bot_count=0
 
 The untracked `web/core/national_arena/storage_owner.lock` is a system owner
 lock, not candidate debris.  Preserve it; do not delete it to manufacture an
-empty `git status`.  Likewise, old expired strict-authority-v1 rows in
+empty `git status`.  It must not be placed in `.gitignore`: the Archivist's
+dedicated cleanliness classifier may exclude only the exact untracked path
+after `lstat` plus `O_NOFOLLOW`/`fstat` proves one current-UID, mode-0600,
+empty, single-link regular inode.  A tracked/staged form, symlink, directory,
+wrong owner or mode, non-empty/replaced file, any sibling, and every other
+dirty path remain blocking.  Older runtime checkouts without that validated
+classifier may use a one-process temporary exact `core.excludesFile` only
+while holding the same proven inode; they must never delete or rename the
+lock.  Likewise, old expired strict-authority-v1 rows in
 `workflow/events.sqlite3` are fenced historical debt, not a live queue.  Do not
 edit SQLite.  Require no undispatched outbox row and no current-workflow live
 effect instead.

@@ -4575,3 +4575,103 @@ checkpoint, native receipts and official rounds are not resumed or migrated;
 even equal candidate bytes must fresh-materialize under a new workflow and rerun
 every gate plus a new 5+3. Stability remains **0/10** and this entry makes no
 publication claim.
+
+## 2026-07-19 — first strict v143 publication and durable handoff
+
+The final first-strict official job
+`564e8c7c08feba3787740c666e27d008c6a8868e4529d88deb446dcdffaead37`
+completed attempt 1 with all eight 70-hand executions, 560 hands and zero
+protocol issue.  Its candidate hash is
+`f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`,
+certificate digest is
+`64d0e9a110ebd4dd2353516f489545d4dd761d94fea9e127f418cd1d5a552d24`,
+and signed-ledger entry digest is
+`f3b22e0fcc84dfa602eab6ea9fd364e2227e7adbfbc16930a6d24b13ddbfce28`.
+The one-time first-strict control remains compliance-only and has
+zero strength weight; neither these official rounds nor their certificate is
+an internal rating sample.
+
+The canonical publication transaction advanced local and remote `main` to
+`6882610660e59381dd32d075e2eb83b549df7e49`.  Annotated tags
+`national-bot-v143` (tag object `93d37eb4bb6bfe60af5036b46055d2a4644da083`)
+and `national-high-water-v143` (tag object
+`56d7950bbc0451707b5349f51237f29cf9e4bff5`) both peel to that exact commit.
+The local `.completed` sentinel contains publication identity
+`3c5d2dcdfd1f24efeb1c8eb6025975b9d48816174707d90978e8d8cbae56b7c0`,
+the pipeline checkpoint is absent, and published strict-pool projection is
+exactly `national_v143`.
+
+Because the emergency stopped publication transaction had no live rating
+daemon, the post-publication handoff initially failed closed at stability
+observation with `rating_daemon_identity_unavailable:ProcessLookupError`.
+A first reviewed operator wrapper
+(`da862c9c5baea16a5e6cb5492fbf4779e9f799c3cda91b472ab0b86c3928a195`)
+exited before daemon startup
+because it imported `daemon_management` before the repository's intentional
+late `evolution_infra` re-export; its finally block removed the temporary Git
+exclude and flock, and handoff remained revision 6 with the original dead PID.
+The corrected, independently re-reviewed wrapper SHA-256 was
+`9445ecfec0469304e9ff7999298b69e75875dfc82d1957bb76d004db0baa5af8`.
+A reviewed one-process recovery held the existing regular/current-UID/0600/
+empty Arena owner-lock inode under an exclusive flock, proved an exact
+temporary root-anchored Git exclude, started the production Elo lifecycle with
+workers=12/pairs=5, and waited for the owner-bound PID `2479007` to report
+`waiting_for_second_published_bot`, `active_bot_count=1`.  The same process then
+completed all eight Archivist effects and stopped that temporary daemon only
+after final reproof.
+
+Handoff identity
+`e0191a1158d7b6cd8980ea0e86ab869f44e64d2d53ce81cf5595cd0439baffca`
+is now schema-2 revision 23, `state=completed`, owner and last error null, with
+validated receipts for stability observation, reap signal, priority eval,
+archive rotation, strict-log cleanup, pool reap, cycle annotation and
+housekeeping.  The active pointer is absent and both structural archive/record
+validation and live local/remote publication reproof return no issue.  Before
+daemon start, after handoff and after daemon stop, byte snapshots of ratings,
+H2H, bot stats, daemon stats, match/rating history, evaluation manifests,
+immutable evaluation-cycle files and match-replay files were identical.  No
+native strength match or rating mutation occurred.
+
+This temporary recovery process is not continuous-runtime evidence.  Once it
+stopped, stable observation returned to **0/10** for the next controlled source
+sync/restart.  The source compatibility lock remains visible to Git and is
+admitted only by the exact validated Archivist classifier described in the
+runbook; the active Arena's actual lease remains the already-ignored
+`web/core/results/national_arena/.owner.lock`.  v143 is therefore formally published and
+protocol-certified, but its strength remains unproven until v144 is published
+and the immutable native two-Bot rating cycle exists.
+
+The stopped post-v143 source batch then replayed the general completed-bootstrap
+repair as detached commit `2f36b823`: a parked request may be re-proved at
+`verified`/`publishing` only when the persisted `official_full` gate binds the
+same pass/bootstrap/status/certificate/identity and the same closed completed
+authorization object.  Unknown/missing/type-drift fields and malformed gate
+containers fail closed, and stage normalization occurs only in a deep-copied
+in-memory checkpoint.
+
+The first complete Web run on the newly published tree produced 12 failures
+(`3746 passed, 5 skipped`).  One was a real split-read defect: namespace
+high-water 143 followed by an eligible strict scan containing v144 silently
+filtered the higher observation.  `policy_epoch_initialization` now withholds
+the entire active projection and exposes
+`strict_publication_versions_above_high_water` until one paired view is read.
+The other failures were test-isolation debt exposed for the first time by a
+real v143 tag and signed certificate: temporary same-name bots reopened the
+tracked certificate, generic route tests lacked explicit published authority,
+and singleton raw rating JSON was correctly refused.  Tests now use separate
+synthetic published-Bot and dual-Bot strength projections, preserve an explicit
+singleton empty/404 regression, and isolate published certificates without
+changing production lookup precedence.  The signed v143 certificate was not
+edited; its operator paths are immutable evidence rather than executable code.
+
+The source-tree Arena compatibility lock remains visible to Git.  Archivist now
+filters only its exact untracked porcelain row after no-follow inode/UID/mode/
+size/link verification; every tracked/staged, symlink, directory, wrong-mode,
+non-empty, hard-linked, replaced or additional dirty entry remains blocking at
+both entry and housekeeping.  Focused results were 91 authority/bootstrap/
+handoff tests, 218 official/governance tests and 130 Bot/Rating route tests.
+`compileall` and `git diff --check` passed.  The final complete Web suite was
+`3775 passed, 5 skipped`, with only the existing Starlette/httpx deprecation
+warning.  At this ledger point the source batch is still detached and not yet
+pushed/synchronized; Web, Orchestrator and Elo remain stopped, v144 has not
+started, and stability remains **0/10**.

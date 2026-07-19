@@ -180,6 +180,7 @@ def test_missing_reset_projects_fresh_v143_and_ignores_old_checkpoint(monkeypatc
 def test_invalid_durable_reset_claim_requires_recovery_not_rerun(tmp_path, monkeypatch):
     import epoch_authority
     import evolution_infra
+    import national_runtime_authority
 
     (tmp_path / "policy_epoch_reset_receipt.json").write_text(
         json.dumps({"kind": "national_tcp_policy_epoch_reset_claim"}) + "\n",
@@ -187,6 +188,20 @@ def test_invalid_durable_reset_claim_requires_recovery_not_rerun(tmp_path, monke
     )
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 142)
+    monkeypatch.setattr(
+        evolution_infra,
+        "version_namespace_authority",
+        lambda: SimpleNamespace(
+            high_water=142,
+            unpaired_completion_versions=(),
+            unpaired_high_water_versions=(),
+        ),
+    )
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "strict_published_bot_names",
+        lambda: (),
+    )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
 
@@ -194,6 +209,7 @@ def test_invalid_durable_reset_claim_requires_recovery_not_rerun(tmp_path, monke
     assert state["initialized"] is False
     assert state["operator_action"] == "inspect_policy_epoch_reset_evidence"
     assert state["operator_command"] is None
+    assert state["strict_publication_versions_above_high_water"] == []
 
 
 def test_strict_tag_without_eligible_publication_requires_recovery(tmp_path, monkeypatch):
@@ -239,6 +255,9 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
+    projection = epoch_authority.strict_epoch_projection(
+        include_checkpoint=False,
+    )
 
     assert state["state"] == "strict_published"
     assert state["initialized"] is True
@@ -251,6 +270,9 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
         "canonical_tag": "national-bot-v143",
     }]
     assert state["namespace_publication_proven"] is True
+    assert state["strict_publication_versions_above_high_water"] == []
+    assert projection["active_bots"] == ["national_v143"]
+    assert projection["strict_published_versions"] == [143]
 
 
 def test_namespace_second_read_failure_does_not_project_active_bot_authority(
@@ -296,7 +318,10 @@ def test_namespace_second_read_failure_does_not_project_active_bot_authority(
 
 @pytest.mark.parametrize(
     "strict_bots",
-    (("national_v144",), ("national_v143", "national_v144")),
+    (
+        ("national_v144",),
+        ("national_v143", "national_v144"),
+    ),
 )
 def test_strict_publication_must_match_paired_namespace_high_water(
     tmp_path,
@@ -310,17 +335,73 @@ def test_strict_publication_must_match_paired_namespace_high_water(
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
     monkeypatch.setattr(
+        evolution_infra,
+        "version_namespace_authority",
+        lambda: SimpleNamespace(
+            high_water=143,
+            unpaired_completion_versions=(),
+            unpaired_high_water_versions=(),
+        ),
+    )
+    monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
         lambda: strict_bots,
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
+    projection = epoch_authority.strict_epoch_projection(
+        include_checkpoint=False,
+    )
 
     assert state["state"] == "version_authority_requires_recovery"
     assert state["initialized"] is False
     assert state["namespace_publication_proven"] is False
+    assert state["strict_published_bots"] == []
+    assert state["strict_publication_versions_above_high_water"] == [144]
     assert state["operator_action"] == "inspect_strict_version_authority"
+    assert projection["active_bots"] == []
+    assert projection["strict_published_versions"] == []
+
+
+@pytest.mark.parametrize("namespace_high_water", (142, 144))
+def test_namespace_high_water_drift_withholds_active_bot_authority(
+    tmp_path,
+    monkeypatch,
+    namespace_high_water,
+):
+    import epoch_authority
+    import evolution_infra
+    import national_runtime_authority
+
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 143)
+    monkeypatch.setattr(
+        evolution_infra,
+        "version_namespace_authority",
+        lambda: SimpleNamespace(
+            high_water=namespace_high_water,
+            unpaired_completion_versions=(),
+            unpaired_high_water_versions=(),
+        ),
+    )
+    monkeypatch.setattr(
+        national_runtime_authority,
+        "strict_published_bot_names",
+        lambda: ("national_v143",),
+    )
+
+    state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
+    projection = epoch_authority.strict_epoch_projection(
+        include_checkpoint=False,
+    )
+
+    assert state["state"] == "version_authority_requires_recovery"
+    assert state["initialized"] is False
+    assert state["namespace_publication_proven"] is False
+    assert state["strict_published_bots"] == []
+    assert projection["active_bots"] == []
+    assert projection["strict_generation_count"] == 0
 
 
 def test_abandoned_floor_is_epoch_scoped(tmp_path, monkeypatch):

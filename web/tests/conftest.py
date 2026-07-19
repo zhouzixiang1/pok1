@@ -262,6 +262,44 @@ def active_bot_version():
     return versions[-1] if versions else None
 
 
+def _write_synthetic_route_bot(root: Path, version: int) -> Path:
+    """Materialize a tiny isolated five-file bot for HTTP projection tests.
+
+    Publication eligibility is injected separately by
+    ``synthetic_published_bot_authority``.  Keeping those two concerns split
+    prevents the presence of a real completion tag from silently changing a
+    route test from skipped/empty to positive.
+    """
+
+    bot = root / f"national_v{int(version)}"
+    bot.mkdir(parents=True, exist_ok=False)
+    (bot / NATIONAL_ENTRYPOINT).write_text(
+        "def main():\n    return 0\n",
+        encoding="utf-8",
+    )
+    (bot / POLICY_ENTRYPOINT).write_text(
+        "def get_baseline_decision(context):\n"
+        "    return {'kind': 'pass'}\n\n"
+        "def iter_decisions(context, baseline, deadline):\n"
+        "    return ()\n",
+        encoding="utf-8",
+    )
+    (bot / PRECOMPUTE_ENTRYPOINT).write_text("TABLE = ()\n", encoding="utf-8")
+    (bot / NATIONAL_RUNTIME_MANIFEST).write_text(
+        '{"kind":"synthetic-route-manifest","schema_version":1}\n',
+        encoding="utf-8",
+    )
+    (bot / POLICY_EPOCH_RECEIPT).write_text(
+        '{"kind":"synthetic-route-receipt","schema_version":1}\n',
+        encoding="utf-8",
+    )
+    (bot / ".completed").write_text(
+        "synthetic published route fixture\n",
+        encoding="utf-8",
+    )
+    return bot
+
+
 # --- Full isolation fixture ---
 
 
@@ -575,3 +613,214 @@ def isolate_state(tmp_path, monkeypatch):
         app_state.decisions = []
         stability_observation.clear_runtime_configuration_binding()
         pok_logger.setLevel(orig_level)
+
+
+@pytest.fixture
+def synthetic_published_bot_authority(isolate_state, monkeypatch):
+    """Inject a complete, isolated two-Bot publication authority for routes.
+
+    This is deliberately opt-in.  Default route tests therefore retain the
+    production fail-closed empty/singleton behavior, while positive Bot tests
+    no longer become active merely because the repository gained its first
+    real annotated completion tag.
+    """
+
+    from bot_namespace import NationalBotSpec
+    import epoch_authority
+    from server.routes import bots as bots_mod
+
+    versions = (9001, 9002)
+    paths = []
+    for version in versions:
+        path = bots_mod.BOTS_DIR / f"national_v{version}"
+        if path.exists():
+            raise AssertionError(f"synthetic route Bot already exists: {path}")
+        paths.append(_write_synthetic_route_bot(bots_mod.BOTS_DIR, version))
+    names = tuple(path.name for path in paths)
+
+    monkeypatch.setattr(
+        epoch_authority,
+        "strict_epoch_projection",
+        lambda **_kwargs: {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "state": "strict_published",
+            "initialized": True,
+            "strict_published": True,
+            "reset_receipt_valid": True,
+            "reset_receipt_digest": "a" * 64,
+            "version_authority_high_water": versions[-1],
+            "strict_published_versions": list(versions),
+            "active_bots": list(names),
+        },
+    )
+
+    real_resolver = bots_mod.resolve_national_bot_spec
+
+    def resolve(path_or_label, role="candidate", **kwargs):
+        path = Path(path_or_label)
+        if not path.is_absolute():
+            path = bots_mod.BOTS_DIR / path.name
+        if path.parent == bots_mod.BOTS_DIR and path.name in names:
+            version = int(path.name.removeprefix("national_v"))
+            return NationalBotSpec(
+                path=path,
+                label=path.name,
+                version=version,
+                role=role,
+                publication_identity={
+                    "published": True,
+                    "tag": f"national-bot-v{version}",
+                    "version": version,
+                },
+                certificate_digest="c" * 64,
+            )
+        return real_resolver(path_or_label, role, **kwargs)
+
+    monkeypatch.setattr(bots_mod, "resolve_national_bot_spec", resolve)
+    return {
+        "versions": versions,
+        "names": names,
+        "paths": tuple(paths),
+        "primary_version": versions[0],
+        "primary_name": names[0],
+    }
+
+
+@pytest.fixture
+def synthetic_strength_projection(
+    synthetic_published_bot_authority,
+    monkeypatch,
+):
+    """Inject a dual-Bot projection backed by complete 70-hand samples."""
+
+    from copy import deepcopy
+    from server.routes import bots as bots_mod
+    from server.routes import data_stream as data_stream_mod
+    from server.routes import ratings as ratings_mod
+
+    first, second = synthetic_published_bot_authority["names"]
+    identity = "d" * 64
+    rows = [
+        {
+            "name": second,
+            "rank": 1,
+            "rating": 1560.0,
+            "rd": 60.0,
+            "sigma": 0.06,
+            "conservative_rating": 1440.0,
+            "confidence": "confident",
+            "selection_score": 0.62,
+            "leaderboard_score": 0.61,
+            "h2h_avg_wr": 0.625,
+            "h2h_coverage": 1.0,
+            "h2h_games": 4,
+            "games": 4,
+        },
+        {
+            "name": first,
+            "rank": 2,
+            "rating": 1500.0,
+            "rd": 80.0,
+            "sigma": 0.06,
+            "conservative_rating": 1340.0,
+            "confidence": "confident",
+            "selection_score": 0.48,
+            "leaderboard_score": 0.45,
+            "h2h_avg_wr": 0.375,
+            "h2h_coverage": 1.0,
+            "h2h_games": 4,
+            "games": 4,
+        },
+    ]
+    h2h = {
+        f"{first} vs {second}": {
+            "games": 4,
+            "a_wins": 1,
+            "b_wins": 2,
+            "draws": 1,
+            "win_rate": 0.375,
+        }
+    }
+    projection = {
+        "available": True,
+        "epoch": "national_tcp_policy_v1",
+        "epoch_reset_receipt_digest": "a" * 64,
+        "active_bots": [first, second],
+        "evaluation_identity_digest": identity,
+        "evaluation_manifest_digest": "e" * 64,
+        "ratings": {
+            row["name"]: {
+                "r": row["rating"],
+                "rd": row["rd"],
+                "sigma": row["sigma"],
+                "last_period": "synthetic-period-2",
+            }
+            for row in rows
+        },
+        "h2h": h2h,
+        "bot_stats": {
+            first: {"wins": 1, "losses": 2, "draws": 1, "games": 4, "win_rate": 0.375},
+            second: {"wins": 2, "losses": 1, "draws": 1, "games": 4, "win_rate": 0.625},
+        },
+        "daemon_stats": {
+            "total_games": 4,
+            "total_periods": 2,
+            "pairs": {f"{first} vs {second}": 4},
+        },
+        "selection_rows": rows,
+        "rating_history": [
+            {
+                "period": 1,
+                "timestamp": "2026-01-01T00:00:00Z",
+                "evaluation_identity_digest": identity,
+                "ratings": {
+                    first: {"r": 1490.0, "rd": 90.0},
+                    second: {"r": 1540.0, "rd": 70.0},
+                },
+                "win_rates": {
+                    first: {"h2h_avg_wr": 0.25},
+                    second: {"h2h_avg_wr": 0.75},
+                },
+            },
+            {
+                "period": 2,
+                "timestamp": "2026-01-02T00:00:00Z",
+                "evaluation_identity_digest": identity,
+                "ratings": {
+                    first: {"r": 1500.0, "rd": 80.0},
+                    second: {"r": 1560.0, "rd": 60.0},
+                },
+                "win_rates": {
+                    first: {"h2h_avg_wr": 0.375},
+                    second: {"h2h_avg_wr": 0.625},
+                },
+            },
+        ],
+        "match_history": [
+            {
+                "id": "synthetic-complete-70-hand-match",
+                "execution_mode": "native_tcp",
+                "evaluation_epoch": "national_tcp_policy_v1",
+                "evaluation_identity_digest": identity,
+                "bot0": first,
+                "bot1": second,
+                "strength_sample_unit": "70_hand_match",
+                "hands_per_strength_sample": 70,
+                "strength_admitted": True,
+                "strength_complete": True,
+                "strength_compliance_passed": True,
+                "strength_sample_count": 1,
+                "net_chips_bot0": [250],
+                "hands_played": 70,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(ratings_mod, "_snapshot", lambda: deepcopy(projection))
+    monkeypatch.setattr(bots_mod, "_strict_snapshot", lambda: deepcopy(projection))
+    monkeypatch.setattr(
+        data_stream_mod,
+        "_strict_snapshot",
+        lambda: deepcopy(projection),
+    )
+    return deepcopy(projection)

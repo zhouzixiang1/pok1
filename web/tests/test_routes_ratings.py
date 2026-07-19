@@ -1,7 +1,6 @@
 """Tests for ratings, history, daemon, H2H, and bot-stat routes."""
 
 import pytest
-from bot_namespace import bot_name
 
 
 class TestGetRatings:
@@ -18,9 +17,8 @@ class TestGetRatings:
             assert "rank" in row
             assert "h2h_avg_wr" in row
 
-    @pytest.mark.requires_active_bot
-    def test_detail_found(self, client, active_bot_version):
-        name = bot_name(active_bot_version)
+    def test_detail_found(self, client, synthetic_strength_projection):
+        name = synthetic_strength_projection["active_bots"][0]
         resp = client.get(f"/api/ratings/{name}")
         assert resp.status_code == 200
         data = resp.json()
@@ -31,28 +29,48 @@ class TestGetRatings:
         resp = client.get("/api/ratings/nonexistent_bot")
         assert resp.status_code == 404
 
+    def test_singleton_pool_has_no_rating_rows_or_detail(self, client, monkeypatch):
+        import server.routes.ratings as ratings
+
+        monkeypatch.setattr(
+            ratings,
+            "_snapshot",
+            lambda: {
+                "available": False,
+                "reason": "active_pool_singleton",
+                "active_bots": ["national_v9001"],
+            },
+        )
+
+        assert client.get("/api/ratings").json() == []
+        detail = client.get("/api/ratings/national_v9001")
+        assert detail.status_code == 404
+
 
 class TestHistory:
-    def test_default(self, client):
+    def test_default(self, client, synthetic_strength_projection):
         resp = client.get("/api/history")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, list)
-        if data:
-            assert "period" in data[0]
-            assert "ratings" in data[0]
-            assert "win_rates" in data[0]
+        assert len(data) == 2
+        assert "period" in data[0]
+        assert "ratings" in data[0]
+        assert "win_rates" in data[0]
 
-    @pytest.mark.requires_active_bot
-    def test_filtered(self, client, active_bot_version):
-        resp = client.get(f"/api/history?bots={bot_name(active_bot_version)}")
+    def test_filtered(self, client, synthetic_strength_projection):
+        name = synthetic_strength_projection["active_bots"][0]
+        resp = client.get(f"/api/history?bots={name}")
         assert resp.status_code == 200
+        assert resp.json()
+        assert all(set(row["ratings"]) == {name} for row in resp.json())
 
-    def test_summary(self, client):
+    def test_summary(self, client, synthetic_strength_projection):
         resp = client.get("/api/history/summary")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, dict)
+        assert set(data) == set(synthetic_strength_projection["active_bots"])
 
 
 class TestRetiredExperienceSurface:
@@ -218,24 +236,26 @@ class TestDaemonStatus:
 
 
 class TestH2H:
-    def test_all(self, client):
+    def test_all(self, client, synthetic_strength_projection):
         resp = client.get("/api/h2h")
         assert resp.status_code == 200
         assert isinstance(resp.json(), dict)
+        assert resp.json()
 
-    @pytest.mark.requires_active_bot
-    def test_filtered(self, client, active_bot_version):
-        name = bot_name(active_bot_version)
+    def test_filtered(self, client, synthetic_strength_projection):
+        name = synthetic_strength_projection["active_bots"][0]
         resp = client.get(f"/api/h2h?bot_name={name}")
         assert resp.status_code == 200
         data = resp.json()
+        assert data
         for key in data:
             assert name in key
 
 
 class TestBotStats:
-    def test_returns_dict(self, client):
+    def test_returns_dict(self, client, synthetic_strength_projection):
         resp = client.get("/api/bot-stats")
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, dict)
+        assert set(data) == set(synthetic_strength_projection["active_bots"])

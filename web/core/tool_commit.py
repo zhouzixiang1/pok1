@@ -2318,12 +2318,76 @@ async def commit_bot(args):
 # Archivist Stage
 # ──────────────────────────────────────────────
 
+_ARCHIVIST_STORAGE_OWNER_LOCK = "web/core/national_arena/storage_owner.lock"
+_ARCHIVIST_STORAGE_OWNER_LOCK_PORCELAIN = (
+    f"?? {_ARCHIVIST_STORAGE_OWNER_LOCK}"
+)
+
+
+def _validated_archivist_storage_owner_lock() -> bool:
+    """Recognize the one system-owned untracked file Archivist may ignore.
+
+    This is deliberately an identity check, not a path allowlist.  The raw
+    porcelain entry must be untracked (checked by the caller), and the path
+    below the repository root must remain the same empty, private, regular
+    inode across ``lstat`` and a no-follow open.  Any ambiguity is dirty.
+    """
+
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        return False
+    path = Path(PROJECT_ROOT) / _ARCHIVIST_STORAGE_OWNER_LOCK
+    fd = -1
+    try:
+        before = os.lstat(path)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.getuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size != 0
+            or before.st_nlink != 1
+        ):
+            return False
+        flags = os.O_RDONLY | nofollow
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        if (
+            opened.st_dev != before.st_dev
+            or opened.st_ino != before.st_ino
+            or opened.st_mode != before.st_mode
+            or opened.st_uid != before.st_uid
+            or opened.st_gid != before.st_gid
+            or opened.st_size != before.st_size
+            or opened.st_nlink != before.st_nlink
+        ):
+            return False
+        return (
+            stat.S_ISREG(opened.st_mode)
+            and opened.st_uid == os.getuid()
+            and stat.S_IMODE(opened.st_mode) == 0o600
+            and opened.st_size == 0
+            and opened.st_nlink == 1
+        )
+    except (OSError, ValueError):
+        return False
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def _git_dirty_paths() -> set[str]:
-    """Return porcelain dirty paths without mutating git state."""
+    """Return Archivist-relevant porcelain paths without mutating Git state."""
     out = _git("status", "--porcelain", check=False)
     paths: set[str] = set()
     for line in out.splitlines():
         if not line:
+            continue
+        if (
+            line == _ARCHIVIST_STORAGE_OWNER_LOCK_PORCELAIN
+            and _validated_archivist_storage_owner_lock()
+        ):
             continue
         # Porcelain v1: XY<space>path, rename: XY old -> new.
         path = line[3:] if len(line) > 3 else line

@@ -79,12 +79,23 @@ def _official_test_signing_material(tmp_path_factory):
 
 @pytest.fixture(autouse=True)
 def _disable_live_official_llm(monkeypatch, tmp_path, _official_test_signing_material):
+    import official_certification
     import official_certificate_signing
 
     key, allowed, policy = _official_test_signing_material
     monkeypatch.setenv("POK_OFFICIAL_LLM_ANALYSIS", "0")
     monkeypatch.setenv("POK_OFFICIAL_EVIDENCE_STORE", str(tmp_path / "evidence-store"))
     monkeypatch.setenv("POK_OFFICIAL_SIGNING_KEY", str(key))
+    # A published v143 attestation is immutable repository evidence.  Tests
+    # that construct a temporary bot with the same namespace must not reopen
+    # that real certificate and correctly fail closed on its different
+    # path/content identity.  Dedicated publication tests override this path
+    # explicitly when exercising tracked attestation precedence.
+    monkeypatch.setattr(
+        official_certification,
+        "PUBLISHED_CERTIFICATE_DIR",
+        tmp_path / "published-certificates",
+    )
     monkeypatch.setattr(official_certificate_signing, "DEFAULT_ALLOWED_SIGNERS", allowed)
     monkeypatch.setattr(official_certificate_signing, "DEFAULT_TRUST_POLICY", policy)
 
