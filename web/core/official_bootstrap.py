@@ -375,7 +375,7 @@ def first_strict_control_consumption(
             "reason": f"official_bootstrap_policy_invalid:{type(exc).__name__}",
             "consumed": False,
         }
-    health = ledger_integrity()
+    health = ledger_integrity(fresh=True)
     if not health.get("valid"):
         return {
             "valid": False,
@@ -1104,7 +1104,7 @@ def validate_first_strict_control_selection(
     allow_consumed: bool = False,
     allow_published: bool = False,
 ) -> dict[str, Any]:
-    health = ledger_integrity()
+    health = ledger_integrity(fresh=True)
     if not health.get("valid"):
         return {
             "valid": False,

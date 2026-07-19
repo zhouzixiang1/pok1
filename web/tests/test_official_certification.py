@@ -1927,6 +1927,12 @@ def test_published_status_projects_the_bound_verdict_ledger_identity(
         "policy_id": "official-full-v5",
         "outcome": STATUS_CERTIFIED,
     }
+    observed_fresh = []
+
+    def latest(_candidate_hash, *, fresh=True):
+        observed_fresh.append(fresh)
+        return {"valid": True, "entry": ledger_entry}
+
     monkeypatch.setattr(
         certification,
         "_published_status",
@@ -1936,13 +1942,14 @@ def test_published_status_projects_the_bound_verdict_ledger_identity(
     monkeypatch.setattr(
         official_verdict_ledger,
         "latest_authoritative_verdict",
-        lambda _candidate_hash: {"valid": True, "entry": ledger_entry},
+        latest,
     )
 
-    restored = read_status(candidate)
+    restored = read_status(candidate, ledger_fresh=False)
 
     assert restored["status"] == STATUS_CERTIFIED
     assert restored["official_verdict_ledger_entry"] == ledger_entry
+    assert observed_fresh == [False]
 
 
 @pytest.mark.parametrize(

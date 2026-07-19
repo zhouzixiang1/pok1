@@ -200,7 +200,7 @@ def test_invalid_durable_reset_claim_requires_recovery_not_rerun(tmp_path, monke
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: (),
+        lambda **_kwargs: (),
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
@@ -220,7 +220,9 @@ def test_strict_tag_without_eligible_publication_requires_recovery(tmp_path, mon
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path)
     monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 155)
     monkeypatch.setattr(
-        national_runtime_authority, "strict_published_bot_names", lambda: ()
+        national_runtime_authority,
+        "strict_published_bot_names",
+        lambda **_kwargs: (),
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
@@ -252,7 +254,7 @@ def test_full_eligible_publication_can_initialize_clean_clone(tmp_path, monkeypa
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v143",),
+        lambda **_kwargs: ("national_v143",),
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
@@ -299,7 +301,7 @@ def test_reaped_active_pool_subset_does_not_renumber_published_history(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v147",),
+        lambda **_kwargs: ("national_v147",),
     )
     monkeypatch.setattr(
         evolution_infra,
@@ -365,7 +367,7 @@ def test_namespace_second_read_failure_does_not_project_active_bot_authority(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v143",),
+        lambda **_kwargs: ("national_v143",),
     )
 
     initialization = epoch_authority.policy_epoch_initialization(
@@ -413,7 +415,7 @@ def test_strict_publication_must_match_paired_namespace_high_water(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: strict_bots,
+        lambda **_kwargs: strict_bots,
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)
@@ -455,7 +457,7 @@ def test_namespace_high_water_drift_withholds_active_bot_authority(
     monkeypatch.setattr(
         national_runtime_authority,
         "strict_published_bot_names",
-        lambda: ("national_v143",),
+        lambda **_kwargs: ("national_v143",),
     )
 
     state = epoch_authority.policy_epoch_initialization(results_dir=tmp_path)

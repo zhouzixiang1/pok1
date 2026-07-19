@@ -209,6 +209,7 @@ def strict_published_bot_names(
     bots_dir: str | Path | None = None,
     publication_resolver: Callable[[Path], dict[str, Any]] | None = None,
     certificate_resolver: Callable[[Path], dict[str, Any]] | None = None,
+    ledger_fresh: bool = True,
 ) -> tuple[str, ...]:
     """Return direct v143+ children satisfying the complete published ABI."""
 
@@ -235,6 +236,7 @@ def strict_published_bot_names(
                 repo_root=repo_root,
                 publication_resolver=publication_resolver,
                 certificate_resolver=certificate_resolver,
+                ledger_fresh=ledger_fresh,
             )
         except Exception:
             continue

@@ -2905,6 +2905,7 @@ def _discover_active_bots(
     *,
     repair_completed_sentinels: bool,
     require_completed_sentinel: bool = True,
+    ledger_fresh: bool = True,
 ) -> list[str]:
     """Active bots = tagged, completed, and protocol-eligible bots.
 
@@ -2965,7 +2966,18 @@ def _discover_active_bots(
                     v in tag_versions
                     and v not in reaped_versions
                     and _protocol_eligible_for_discovery(v, None)
-                    and _official_parent_eligible(BOTS_DIR / d)
+                    and (
+                        _official_parent_eligible(
+                            BOTS_DIR / d,
+                            ledger_fresh=False,
+                        )
+                        if (
+                            not ledger_fresh
+                            and _official_parent_eligible
+                            is _ORIGINAL_OFFICIAL_PARENT_ELIGIBLE
+                        )
+                        else _official_parent_eligible(BOTS_DIR / d)
+                    )
                 ):
                     bots.append(d)
     return sorted(bots, key=version_sort_key)
@@ -2984,7 +2996,10 @@ def get_active_bots_read_only():
     completion sentinels or otherwise mutate the evolution checkout.
     """
 
-    return _discover_active_bots(repair_completed_sentinels=False)
+    return _discover_active_bots(
+        repair_completed_sentinels=False,
+        ledger_fresh=False,
+    )
 
 
 def get_published_active_bots_read_only():
@@ -2998,15 +3013,21 @@ def get_published_active_bots_read_only():
     return _discover_active_bots(
         repair_completed_sentinels=False,
         require_completed_sentinel=False,
+        ledger_fresh=False,
     )
 
 
-def _official_parent_eligible(bot_dir: Path) -> bool:
+def _official_parent_eligible(
+    bot_dir: Path,
+    *,
+    ledger_fresh: bool = True,
+) -> bool:
     try:
         spec = resolve_national_bot_spec(
             bot_dir,
             ROLE_PARENT_SOURCE,
             repo_root=BOTS_DIR.parent,
+            ledger_fresh=ledger_fresh,
         )
         if not spec.eligible:
             log.warning(
@@ -3022,6 +3043,9 @@ def _official_parent_eligible(bot_dir: Path) -> bool:
             exc,
         )
         return False
+
+
+_ORIGINAL_OFFICIAL_PARENT_ELIGIBLE = _official_parent_eligible
 
 
 def version_namespace_authority():

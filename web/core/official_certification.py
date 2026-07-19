@@ -1366,7 +1366,11 @@ def _published_status(
     return status
 
 
-def read_status(candidate: str | Path) -> dict[str, Any]:
+def read_status(
+    candidate: str | Path,
+    *,
+    ledger_fresh: bool = True,
+) -> dict[str, Any]:
     label = _safe_label(candidate)
     payload = _read_json(_status_path(label)) or {}
     published = _published_status(candidate, require_published=True)
@@ -1380,7 +1384,10 @@ def read_status(candidate: str | Path) -> dict[str, Any]:
         candidate_hash = hash_path(Path(candidate).expanduser().resolve())
         from official_verdict_ledger import latest_authoritative_verdict
 
-        ledger = latest_authoritative_verdict(candidate_hash)
+        ledger = latest_authoritative_verdict(
+            candidate_hash,
+            fresh=ledger_fresh,
+        )
         if not ledger.get("valid"):
             if authoritative_context:
                 base = published or payload or {"bot": label}
@@ -1746,7 +1753,10 @@ def official_compliance_verdict(status: dict[str, Any]) -> dict[str, Any]:
         try:
             from official_verdict_ledger import latest_authoritative_verdict
 
-            ledger = latest_authoritative_verdict(candidate_hash)
+            ledger = latest_authoritative_verdict(
+                candidate_hash,
+                fresh=True,
+            )
             entry = ledger.get("entry") if ledger.get("valid") else None
             if (
                 isinstance(entry, dict)
@@ -2270,6 +2280,7 @@ def certificate_validation(
     candidate: str | Path | None = None,
     config: OfficialPlatformConfig | None = None,
     require_published: bool = False,
+    ledger_fresh: bool = True,
     _skip_ledger_check: bool = False,
     _validated_ledger_entries: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -2468,7 +2479,8 @@ def certificate_validation(
             from official_verdict_ledger import latest_authoritative_verdict
 
             ledger = latest_authoritative_verdict(
-                str(current_identity.get("candidate_hash") or "")
+                str(current_identity.get("candidate_hash") or ""),
+                fresh=ledger_fresh,
             )
             if not ledger.get("valid"):
                 issues.extend(ledger.get("issues") or ["official_verdict_ledger_invalid"])
@@ -2568,6 +2580,7 @@ def official_full_certified(
     *,
     config: OfficialPlatformConfig | None = None,
     require_published: bool = False,
+    ledger_fresh: bool = True,
 ) -> bool:
     status_identity = (
         status.get("certification_identity")
@@ -2596,13 +2609,17 @@ def official_full_certified(
         candidate=candidate,
         config=config,
         require_published=require_published,
+        ledger_fresh=ledger_fresh,
     )
     if not validation.get("valid"):
         return False
     identity = validation.get("identity") if isinstance(validation.get("identity"), dict) else {}
     from official_verdict_ledger import latest_authoritative_verdict
 
-    ledger = latest_authoritative_verdict(str(identity.get("candidate_hash") or ""))
+    ledger = latest_authoritative_verdict(
+        str(identity.get("candidate_hash") or ""),
+        fresh=ledger_fresh,
+    )
     entry = ledger.get("entry") if ledger.get("valid") else None
     return bool(
         isinstance(entry, dict)
@@ -2802,7 +2819,7 @@ def _official_verdict_ledger_issues() -> list[str]:
     try:
         from official_verdict_ledger import ledger_integrity
 
-        validation = ledger_integrity()
+        validation = ledger_integrity(fresh=True)
     except Exception as exc:
         return [
             f"official_verdict_ledger_validation_error:{type(exc).__name__}:{str(exc)[:160]}"

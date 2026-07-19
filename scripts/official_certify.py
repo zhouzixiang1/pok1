@@ -51,7 +51,7 @@ from official_verdict_ledger import (  # noqa: E402
 def _ledger_report() -> dict:
     path = ledger_path()
     try:
-        integrity = ledger_integrity()
+        integrity = ledger_integrity(fresh=True)
     except Exception as exc:
         integrity = {
             "valid": False,

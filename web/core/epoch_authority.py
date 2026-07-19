@@ -1374,7 +1374,7 @@ def policy_epoch_initialization(
     # stray/manual national-bot-v143+ tag from bypassing the one-time reset.
     observed_strict = [
         (str(name), version)
-        for name in strict_published_bot_names()
+        for name in strict_published_bot_names(ledger_fresh=False)
         if (version := parse_bot_version(str(name))) is not None
     ]
     strict_publication_versions_above_high_water = sorted({

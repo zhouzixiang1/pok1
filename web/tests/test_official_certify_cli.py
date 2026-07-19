@@ -60,7 +60,7 @@ def test_cli_fails_without_eligible_opponent(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 0, "head": None},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 0, "head": None},
     )
     monkeypatch.setattr(module, "select_official_opponent", lambda *_a, **_k: {
         "selected": False,
@@ -96,7 +96,7 @@ def test_cli_doctor_requires_platform_and_signer(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 0, "head": None},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 0, "head": None},
     )
     monkeypatch.setattr(
         module,
@@ -130,7 +130,7 @@ def test_cli_doctor_reports_missing_ledger_without_initializing(monkeypatch, cap
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {
+        lambda **_kwargs: {
             "valid": False,
             "issues": ["official_verdict_ledger_missing"],
             "entry_count": 0,
@@ -171,7 +171,7 @@ def test_cli_init_ledger_is_explicit_and_idempotent(monkeypatch, capsys):
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 3, "head": {}},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 3, "head": {}},
     )
 
     exit_code = module.main(["init-ledger"])
@@ -196,7 +196,7 @@ def test_cli_init_ledger_requires_signer_before_creating_genesis(monkeypatch, ca
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {
+        lambda **_kwargs: {
             "valid": False,
             "issues": ["official_verdict_ledger_missing"],
             "entry_count": 0,
@@ -217,7 +217,7 @@ def test_cli_full_blocks_before_selection_when_ledger_is_unavailable(monkeypatch
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {
+        lambda **_kwargs: {
             "valid": False,
             "issues": ["official_verdict_ledger_missing"],
             "entry_count": 0,
@@ -245,7 +245,7 @@ def test_cli_returns_nonzero_for_terminal_job_infrastructure_failure(monkeypatch
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 0, "head": None},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 0, "head": None},
     )
     monkeypatch.setattr(module, "select_official_opponent", lambda *_a, **_k: {
         "selected": True,
@@ -283,7 +283,7 @@ def test_cli_full_blocks_before_selection_when_dynamic_quality_admission_is_inva
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
     )
     monkeypatch.setattr(
         module,
@@ -317,7 +317,7 @@ def test_cli_full_binds_quality_admission_into_durable_spec(monkeypatch):
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
     )
     monkeypatch.setattr(
         module,
@@ -383,7 +383,7 @@ def test_cli_first_strict_binds_current_control_to_full_spec(monkeypatch):
     monkeypatch.setattr(
         module,
         "ledger_integrity",
-        lambda: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
+        lambda **_kwargs: {"valid": True, "issues": [], "entry_count": 1, "head": {}},
     )
     monkeypatch.setattr(
         module,

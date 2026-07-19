@@ -597,6 +597,7 @@ def resolve_national_bot_spec(
     require_certificate: bool | None = None,
     publication_resolver: Callable[[Path], dict[str, Any]] | None = None,
     certificate_resolver: Callable[[Path], dict[str, Any]] | None = None,
+    ledger_fresh: bool = True,
 ) -> NationalBotSpec:
     """Resolve one strict policy bot without consulting archive directories.
 
@@ -692,10 +693,13 @@ def resolve_national_bot_spec(
                     read_status,
                 )
 
-                status = read_status(path)
+                status = read_status(path, ledger_fresh=ledger_fresh)
                 certificate = {
                     "eligible": official_full_certified(
-                        status, path, require_published=True
+                        status,
+                        path,
+                        require_published=True,
+                        ledger_fresh=ledger_fresh,
                     ),
                     "certificate_digest": status.get("certificate_digest"),
                 }

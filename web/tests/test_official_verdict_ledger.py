@@ -1,9 +1,11 @@
 from pathlib import Path
 from copy import deepcopy
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import time
 
 import pytest
 
@@ -448,3 +450,264 @@ def test_write_all_retries_short_os_writes(tmp_path, monkeypatch):
 
     assert len(calls) > 1
     assert target.read_bytes() == payload
+
+
+def test_observer_validation_is_single_flight_and_returns_deep_copies(
+    tmp_path,
+    monkeypatch,
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    append_verdict(
+        _status(
+            "official-certified",
+            "a" * 64,
+            certificate_digest="d" * 64,
+        )
+    )
+    official_verdict_ledger._invalidate_validated_snapshot_cache()
+
+    original = official_verdict_ledger._validate_captured_snapshot
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def slow_validate(captured):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(captured)
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_validate_captured_snapshot",
+        slow_validate,
+    )
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [
+            pool.submit(lambda: ledger_integrity(fresh=False))
+            for _index in range(8)
+        ]
+        assert entered.wait(timeout=5)
+        time.sleep(0.05)
+        release.set()
+        results = [future.result(timeout=10) for future in futures]
+
+    assert calls == 1
+    assert all(result["valid"] is True for result in results)
+    assert all(result["entry_count"] == 1 for result in results)
+    results[0]["head"]["sequence"] = 999
+    assert results[1]["head"]["sequence"] == 1
+    assert ledger_integrity(fresh=False)["head"]["sequence"] == 1
+
+
+def test_healthy_observer_uses_shared_lock_and_fresh_bypasses_cache(
+    tmp_path,
+    monkeypatch,
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    append_verdict(
+        _status(
+            "official-certified",
+            "a" * 64,
+            certificate_digest="d" * 64,
+        )
+    )
+    official_verdict_ledger._invalidate_validated_snapshot_cache()
+
+    validation_calls = 0
+    original_validation = official_verdict_ledger._validate_captured_snapshot
+
+    def counted_validation(captured):
+        nonlocal validation_calls
+        validation_calls += 1
+        return original_validation(captured)
+
+    lock_modes = []
+    original_flock = official_verdict_ledger.fcntl.flock
+
+    def recorded_flock(descriptor, operation):
+        if operation in {
+            official_verdict_ledger.fcntl.LOCK_SH,
+            official_verdict_ledger.fcntl.LOCK_EX,
+        }:
+            lock_modes.append(operation)
+        return original_flock(descriptor, operation)
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_validate_captured_snapshot",
+        counted_validation,
+    )
+    monkeypatch.setattr(official_verdict_ledger.fcntl, "flock", recorded_flock)
+
+    assert ledger_integrity(fresh=False)["valid"] is True
+    assert ledger_integrity(fresh=False)["valid"] is True
+    assert validation_calls == 1
+    assert official_verdict_ledger.fcntl.LOCK_SH in lock_modes
+    assert official_verdict_ledger.fcntl.LOCK_EX not in lock_modes
+
+    # The public default is fresh for mutation/publication admission.  Only
+    # explicitly read-only observers opt into the content-bound cache.
+    assert ledger_integrity()["valid"] is True
+    assert ledger_integrity(fresh=True)["valid"] is True
+    assert validation_calls == 3
+
+
+def test_observer_cache_key_binds_ledger_head_and_signer_inputs(
+    tmp_path,
+    monkeypatch,
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    append_verdict(
+        _status(
+            "official-certified",
+            "a" * 64,
+            certificate_digest="d" * 64,
+        )
+    )
+    official_verdict_ledger._invalidate_validated_snapshot_cache()
+
+    calls = 0
+    original = official_verdict_ledger._validate_captured_snapshot
+
+    def counted(captured):
+        nonlocal calls
+        calls += 1
+        return original(captured)
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_validate_captured_snapshot",
+        counted,
+    )
+
+    def bump_identity(path: Path) -> None:
+        metadata = path.stat()
+        os.utime(
+            path,
+            ns=(metadata.st_atime_ns, metadata.st_mtime_ns + 1_000_000),
+        )
+
+    assert ledger_integrity(fresh=False)["valid"] is True
+    assert ledger_integrity(fresh=False)["valid"] is True
+    assert calls == 1
+
+    bound_paths = (
+        ledger_path(),
+        ledger_head_path(),
+        official_certificate_signing.allowed_signers_path(),
+        official_certificate_signing.signer_trust_policy_path(),
+    )
+    for expected_calls, path in enumerate(bound_paths, start=2):
+        bump_identity(path)
+        assert ledger_integrity(fresh=False)["valid"] is True
+        assert calls == expected_calls
+
+
+def test_cached_observer_fails_closed_after_same_path_content_tamper(
+    tmp_path,
+    monkeypatch,
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    append_verdict(
+        _status(
+            "official-certified",
+            "a" * 64,
+            certificate_digest="d" * 64,
+        )
+    )
+
+    assert ledger_integrity(fresh=False)["valid"] is True
+    path = ledger_path()
+    original = path.read_text(encoding="utf-8")
+    path.write_text(
+        original.replace("official-certified", "official-failed"),
+        encoding="utf-8",
+    )
+
+    result = ledger_integrity(fresh=False)
+
+    assert result["valid"] is False
+    assert any(
+        "digest_invalid" in issue or "signature_invalid" in issue
+        for issue in result["issues"]
+    )
+
+
+def test_observer_capture_failure_is_fail_closed(monkeypatch):
+    official_verdict_ledger._invalidate_validated_snapshot_cache()
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_capture_validation_inputs",
+        lambda: (_ for _ in ()).throw(OSError("capture failed")),
+    )
+
+    result = ledger_integrity(fresh=False)
+
+    assert result["valid"] is False
+    assert result["entry_count"] == 0
+    assert result["issues"] == [
+        "official_verdict_ledger_validation_capture_error:OSError"
+    ]
+
+
+def test_partial_suffix_observer_escalates_to_exclusive_recovery(
+    tmp_path,
+    monkeypatch,
+):
+    _signing_material(tmp_path, monkeypatch)
+    _allow_synthetic_status(monkeypatch)
+    original_write = official_verdict_ledger._write_all
+
+    def partial_then_crash(descriptor, data):
+        assert official_verdict_ledger.os.write(
+            descriptor,
+            bytes(data[: max(1, len(data) // 2)]),
+        ) > 0
+        raise RuntimeError("crash-during-line")
+
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_write_all",
+        partial_then_crash,
+    )
+    with pytest.raises(RuntimeError, match="crash-during-line"):
+        append_verdict(
+            _status(
+                "official-certified",
+                "a" * 64,
+                certificate_digest="d" * 64,
+            )
+        )
+    monkeypatch.setattr(
+        official_verdict_ledger,
+        "_write_all",
+        original_write,
+    )
+
+    lock_modes = []
+    original_flock = official_verdict_ledger.fcntl.flock
+
+    def recorded_flock(descriptor, operation):
+        if operation in {
+            official_verdict_ledger.fcntl.LOCK_SH,
+            official_verdict_ledger.fcntl.LOCK_EX,
+        }:
+            lock_modes.append(operation)
+        return original_flock(descriptor, operation)
+
+    monkeypatch.setattr(official_verdict_ledger.fcntl, "flock", recorded_flock)
+    result = ledger_integrity(fresh=False)
+
+    assert result["valid"] is True
+    assert result["entry_count"] == 0
+    assert lock_modes[0] == official_verdict_ledger.fcntl.LOCK_SH
+    assert official_verdict_ledger.fcntl.LOCK_EX in lock_modes
+    assert ledger_path().stat().st_size == 0

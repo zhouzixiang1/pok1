@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 
 def _published_identity(path: Path) -> dict[str, object]:
@@ -71,6 +72,38 @@ def test_strict_discovery_has_no_pre_policy_or_quarantine_path(tmp_path):
         publication_resolver=_published_identity,
         certificate_resolver=_certificate,
     ) == ("national_v143",)
+
+
+def test_strict_discovery_defaults_fresh_and_observers_must_opt_into_cache(
+    tmp_path,
+    monkeypatch,
+):
+    import national_runtime_authority as authority
+
+    bots = tmp_path / "bots"
+    (bots / "national_v143").mkdir(parents=True)
+    observed = []
+
+    monkeypatch.setattr(
+        authority,
+        "current_system_native_runtime_errors",
+        lambda _path: [],
+    )
+
+    def resolve(_path, _role, **kwargs):
+        observed.append(kwargs["ledger_fresh"])
+        return SimpleNamespace(eligible=True)
+
+    monkeypatch.setattr(authority, "resolve_national_bot_spec", resolve)
+
+    assert authority.strict_published_bot_names(bots_dir=bots) == (
+        "national_v143",
+    )
+    assert authority.strict_published_bot_names(
+        bots_dir=bots,
+        ledger_fresh=False,
+    ) == ("national_v143",)
+    assert observed == [True, False]
 
 
 def test_runtime_authority_has_no_archived_identity_registry():
