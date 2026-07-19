@@ -33,6 +33,15 @@ _LifecycleResult = TypeVar("_LifecycleResult")
 
 _OBSERVER_CACHE_TTL_SEC = 1.0
 _OBSERVER_ERROR_TTL_SEC = 0.2
+_OBSERVER_HTTP_RETRY_DELAY_SEC = 0.025
+
+
+class _ObserverProjectionUnavailable(RuntimeError):
+    """A coherent observer projection is temporarily being refreshed."""
+
+    def __init__(self, reason: str):
+        self.reason = str(reason)
+        super().__init__(self.reason)
 
 
 class _ObserverSingleflightCache:
@@ -63,8 +72,27 @@ class _ObserverSingleflightCache:
         self._error_expires_at = 0.0
         self._inflight = False
         self._inflight_generation: int | None = None
+        self._pending_builder: Callable[[], dict[str, Any]] | None = None
         self._generation = 0
         self._key: object = None
+
+    def _start_pending_refresh_locked(self) -> None:
+        """Hand the single refresh slot to the newest invalidated authority."""
+
+        if self._inflight or self._pending_builder is None:
+            return
+        builder = self._pending_builder
+        self._pending_builder = None
+        generation = self._generation
+        self._inflight = True
+        self._inflight_generation = generation
+        threading.Thread(
+            target=self._complete_background_refresh,
+            args=(builder,),
+            kwargs={"generation": generation},
+            name="pok-control-observer-refresh",
+            daemon=True,
+        ).start()
 
     def _complete_background_refresh(
         self,
@@ -83,13 +111,20 @@ class _ObserverSingleflightCache:
                     self._inflight = False
                     self._inflight_generation = None
                 if generation == self._generation:
-                    self._error = (
-                        f"observer_projection_failed:{type(exc).__name__}:"
-                        f"{str(exc)[:160]}"
-                    )
-                    self._error_expires_at = (
-                        time.monotonic() + _OBSERVER_ERROR_TTL_SEC
-                    )
+                    if isinstance(exc, _ObserverProjectionUnavailable):
+                        self._error = None
+                        self._error_expires_at = 0.0
+                    else:
+                        self._error = (
+                            f"observer_projection_failed:{type(exc).__name__}:"
+                            f"{str(exc)[:160]}"
+                        )
+                        self._error_expires_at = (
+                            time.monotonic() + _OBSERVER_ERROR_TTL_SEC
+                        )
+                    self._pending_builder = None
+                else:
+                    self._start_pending_refresh_locked()
                 self._condition.notify_all()
             return
         with self._condition:
@@ -101,6 +136,9 @@ class _ObserverSingleflightCache:
                 self._expires_at = time.monotonic() + self.ttl_sec
                 self._error = None
                 self._error_expires_at = 0.0
+                self._pending_builder = None
+            else:
+                self._start_pending_refresh_locked()
             self._condition.notify_all()
 
     def invalidate(self) -> None:
@@ -110,6 +148,7 @@ class _ObserverSingleflightCache:
             self._expires_at = 0.0
             self._error = None
             self._error_expires_at = 0.0
+            self._pending_builder = None
             self._key = None
             self._condition.notify_all()
 
@@ -136,7 +175,8 @@ class _ObserverSingleflightCache:
                             self._expires_at = 0.0
                             self._error = None
                             self._error_expires_at = 0.0
-                            raise RuntimeError(
+                            self._pending_builder = builder
+                            raise _ObserverProjectionUnavailable(
                                 "observer_projection_authority_changed_during_refresh"
                             )
                         self._condition.wait()
@@ -177,13 +217,14 @@ class _ObserverSingleflightCache:
                 if self._error is not None and now < self._error_expires_at:
                     raise RuntimeError(self._error)
                 if self._inflight:
-                    if (
-                        self.stale_while_revalidate_sec > 0
-                        and self._inflight_generation != self._generation
-                    ):
-                        raise RuntimeError(
+                    if self.stale_while_revalidate_sec > 0:
+                        self._pending_builder = builder
+                        reason = (
                             "observer_projection_authority_changed_during_refresh"
+                            if self._inflight_generation != self._generation
+                            else "observer_projection_refresh_in_progress"
                         )
+                        raise _ObserverProjectionUnavailable(reason)
                     self._condition.wait()
                     continue
                 self._inflight = True
@@ -205,13 +246,20 @@ class _ObserverSingleflightCache:
                     self._inflight = False
                     self._inflight_generation = None
                 if generation == self._generation:
-                    self._error = (
-                        f"observer_projection_failed:{type(exc).__name__}:"
-                        f"{str(exc)[:160]}"
-                    )
-                    self._error_expires_at = (
-                        time.monotonic() + _OBSERVER_ERROR_TTL_SEC
-                    )
+                    if isinstance(exc, _ObserverProjectionUnavailable):
+                        self._error = None
+                        self._error_expires_at = 0.0
+                    else:
+                        self._error = (
+                            f"observer_projection_failed:{type(exc).__name__}:"
+                            f"{str(exc)[:160]}"
+                        )
+                        self._error_expires_at = (
+                            time.monotonic() + _OBSERVER_ERROR_TTL_SEC
+                        )
+                    self._pending_builder = None
+                else:
+                    self._start_pending_refresh_locked()
                 self._condition.notify_all()
             raise
         with self._condition:
@@ -224,9 +272,14 @@ class _ObserverSingleflightCache:
                 self._expires_at = time.monotonic() + self.ttl_sec
                 self._error = None
                 self._error_expires_at = 0.0
+                self._pending_builder = None
+            else:
+                self._start_pending_refresh_locked()
             self._condition.notify_all()
         if not still_current:
-            raise RuntimeError("observer_projection_invalidated_during_build")
+            raise _ObserverProjectionUnavailable(
+                "observer_projection_invalidated_during_build"
+            )
         return copy.deepcopy(frozen)
 
 
@@ -1561,6 +1614,44 @@ def _control_status_snapshot() -> dict[str, Any]:
     )
 
 
+async def _run_control_observer_http_snapshot(
+    builder: Callable[[], dict[str, Any]],
+    *,
+    thread_name_prefix: str,
+) -> dict[str, Any]:
+    """Absorb a narrow refresh race, then expose coherent unavailability.
+
+    Local checkpoint/tag movement is expected while evolution runs.  It must
+    invalidate the preceding observer projection, but it is not an internal
+    server error.  A second off-loop sample absorbs refreshes which complete
+    immediately; a still-running refresh is reported as retryable 503 without
+    ever returning the old authority under the new content key.
+    """
+
+    failure: _ObserverProjectionUnavailable | None = None
+    for attempt in range(2):
+        try:
+            return await run_blocking_isolated(
+                builder,
+                thread_name_prefix=thread_name_prefix,
+            )
+        except _ObserverProjectionUnavailable as exc:
+            failure = exc
+            if attempt == 0:
+                await asyncio.sleep(_OBSERVER_HTTP_RETRY_DELAY_SEC)
+    assert failure is not None
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "observer_projection_refreshing",
+            "reason": failure.reason,
+            "retryable": True,
+            "authority": "strict_epoch_projection",
+        },
+        headers={"Retry-After": "1"},
+    ) from None
+
+
 def control_observer_epoch_projection() -> dict[str, Any]:
     """Return the epoch slice of the shared read-only control observation.
 
@@ -1800,7 +1891,7 @@ async def _reserve_runtime_launch_owner() -> dict[str, Any]:
 
 @router.get("/status")
 async def control_status():
-    return await run_blocking_isolated(
+    return await _run_control_observer_http_snapshot(
         _control_status_snapshot,
         thread_name_prefix="control-status-snapshot",
     )
@@ -1823,7 +1914,7 @@ def _control_health_snapshot() -> dict[str, Any]:
 @router.get("/health")
 async def control_health():
     """Return a single read-only health snapshot for observers/supervisors."""
-    return await run_blocking_isolated(
+    return await _run_control_observer_http_snapshot(
         _control_health_snapshot,
         thread_name_prefix="control-health-snapshot",
     )

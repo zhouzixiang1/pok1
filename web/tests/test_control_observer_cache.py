@@ -4,6 +4,8 @@ import copy
 import threading
 import time
 
+import pytest
+
 
 def test_observer_cache_coalesces_concurrent_builds_and_returns_deep_copies():
     from server.routes.control import _ObserverSingleflightCache
@@ -145,6 +147,62 @@ def test_observer_cache_serves_bounded_stale_and_rejects_content_key_drift():
     }
 
 
+def test_observer_cache_hands_drift_to_one_latest_background_refresh():
+    from server.routes.control import (
+        _ObserverProjectionUnavailable,
+        _ObserverSingleflightCache,
+    )
+
+    cache = _ObserverSingleflightCache(
+        ttl_sec=1.0,
+        stale_while_revalidate_sec=1.0,
+    )
+    old_entered = threading.Event()
+    old_release = threading.Event()
+    latest_entered = threading.Event()
+    latest_release = threading.Event()
+    latest_calls = 0
+
+    assert cache.get(lambda: {"revision": 1}, key="content-a") == {
+        "revision": 1
+    }
+    with cache._condition:
+        cache._expires_at = time.monotonic() - 0.01
+
+    def old_refresh():
+        old_entered.set()
+        assert old_release.wait(timeout=2)
+        return {"revision": 2}
+
+    def latest_refresh():
+        nonlocal latest_calls
+        latest_calls += 1
+        latest_entered.set()
+        assert latest_release.wait(timeout=2)
+        return {"revision": 3}
+
+    assert cache.get(old_refresh, key="content-a") == {"revision": 1}
+    assert old_entered.wait(timeout=1)
+    with pytest.raises(_ObserverProjectionUnavailable) as changed:
+        cache.get(latest_refresh, key="content-b")
+    assert "authority_changed_during_refresh" in str(changed.value)
+
+    old_release.set()
+    assert latest_entered.wait(timeout=1)
+    started = time.monotonic()
+    with pytest.raises(_ObserverProjectionUnavailable) as refreshing:
+        cache.get(latest_refresh, key="content-b")
+    assert "refresh_in_progress" in str(refreshing.value)
+    assert time.monotonic() - started < 0.1
+
+    latest_release.set()
+    deadline = time.monotonic() + 2
+    while cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert cache.get(latest_refresh, key="content-b") == {"revision": 3}
+    assert latest_calls == 1
+
+
 def test_remote_publication_proof_is_singleflight_under_slow_origin(monkeypatch):
     import evolution_infra
 
@@ -258,6 +316,70 @@ def test_control_health_remains_responsive_during_slow_status_refresh(
     assert entered.wait(timeout=1)
     release.set()
     assert completed.wait(timeout=2)
+
+
+def test_control_health_maps_expected_authority_drift_to_retryable_503(
+    monkeypatch,
+    client,
+):
+    from server.routes import control
+
+    status_cache = control._ObserverSingleflightCache(
+        ttl_sec=0.01,
+        stale_while_revalidate_sec=1.0,
+    )
+    health_cache = control._ObserverSingleflightCache(ttl_sec=0.01)
+    current_key = ["content-a"]
+    old_entered = threading.Event()
+    old_release = threading.Event()
+    calls = 0
+
+    def status_builder():
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            old_entered.set()
+            assert old_release.wait(timeout=2)
+        return {"revision": calls}
+
+    monkeypatch.setattr(control, "_OBSERVER_STATUS_CACHE", status_cache)
+    monkeypatch.setattr(control, "_OBSERVER_HEALTH_CACHE", health_cache)
+    monkeypatch.setattr(
+        control,
+        "_observer_cache_key",
+        lambda **_kwargs: current_key[0],
+    )
+    monkeypatch.setattr(control, "_fresh_control_status_snapshot", status_builder)
+    monkeypatch.setattr(
+        control,
+        "_health_summary",
+        lambda status: {"overall": "healthy", "revision": status["revision"]},
+    )
+    monkeypatch.setattr(control, "_OBSERVER_HTTP_RETRY_DELAY_SEC", 0.001)
+
+    assert asyncio.run(control.control_health())["revision"] == 1
+    time.sleep(0.02)
+    assert asyncio.run(control.control_health())["revision"] == 1
+    assert old_entered.wait(timeout=1)
+
+    current_key[0] = "content-b"
+    started = time.monotonic()
+    unavailable = client.get("/api/control/health")
+    assert time.monotonic() - started < 0.1
+    assert unavailable.status_code == 503
+    assert unavailable.headers["Retry-After"] == "1"
+    assert unavailable.json()["detail"] == {
+        "code": "observer_projection_refreshing",
+        "reason": "observer_projection_authority_changed_during_refresh",
+        "retryable": True,
+        "authority": "strict_epoch_projection",
+    }
+
+    old_release.set()
+    deadline = time.monotonic() + 2
+    while status_cache._inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert asyncio.run(control.control_health())["revision"] == 3
 
 
 def test_launch_barrier_uses_fresh_projection_not_observer_cache(monkeypatch):
