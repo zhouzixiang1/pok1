@@ -1,15 +1,16 @@
 """Operator-only recovery authority for a parked first-strict bootstrap.
 
-This owner exists for two explicitly tagged forms of one narrow crash-safe
+This owner exists for three explicitly tagged forms of one narrow crash-safe
 case: an unpublished v143 is parked at ``official_bootstrap_required`` and a
 reviewed descendant HEAD changes the official evaluation contract.  The
 terminal job is either the original zero-round harness-inconclusive profile or
-the content-proven eight-round legacy wire causal-order false-failure profile.
-The checkpoint and old verdict are never rewritten under the new contract.
-Instead an external, content-bound claim freezes the old checkpoint/job/
-verdict identities and the canonical abandon transaction consumes that claim.
-Neither profile turns old rounds into pass, strength, certification, or rating
-evidence.
+the content-proven eight-round legacy wire causal-order false-failure profile,
+or the one exact workflow-v64 five-pass/three-inconclusive called-all-in
+runout profile.  The checkpoint and old verdict are never rewritten under the
+new contract.  Instead an external, content-bound claim freezes the old
+checkpoint/job/verdict identities and the canonical abandon transaction
+consumes that claim.  No profile turns old rounds into pass, strength,
+certification, or rating evidence.
 
 The ordinary ``abandon_generation`` tool has no access to this authority.
 """
@@ -137,6 +138,203 @@ _LEGACY_INCIDENT_EVENT_COUNTS = (18, 24, 36, 20, 22, 24, 27, 21)
 _LEGACY_INCIDENT_STORED_COUNTS = (17, 24, 35, 19, 21, 23, 27, 20)
 _LEGACY_INCIDENT_HANDS = (1, 1, 2, 1, 1, 1, 1, 1)
 _LEGACY_INCIDENT_SETTLEMENTS = (0, 0, 1, 0, 0, 0, 0, 0)
+_LEGACY_STORED_REPLAY_FIELDS = frozenset({
+    "events_seen",
+    "hands_started_min",
+    "settlements_min",
+    "seats",
+    "issues",
+    "warnings",
+    "pending_expected_actions",
+    "max_platform_silent_gap_sec",
+})
+_LEGACY_POST_CLAIM_REPLAY_FIELDS = frozenset({
+    "omitted_allin_runout_boundaries",
+    "provisional_omitted_allin_runout_boundaries",
+})
+
+_CALLED_ALLIN_PROFILE_ID = (
+    "workflow-v64-called-allin-runout-harness-inconclusive-v1"
+)
+_CALLED_ALLIN_DIAGNOSIS_KIND = (
+    "official-bootstrap-called-allin-runout-failure-diagnosis"
+)
+_CALLED_ALLIN_DEFECT_ID = (
+    "official-2021-called-allin-wire-runout-omission-v1"
+)
+_CALLED_ALLIN_BASELINE_HEAD = (
+    "8e3fa0a1c8d5455aaa3b8dc58cfb9a1e9ee8a7b5"
+)
+_CALLED_ALLIN_BASELINE_CONTRACT_HASH = (
+    "ff176151c15a6ebcca8758cd37a3dbc4809673ccaa701c6cb7076fbb3c70c68d"
+)
+_CALLED_ALLIN_WORKFLOW_RUN_ID = "generation:143:workflow-v64"
+_CALLED_ALLIN_CHECKPOINT_REVISION = 21
+_CALLED_ALLIN_CANDIDATE_HASH = (
+    "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50"
+)
+_CALLED_ALLIN_CONTROL_HASH = (
+    "1cfe42b96566017ba470573b0aa9bc46a992c966779ff63db2470248d7440db2"
+)
+_CALLED_ALLIN_JOB_ID = (
+    "37bc2c6555b516b6568f45c85cdf8b9e23b0c06e6bbca207d5367a561759dae6"
+)
+_CALLED_ALLIN_JOB_RESULT_DIGEST = (
+    "c055966f5385fd921ece46920202a70477522d700bea106dd45cc1bae3196f9a"
+)
+_CALLED_ALLIN_EXE_SHA256 = (
+    "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a"
+)
+_CALLED_ALLIN_ORACLE_DOC = (
+    "docs/official-allin-runout-wire-oracle-2026-07-19.md"
+)
+_CALLED_ALLIN_ORACLE_DOC_SHA256 = (
+    "95b9945a106c8a20c688925d50448a7ddee7f34486fc4a79366a8b32c6cfdd2d"
+)
+_CALLED_ALLIN_ORACLE_FIXTURE = (
+    "sever/tests/fixtures/official_allin_runout_wire_oracle_20260719.json"
+)
+_CALLED_ALLIN_ORACLE_FIXTURE_SHA256 = (
+    "c17f9b1908031ce3d85abb5f995581a5a049449ed8c6bb94da0cf9c954646440"
+)
+_CALLED_ALLIN_EXPECTED_SLOTS = (
+    "self_play_01",
+    "self_play_02",
+    "self_play_03",
+    "self_play_04",
+    "self_play_05",
+    "opponent_01",
+    "opponent_02",
+    "opponent_03",
+)
+_CALLED_ALLIN_PASS_PATTERN = (
+    False, False, True, True, True, False, True, True,
+)
+_CALLED_ALLIN_FALSE_FAILURES = (
+    {
+        "slot": "self_play_01",
+        "hand": 4,
+        "stage": "turn",
+        "public_cards_observed": 4,
+        "wire_events_sha256": (
+            "fdf8356114caf957d2c871ed3c6273e4837d2f4c0b6982a4c6b52e4f0ea07e08"
+        ),
+        "record_seq": [145, 146, 148, 151, 152, 153, 154],
+        "observation_seq": [93, 92, 94, 95, 96, 97, 98],
+        "corrected_hands_started": 5,
+        "corrected_settlements": 4,
+    },
+    {
+        "slot": "self_play_02",
+        "hand": 10,
+        "stage": "flop",
+        "public_cards_observed": 3,
+        "wire_events_sha256": (
+            "0d098d48fcb09b4a98de6c8742a3e53b4485461a404dafd7806785d814d0d77e"
+        ),
+        "record_seq": [268, 269, 271, 274, 275, 276, 277],
+        "observation_seq": [173, 172, 174, 175, 176, 177, 178],
+        "corrected_hands_started": 11,
+        "corrected_settlements": 10,
+    },
+    {
+        "slot": "opponent_01",
+        "hand": 2,
+        "stage": "preflop",
+        "public_cards_observed": 0,
+        "wire_events_sha256": (
+            "5fd8a7dc035878fd2cd52c78048c59c0a264ead7bc615b22d82100cd2d5b11b7"
+        ),
+        "record_seq": [46, 47, 49, 52, 53, 54, 55],
+        "observation_seq": [32, 31, 33, 34, 35, 36, 37],
+        "corrected_hands_started": 3,
+        "corrected_settlements": 2,
+    },
+)
+_CALLED_ALLIN_DIAGNOSIS_FIELDS = frozenset({
+    "schema_version",
+    "kind",
+    "profile_id",
+    "defect_id",
+    "incident_identity",
+    "baseline_wire_probe_sha256",
+    "repair_wire_probe_sha256",
+    "baseline_harness_sha256",
+    "repair_harness_sha256",
+    "oracle_identity",
+    "evidence_sha256",
+    "evidence_archive_sha256",
+    "evidence_archive_manifest_digest",
+    "suite_summary_sha256",
+    "attribution_digest",
+    "round_receipts",
+    "false_failures",
+    "authority_absence",
+    "strength_evaluation",
+    "disposition",
+    "proof_digest",
+})
+_CALLED_ALLIN_INCIDENT_IDENTITY_FIELDS = frozenset({
+    "baseline_head",
+    "baseline_contract_version",
+    "baseline_contract_hash",
+    "repair_contract_version",
+    "workflow_run_id",
+    "checkpoint_revision",
+    "candidate_artifact_hash",
+    "job_id",
+    "job_result_digest",
+    "rounds_requested",
+    "rounds_completed",
+    "rounds_run",
+    "passed_rounds",
+    "failed_rounds",
+})
+_CALLED_ALLIN_ORACLE_IDENTITY_FIELDS = frozenset({
+    "document_path",
+    "document_sha256",
+    "fixture_path",
+    "fixture_sha256",
+    "oracle_id",
+    "authority_scope",
+    "strength_weight",
+    "official_exe_sha256",
+    "control_artifact_sha256",
+    "observations_digest",
+})
+_CALLED_ALLIN_ROUND_RECEIPT_FIELDS = frozenset({
+    "slot",
+    "round_id",
+    "passed",
+    "receipt_sha256",
+})
+_CALLED_ALLIN_FALSE_FAILURE_FIELDS = frozenset({
+    "slot",
+    "round_id",
+    "hand",
+    "stage",
+    "public_cards_observed",
+    "receipt_sha256",
+    "wire_events_sha256",
+    "replay_summary_sha256",
+    "event_count",
+    "stored_summary_digest",
+    "corrected_summary_digest",
+    "omitted_runout_boundaries_digest",
+    "corrected_hands_started",
+    "corrected_settlements",
+    "corrected_pending_count",
+})
+_CALLED_ALLIN_AUTHORITY_ABSENCE = {
+    "certificate_present": False,
+    "certificate_digest": None,
+    "candidate_completed": False,
+    "completion_tags": [],
+    "active_bots": [],
+    "strict_published_bots": [],
+    "control_successful_count": 0,
+    "control_max_successful_consumptions": 1,
+}
 
 
 class BootstrapContractRecoveryError(RuntimeError):
@@ -792,6 +990,22 @@ def _legacy_wire_causalize(
     return causal, bindings
 
 
+def _legacy_owned_replay_projection(observed: Any) -> dict[str, Any]:
+    if not isinstance(observed, dict):
+        raise ValueError("current replay projection is invalid")
+    if set(observed) != (
+        _LEGACY_STORED_REPLAY_FIELDS | _LEGACY_POST_CLAIM_REPLAY_FIELDS
+    ):
+        raise ValueError("current replay projection schema is unsupported")
+    if any(observed.get(field) != [] for field in (
+        _LEGACY_POST_CLAIM_REPLAY_FIELDS
+    )):
+        raise ValueError("legacy replay unexpectedly contains all-in runout proof")
+    return {
+        field: observed[field] for field in _LEGACY_STORED_REPLAY_FIELDS
+    }
+
+
 def _legacy_replay_matches_stored(
     events: list[dict[str, Any]],
     stored: dict[str, Any],
@@ -830,7 +1044,84 @@ def _legacy_replay_matches_stored(
         )
     else:
         frozen_now = max(float(event["t"]) for event in events[:count])
-    if replay.summary(now=frozen_now) != stored:
+    observed = replay.summary(now=frozen_now)
+    if set(stored) != _LEGACY_STORED_REPLAY_FIELDS:
+        raise ValueError("stored legacy replay schema is invalid")
+    projected = _legacy_owned_replay_projection(observed)
+    stored_issues = stored.get("issues")
+    observed_issues = projected.get("issues")
+    if not isinstance(stored_issues, list) or not isinstance(
+        observed_issues,
+        list,
+    ):
+        raise ValueError("legacy replay issues are invalid")
+
+    def current_only_deferred_boundary(issue: Any) -> bool:
+        if not isinstance(issue, dict) or issue.get("kind") != (
+            "street_boundary_unproved"
+        ):
+            return False
+        previous_stage = issue.get("previous_stage")
+        observed_stage = issue.get("observed_stage")
+        if (
+            {"preflop": "flop", "flop": "turn", "turn": "river"}.get(
+                previous_stage
+            ) != observed_stage
+            or issue.get("stage") != previous_stage
+            or issue.get("pending_expected_action") is not True
+            or not str(issue.get("message") or "").startswith(
+                f"{observed_stage}|"
+            )
+            or issue.get("reason")
+            != (
+                "next public street requires an exact completed prior street "
+                "or a previously proved called-all-in runout"
+            )
+        ):
+            return False
+        action_suffix = issue.get("action_suffix")
+        if (
+            not isinstance(action_suffix, list)
+            or not 1 <= len(action_suffix) <= 2
+            or any(
+                not isinstance(item, dict)
+                or set(item) != {
+                    "actor",
+                    "action_type",
+                    "stage",
+                    "inferred",
+                }
+                or item.get("actor") not in {"player", "opponent"}
+                or item.get("action_type")
+                not in {"raise", "call", "check"}
+                or item.get("stage") != previous_stage
+                or item.get("inferred") is not False
+                for item in action_suffix
+            )
+        ):
+            return False
+        owners = [
+            stored_issue
+            for stored_issue in stored_issues
+            if isinstance(stored_issue, dict)
+            and stored_issue.get("kind") in _LEGACY_FALSE_WIRE_ISSUES
+            and stored_issue.get("conn") == issue.get("conn")
+            and stored_issue.get("hand") == issue.get("hand")
+            and stored_issue.get("stage") == observed_stage
+            and isinstance(stored_issue.get("dt"), (int, float))
+            and not isinstance(stored_issue.get("dt"), bool)
+            and isinstance(issue.get("dt"), (int, float))
+            and not isinstance(issue.get("dt"), bool)
+            and 0.0 <= float(stored_issue["dt"]) - float(issue["dt"]) < 60.0
+        ]
+        return len(owners) == 1
+
+    projected["issues"] = [
+        issue
+        for issue in observed_issues
+        if not current_only_deferred_boundary(issue)
+    ]
+    if projected != stored:
         raise ValueError("stored legacy replay does not match raw events")
     return canonical_digest(stored)
 
@@ -862,6 +1153,209 @@ def _strict_artifact_bytes(
     if len(raw) != item["size_bytes"] or _sha256_bytes(raw) != item["sha256"]:
         raise ValueError("official evidence artifact bytes changed")
     return raw
+
+
+def _expected_called_allin_oracle_observations() -> list[dict[str, Any]]:
+    return [
+        {
+            "round": item["slot"],
+            "hand": item["hand"],
+            "stage": item["stage"],
+            "public_cards_observed": item["public_cards_observed"],
+            "wire_events_sha256": item["wire_events_sha256"],
+            "record_seq": list(item["record_seq"]),
+            "observation_seq": list(item["observation_seq"]),
+            "semantic_sequence": [
+                "allin",
+                "call",
+                "earnChips",
+                "earnChips",
+                "oppo_hands",
+                "oppo_hands",
+            ],
+        }
+        for item in _CALLED_ALLIN_FALSE_FAILURES
+    ]
+
+
+def _expected_called_allin_incident_identity() -> dict[str, Any]:
+    return {
+        "baseline_head": _CALLED_ALLIN_BASELINE_HEAD,
+        "baseline_contract_version": PARKED_EVALUATION_CONTRACT_VERSION,
+        "baseline_contract_hash": _CALLED_ALLIN_BASELINE_CONTRACT_HASH,
+        "repair_contract_version": 41,
+        "workflow_run_id": _CALLED_ALLIN_WORKFLOW_RUN_ID,
+        "checkpoint_revision": _CALLED_ALLIN_CHECKPOINT_REVISION,
+        "candidate_artifact_hash": _CALLED_ALLIN_CANDIDATE_HASH,
+        "job_id": _CALLED_ALLIN_JOB_ID,
+        "job_result_digest": _CALLED_ALLIN_JOB_RESULT_DIGEST,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "passed_rounds": 5,
+        "failed_rounds": 3,
+    }
+
+
+def _called_allin_incident_identity_issues(value: Any) -> list[str]:
+    if (
+        not isinstance(value, dict)
+        or set(value) != _CALLED_ALLIN_INCIDENT_IDENTITY_FIELDS
+        or value != _expected_called_allin_incident_identity()
+    ):
+        return ["bootstrap_contract_called_allin_incident_identity_mismatch"]
+    return []
+
+
+def _validate_called_allin_failure_diagnosis_envelope(
+    value: Any,
+) -> dict[str, Any]:
+    """Validate the one exact workflow-v64 5/3 harness incident proof."""
+
+    if (
+        not isinstance(value, dict)
+        or set(value) != _CALLED_ALLIN_DIAGNOSIS_FIELDS
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_called_allin_diagnosis_fields_invalid"
+        ])
+    payload = {
+        key: item for key, item in value.items() if key != "proof_digest"
+    }
+    incident = value.get("incident_identity")
+    oracle = value.get("oracle_identity")
+    receipts = value.get("round_receipts")
+    failures = value.get("false_failures")
+    expected_observations = _expected_called_allin_oracle_observations()
+    digest_fields = (
+        "baseline_wire_probe_sha256",
+        "repair_wire_probe_sha256",
+        "baseline_harness_sha256",
+        "repair_harness_sha256",
+        "evidence_sha256",
+        "evidence_archive_sha256",
+        "evidence_archive_manifest_digest",
+        "suite_summary_sha256",
+        "attribution_digest",
+    )
+    failure_digest_fields = (
+        "receipt_sha256",
+        "wire_events_sha256",
+        "replay_summary_sha256",
+        "stored_summary_digest",
+        "corrected_summary_digest",
+        "omitted_runout_boundaries_digest",
+    )
+    invalid = bool(
+        value.get("schema_version") != 1
+        or value.get("kind") != _CALLED_ALLIN_DIAGNOSIS_KIND
+        or value.get("profile_id") != _CALLED_ALLIN_PROFILE_ID
+        or value.get("defect_id") != _CALLED_ALLIN_DEFECT_ID
+        or _called_allin_incident_identity_issues(incident)
+        or value.get("proof_digest") != canonical_digest(payload)
+        or value.get("strength_evaluation") != "not_applicable"
+        or value.get("disposition")
+        != "abandon_and_reprepare_only_without_evidence_reuse"
+        or any(
+            not _HEX64.fullmatch(str(value.get(field) or ""))
+            for field in digest_fields
+        )
+        or value.get("baseline_wire_probe_sha256")
+        == value.get("repair_wire_probe_sha256")
+        or value.get("baseline_harness_sha256")
+        == value.get("repair_harness_sha256")
+        or not isinstance(oracle, dict)
+        or set(oracle) != _CALLED_ALLIN_ORACLE_IDENTITY_FIELDS
+        or oracle.get("document_path") != _CALLED_ALLIN_ORACLE_DOC
+        or oracle.get("document_sha256")
+        != _CALLED_ALLIN_ORACLE_DOC_SHA256
+        or oracle.get("fixture_path") != _CALLED_ALLIN_ORACLE_FIXTURE
+        or oracle.get("fixture_sha256")
+        != _CALLED_ALLIN_ORACLE_FIXTURE_SHA256
+        or oracle.get("oracle_id") != _CALLED_ALLIN_DEFECT_ID
+        or oracle.get("authority_scope")
+        != "official_exe_wire_compliance_only"
+        or oracle.get("strength_weight") != 0
+        or oracle.get("official_exe_sha256") != _CALLED_ALLIN_EXE_SHA256
+        or oracle.get("control_artifact_sha256")
+        != _CALLED_ALLIN_CONTROL_HASH
+        or oracle.get("observations_digest")
+        != canonical_digest(expected_observations)
+        or value.get("authority_absence")
+        != _CALLED_ALLIN_AUTHORITY_ABSENCE
+        or not isinstance(receipts, list)
+        or len(receipts) != 8
+        or any(
+            not isinstance(item, dict)
+            or set(item) != _CALLED_ALLIN_ROUND_RECEIPT_FIELDS
+            for item in receipts
+        )
+        or tuple(item.get("slot") for item in receipts)
+        != _CALLED_ALLIN_EXPECTED_SLOTS
+        or tuple(item.get("passed") for item in receipts)
+        != _CALLED_ALLIN_PASS_PATTERN
+        or any(
+            not isinstance(item.get("round_id"), str)
+            or not item["round_id"].startswith(f"{item['slot']}_")
+            or not _HEX64.fullmatch(str(item.get("receipt_sha256") or ""))
+            for item in receipts
+        )
+        or not isinstance(failures, list)
+        or len(failures) != 3
+        or any(
+            not isinstance(item, dict)
+            or set(item) != _CALLED_ALLIN_FALSE_FAILURE_FIELDS
+            for item in failures
+        )
+    )
+    if not invalid:
+        receipt_by_slot = {item["slot"]: item for item in receipts}
+        for observed, expected in zip(
+            failures,
+            _CALLED_ALLIN_FALSE_FAILURES,
+        ):
+            invalid = bool(
+                observed.get("slot") != expected["slot"]
+                or observed.get("round_id")
+                != receipt_by_slot[expected["slot"]]["round_id"]
+                or observed.get("hand") != expected["hand"]
+                or observed.get("stage") != expected["stage"]
+                or observed.get("public_cards_observed")
+                != expected["public_cards_observed"]
+                or observed.get("wire_events_sha256")
+                != expected["wire_events_sha256"]
+                or observed.get("receipt_sha256")
+                != receipt_by_slot[expected["slot"]]["receipt_sha256"]
+                or observed.get("corrected_hands_started")
+                != expected["corrected_hands_started"]
+                or observed.get("corrected_settlements")
+                != expected["corrected_settlements"]
+                or observed.get("corrected_pending_count") != 1
+                or type(observed.get("event_count")) is not int
+                or observed["event_count"]
+                < max(expected["record_seq"])
+                or any(
+                    not _HEX64.fullmatch(str(observed.get(field) or ""))
+                    for field in failure_digest_fields
+                )
+            )
+            if invalid:
+                break
+    if invalid:
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_called_allin_diagnosis_invalid"
+        ])
+    return value
+
+
+def _validate_contract_failure_diagnosis_envelope(
+    value: Any,
+) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("kind") == (
+        _CALLED_ALLIN_DIAGNOSIS_KIND
+    ):
+        return _validate_called_allin_failure_diagnosis_envelope(value)
+    return _validate_causal_failure_diagnosis_envelope(value)
 
 
 def _validate_causal_failure_diagnosis_envelope(value: Any) -> dict[str, Any]:
@@ -1390,6 +1884,9 @@ def _legacy_causal_failure_diagnosis(
             now=frozen_now,
             finalized=False,
         )
+        corrected_legacy_projection = _legacy_owned_replay_projection(
+            corrected
+        )
         pending_actions = corrected.get("pending_expected_actions")
         pending_actions = pending_actions if isinstance(pending_actions, list) else []
         pending_waits = [
@@ -1429,7 +1926,9 @@ def _legacy_causal_failure_diagnosis(
             "legacy_issue_kinds": legacy_issue_kinds,
             "deferred_observation_bindings_digest": canonical_digest(bindings),
             "legacy_summary_digest": legacy_summary_digest,
-            "corrected_summary_digest": canonical_digest(corrected),
+            "corrected_summary_digest": canonical_digest(
+                corrected_legacy_projection
+            ),
             "max_pending_wait_sec": round(max_pending_wait, 3),
             "corrected_hands_started": corrected_hands,
             "corrected_settlements": corrected_settlements,
@@ -1464,6 +1963,720 @@ def _legacy_causal_failure_diagnosis(
     })
 
 
+def _called_allin_oracle_identity(
+    root: Path,
+    *,
+    expected_repair_head: str,
+    require_live_repair_source: bool,
+) -> dict[str, Any]:
+    document_raw = _git(
+        root,
+        "show",
+        f"{expected_repair_head}:{_CALLED_ALLIN_ORACLE_DOC}",
+        binary=True,
+    )
+    fixture_raw = _git(
+        root,
+        "show",
+        f"{expected_repair_head}:{_CALLED_ALLIN_ORACLE_FIXTURE}",
+        binary=True,
+    )
+    if not isinstance(document_raw, bytes) or not isinstance(fixture_raw, bytes):
+        raise ValueError("called-allin oracle Git blobs are unavailable")
+    if (
+        _sha256_bytes(document_raw) != _CALLED_ALLIN_ORACLE_DOC_SHA256
+        or _sha256_bytes(fixture_raw)
+        != _CALLED_ALLIN_ORACLE_FIXTURE_SHA256
+    ):
+        raise ValueError("called-allin oracle Git identity changed")
+    if require_live_repair_source:
+        live_document = _read_regular_exact(
+            root / _CALLED_ALLIN_ORACLE_DOC,
+            max_bytes=256 * 1024,
+        )
+        live_fixture = _read_regular_exact(
+            root / _CALLED_ALLIN_ORACLE_FIXTURE,
+            max_bytes=256 * 1024,
+        )
+        if live_document != document_raw or live_fixture != fixture_raw:
+            raise ValueError("live called-allin oracle is not the reviewed repair")
+    fixture = json.loads(fixture_raw.decode("utf-8"))
+    expected_observations = _expected_called_allin_oracle_observations()
+    if (
+        not isinstance(fixture, dict)
+        or fixture.get("schema_version") != 1
+        or fixture.get("oracle_id") != _CALLED_ALLIN_DEFECT_ID
+        or fixture.get("authority_scope")
+        != "official_exe_wire_compliance_only"
+        or fixture.get("strength_weight") != 0
+        or fixture.get("official_exe_sha256") != _CALLED_ALLIN_EXE_SHA256
+        or fixture.get("job_id") != _CALLED_ALLIN_JOB_ID
+        or fixture.get("job_result_digest")
+        != _CALLED_ALLIN_JOB_RESULT_DIGEST
+        or fixture.get("candidate_artifact_sha256")
+        != _CALLED_ALLIN_CANDIDATE_HASH
+        or fixture.get("control_artifact_sha256")
+        != _CALLED_ALLIN_CONTROL_HASH
+        or fixture.get("observations") != expected_observations
+        or fixture.get("accepted_board_prefixes")
+        != {"preflop": 0, "flop": 3, "turn": 4}
+        or (fixture.get("required_local_terminal_proof") or {}).get(
+            "action_suffix"
+        ) != ["allin", "call"]
+        or (fixture.get("required_local_terminal_proof") or {}).get(
+            "action_suffix_same_stage"
+        ) is not True
+        or (fixture.get("required_local_terminal_proof") or {}).get("pot")
+        != 40000
+        or (fixture.get("required_cross_connection_proof") or {}).get(
+            "all_prior_streets_closed_or_called_allin_runout"
+        ) is not True
+        or (fixture.get("required_cross_connection_proof") or {}).get(
+            "settlement_values"
+        ) != [[-20000, 20000], [0, 0]]
+        or (fixture.get("required_strict_thp_proof") or {}).get(
+            "complete_public_board_cards"
+        ) != 5
+        or (fixture.get("natural_hand_70") or {}).get(
+            "dual_showdown_reveal_required_for_called_allin"
+        ) is not True
+        or "accept_actions_from_a_prior_street_as_the_terminal_suffix"
+        not in (fixture.get("forbidden_inferences") or [])
+        or "accept_an_unclosed_prior_street_before_the_allin_street"
+        not in (fixture.get("forbidden_inferences") or [])
+        or "treat_official_exe_oracle_as_strength"
+        not in (fixture.get("forbidden_inferences") or [])
+    ):
+        raise ValueError("called-allin oracle semantic identity changed")
+    return {
+        "document_path": _CALLED_ALLIN_ORACLE_DOC,
+        "document_sha256": _CALLED_ALLIN_ORACLE_DOC_SHA256,
+        "fixture_path": _CALLED_ALLIN_ORACLE_FIXTURE,
+        "fixture_sha256": _CALLED_ALLIN_ORACLE_FIXTURE_SHA256,
+        "oracle_id": fixture["oracle_id"],
+        "authority_scope": fixture["authority_scope"],
+        "strength_weight": fixture["strength_weight"],
+        "official_exe_sha256": fixture["official_exe_sha256"],
+        "control_artifact_sha256": fixture["control_artifact_sha256"],
+        "observations_digest": canonical_digest(expected_observations),
+    }
+
+
+def _called_allin_authority_absence(
+    root: Path,
+    *,
+    candidate: Path,
+    control_consumption: dict[str, Any],
+    require_live: bool,
+) -> dict[str, Any]:
+    if require_live:
+        certificate = (
+            root
+            / "official_certificates"
+            / f"{bot_name(FIRST_STRICT_POLICY_VERSION)}.json"
+        )
+        tags = (
+            f"national-bot-v{FIRST_STRICT_POLICY_VERSION}",
+            f"national-high-water-v{FIRST_STRICT_POLICY_VERSION}",
+        )
+        from evolution_core import get_active_bots
+        from national_runtime_authority import strict_published_bot_names
+
+        if (
+            os.path.lexists(certificate)
+            or os.path.lexists(candidate / ".completed")
+            or any(
+                not _git_absence(
+                    root,
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    f"refs/tags/{tag}",
+                )
+                for tag in tags
+            )
+            or list(get_active_bots())
+            or list(strict_published_bot_names())
+            or control_consumption.get("successful_count") != 0
+            or control_consumption.get("max_successful_consumptions") != 1
+        ):
+            raise ValueError("called-allin publication authority is not absent")
+    return {
+        **_CALLED_ALLIN_AUTHORITY_ABSENCE,
+        "completion_tags": [],
+        "active_bots": [],
+        "strict_published_bots": [],
+    }
+
+
+def _called_allin_runout_failure_diagnosis(
+    root: Path,
+    directory: Path,
+    *,
+    request: dict[str, Any],
+    state: dict[str, Any],
+    status: dict[str, Any],
+    candidate_hash: str,
+    workflow_run_id: str,
+    checkpoint_revision: int,
+    job_result_digest: str,
+    expected_evaluation_contract_version: int,
+    expected_evaluation_contract_hash: str,
+    expected_repair_contract_version: int,
+    expected_baseline_head: str,
+    expected_repair_head: str,
+    control_consumption: dict[str, Any],
+    require_live_repair_source: bool = True,
+) -> dict[str, Any]:
+    """Reopen only the v64 5-pass/3-false-fail called-all-in incident."""
+
+    from official_evidence_archive import validate_evidence_archive
+    from official_wire_probe import replay_events
+
+    incident_identity = {
+        "baseline_head": expected_baseline_head,
+        "baseline_contract_version": expected_evaluation_contract_version,
+        "baseline_contract_hash": expected_evaluation_contract_hash,
+        "repair_contract_version": expected_repair_contract_version,
+        "workflow_run_id": workflow_run_id,
+        "checkpoint_revision": checkpoint_revision,
+        "candidate_artifact_hash": candidate_hash,
+        "job_id": directory.name,
+        "job_result_digest": job_result_digest,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "passed_rounds": 5,
+        "failed_rounds": 3,
+    }
+    if _called_allin_incident_identity_issues(incident_identity):
+        raise ValueError("called-allin incident identity is not exact")
+    if state.get("attempt") != 1 or state.get("result_digest") != (
+        _CALLED_ALLIN_JOB_RESULT_DIGEST
+    ):
+        raise ValueError("called-allin job attempt/result identity changed")
+
+    identity = request.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    platform = identity.get("platform")
+    platform = platform if isinstance(platform, dict) else {}
+    if (
+        request.get("job_id") != _CALLED_ALLIN_JOB_ID
+        or identity.get("candidate_hash") != _CALLED_ALLIN_CANDIDATE_HASH
+        or identity.get("opponent_hash") != _CALLED_ALLIN_CONTROL_HASH
+        or platform.get("exe_sha256") != _CALLED_ALLIN_EXE_SHA256
+    ):
+        raise ValueError("called-allin request identity changed")
+
+    source_identities: dict[str, str] = {}
+    for label, relative in (
+        ("wire_probe", "web/core/official_wire_probe.py"),
+        ("harness", "web/core/official_platform_harness.py"),
+    ):
+        baseline_raw = _git(
+            root,
+            "show",
+            f"{expected_baseline_head}:{relative}",
+            binary=True,
+        )
+        repair_raw = _git(
+            root,
+            "show",
+            f"{expected_repair_head}:{relative}",
+            binary=True,
+        )
+        if not isinstance(baseline_raw, bytes) or not isinstance(repair_raw, bytes):
+            raise ValueError(f"called-allin {label} source is unavailable")
+        baseline_sha256 = _sha256_bytes(baseline_raw)
+        repair_sha256 = _sha256_bytes(repair_raw)
+        platform_field = f"{label}_sha256"
+        if (
+            platform.get(platform_field) != baseline_sha256
+            or baseline_sha256 == repair_sha256
+        ):
+            raise ValueError(f"called-allin {label} contract change is unproven")
+        if require_live_repair_source:
+            live_raw = _read_regular_exact(root / relative, max_bytes=4 * 1024 * 1024)
+            if live_raw != repair_raw:
+                raise ValueError(f"live {label} is not the reviewed repair")
+        source_identities[f"baseline_{label}_sha256"] = baseline_sha256
+        source_identities[f"repair_{label}_sha256"] = repair_sha256
+
+    oracle_identity = _called_allin_oracle_identity(
+        root,
+        expected_repair_head=expected_repair_head,
+        require_live_repair_source=require_live_repair_source,
+    )
+    candidate = root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
+    authority_absence = _called_allin_authority_absence(
+        root,
+        candidate=candidate,
+        control_consumption=control_consumption,
+        require_live=require_live_repair_source,
+    )
+
+    suite = directory / "suite_attempt_01"
+    _require_regular_directory(suite)
+    status_summary = status.get("summary")
+    status_summary = status_summary if isinstance(status_summary, dict) else {}
+    if Path(str(status_summary.get("suite_dir") or "")) != suite:
+        raise ValueError("called-allin suite path is not job-owned")
+    evidence_path = suite / "official_evidence.json"
+    if Path(str(status.get("official_evidence_path") or "")) != evidence_path:
+        raise ValueError("called-allin evidence path is not canonical")
+    summary_raw, suite_report = _regular_json(
+        suite / "summary.json",
+        max_bytes=4 * 1024 * 1024,
+    )
+    evidence_raw, evidence = _regular_json(
+        evidence_path,
+        max_bytes=4 * 1024 * 1024,
+    )
+    evidence_sha256 = _sha256_bytes(evidence_raw)
+    deterministic = status.get("official_deterministic_status_receipt")
+    deterministic = deterministic if isinstance(deterministic, dict) else {}
+    archive = status.get("official_evidence_archive")
+    archive = archive if isinstance(archive, dict) else {}
+    archive_validation = validate_evidence_archive(
+        archive,
+        expected_evidence_sha256=evidence_sha256,
+    )
+    if (
+        deterministic.get("evidence_sha256") != evidence_sha256
+        or archive.get("evidence_sha256") != evidence_sha256
+        or archive_validation.get("valid") is not True
+        or evidence.get("schema_version") != 1
+        or evidence.get("purpose") != "official_platform_compliance"
+        or evidence.get("strength_evaluation") != "not_applicable"
+    ):
+        raise ValueError("called-allin evidence/archive identity changed")
+
+    expected_summary = {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "rounds_requested": 8,
+        "rounds_run": 8,
+        "passed_rounds": 5,
+        "failed_rounds": 3,
+        "resumed_rounds": 0,
+        "official_platform": True,
+    }
+    report_summary = suite_report.get("summary")
+    report_summary = report_summary if isinstance(report_summary, dict) else {}
+    evidence_summary = evidence.get("summary")
+    evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+    if any(
+        status_summary.get(key) != expected
+        or report_summary.get(key) != expected
+        or evidence_summary.get(key) != expected
+        for key, expected in expected_summary.items()
+    ):
+        raise ValueError("called-allin suite is not exact 5-pass/3-fail")
+    if (
+        Path(str(report_summary.get("suite_dir") or "")) != suite
+        or Path(str(evidence_summary.get("suite_dir") or "")) != suite
+        or report_summary.get("attribution") != status_summary.get("attribution")
+        or evidence_summary.get("attribution") != status_summary.get("attribution")
+        or report_summary.get("formal_execution")
+        != status_summary.get("formal_execution")
+        or evidence_summary.get("formal_execution")
+        != status_summary.get("formal_execution")
+        or not isinstance(status_summary.get("formal_execution"), dict)
+        or status_summary["formal_execution"].get("ok") is not True
+        or status_summary["formal_execution"].get("issues") != []
+        or evidence_summary.get("passed") is not False
+        or evidence_summary.get("raw_passed") is not False
+        or evidence_summary.get("wire_evidence_required_rounds") != 8
+        or evidence_summary.get("wire_evidence_complete_rounds") != 8
+    ):
+        raise ValueError("called-allin suite crossbinding changed")
+    attribution = status_summary.get("attribution")
+    attribution = attribution if isinstance(attribution, dict) else {}
+    attribution_rounds = attribution.get("rounds")
+    if (
+        status.get("status") != "official-inconclusive"
+        or attribution.get("schema_version") != 1
+        or attribution.get("policy_id") != "official-attribution-v1"
+        or attribution.get("candidate_verdict") != "inconclusive"
+        or attribution.get("candidate_blocking") is not False
+        or attribution.get("inconclusive") is not True
+        or attribution.get("countable_rounds") != 5
+        or not isinstance(attribution_rounds, list)
+        or len(attribution_rounds) != 8
+    ):
+        raise ValueError("called-allin attribution is not harness-inconclusive")
+
+    report_rounds = suite_report.get("rounds")
+    evidence_rounds = evidence.get("rounds")
+    if (
+        not isinstance(report_rounds, list)
+        or len(report_rounds) != 8
+        or not isinstance(evidence_rounds, list)
+        or len(evidence_rounds) != 8
+    ):
+        raise ValueError("called-allin suite round set is incomplete")
+
+    oracle_by_slot = {
+        item["slot"]: item for item in _CALLED_ALLIN_FALSE_FAILURES
+    }
+    round_receipts: list[dict[str, Any]] = []
+    false_failures: list[dict[str, Any]] = []
+    for offset, slot in enumerate(_CALLED_ALLIN_EXPECTED_SLOTS):
+        expected_passed = _CALLED_ALLIN_PASS_PATTERN[offset]
+        kind = "self_play" if slot.startswith("self_play") else "opponent"
+        index = int(slot.rsplit("_", 1)[1])
+        receipt = report_rounds[offset]
+        evidence_round = evidence_rounds[offset]
+        attribution_round = attribution_rounds[offset]
+        if not all(
+            isinstance(item, dict)
+            for item in (receipt, evidence_round, attribution_round)
+        ):
+            raise ValueError("called-allin round evidence shape is invalid")
+        round_id = receipt.get("round_id")
+        if (
+            receipt.get("round_kind") != kind
+            or receipt.get("round_index") != index
+            or receipt.get("target_hands") != 70
+            or receipt.get("passed") is not expected_passed
+            or not isinstance(round_id, str)
+            or not round_id.startswith(f"{slot}_")
+            or evidence_round.get("round_kind") != kind
+            or evidence_round.get("round_index") != index
+            or evidence_round.get("round_id") != round_id
+            or evidence_round.get("passed") is not expected_passed
+            or attribution_round.get("candidate_blocking") is not False
+            or attribution_round.get("candidate_verdict")
+            != ("pass" if expected_passed else "inconclusive")
+            or attribution_round.get("countable") is not expected_passed
+        ):
+            raise ValueError("called-allin round outcome identity changed")
+        _require_exact_round_job_envelope(
+            receipt.get("job_envelope"),
+            status.get("official_job_envelope"),
+            job_id=directory.name,
+            candidate_hash=candidate_hash,
+        )
+        wire_probe = receipt.get("wire_probe")
+        wire_probe = wire_probe if isinstance(wire_probe, dict) else {}
+        if wire_probe.get("enabled") is not True or wire_probe.get("issues") != []:
+            raise ValueError("called-allin wire probe failed independently")
+
+        artifacts = evidence_round.get("artifacts")
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
+        receipt_item = artifacts.get("receipt")
+        archive_path = str((receipt_item or {}).get("archive_path") or "")
+        pure_receipt = PurePosixPath(archive_path)
+        if (
+            len(pure_receipt.parts) != 4
+            or pure_receipt.parts[0] != slot
+            or pure_receipt.parts[1] != "executions"
+            or re.fullmatch(
+                r"run_[0-9]+_[0-9]+",
+                pure_receipt.parts[2],
+            ) is None
+            or pure_receipt.parts[3] != "receipt.json"
+        ):
+            raise ValueError("called-allin round execution path is invalid")
+        execution_prefix = "/".join(pure_receipt.parts[:-1])
+        receipt_raw = _strict_artifact_bytes(
+            suite,
+            receipt_item,
+            expected_archive_path=f"{execution_prefix}/receipt.json",
+            max_bytes=2 * 1024 * 1024,
+        )
+        if json.loads(receipt_raw.decode("utf-8")) != receipt:
+            raise ValueError("called-allin summary receipt bytes changed")
+        slot_dir = suite / slot
+        executions = slot_dir / "executions"
+        execution_dir = executions / pure_receipt.parts[2]
+        for owned_directory in (slot_dir, executions, execution_dir):
+            _require_regular_directory(owned_directory)
+        if (
+            sorted(item.name for item in slot_dir.iterdir())
+            != ["executions", "receipt.json"]
+            or sorted(item.name for item in executions.iterdir())
+            != [pure_receipt.parts[2]]
+            or _read_regular_exact(
+                slot_dir / "receipt.json",
+                max_bytes=2 * 1024 * 1024,
+            ) != receipt_raw
+        ):
+            raise ValueError("called-allin round was resumed or duplicated")
+        receipt_sha256 = _sha256_bytes(receipt_raw)
+        round_receipts.append({
+            "slot": slot,
+            "round_id": round_id,
+            "passed": expected_passed,
+            "receipt_sha256": receipt_sha256,
+        })
+
+        stored_replay = receipt.get("wire_replay_summary")
+        if (
+            not isinstance(stored_replay, dict)
+            or evidence_round.get("wire_replay_summary") != stored_replay
+        ):
+            raise ValueError("called-allin stored replay is not cross-bound")
+        if expected_passed:
+            if (
+                receipt.get("issues") != []
+                or stored_replay.get("issues") != []
+                or stored_replay.get("warnings") != []
+                or stored_replay.get("hands_started_min") != 70
+                or stored_replay.get("settlements_min") != 69
+            ):
+                raise ValueError("called-allin passing round is not intact")
+            continue
+
+        expected_failure = oracle_by_slot.get(slot)
+        if expected_failure is None:
+            raise ValueError("called-allin false-failure slot is unsupported")
+        wire_raw = _strict_artifact_bytes(
+            suite,
+            artifacts.get("wire_events"),
+            expected_archive_path=f"{execution_prefix}/wire_events.jsonl",
+            max_bytes=2 * 1024 * 1024,
+        )
+        replay_raw = _strict_artifact_bytes(
+            suite,
+            artifacts.get("replay_summary"),
+            expected_archive_path=f"{execution_prefix}/replay_summary.json",
+            max_bytes=2 * 1024 * 1024,
+        )
+        if (
+            _sha256_bytes(wire_raw)
+            != expected_failure["wire_events_sha256"]
+            or json.loads(replay_raw.decode("utf-8")) != stored_replay
+        ):
+            raise ValueError("called-allin raw/replay oracle binding changed")
+        old_issues = stored_replay.get("issues")
+        if (
+            not isinstance(old_issues, list)
+            or len(old_issues) != 2
+            or [item.get("conn") for item in old_issues] != ["B", "A"]
+            or any(
+                not isinstance(item, dict)
+                or item.get("kind") != "showdown_boundary_invalid"
+                or item.get("hand") != expected_failure["hand"]
+                or item.get("stage") != expected_failure["stage"]
+                or item.get("reason")
+                != "oppo_hands is valid only at a five-card non-fold showdown"
+                for item in old_issues
+            )
+            or stored_replay.get("warnings") != []
+            or stored_replay.get("hands_started_min")
+            != expected_failure["corrected_hands_started"]
+            or stored_replay.get("settlements_min")
+            != expected_failure["corrected_settlements"]
+        ):
+            raise ValueError("called-allin old replay has another failure")
+        round_issues = receipt.get("issues")
+        if (
+            not isinstance(round_issues, list)
+            or len([
+                issue for issue in round_issues
+                if isinstance(issue, str)
+                and issue.startswith("wire_showdown_boundary_invalid:")
+            ]) != 2
+            or sorted(
+                issue for issue in round_issues
+                if not str(issue).startswith("wire_showdown_boundary_invalid:")
+            ) != sorted(_LEGACY_DOWNSTREAM_FINDINGS)
+        ):
+            raise ValueError("called-allin old receipt contains another failure")
+
+        events = [
+            json.loads(line)
+            for line in wire_raw.decode("utf-8").splitlines()
+            if line.strip()
+        ]
+        if (
+            any(not isinstance(event, dict) for event in events)
+            or stored_replay.get("events_seen") != len(events)
+            or len(events) < max(expected_failure["record_seq"])
+        ):
+            raise ValueError("called-allin raw event set is incomplete")
+        selected = [
+            events[index - 1] for index in expected_failure["record_seq"]
+        ]
+        selected_messages = [
+            str((event.get("messages") or [""])[0]) for event in selected
+        ]
+        if (
+            [event.get("observation_seq") for event in selected]
+            != expected_failure["observation_seq"]
+            or selected_messages[:3] != ["allin", "allin", "call"]
+            or any(
+                not message.startswith("earnChips ")
+                for message in selected_messages[3:5]
+            )
+            or any(
+                not message.startswith("oppo_hands|")
+                for message in selected_messages[5:]
+            )
+        ):
+            raise ValueError("called-allin raw semantic sequence changed")
+
+        corrected = replay_events(
+            events,
+            now=max(float(event["t"]) for event in events),
+            finalized=True,
+        )
+        corrected_warnings = corrected.get("warnings")
+        corrected_omissions = corrected.get(
+            "omitted_allin_runout_boundaries"
+        )
+        pending = corrected.get("pending_expected_actions")
+        if (
+            corrected.get("issues") != []
+            or not isinstance(corrected_warnings, list)
+            or len(corrected_warnings) != 2
+            or any(
+                item.get("kind")
+                != "showdown_runout_omitted_after_called_allin"
+                or item.get("hand") != expected_failure["hand"]
+                or item.get("stage") != expected_failure["stage"]
+                or item.get("public_cards_observed")
+                != expected_failure["public_cards_observed"]
+                for item in corrected_warnings
+            )
+            or not isinstance(corrected_omissions, list)
+            or len(corrected_omissions) != 2
+            or {item.get("conn") for item in corrected_omissions}
+            != {"A", "B"}
+            or any(
+                item.get("kind") != "omitted_allin_runout"
+                or item.get("hand") != expected_failure["hand"]
+                or item.get("stage") != expected_failure["stage"]
+                or item.get("public_cards_observed")
+                != expected_failure["public_cards_observed"]
+                or item.get("natural_hand_70") is not False
+                or item.get("player_chips") != 0
+                or item.get("opponent_chips") != 0
+                or item.get("player_bet") != item.get("opponent_bet")
+                or item.get("pot") != 40000
+                or [
+                    action.get("action_type")
+                    for action in (item.get("action_suffix") or [])
+                ] != ["allin", "call"]
+                or any(
+                    action.get("stage") != expected_failure["stage"]
+                    for action in (item.get("action_suffix") or [])
+                )
+                for item in corrected_omissions
+            )
+            or sorted(
+                item.get("settlement_amount")
+                for item in corrected_omissions
+            ) not in ([-20000, 20000], [0, 0])
+            or corrected.get("events_seen") != len(events)
+            or corrected.get("hands_started_min")
+            != expected_failure["corrected_hands_started"]
+            or corrected.get("settlements_min")
+            != expected_failure["corrected_settlements"]
+            or not isinstance(pending, list)
+            or len(pending) != 1
+        ):
+            raise ValueError("called-allin repaired replay is not exact")
+        false_failures.append({
+            "slot": slot,
+            "round_id": round_id,
+            "hand": expected_failure["hand"],
+            "stage": expected_failure["stage"],
+            "public_cards_observed": expected_failure[
+                "public_cards_observed"
+            ],
+            "receipt_sha256": receipt_sha256,
+            "wire_events_sha256": _sha256_bytes(wire_raw),
+            "replay_summary_sha256": _sha256_bytes(replay_raw),
+            "event_count": len(events),
+            "stored_summary_digest": canonical_digest(stored_replay),
+            "corrected_summary_digest": canonical_digest(corrected),
+            "omitted_runout_boundaries_digest": canonical_digest(
+                corrected_omissions
+            ),
+            "corrected_hands_started": corrected["hands_started_min"],
+            "corrected_settlements": corrected["settlements_min"],
+            "corrected_pending_count": len(pending),
+        })
+
+    payload = {
+        "schema_version": 1,
+        "kind": _CALLED_ALLIN_DIAGNOSIS_KIND,
+        "profile_id": _CALLED_ALLIN_PROFILE_ID,
+        "defect_id": _CALLED_ALLIN_DEFECT_ID,
+        "incident_identity": incident_identity,
+        **source_identities,
+        "oracle_identity": oracle_identity,
+        "evidence_sha256": evidence_sha256,
+        "evidence_archive_sha256": archive["archive_sha256"],
+        "evidence_archive_manifest_digest": archive["manifest_digest"],
+        "suite_summary_sha256": _sha256_bytes(summary_raw),
+        "attribution_digest": canonical_digest(attribution),
+        "round_receipts": round_receipts,
+        "false_failures": false_failures,
+        "authority_absence": authority_absence,
+        "strength_evaluation": "not_applicable",
+        "disposition": "abandon_and_reprepare_only_without_evidence_reuse",
+    }
+    return _validate_called_allin_failure_diagnosis_envelope({
+        **payload,
+        "proof_digest": canonical_digest(payload),
+    })
+
+
+def _terminal_job_recovery_profile(
+    progress: Any,
+    status: Any,
+    verdict: Any,
+) -> str | None:
+    progress = progress if isinstance(progress, dict) else {}
+    status = status if isinstance(status, dict) else {}
+    verdict = verdict if isinstance(verdict, dict) else {}
+    summary = status.get("summary")
+    summary = summary if isinstance(summary, dict) else {}
+    if (
+        progress.get("rounds_requested") == 8
+        and progress.get("rounds_completed") == 0
+        and status.get("status") == "official-inconclusive"
+        and summary.get("rounds_run") == 0
+        and verdict.get("inconclusive") is True
+        and verdict.get("blocking") is False
+        and verdict.get("violation") is False
+    ):
+        return "zero-round-harness-inconclusive"
+    if (
+        progress.get("rounds_requested") == 8
+        and progress.get("rounds_completed") == 8
+        and status.get("status") == "official-failed"
+        and summary.get("rounds_run") == 8
+        and summary.get("passed_rounds") == 0
+        and summary.get("failed_rounds") == 8
+        and summary.get("resumed_rounds") == 0
+        and verdict.get("inconclusive") is False
+        and verdict.get("blocking") is True
+        and verdict.get("violation") is True
+    ):
+        return "legacy-causal-order-false-failure"
+    if (
+        progress.get("rounds_requested") == 8
+        and progress.get("rounds_completed") == 8
+        and progress.get("rounds_passed") == 5
+        and status.get("status") == "official-inconclusive"
+        and summary.get("rounds_run") == 8
+        and summary.get("passed_rounds") == 5
+        and summary.get("failed_rounds") == 3
+        and summary.get("resumed_rounds") == 0
+        and verdict.get("inconclusive") is True
+        and verdict.get("blocking") is False
+        and verdict.get("violation") is False
+        and verdict.get("classification") == "inconclusive"
+    ):
+        return _CALLED_ALLIN_PROFILE_ID
+    return None
+
+
 def _terminal_job_facts(
     root: Path,
     *,
@@ -1479,6 +2692,8 @@ def _terminal_job_facts(
     expected_first_strict_control_receipt_digest: str,
     expected_protocol_bootstrap_receipt: dict[str, Any],
     expected_first_strict_control_receipt: dict[str, Any],
+    expected_checkpoint_revision: int,
+    expected_repair_contract_version: int,
     expected_baseline_head: str,
     expected_current_head: str,
 ) -> dict[str, Any]:
@@ -1535,32 +2750,28 @@ def _terminal_job_facts(
         issues.append("bootstrap_contract_job_identity_mismatch")
     if public.get("pending") is not False or public.get("state") != "completed":
         issues.append("bootstrap_contract_job_not_terminal_completed")
-    summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
     verdict = official_compliance_verdict(status)
-    zero_round_inconclusive = bool(
-        progress.get("rounds_requested") == 8
-        and progress.get("rounds_completed") == 0
-        and status.get("status") == "official-inconclusive"
-        and summary.get("rounds_run") == 0
-        and verdict.get("inconclusive")
-        and not verdict.get("blocking")
-        and not verdict.get("violation")
+    recovery_profile = _terminal_job_recovery_profile(
+        progress,
+        status,
+        verdict,
     )
-    legacy_causal_failure = bool(
-        progress.get("rounds_requested") == 8
-        and progress.get("rounds_completed") == 8
-        and status.get("status") == "official-failed"
-        and summary.get("rounds_run") == 8
-        and summary.get("passed_rounds") == 0
-        and summary.get("failed_rounds") == 8
-        and summary.get("resumed_rounds") == 0
-        and verdict.get("inconclusive") is False
-        and verdict.get("blocking") is True
-        and verdict.get("violation") is True
+    zero_round_inconclusive = (
+        recovery_profile == "zero-round-harness-inconclusive"
     )
-    if not zero_round_inconclusive and not legacy_causal_failure:
+    legacy_causal_failure = (
+        recovery_profile == "legacy-causal-order-false-failure"
+    )
+    called_allin_harness_failure = (
+        recovery_profile == _CALLED_ALLIN_PROFILE_ID
+    )
+    if not any((
+        zero_round_inconclusive,
+        legacy_causal_failure,
+        called_allin_harness_failure,
+    )):
         issues.append("bootstrap_contract_terminal_job_profile_unsupported")
-    if legacy_causal_failure:
+    if legacy_causal_failure or called_allin_harness_failure:
         issues.extend(_deterministic_status_receipt_issues(
             status,
             candidate=candidate,
@@ -1766,6 +2977,7 @@ def _terminal_job_facts(
         ]
         if later_candidate_entries:
             issues.append("bootstrap_contract_terminal_ledger_not_latest_for_candidate")
+    consumption = first_strict_control_consumption(CONTROL_ID)
     diagnosis: dict[str, Any] | None = None
     if legacy_causal_failure:
         try:
@@ -1784,12 +2996,41 @@ def _terminal_job_facts(
                 "bootstrap_contract_causal_failure_unproven:"
                 f"{type(exc).__name__}:{str(exc)[:160]}"
             )
+    elif called_allin_harness_failure:
+        try:
+            diagnosis = _called_allin_runout_failure_diagnosis(
+                root,
+                directory,
+                request=request,
+                state=state,
+                status=status,
+                candidate_hash=candidate_hash,
+                workflow_run_id=workflow_run_id,
+                checkpoint_revision=expected_checkpoint_revision,
+                job_result_digest=str(result.get("result_digest") or ""),
+                expected_evaluation_contract_version=(
+                    expected_evaluation_contract_version
+                ),
+                expected_evaluation_contract_hash=(
+                    expected_evaluation_contract_hash
+                ),
+                expected_repair_contract_version=(
+                    expected_repair_contract_version
+                ),
+                expected_baseline_head=expected_baseline_head,
+                expected_repair_head=expected_current_head,
+                control_consumption=consumption,
+            )
+        except Exception as exc:
+            issues.append(
+                "bootstrap_contract_called_allin_failure_unproven:"
+                f"{type(exc).__name__}:{str(exc)[:160]}"
+            )
     certificate_path = (
         root / "official_certificates" / f"{bot_name(FIRST_STRICT_POLICY_VERSION)}.json"
     )
     if os.path.lexists(certificate_path):
         issues.append("bootstrap_contract_published_certificate_present")
-    consumption = first_strict_control_consumption(CONTROL_ID)
     if (
         consumption.get("valid") is not True
         or consumption.get("successful_count") != 0
@@ -1805,8 +3046,16 @@ def _terminal_job_facts(
         "result_digest": result["result_digest"],
         "status_digest": canonical_digest(status),
         "rounds_requested": 8,
-        "rounds_completed": 8 if legacy_causal_failure else 0,
-        "rounds_run": 8 if legacy_causal_failure else 0,
+        "rounds_completed": (
+            8
+            if legacy_causal_failure or called_allin_harness_failure
+            else 0
+        ),
+        "rounds_run": (
+            8
+            if legacy_causal_failure or called_allin_harness_failure
+            else 0
+        ),
         "ledger_entry_digest": ledger_entry["entry_digest"],
         "ledger_sequence": ledger_entry["sequence"],
         "deterministic_status_receipt_digest": deterministic.get("receipt_digest"),
@@ -1821,6 +3070,11 @@ def _terminal_job_facts(
         **(
             {"contract_failure_diagnosis": diagnosis}
             if diagnosis is not None
+            else {}
+        ),
+        **(
+            {"recovery_profile": _CALLED_ALLIN_PROFILE_ID}
+            if called_allin_harness_failure
             else {}
         ),
     }
@@ -1997,12 +3251,21 @@ def build_claim(
             expected_first_strict_control_receipt=(
                 checkpoint_control_receipt
             ),
+            expected_checkpoint_revision=expected_checkpoint_revision,
+            expected_repair_contract_version=int(
+                new_contract.get("version", 0) or 0
+            ),
             expected_baseline_head=full_expected_baseline,
             expected_current_head=current_head,
         )
     except BootstrapContractRecoveryError as exc:
         issues.extend(exc.issues)
         job_facts = {}
+    if (
+        job_facts.get("recovery_profile") == _CALLED_ALLIN_PROFILE_ID
+        and new_contract.get("version") != 41
+    ):
+        issues.append("bootstrap_contract_called_allin_contract_41_required")
     try:
         from official_certification import official_full_certified, status_payload
         status = status_payload(root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION))
@@ -2276,7 +3539,7 @@ def _validate_claim_envelope(
         ])
     diagnosis = terminal_job.get("contract_failure_diagnosis")
     if diagnosis is not None:
-        _validate_causal_failure_diagnosis_envelope(diagnosis)
+        _validate_contract_failure_diagnosis_envelope(diagnosis)
     if (
         not isinstance(old, dict)
         or set(old) != {
@@ -2324,6 +3587,40 @@ def _validate_claim_envelope(
         raise BootstrapContractRecoveryError([
             "bootstrap_contract_claim_crossbinding_invalid"
         ])
+    if diagnosis is not None and diagnosis.get("kind") == (
+        _CALLED_ALLIN_DIAGNOSIS_KIND
+    ):
+        incident = diagnosis.get("incident_identity") or {}
+        consumption = terminal_job.get("control_consumption") or {}
+        if (
+            terminal_job.get("recovery_profile")
+            != _CALLED_ALLIN_PROFILE_ID
+            or terminal_job.get("job_id") != incident.get("job_id")
+            or terminal_job.get("result_digest")
+            != incident.get("job_result_digest")
+            or terminal_job.get("rounds_requested")
+            != incident.get("rounds_requested")
+            or terminal_job.get("rounds_completed")
+            != incident.get("rounds_completed")
+            or terminal_job.get("rounds_run")
+            != incident.get("rounds_run")
+            or old.get("workflow_run_id")
+            != incident.get("workflow_run_id")
+            or old.get("checkpoint_revision")
+            != incident.get("checkpoint_revision")
+            or candidate.get("artifact_hash")
+            != incident.get("candidate_artifact_hash")
+            or migration.get("baseline_head")
+            != incident.get("baseline_head")
+            or migration.get("baseline_contract_hash")
+            != incident.get("baseline_contract_hash")
+            or consumption.get("valid") is not True
+            or consumption.get("successful_count") != 0
+            or consumption.get("max_successful_consumptions") != 1
+        ):
+            raise BootstrapContractRecoveryError([
+                "bootstrap_contract_called_allin_claim_crossbinding_invalid"
+            ])
     return claim
 
 
@@ -2518,10 +3815,20 @@ def _historical_terminal_job_matches(
         status = result.get("status") if isinstance(result.get("status"), dict) else {}
         progress = public.get("progress") if isinstance(public.get("progress"), dict) else {}
         diagnosis = expected.get("contract_failure_diagnosis")
-        causal_profile = diagnosis is not None
-        if causal_profile:
-            _validate_causal_failure_diagnosis_envelope(diagnosis)
-        expected_rounds = 8 if causal_profile else 0
+        diagnosis_kind = (
+            diagnosis.get("kind") if isinstance(diagnosis, dict) else None
+        )
+        legacy_causal_profile = diagnosis_kind == (
+            _CAUSAL_FAILURE_DIAGNOSIS_KIND
+        )
+        called_allin_profile = diagnosis_kind == (
+            _CALLED_ALLIN_DIAGNOSIS_KIND
+        )
+        if diagnosis is not None:
+            _validate_contract_failure_diagnosis_envelope(diagnosis)
+        expected_rounds = (
+            8 if legacy_causal_profile or called_allin_profile else 0
+        )
         if (
             public.get("state") != "completed"
             or public.get("pending") is not False
@@ -2535,12 +3842,17 @@ def _historical_terminal_job_matches(
             != expected_rounds
             or status.get("status") != (
                 "official-failed"
-                if causal_profile
+                if legacy_causal_profile
                 else "official-inconclusive"
+            )
+            or (
+                called_allin_profile
+                and expected.get("recovery_profile")
+                != _CALLED_ALLIN_PROFILE_ID
             )
         ):
             return False
-        if causal_profile:
+        if legacy_causal_profile:
             project_root = Path(root).resolve() if root is not None else directory.parents[5]
             rebuilt_diagnosis = _legacy_causal_failure_diagnosis(
                 project_root,
@@ -2563,6 +3875,59 @@ def _historical_terminal_job_matches(
             )
             if rebuilt_diagnosis != diagnosis:
                 return False
+        elif called_allin_profile:
+            project_root = (
+                Path(root).resolve()
+                if root is not None
+                else directory.parents[5]
+            )
+            incident = diagnosis.get("incident_identity") or {}
+            rebuilt_diagnosis = _called_allin_runout_failure_diagnosis(
+                project_root,
+                directory,
+                request=request,
+                state=state,
+                status=status,
+                candidate_hash=str(
+                    (claim.get("candidate") or {}).get("artifact_hash") or ""
+                ),
+                workflow_run_id=str(
+                    (claim.get("old_checkpoint") or {}).get(
+                        "workflow_run_id"
+                    ) or ""
+                ),
+                checkpoint_revision=int(
+                    (claim.get("old_checkpoint") or {}).get(
+                        "checkpoint_revision", 0
+                    ) or 0
+                ),
+                job_result_digest=str(result.get("result_digest") or ""),
+                expected_evaluation_contract_version=int(
+                    incident.get("baseline_contract_version", 0) or 0
+                ),
+                expected_evaluation_contract_hash=str(
+                    (claim.get("git_contract_migration") or {}).get(
+                        "baseline_contract_hash"
+                    ) or ""
+                ),
+                expected_repair_contract_version=int(
+                    incident.get("repair_contract_version", 0) or 0
+                ),
+                expected_baseline_head=str(
+                    (claim.get("git_contract_migration") or {}).get(
+                        "baseline_head"
+                    ) or ""
+                ),
+                expected_repair_head=str(
+                    (claim.get("git_contract_migration") or {}).get(
+                        "current_head"
+                    ) or ""
+                ),
+                control_consumption=expected.get("control_consumption") or {},
+                require_live_repair_source=False,
+            )
+            if rebuilt_diagnosis != diagnosis:
+                return False
         entries, issues = _validated_ledger_entries()
         if issues:
             return False
@@ -2577,14 +3942,14 @@ def _historical_terminal_job_matches(
             entry.get("sequence") == expected.get("ledger_sequence")
             and entry.get("outcome") == (
                 "official-failed"
-                if causal_profile
+                if legacy_causal_profile
                 else "official-inconclusive"
             )
             and entry.get("classification") == (
-                "protocol" if causal_profile else "harness"
+                "protocol" if legacy_causal_profile else "harness"
             )
-            and entry.get("authoritative") is causal_profile
-            and entry.get("blocking") is causal_profile
+            and entry.get("authoritative") is legacy_causal_profile
+            and entry.get("blocking") is legacy_causal_profile
             and entry.get("certificate_digest") in {None, ""}
             and entry.get("strength_evaluation") == "not_applicable"
         )

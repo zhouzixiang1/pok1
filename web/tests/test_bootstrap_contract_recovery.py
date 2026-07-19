@@ -276,13 +276,191 @@ def _causal_failure_diagnosis():
     return {**payload, "proof_digest": canonical_digest(payload)}
 
 
+def _called_allin_failure_diagnosis():
+    def digest(seed):
+        return f"{(seed % 15) + 1:x}" * 64
+
+    receipts = [
+        {
+            "slot": slot,
+            "round_id": f"{slot}_20260719_000000",
+            "passed": passed,
+            "receipt_sha256": digest(offset),
+        }
+        for offset, (slot, passed) in enumerate(
+            zip(
+                recovery._CALLED_ALLIN_EXPECTED_SLOTS,
+                recovery._CALLED_ALLIN_PASS_PATTERN,
+            ),
+            1,
+        )
+    ]
+    receipt_by_slot = {item["slot"]: item for item in receipts}
+    failures = []
+    for offset, expected in enumerate(
+        recovery._CALLED_ALLIN_FALSE_FAILURES,
+        1,
+    ):
+        failures.append({
+            "slot": expected["slot"],
+            "round_id": receipt_by_slot[expected["slot"]]["round_id"],
+            "hand": expected["hand"],
+            "stage": expected["stage"],
+            "public_cards_observed": expected["public_cards_observed"],
+            "receipt_sha256": receipt_by_slot[expected["slot"]][
+                "receipt_sha256"
+            ],
+            "wire_events_sha256": expected["wire_events_sha256"],
+            "replay_summary_sha256": digest(offset + 8),
+            "event_count": max(expected["record_seq"]) + 5,
+            "stored_summary_digest": digest(offset + 11),
+            "corrected_summary_digest": digest(offset + 14),
+            "omitted_runout_boundaries_digest": digest(offset + 17),
+            "corrected_hands_started": expected[
+                "corrected_hands_started"
+            ],
+            "corrected_settlements": expected["corrected_settlements"],
+            "corrected_pending_count": 1,
+        })
+    payload = {
+        "schema_version": 1,
+        "kind": recovery._CALLED_ALLIN_DIAGNOSIS_KIND,
+        "profile_id": recovery._CALLED_ALLIN_PROFILE_ID,
+        "defect_id": recovery._CALLED_ALLIN_DEFECT_ID,
+        "incident_identity": (
+            recovery._expected_called_allin_incident_identity()
+        ),
+        "baseline_wire_probe_sha256": "1" * 64,
+        "repair_wire_probe_sha256": "2" * 64,
+        "baseline_harness_sha256": "3" * 64,
+        "repair_harness_sha256": "4" * 64,
+        "oracle_identity": {
+            "document_path": recovery._CALLED_ALLIN_ORACLE_DOC,
+            "document_sha256": recovery._CALLED_ALLIN_ORACLE_DOC_SHA256,
+            "fixture_path": recovery._CALLED_ALLIN_ORACLE_FIXTURE,
+            "fixture_sha256": (
+                recovery._CALLED_ALLIN_ORACLE_FIXTURE_SHA256
+            ),
+            "oracle_id": recovery._CALLED_ALLIN_DEFECT_ID,
+            "authority_scope": "official_exe_wire_compliance_only",
+            "strength_weight": 0,
+            "official_exe_sha256": recovery._CALLED_ALLIN_EXE_SHA256,
+            "control_artifact_sha256": recovery._CALLED_ALLIN_CONTROL_HASH,
+            "observations_digest": canonical_digest(
+                recovery._expected_called_allin_oracle_observations()
+            ),
+        },
+        "evidence_sha256": "5" * 64,
+        "evidence_archive_sha256": "6" * 64,
+        "evidence_archive_manifest_digest": "7" * 64,
+        "suite_summary_sha256": "8" * 64,
+        "attribution_digest": "9" * 64,
+        "round_receipts": receipts,
+        "false_failures": failures,
+        "authority_absence": copy.deepcopy(
+            recovery._CALLED_ALLIN_AUTHORITY_ABSENCE
+        ),
+        "strength_evaluation": "not_applicable",
+        "disposition": "abandon_and_reprepare_only_without_evidence_reuse",
+    }
+    return {**payload, "proof_digest": canonical_digest(payload)}
+
+
+def _resign_diagnosis(value):
+    value["proof_digest"] = canonical_digest({
+        key: item for key, item in value.items()
+        if key != "proof_digest"
+    })
+    return value
+
+
+def _called_allin_claim_envelope():
+    scope = {
+        **_execution_scope(),
+        "workflow_run_id": recovery._CALLED_ALLIN_WORKFLOW_RUN_ID,
+        "checkpoint_revision": 20,
+        "candidate_artifact_hash": recovery._CALLED_ALLIN_CANDIDATE_HASH,
+    }
+    terminal = {
+        **_execution_terminal(),
+        "scope_digest": canonical_digest(scope),
+    }
+    success_payload = {
+        "scope": scope,
+        "expected_receipts": _execution_receipts(),
+        "terminal_receipt": terminal,
+    }
+    diagnosis = _called_allin_failure_diagnosis()
+    incident = diagnosis["incident_identity"]
+    payload = {
+        "schema_version": recovery.CLAIM_SCHEMA_VERSION,
+        "kind": recovery.CLAIM_KIND,
+        "evaluation_epoch": recovery.EVALUATION_EPOCH,
+        "old_checkpoint": {
+            "digest": "a" * 64,
+            "workflow_run_id": incident["workflow_run_id"],
+            "next_v": 143,
+            "source_v": 142,
+            "stage": "official_bootstrap_required",
+            "checkpoint_revision": incident["checkpoint_revision"],
+        },
+        "git_contract_migration": {
+            "baseline_head": incident["baseline_head"],
+            "baseline_contract_hash": incident["baseline_contract_hash"],
+            "current_head": NEW_HEAD,
+            "current_contract_hash": "b" * 64,
+            "changed_paths": ["web/core/official_wire_probe.py"],
+            "contract_paths": ["web/core/official_wire_probe.py"],
+        },
+        "candidate": {
+            "path": "bots/national_v143",
+            "artifact_hash": incident["candidate_artifact_hash"],
+            "files": sorted(recovery._STRICT_FILES),
+        },
+        "parked_request_digest": "c" * 64,
+        "terminal_job": {
+            "job_id": incident["job_id"],
+            "result_digest": incident["job_result_digest"],
+            "rounds_requested": incident["rounds_requested"],
+            "rounds_completed": incident["rounds_completed"],
+            "rounds_run": incident["rounds_run"],
+            "control_consumption": {
+                "valid": True,
+                "successful_count": 0,
+                "max_successful_consumptions": 1,
+            },
+            "contract_failure_diagnosis": diagnosis,
+            "recovery_profile": recovery._CALLED_ALLIN_PROFILE_ID,
+        },
+        "first_strict_execution_success": {
+            **success_payload,
+            "proof_digest": canonical_digest(success_payload),
+        },
+        "disposition": (
+            "canonical_abandon_and_quarantine_without_evidence_migration"
+        ),
+    }
+    return {**payload, "claim_digest": canonical_digest(payload)}
+
+
+def _resign_claim(value):
+    value["claim_digest"] = canonical_digest({
+        key: item for key, item in value.items()
+        if key != "claim_digest"
+    })
+    return value
+
+
 def test_legacy_idle_flush_false_call_is_rebuilt_from_raw_causally():
     from official_wire_probe import replay_events
 
     events = _legacy_false_illegal_call_events()
     legacy = replay_events(events, now=max(item["t"] for item in events))
 
-    assert [item["kind"] for item in legacy["issues"]] == ["illegal_call"]
+    assert [item["kind"] for item in legacy["issues"]] == [
+        "street_boundary_unproved",
+        "illegal_call",
+    ]
     causal, bindings = recovery._legacy_wire_causalize(events)
     corrected = replay_events(
         causal,
@@ -315,13 +493,73 @@ def test_legacy_stored_replay_allows_only_full_or_last_eof_omission():
     from official_wire_probe import replay_events
 
     events = _legacy_false_illegal_call_events()
-    stored = replay_events(events, now=max(item["t"] for item in events))
+    current = replay_events(events, now=max(item["t"] for item in events))
+    stored = {
+        key: copy.deepcopy(value)
+        for key, value in current.items()
+        if key in recovery._LEGACY_STORED_REPLAY_FIELDS
+    }
+    stored["issues"] = [
+        item for item in stored["issues"]
+        if item.get("kind") != "street_boundary_unproved"
+    ]
     assert recovery._legacy_replay_matches_stored(events, stored)
 
     forged = copy.deepcopy(stored)
     forged["events_seen"] = len(events) - 2
     with pytest.raises(ValueError, match="event count is invalid"):
         recovery._legacy_replay_matches_stored(events, forged)
+
+
+@pytest.mark.parametrize(
+    "issue_mutation",
+    (
+        lambda summary: summary["issues"].append({
+            "kind": "illegal_raise",
+            "conn": "A",
+            "hand": 1,
+            "stage": "flop",
+            "message": "raise 1",
+            "dt": 1.0,
+            "reason": "forged other issue",
+        }),
+        lambda summary: summary["issues"][0].update(observed_stage="turn"),
+    ),
+)
+def test_legacy_projection_rejects_nonversioned_or_unowned_current_issue(
+    monkeypatch,
+    issue_mutation,
+):
+    import official_wire_probe
+
+    events = _legacy_false_illegal_call_events()
+    current = official_wire_probe.replay_events(
+        events,
+        now=max(item["t"] for item in events),
+    )
+    stored = {
+        key: copy.deepcopy(value)
+        for key, value in current.items()
+        if key in recovery._LEGACY_STORED_REPLAY_FIELDS
+    }
+    stored["issues"] = [
+        item for item in stored["issues"]
+        if item.get("kind") != "street_boundary_unproved"
+    ]
+    original = official_wire_probe.OfficialWireReplay.summary
+
+    def drifted_summary(self, *args, **kwargs):
+        summary = original(self, *args, **kwargs)
+        issue_mutation(summary)
+        return summary
+
+    monkeypatch.setattr(
+        official_wire_probe.OfficialWireReplay,
+        "summary",
+        drifted_summary,
+    )
+    with pytest.raises(ValueError, match="does not match raw events"):
+        recovery._legacy_replay_matches_stored(events, stored)
 
 
 @pytest.mark.parametrize(
@@ -370,6 +608,319 @@ def test_causal_failure_diagnosis_is_tagged_exact_and_cannot_be_resigned_wider()
         })
         with pytest.raises(recovery.BootstrapContractRecoveryError):
             recovery._validate_causal_failure_diagnosis_envelope(forged)
+
+
+def test_called_allin_failure_diagnosis_is_exact_contract_40_to_41_profile():
+    diagnosis = _called_allin_failure_diagnosis()
+
+    assert recovery._validate_called_allin_failure_diagnosis_envelope(
+        diagnosis
+    ) == diagnosis
+    assert recovery._validate_contract_failure_diagnosis_envelope(
+        diagnosis
+    ) == diagnosis
+    assert diagnosis["incident_identity"] == {
+        "baseline_head": recovery._CALLED_ALLIN_BASELINE_HEAD,
+        "baseline_contract_version": 40,
+        "baseline_contract_hash": (
+            recovery._CALLED_ALLIN_BASELINE_CONTRACT_HASH
+        ),
+        "repair_contract_version": 41,
+        "workflow_run_id": "generation:143:workflow-v64",
+        "checkpoint_revision": 21,
+        "candidate_artifact_hash": recovery._CALLED_ALLIN_CANDIDATE_HASH,
+        "job_id": recovery._CALLED_ALLIN_JOB_ID,
+        "job_result_digest": recovery._CALLED_ALLIN_JOB_RESULT_DIGEST,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "passed_rounds": 5,
+        "failed_rounds": 3,
+    }
+    assert [
+        item["wire_events_sha256"]
+        for item in diagnosis["false_failures"]
+    ] == [
+        item["wire_events_sha256"]
+        for item in recovery._CALLED_ALLIN_FALSE_FAILURES
+    ]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        None,
+        lambda progress, _status, _verdict: progress.update(
+            rounds_requested=7
+        ),
+        lambda progress, _status, _verdict: progress.update(
+            rounds_completed=7
+        ),
+        lambda progress, _status, _verdict: progress.update(
+            rounds_passed=4
+        ),
+        lambda _progress, status, _verdict: status.update(
+            status="official-failed"
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            rounds_run=7
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            passed_rounds=4
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            failed_rounds=4
+        ),
+        lambda _progress, status, _verdict: status["summary"].update(
+            resumed_rounds=1
+        ),
+        lambda _progress, _status, verdict: verdict.update(
+            inconclusive=False
+        ),
+        lambda _progress, _status, verdict: verdict.update(blocking=True),
+        lambda _progress, _status, verdict: verdict.update(violation=True),
+        lambda _progress, _status, verdict: verdict.update(
+            classification="harness"
+        ),
+    ),
+)
+def test_terminal_job_profile_matches_only_exact_v64_five_three_shape(
+    mutation,
+):
+    progress = {
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_passed": 5,
+    }
+    status = {
+        "status": "official-inconclusive",
+        "summary": {
+            "rounds_run": 8,
+            "passed_rounds": 5,
+            "failed_rounds": 3,
+            "resumed_rounds": 0,
+        },
+    }
+    verdict = {
+        "inconclusive": True,
+        "blocking": False,
+        "violation": False,
+        "classification": "inconclusive",
+    }
+    if mutation is not None:
+        mutation(progress, status, verdict)
+
+    observed = recovery._terminal_job_recovery_profile(
+        progress,
+        status,
+        verdict,
+    )
+    if mutation is None:
+        assert observed == recovery._CALLED_ALLIN_PROFILE_ID
+    else:
+        assert observed is None
+
+
+def test_called_allin_oracle_identity_reopens_pinned_git_and_live_bytes(
+    monkeypatch,
+):
+    root = Path(__file__).resolve().parents[2]
+
+    def git(_root, *args, binary=False):
+        assert binary is True
+        assert args[:1] == ("show",)
+        relative = args[1].split(":", 1)[1]
+        return (root / relative).read_bytes()
+
+    monkeypatch.setattr(recovery, "_git", git)
+    observed = recovery._called_allin_oracle_identity(
+        root,
+        expected_repair_head=NEW_HEAD,
+        require_live_repair_source=True,
+    )
+
+    assert observed == {
+        "document_path": recovery._CALLED_ALLIN_ORACLE_DOC,
+        "document_sha256": recovery._CALLED_ALLIN_ORACLE_DOC_SHA256,
+        "fixture_path": recovery._CALLED_ALLIN_ORACLE_FIXTURE,
+        "fixture_sha256": recovery._CALLED_ALLIN_ORACLE_FIXTURE_SHA256,
+        "oracle_id": recovery._CALLED_ALLIN_DEFECT_ID,
+        "authority_scope": "official_exe_wire_compliance_only",
+        "strength_weight": 0,
+        "official_exe_sha256": recovery._CALLED_ALLIN_EXE_SHA256,
+        "control_artifact_sha256": recovery._CALLED_ALLIN_CONTROL_HASH,
+        "observations_digest": canonical_digest(
+            recovery._expected_called_allin_oracle_observations()
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "field",
+    tuple(recovery._CALLED_ALLIN_INCIDENT_IDENTITY_FIELDS),
+)
+def test_called_allin_diagnosis_rejects_every_incident_identity_drift(field):
+    diagnosis = _called_allin_failure_diagnosis()
+    identity = diagnosis["incident_identity"]
+    identity[field] = (
+        identity[field] + 1
+        if type(identity[field]) is int
+        else ("0" * len(identity[field]))
+    )
+    _resign_diagnosis(diagnosis)
+
+    with pytest.raises(
+        recovery.BootstrapContractRecoveryError,
+        match="called_allin_diagnosis_invalid",
+    ):
+        recovery._validate_called_allin_failure_diagnosis_envelope(
+            diagnosis
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda value: value["oracle_identity"].update(
+            document_path="docs/forged.md"
+        ),
+        lambda value: value["oracle_identity"].update(
+            document_sha256="0" * 64
+        ),
+        lambda value: value["oracle_identity"].update(
+            fixture_path="sever/tests/fixtures/forged.json"
+        ),
+        lambda value: value["oracle_identity"].update(
+            fixture_sha256="0" * 64
+        ),
+        lambda value: value["oracle_identity"].update(
+            oracle_id="forged"
+        ),
+        lambda value: value["oracle_identity"].update(
+            authority_scope="strength"
+        ),
+        lambda value: value["oracle_identity"].update(strength_weight=1),
+        lambda value: value["oracle_identity"].update(
+            official_exe_sha256="0" * 64
+        ),
+        lambda value: value["oracle_identity"].update(
+            control_artifact_sha256="0" * 64
+        ),
+        lambda value: value["oracle_identity"].update(
+            observations_digest="0" * 64
+        ),
+        lambda value: value["false_failures"][0].update(
+            wire_events_sha256="0" * 64
+        ),
+        lambda value: value["false_failures"][1].update(
+            wire_events_sha256="0" * 64
+        ),
+        lambda value: value["false_failures"][2].update(
+            wire_events_sha256="0" * 64
+        ),
+        lambda value: value["round_receipts"][0].update(passed=True),
+        lambda value: value["authority_absence"].update(
+            certificate_present=True
+        ),
+        lambda value: value["authority_absence"].update(
+            certificate_digest="0" * 64
+        ),
+        lambda value: value["authority_absence"].update(
+            candidate_completed=True
+        ),
+        lambda value: value["authority_absence"].update(
+            completion_tags=["national-bot-v143"]
+        ),
+        lambda value: value["authority_absence"].update(
+            active_bots=["national_v143"]
+        ),
+        lambda value: value["authority_absence"].update(
+            strict_published_bots=["national_v143"]
+        ),
+        lambda value: value["authority_absence"].update(
+            control_successful_count=1
+        ),
+        lambda value: value["authority_absence"].update(
+            control_max_successful_consumptions=2
+        ),
+        lambda value: value.update(strength_evaluation="candidate_strength"),
+        lambda value: value.update(
+            disposition="reuse_old_rounds_as_certification"
+        ),
+    ),
+)
+def test_called_allin_diagnosis_rejects_oracle_raw_outcome_or_authority_drift(
+    mutation,
+):
+    diagnosis = _called_allin_failure_diagnosis()
+    mutation(diagnosis)
+    _resign_diagnosis(diagnosis)
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError):
+        recovery._validate_called_allin_failure_diagnosis_envelope(
+            diagnosis
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        None,
+        lambda claim: claim["terminal_job"].update(
+            recovery_profile="forged"
+        ),
+        lambda claim: claim["terminal_job"].update(job_id="0" * 64),
+        lambda claim: claim["terminal_job"].update(
+            result_digest="0" * 64
+        ),
+        lambda claim: claim["terminal_job"].update(rounds_requested=7),
+        lambda claim: claim["terminal_job"].update(rounds_completed=7),
+        lambda claim: claim["terminal_job"].update(rounds_run=7),
+        lambda claim: claim["terminal_job"]["control_consumption"].update(
+            valid=False
+        ),
+        lambda claim: claim["terminal_job"]["control_consumption"].update(
+            successful_count=1
+        ),
+        lambda claim: claim["terminal_job"]["control_consumption"].update(
+            max_successful_consumptions=2
+        ),
+        lambda claim: claim["candidate"].update(artifact_hash="0" * 64),
+        lambda claim: claim["git_contract_migration"].update(
+            baseline_head="0" * 40
+        ),
+        lambda claim: claim["git_contract_migration"].update(
+            baseline_contract_hash="0" * 64
+        ),
+    ),
+)
+def test_called_allin_claim_crossbinds_terminal_authority_and_migration(
+    monkeypatch,
+    mutation,
+):
+    claim = _called_allin_claim_envelope()
+    monkeypatch.setattr(
+        recovery,
+        "_read_succeeded_first_strict_execution",
+        lambda _scope, *, expected_receipts, expected_terminal_receipt: (
+            expected_terminal_receipt
+        ),
+    )
+    if mutation is not None:
+        mutation(claim)
+        _resign_claim(claim)
+
+    if mutation is None:
+        assert recovery._validate_claim_envelope(
+            claim,
+            claim["claim_digest"],
+        ) == claim
+    else:
+        with pytest.raises(recovery.BootstrapContractRecoveryError):
+            recovery._validate_claim_envelope(
+                claim,
+                claim["claim_digest"],
+            )
 
 
 def test_round_job_envelope_must_equal_status_including_opponent_bindings():
@@ -502,6 +1053,145 @@ def test_historical_causal_failure_reopens_raw_diagnosis_and_signed_failure(
         root=tmp_path,
     )
     assert observed["kwargs"]["require_live_repair_source"] is False
+    observed["value"] = {
+        **diagnosis,
+        "proof_digest": "0" * 64,
+    }
+    assert not recovery._historical_terminal_job_matches(
+        claim,
+        directory,
+        root=tmp_path,
+    )
+
+
+def test_historical_called_allin_failure_reopens_exact_raw_oracle_profile(
+    tmp_path,
+    monkeypatch,
+):
+    import official_bootstrap
+
+    directory = tmp_path / recovery._CALLED_ALLIN_JOB_ID
+    directory.mkdir()
+    diagnosis = _called_allin_failure_diagnosis()
+    entry = {
+        "entry_digest": "9" * 64,
+        "sequence": 4,
+        "outcome": "official-inconclusive",
+        "classification": "harness",
+        "authoritative": False,
+        "blocking": False,
+        "certificate_digest": "",
+        "strength_evaluation": "not_applicable",
+    }
+    status = {
+        "status": "official-inconclusive",
+        "summary": {"rounds_run": 8},
+        "official_verdict_ledger_entry": entry,
+    }
+    request = {"request_digest": "6" * 64}
+    state = {
+        "revision": 1218,
+        "attempt": 1,
+        "result_digest": recovery._CALLED_ALLIN_JOB_RESULT_DIGEST,
+    }
+    result = {
+        "result_digest": recovery._CALLED_ALLIN_JOB_RESULT_DIGEST,
+        "status": status,
+    }
+    public = {
+        "state": "completed",
+        "pending": False,
+        "progress": {"rounds_requested": 8, "rounds_completed": 8},
+    }
+    expected = {
+        "job_id": recovery._CALLED_ALLIN_JOB_ID,
+        "request_digest": request["request_digest"],
+        "state_revision": state["revision"],
+        "result_digest": result["result_digest"],
+        "status_digest": canonical_digest(status),
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "ledger_entry_digest": entry["entry_digest"],
+        "ledger_sequence": entry["sequence"],
+        "control_consumption": {
+            "valid": True,
+            "successful_count": 0,
+            "max_successful_consumptions": 1,
+        },
+        "contract_failure_diagnosis": diagnosis,
+        "recovery_profile": recovery._CALLED_ALLIN_PROFILE_ID,
+    }
+    claim = {
+        "old_checkpoint": {
+            "workflow_run_id": recovery._CALLED_ALLIN_WORKFLOW_RUN_ID,
+            "checkpoint_revision": (
+                recovery._CALLED_ALLIN_CHECKPOINT_REVISION
+            ),
+        },
+        "terminal_job": expected,
+        "candidate": {
+            "artifact_hash": recovery._CALLED_ALLIN_CANDIDATE_HASH,
+        },
+        "git_contract_migration": {
+            "baseline_head": recovery._CALLED_ALLIN_BASELINE_HEAD,
+            "baseline_contract_hash": (
+                recovery._CALLED_ALLIN_BASELINE_CONTRACT_HASH
+            ),
+            "current_head": NEW_HEAD,
+        },
+    }
+    monkeypatch.setattr(
+        official_certification_job,
+        "_job_lock",
+        lambda *_a: nullcontext(),
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_read_json",
+        lambda path: request if path.name == "request.json" else state,
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_validate_request",
+        lambda _r: [],
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_public_state",
+        lambda *_a: public,
+    )
+    monkeypatch.setattr(
+        official_certification_job,
+        "_result_payload",
+        lambda *_a: result,
+    )
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_validated_ledger_entries",
+        lambda: ([entry], []),
+    )
+    observed = {"value": diagnosis, "kwargs": None}
+
+    def rebuild_diagnosis(*_args, **kwargs):
+        observed["kwargs"] = kwargs
+        return observed["value"]
+
+    monkeypatch.setattr(
+        recovery,
+        "_called_allin_runout_failure_diagnosis",
+        rebuild_diagnosis,
+    )
+
+    assert recovery._historical_terminal_job_matches(
+        claim,
+        directory,
+        root=tmp_path,
+    )
+    assert observed["kwargs"]["require_live_repair_source"] is False
+    assert observed["kwargs"]["workflow_run_id"] == (
+        recovery._CALLED_ALLIN_WORKFLOW_RUN_ID
+    )
     observed["value"] = {
         **diagnosis,
         "proof_digest": "0" * 64,
@@ -857,6 +1547,61 @@ def test_build_claim_binds_exact_parked_contract_and_terminal_job(tmp_path, monk
     assert claim["claim_digest"] == canonical_digest({
         key: value for key, value in claim.items() if key != "claim_digest"
     })
+
+
+def test_called_allin_profile_requires_repair_contract_41(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / ".evolution_pok"
+    _configure_claim(monkeypatch, root)
+    called_job = {
+        "job_id": JOB_ID,
+        "request_digest": "6" * 64,
+        "state_revision": 4,
+        "result_digest": "7" * 64,
+        "status_digest": "8" * 64,
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "ledger_entry_digest": "9" * 64,
+        "ledger_sequence": 2,
+        "control_consumption": {
+            "valid": True,
+            "successful_count": 0,
+            "max_successful_consumptions": 1,
+        },
+        "recovery_profile": recovery._CALLED_ALLIN_PROFILE_ID,
+    }
+    monkeypatch.setattr(
+        recovery,
+        "_terminal_job_facts",
+        lambda *_a, **_k: called_job,
+    )
+
+    with pytest.raises(recovery.BootstrapContractRecoveryError) as exc:
+        _build(root)
+    assert (
+        "bootstrap_contract_called_allin_contract_41_required"
+        in exc.value.issues
+    )
+
+    monkeypatch.setattr(
+        evaluation_contract,
+        "build_evaluation_contract",
+        lambda *_a, **_k: {
+            "version": 41,
+            "stage": "official_bootstrap_required",
+            "path_exact": ["web/core/official_platform_harness.py"],
+            "path_prefixes": [],
+            "runtime_prefixes": [],
+            "non_contract_prefixes": [],
+            "hash": "a" * 64,
+        },
+    )
+    assert _build(root)["terminal_job"]["recovery_profile"] == (
+        recovery._CALLED_ALLIN_PROFILE_ID
+    )
 
 
 def test_build_claim_rejects_seven_of_eight_first_strict_receipts(
