@@ -1206,11 +1206,11 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "pre_master",
         "warning_suffix": "pre_master",
         "requires_target": True,
-        # No candidate-mutating Worker effect exists at this boundary.  If a
-        # crash left an already accepted Master result in the strict journal,
-        # run_master recovers that content-bound result (the same condition as
-        # the master_planned policy below); otherwise it renders and validates
-        # a fresh plan from the current source.  Live epoch, parent, bootstrap,
+        # No candidate-mutating Worker effect exists at this boundary. Any
+        # role-specific result recovery remains gated by that role's own
+        # immutable receipt validator; when no accepted result exists,
+        # run_master renders and validates a fresh plan from current source.
+        # Live epoch, parent, bootstrap,
         # allocation and prepared-artifact authority are rechecked before a
         # provider call, and the direction_audited -> master_planned transition
         # refreshes repo_baseline to the HEAD that actually owns the plan.

@@ -55,8 +55,9 @@ checkpoint, result, log, or certificate files are never copied by hand.
       Worker effect exists yet, so the exact head-drift policy may allow only
       `run_literature_probe`/`run_master` after target/worktree, epoch, parent,
       bootstrap, live allocation and prepared-artifact authority revalidate.
-      An already accepted Master result is recovered only through its immutable
-      strict receipt; otherwise Master renders against current source. The
+      Any role-specific Master recovery remains subject to its own immutable
+      receipt validator; when no accepted result exists, Master renders against
+      current source. The
       transition to `master_planned` refreshes `repo_baseline` to the HEAD that
       owns the plan. This exception does not extend to Quality or later stages;
     - a reviewed, source-owned terminal migrator that does not exist on the old

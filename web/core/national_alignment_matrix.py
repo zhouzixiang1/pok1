@@ -1300,6 +1300,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_singleton_live_allocation_reopens_exact_abandon_chain",
             "web/tests/test_runtime_governance_refactor.py::"
             "test_direction_audited_recovery_allows_reviewed_master_contract_drift",
+            "web/tests/test_runtime_governance_refactor.py::"
+            "test_write_pipeline_checkpoint_refreshes_baseline_after_planning_handoff",
         ),
         negative_tests=(
             "web/tests/test_official_bootstrap.py::"

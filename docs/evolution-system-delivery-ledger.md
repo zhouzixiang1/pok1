@@ -4742,11 +4742,14 @@ Contract-42 Master path set necessarily differs from the repaired source. The
 stage-scoped HEAD-drift policy now treats only this exact pre-Master boundary as
 resumable contract drift: target/worktree plus live epoch, parent, bootstrap,
 allocation and prepared-artifact authority must revalidate; `run_master` either
-recovers a previously accepted immutable Master result or renders on current
-source; and the successful `master_planned` transition refreshes the repository
-baseline. Quality and every later evidence-bearing stage continue to require
-an unchanged evaluation contract. This prevents both a needless v147 abandon
-and a broad post-gate source-drift bypass.
+uses a role-specific immutable recovery receipt when that contract supports one
+or renders on current source; and the successful `master_planned` transition
+refreshes the repository baseline. The stopped v147 event chain contains a
+`run_master_start` heartbeat followed by operator SIGTERM/exit 143 and no
+accepted plan, so it must render a fresh repaired attempt. Quality and every
+later evidence-bearing stage continue to require an unchanged evaluation
+contract. This prevents both a needless v147 abandon and a broad post-gate
+source-drift bypass.
 
 Presentation ordinal authority now enumerates immutable paired publication-tag
 history, not canonical-version arithmetic or the mutable executable pool.
