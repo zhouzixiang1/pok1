@@ -2947,7 +2947,14 @@ async def run_master(args):
     )
     if _master_exhausted is not None:
         return _json_tool_result(_master_exhausted)
-    if isinstance(_master_entry_ckpt, dict):
+    _persisted_identity_replan = (
+        (_master_entry_ckpt.get("audit_context") or {}).get(
+            "architecture_policy_identity_replan"
+        )
+        if isinstance(_master_entry_ckpt, dict)
+        else None
+    )
+    if isinstance(_persisted_identity_replan, dict):
         try:
             persisted_identity_recovery = (
                 _recover_persisted_architecture_policy_identity_replan(
