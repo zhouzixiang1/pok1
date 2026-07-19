@@ -366,12 +366,19 @@ def _current_candidate_context(
         return None
 
     workflow_run_id = str(identity.get("workflow_run_id") or "")
+    generation_attempt = int(checkpoint.get("generation_attempt") or 0)
+    checkpoint_run_id = checkpoint.get("run_id") or f"{version}#{generation_attempt}"
     if (
         not workflow_run_id
         or checkpoint.get("workflow_run_id") != workflow_run_id
         or active.get("workflow_run_id") != workflow_run_id
         or checkpoint.get("next_v") != version
+        or active.get("source_v") != checkpoint.get("source_v")
+        or active.get("parent2_v") != checkpoint.get("parent2_v")
         or active.get("stage") != checkpoint.get("stage")
+        or active.get("run_id") != checkpoint_run_id
+        or active.get("checkpoint_revision")
+        != checkpoint.get("checkpoint_revision")
     ):
         return None
 
@@ -399,6 +406,7 @@ def _current_candidate_context(
         "checkpoint": checkpoint,
         "version": version,
         "workflow_run_id": workflow_run_id,
+        "run_id": checkpoint_run_id,
         "candidate": candidate.resolve(),
         "candidate_hash": candidate_hash,
     }
@@ -1240,6 +1248,8 @@ def _jobs_payload() -> dict[str, Any]:
             )
     workflow = context.get("workflow_run_id") if context is not None else None
     version = context.get("version") if context is not None else None
+    checkpoint = context.get("checkpoint") if context is not None else None
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
     rows = [job] if job is not None else []
     return {
         "schema_version": 1,
@@ -1248,6 +1258,23 @@ def _jobs_payload() -> dict[str, Any]:
             workflow_run_id=workflow,
             candidate_version=version,
         ),
+        # Complete checkpoint identity for browser pairing.  Candidate version
+        # plus workflow is insufficient: the same workflow/stage can advance a
+        # revision while a formerly current job response is in flight.
+        "next_v": version,
+        "source_v": checkpoint.get("source_v"),
+        "parent2_v": checkpoint.get("parent2_v"),
+        "checkpoint_stage": checkpoint.get("stage"),
+        "checkpoint_revision": checkpoint.get("checkpoint_revision"),
+        "run_id": (
+            context.get("run_id")
+            or checkpoint.get("run_id")
+            or (
+                f"{version}#{int(checkpoint.get('generation_attempt') or 0)}"
+                if type(version) is int
+                else None
+            )
+        ) if context is not None else None,
         "pending": sum(1 for item in rows if item.get("pending") is True),
         "running": sum(
             1
@@ -1257,6 +1284,40 @@ def _jobs_payload() -> dict[str, Any]:
         "jobs": rows,
         "operator_transition": operator_transition,
     }
+
+
+def operator_transition_for_epoch_projection(
+    projection: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Refine the parked v143 transition for one already-sampled epoch.
+
+    The control route uses this helper only after it has obtained a stable
+    epoch/handoff sample.  ``_current_candidate_context`` then reopens the
+    checkpoint and requires the exact version, parents, stage, run id,
+    workflow id and revision before any durable job may refine the default
+    ``bootstrap_required`` transition.  An identity race therefore returns
+    ``None`` and leaves the epoch-owned fail-closed transition untouched.
+    """
+
+    if not isinstance(projection, dict):
+        return None
+    active = projection.get("active_generation")
+    if (
+        not isinstance(active, dict)
+        or active.get("stage") != _BOOTSTRAP_STAGE
+        or active.get("next_v") != FIRST_STRICT_POLICY_VERSION
+    ):
+        return None
+    context = _current_candidate_context(projection)
+    if context is None:
+        return None
+    job, discovery_issue = _bootstrap_job_resolution(context)
+    transition = _bootstrap_operator_transition(
+        context,
+        job,
+        discovery_issue=discovery_issue,
+    )
+    return transition if isinstance(transition, dict) else None
 
 
 def _cancel_exact_job_sync(

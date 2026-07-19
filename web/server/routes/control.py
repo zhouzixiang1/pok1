@@ -1,12 +1,14 @@
 """Read-only status plus explicit, authenticated operator controls."""
 
 import asyncio
+import copy
 import hashlib
 import json
 import logging
 import math
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
@@ -28,6 +30,323 @@ router = APIRouter(prefix="/api/control", tags=["control"])
 _log = logging.getLogger("pok.control")
 _RUNTIME_LIFECYCLE_LOCK = asyncio.Lock()
 _LifecycleResult = TypeVar("_LifecycleResult")
+
+_OBSERVER_CACHE_TTL_SEC = 1.0
+_OBSERVER_ERROR_TTL_SEC = 0.2
+
+
+class _ObserverSingleflightCache:
+    """Bound duplicate GET projections without weakening fresh launch reads.
+
+    ``stale_while_revalidate_sec`` is observer-only.  It may reuse a prior
+    projection after the short fresh TTL only while the caller's exact local
+    content key is unchanged.  One daemon refresh then runs in the background.
+    A changed key never consumes stale bytes, and launch/mutation paths do not
+    call this cache at all.
+    """
+
+    def __init__(
+        self,
+        ttl_sec: float = _OBSERVER_CACHE_TTL_SEC,
+        *,
+        stale_while_revalidate_sec: float = 0.0,
+    ):
+        self.ttl_sec = float(ttl_sec)
+        self.stale_while_revalidate_sec = max(
+            0.0,
+            float(stale_while_revalidate_sec),
+        )
+        self._condition = threading.Condition()
+        self._value: dict[str, Any] | None = None
+        self._expires_at = 0.0
+        self._error: str | None = None
+        self._error_expires_at = 0.0
+        self._inflight = False
+        self._inflight_generation: int | None = None
+        self._generation = 0
+        self._key: object = None
+
+    def _complete_background_refresh(
+        self,
+        builder: Callable[[], dict[str, Any]],
+        *,
+        generation: int,
+    ) -> None:
+        try:
+            built = builder()
+            if not isinstance(built, dict):
+                raise TypeError("observer snapshot builder did not return an object")
+            frozen = copy.deepcopy(built)
+        except BaseException as exc:
+            with self._condition:
+                if self._inflight_generation == generation:
+                    self._inflight = False
+                    self._inflight_generation = None
+                if generation == self._generation:
+                    self._error = (
+                        f"observer_projection_failed:{type(exc).__name__}:"
+                        f"{str(exc)[:160]}"
+                    )
+                    self._error_expires_at = (
+                        time.monotonic() + _OBSERVER_ERROR_TTL_SEC
+                    )
+                self._condition.notify_all()
+            return
+        with self._condition:
+            if self._inflight_generation == generation:
+                self._inflight = False
+                self._inflight_generation = None
+            if generation == self._generation:
+                self._value = frozen
+                self._expires_at = time.monotonic() + self.ttl_sec
+                self._error = None
+                self._error_expires_at = 0.0
+            self._condition.notify_all()
+
+    def invalidate(self) -> None:
+        with self._condition:
+            self._generation += 1
+            self._value = None
+            self._expires_at = 0.0
+            self._error = None
+            self._error_expires_at = 0.0
+            self._key = None
+            self._condition.notify_all()
+
+    def get(
+        self,
+        builder: Callable[[], dict[str, Any]],
+        *,
+        key: object = None,
+    ) -> dict[str, Any]:
+        cached_value: dict[str, Any] | None = None
+        while True:
+            with self._condition:
+                if self._key != key:
+                    if self._inflight:
+                        if self.stale_while_revalidate_sec > 0:
+                            # The in-flight background result belongs to the
+                            # preceding local authority.  Invalidate it now
+                            # and fail this observation quickly; never wait for
+                            # a slow remote proof and never serve the old value
+                            # under the new content key.
+                            self._generation += 1
+                            self._key = key
+                            self._value = None
+                            self._expires_at = 0.0
+                            self._error = None
+                            self._error_expires_at = 0.0
+                            raise RuntimeError(
+                                "observer_projection_authority_changed_during_refresh"
+                            )
+                        self._condition.wait()
+                        continue
+                    self._generation += 1
+                    self._key = key
+                    self._value = None
+                    self._expires_at = 0.0
+                    self._error = None
+                    self._error_expires_at = 0.0
+                now = time.monotonic()
+                if self._value is not None and now < self._expires_at:
+                    cached_value = self._value
+                    break
+                stale_until = (
+                    self._expires_at + self.stale_while_revalidate_sec
+                )
+                if self._value is not None and now < stale_until:
+                    cached_value = self._value
+                    if (
+                        not self._inflight
+                        and not (
+                            self._error is not None
+                            and now < self._error_expires_at
+                        )
+                    ):
+                        self._inflight = True
+                        generation = self._generation
+                        self._inflight_generation = generation
+                        threading.Thread(
+                            target=self._complete_background_refresh,
+                            args=(builder,),
+                            kwargs={"generation": generation},
+                            name="pok-control-observer-refresh",
+                            daemon=True,
+                        ).start()
+                    break
+                if self._error is not None and now < self._error_expires_at:
+                    raise RuntimeError(self._error)
+                if self._inflight:
+                    if (
+                        self.stale_while_revalidate_sec > 0
+                        and self._inflight_generation != self._generation
+                    ):
+                        raise RuntimeError(
+                            "observer_projection_authority_changed_during_refresh"
+                        )
+                    self._condition.wait()
+                    continue
+                self._inflight = True
+                generation = self._generation
+                self._inflight_generation = generation
+                break
+        if cached_value is not None:
+            # Copy outside the condition: status payloads are bounded, but a
+            # deep copy must not serialize unrelated cache readers.
+            return copy.deepcopy(cached_value)
+        try:
+            built = builder()
+            if not isinstance(built, dict):
+                raise TypeError("observer snapshot builder did not return an object")
+            frozen = copy.deepcopy(built)
+        except BaseException as exc:
+            with self._condition:
+                if self._inflight_generation == generation:
+                    self._inflight = False
+                    self._inflight_generation = None
+                if generation == self._generation:
+                    self._error = (
+                        f"observer_projection_failed:{type(exc).__name__}:"
+                        f"{str(exc)[:160]}"
+                    )
+                    self._error_expires_at = (
+                        time.monotonic() + _OBSERVER_ERROR_TTL_SEC
+                    )
+                self._condition.notify_all()
+            raise
+        with self._condition:
+            if self._inflight_generation == generation:
+                self._inflight = False
+                self._inflight_generation = None
+            still_current = generation == self._generation
+            if still_current:
+                self._value = frozen
+                self._expires_at = time.monotonic() + self.ttl_sec
+                self._error = None
+                self._error_expires_at = 0.0
+            self._condition.notify_all()
+        if not still_current:
+            raise RuntimeError("observer_projection_invalidated_during_build")
+        return copy.deepcopy(frozen)
+
+
+_OBSERVER_STATUS_CACHE = _ObserverSingleflightCache(
+    stale_while_revalidate_sec=60.0,
+)
+_OBSERVER_HEALTH_CACHE = _ObserverSingleflightCache()
+
+
+def _invalidate_observer_projection_cache() -> None:
+    _OBSERVER_STATUS_CACHE.invalidate()
+    _OBSERVER_HEALTH_CACHE.invalidate()
+
+
+def _observer_path_token(path: str | Path) -> tuple:
+    """Return a no-follow local content token without opening the payload."""
+
+    candidate = Path(path)
+    try:
+        value = candidate.lstat()
+    except (FileNotFoundError, OSError):
+        return (str(candidate), None)
+    return (
+        str(candidate),
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_size,
+        value.st_mtime_ns,
+    )
+
+
+def _observer_authority_content_key() -> tuple:
+    """Cheap local invalidation key for bounded stale observer snapshots.
+
+    Remote publication freshness is deliberately absent: refreshing that proof
+    is the slow operation this observer hides.  Local tags, checkpoint/reset,
+    abandon/reap ledgers, handoff rows, published artifact directories and
+    certificates are all included.  Any local authority movement therefore
+    rejects stale bytes immediately; launch still performs a new complete
+    remote proof through ``_fresh_control_status_snapshot``.
+    """
+
+    import evolution_infra as infra
+    from epoch_authority import RUNTIME_RECONCILIATION_CLAIM_FILENAME
+    from system_strict_bootstrap import POLICY_EPOCH_RESET_RECEIPT_FILENAME
+
+    try:
+        namespace = infra.version_namespace_authority()
+        namespace_token: tuple = (
+            "namespace",
+            namespace.high_water,
+            namespace.paired_versions,
+            namespace.paired_commits,
+            namespace.unpaired_completion_versions,
+            namespace.unpaired_high_water_versions,
+        )
+        published_versions = tuple(namespace.paired_versions)
+    except Exception as exc:
+        namespace_token = (
+            "namespace_unavailable",
+            type(exc).__name__,
+        )
+        published_versions = ()
+
+    results_paths = (
+        infra.PIPELINE_STATE_FILE,
+        infra.ABANDONED_VERSIONS_FILE,
+        infra.REAPED_BOTS_FILE,
+        Path(infra.RESULTS_DIR) / POLICY_EPOCH_RESET_RECEIPT_FILENAME,
+        Path(infra.RESULTS_DIR) / RUNTIME_RECONCILIATION_CLAIM_FILENAME,
+        Path(infra.RESULTS_DIR) / "stability_observation.json",
+        Path(infra.RESULTS_DIR) / "evaluation_cycle_manifest.json",
+        infra.POST_PUBLICATION_HANDOFF_DIR,
+    )
+    publication_paths: list[Path] = []
+    project_root = Path(infra.PROJECT_ROOT)
+    for version in published_versions:
+        bot_dir = Path(infra.BOTS_DIR) / f"national_v{version}"
+        publication_paths.extend((
+            bot_dir,
+            bot_dir / ".completed",
+            bot_dir / "national_bot.py",
+            bot_dir / "precompute.py",
+            bot_dir / "policy.py",
+            bot_dir / "national_runtime_manifest.json",
+            bot_dir / "policy_epoch_receipt.json",
+            project_root / "official_certificates" / f"national_v{version}.json",
+        ))
+    return (
+        namespace_token,
+        tuple(_observer_path_token(path) for path in results_paths),
+        tuple(_observer_path_token(path) for path in publication_paths),
+    )
+
+
+def _observer_cache_key(*, health: bool = False) -> tuple:
+    """Cheap process-local invalidation key; durable state still uses TTL."""
+
+    from epoch_authority import strict_epoch_projection
+
+    state = app_state.to_dict()
+    task = app_state.task_snapshot()
+    key = (
+        strict_epoch_projection,
+        _sync_evolution_fields,
+        state.get("running"),
+        state.get("daemon_enabled"),
+        state.get("daemon_workers"),
+        state.get("daemon_pairs"),
+        task.get("present"),
+        task.get("done"),
+        task.get("shutdown_requested"),
+        task.get("owner_id"),
+        task.get("lifecycle_revision"),
+        _observer_authority_content_key(),
+    )
+    if health:
+        return (*key, _daemon_health_snapshot, _read_pipeline_health)
+    return key
 
 
 async def _run_lifecycle_operation(
@@ -655,6 +974,142 @@ def _stability_observation_digest(observation: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _dynamic_first_strict_operator_transition(epoch: dict) -> dict | None:
+    """Read the durable bootstrap job through certification's strict reader."""
+
+    try:
+        from server.routes.certification import (
+            operator_transition_for_epoch_projection,
+        )
+
+        return operator_transition_for_epoch_projection(epoch)
+    except Exception:
+        return None
+
+
+def _operator_transition_matches_active(
+    transition: dict | None,
+    active: dict | None,
+    base_transition: dict | None,
+) -> bool:
+    """Accept a dynamic transition only for the exact stable checkpoint."""
+
+    if not all(isinstance(value, dict) for value in (
+        transition,
+        active,
+        base_transition,
+    )):
+        return False
+    assert isinstance(transition, dict)
+    assert isinstance(active, dict)
+    assert isinstance(base_transition, dict)
+    digest = transition.get("transition_digest")
+    try:
+        encoded = json.dumps(
+            {key: value for key, value in transition.items() if key != "transition_digest"},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError):
+        return False
+    if (
+        not isinstance(digest, str)
+        or hashlib.sha256(encoded).hexdigest() != digest
+        or transition.get("schema_version") != 1
+        or transition.get("kind")
+        != "first-strict-official-operator-transition"
+        or transition.get("state") not in {
+            "bootstrap_required",
+            "bootstrap_running",
+            "bootstrap_failed",
+            "ready_to_finalize",
+        }
+        or transition.get("certification_profile") != "first_strict_control_v1"
+        or transition.get("opponent_authority") != "system_control"
+        or transition.get("strength_evidence_weight") != 0
+        or transition.get("strategy_evidence_weight") != 0
+        or transition.get("evaluation_epoch") != "national_tcp_policy_v1"
+        or transition.get("workflow_run_id") != active.get("workflow_run_id")
+        or transition.get("candidate_version") != active.get("next_v")
+        or transition.get("source_v") != active.get("source_v")
+        or transition.get("checkpoint_stage") != active.get("stage")
+        or transition.get("checkpoint_revision")
+        != active.get("checkpoint_revision")
+        or transition.get("candidate_hash")
+        != base_transition.get("candidate_hash")
+        or transition.get("parked_request_digest")
+        != base_transition.get("parked_request_digest")
+    ):
+        return False
+    def hex64(value: object) -> bool:
+        return bool(
+            isinstance(value, str)
+            and len(value) == 64
+            and all(char in "0123456789abcdef" for char in value)
+        )
+    state = transition["state"]
+    if state == "bootstrap_required":
+        return transition.get("job_id") is None and transition.get("certificate_digest") is None
+    if state == "bootstrap_failed":
+        return (
+            transition.get("certificate_digest") is None
+            and (
+                transition.get("job_id") is None
+                or hex64(transition.get("job_id"))
+            )
+        )
+    if not hex64(transition.get("job_id")):
+        return False
+    if state == "ready_to_finalize":
+        return hex64(transition.get("certificate_digest"))
+    return transition.get("certificate_digest") is None
+
+
+def _epoch_transition_identity(epoch: dict) -> tuple:
+    active = epoch.get("active_generation")
+    active = active if isinstance(active, dict) else {}
+    return (
+        epoch.get("evaluation_epoch"),
+        epoch.get("state"),
+        epoch.get("initialized"),
+        epoch.get("reset_receipt_digest"),
+        *(active.get(field) for field in (
+            "next_v",
+            "source_v",
+            "parent2_v",
+            "stage",
+            "run_id",
+            "workflow_run_id",
+            "checkpoint_revision",
+        )),
+    )
+
+
+def _refined_operator_transition(
+    epoch: dict,
+    *,
+    resample: Callable[[], dict],
+) -> dict | None:
+    """Return a dynamic exact-job transition or the epoch-owned baseline."""
+
+    base = epoch.get("operator_transition")
+    active = epoch.get("active_generation")
+    if (
+        not isinstance(active, dict)
+        or active.get("stage") != "official_bootstrap_required"
+    ):
+        return base if isinstance(base, dict) else None
+    candidate = _dynamic_first_strict_operator_transition(epoch)
+    if not _operator_transition_matches_active(candidate, active, base):
+        return base if isinstance(base, dict) else None
+    after = resample()
+    if _epoch_transition_identity(after) != _epoch_transition_identity(epoch):
+        return base if isinstance(base, dict) else None
+    return candidate
+
+
 def _sync_evolution_fields(state: dict) -> dict:
     """Overlay cheap authoritative evolution fields for status reads.
 
@@ -686,6 +1141,10 @@ def _sync_evolution_fields(state: dict) -> dict:
             raise RuntimeError(
                 "canonical_epoch_changed_during_handoff_projection"
             )
+        dynamic_transition = _refined_operator_transition(
+            epoch,
+            resample=strict_epoch_projection,
+        )
         current_v = int(epoch["current_v"])
         next_v = int(epoch["next_v"])
         generation_count = int(epoch["strict_generation_count"])
@@ -738,7 +1197,7 @@ def _sync_evolution_fields(state: dict) -> dict:
         state["unpaired_high_water_versions"] = list(
             epoch.get("unpaired_high_water_versions") or []
         )
-        state["operator_transition"] = epoch.get("operator_transition")
+        state["operator_transition"] = dynamic_transition
         state["ignored_checkpoint"] = epoch["ignored_checkpoint"]
         state["unpublished_candidate_versions"] = unpublished_candidate_versions()
         state["post_publication_handoff"] = handoff
@@ -997,6 +1456,7 @@ async def _set_config_transaction(req: ConfigRequest) -> dict[str, Any]:
     }
     if not changed:
         return previous_config
+    _invalidate_observer_projection_cache()
     daemon_was_alive = bool(_daemon_health_snapshot().get("alive"))
     result: dict[str, Any] | None = None
     daemon_transaction_state: dict[str, Any] = {}
@@ -1063,6 +1523,7 @@ async def _set_config_transaction(req: ConfigRequest) -> dict[str, Any]:
             rollback_errors.append(
                 f"stability:{type(rollback_exc).__name__}:{str(rollback_exc)[:160]}"
             )
+        _invalidate_observer_projection_cache()
         raise HTTPException(
             status_code=500,
             detail={
@@ -1071,6 +1532,7 @@ async def _set_config_transaction(req: ConfigRequest) -> dict[str, Any]:
                 "rollback_errors": rollback_errors,
             },
         ) from None
+    _invalidate_observer_projection_cache()
     return result
 
 
@@ -1082,14 +1544,24 @@ async def set_config(req: ConfigRequest, request: Request):
     )
 
 
-def _control_status_snapshot() -> dict[str, Any]:
+def _fresh_control_status_snapshot() -> dict[str, Any]:
     return _sync_evolution_fields(app_state.to_dict())
+
+
+def _control_status_snapshot() -> dict[str, Any]:
+    """Short-lived singleflight snapshot for read-only HTTP observers."""
+
+    return _OBSERVER_STATUS_CACHE.get(
+        _fresh_control_status_snapshot,
+        key=_observer_cache_key(),
+    )
 
 
 def _control_launch_authority_snapshot() -> tuple[dict[str, Any], dict[str, Any]]:
     """Return the canonical status and live-revalidated launch barrier."""
 
-    status = _control_status_snapshot()
+    # Launch is a mutation boundary: it must never consume observer cache.
+    status = _fresh_control_status_snapshot()
     return status, _read_pipeline_health(status)
 
 
@@ -1241,6 +1713,7 @@ async def _reserve_runtime_launch_owner() -> dict[str, Any]:
             "reason": "already_owned",
             "barrier": before,
         }
+    _invalidate_observer_projection_cache()
     try:
         after = await run_blocking_isolated(
             _runtime_launch_barrier_snapshot,
@@ -1252,12 +1725,14 @@ async def _reserve_runtime_launch_owner() -> dict[str, Any]:
         # owner before propagating; otherwise AppState remains running with no
         # task and every later launch is permanently rejected as already owned.
         app_state.abort_runtime_owner(owner_id)
+        _invalidate_observer_projection_cache()
         raise
     if (
         after.get("allowed") is not True
         or after.get("fence_digest") != before.get("fence_digest")
     ):
         app_state.abort_runtime_owner(owner_id)
+        _invalidate_observer_projection_cache()
         if after.get("allowed") is True:
             after = {
                 **after,
@@ -1289,9 +1764,18 @@ async def control_status():
     )
 
 
-def _control_health_snapshot() -> dict[str, Any]:
-    status = _sync_evolution_fields(app_state.to_dict())
+def _fresh_control_health_snapshot() -> dict[str, Any]:
+    # Reuse the exact coalesced observer status authority. This does not alter
+    # the launch barrier, which calls _fresh_control_status_snapshot directly.
+    status = _control_status_snapshot()
     return _health_summary(status)
+
+
+def _control_health_snapshot() -> dict[str, Any]:
+    return _OBSERVER_HEALTH_CACHE.get(
+        _fresh_control_health_snapshot,
+        key=_observer_cache_key(health=True),
+    )
 
 
 @router.get("/health")
@@ -1407,6 +1891,7 @@ async def _start_evolution_transaction() -> dict[str, str]:
             owner_id=owner_id,
         ))
         app_state.set_task(task, owner_id=owner_id)
+        _invalidate_observer_projection_cache()
         register_lifespan_runtime_owner(owner_id)
     except BaseException:
         if task is not None:
@@ -1422,6 +1907,7 @@ async def _start_evolution_transaction() -> dict[str, str]:
             except Exception:
                 pass
         app_state.abort_runtime_owner(owner_id)
+        _invalidate_observer_projection_cache()
         raise
 
     return {"status": "started", "mode": "orchestrator"}
@@ -1434,6 +1920,7 @@ async def start_evolution(request: Request):
 
 
 async def _stop_evolution_transaction() -> dict[str, str]:
+    _invalidate_observer_projection_cache()
     app_state.request_shutdown()
     task = app_state.stop_running()
     if task and not task.done():
@@ -1469,6 +1956,7 @@ async def _stop_evolution_transaction() -> dict[str, str]:
             thread_name_prefix="control-stop-stability",
         )
     except Exception as exc:
+        _invalidate_observer_projection_cache()
         raise HTTPException(
             status_code=500,
             detail={
@@ -1476,6 +1964,7 @@ async def _stop_evolution_transaction() -> dict[str, str]:
                 "failure": f"{type(exc).__name__}:{str(exc)[:240]}",
             },
         ) from None
+    _invalidate_observer_projection_cache()
     return {"status": "stopped"}
 
 

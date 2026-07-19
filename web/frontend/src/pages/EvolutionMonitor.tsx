@@ -935,6 +935,7 @@ export default function EvolutionMonitor() {
                   activeBlocked={Boolean(epochStatus?.active_generation && pipelineBlocked)}
                   activeIssues={pipelineIssues}
                   schedulerActive={schedulerOwnsPrepare}
+                  route={controlHealth?.pipeline?.route ?? null}
                 />
                 <WorkerProgress workers={workers} />
                 {epochStatus?.epoch_initialized && (

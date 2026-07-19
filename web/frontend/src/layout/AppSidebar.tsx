@@ -12,19 +12,30 @@ type NavItem = {
 };
 
 const navItems: NavItem[] = [
-  { icon: <GridIcon />, name: "总览", path: "/", group: "概览" },
-  { icon: <BoltIcon />, name: "进化监控", path: "/evolution", group: "概览" },
+  // Command Center / overview (enhanced Overview, retains guarded strings).
+  { icon: <GridIcon />, name: "运行总览", path: "/", group: "概览" },
+  // New structured evolution views from the dashboard redesign.
+  { icon: <BoltIcon />, name: "本代进度", path: "/pipeline", group: "进化" },
+  { icon: <ChatIcon />, name: "研发协作", path: "/agents", group: "进化" },
+  { icon: <PageIcon />, name: "发布资格", path: "/evidence", group: "进化" },
+  { icon: <BoxIcon />, name: "异常与恢复", path: "/failures", group: "进化" },
+  { icon: <PieChartIcon />, name: "后台 70 手评测", path: "/strength", group: "进化" },
+  { icon: <GridIcon />, name: "发布概览", path: "/bots-inventory", group: "进化" },
+  // Legacy evolution console (guarded by contract tests).
+  { icon: <BoltIcon />, name: "技术执行流（兼容）", path: "/evolution", group: "进化" },
+  // Matches / arena (unchanged).
   { icon: <ChatIcon />, name: "对局回放", path: "/matches", group: "对局" },
   { icon: <VideoIcon />, name: "国赛对弈", path: "/arena", group: "对局" },
   { icon: <PieChartIcon />, name: "评分趋势", path: "/rating-trends", group: "对局" },
   { icon: <TableIcon />, name: "对局矩阵", path: "/match-matrix", group: "对局" },
+  // Management (read-only contracts; names guarded by contract tests).
   { icon: <PageIcon />, name: "迭代日志", path: "/logs", group: "管理" },
   { icon: <PlugInIcon />, name: "控制面板", path: "/control", group: "管理" },
   { icon: <BoxIcon />, name: "严格发布 Bot", path: "/bots", group: "管理" },
   { icon: <FileIcon />, name: "提示词契约", path: "/prompts", group: "管理" },
 ];
 
-const GROUP_ORDER = ["概览", "对局", "管理"];
+const GROUP_ORDER = ["概览", "进化", "对局", "管理"];
 
 const LogoIcon = ({ className }: { className?: string }) => (
   <svg className={className} width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

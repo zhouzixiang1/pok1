@@ -2494,20 +2494,30 @@ def record_reaped_bot(bot_name, *, reason="", data=None):
 
 
 _REMOTE_PUBLICATION_CACHE_LOCK = threading.RLock()
+_REMOTE_PUBLICATION_CACHE_CONDITION = threading.Condition(
+    _REMOTE_PUBLICATION_CACHE_LOCK
+)
 _REMOTE_PUBLICATION_CACHE = {
     "key": None,
     "checked_at": 0.0,
     "versions": frozenset(),
+    "generation": 0,
+    "inflight_key": None,
+    "inflight_generation": None,
 }
 
 
 def _clear_remote_publication_cache():
-    with _REMOTE_PUBLICATION_CACHE_LOCK:
+    with _REMOTE_PUBLICATION_CACHE_CONDITION:
         _REMOTE_PUBLICATION_CACHE.update({
             "key": None,
             "checked_at": 0.0,
             "versions": frozenset(),
+            "generation": int(
+                _REMOTE_PUBLICATION_CACHE.get("generation") or 0
+            ) + 1,
         })
+        _REMOTE_PUBLICATION_CACHE_CONDITION.notify_all()
 
 
 def _remote_published_completion_versions(tag_versions) -> set[int]:
@@ -2542,14 +2552,34 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
             ).strip(),
         ))
     cache_key = tuple(local_rows)
-    now = time.monotonic()
-    with _REMOTE_PUBLICATION_CACHE_LOCK:
-        if (
-            _REMOTE_PUBLICATION_CACHE.get("key") == cache_key
-            and now - float(_REMOTE_PUBLICATION_CACHE.get("checked_at") or 0.0)
-            <= 5.0
-        ):
-            return set(_REMOTE_PUBLICATION_CACHE.get("versions") or ())
+    # A Dashboard can ask for status, health, evolution state and strength at
+    # the same time.  Once the five-second proof cache expires those callers
+    # must share one remote transaction; otherwise each observer launches its
+    # own ``git ls-remote``/fetch and a slow origin amplifies into an ASGI
+    # outage.  Mutation/launch callers still wait for this exact fresh proof --
+    # no stale remote result is accepted at an effect boundary.
+    while True:
+        now = time.monotonic()
+        with _REMOTE_PUBLICATION_CACHE_CONDITION:
+            if (
+                _REMOTE_PUBLICATION_CACHE.get("key") == cache_key
+                and now
+                - float(_REMOTE_PUBLICATION_CACHE.get("checked_at") or 0.0)
+                <= 5.0
+            ):
+                return set(_REMOTE_PUBLICATION_CACHE.get("versions") or ())
+            inflight_key = _REMOTE_PUBLICATION_CACHE.get("inflight_key")
+            if inflight_key is not None:
+                _REMOTE_PUBLICATION_CACHE_CONDITION.wait()
+                continue
+            refresh_generation = int(
+                _REMOTE_PUBLICATION_CACHE.get("generation") or 0
+            )
+            _REMOTE_PUBLICATION_CACHE["inflight_key"] = cache_key
+            _REMOTE_PUBLICATION_CACHE["inflight_generation"] = (
+                refresh_generation
+            )
+            break
     try:
         raw = _git(
             "ls-remote",
@@ -2608,13 +2638,26 @@ def _remote_published_completion_versions(tag_versions) -> set[int]:
             exc,
         )
         verified = set()
-    with _REMOTE_PUBLICATION_CACHE_LOCK:
-        _REMOTE_PUBLICATION_CACHE.update({
-            "key": cache_key,
-            "checked_at": now,
-            "versions": frozenset(verified),
-        })
-    return verified
+    with _REMOTE_PUBLICATION_CACHE_CONDITION:
+        refresh_is_current = bool(
+            _REMOTE_PUBLICATION_CACHE.get("generation")
+            == refresh_generation
+            and _REMOTE_PUBLICATION_CACHE.get("inflight_key") == cache_key
+            and _REMOTE_PUBLICATION_CACHE.get("inflight_generation")
+            == refresh_generation
+        )
+        if refresh_is_current:
+            _REMOTE_PUBLICATION_CACHE.update({
+                "key": cache_key,
+                "checked_at": time.monotonic(),
+                "versions": frozenset(verified),
+            })
+        _REMOTE_PUBLICATION_CACHE["inflight_key"] = None
+        _REMOTE_PUBLICATION_CACHE["inflight_generation"] = None
+        _REMOTE_PUBLICATION_CACHE_CONDITION.notify_all()
+    # Cache invalidation is an authority movement.  A remote response which
+    # began before that movement is not allowed to escape to its caller.
+    return verified if refresh_is_current else set()
 
 
 def _ensure_completed_sentinels_for_tagged_bots(tag_versions=None, reaped_versions=None):

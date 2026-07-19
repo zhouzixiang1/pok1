@@ -530,7 +530,11 @@ def _filter_strict_match_rows(
     return accepted
 
 
-def load_strict_strength_snapshot(results_dir: Path) -> dict:
+def load_strict_strength_snapshot(
+    results_dir: Path,
+    *,
+    bundle_snapshot: dict | None = None,
+) -> dict:
     """Load one fail-closed dashboard projection of current strength evidence.
 
     HTTP readers never reopen the mutable compatibility aliases.  The returned
@@ -540,12 +544,15 @@ def load_strict_strength_snapshot(results_dir: Path) -> dict:
     been published.
     """
 
-    try:
-        from evaluation_bundle import load_current_strict_evaluation_bundle
+    if bundle_snapshot is None:
+        try:
+            from evaluation_bundle import load_current_strict_evaluation_bundle
 
-        bundle = load_current_strict_evaluation_bundle(Path(results_dir))
-    except Exception:
-        return {"available": False, "reason": "evaluation_bundle_unavailable"}
+            bundle = load_current_strict_evaluation_bundle(Path(results_dir))
+        except Exception:
+            return {"available": False, "reason": "evaluation_bundle_unavailable"}
+    else:
+        bundle = bundle_snapshot
     if not isinstance(bundle, dict):
         return {"available": False, "reason": "evaluation_bundle_unavailable"}
     if bundle.get("available") is not True:
@@ -704,11 +711,21 @@ def read_strict_worker_failures(
     *,
     results_dir: Path,
     checkpoint_path: Path,
+    checkpoint_snapshot: dict | None = None,
     limit: int | None = None,
 ) -> list[dict]:
-    """Read only failures explicitly bound to the current strict workflow."""
+    """Read only failures explicitly bound to one strict workflow snapshot.
 
-    checkpoint = load_strict_pipeline_checkpoint(results_dir, checkpoint_path)
+    Callers that already loaded the validated checkpoint must pass that exact
+    object.  Reopening ``pipeline_state.json`` between the agent projection
+    and the failure read could otherwise combine failures from revision R+1
+    with the identity fields from revision R.  Legacy callers may omit the
+    snapshot and retain the previous single-reader behaviour.
+    """
+
+    checkpoint = checkpoint_snapshot
+    if checkpoint is None:
+        checkpoint = load_strict_pipeline_checkpoint(results_dir, checkpoint_path)
     if checkpoint is None:
         return []
     from bot_namespace import EVALUATION_EPOCH

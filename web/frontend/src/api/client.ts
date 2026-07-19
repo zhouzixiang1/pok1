@@ -3,11 +3,13 @@ import type {
   MatchSummary, MatchReplayData, DaemonStatus, BotSummary, BotDetail,
   WorkerFailure, PromptInfo, OrchestratorSession, OrchestratorLogFile,
   H2HEntry, BotStatsEntry, SystemEventsResponse, WorkerFailuresResponse, OfficialCertification,
-  OfficialCertificationJobsProjection,
   ArenaCreatePayload, ArenaEventHistoryResponse, ArenaSession, ArenaSessionUnavailable,
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
 } from "./types";
 import { expectPipelineCheckpoint } from "./pipeline";
+import { expectAgentActivity } from "./agentActivity";
+import { expectOfficialCertificationJobs } from "./officialJobs";
+import { expectStrengthJobs } from "./strengthJobs";
 const BASE = "/api";
 const FETCH_TIMEOUT = 30_000;
 
@@ -180,7 +182,9 @@ export const api = {
     URL.revokeObjectURL(url);
   },
   certificationStatus: (version: number) => fetchJSON<OfficialCertification>(`${BASE}/certification/${version}`),
-  certificationJobs: () => fetchJSON<OfficialCertificationJobsProjection>(`${BASE}/certification/jobs`),
+  certificationJobs: async () => expectOfficialCertificationJobs(
+    await fetchJSON<unknown>(`${BASE}/certification/jobs`),
+  ),
 
   // National Web Arena. These matches are local diagnostics and never certify a bot.
   arenaBots: () => fetchJSON<ArenaBotsResponse>(`${BASE}/national-arena/bots`),
@@ -208,6 +212,12 @@ export const api = {
     await fetchJSON<unknown>(`${BASE}/pipeline/checkpoint`),
   ),
   pipelineFailures: (limit = 10) => fetchJSON<WorkerFailure[]>(`${BASE}/pipeline/failures?limit=${limit}`),
+  pipelineAgents: async () => expectAgentActivity(
+    await fetchJSON<unknown>(`${BASE}/pipeline/agents`),
+  ),
+  pipelineStrengthJobs: async (offset = 0, limit = 50) => expectStrengthJobs(
+    await fetchJSON<unknown>(`${BASE}/pipeline/strength-jobs?offset=${offset}&limit=${limit}`),
+  ),
 
   // Prompts
   listPrompts: () => fetchJSON<PromptInfo[]>(`${BASE}/prompts`),

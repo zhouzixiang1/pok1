@@ -12,6 +12,17 @@ import ControlPanel from "./pages/ControlPanel";
 import BotManager from "./pages/BotManager";
 import PromptEditor from "./pages/PromptEditor";
 import NationalArena from "./pages/NationalArena";
+// New structured views from the dashboard redesign.  Each consumes the shared
+// normalization layer (lib/, domain/) and the paired /api/control/health
+// observation; none re-derives a stage, route, or identity from a single
+// field.  Legacy routes (/evolution, /bots) remain for backward compatibility
+// and because test_frontend_contract_closure.py guards their content.
+import PipelineMap from "./pages/PipelineMap";
+import AgentActivity from "./pages/AgentActivity";
+import EvidenceGates from "./pages/EvidenceGates";
+import BotInventory from "./pages/BotInventory";
+import FailuresRecovery from "./pages/FailuresRecovery";
+import BackgroundStrength from "./pages/BackgroundStrength";
 
 export default function App() {
   return (
@@ -20,7 +31,16 @@ export default function App() {
         <ScrollToTop />
         <Routes>
           <Route element={<AppLayout />}>
+            {/* Command Center / overview (enhanced, retains guarded strings) */}
             <Route index path="/" element={<Overview />} />
+            {/* New structured views */}
+            <Route path="/pipeline" element={<PipelineMap />} />
+            <Route path="/agents" element={<AgentActivity />} />
+            <Route path="/evidence" element={<EvidenceGates />} />
+            <Route path="/bots-inventory" element={<BotInventory />} />
+            <Route path="/failures" element={<FailuresRecovery />} />
+            <Route path="/strength" element={<BackgroundStrength />} />
+            {/* Legacy / compatibility routes (guarded by contract tests) */}
             <Route path="/evolution" element={<EvolutionMonitor />} />
             <Route path="/matches" element={<MatchReplay />} />
             <Route path="/arena" element={<NationalArena />} />

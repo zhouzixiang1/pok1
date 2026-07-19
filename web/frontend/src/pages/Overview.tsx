@@ -13,6 +13,7 @@ import { Badge } from "../components/shared/Badge";
 import { EmptyState } from "../components/shared/EmptyState";
 import { PipelineStatus } from "../components/evolution/PipelineStatus";
 import { EpochAuthorityStatus } from "../components/evolution/EpochAuthorityStatus";
+import { OperatorSituation } from "../components/evolution/OperatorSituation";
 import { StabilityStatus } from "../components/evolution/StabilityStatus";
 import { stabilityPresentation } from "../lib/stabilityView";
 import { controlTaskActive, controlTaskStopping } from "../lib/controlRuntimeState";
@@ -202,10 +203,10 @@ export default function Overview() {
   const strengthEmptyMessage = controlStatus?.epoch_initialized
     ? controlStatus.active_bots.length === 0
       ? "当前严格发布池为空；尚无可进入评分周期的 Bot。"
-      : "严格发布池正在等待首个同发布池 evaluation cycle；不会用 Glicko 默认值伪造选择分。"
+      : "严格发布池正在等待首个绑定当前发布池的完整 70 手评分周期；不会用默认分伪造强度。"
     : nextAuthorityVersion != null
-      ? `严格国赛 epoch 尚未初始化；v${controlStatus?.version_authority_high_water ?? 142} 仅为数字高水位，reset 后首目标为 v${nextAuthorityVersion}。`
-      : "epoch 权威当前不可用或需要恢复；在权威恢复前不声明下一版本或强度结果。";
+      ? `严格进化尚未初始化；v${controlStatus?.version_authority_high_water ?? 142} 只用于防止版本号倒退，初始化后首目标为 v${nextAuthorityVersion}。`
+      : "当前无法验证严格进化身份；恢复前不声明下一版本或强度结果。";
   const strengthSampleDisplay = controlStatus?.epoch_initialized && visibleRatings.length > 0
     ? (stats?.total_strength_samples ?? stats?.total_games ?? 0).toLocaleString()
     : "—";
@@ -271,12 +272,18 @@ export default function Overview() {
 
   return (
     <>
-      <PageMeta title="总览 — Bot 自进化" description="Bot 种群概览" />
+      <PageMeta title="运行总览 — Bot 自进化" description="现在发生什么、已发布什么、真实强度如何" />
 
       <EpochAuthorityStatus
         status={controlStatus}
         loading={controlLoading}
         error={controlError}
+        className="mb-4"
+      />
+
+      <OperatorSituation
+        status={controlStatus}
+        health={controlHealth}
         className="mb-4"
       />
 
@@ -303,24 +310,24 @@ export default function Overview() {
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex items-baseline gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{controlStatus?.active_bots.length ?? 0}</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">严格发布 Bot</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">真正完成发布的 Bot</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-baseline gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{strengthSampleDisplay}</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">权威强度样本</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">已采纳完整 70 手样本</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-baseline gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">{controlStatus?.strict_generation_count ?? 0}</span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">严格代次</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">已发布严格代次</span>
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
         <div className="flex items-center gap-2">
           <span className="text-2xl font-bold text-gray-900 dark:text-white tabular-nums">
             {stability && stabilityCountVerified ? `${stability.count}/${stability.target}` : "—"}
           </span>
-          <span className="text-xs text-gray-500 dark:text-gray-400">连续进化验收</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">连续稳定代次</span>
           <StabilityStatus observation={stability} compact />
         </div>
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700" />
@@ -471,7 +478,7 @@ export default function Overview() {
                   </Badge>
                   <span className="text-sm text-gray-500 dark:text-gray-400">
                     {controlStatus.active_generation
-                      ? `${activeIdentityLabel ?? "双身份投影不可用"} · source_v ${controlStatus.active_generation.source_v == null ? "—" : `v${controlStatus.active_generation.source_v}`}`
+                      ? `${activeIdentityLabel ?? "代次与真实标签无法配对"} · 主父本 ${controlStatus.active_generation.source_v == null ? "无" : `v${controlStatus.active_generation.source_v}`}`
                       : controlStatus.post_publication_handoff.status !== "none"
                         ? `post-publication v${controlStatus.post_publication_handoff.version ?? "?"}`
                         : `scheduler target ${nextAuthorityVersion == null ? "待恢复" : `v${nextAuthorityVersion}`}`}
@@ -486,6 +493,7 @@ export default function Overview() {
                 activeBlocked={Boolean(controlStatus.active_generation && pipelineBlocked)}
                 activeIssues={pipelineIssues}
                 schedulerActive={schedulerOwnsPrepare}
+                route={controlHealth?.pipeline?.route ?? null}
               />
             </div>
           )}
@@ -496,7 +504,7 @@ export default function Overview() {
           <RecentActivityCard />
         ) : (
           <div className="rounded-2xl border border-gray-200 bg-white p-4 text-xs text-gray-500 dark:border-border-subtle dark:bg-surface-1 dark:text-gray-400">
-            旧对局、旧 H2H 和旧代次日志已退出当前权威视图；完成一次性 reset 后才会展示新 epoch 证据。
+            旧对局、旧 H2H 和旧代次日志不会混入当前视图；完成一次性初始化后才展示新周期证据。
           </div>
         )}
       </div>

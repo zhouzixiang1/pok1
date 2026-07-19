@@ -7,6 +7,7 @@ import re
 import time
 
 from fastapi import APIRouter, Request
+from blocking_runtime import run_blocking_isolated
 
 router = APIRouter(prefix="/api", tags=["evolution"])
 
@@ -320,6 +321,16 @@ def _stable_stream_projection(max_attempts: int = 3):
     )
 
 
+async def _stable_stream_projection_async(max_attempts: int = 3):
+    """Run complete Git/checkpoint authority proof outside the ASGI loop."""
+
+    return await run_blocking_isolated(
+        _stable_stream_projection,
+        max_attempts,
+        thread_name_prefix="evolution-stream-authority",
+    )
+
+
 @router.get("/evolution/stream")
 async def evolution_stream(request: Request):
     """SSE endpoint for real-time evolution events."""
@@ -328,7 +339,7 @@ async def evolution_stream(request: Request):
 
     bound_before_sample = broadcaster.authority_identity()
     epoch, connection_handoff, connection_authority_digest = (
-        _stable_stream_projection()
+        await _stable_stream_projection_async()
     )
     expected_authority_digest = str(
         request.query_params.get("authority") or ""
@@ -392,7 +403,7 @@ async def evolution_stream(request: Request):
     async def generate():
         try:
             initial_epoch, initial_handoff, initial_digest = (
-                _stable_stream_projection()
+                await _stable_stream_projection_async()
             )
             if initial_digest != connection_authority_digest:
                 if initial_digest is not None or not initial_epoch.get("initialized"):
@@ -439,7 +450,7 @@ async def evolution_stream(request: Request):
                 if await request.is_disconnected():
                     break
                 live_epoch, live_handoff, live_authority_digest = (
-                    _stable_stream_projection()
+                    await _stable_stream_projection_async()
                 )
                 if (
                     live_authority_digest is None
@@ -472,7 +483,7 @@ async def evolution_stream(request: Request):
                     # identity; otherwise one new-generation event could flash
                     # in an old controller immediately before the fence.
                     delivery_epoch, _delivery_handoff, delivery_authority_digest = (
-                        _stable_stream_projection()
+                        await _stable_stream_projection_async()
                     )
                     if delivery_authority_digest != connection_authority_digest:
                         if delivery_authority_digest is not None or not delivery_epoch.get("initialized"):
@@ -506,8 +517,7 @@ async def evolution_stream(request: Request):
     return EventSourceResponse(generate())
 
 
-@router.get("/evolution/state")
-async def evolution_state():
+def _evolution_state_snapshot():
     """Current state snapshot for initial load."""
     from server.app import web_ui
     from evolution_infra import PIPELINE_STATE_FILE, RESULTS_DIR
@@ -615,3 +625,13 @@ async def evolution_state():
     if checkpoint is None and handoff.get("status") != "none":
         state["pipeline_stage"] = "post_publication_handoff"
     return state
+
+
+@router.get("/evolution/state")
+async def evolution_state():
+    """Current state snapshot without blocking unrelated ASGI requests."""
+
+    return await run_blocking_isolated(
+        _evolution_state_snapshot,
+        thread_name_prefix="evolution-state-observer",
+    )

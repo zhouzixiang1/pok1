@@ -4,14 +4,14 @@ import { cn } from "../../lib/utils";
 import { canonicalGenerationLabel } from "../../lib/canonicalGenerationIdentity";
 
 const stateLabels: Record<EpochState, string> = {
-  reset_required: "需要执行一次性 epoch 重置",
-  reset_evidence_requires_recovery: "重置证据需要人工恢复",
-  version_authority_requires_recovery: "版本权威需要人工恢复",
-  epoch_authority_unavailable: "epoch 权威不可用",
-  runtime_reconciliation_in_progress: "运行时 reconciliation 正在进行",
-  publication_recovery_ready: "发布事务等待原位恢复",
-  fresh_bootstrap_ready: "首个严格版本已就绪",
-  strict_published: "严格国赛 epoch 已发布",
+  reset_required: "严格进化需要一次性初始化",
+  reset_evidence_requires_recovery: "初始化证据需要人工恢复",
+  version_authority_requires_recovery: "真实版本身份需要人工恢复",
+  epoch_authority_unavailable: "无法验证当前严格进化身份",
+  runtime_reconciliation_in_progress: "正在核对停机前后的运行状态",
+  publication_recovery_ready: "一次未完成的发布可以原位续做",
+  fresh_bootstrap_ready: "首个严格 Bot 的生产环境已就绪",
+  strict_published: "严格发布池已建立",
 };
 
 const stateTone: Record<EpochState, string> = {
@@ -38,7 +38,7 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
     return (
       <div className={cn("rounded-xl border border-gray-200 bg-white p-4 text-sm dark:border-border-subtle dark:bg-surface-1", className)}>
         {loading ? (
-          <span className="text-gray-500">正在读取严格国赛 epoch 权威状态…</span>
+          <span className="text-gray-500">正在核对严格进化与版本身份…</span>
         ) : (
           <div>
             <p className="font-semibold text-red-600 dark:text-red-300">无法确认版本与运行权威</p>
@@ -57,7 +57,7 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
     : null;
 
   return (
-    <section className={cn("rounded-xl border p-4", stateTone[status.epoch_state], className)} aria-label="严格国赛 epoch 权威">
+    <section className={cn("rounded-xl border p-4", stateTone[status.epoch_state], className)} aria-label="严格进化身份状态">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex flex-wrap items-center gap-2">
@@ -67,10 +67,10 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
             </span>
           </div>
           <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-            数字权威高水位 <span className="font-mono font-semibold">v{status.version_authority_high_water}</span>
-            {resetBlocked && "（仅归档数字边界，不是严格活跃父代）"}
+            历史版本编号上限 <span className="font-mono font-semibold">v{status.version_authority_high_water}</span>
+            {resetBlocked && "（只用于防止版本号倒退，不是可继承父本）"}
             {nextVersion != null && (
-              <> · 下一权威目标 <span className="font-mono font-semibold">v{nextVersion}</span></>
+              <> · 下一真实版本 <span className="font-mono font-semibold">v{nextVersion}</span></>
             )}
             <> · 已发布严格代次 <span className="font-mono font-semibold">{status.strict_generation_count}</span></>
           </p>
@@ -81,7 +81,7 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
             ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
             : "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300",
         )}>
-          {status.epoch_initialized ? "权威已初始化" : "禁止启动进化"}
+          {status.epoch_initialized ? "身份已验证" : "禁止启动进化"}
         </span>
       </div>
 
@@ -137,11 +137,11 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
             </p>
           )}
           {status.epoch_state === "fresh_bootstrap_ready" && (
-            <p>一次性重置 receipt 已验证；等待 v{nextVersion} 完成原生 TCP、本地门和正式 EXE 全量认证后发布。</p>
+            <p>一次性初始化收据已验证；v{nextVersion} 只有完成原生 TCP、本地门和正式 EXE 全量认证后才会进入发布池。</p>
           )}
           {status.epoch_state === "strict_published" && (
             <p>
-              活跃池仅包含带严格发布身份的 Bot：{status.active_bots.length > 0 ? status.active_bots.join("、") : "当前为空"}。
+              当前可参与评分的发布 Bot：{status.active_bots.length > 0 ? status.active_bots.join("、") : "当前为空"}。
             </p>
           )}
 
@@ -173,14 +173,14 @@ export function EpochAuthorityStatus({ status, loading = false, error, compact =
 
           {status.active_generation && (
             <p>
-              权威活动代次：{activeIdentityLabel ? (
+              正在处理：{activeIdentityLabel ? (
                 <span className="font-mono">{activeIdentityLabel}</span>
               ) : (
                 <span className="font-semibold text-red-700 dark:text-red-300">双身份投影不可用</span>
               )}
-              {status.active_generation.source_v != null && <> · source_v=<span className="font-mono">v{status.active_generation.source_v}</span></>}
-              <> · {status.active_generation.stage}</>
-              <> · workflow <span className="font-mono">{status.active_generation.workflow_run_id || "—"}</span></>
+              {status.active_generation.source_v != null && <> · 主父本 <span className="font-mono">v{status.active_generation.source_v}</span></>}
+              <> · 内部阶段 <span className="font-mono">{status.active_generation.stage}</span></>
+              <> · 工作流 <span className="font-mono">{status.active_generation.workflow_run_id || "—"}</span></>
               {status.active_generation.recovery_kind === "recorded_abandon_checkpoint_finalize" && (
                 <> · 已记录 abandon receipt，等待完成 checkpoint/candidate 清理</>
               )}

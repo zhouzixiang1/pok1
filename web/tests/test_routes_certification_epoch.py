@@ -1069,6 +1069,14 @@ def test_normal_attached_job_is_visible_in_all_owning_checkpoint_stages(
     payload = client.get("/api/certification/jobs").json()
 
     assert [row["job_id"] for row in payload["jobs"]] == [request["job_id"]]
+    assert payload["next_v"] == context["checkpoint"]["next_v"]
+    assert payload["candidate_version"] == context["checkpoint"]["next_v"]
+    assert payload["source_v"] == context["checkpoint"]["source_v"]
+    assert payload["parent2_v"] is None
+    assert payload["checkpoint_stage"] == stage
+    assert payload["checkpoint_revision"] == context["checkpoint"]["checkpoint_revision"]
+    assert payload["workflow_run_id"] == context["workflow_run_id"]
+    assert payload["run_id"] == "144#0"
 
 
 @pytest.mark.parametrize(

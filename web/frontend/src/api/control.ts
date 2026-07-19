@@ -66,7 +66,11 @@ export interface PipelineRoute {
   next_tool: string | null;
   allowed_tools: string[];
   intent: string;
+  /** Recovery action emitted by the backend when the route owns a retry. */
+  action?: "retry_same_tool" | "abandon_generation" | string | null;
   failure_class?: string | null;
+  /** Typed enough for presentation; the backend remains the classification authority. */
+  infra_failure?: Record<string, unknown> | null;
   directive: string;
 }
 
@@ -126,6 +130,8 @@ export interface StabilityObservation {
   };
   continuity_id: string | null;
   last_reset_reason: string | null;
+  /** Diagnostic context for the latest reset; never a rating/selection input. */
+  last_reset_details?: Record<string, unknown> | null;
   identity_mismatches: string[];
   errors: string[];
   verification?: {
@@ -252,6 +258,7 @@ export interface ControlPipelineHealth {
   identity_changed?: boolean;
   identity_mismatches?: string[];
   recovery_blocked?: boolean;
+  operator_action_required?: boolean;
   admission_blocked?: boolean;
   terminalization_pending?: boolean;
   gate_outcome?: {

@@ -11,6 +11,7 @@ import {
   validateDataStreamEvent,
 } from "../node_modules/.tmp/sse-tests/lib/dataStreamController.js";
 import {
+  acceptedEvolutionStatusAllowsIO,
   createEvolutionStreamController,
   compareTransientStatusTaskProjection,
   createTransientStatusTaskAuthorityState,
@@ -1206,6 +1207,10 @@ test("transient evolution status rejects stale, inactive, and mismatched checkpo
   assert.equal(evolutionStatusExpiryAt(current, 105), 130);
   assert.equal(isAcceptedEvolutionStatusFresh(current, 105, 129.999), true);
   assert.equal(isAcceptedEvolutionStatusFresh(current, 105, 130), false);
+  assert.equal(acceptedEvolutionStatusAllowsIO(current, 105, active, activeTask, 129.999), true);
+  // AgentActivity must reject both IO and tool events at the same expiry even
+  // if workflow/task identity remains otherwise unchanged.
+  assert.equal(acceptedEvolutionStatusAllowsIO(current, 105, active, activeTask, 130), false);
   assert.equal(evolutionStatusExpiryAt({ ...current, emitted_at: 108 }, 105), 135);
   assert.equal(isAcceptedEvolutionStatusFresh({ ...current, emitted_at: 108 }, 105, 134.999), true);
   assert.equal(isAcceptedEvolutionStatusFresh({ ...current, emitted_at: 108 }, 105, 135), false);

@@ -137,6 +137,22 @@ export interface TransientStatusTask {
 }
 
 /**
+ * IO/tool events carry no independent checkpoint identity.  They may render
+ * only while the last accepted status still binds the exact generation/task
+ * and remains inside the same 30-second replay lifetime.
+ */
+export function acceptedEvolutionStatusAllowsIO(
+  status: EvolutionStatusEvent | null | undefined,
+  acceptedAt: number | null | undefined,
+  active: ActiveGenerationStatusIdentity | null | undefined,
+  task: TransientStatusTask | null | undefined,
+  observedAt: number = Date.now() / 1000,
+): boolean {
+  return isAcceptedEvolutionStatusFresh(status, acceptedAt, observedAt)
+    && evolutionStatusMatchesActiveGeneration(status, active, task);
+}
+
+/**
  * The browser must treat a malformed or missing task projection as an
  * authority loss, rather than trying to infer whether a prior task is still
  * live.  `lastVerified` is deliberately retained across that loss: an exact

@@ -87,32 +87,54 @@ export const PIPELINE_STAGES = [
 
 export type PipelineMilestone = typeof PIPELINE_STAGES[number];
 
-export const STAGE_TO_MILESTONE: Record<PipelineStage, PipelineMilestone> = {
-  selected: "selected",
-  preparing: "selected",
-  prepared: "prepared",
-  crossover_running: "prepared",
-  direction_audited: "direction_audited",
-  master_planned: "master_planned",
-  workers_done: "workers_done",
-  quality_failed: "quality_passed",
-  quality_rejected: "quality_passed",
-  quality_passed: "quality_passed",
-  review_rejected: "reviewed",
-  reviewed: "reviewed",
-  critic_rejected: "critic_checked",
-  critic_checked: "critic_checked",
-  precommit_failed: "verified",
-  repair_planned: "verified",
-  rework_running: "verified",
-  verified: "verified",
-  official_bootstrap_required: "official_certifying",
-  official_certifying: "official_certifying",
-  official_failed: "official_certifying",
-  official_inconclusive: "official_certifying",
-  publishing: "publishing",
-  archived: "archived",
+/**
+ * A durable checkpoint stage is not automatically "work currently running".
+ * Most successful stages are committed boundaries: the next tool, carried by
+ * the paired health route, owns the work that follows.  Transitional and
+ * failed stages remain visually active but never turn their target milestone
+ * green.
+ */
+export type PipelineStageProgressKind =
+  | "completed_boundary"
+  | "in_progress"
+  | "failed_boundary";
+
+export interface PipelineStageProgress {
+  kind: PipelineStageProgressKind;
+  completedThrough: PipelineMilestone | null;
+  activeMilestone: PipelineMilestone | null;
+}
+
+export const PIPELINE_STAGE_PROGRESS: Record<PipelineStage, PipelineStageProgress> = {
+  selected: { kind: "completed_boundary", completedThrough: "selected", activeMilestone: "prepared" },
+  preparing: { kind: "in_progress", completedThrough: "selected", activeMilestone: "prepared" },
+  prepared: { kind: "completed_boundary", completedThrough: "prepared", activeMilestone: "direction_audited" },
+  crossover_running: { kind: "in_progress", completedThrough: "selected", activeMilestone: "prepared" },
+  direction_audited: { kind: "completed_boundary", completedThrough: "direction_audited", activeMilestone: "master_planned" },
+  master_planned: { kind: "completed_boundary", completedThrough: "master_planned", activeMilestone: "workers_done" },
+  workers_done: { kind: "completed_boundary", completedThrough: "workers_done", activeMilestone: "quality_passed" },
+  quality_failed: { kind: "failed_boundary", completedThrough: "workers_done", activeMilestone: "quality_passed" },
+  quality_rejected: { kind: "failed_boundary", completedThrough: "workers_done", activeMilestone: "quality_passed" },
+  quality_passed: { kind: "completed_boundary", completedThrough: "quality_passed", activeMilestone: "reviewed" },
+  review_rejected: { kind: "failed_boundary", completedThrough: "quality_passed", activeMilestone: "reviewed" },
+  reviewed: { kind: "completed_boundary", completedThrough: "reviewed", activeMilestone: "critic_checked" },
+  critic_rejected: { kind: "failed_boundary", completedThrough: "reviewed", activeMilestone: "critic_checked" },
+  critic_checked: { kind: "completed_boundary", completedThrough: "critic_checked", activeMilestone: "verified" },
+  precommit_failed: { kind: "failed_boundary", completedThrough: "critic_checked", activeMilestone: "verified" },
+  repair_planned: { kind: "in_progress", completedThrough: "master_planned", activeMilestone: "workers_done" },
+  rework_running: { kind: "in_progress", completedThrough: "master_planned", activeMilestone: "workers_done" },
+  verified: { kind: "completed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
+  official_bootstrap_required: { kind: "completed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
+  official_certifying: { kind: "in_progress", completedThrough: "verified", activeMilestone: "official_certifying" },
+  official_failed: { kind: "failed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
+  official_inconclusive: { kind: "failed_boundary", completedThrough: "verified", activeMilestone: "official_certifying" },
+  publishing: { kind: "in_progress", completedThrough: "official_certifying", activeMilestone: "publishing" },
+  archived: { kind: "completed_boundary", completedThrough: "publishing", activeMilestone: "archived" },
 };
+
+export function pipelineStageProgress(stage: PipelineStage): PipelineStageProgress {
+  return PIPELINE_STAGE_PROGRESS[stage];
+}
 
 export const STAGE_LABELS: Record<PipelineStage | PipelineMilestone, string> = {
   selected: "基线选定",
@@ -138,5 +160,5 @@ export const STAGE_LABELS: Record<PipelineStage | PipelineMilestone, string> = {
   official_failed: "官方认证失败",
   official_inconclusive: "官方认证无结论",
   publishing: "签名发布",
-  archived: "Post-commit 归档",
+  archived: "已发布，等待 Archivist 收尾",
 };

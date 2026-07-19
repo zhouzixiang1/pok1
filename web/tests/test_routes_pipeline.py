@@ -1,6 +1,9 @@
 """Tests for /api/pipeline/* endpoints."""
 
+import asyncio
 import json
+import threading
+import time
 
 
 class TestPipelineCheckpoint:
@@ -10,6 +13,39 @@ class TestPipelineCheckpoint:
         # No pipeline_state.json in isolated tmp, so should be None
         data = resp.json()
         assert data is None, f"Expected no pipeline checkpoint in test, got: {data}"
+
+    def test_slow_checkpoint_authority_does_not_block_event_loop(
+        self, monkeypatch
+    ):
+        from server.routes import pipeline
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_checkpoint(*_args, **_kwargs):
+            entered.set()
+            assert release.wait(timeout=2)
+            return {"stage": "direction_audited"}
+
+        monkeypatch.setattr(
+            pipeline,
+            "load_strict_pipeline_checkpoint",
+            slow_checkpoint,
+        )
+
+        async def run():
+            task = asyncio.create_task(pipeline.pipeline_checkpoint())
+            deadline = time.monotonic() + 1
+            while not entered.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(0.001)
+            assert entered.is_set()
+            started = time.monotonic()
+            await asyncio.sleep(0.02)
+            assert time.monotonic() - started < 0.1
+            release.set()
+            return await task
+
+        assert asyncio.run(run()) == {"stage": "direction_audited"}
 
     def test_legacy_checkpoint_is_not_presented_as_current(self, client):
         # A pre-policy shape is operator archive/reset evidence, not a current

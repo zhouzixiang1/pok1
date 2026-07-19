@@ -1,5 +1,9 @@
 """Tests for /api/evolution/* endpoints."""
 
+import asyncio
+import threading
+import time
+
 
 def _active_epoch(*, revision=7, stage="master_planning"):
     return {
@@ -41,6 +45,48 @@ class TestEvolutionState:
         assert resp.status_code == 200
         data = resp.json()
         assert isinstance(data, dict)
+
+    def test_state_and_stream_authority_reads_do_not_block_event_loop(
+        self, monkeypatch
+    ):
+        from server.routes import evolution
+
+        def exercise(target_name, async_call, expected):
+            entered = threading.Event()
+            release = threading.Event()
+
+            def slow_authority(*_args):
+                entered.set()
+                assert release.wait(timeout=2)
+                return expected
+
+            monkeypatch.setattr(evolution, target_name, slow_authority)
+
+            async def run():
+                task = asyncio.create_task(async_call())
+                deadline = time.monotonic() + 1
+                while not entered.is_set() and time.monotonic() < deadline:
+                    await asyncio.sleep(0.001)
+                assert entered.is_set()
+                started = time.monotonic()
+                await asyncio.sleep(0.02)
+                assert time.monotonic() - started < 0.1
+                release.set()
+                return await task
+
+            return asyncio.run(run())
+
+        assert exercise(
+            "_evolution_state_snapshot",
+            evolution.evolution_state,
+            {"status": "ok"},
+        ) == {"status": "ok"}
+        expected_stream = ({"initialized": False}, {"status": "none"}, None)
+        assert exercise(
+            "_stable_stream_projection",
+            evolution._stable_stream_projection_async,
+            expected_stream,
+        ) == expected_stream
 
     def test_uninitialized_epoch_never_exposes_stale_webui_state(self, client, monkeypatch):
         import epoch_authority

@@ -1,21 +1,15 @@
 import type { ControlStatus, OperatorTransition } from "../../api/control";
-import type { OfficialCertificationJob } from "../../api/types";
+import type {
+  OfficialCertificationJob,
+  OfficialCertificationJobsProjection,
+} from "../../api/types";
 import { useOfficialCertificationJobs } from "../../hooks/useOfficialCertificationJobs";
+import {
+  isNormalOfficialCertificationStage,
+  isOfficialCertificationStage,
+  officialJobsBindingIssues,
+} from "../../api/officialJobs";
 import { cn } from "../../lib/utils";
-
-const VISIBLE_STAGES = new Set([
-  "official_bootstrap_required",
-  "official_certifying",
-  "official_failed",
-  "official_inconclusive",
-  "publishing",
-]);
-const NORMAL_JOB_STAGES = new Set([
-  "official_certifying",
-  "official_failed",
-  "official_inconclusive",
-  "publishing",
-]);
 
 const roundKind = (kind: string) => kind === "self_play" ? "自对弈" : kind === "opponent" ? "认证对手" : kind;
 
@@ -149,20 +143,50 @@ export function OfficialCertificationProgress({
   className?: string;
 }) {
   const stage = status?.active_generation?.stage ?? "";
-  const shouldPoll = Boolean(status?.epoch_initialized && VISIBLE_STAGES.has(stage));
-  const { jobsProjection, loading, error } = useOfficialCertificationJobs(shouldPoll);
+  const shouldPoll = Boolean(status?.epoch_initialized && isOfficialCertificationStage(stage));
+  const generation = status?.active_generation ?? null;
+  const { jobsProjection, loading, error } = useOfficialCertificationJobs(
+    shouldPoll,
+    generation,
+  );
 
-  if (!status?.epoch_initialized || !VISIBLE_STAGES.has(stage)) return null;
+  return (
+    <OfficialCertificationProgressView
+      status={status}
+      className={className}
+      jobsProjection={jobsProjection}
+      loading={loading}
+      error={error}
+    />
+  );
+}
 
-  const generation = status.active_generation;
+/** Pure rendering child used when a page already owns the sole jobs poll. */
+export function OfficialCertificationProgressView({
+  status,
+  className,
+  jobsProjection,
+  loading,
+  error,
+}: {
+  status: ControlStatus | null;
+  className?: string;
+  jobsProjection: OfficialCertificationJobsProjection | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const stage = status?.active_generation?.stage ?? "";
+  const generation = status?.active_generation ?? null;
+
+  if (!status?.epoch_initialized || !isOfficialCertificationStage(stage)) return null;
+
   const identityMatches = Boolean(
     jobsProjection
     && generation
-    && jobsProjection.workflow_run_id === generation.workflow_run_id
-    && jobsProjection.candidate_version === generation.next_v,
+    && officialJobsBindingIssues(jobsProjection, generation).length === 0,
   );
   const bootstrap = stage === "official_bootstrap_required";
-  const normalJobStage = NORMAL_JOB_STAGES.has(stage);
+  const normalJobStage = isNormalOfficialCertificationStage(stage);
   // The status projection owns the initial pause. The exact jobs endpoint may
   // refine that same checkpoint-bound transition to running/failed/finalize;
   // prefer the refined record only after its workflow/candidate identity has

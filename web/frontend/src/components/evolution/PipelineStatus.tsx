@@ -1,13 +1,13 @@
 import { useState } from "react";
 import type { MasterPlanTask, PipelineCheckpoint, PipelineGateResult } from "../../api/types";
-import type { ActiveGeneration, PostPublicationHandoffStatus } from "../../api/control";
+import type { ActiveGeneration, PipelineRoute, PostPublicationHandoffStatus } from "../../api/control";
 import {
   PIPELINE_STAGE_CONTRACT,
   PIPELINE_STAGES,
   PIPELINE_TIMEOUT_LEASES,
   STAGE_LABELS,
-  STAGE_TO_MILESTONE,
   isPipelineTimeoutLeaseStage,
+  pipelineStageProgress,
   type PipelineStage,
 } from "../../constants/pipeline";
 import { cn } from "../../lib/utils";
@@ -20,7 +20,13 @@ import {
 } from "../../lib/pipelinePresentation";
 import { CheckIcon, CrossIcon } from "./icons";
 
-export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint | null }) {
+export function PipelineStepper({
+  checkpoint,
+  nextTool = null,
+}: {
+  checkpoint: PipelineCheckpoint | null;
+  nextTool?: string | null;
+}) {
   if (!checkpoint) return null;
 
   const rawStage = checkpoint.stage ?? "";
@@ -46,15 +52,16 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
     );
   }
   const stage = rawStage as PipelineStage;
+  const progress = pipelineStageProgress(stage);
   const isRepair = stage === "repair_planned" || stage === "rework_running";
-  // Once repair owns the candidate, review/critic/precommit results belong to
-  // the pre-repair bytes.  Keep only the planning prefix green and render the
-  // Worker milestone as active until the repaired bytes re-enter the gates.
-  const milestone = isRepair ? "workers_done" : STAGE_TO_MILESTONE[stage];
-  const currentIdx = PIPELINE_STAGES.indexOf(milestone);
-  const isFailure = stage.endsWith("_failed")
-    || stage.endsWith("_rejected")
-    || stage === "official_inconclusive";
+  const completedIdx = progress.completedThrough == null
+    ? -1
+    : PIPELINE_STAGES.indexOf(progress.completedThrough);
+  const isFailure = progress.kind === "failed_boundary";
+  const boundaryText = progress.completedThrough == null
+    ? "尚无已完成里程碑"
+    : `已完成到“${STAGE_LABELS[progress.completedThrough]}”`;
+  const nextText = nextTool ? `；下一动作：${nextTool}` : "；下一动作等待配对 health route";
 
   return (
     <div>
@@ -62,12 +69,18 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
         "mb-1 text-[10px] font-medium",
         isFailure ? "text-red-600 dark:text-red-400" : stage === "official_bootstrap_required" ? "text-amber-600 dark:text-amber-400" : "text-gray-500",
       )}>
-        当前阶段：{STAGE_LABELS[stage]} <span className="font-mono text-gray-400">({stage})</span>
+        {progress.kind === "completed_boundary"
+          ? `已落盘完成边界：${STAGE_LABELS[stage]}`
+          : progress.kind === "failed_boundary"
+            ? `失败/拒绝边界：${STAGE_LABELS[stage]}`
+            : `执行中边界：${STAGE_LABELS[stage]}`}
+        <span className="font-mono text-gray-400"> ({stage})</span>
+        <span className="ml-1 font-normal text-gray-400">· {boundaryText}{nextText}</span>
       </div>
       <div className="flex items-center gap-0 overflow-x-auto py-2">
       {PIPELINE_STAGES.map((pipelineStage, i) => {
-        const done = i < currentIdx;
-        const active = i === currentIdx;
+        const done = i <= completedIdx;
+        const active = progress.activeMilestone === pipelineStage;
         return (
           <div key={pipelineStage} className="flex items-center shrink-0">
             {/* Node */}
@@ -96,7 +109,7 @@ export function PipelineStepper({ checkpoint }: { checkpoint: PipelineCheckpoint
             {i < PIPELINE_STAGES.length - 1 && (
               <div className={cn(
                 "w-4 h-0.5 transition-colors duration-300 mx-0.5",
-                i < currentIdx ? "bg-success-500" : "bg-gray-300 dark:bg-gray-700",
+                i < completedIdx ? "bg-success-500" : "bg-gray-300 dark:bg-gray-700",
               )} />
             )}
           </div>
@@ -115,6 +128,7 @@ export function PipelineStatus({
   activeBlocked = false,
   activeIssues = [],
   schedulerActive = false,
+  route = null,
 }: {
   checkpoint: PipelineCheckpoint | null;
   activeGeneration?: ActiveGeneration | null;
@@ -123,12 +137,21 @@ export function PipelineStatus({
   activeBlocked?: boolean;
   activeIssues?: string[];
   schedulerActive?: boolean;
+  route?: PipelineRoute | null;
 }) {
   const [expanded, setExpanded] = useState(false);
   const activeIdentityLabel = activeGeneration
     ? canonicalGenerationLabel(activeGeneration, activeGeneration.next_v)
     : null;
   const activeIdentityText = activeIdentityLabel ?? "双身份投影不可用";
+  const boundRoute = activeGeneration
+    && route
+    && route.stage === activeGeneration.stage
+    && route.next_v === activeGeneration.next_v
+    && route.source_v === activeGeneration.source_v
+    && route.parent2_v === activeGeneration.parent2_v
+    ? route
+    : null;
 
   if (handoff && handoff.status !== "none") {
     const blocked = handoff.status === "blocked" || handoff.blocked || handoffBlocked;
@@ -204,7 +227,8 @@ export function PipelineStatus({
           {activeGeneration.source_v != null ? ` · source_v=v${activeGeneration.source_v}` : ""}
         </h3>
         <p className="text-xs text-amber-600 dark:text-amber-300">
-          权威活动阶段为 {activeGeneration.stage}，详细 checkpoint 暂不可用。
+          已知 checkpoint 边界为 {activeGeneration.stage}，但详细 checkpoint 暂不可用；
+          下一动作：{boundRoute?.next_tool ?? "等待配对 health route"}。
         </p>
       </div>
     );
@@ -244,7 +268,7 @@ export function PipelineStatus({
         <span className="text-[10px] text-gray-400">{expanded ? "▲" : "▼"}</span>
       </button>
 
-      <PipelineStepper checkpoint={checkpoint} />
+      <PipelineStepper checkpoint={checkpoint} nextTool={boundRoute?.next_tool ?? null} />
 
       {expanded && (
         <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700 space-y-2">
