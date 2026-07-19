@@ -1206,7 +1206,18 @@ HEAD_DRIFT_RESUME_POLICY = {
         "resume_kind": "pre_master",
         "warning_suffix": "pre_master",
         "requires_target": True,
-        "requires_contract_unchanged": True,
+        # No candidate-mutating Worker effect exists at this boundary.  If a
+        # crash left an already accepted Master result in the strict journal,
+        # run_master recovers that content-bound result (the same condition as
+        # the master_planned policy below); otherwise it renders and validates
+        # a fresh plan from the current source.  Live epoch, parent, bootstrap,
+        # allocation and prepared-artifact authority are rechecked before a
+        # provider call, and the direction_audited -> master_planned transition
+        # refreshes repo_baseline to the HEAD that actually owns the plan.
+        # Requiring the old Master contract here would make a source repair
+        # impossible to resume and would consume a new canonical label despite
+        # there being no accepted strategy or code mutation to discard.
+        "requires_contract_unchanged": False,
         "branch_alias_allowed": True,
     },
     "master_planned": {

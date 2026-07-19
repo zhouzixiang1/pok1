@@ -3758,6 +3758,63 @@ def test_checkpoint_recovery_diagnostics_allows_pre_master_head_mismatch(tmp_pat
         assert diag["target"]["exists"] is True
 
 
+def test_direction_audited_recovery_allows_reviewed_master_contract_drift(
+    tmp_path,
+    monkeypatch,
+):
+    """The real contract-bearing checkpoint may resume before Master mutates code."""
+
+    import pipeline_recovery
+
+    monkeypatch.setattr(
+        pipeline_recovery,
+        "evaluate_head_drift",
+        lambda *_args, **_kwargs: (
+            False,
+            {
+                "head_contract_paths": [
+                    "web/core/agent_master.py",
+                    "web/core/generation_evidence.py",
+                ],
+                "head_external_paths": [],
+            },
+        ),
+    )
+    _strict_artifact(tmp_path / "bots" / "national_v257", 257)
+    checkpoint = _strict_checkpoint(
+        257,
+        197,
+        "direction_audited",
+        repo_baseline={
+            "branch": "main",
+            "head": "old123",
+            "evaluation_contract": {"version": 42, "hash": "old-contract"},
+        },
+    )
+    snapshot = {"ok": True, "branch": "main", "head": "new456"}
+
+    diag = pipeline_recovery.checkpoint_recovery_diagnostics(
+        checkpoint,
+        snapshot=snapshot,
+        project_root=tmp_path,
+    )
+
+    assert diag["active"] is True
+    assert diag["recoverable"] is True
+    assert "repo_baseline_head_mismatch" not in diag["issues"]
+    assert "repo_baseline_head_mismatch_pre_master_resume" in diag["warnings"]
+    assert diag["repo"]["baseline_evaluation_contract_unchanged"] is False
+    assert diag["repo"]["baseline_head_contract_paths"] == [
+        "web/core/agent_master.py",
+        "web/core/generation_evidence.py",
+    ]
+    assert diag["repo"]["head_drift_requires_contract_unchanged"] is False
+    assert diag["repo"]["head_drift_allowed_tools"] == [
+        "run_literature_probe",
+        "run_master",
+    ]
+
+
 def test_checkpoint_recovery_diagnostics_blocks_preparing_repo_head_mismatch(tmp_path):
     import pipeline_recovery
 

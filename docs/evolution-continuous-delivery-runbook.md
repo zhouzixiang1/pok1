@@ -46,20 +46,29 @@ checkpoint, result, log, or certificate files are never copied by hand.
 9. If the stopped runtime is checkpoint-free and its active-stage evaluation
    contract did **not** change, fast-forward `.evolution_pok` only from merged
    `origin/main`, then run canonical checkpoint recovery diagnostics.
-10. If an active checkpoint's evaluation contract changed, do **not** resume it
-    under new source. Normally keep `.evolution_pok` on its recorded old HEAD,
-    run the old contract's exact-CAS governed abandon, validate the finalized
-    handoff/quarantine/cleared-checkpoint proof, and only then fast-forward.
-    The sole exception is a reviewed, source-owned terminal migrator that does
-    not exist on the old HEAD and has already matched an immutable/online-backup
-    projection of that exact stopped checkpoint. For that exception, prove all
-    autonomous processes stopped, fast-forward only to the exact reviewed main
-    SHA, start no Web/orchestrator/daemon/provider process, and immediately run
-    the migrator dry-run followed by its explicitly acknowledged exact-CAS
-    terminal action. A failed dry-run or execute leaves the runtime stopped on
-    the migrated source for diagnosis; it never falls through to normal
-    recovery. Never delete, copy back, or edit a checkpoint/candidate to make
-    either path appear clean.
+10. If an active checkpoint's evaluation contract changed, default to **not**
+    resuming it under new source. Normally keep `.evolution_pok` on its recorded
+    old HEAD, run the old contract's exact-CAS governed abandon, validate the
+    finalized handoff/quarantine/cleared-checkpoint proof, and only then
+    fast-forward. There are only two source-owned exceptions:
+    - `direction_audited` is the pre-Master boundary. No candidate-mutating
+      Worker effect exists yet, so the exact head-drift policy may allow only
+      `run_literature_probe`/`run_master` after target/worktree, epoch, parent,
+      bootstrap, live allocation and prepared-artifact authority revalidate.
+      An already accepted Master result is recovered only through its immutable
+      strict receipt; otherwise Master renders against current source. The
+      transition to `master_planned` refreshes `repo_baseline` to the HEAD that
+      owns the plan. This exception does not extend to Quality or later stages;
+    - a reviewed, source-owned terminal migrator that does not exist on the old
+      HEAD and has already matched an immutable/online-backup projection of that
+      exact stopped checkpoint. For that exception, prove all autonomous
+      processes stopped, fast-forward only to the exact reviewed main SHA,
+      start no Web/orchestrator/daemon/provider process, and immediately run the
+      migrator dry-run followed by its explicitly acknowledged exact-CAS
+      terminal action.
+    A failed diagnostic, dry-run or execute leaves the runtime stopped; it never
+    falls through to normal recovery. Never delete, copy back, or edit a
+    checkpoint/candidate to make either path appear clean.
 
 ## Historical Contract-40 source freeze gate
 

@@ -1046,6 +1046,35 @@ def test_quality_admission_refresh_has_a_checkpoint_scoped_head_drift_policy():
     assert head_drift_allowed_tools("official_certifying") == {"commit_bot"}
 
 
+def test_direction_audited_head_drift_rebinds_only_at_the_pre_master_boundary():
+    """A reviewed Master-source fix resumes without wasting a Bot label."""
+
+    policy = head_drift_resume_policy(
+        "direction_audited",
+        checkpoint={"stage": "direction_audited", "master_plan": None},
+    )
+
+    assert policy is not None
+    assert policy["allowed_tools"] == ("run_literature_probe", "run_master")
+    assert policy["resume_kind"] == "pre_master"
+    assert policy["requires_target"] is True
+    assert policy["requires_contract_unchanged"] is False
+    assert head_drift_allowed_tools("direction_audited") == {
+        "run_literature_probe",
+        "run_master",
+    }
+
+
+def test_post_quality_head_drift_does_not_inherit_pre_master_exception():
+    """Proven candidate gates remain bound to their exact source contract."""
+
+    # Once Quality has proved candidate bytes, the same contract drift remains
+    # blocking and cannot ride the pre-Master exception into later gates.
+    post_quality = head_drift_resume_policy("quality_passed")
+    assert post_quality is not None
+    assert post_quality["requires_contract_unchanged"] is True
+
+
 def test_official_certifying_profile_refresh_transitions_are_legal():
     for target in ("quality_failed", "quality_passed", "precommit_failed", "verified"):
         ok, reason = validate_stage_transition("official_certifying", target)

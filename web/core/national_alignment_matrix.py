@@ -1252,6 +1252,11 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
                 "validate_completed_operator_bootstrap_authorization",
             ),
             _ref("web/core/national_native.py", "run_native_precommit"),
+            _ref("web/core/pipeline_state.py", "head_drift_resume_policy"),
+            _ref(
+                "web/core/pipeline_recovery.py",
+                "checkpoint_recovery_diagnostics",
+            ),
             _ref("web/core/first_strict_control.py", "validate_control_result"),
             _ref("web/core/tool_eval.py", "_build_first_strict_control_execution_scope"),
             _ref("web/core/official_certification.py", "build_spec"),
@@ -1266,6 +1271,7 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             _ref("web/core/first_strict_control.py", "control_gate_blockers"),
             _ref("web/core/official_certification.py", "official_full_certified"),
             _ref("web/core/epoch_authority.py", "require_policy_epoch_initialized"),
+            _ref("web/core/pipeline_state.py", "head_drift_allowed_tools"),
         ),
         prompts=_CORE_PROMPTS,
         prompt_statement=(
@@ -1292,6 +1298,8 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_normal_strict_v144_resume_accepts_published_parent_binding",
             "web/tests/test_logic_mcp.py::"
             "test_singleton_live_allocation_reopens_exact_abandon_chain",
+            "web/tests/test_runtime_governance_refactor.py::"
+            "test_direction_audited_recovery_allows_reviewed_master_contract_drift",
         ),
         negative_tests=(
             "web/tests/test_official_bootstrap.py::"
@@ -1304,11 +1312,15 @@ CURRENT_ALIGNMENT_ROWS: tuple[MatrixRow, ...] = (
             "test_cli_first_strict_requires_explicit_one_time_acknowledgement",
             "web/tests/test_logic_mcp.py::"
             "test_singleton_live_allocation_rejects_redigested_skipped_target",
+            "web/tests/test_pipeline_state_machine.py::"
+            "test_post_quality_head_drift_does_not_inherit_pre_master_exception",
         ),
         fail_closed=(
             "No missing control, reset receipt, explicit zero-migration result flag, eligible "
             "parent, certificate, tag, or operator acknowledgement may be inferred; the "
-            "checkpoint parks/requires recovery."
+            "checkpoint parks/requires recovery. Only direction_audited may resume a reviewed "
+            "Master-contract drift before any Worker mutation; Quality and later stages remain "
+            "bound to their unchanged evaluation contract."
         ),
     ),
     MatrixRow(

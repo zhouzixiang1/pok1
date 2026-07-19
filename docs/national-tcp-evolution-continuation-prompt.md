@@ -1843,4 +1843,9 @@ The repair must use one exact prompt/validator literal, accept any content- and
 live-allocation-bound successor above v143, classify deterministic Master
 authority defects as recovery-blocked rather than `master_llm`, and derive
 ordinals from immutable paired publication history so abandon/reap never
-renumbers a Bot. Stability remains **0/10** until the controlled restart.
+renumbers a Bot. Since this checkpoint is already `direction_audited`, only the
+pre-Master HEAD-drift route may accept the reviewed Master-contract change; it
+must revalidate the exact target and all live authorities, and the subsequent
+`master_planned` transition must refresh the repository baseline. Quality and
+later stages retain unchanged-contract fail-closed behavior. Stability remains
+**0/10** until the controlled restart.

@@ -4737,6 +4737,17 @@ defects now return a typed recovery-blocked result which preserves the same
 checkpoint and forbids LLM retry or automatic label consumption; only provider
 transport remains `MasterInfrastructureError`.
 
+Because the stopped checkpoint is already at `direction_audited`, its recorded
+Contract-42 Master path set necessarily differs from the repaired source. The
+stage-scoped HEAD-drift policy now treats only this exact pre-Master boundary as
+resumable contract drift: target/worktree plus live epoch, parent, bootstrap,
+allocation and prepared-artifact authority must revalidate; `run_master` either
+recovers a previously accepted immutable Master result or renders on current
+source; and the successful `master_planned` transition refreshes the repository
+baseline. Quality and every later evidence-bearing stage continue to require
+an unchanged evaluation contract. This prevents both a needless v147 abandon
+and a broad post-gate source-drift bypass.
+
 Presentation ordinal authority now enumerates immutable paired publication-tag
 history, not canonical-version arithmetic or the mutable executable pool.
 Abandoned labels consume no ordinal, and a reaped/temporarily unavailable
