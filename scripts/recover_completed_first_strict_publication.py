@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import ctypes
 from copy import deepcopy
+import errno
 import json
 import os
 from pathlib import Path
@@ -28,6 +30,7 @@ import stat
 import subprocess
 import sys
 from typing import Any
+import uuid
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,6 +62,37 @@ CLAIM_DIRNAME = "completed_first_strict_publication_recovery"
 RECOVERY_SCRIPT = "scripts/recover_completed_first_strict_publication.py"
 RECOVERY_TEST = "web/tests/test_completed_bootstrap_publication_recovery.py"
 EXPECTED_CHANGED_PATHS = frozenset({RECOVERY_SCRIPT, RECOVERY_TEST})
+_CLAIM_FIELDS = frozenset({
+    "schema_version",
+    "kind",
+    "evaluation_epoch",
+    "checkpoint",
+    "git",
+    "evaluation_contract",
+    "candidate",
+    "parked_request_digest",
+    "certificate",
+    "final_gate_ledger_digest",
+    "pool",
+    "operator_boundary",
+    "disposition",
+    "claim_digest",
+})
+_TERMINAL_RECEIPT_FIELDS = frozenset({
+    "schema_version",
+    "kind",
+    "claim_digest",
+    "publication_id",
+    "workflow_run_id",
+    "candidate_hash",
+    "certificate_digest",
+    "ledger_entry_digest",
+    "baseline_head",
+    "migration_head",
+    "baseline_contract_hash",
+    "migration_contract_hash",
+    "receipt_digest",
+})
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -299,6 +333,8 @@ def validate_completed_at_parked_authority(
 def publishing_recovery_issues(
     checkpoint: dict[str, Any],
     claim_digest: str,
+    *,
+    claim: dict[str, Any] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     if not _HEX64.fullmatch(str(claim_digest or "")):
@@ -319,6 +355,8 @@ def publishing_recovery_issues(
     unsigned = {key: value for key, value in receipt.items() if key != "receipt_digest"}
     if receipt and receipt.get("receipt_digest") != canonical_digest(unsigned):
         issues.append("first_strict_publication_recovery_receipt_digest_mismatch")
+    if receipt and set(receipt) != _TERMINAL_RECEIPT_FIELDS:
+        issues.append("first_strict_publication_recovery_receipt_shape_mismatch")
     if receipt and (
         receipt.get("schema_version") != TERMINAL_RECEIPT_SCHEMA_VERSION
         or receipt.get("kind") != TERMINAL_RECEIPT_KIND
@@ -340,6 +378,271 @@ def publishing_recovery_issues(
         intent.get("strategy_tag") or ""
     ):
         issues.append("first_strict_publication_recovery_intent_receipt_mismatch")
+    if intent and (
+        intent.get("remote_publication_required") is not True
+        or intent.get("remote_publication_enabled") is not True
+    ):
+        issues.append(
+            "first_strict_publication_recovery_remote_publication_not_required"
+        )
+    if isinstance(claim, dict):
+        checkpoint_claim = claim.get("checkpoint") or {}
+        claim_git = claim.get("git") or {}
+        claim_contract = claim.get("evaluation_contract") or {}
+        claim_certificate = claim.get("certificate") or {}
+        if (
+            receipt.get("workflow_run_id")
+            != checkpoint_claim.get("workflow_run_id")
+            or receipt.get("candidate_hash")
+            != claim_certificate.get("candidate_hash")
+            or receipt.get("certificate_digest")
+            != claim_certificate.get("certificate_digest")
+            or receipt.get("ledger_entry_digest")
+            != claim_certificate.get("ledger_entry_digest")
+            or receipt.get("baseline_head") != claim_git.get("baseline_head")
+            or receipt.get("migration_head") != claim_git.get("current_head")
+            or receipt.get("baseline_contract_hash")
+            != claim_contract.get("baseline_hash")
+            or receipt.get("migration_contract_hash")
+            != claim_contract.get("current_hash")
+        ):
+            issues.append("first_strict_publication_recovery_receipt_claim_mismatch")
+        if intent and (
+            intent.get("candidate_artifact_hash")
+            != claim_certificate.get("candidate_hash")
+            or intent.get("official_certificate_digest")
+            != claim_certificate.get("certificate_digest")
+            or intent.get("official_status_digest")
+            != claim_certificate.get("official_status_digest")
+            or intent.get("final_gate_ledger_digest")
+            != claim.get("final_gate_ledger_digest")
+            or intent.get("baseline_head") != claim_git.get("current_head")
+            or intent.get("baseline_remote_main") != claim_git.get("origin_main")
+            or intent.get("baseline_remote_completion_refs") != {}
+            or intent.get("prepublication_strict_bots")
+            != (claim.get("pool") or {}).get("strict_published_bots")
+            or intent.get("origin_checkpoint_revision")
+            != checkpoint_claim.get("checkpoint_revision")
+            or intent.get("origin_checkpoint_stage")
+            != checkpoint_claim.get("stage")
+        ):
+            issues.append("first_strict_publication_recovery_intent_claim_mismatch")
+    return _unique(issues)
+
+
+def publishing_exact_git_issues(
+    root: Path,
+    checkpoint: dict[str, Any],
+    claim: dict[str, Any],
+) -> list[str]:
+    """Keep recovery on the reviewed head or its sole publication commit."""
+
+    issues: list[str] = []
+    intent = checkpoint.get("publication_intent")
+    intent = intent if isinstance(intent, dict) else {}
+    reviewed_head = str((claim.get("git") or {}).get("current_head") or "")
+    try:
+        head = _full_commit(root, "HEAD")
+        origin = _full_commit(root, "origin/main")
+        from evolution_infra import _resolve_existing_publication_commit
+
+        publication_commit = _resolve_existing_publication_commit(intent)
+        parent = (
+            _full_commit(root, f"{publication_commit}^")
+            if publication_commit
+            else ""
+        )
+        issues.extend(publication_ref_state_issues(
+            reviewed_head=reviewed_head,
+            head=head,
+            origin=origin,
+            publication_commit=publication_commit,
+            publication_parent=parent,
+        ))
+        for tag in (
+            f"national-bot-v{FIRST_STRICT_POLICY_VERSION}",
+            f"national-high-water-v{FIRST_STRICT_POLICY_VERSION}",
+        ):
+            probe = subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}"],
+                cwd=str(root),
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+            if probe.returncode == 0:
+                target = _full_commit(root, f"refs/tags/{tag}")
+                if not publication_commit or target != publication_commit:
+                    issues.append(
+                        "first_strict_publication_recovery_local_tag_drift:"
+                        + tag
+                    )
+            elif probe.returncode != 1:
+                issues.append(
+                    "first_strict_publication_recovery_local_tag_probe_failed:"
+                    + tag
+                )
+        tracked = str(
+            _git(root, "status", "--porcelain", "--untracked-files=no")
+        ).strip()
+        if tracked:
+            issues.append(
+                "first_strict_publication_recovery_tracked_worktree_dirty"
+            )
+        issues.extend(index_flag_issues(
+            _git(root, "ls-files", "-v", "-z", binary=True)
+        ))
+        issues.extend(_self_blob_issues(root, reviewed_head))
+    except Exception as exc:
+        issues.append(
+            "first_strict_publication_recovery_exact_git_validation_error:"
+            f"{type(exc).__name__}:{str(exc)[:200]}"
+        )
+    return _unique(issues)
+
+
+def publication_ref_state_issues(
+    *,
+    reviewed_head: str,
+    head: str,
+    origin: str,
+    publication_commit: str,
+    publication_parent: str,
+) -> list[str]:
+    """Accept only reviewed/reviewed and the two exact publication states."""
+
+    if publication_commit:
+        if (
+            publication_parent != reviewed_head
+            or head != publication_commit
+            or origin not in {reviewed_head, publication_commit}
+        ):
+            return ["first_strict_publication_recovery_publication_head_drift"]
+        return []
+    if head != reviewed_head or origin != reviewed_head:
+        return ["first_strict_publication_recovery_reviewed_head_drift"]
+    return []
+
+
+def publishing_live_claim_issues(
+    root: Path,
+    checkpoint: dict[str, Any],
+    claim: dict[str, Any],
+) -> list[str]:
+    """Reopen candidate/certificate/gate/pool authority on every resume."""
+
+    issues: list[str] = []
+    candidate = root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
+    intent = checkpoint.get("publication_intent")
+    intent = intent if isinstance(intent, dict) else {}
+    certificate_claim = claim.get("certificate") or {}
+    try:
+        from bot_artifact import hash_path
+        from evolution_infra import get_active_bots_read_only
+        from national_runtime_authority import (
+            build_pending_local_publication_proof,
+            strict_published_bot_names,
+        )
+        from official_certification import (
+            official_full_certified,
+            read_status,
+        )
+        from official_certification_job import job_snapshot
+        from publication_transaction import publication_gate_ledger_digest
+        from tool_commit import validate_commit_gate_ledger
+
+        frozen_status = (
+            (((checkpoint.get("gate_results") or {}).get("official_full") or {})
+            .get("status"))
+            or {}
+        )
+        status = read_status(candidate)
+        if canonical_digest(frozen_status) != certificate_claim.get(
+            "official_status_digest"
+        ):
+            issues.append(
+                "first_strict_publication_recovery_status_drift_on_resume"
+            )
+        if hash_path(candidate) != certificate_claim.get("candidate_hash"):
+            issues.append(
+                "first_strict_publication_recovery_candidate_drift_on_resume"
+            )
+        tag = f"refs/tags/national-bot-v{FIRST_STRICT_POLICY_VERSION}"
+        tag_present = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", tag],
+            cwd=str(root),
+            capture_output=True,
+            timeout=30,
+            check=False,
+        ).returncode == 0
+        if not official_full_certified(
+            status,
+            candidate,
+            require_published=tag_present,
+        ):
+            issues.append(
+                "first_strict_publication_recovery_certificate_invalid_on_resume"
+            )
+        pending = (
+            build_pending_local_publication_proof(candidate)
+            if tag_present
+            else None
+        )
+        gate = validate_commit_gate_ledger(
+            FIRST_STRICT_POLICY_VERSION,
+            ARCHIVED_VERSION_HIGH_WATER,
+            checkpoint,
+            bot_dir=candidate,
+            pending_local_publication=pending,
+        )
+        if (
+            gate.get("missing_gates")
+            or gate.get("failed_gates")
+            or publication_gate_ledger_digest(gate)
+            != claim.get("final_gate_ledger_digest")
+        ):
+            issues.append(
+                "first_strict_publication_recovery_gate_drift_on_resume"
+            )
+        active_without_candidate = sorted(
+            item
+            for item in get_active_bots_read_only()
+            if item != bot_name(FIRST_STRICT_POLICY_VERSION)
+        )
+        if active_without_candidate != (claim.get("pool") or {}).get(
+            "active_bots"
+        ):
+            issues.append(
+                "first_strict_publication_recovery_active_pool_drift_on_resume"
+            )
+        strict_without_candidate = sorted(
+            item
+            for item in strict_published_bot_names()
+            if item != bot_name(FIRST_STRICT_POLICY_VERSION)
+        )
+        if strict_without_candidate != (claim.get("pool") or {}).get(
+            "strict_published_bots"
+        ):
+            issues.append(
+                "first_strict_publication_recovery_strict_pool_drift_on_resume"
+            )
+        jobs = job_snapshot()
+        if jobs.get("pending") or jobs.get("running"):
+            issues.append(
+                "first_strict_publication_recovery_official_job_active_on_resume"
+            )
+        if (
+            intent.get("remote_publication_required") is not True
+            or intent.get("remote_publication_enabled") is not True
+        ):
+            issues.append(
+                "first_strict_publication_recovery_remote_publication_not_required"
+            )
+    except Exception as exc:
+        issues.append(
+            "first_strict_publication_recovery_live_resume_validation_error:"
+            f"{type(exc).__name__}:{str(exc)[:200]}"
+        )
     return _unique(issues)
 
 
@@ -381,16 +684,108 @@ def _self_blob_issues(root: Path, head: str) -> list[str]:
     return issues
 
 
+def index_flag_issues(raw: str | bytes) -> list[str]:
+    """Reject assume-unchanged/skip-worktree and every non-normal index flag."""
+
+    records = (
+        [item.decode("utf-8", errors="replace") for item in raw.split(b"\0") if item]
+        if isinstance(raw, bytes)
+        else [item for item in str(raw).split("\0") if item]
+    )
+    return [
+        "first_strict_publication_recovery_index_flag_non_normal:"
+        + item[:200]
+        for item in records
+        if not item.startswith("H ")
+    ]
+
+
+def operator_runtime_issues() -> list[str]:
+    """Require a stopped, clean runtime checkout without overconstraining refs.
+
+    HEAD/origin equality is a verified-stage precondition in ``build_claim``.
+    Publishing recovery legitimately has three exact states (reviewed/reviewed,
+    publication/reviewed, publication/publication), which are owned by
+    :func:`publishing_exact_git_issues` instead.
+    """
+
+    issues: list[str] = []
+    try:
+        root = ROOT.resolve()
+        if root.name != ".evolution_pok":
+            issues.append(
+                "first_strict_publication_recovery_operator_boundary:"
+                "runtime_checkout_name_mismatch"
+            )
+        if Path(str(_git(root, "rev-parse", "--show-toplevel")).strip()).resolve() != root:
+            issues.append(
+                "first_strict_publication_recovery_operator_boundary:git_root_mismatch"
+            )
+        if str(_git(root, "rev-parse", "--abbrev-ref", "HEAD")).strip() != "main":
+            issues.append(
+                "first_strict_publication_recovery_operator_boundary:branch_not_main"
+            )
+        if str(_git(root, "status", "--porcelain", "--untracked-files=no")).strip():
+            issues.append(
+                "first_strict_publication_recovery_operator_boundary:tracked_dirty"
+            )
+        issues.extend(index_flag_issues(
+            _git(root, "ls-files", "-v", "-z", binary=True)
+        ))
+        from scripts.reconcile_national_policy_epoch import _runtime_process_errors
+
+        issues.extend(
+            "first_strict_publication_recovery_operator_boundary:" + str(item)
+            for item in _runtime_process_errors()
+        )
+    except Exception as exc:
+        issues.append(
+            "first_strict_publication_recovery_operator_boundary_unavailable:"
+            f"{type(exc).__name__}"
+        )
+    return _unique(issues)
+
+
 def _claim_path(root: Path, claim_digest: str) -> Path:
     return root / "web" / "core" / "results" / CLAIM_DIRNAME / f"{claim_digest}.json"
 
 
-def _read_regular_json(path: Path) -> dict[str, Any]:
+def _validated_claim(claim: Any, expected_digest: str) -> dict[str, Any]:
+    if (
+        not isinstance(claim, dict)
+        or set(claim) != _CLAIM_FIELDS
+        or claim.get("schema_version") != CLAIM_SCHEMA_VERSION
+        or claim.get("kind") != CLAIM_KIND
+        or claim.get("evaluation_epoch") != "national_tcp_policy_v1"
+        or claim.get("claim_digest") != expected_digest
+        or canonical_digest({
+            key: value for key, value in claim.items() if key != "claim_digest"
+        }) != expected_digest
+    ):
+        raise CompletedFirstStrictPublicationRecoveryError([
+            "first_strict_publication_recovery_claim_invalid"
+        ])
+    return claim
+
+
+def _read_regular_json(
+    path: Path,
+    *,
+    directory_fd: int | None = None,
+) -> dict[str, Any]:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+    descriptor = os.open(
+        path.name if directory_fd is not None else path,
+        flags,
+        **({"dir_fd": directory_fd} if directory_fd is not None else {}),
+    )
     try:
         opened = os.fstat(descriptor)
-        live = os.lstat(path)
+        live = (
+            os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if directory_fd is not None
+            else os.lstat(path)
+        )
         identity = (
             opened.st_dev,
             opened.st_ino,
@@ -418,7 +813,11 @@ def _read_regular_json(path: Path) -> dict[str, Any]:
             remaining -= len(chunk)
         raw = b"".join(chunks)
         after = os.fstat(descriptor)
-        live_after = os.lstat(path)
+        live_after = (
+            os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if directory_fd is not None
+            else os.lstat(path)
+        )
         if (
             len(raw) > 4 * 1024 * 1024
             or (
@@ -442,14 +841,40 @@ def _read_regular_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _rename_noreplace(
+    directory_fd: int,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    """Atomically publish one complete file without clobbering a winner."""
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise RuntimeError("atomic renameat2 is unavailable")
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        directory_fd,
+        os.fsencode(source_name),
+        directory_fd,
+        os.fsencode(destination_name),
+        1,  # RENAME_NOREPLACE
+    )
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), destination_name)
+
+
 def publish_claim(root: Path, claim: dict[str, Any]) -> Path:
     digest = str(claim.get("claim_digest") or "")
-    if digest != canonical_digest({
-        key: value for key, value in claim.items() if key != "claim_digest"
-    }):
-        raise CompletedFirstStrictPublicationRecoveryError([
-            "first_strict_publication_recovery_claim_digest_mismatch"
-        ])
+    _validated_claim(claim, digest)
     path = _claim_path(root, digest)
     results = root / "web" / "core" / "results"
     for parent in (results.parent.parent, results.parent, results):
@@ -476,6 +901,7 @@ def publish_claim(root: Path, claim: dict[str, Any]) -> Path:
         path.parent,
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
+    opened_directory = os.fstat(directory)
     if created:
         results_descriptor = os.open(
             results, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
@@ -487,24 +913,19 @@ def publish_claim(root: Path, claim: dict[str, Any]) -> Path:
     encoded = (json.dumps(
         claim, ensure_ascii=False, sort_keys=True, indent=2
     ) + "\n").encode("utf-8")
+    temporary = f".{digest}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    descriptor: int | None = None
     try:
-        try:
-            descriptor = os.open(
-                path.name,
-                os.O_WRONLY
-                | os.O_CREAT
-                | os.O_EXCL
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-                0o400,
-                dir_fd=directory,
-            )
-        except FileExistsError:
-            if _read_regular_json(path) != claim:
-                raise CompletedFirstStrictPublicationRecoveryError([
-                    "first_strict_publication_recovery_existing_claim_mismatch"
-                ])
-            return path
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o400,
+            dir_fd=directory,
+        )
         try:
             view = memoryview(encoded)
             offset = 0
@@ -516,10 +937,53 @@ def publish_claim(root: Path, claim: dict[str, Any]) -> Path:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
-        os.fsync(directory)
+            descriptor = None
+        try:
+            _rename_noreplace(directory, temporary, path.name)
+            os.fsync(directory)
+        except OSError as exc:
+            if exc.errno != errno.EEXIST:
+                raise
+            if _read_regular_json(path, directory_fd=directory) != claim:
+                raise CompletedFirstStrictPublicationRecoveryError([
+                    "first_strict_publication_recovery_existing_claim_mismatch"
+                ])
     finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory)
+            os.fsync(directory)
+        except FileNotFoundError:
+            pass
+        live_directory = os.lstat(path.parent)
+        if (
+            not stat.S_ISDIR(live_directory.st_mode)
+            or stat.S_ISLNK(live_directory.st_mode)
+            or (live_directory.st_dev, live_directory.st_ino)
+            != (opened_directory.st_dev, opened_directory.st_ino)
+        ):
+            os.close(directory)
+            raise CompletedFirstStrictPublicationRecoveryError([
+                "first_strict_publication_recovery_claim_directory_changed"
+            ])
         os.close(directory)
     return path
+
+
+def load_claim(root: Path, claim_digest: str) -> dict[str, Any]:
+    if not _HEX64.fullmatch(str(claim_digest or "")):
+        raise CompletedFirstStrictPublicationRecoveryError([
+            "first_strict_publication_recovery_claim_digest_invalid"
+        ])
+    try:
+        claim = _read_regular_json(_claim_path(root, claim_digest))
+    except Exception as exc:
+        raise CompletedFirstStrictPublicationRecoveryError([
+            "first_strict_publication_recovery_claim_unreadable:"
+            f"{type(exc).__name__}"
+        ]) from exc
+    return _validated_claim(claim, claim_digest)
 
 
 def build_claim(
@@ -541,6 +1005,7 @@ def build_claim(
     issues: list[str] = []
     if root.name != ".evolution_pok":
         issues.append("first_strict_publication_recovery_requires_runtime_checkout")
+    issues.extend(operator_runtime_issues())
     if (
         checkpoint.get("workflow_run_id") != expected_workflow_run_id
         or checkpoint.get("checkpoint_revision") != expected_checkpoint_revision
@@ -590,6 +1055,15 @@ def build_claim(
     ).strip()
     if tracked_dirty:
         issues.append("first_strict_publication_recovery_tracked_worktree_dirty")
+    try:
+        issues.extend(index_flag_issues(
+            _git(root, "ls-files", "-v", "-z", binary=True)
+        ))
+    except Exception as exc:
+        issues.append(
+            "first_strict_publication_recovery_index_flags_unavailable:"
+            f"{type(exc).__name__}"
+        )
     ancestor = subprocess.run(
         ["git", "merge-base", "--is-ancestor", full_expected_baseline, current_head],
         cwd=str(root),
@@ -671,11 +1145,11 @@ def build_claim(
     try:
         from evolution_infra import get_active_bots_read_only, git_publish_status
         from national_runtime_authority import strict_published_bot_names
-        from official_certification import official_full_certified, status_payload
+        from official_certification import official_full_certified, read_status
         from official_certification_job import job_snapshot
         from tool_commit import validate_commit_gate_ledger
 
-        status = status_payload(candidate)
+        status = read_status(candidate)
         certified = official_full_certified(status, candidate)
         authorization = validate_completed_at_parked_authority(
             status, candidate, checkpoint
@@ -793,6 +1267,12 @@ def build_claim(
             "publication_transaction"
         ).publication_gate_ledger_digest(gate_ledger),
         "pool": {"active_bots": [], "strict_published_bots": []},
+        "operator_boundary": {
+            "runtime_checkout": str(root),
+            "runtime_stopped": True,
+            "ordinary_commit_route_authorized": False,
+            "recovery_command_only": True,
+        },
         "disposition": (
             "publication_only_preserve_signed_certificate_no_recertification"
         ),
@@ -843,12 +1323,32 @@ def _resume_publishing(
     checkpoint: dict[str, Any],
     claim_digest: str,
 ) -> dict[str, Any]:
-    issues = publishing_recovery_issues(checkpoint, claim_digest)
+    claim = load_claim(ROOT, claim_digest)
+    issues = operator_runtime_issues()
+    issues.extend(publishing_recovery_issues(
+        checkpoint, claim_digest, claim=claim
+    ))
+    issues.extend(publishing_exact_git_issues(ROOT, checkpoint, claim))
+    issues.extend(publishing_live_claim_issues(ROOT, checkpoint, claim))
+    try:
+        from publication_transaction import (
+            publication_intent_checkpoint_errors,
+            publication_intent_structure_errors,
+        )
+
+        intent = checkpoint.get("publication_intent")
+        issues.extend(publication_intent_structure_errors(intent))
+        issues.extend(publication_intent_checkpoint_errors(intent, checkpoint))
+    except Exception as exc:
+        issues.append(
+            "first_strict_publication_recovery_intent_validation_error:"
+            f"{type(exc).__name__}"
+        )
     if issues:
         raise CompletedFirstStrictPublicationRecoveryError(issues)
-    os.environ.setdefault("POK_EVOLUTION_RUNTIME", "1")
-    os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
-    os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
+    os.environ["POK_EVOLUTION_RUNTIME"] = "1"
+    os.environ["POK_REQUIRE_EVOLUTION_PUSH"] = "1"
+    os.environ["EVOLUTION_GIT_PUSH"] = "1"
     os.environ["POK_OPERATOR_FIRST_STRICT_FINALIZE"] = str(os.getpid())
     strategy = str((checkpoint.get("publication_intent") or {}).get(
         "strategy_tag"
@@ -857,16 +1357,26 @@ def _resume_publishing(
 
 
 def execute_claim(root: Path, checkpoint: dict[str, Any], claim: dict[str, Any]) -> dict[str, Any]:
+    # This operator-only recovery never permits a local-only first anchor.
+    os.environ["POK_EVOLUTION_RUNTIME"] = "1"
+    os.environ["POK_REQUIRE_EVOLUTION_PUSH"] = "1"
+    os.environ["EVOLUTION_GIT_PUSH"] = "1"
     from evolution_infra import (
         _git as infra_git,
         evolution_git_push_enabled,
         evolution_git_push_required,
+        get_active_bots_read_only,
         read_pipeline_checkpoint,
         remote_completion_ref_snapshot,
         write_pipeline_checkpoint,
     )
     from national_runtime_authority import strict_published_bot_names
-    from official_certification import publish_certificate_attestation, status_payload
+    from official_certification import (
+        official_full_certified,
+        publish_certificate_attestation,
+        read_status,
+    )
+    from official_certification_job import job_snapshot
     from publication_transaction import (
         build_publication_intent,
         file_sha256,
@@ -876,13 +1386,97 @@ def execute_claim(root: Path, checkpoint: dict[str, Any], claim: dict[str, Any])
 
     claim_path = publish_claim(root, claim)
     candidate = root / "bots" / bot_name(FIRST_STRICT_POLICY_VERSION)
-    status = status_payload(candidate)
+    live_checkpoint = read_pipeline_checkpoint()
+    preflight_issues: list[str] = operator_runtime_issues()
+    if (
+        not isinstance(live_checkpoint, dict)
+        or live_checkpoint != checkpoint
+        or canonical_digest(live_checkpoint or {})
+        != claim["checkpoint"]["digest"]
+    ):
+        preflight_issues.append(
+            "first_strict_publication_recovery_checkpoint_changed_before_execute"
+        )
+    status = read_status(candidate)
+    authorization = validate_completed_at_parked_authority(
+        status, candidate, checkpoint
+    )
     gate_ledger = validate_commit_gate_ledger(
         FIRST_STRICT_POLICY_VERSION,
         ARCHIVED_VERSION_HIGH_WATER,
         checkpoint,
         bot_dir=candidate,
     )
+    try:
+        from bootstrap_contract_recovery import _safe_candidate
+
+        candidate_facts = _safe_candidate(
+            root,
+            FIRST_STRICT_POLICY_VERSION,
+            claim["certificate"]["candidate_hash"],
+        )
+    except Exception as exc:
+        preflight_issues.append(
+            "first_strict_publication_recovery_candidate_changed_before_execute:"
+            f"{type(exc).__name__}"
+        )
+        candidate_facts = {}
+    jobs = job_snapshot()
+    preflight_issues.extend(publication_recovery_snapshot_issues(
+        checkpoint=checkpoint,
+        status=status,
+        candidate=candidate,
+        candidate_hash=claim["certificate"]["candidate_hash"],
+        certificate_digest=claim["certificate"]["certificate_digest"],
+        ledger_entry_digest=claim["certificate"]["ledger_entry_digest"],
+        authorization=authorization,
+        gate_ledger=gate_ledger,
+        active_bots=list(get_active_bots_read_only()),
+        strict_bots=list(strict_published_bot_names()),
+        completion_tags=[],
+        completed=os.path.lexists(candidate / ".completed"),
+        official_jobs_active=bool(jobs.get("pending") or jobs.get("running")),
+    ))
+    if candidate_facts != claim.get("candidate"):
+        preflight_issues.append(
+            "first_strict_publication_recovery_candidate_claim_drift"
+        )
+    if canonical_digest(status) != claim["certificate"]["official_status_digest"]:
+        preflight_issues.append(
+            "first_strict_publication_recovery_status_changed_before_execute"
+        )
+    if not official_full_certified(status, candidate):
+        preflight_issues.append(
+            "first_strict_publication_recovery_certificate_invalid_before_execute"
+        )
+    if publication_gate_ledger_digest(gate_ledger) != claim.get(
+        "final_gate_ledger_digest"
+    ):
+        preflight_issues.append(
+            "first_strict_publication_recovery_gate_ledger_changed_before_execute"
+        )
+    if (
+        infra_git("rev-parse", "refs/heads/main").strip()
+        != claim["git"]["current_head"]
+        or infra_git("rev-parse", "refs/remotes/origin/main", check=False).strip()
+        != claim["git"]["origin_main"]
+    ):
+        preflight_issues.append(
+            "first_strict_publication_recovery_head_changed_before_execute"
+        )
+    try:
+        preflight_issues.extend(index_flag_issues(
+            _git(root, "ls-files", "-v", "-z", binary=True)
+        ))
+    except Exception as exc:
+        preflight_issues.append(
+            "first_strict_publication_recovery_index_flags_unavailable:"
+            f"{type(exc).__name__}"
+        )
+    if preflight_issues:
+        raise CompletedFirstStrictPublicationRecoveryError(
+            _unique(preflight_issues)
+        )
     strategy_base = (
         str(((checkpoint.get("master_plan") or {}).get("strategy") or ""))
         if isinstance(checkpoint.get("master_plan"), dict)
@@ -933,12 +1527,16 @@ def execute_claim(root: Path, checkpoint: dict[str, Any], claim: dict[str, Any])
             "first_strict_publication_recovery_publishing_cas_failed"
         ])
     publishing = read_pipeline_checkpoint() or {}
-    issues = publishing_recovery_issues(publishing, claim["claim_digest"])
+    issues = publishing_recovery_issues(
+        publishing, claim["claim_digest"], claim=claim
+    )
+    issues.extend(publishing_exact_git_issues(root, publishing, claim))
+    issues.extend(publishing_live_claim_issues(root, publishing, claim))
     if issues:
         raise CompletedFirstStrictPublicationRecoveryError(issues)
-    os.environ.setdefault("POK_EVOLUTION_RUNTIME", "1")
-    os.environ.setdefault("POK_REQUIRE_EVOLUTION_PUSH", "1")
-    os.environ.setdefault("EVOLUTION_GIT_PUSH", "1")
+    os.environ["POK_EVOLUTION_RUNTIME"] = "1"
+    os.environ["POK_REQUIRE_EVOLUTION_PUSH"] = "1"
+    os.environ["EVOLUTION_GIT_PUSH"] = "1"
     os.environ["POK_OPERATOR_FIRST_STRICT_FINALIZE"] = str(os.getpid())
     result = asyncio.run(_delegate_commit_bot(strategy))
     return {
