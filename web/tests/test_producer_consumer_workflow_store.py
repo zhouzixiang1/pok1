@@ -196,6 +196,31 @@ def test_concurrent_submit_has_one_job_and_idempotency_cas_winner(tmp_path):
     }
 
 
+def test_concurrent_same_job_different_key_has_one_durable_winner(tmp_path):
+    adapter = _adapter(tmp_path)
+    first = _envelope()
+    second = _envelope(idempotency_key="draft-1:quality-static:v2")
+    barrier = __import__("threading").Barrier(2)
+
+    def submit(envelope):
+        barrier.wait()
+        try:
+            adapter.submit(envelope)
+            return "submitted"
+        except ProducerConsumerStoreError:
+            return "conflict"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(submit, (first, second)))
+    assert sorted(results) == ["conflict", "submitted"]
+    effects = adapter.store.effects_for_run(first["run_id"])
+    assert len(effects) == 1
+    assert effects[0]["input_payload"]["envelope"]["idempotency_key"] in {
+        first["idempotency_key"],
+        second["idempotency_key"],
+    }
+
+
 def test_claim_and_heartbeat_are_bounded_by_frozen_envelope_deadline(tmp_path):
     adapter = _adapter(tmp_path)
     envelope = _envelope(deadline={
@@ -553,9 +578,13 @@ def test_queued_effect_can_be_cancelled_only_against_exact_zero_lease(tmp_path):
     assert cancelled["status"] == "abandoned"
 
 
-def test_production_entrypoints_do_not_import_inert_adapter():
+def test_production_entrypoints_do_not_import_inert_slice_modules():
     root = Path(__file__).resolve().parents[2]
-    forbidden = "producer_consumer_workflow_store"
+    forbidden = (
+        "pipeline_job_contract",
+        "producer_consumer_pipeline",
+        "producer_consumer_workflow_store",
+    )
     production_entrypoints = [
         root / "web" / "main.py",
         root / "web" / "core" / "orchestrator.py",
@@ -566,4 +595,6 @@ def test_production_entrypoints_do_not_import_inert_adapter():
     ]
     assert production_entrypoints
     for path in production_entrypoints:
-        assert forbidden not in path.read_text(encoding="utf-8"), path
+        source = path.read_text(encoding="utf-8")
+        for module_name in forbidden:
+            assert module_name not in source, (path, module_name)
