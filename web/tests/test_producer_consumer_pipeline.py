@@ -40,6 +40,7 @@ OUTPUT_POLICY_BYTES = (
 )
 NATIONAL_BOT_BYTES = b"system-national-runtime\n"
 PRECOMPUTE_BYTES = b"system-precompute\n"
+PROMOTION_AUTHORITY_PACKAGES = {}
 
 
 def _remote_proof(**overrides):
@@ -74,18 +75,41 @@ def _promotion_receipt(*, remote_proof=None, **overrides):
     return pipeline.build_promotion_receipt(**values)
 
 
-def _promotion_payload(reason="all_gates_and_publication_verified"):
-    remote = _remote_proof()
+def _promotion_payload_from_package(
+    remote,
+    receipt,
+    *,
+    reason="all_gates_and_publication_verified",
+    resolver_digest=REMOTE_RESOLVER_DIGEST,
+):
+    PROMOTION_AUTHORITY_PACKAGES[
+        (receipt["receipt_digest"], resolver_digest)
+    ] = {
+        "authority": "strict-publication-authority-resolver-v1",
+        "official_policy_id": "official-full-v5",
+        "resolver_digest": resolver_digest,
+        "promotion_receipt": receipt,
+        "remote_proof": remote,
+    }
     return {
         "reason": reason,
-        "remote_proof": remote,
-        "promotion_receipt": _promotion_receipt(remote_proof=remote),
+        "promotion_receipt_digest": receipt["receipt_digest"],
+        "resolver_digest": resolver_digest,
     }
 
 
+def _promotion_payload(reason="all_gates_and_publication_verified"):
+    remote = _remote_proof()
+    receipt = _promotion_receipt(remote_proof=remote)
+    return _promotion_payload_from_package(remote, receipt, reason=reason)
+
+
 def _published_proof_fields(payload):
-    receipt = payload["promotion_receipt"]
-    remote = payload["remote_proof"]
+    resolved = PROMOTION_AUTHORITY_PACKAGES[
+        (payload["promotion_receipt_digest"], payload["resolver_digest"])
+    ]
+    receipt = resolved["promotion_receipt"]
+    remote = resolved["remote_proof"]
     return {
         "promotion_receipt_digest": receipt["receipt_digest"],
         "official_certificate_digest": receipt["official_certificate_digest"],
@@ -169,6 +193,10 @@ def _repair_policy_resolver(artifact_hash, manifest_digest):
     }
 
 
+def _promotion_authority_resolver(receipt_digest, resolver_digest):
+    return deepcopy(PROMOTION_AUTHORITY_PACKAGES[(receipt_digest, resolver_digest)])
+
+
 def _apply(
     state,
     event_type,
@@ -193,6 +221,9 @@ def _apply(
         event,
         mechanical_repair_policy_resolver=(
             _repair_policy_resolver if event_type == "repair_child_created" else None
+        ),
+        promotion_authority_resolver=(
+            _promotion_authority_resolver if event_type == "candidate_promoted" else None
         ),
     ), event
 
@@ -822,11 +853,11 @@ def test_promotion_requires_complete_content_bound_publication_identity():
     with pytest.raises(pipeline.PipelineContractError, match="payload is not exact"):
         pipeline.reduce_event(state, incomplete)
 
-    invalid_digest_payload = _promotion_payload()
-    invalid_digest_payload["promotion_receipt"][
-        "official_certificate_digest"
-    ] = "2" * 63
-    _resign_promotion_receipt(invalid_digest_payload["promotion_receipt"])
+    remote = _remote_proof()
+    receipt = _promotion_receipt(remote_proof=remote)
+    receipt["official_certificate_digest"] = "2" * 63
+    _resign_promotion_receipt(receipt)
+    invalid_digest_payload = _promotion_payload_from_package(remote, receipt)
     invalid_digest = pipeline.build_event(
         state,
         "candidate_promoted",
@@ -837,14 +868,70 @@ def test_promotion_requires_complete_content_bound_publication_identity():
         payload=invalid_digest_payload,
     )
     with pytest.raises(pipeline.PipelineContractError, match="official certificate digest"):
-        pipeline.reduce_event(state, invalid_digest)
+        pipeline.reduce_event(
+            state,
+            invalid_digest,
+            promotion_authority_resolver=_promotion_authority_resolver,
+        )
+
+
+def test_promotion_reference_requires_non_echoing_authority_resolution():
+    state, _ = _sealed_candidate(pipeline.initial_projection(TARGET))
+    state, _ = _apply(
+        state,
+        "validation_started",
+        "a-validation",
+        "draft-a",
+        candidate_id="candidate-a",
+        artifact_hash=ARTIFACT_A,
+    )
+    payload = _promotion_payload()
+    event = pipeline.build_event(
+        state,
+        "candidate_promoted",
+        event_id="a-promotion-no-authority",
+        work_item_id="draft-a",
+        candidate_id="candidate-a",
+        artifact_hash=ARTIFACT_A,
+        payload=payload,
+    )
+
+    with pytest.raises(pipeline.PipelineContractError, match="resolver is required"):
+        pipeline.reduce_event(state, event)
+
+    def mismatched_resolver(receipt_digest, resolver_digest):
+        resolved = _promotion_authority_resolver(receipt_digest, resolver_digest)
+        resolved["resolver_digest"] = "8" * 64
+        return resolved
+
+    with pytest.raises(pipeline.PipelineContractError, match="identity mismatch"):
+        pipeline.reduce_event(
+            state,
+            event,
+            promotion_authority_resolver=mismatched_resolver,
+        )
+
+    def generic_official_resolver(receipt_digest, resolver_digest):
+        resolved = _promotion_authority_resolver(receipt_digest, resolver_digest)
+        resolved["official_policy_id"] = "generic-official-envelope"
+        return resolved
+
+    with pytest.raises(pipeline.PipelineContractError, match="official-full-v5"):
+        pipeline.reduce_event(
+            state,
+            event,
+            promotion_authority_resolver=generic_official_resolver,
+        )
 
 
 def test_promotion_accepts_explicit_sha1_and_sha256_object_formats():
     sha1 = _promotion_payload()
-    assert sha1["remote_proof"]["object_format"] == "sha1"
-    assert sha1["promotion_receipt"]["object_format"] == "sha1"
-    assert len(sha1["promotion_receipt"]["commit"]["oid"]) == 40
+    resolved_sha1 = _promotion_authority_resolver(
+        sha1["promotion_receipt_digest"], sha1["resolver_digest"]
+    )
+    assert resolved_sha1["remote_proof"]["object_format"] == "sha1"
+    assert resolved_sha1["promotion_receipt"]["object_format"] == "sha1"
+    assert len(resolved_sha1["promotion_receipt"]["commit"]["oid"]) == 40
 
     sha256_commit = {"object_format": "sha256", "oid": "a" * 64}
     sha256_remote_main = {"object_format": "sha256", "oid": "b" * 64}
@@ -881,9 +968,12 @@ def test_promotion_parser_cross_binds_receipt_commit_tag_and_remote_proof(tamper
         candidate_id="candidate-a",
         artifact_hash=ARTIFACT_A,
     )
-    payload = deepcopy(_promotion_payload())
-    remote = payload["remote_proof"]
-    receipt = payload["promotion_receipt"]
+    base_payload = _promotion_payload()
+    resolved = _promotion_authority_resolver(
+        base_payload["promotion_receipt_digest"], base_payload["resolver_digest"]
+    )
+    remote = resolved["remote_proof"]
+    receipt = resolved["promotion_receipt"]
     if tamper == "commit":
         receipt["commit"]["oid"] = "8" * 40
     elif tamper == "tag":
@@ -895,6 +985,7 @@ def test_promotion_parser_cross_binds_receipt_commit_tag_and_remote_proof(tamper
     else:
         receipt["object_format"] = "sha256"
     _resign_promotion_receipt(receipt)
+    payload = _promotion_payload_from_package(remote, receipt)
     event = pipeline.build_event(
         state,
         "candidate_promoted",
@@ -906,7 +997,11 @@ def test_promotion_parser_cross_binds_receipt_commit_tag_and_remote_proof(tamper
     )
 
     with pytest.raises(pipeline.PipelineContractError, match="(cross-bound|formats differ)"):
-        pipeline.reduce_event(state, event)
+        pipeline.reduce_event(
+            state,
+            event,
+            promotion_authority_resolver=_promotion_authority_resolver,
+        )
 
 
 @pytest.mark.parametrize(
@@ -1182,6 +1277,57 @@ def test_replay_of_bound_event_stream_is_byte_identical():
     assert pipeline.validate_projection(state, events=events) == state
     with pytest.raises(pipeline.PipelineContractError, match="complete event replay"):
         pipeline.validate_projection(state, events=events[:-1])
+
+
+def test_complete_promotion_replay_requires_and_forwards_authority_resolver():
+    state = pipeline.initial_projection(TARGET)
+    events = []
+    state, produced = _queue_and_start(state, "draft-a", "a")
+    events.extend(produced)
+    state, event = _seal(
+        state,
+        "draft-a",
+        "a",
+        "candidate-a",
+        ARTIFACT_A,
+        MANIFEST_A,
+    )
+    events.append(event)
+    state, event = _apply(
+        state,
+        "validation_started",
+        "a-validation",
+        "draft-a",
+        candidate_id="candidate-a",
+        artifact_hash=ARTIFACT_A,
+    )
+    events.append(event)
+    state, event = _apply(
+        state,
+        "candidate_promoted",
+        "a-promoted",
+        "draft-a",
+        candidate_id="candidate-a",
+        artifact_hash=ARTIFACT_A,
+        payload=_promotion_payload(),
+    )
+    events.append(event)
+
+    assert pipeline.reduce_events(
+        TARGET,
+        events,
+        promotion_authority_resolver=_promotion_authority_resolver,
+    ) == state
+    assert pipeline.validate_projection(
+        state,
+        events=events,
+        promotion_authority_resolver=_promotion_authority_resolver,
+    ) == state
+    with pytest.raises(
+        pipeline.PipelineContractError,
+        match="promotion authority resolver is required",
+    ):
+        pipeline.validate_projection(state, events=events)
 
 
 def test_complete_projection_replay_forwards_mechanical_repair_resolver():

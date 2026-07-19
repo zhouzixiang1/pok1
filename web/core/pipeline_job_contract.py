@@ -190,6 +190,7 @@ _ENVELOPE_FIELDS = frozenset({
     "job_id",
     "run_id",
     "draft_id",
+    "candidate_id",
     "job_kind",
     "purpose",
     "charter_digest",
@@ -486,7 +487,7 @@ def _job_policy_issues(envelope: Mapping[str, Any]) -> list[str]:
     if isinstance(candidate_ref, Mapping):
         if candidate_ref.get("digest") != envelope.get("artifact_digest"):
             issues.append("job_candidate_ref_digest_mismatch")
-        if candidate_ref.get("subject") != envelope.get("draft_id"):
+        if candidate_ref.get("subject") != envelope.get("candidate_id"):
             issues.append("job_candidate_ref_subject_mismatch")
     executor_ref = refs.get("executor")
     if (
@@ -598,12 +599,19 @@ def job_envelope_issues(envelope: Any) -> list[str]:
         "job_id",
         "run_id",
         "draft_id",
+        "candidate_id",
         "job_kind",
         "purpose",
         "idempotency_key",
     ):
         if not _safe_id_ok(envelope.get(field)):
             issues.append(f"job_envelope_{field}_invalid")
+    if (
+        _safe_id_ok(envelope.get("draft_id"))
+        and _safe_id_ok(envelope.get("candidate_id"))
+        and envelope.get("draft_id") == envelope.get("candidate_id")
+    ):
+        issues.append("job_envelope_draft_candidate_identity_collapsed")
     for field in ("charter_digest", "artifact_digest"):
         if not _digest_ok(envelope.get(field)):
             issues.append(f"job_envelope_{field}_invalid")
@@ -665,6 +673,7 @@ def build_job_envelope(
     job_id: str,
     run_id: str,
     draft_id: str,
+    candidate_id: str,
     job_kind: str,
     charter_digest: str,
     artifact_digest: str,
@@ -694,6 +703,7 @@ def build_job_envelope(
         "job_id": job_id,
         "run_id": run_id,
         "draft_id": draft_id,
+        "candidate_id": candidate_id,
         "job_kind": job_kind,
         "purpose": (
             JOB_KIND_POLICIES.get(job_kind) or {}

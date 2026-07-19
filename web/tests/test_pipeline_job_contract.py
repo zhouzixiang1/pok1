@@ -26,7 +26,7 @@ DIGESTS = {letter: letter * 64 for letter in "abcdef0123456789"}
 
 
 def _input_refs(
-    *, draft_id="draft-1", native=False, rating=False, executor_id=None, **digests
+    *, candidate_id="candidate-1", native=False, rating=False, executor_id=None, **digests
 ):
     executor_id = executor_id or (
         "native-admission-consumer" if native else "quality-consumer"
@@ -50,7 +50,7 @@ def _input_refs(
     values.update(digests)
     subjects = {
         "charter": "generation-charter",
-        "candidate": draft_id,
+        "candidate": candidate_id,
         "runtime": "national-runtime",
         "repository": "origin-main",
         "executor": executor_id,
@@ -91,6 +91,7 @@ def _envelope(**overrides):
         "job_id": "job:draft-1:quality",
         "run_id": "draft:draft-1",
         "draft_id": "draft-1",
+        "candidate_id": "candidate-1",
         "job_kind": "quality-static",
         "charter_digest": DIGESTS["a"],
         "artifact_digest": DIGESTS["b"],
@@ -126,7 +127,7 @@ def _envelope(**overrides):
             policy["executor_id"] if policy is not None else "quality-consumer"
         )
         values["input_refs"] = _input_refs(
-            draft_id=values["draft_id"],
+            candidate_id=values["candidate_id"],
             native=native,
             rating=values["job_kind"] == "native-rating",
             executor_id=executor_id,
@@ -418,6 +419,7 @@ def test_idempotency_accepts_exact_replay_and_distinguishes_new_key():
     "changed",
     [
         {"artifact_digest": DIGESTS["c"]},
+        {"candidate_id": "candidate-2"},
         {"job_id": "job:draft-1:quality-replacement"},
         {
             "deadline": {

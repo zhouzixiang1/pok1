@@ -1,7 +1,8 @@
 # Producer–Consumer Evolution Pipeline v1
 
-Status: design frozen for incremental implementation; not an active runtime
-contract and not publication authority.
+Status: design frozen for incremental implementation; Slice-2 durable
+foundation implemented but inert; not an active runtime contract and not
+publication authority.
 
 This document operationalizes the open experiment plane in
 `docs/open-agent-experiment-architecture-v1.md`. It does not authorize a Bot,
@@ -12,29 +13,39 @@ content-bound migration receipt.
 
 ### Implemented shadow boundary (partial and inert)
 
-The files delivered with this document are a **partial, inert shadow** only:
-they provide pure value validators, a deterministic in-memory reducer and
-focused tests. They are not imported by the production orchestrator, scheduler,
-HTTP routes, rating daemon, official certifier or publication path, and they do
-not read or mutate the autonomous runtime checkout.
+The files delivered with this document are a **partial, inert shadow** only.
+They provide value validators, a deterministic reducer, a narrow adapter over
+the existing `WorkflowStore`, generic kernel heartbeat/per-effect-cancel
+primitives and focused restart/CAS tests. They are not imported by the
+production orchestrator, scheduler, HTTP routes, rating daemon, official
+certifier or publication path, and they do not read or mutate the autonomous
+runtime checkout.
 
 The following designed capabilities are deliberately **not implemented** in
 this slice and therefore carry no runtime or recovery authority:
 
-- no `WorkflowStore`/journal/outbox/inbox adapter, transactional CAS writer,
-  restart loader or workboard API;
-- no deferred queue, `retry_at`/backoff scheduler, lease heartbeat/reclaim,
-  cancellation/drain implementation or exhausted-retry transition;
+- the inert adapter now persists exact `JobEnvelope` values through the
+  existing `WorkflowStore` journal/outbox/inbox, supports deterministic
+  submit identities, owner/attempt/lease fencing, heartbeat renewal,
+  per-effect cancel, restart loading and death-proof reclaim. It is not a
+  dispatcher, production workboard API or activation adapter;
+- no `retry_at`/exponential-backoff scheduler, priority/resource broker,
+  cancellation/drain coordinator or fork/join executor. The existing kernel
+  exhausted-retry transition remains available to the inert adapter;
 - no fork/join/dependency executor and no adapter for current checkpoint stages;
 - no LLM job kinds or dispatch for Master, Scouts, Workers, Reviewer, Critic,
   schema repair, or provider availability; the closed shadow table currently
   models only quality, native and official envelope shapes;
-- no raw replay resolver or durable strength-admission CAS and no Git
-  command/ref resolver. The shadow reducer does require a caller-supplied,
+- no raw replay resolver or durable strength-admission CAS and no production
+  Git command/ref resolver. The shadow reducer does require a caller-supplied,
   content-addressed strict-artifact resolver for every mechanical-repair event;
   it must return exactly `national_bot.py`, `policy.py` and `precompute.py` for
   each named artifact/manifest. No production adapter supplies it yet. Resolver
   digests are frozen contracts, not proof that any external effect ran.
+  Promotion events carry only a receipt digest and resolver digest; the reducer
+  requires an independent resolver result and fails closed when none exists.
+  The test resolver is not publication authority and no production resolver is
+  installed.
 
 Sections below describe the complete target design. Statements about retry,
 deferred work, `WorkflowStore`, LLM jobs, publication or admission are future
@@ -131,7 +142,10 @@ waits for every required receipt.
 
 ### 4.1 Draft identity
 
-A draft starts with opaque `work_item_id` and `draft_id`. It does **not** own:
+A draft starts with opaque `work_item_id` and `draft_id`. `draft_id` identifies
+mutable Producer work; after seal, the distinct `candidate_id` identifies one
+immutable candidate. Collapsing the two IDs is schema-invalid. A draft does
+**not** own:
 
 - a `national_vN` directory;
 - `generation_ordinal`;
@@ -258,6 +272,8 @@ retry_policy, deadline, input_refs, envelope_digest
 Retry of an infrastructure failure must reuse the exact envelope/job ID.
 Changing policy bytes, opponent, seed, gate plan, evaluator or runtime creates a
 new job. Same idempotency key with a different input digest is a conflict.
+The `candidate` input-ref subject is exactly `candidate_id`, never `draft_id`;
+the latter remains the producing-work identity only.
 
 For a native sample, the stable admission identity binds the closed `job_kind`,
 its policy-owned `purpose`, candidate/opponent, evaluator/parser/timing/seed,
@@ -289,8 +305,9 @@ row and uses the same strict live-lease rule as
 expired. The acceptance/CAS timestamp must also be strictly before that
 boundary. Acceptance rejects stale attempts, owners or epochs, old
 artifact/contract hashes, late superseded results, 69-hand samples and any
-Official/Arena result offered as strength. The production adapter must read and
-claim that durable row atomically; this remains a Slice-2 blocker.
+Official/Arena result offered as strength. The inert adapter now reads and
+claims that durable effect row, but does not perform raw-replay resolution or
+the atomic rating-admission CAS; those remain activation blockers.
 
 ## 8. Synchronous and asynchronous work
 
@@ -371,6 +388,15 @@ Every commit, annotated-tag object, peeled tag commit, remote-main object and
 high-water tag object must use that format. The parser cross-binds the promotion
 receipt to the exact commit, completion tag, high-water tag and remote proof;
 SHA-1 object IDs are 40 hexadecimal characters while SHA-256 IDs are 64.
+The reducer does not accept a receipt/proof object embedded by the promotion
+caller. Its event contains only `promotion_receipt_digest` and
+`resolver_digest`; an independent content-addressed resolver must return the
+exact receipt and remote proof, bind both resolver identities, and pass all
+cross-checks. The resolution contract requires `official_policy_id` to be
+exactly `official-full-v5`; a generic official envelope fails closed. Missing,
+echo, mismatched or unavailable resolution fails closed.
+The builders in the inert module construct test values only; they do not prove
+that Git, certification or remote publication occurred.
 
 AST equality deliberately preserves constants, strings/docstrings, imports,
 decorators, helpers, comparisons and control flow. Syntax/indent/name/import,
@@ -403,6 +429,15 @@ delete docstrings is not mechanical-repair authority.
 There is no silent wait. Every nonterminal job must be `queued`, `running`,
 `retry` with `retry_at`, `deferred`, `backpressured` or `infra_blocked`, with an
 owner/lease/heartbeat and a backend-provided next action/reason.
+
+The implemented kernel heartbeat is a same-owner/same-attempt/same-epoch CAS.
+It renews only a still-live lease and cannot revive an expired, foreign or
+terminal lease. Per-effect cancel binds observed status, attempt, lease epoch
+and owner, atomically appends `EffectCancelled`, fences the effect and rejects
+late completion. Restart recovery claims requested/retry work; expired running
+work requires a content-bound owner-death proof before the existing kernel
+reclaim transaction increments attempt and lease epoch. These primitives are
+present but no production dispatcher invokes them yet.
 
 ## 11. Resource broker and backpressure
 
@@ -501,6 +536,13 @@ Phased activation:
    strength jobs in the common contract without changing their evidence
    semantics.
 
+The generic `official-certification` JobEnvelope is scheduling metadata only.
+It cannot satisfy, weaken, alias or replace the repository's authoritative
+`official-full-v5` harness, signed certificate, commit/`.completed`/annotated
+tag and remote publication checks. Likewise, structurally accepted native
+samples remain `rating_eligible=false` until a future raw-replay resolver and
+durable admission CAS atomically prove the existing rating authority contract.
+
 Cutover requires no active canonical checkpoint, no post-publication handoff
 and no nonterminal official job. It writes a content-bound migration receipt.
 Rollback stops new dispatch, cancels/drains through fenced receipts and retains
@@ -545,7 +587,10 @@ The current v143 delivery remains on the existing tested chain and must not
 wait for this refactor.
 
 - Slice 1, contracts/shadow/reducer/workboard: 1–2 focused development days;
-- Slice 2, one ahead-buffer with current Consumer: total 2–3 days;
+- Slice 2a, durable adapter/lease heartbeat/cancel/restart foundation: complete
+  in shadow, not activated;
+- Slice 2b, one ahead-buffer with current Consumer and resource broker: still
+  2–3 focused development days including production integration review;
 - Slice 3, Quality/native fork/join: another 2–3 days;
 - Slice 4, official/rating/restart canary and frontend: another 1–2 days.
 

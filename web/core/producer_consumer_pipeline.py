@@ -5,8 +5,11 @@ defines the schema-v1 event/projection contract that a durable owner may later
 persist through :mod:`workflow_kernel`.  The reducer never reads a checkpoint,
 the filesystem, wall clock, or a live queue.  A mechanical-repair event must be
 given a deterministic content-addressed resolver for all three parent/child
-executable members; with the same resolved bytes, replaying the same events
-always produces the same content-addressed projection.
+executable members.  A promotion event carries only receipt/resolver digests
+and likewise requires an independent content-addressed authority resolver;
+caller-supplied receipt bytes are never accepted directly.  With the same
+resolved evidence, replaying the same events always produces the same
+content-addressed projection.
 
 The three macro states belong to one immutable candidate artifact, not to the
 existing strict checkpoint ``STAGE_ORDER``:
@@ -172,6 +175,13 @@ _PUBLISHED_PROOF_FIELDS = (
 )
 _PROMOTION_PAYLOAD_KEYS = frozenset({
     "reason",
+    "promotion_receipt_digest",
+    "resolver_digest",
+})
+_PROMOTION_AUTHORITY_RESOLUTION_KEYS = frozenset({
+    "authority",
+    "official_policy_id",
+    "resolver_digest",
     "promotion_receipt",
     "remote_proof",
 })
@@ -504,6 +514,9 @@ def validate_projection(
     mechanical_repair_policy_resolver: (
         Callable[[str, str], Mapping[str, Any]] | None
     ) = None,
+    promotion_authority_resolver: (
+        Callable[[str, str], Mapping[str, Any]] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Validate a projection, optionally replaying its complete event stream.
 
@@ -638,6 +651,7 @@ def validate_projection(
             target,
             list(events),
             mechanical_repair_policy_resolver=mechanical_repair_policy_resolver,
+            promotion_authority_resolver=promotion_authority_resolver,
         )
         if replayed != validated:
             raise PipelineContractError("projection does not match complete event replay")
@@ -1093,18 +1107,57 @@ def _validate_promotion_payload(
     target_identity: Mapping[str, Any],
     candidate_id: str,
     artifact_hash: str,
+    promotion_authority_resolver: (
+        Callable[[str, str], Mapping[str, Any]] | None
+    ),
 ) -> dict[str, Any]:
     if set(payload) != set(_PROMOTION_PAYLOAD_KEYS):
         raise PipelineContractError("candidate promotion payload is not exact")
     reason = payload.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise PipelineContractError("candidate promotion reason is invalid")
+    receipt_digest = _require_digest(
+        payload.get("promotion_receipt_digest"),
+        "candidate promotion receipt digest",
+    )
+    resolver_digest = _require_digest(
+        payload.get("resolver_digest"),
+        "candidate promotion authority resolver digest",
+    )
+    if promotion_authority_resolver is None:
+        raise PipelineContractError("promotion authority resolver is required")
+    try:
+        resolved_value = promotion_authority_resolver(
+            receipt_digest,
+            resolver_digest,
+        )
+    except Exception as exc:
+        raise PipelineContractError("promotion authority resolution failed") from exc
+    resolved = _require_exact_keys(
+        resolved_value,
+        _PROMOTION_AUTHORITY_RESOLUTION_KEYS,
+        "promotion authority resolution",
+    )
+    if resolved.get("authority") != "strict-publication-authority-resolver-v1":
+        raise PipelineContractError("promotion authority kind is invalid")
+    if resolved.get("official_policy_id") != "official-full-v5":
+        raise PipelineContractError("promotion official policy is not official-full-v5")
+    if resolved.get("resolver_digest") != resolver_digest:
+        raise PipelineContractError("promotion authority resolver identity mismatch")
     remote = _validate_remote_publication_proof(
-        payload.get("remote_proof"),
+        resolved.get("remote_proof"),
         target_identity,
     )
+    if remote.get("resolver_digest") != resolver_digest:
+        raise PipelineContractError("remote proof resolver identity mismatch")
+    resolved_receipt = resolved.get("promotion_receipt")
+    if (
+        not isinstance(resolved_receipt, Mapping)
+        or resolved_receipt.get("receipt_digest") != receipt_digest
+    ):
+        raise PipelineContractError("resolved promotion receipt digest mismatch")
     receipt = _validate_promotion_receipt(
-        payload.get("promotion_receipt"),
+        resolved_receipt,
         target_identity=target_identity,
         candidate_id=candidate_id,
         artifact_hash=artifact_hash,
@@ -1403,6 +1456,9 @@ def reduce_event(
     mechanical_repair_policy_resolver: (
         Callable[[str, str], Mapping[str, Any]] | None
     ) = None,
+    promotion_authority_resolver: (
+        Callable[[str, str], Mapping[str, Any]] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Apply one exact next event, returning a new canonical projection."""
 
@@ -1569,6 +1625,7 @@ def reduce_event(
                         target_identity=state["target_identity"],
                         candidate_id=item["candidate_id"],
                         artifact_hash=item["artifact_hash"],
+                        promotion_authority_resolver=promotion_authority_resolver,
                     )
                     reason = publication["reason"]
                 else:
@@ -1647,6 +1704,9 @@ def reduce_events(
     mechanical_repair_policy_resolver: (
         Callable[[str, str], Mapping[str, Any]] | None
     ) = None,
+    promotion_authority_resolver: (
+        Callable[[str, str], Mapping[str, Any]] | None
+    ) = None,
 ) -> dict[str, Any]:
     """Replay an ordered event stream from the canonical empty projection."""
 
@@ -1656,5 +1716,6 @@ def reduce_events(
             state,
             event,
             mechanical_repair_policy_resolver=mechanical_repair_policy_resolver,
+            promotion_authority_resolver=promotion_authority_resolver,
         )
     return state

@@ -222,6 +222,255 @@ def test_strict_completion_rejects_current_but_expired_lease(tmp_path):
     assert store.effect("strict-worker-149")["status"] == "running"
 
 
+def test_lease_heartbeat_is_durable_idempotent_and_does_not_consume_attempt(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="native-149",
+        kind="strict-native-match",
+        input_payload={"hands": 70},
+        causation_id="native-requested",
+        max_attempts=3,
+    )
+    claimed = store.claim_effect(
+        "native-149", owner="consumer-a", lease_seconds=10, now=100
+    )
+
+    renewed = store.renew_effect_lease(
+        "native-149",
+        owner="consumer-a",
+        lease_epoch=claimed.lease_epoch,
+        lease_seconds=30,
+        causation_id="native-heartbeat-1",
+        now=105,
+    )
+    duplicate = store.renew_effect_lease(
+        "native-149",
+        owner="consumer-a",
+        lease_epoch=claimed.lease_epoch,
+        lease_seconds=30,
+        causation_id="native-heartbeat-1",
+        now=105,
+    )
+
+    assert renewed == duplicate
+    assert renewed.attempt == claimed.attempt == 1
+    assert renewed.lease_epoch == claimed.lease_epoch == 1
+    assert renewed.lease_until == 135
+    restarted = WorkflowStore(store.path)
+    durable = restarted.effect("native-149")
+    assert durable["attempt"] == 1
+    assert durable["lease_epoch"] == 1
+    assert durable["lease_until"] == 135
+    assert [
+        event.event_type for event in restarted.events("149#0")
+    ].count("EffectLeaseHeartbeat") == 1
+
+    completed = restarted.complete_effect(
+        "native-149",
+        lease_epoch=renewed.lease_epoch,
+        completion_id="native-completed",
+        result_payload={"hands": 70},
+        causation_id="native-completed",
+        require_live_lease=True,
+        now=120,
+    )
+    assert completed["accepted"] is True
+
+
+def test_lease_heartbeat_rejects_foreign_stale_expired_and_terminal_effect(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="native-149",
+        kind="strict-native-match",
+        input_payload={"hands": 70},
+        causation_id="native-requested",
+    )
+    lease = store.claim_effect(
+        "native-149", owner="consumer-a", lease_seconds=10, now=100
+    )
+
+    for owner, epoch, now in (
+        ("consumer-b", lease.lease_epoch, 101),
+        ("consumer-a", lease.lease_epoch + 1, 101),
+        ("consumer-a", lease.lease_epoch, 110),
+    ):
+        with pytest.raises(InvalidCompletion, match="stale effect lease heartbeat"):
+            store.renew_effect_lease(
+                "native-149",
+                owner=owner,
+                lease_epoch=epoch,
+                lease_seconds=10,
+                causation_id=f"heartbeat-{owner}-{epoch}-{now}",
+                now=now,
+            )
+
+    accepted = store.complete_effect(
+        "native-149",
+        lease_epoch=lease.lease_epoch,
+        completion_id="native-terminal",
+        result_payload={"hands": 70},
+        causation_id="native-terminal",
+        now=105,
+    )
+    assert accepted["accepted"] is True
+    with pytest.raises(InvalidCompletion, match="stale effect lease heartbeat"):
+        store.renew_effect_lease(
+            "native-149",
+            owner="consumer-a",
+            lease_epoch=lease.lease_epoch,
+            lease_seconds=10,
+            causation_id="heartbeat-after-terminal",
+            now=106,
+        )
+
+
+def test_per_effect_cancel_is_fenced_idempotent_and_rejects_late_completion(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="native-149",
+        kind="strict-native-match",
+        input_payload={"hands": 70},
+        causation_id="native-requested",
+    )
+    lease = store.claim_effect(
+        "native-149", owner="consumer-a", lease_seconds=20, now=100
+    )
+
+    for override in (
+        {"expected_attempt": 2},
+        {"expected_lease_epoch": lease.lease_epoch + 1},
+        {"expected_owner": "consumer-b"},
+    ):
+        values = {
+            "expected_status": "running",
+            "expected_attempt": lease.attempt,
+            "expected_lease_epoch": lease.lease_epoch,
+            "expected_owner": "consumer-a",
+            "reason": "operator_contract_change",
+            "causation_id": f"cancel-stale-{sorted(override.items())}",
+            "now": 105,
+        }
+        values.update(override)
+        with pytest.raises(WorkflowConflict, match="stale effect cancellation"):
+            store.cancel_effect("native-149", **values)
+
+    cancelled = store.cancel_effect(
+        "native-149",
+        expected_status="running",
+        expected_attempt=lease.attempt,
+        expected_lease_epoch=lease.lease_epoch,
+        expected_owner="consumer-a",
+        reason="operator_contract_change",
+        causation_id="native-cancelled",
+        now=105,
+    )
+    duplicate = store.cancel_effect(
+        "native-149",
+        expected_status="running",
+        expected_attempt=lease.attempt,
+        expected_lease_epoch=lease.lease_epoch,
+        expected_owner="consumer-a",
+        reason="operator_contract_change",
+        causation_id="native-cancelled",
+        now=105,
+    )
+    assert cancelled["status"] == duplicate["status"] == "abandoned"
+    assert store.pending_outbox(now=106) == []
+    assert store.events("149#0")[-1].event_type == "EffectCancelled"
+
+    late = store.complete_effect(
+        "native-149",
+        lease_epoch=lease.lease_epoch,
+        completion_id="native-late",
+        result_payload={"hands": 70},
+        causation_id="native-late",
+        require_live_lease=True,
+        now=106,
+    )
+    assert late["accepted"] is False
+    with pytest.raises(WorkflowConflict, match="stale effect cancellation"):
+        store.cancel_effect(
+            "native-149",
+            expected_status="running",
+            expected_attempt=lease.attempt,
+            expected_lease_epoch=lease.lease_epoch,
+            expected_owner="consumer-a",
+            reason="second_cancel",
+            causation_id="native-second-cancel",
+            now=106,
+        )
+
+
+def test_per_effect_cancel_rejects_expired_running_lease(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="native-149",
+        kind="strict-native-match",
+        input_payload={"hands": 70},
+        causation_id="native-requested",
+    )
+    lease = store.claim_effect(
+        "native-149", owner="consumer-a", lease_seconds=10, now=100
+    )
+    with pytest.raises(WorkflowConflict, match="stale effect cancellation"):
+        store.cancel_effect(
+            "native-149",
+            expected_status="running",
+            expected_attempt=lease.attempt,
+            expected_lease_epoch=lease.lease_epoch,
+            expected_owner="consumer-a",
+            reason="expired_owner_cannot_cancel",
+            causation_id="expired-cancel",
+            now=110,
+        )
+
+
+def test_concurrent_per_effect_cancel_has_one_cas_winner(tmp_path):
+    store = _store(tmp_path)
+    store.request_effect(
+        run_id="149#0",
+        effect_id="native-149",
+        kind="strict-native-match",
+        input_payload={"hands": 70},
+        causation_id="native-requested",
+    )
+    lease = store.claim_effect(
+        "native-149", owner="consumer-a", lease_seconds=30, now=100
+    )
+    barrier = __import__("threading").Barrier(2)
+
+    def cancel(index):
+        barrier.wait()
+        try:
+            store.cancel_effect(
+                "native-149",
+                expected_status="running",
+                expected_attempt=lease.attempt,
+                expected_lease_epoch=lease.lease_epoch,
+                expected_owner="consumer-a",
+                reason="contract_changed",
+                causation_id=f"concurrent-cancel-{index}",
+                now=105,
+            )
+            return "cancelled"
+        except WorkflowConflict:
+            return "stale"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(cancel, range(2)))
+    assert sorted(results) == ["cancelled", "stale"]
+    assert store.effect("native-149")["status"] == "abandoned"
+    assert len([
+        event
+        for event in store.events("149#0")
+        if event.event_type == "EffectCancelled"
+    ]) == 1
+
+
 def test_three_failures_exhaust_one_logical_effect(tmp_path):
     store = _store(tmp_path)
     store.request_effect(
