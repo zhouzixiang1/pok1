@@ -1,24 +1,29 @@
 """Operator-only recovery authority for a parked first-strict bootstrap.
 
-This owner exists for one narrow crash-safe case: an unpublished v143 is
-parked at ``official_bootstrap_required``, its explicit bootstrap job ended
-inconclusively before any round, and a reviewed descendant HEAD changes the
-official evaluation contract.  The checkpoint is never rewritten under the
-new contract.  Instead an external, content-bound claim freezes the old
-checkpoint/job/verdict identities and the canonical abandon transaction
-consumes that claim.
+This owner exists for two explicitly tagged forms of one narrow crash-safe
+case: an unpublished v143 is parked at ``official_bootstrap_required`` and a
+reviewed descendant HEAD changes the official evaluation contract.  The
+terminal job is either the original zero-round harness-inconclusive profile or
+the content-proven eight-round legacy wire causal-order false-failure profile.
+The checkpoint and old verdict are never rewritten under the new contract.
+Instead an external, content-bound claim freezes the old checkpoint/job/
+verdict identities and the canonical abandon transaction consumes that claim.
+Neither profile turns old rounds into pass, strength, certification, or rating
+evidence.
 
 The ordinary ``abandon_generation`` tool has no access to this authority.
 """
 
 from __future__ import annotations
 
+import codecs
 from contextlib import contextmanager
 import fcntl
 import hashlib
 import json
+import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import subprocess
@@ -66,6 +71,72 @@ _FIRST_STRICT_SUCCESS_FIELDS = frozenset({
     "terminal_receipt",
     "proof_digest",
 })
+_CAUSAL_FAILURE_DIAGNOSIS_FIELDS = frozenset({
+    "schema_version",
+    "kind",
+    "defect_id",
+    "baseline_wire_probe_sha256",
+    "repair_wire_probe_sha256",
+    "evidence_sha256",
+    "evidence_archive_sha256",
+    "evidence_archive_manifest_digest",
+    "suite_summary_sha256",
+    "attribution_digest",
+    "original_issue_kinds",
+    "original_issue_count",
+    "rounds",
+    "strength_evaluation",
+    "disposition",
+    "proof_digest",
+})
+_CAUSAL_FAILURE_DIAGNOSIS_KIND = (
+    "official-bootstrap-contract-failure-diagnosis"
+)
+_CAUSAL_FAILURE_DEFECT_ID = (
+    "legacy-idle-flush-causal-order-false-positive-8-of-8-v1"
+)
+_CAUSAL_FAILURE_ROUND_FIELDS = frozenset({
+    "slot",
+    "round_id",
+    "receipt_sha256",
+    "wire_events_sha256",
+    "replay_summary_sha256",
+    "event_count",
+    "stored_events_seen",
+    "legacy_issue_kinds",
+    "deferred_observation_bindings_digest",
+    "legacy_summary_digest",
+    "corrected_summary_digest",
+    "max_pending_wait_sec",
+    "corrected_hands_started",
+    "corrected_settlements",
+    "corrected_pending_count",
+})
+_LEGACY_WIRE_EVENT_FIELDS = frozenset({
+    "ts",
+    "t",
+    "dt",
+    "conn",
+    "direction",
+    "event_type",
+    "raw_repr",
+    "raw_hex",
+    "messages",
+    "remaining",
+    "details",
+})
+_LEGACY_FALSE_WIRE_ISSUES = frozenset({
+    "illegal_call",
+    "unsolicited_client_action",
+})
+_LEGACY_DOWNSTREAM_FINDINGS = frozenset({
+    "thp_missing_for_full_70_hand_round",
+    "official_terminal_socket_boundary_invalid",
+})
+_LEGACY_INCIDENT_EVENT_COUNTS = (18, 24, 36, 20, 22, 24, 27, 21)
+_LEGACY_INCIDENT_STORED_COUNTS = (17, 24, 35, 19, 21, 23, 27, 20)
+_LEGACY_INCIDENT_HANDS = (1, 1, 2, 1, 1, 1, 1, 1)
+_LEGACY_INCIDENT_SETTLEMENTS = (0, 0, 1, 0, 0, 0, 0, 0)
 
 
 class BootstrapContractRecoveryError(RuntimeError):
@@ -411,6 +482,988 @@ def _safe_candidate(root: Path, version: int, expected_hash: str) -> dict[str, A
     }
 
 
+def _sha256_bytes(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _regular_json(
+    path: Path,
+    *,
+    max_bytes: int = 4 * 1024 * 1024,
+) -> tuple[bytes, dict[str, Any]]:
+    raw = _read_regular_exact(path, max_bytes=max_bytes)
+    value = json.loads(raw.decode("utf-8"))
+    if not isinstance(value, dict):
+        raise ValueError("expected a JSON object")
+    return raw, value
+
+
+def _require_regular_directory(path: Path) -> Path:
+    metadata = os.lstat(path)
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        raise ValueError("job-owned directory is unsafe")
+    return path
+
+
+def _require_exact_round_job_envelope(
+    round_envelope: Any,
+    status_envelope: Any,
+    *,
+    job_id: str,
+    candidate_hash: str,
+) -> dict[str, Any]:
+    if not isinstance(status_envelope, dict) or not status_envelope:
+        raise ValueError("status official job envelope is missing")
+    if not isinstance(round_envelope, dict) or round_envelope != status_envelope:
+        raise ValueError("round official job envelope is not exact")
+    if (
+        status_envelope.get("job_id") != job_id
+        or status_envelope.get("attempt") != 1
+        or status_envelope.get("candidate_hash") != candidate_hash
+        or not _HEX64.fullmatch(str(status_envelope.get("opponent_hash") or ""))
+        or not _HEX64.fullmatch(
+            str(status_envelope.get("opponent_selection_digest") or "")
+        )
+    ):
+        raise ValueError("status official job envelope identity is invalid")
+    return status_envelope
+
+
+def _legacy_wire_causalize(
+    events: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, int]]]:
+    """Rebuild legacy parser transitions and attach causal observations.
+
+    The old recorder appended an idle-flush semantic event after forwarding
+    the raw bytes.  A fast official-EXE response could therefore be recorded
+    between the raw action and its semantic flush.  This verifier trusts only
+    ``raw_hex`` and the official incremental parsers, then makes that already
+    observed action causally precede the response.  It is deliberately scoped
+    to the exact old ``data``/``idle_flush``/``stream_eof`` event vocabulary.
+    """
+
+    from official_wire_probe import (
+        WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION,
+        split_client_messages,
+        split_server_messages,
+    )
+
+    if not isinstance(events, list) or not events:
+        raise ValueError("legacy wire capture is empty")
+    decoders: dict[tuple[str, str], codecs.IncrementalDecoder] = {}
+    buffers: dict[tuple[str, str], str] = {}
+    pending: dict[tuple[str, str], dict[str, Any]] = {}
+    terminated: set[tuple[str, str]] = set()
+    consumed_sources: set[int] = set()
+    name_requested: dict[str, bool] = {}
+    causal: list[dict[str, Any]] = []
+    bindings: list[dict[str, int]] = []
+    observation_seq = 0
+    recorder_epoch: float | None = None
+    last_t = float("-inf")
+    last_dt = float("-inf")
+
+    def parse(
+        conn: str,
+        direction: str,
+        buffer: str,
+        *,
+        flush: bool,
+    ) -> tuple[list[str], str, str]:
+        if direction == "server_to_bot":
+            messages, remaining = split_server_messages(
+                buffer,
+                flush_numeric=flush,
+            )
+            return messages, remaining, "server"
+        if direction == "bot_to_server":
+            allow_name = bool(name_requested.get(conn, False))
+            messages, remaining = split_client_messages(
+                buffer,
+                allow_name=allow_name,
+                flush_numeric=flush,
+            )
+            return (
+                messages,
+                remaining,
+                "client_name" if allow_name else "client_action",
+            )
+        raise ValueError("legacy wire direction is invalid")
+
+    def apply_handshake(
+        conn: str,
+        direction: str,
+        messages: list[str],
+    ) -> None:
+        if direction == "server_to_bot" and "name" in messages:
+            name_requested[conn] = True
+        elif direction == "bot_to_server" and messages and name_requested.get(conn):
+            name_requested[conn] = False
+
+    for record_seq, source_event in enumerate(events, 1):
+        if not isinstance(source_event, dict) or set(source_event) != _LEGACY_WIRE_EVENT_FIELDS:
+            raise ValueError("legacy wire event shape is invalid")
+        event = dict(source_event)
+        if event.get("details") != {}:
+            raise ValueError("legacy wire event details are not empty")
+        if (
+            not isinstance(event.get("ts"), str)
+            or not isinstance(event.get("conn"), str)
+            or event.get("conn") not in {"A", "B"}
+            or event.get("direction") not in {"server_to_bot", "bot_to_server"}
+            or not isinstance(event.get("messages"), list)
+            or any(not isinstance(item, str) for item in event["messages"])
+            or not isinstance(event.get("remaining"), str)
+            or not isinstance(event.get("raw_repr"), str)
+        ):
+            raise ValueError("legacy wire event payload is invalid")
+        if not all(
+            isinstance(event.get(field), (int, float))
+            and not isinstance(event.get(field), bool)
+            and math.isfinite(float(event[field]))
+            for field in ("t", "dt")
+        ):
+            raise ValueError("legacy wire event time is invalid")
+        event_t = float(event["t"])
+        event_dt = float(event["dt"])
+        epoch = event_t - event_dt
+        if recorder_epoch is None:
+            recorder_epoch = epoch
+        if (
+            event_dt < 0
+            or event_t < last_t
+            or event_dt < last_dt
+            or abs(epoch - recorder_epoch) > 0.00001
+        ):
+            raise ValueError("legacy wire event time order is invalid")
+        last_t, last_dt = event_t, event_dt
+        raw_hex = event.get("raw_hex")
+        if (
+            not isinstance(raw_hex, str)
+            or len(raw_hex) % 2
+            or raw_hex != raw_hex.lower()
+            or re.fullmatch(r"[0-9a-f]*", raw_hex) is None
+        ):
+            raise ValueError("legacy wire raw bytes are invalid")
+        raw = bytes.fromhex(raw_hex)
+        key = (event["conn"], event["direction"])
+        if key in terminated:
+            raise ValueError("legacy wire event follows stream EOF")
+        decoder = decoders.setdefault(
+            key,
+            codecs.getincrementaldecoder("utf-8")("strict"),
+        )
+        buffer = buffers.get(key, "")
+        event_type = event.get("event_type")
+
+        if event_type == "data":
+            if not raw:
+                raise ValueError("legacy data event has no raw bytes")
+            text = decoder.decode(raw, final=False)
+            messages, remaining, _mode = parse(
+                event["conn"],
+                event["direction"],
+                buffer + text,
+                flush=False,
+            )
+            if event["messages"] != messages or event["remaining"] != remaining:
+                raise ValueError("legacy data parser transition mismatch")
+            observation_seq += 1
+            observation = {
+                "observation_seq": observation_seq,
+                "observation_t": event_t,
+                "observation_dt": event_dt,
+                "source_record_seq": record_seq,
+            }
+            if remaining:
+                pending[key] = observation
+            else:
+                pending.pop(key, None)
+            buffers[key] = remaining
+            apply_handshake(event["conn"], event["direction"], messages)
+            causal.append({
+                **event,
+                "causal_order_schema_version": (
+                    WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+                ),
+                "record_seq": record_seq,
+                "observation_seq": observation_seq,
+                "observation_t": event_t,
+                "observation_dt": event_dt,
+            })
+            continue
+
+        if event_type == "idle_flush":
+            source = pending.get(key)
+            pending_bytes, _flag = decoder.getstate()
+            if (
+                raw
+                or source is None
+                or int(source["observation_seq"]) in consumed_sources
+                or pending_bytes
+                or not buffer
+            ):
+                raise ValueError("legacy idle flush has no unique raw source")
+            messages, remaining, mode = parse(
+                event["conn"],
+                event["direction"],
+                buffer,
+                flush=True,
+            )
+            if (
+                not messages
+                or remaining
+                or event["messages"] != messages
+                or event["remaining"] != remaining
+            ):
+                raise ValueError("legacy idle flush parser transition mismatch")
+            consumed_sources.add(int(source["observation_seq"]))
+            pending.pop(key, None)
+            buffers[key] = remaining
+            apply_handshake(event["conn"], event["direction"], messages)
+            bindings.append({
+                "flush_record_seq": record_seq,
+                "source_record_seq": int(source["source_record_seq"]),
+                "observation_seq": int(source["observation_seq"]),
+            })
+            causal.append({
+                **event,
+                "causal_order_schema_version": (
+                    WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+                ),
+                "record_seq": record_seq,
+                "observation_seq": int(source["observation_seq"]),
+                "observation_t": float(source["observation_t"]),
+                "observation_dt": float(source["observation_dt"]),
+                "deferred_parser_mode": mode,
+            })
+            continue
+
+        if event_type == "stream_eof":
+            if raw or event["messages"]:
+                raise ValueError("legacy stream EOF payload is invalid")
+            buffer += decoder.decode(b"", final=True)
+            messages, remaining, _mode = parse(
+                event["conn"],
+                event["direction"],
+                buffer,
+                flush=True,
+            )
+            if messages or event["remaining"] != remaining or remaining:
+                raise ValueError("legacy stream EOF leaves unproved bytes")
+            observation_seq += 1
+            buffers[key] = remaining
+            pending.pop(key, None)
+            terminated.add(key)
+            causal.append({
+                **event,
+                "causal_order_schema_version": (
+                    WIRE_EVENT_CAUSAL_ORDER_SCHEMA_VERSION
+                ),
+                "record_seq": record_seq,
+                "observation_seq": observation_seq,
+                "observation_t": event_t,
+                "observation_dt": event_dt,
+            })
+            continue
+
+        raise ValueError("legacy wire event type is outside the defect profile")
+
+    terminal_tail = events[-2:]
+    if (
+        len(terminal_tail) != 2
+        or {event.get("conn") for event in terminal_tail} != {"A", "B"}
+        or any(
+            event.get("direction") != "bot_to_server"
+            or event.get("event_type") != "stream_eof"
+            for event in terminal_tail
+        )
+    ):
+        raise ValueError("legacy wire capture has no exact terminal EOF pair")
+    if (
+        pending
+        or terminated != {
+            ("A", "bot_to_server"),
+            ("B", "bot_to_server"),
+        }
+        or any(decoder.getstate()[0] for decoder in decoders.values())
+    ):
+        raise ValueError("legacy wire capture is not cleanly terminated")
+    return causal, bindings
+
+
+def _legacy_replay_matches_stored(
+    events: list[dict[str, Any]],
+    stored: dict[str, Any],
+) -> str:
+    from official_wire_probe import OfficialWireReplay
+
+    count = stored.get("events_seen")
+    if (
+        type(count) is not int
+        or count not in {len(events), len(events) - 1}
+        or (
+            count == len(events) - 1
+            and events[-1].get("event_type") != "stream_eof"
+        )
+    ):
+        raise ValueError("stored replay event count is invalid")
+    replay = OfficialWireReplay()
+    for event in events[:count]:
+        replay.consume_event(event)
+    pending = stored.get("pending_expected_actions")
+    if not isinstance(pending, list):
+        raise ValueError("stored replay pending actions are invalid")
+    if pending:
+        first = pending[0]
+        if (
+            not isinstance(first, dict)
+            or first.get("conn") not in replay.seats
+            or replay.seats[first["conn"]].expected_since is None
+            or not isinstance(first.get("waited_sec"), (int, float))
+            or isinstance(first.get("waited_sec"), bool)
+        ):
+            raise ValueError("stored replay pending clock is invalid")
+        frozen_now = (
+            float(replay.seats[first["conn"]].expected_since)
+            + float(first["waited_sec"])
+        )
+    else:
+        frozen_now = max(float(event["t"]) for event in events[:count])
+    if replay.summary(now=frozen_now) != stored:
+        raise ValueError("stored legacy replay does not match raw events")
+    return canonical_digest(stored)
+
+
+def _strict_artifact_bytes(
+    suite: Path,
+    item: Any,
+    *,
+    expected_archive_path: str,
+    max_bytes: int,
+) -> bytes:
+    if not isinstance(item, dict):
+        raise ValueError("official evidence artifact is missing")
+    pure = PurePosixPath(str(item.get("archive_path") or ""))
+    if (
+        pure.is_absolute()
+        or ".." in pure.parts
+        or pure.as_posix() != expected_archive_path
+        or item.get("exists") is not True
+        or type(item.get("size_bytes")) is not int
+        or item["size_bytes"] < 0
+        or not _HEX64.fullmatch(str(item.get("sha256") or ""))
+    ):
+        raise ValueError("official evidence artifact identity is invalid")
+    path = suite.joinpath(*pure.parts)
+    if str(item.get("path") or "") != str(path):
+        raise ValueError("official evidence artifact path is not canonical")
+    raw = _read_regular_exact(path, max_bytes=max_bytes)
+    if len(raw) != item["size_bytes"] or _sha256_bytes(raw) != item["sha256"]:
+        raise ValueError("official evidence artifact bytes changed")
+    return raw
+
+
+def _validate_causal_failure_diagnosis_envelope(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != _CAUSAL_FAILURE_DIAGNOSIS_FIELDS:
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_causal_failure_diagnosis_fields_invalid"
+        ])
+    payload = {key: item for key, item in value.items() if key != "proof_digest"}
+    rounds = value.get("rounds")
+    digest_fields = (
+        "baseline_wire_probe_sha256",
+        "repair_wire_probe_sha256",
+        "evidence_sha256",
+        "evidence_archive_sha256",
+        "evidence_archive_manifest_digest",
+        "suite_summary_sha256",
+        "attribution_digest",
+    )
+    round_digest_fields = (
+        "receipt_sha256",
+        "wire_events_sha256",
+        "replay_summary_sha256",
+        "deferred_observation_bindings_digest",
+        "legacy_summary_digest",
+        "corrected_summary_digest",
+    )
+    if (
+        value.get("schema_version") != 1
+        or value.get("kind") != _CAUSAL_FAILURE_DIAGNOSIS_KIND
+        or value.get("defect_id") != _CAUSAL_FAILURE_DEFECT_ID
+        or value.get("proof_digest") != canonical_digest(payload)
+        or value.get("strength_evaluation") != "not_applicable"
+        or value.get("disposition")
+        != "abandon_and_reprepare_only_without_evidence_reuse"
+        or value.get("original_issue_kinds")
+        != sorted(_LEGACY_FALSE_WIRE_ISSUES)
+        or any(not _HEX64.fullmatch(str(value.get(field) or "")) for field in digest_fields)
+        or value.get("baseline_wire_probe_sha256")
+        == value.get("repair_wire_probe_sha256")
+        or type(value.get("original_issue_count")) is not int
+        or int(value["original_issue_count"]) != 10
+        or not isinstance(rounds, list)
+        or len(rounds) != 8
+        or any(
+            not isinstance(item, dict)
+            or set(item) != _CAUSAL_FAILURE_ROUND_FIELDS
+            for item in rounds
+        )
+        or [item.get("slot") for item in rounds]
+        != [
+            "self_play_01",
+            "self_play_02",
+            "self_play_03",
+            "self_play_04",
+            "self_play_05",
+            "opponent_01",
+            "opponent_02",
+            "opponent_03",
+        ]
+        or any(
+            not isinstance(item.get("legacy_issue_kinds"), list)
+            or not item["legacy_issue_kinds"]
+            or any(
+                issue not in _LEGACY_FALSE_WIRE_ISSUES
+                for issue in item["legacy_issue_kinds"]
+            )
+            for item in rounds
+        )
+        or sum(len(item["legacy_issue_kinds"]) for item in rounds) != 10
+        or [len(item["legacy_issue_kinds"]) for item in rounds]
+        != [1, 2, 1, 1, 1, 1, 2, 1]
+        or rounds[0]["legacy_issue_kinds"] != ["illegal_call"]
+        or any(
+            issue != "unsolicited_client_action"
+            for item in rounds[1:]
+            for issue in item["legacy_issue_kinds"]
+        )
+        or any(
+            any(not _HEX64.fullmatch(str(item.get(field) or "")) for field in round_digest_fields)
+            or not isinstance(item.get("round_id"), str)
+            or not item["round_id"].startswith(f"{item['slot']}_")
+            or type(item.get("event_count")) is not int
+            or type(item.get("stored_events_seen")) is not int
+            or not 1 <= item["stored_events_seen"] <= item["event_count"]
+            or not isinstance(item.get("max_pending_wait_sec"), (int, float))
+            or isinstance(item.get("max_pending_wait_sec"), bool)
+            or not math.isfinite(float(item["max_pending_wait_sec"]))
+            or not 0.0 <= float(item["max_pending_wait_sec"]) < 60.0
+            for item in rounds
+        )
+        or tuple(item["event_count"] for item in rounds)
+        != _LEGACY_INCIDENT_EVENT_COUNTS
+        or tuple(item["stored_events_seen"] for item in rounds)
+        != _LEGACY_INCIDENT_STORED_COUNTS
+        or tuple(item.get("corrected_hands_started") for item in rounds)
+        != _LEGACY_INCIDENT_HANDS
+        or tuple(item.get("corrected_settlements") for item in rounds)
+        != _LEGACY_INCIDENT_SETTLEMENTS
+        or any(
+            type(item.get("corrected_hands_started")) is not int
+            or type(item.get("corrected_settlements")) is not int
+            or type(item.get("corrected_pending_count")) is not int
+            or not 0 <= item["corrected_hands_started"] < 70
+            or not 0 <= item["corrected_settlements"] < 70
+            or item["corrected_pending_count"] != 1
+            for item in rounds
+        )
+    ):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_causal_failure_diagnosis_invalid"
+        ])
+    return value
+
+
+def _legacy_causal_failure_diagnosis(
+    root: Path,
+    directory: Path,
+    *,
+    request: dict[str, Any],
+    state: dict[str, Any],
+    status: dict[str, Any],
+    candidate_hash: str,
+    expected_baseline_head: str,
+    expected_repair_head: str,
+    require_live_repair_source: bool = True,
+) -> dict[str, Any]:
+    """Prove the one known 8/8 append-order false-failure profile.
+
+    This produces abandon/reprepare authority only.  The signed failure,
+    receipts, archive, and all incomplete rounds remain immutable and retain
+    zero certification or strength authority.
+    """
+
+    from official_evidence_archive import validate_evidence_archive
+    from official_wire_probe import replay_events
+
+    if state.get("attempt") != 1:
+        raise ValueError("legacy false-failure job is not attempt one")
+    status_job_envelope = status.get("official_job_envelope")
+    if not isinstance(status_job_envelope, dict) or not status_job_envelope:
+        raise ValueError("status official job envelope is missing")
+    identity = request.get("identity")
+    identity = identity if isinstance(identity, dict) else {}
+    platform = identity.get("platform")
+    platform = platform if isinstance(platform, dict) else {}
+    baseline_source = _git(
+        root,
+        "show",
+        f"{expected_baseline_head}:web/core/official_wire_probe.py",
+        binary=True,
+    )
+    if not isinstance(baseline_source, bytes):
+        raise ValueError("baseline wire probe source is unavailable")
+    baseline_wire_sha256 = _sha256_bytes(baseline_source)
+    repair_source = _git(
+        root,
+        "show",
+        f"{expected_repair_head}:web/core/official_wire_probe.py",
+        binary=True,
+    )
+    if not isinstance(repair_source, bytes):
+        raise ValueError("repair wire probe source is unavailable")
+    repair_wire_sha256 = _sha256_bytes(repair_source)
+    if (
+        platform.get("wire_probe_sha256") != baseline_wire_sha256
+        or repair_wire_sha256 == baseline_wire_sha256
+    ):
+        raise ValueError("wire probe contract change is not proven")
+    if require_live_repair_source:
+        current_wire_sha256 = _sha256_bytes(_read_regular_exact(
+            root / "web" / "core" / "official_wire_probe.py",
+            max_bytes=2 * 1024 * 1024,
+        ))
+        if current_wire_sha256 != repair_wire_sha256:
+            raise ValueError("live wire probe is not the reviewed repair")
+
+    suite = directory / "suite_attempt_01"
+    _require_regular_directory(suite)
+    status_summary = status.get("summary")
+    status_summary = status_summary if isinstance(status_summary, dict) else {}
+    if Path(str(status_summary.get("suite_dir") or "")) != suite:
+        raise ValueError("legacy suite path is not job-owned")
+    evidence_path = suite / "official_evidence.json"
+    if Path(str(status.get("official_evidence_path") or "")) != evidence_path:
+        raise ValueError("legacy evidence path is not canonical")
+    summary_raw, suite_report = _regular_json(
+        suite / "summary.json",
+        max_bytes=4 * 1024 * 1024,
+    )
+    evidence_raw, evidence = _regular_json(
+        evidence_path,
+        max_bytes=4 * 1024 * 1024,
+    )
+    evidence_sha256 = _sha256_bytes(evidence_raw)
+    deterministic = status.get("official_deterministic_status_receipt")
+    deterministic = deterministic if isinstance(deterministic, dict) else {}
+    archive = status.get("official_evidence_archive")
+    archive = archive if isinstance(archive, dict) else {}
+    archive_validation = validate_evidence_archive(
+        archive,
+        expected_evidence_sha256=evidence_sha256,
+    )
+    if (
+        deterministic.get("evidence_sha256") != evidence_sha256
+        or archive.get("evidence_sha256") != evidence_sha256
+        or archive_validation.get("valid") is not True
+        or evidence.get("schema_version") != 1
+        or evidence.get("purpose") != "official_platform_compliance"
+        or evidence.get("strength_evaluation") != "not_applicable"
+    ):
+        raise ValueError("legacy evidence archive is not exact and retained")
+
+    expected_summary = {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "rounds_requested": 8,
+        "rounds_run": 8,
+        "passed_rounds": 0,
+        "failed_rounds": 8,
+        "resumed_rounds": 0,
+        "official_platform": True,
+    }
+    report_summary = suite_report.get("summary")
+    report_summary = report_summary if isinstance(report_summary, dict) else {}
+    evidence_summary = evidence.get("summary")
+    evidence_summary = evidence_summary if isinstance(evidence_summary, dict) else {}
+    if any(
+        status_summary.get(key) != expected
+        or report_summary.get(key) != expected
+        or evidence_summary.get(key) != expected
+        for key, expected in expected_summary.items()
+    ):
+        raise ValueError("legacy suite is not exact failed 5+3x70")
+    if (
+        Path(str(report_summary.get("suite_dir") or "")) != suite
+        or Path(str(evidence_summary.get("suite_dir") or "")) != suite
+    ):
+        raise ValueError("legacy suite summary path changed")
+
+    attribution = status_summary.get("attribution")
+    attribution = attribution if isinstance(attribution, dict) else {}
+    attribution_rounds = attribution.get("rounds")
+    if (
+        attribution.get("schema_version") != 1
+        or attribution.get("policy_id") != "official-attribution-v1"
+        or attribution.get("candidate_verdict") != "fail"
+        or attribution.get("candidate_blocking") is not True
+        or attribution.get("inconclusive") is not False
+        or attribution.get("countable_rounds") != 0
+        or not isinstance(attribution_rounds, list)
+        or len(attribution_rounds) != 8
+        or report_summary.get("attribution") != attribution
+        or evidence_summary.get("attribution") != attribution
+        or status_summary.get("formal_execution")
+        != report_summary.get("formal_execution")
+        or report_summary.get("formal_execution")
+        != evidence_summary.get("formal_execution")
+        or not isinstance(report_summary.get("formal_execution"), dict)
+        or report_summary["formal_execution"].get("ok") is not True
+        or report_summary["formal_execution"].get("issues") != []
+        or evidence_summary.get("passed") is not False
+        or evidence_summary.get("raw_passed") is not False
+        or evidence_summary.get("wire_evidence_required_rounds") != 8
+        or evidence_summary.get("wire_evidence_complete_rounds") != 8
+    ):
+        raise ValueError("legacy failure attribution is invalid")
+
+    expected_slots = [
+        *(f"self_play_{index:02d}" for index in range(1, 6)),
+        *(f"opponent_{index:02d}" for index in range(1, 4)),
+    ]
+    report_rounds = suite_report.get("rounds")
+    evidence_rounds = evidence.get("rounds")
+    if (
+        not isinstance(report_rounds, list)
+        or len(report_rounds) != 8
+        or not isinstance(evidence_rounds, list)
+        or len(evidence_rounds) != 8
+    ):
+        raise ValueError("legacy suite round set is incomplete")
+
+    proof_rounds: list[dict[str, Any]] = []
+    all_legacy_issue_kinds: list[str] = []
+    for offset, slot in enumerate(expected_slots):
+        kind = "self_play" if slot.startswith("self_play") else "opponent"
+        index = int(slot.rsplit("_", 1)[1])
+        receipt = report_rounds[offset]
+        evidence_round = evidence_rounds[offset]
+        attribution_round = attribution_rounds[offset]
+        if not all(
+            isinstance(item, dict)
+            for item in (receipt, evidence_round, attribution_round)
+        ):
+            raise ValueError("legacy round evidence shape is invalid")
+        round_id = receipt.get("round_id")
+        if (
+            receipt.get("round_kind") != kind
+            or receipt.get("round_index") != index
+            or receipt.get("target_hands") != 70
+            or receipt.get("passed") is not False
+            or not isinstance(round_id, str)
+            or not round_id.startswith(f"{slot}_")
+            or evidence_round.get("round_kind") != kind
+            or evidence_round.get("round_index") != index
+            or evidence_round.get("round_id") != round_id
+            or evidence_round.get("passed") is not False
+            or evidence_round.get("strength_evaluation") not in {None, "not_applicable"}
+        ):
+            raise ValueError("legacy round identity is invalid")
+        round_envelope = receipt.get("job_envelope")
+        _require_exact_round_job_envelope(
+            round_envelope,
+            status_job_envelope,
+            job_id=directory.name,
+            candidate_hash=candidate_hash,
+        )
+        wire_probe = receipt.get("wire_probe")
+        wire_probe = wire_probe if isinstance(wire_probe, dict) else {}
+        if wire_probe.get("enabled") is not True or wire_probe.get("issues") != []:
+            raise ValueError("legacy round wire probe failed independently")
+
+        round_attribution_topology = attribution_round.get("topology")
+        round_attribution_topology = (
+            round_attribution_topology
+            if isinstance(round_attribution_topology, dict)
+            else {}
+        )
+        findings = attribution_round.get("findings")
+        if (
+            attribution_round.get("schema_version") != 1
+            or attribution_round.get("policy_id") != "official-attribution-v1"
+            or round_attribution_topology.get("round_kind") != kind
+            or not isinstance(findings, list)
+        ):
+            raise ValueError("legacy round attribution is invalid")
+        wire_findings: list[dict[str, Any]] = []
+        downstream_codes: list[str] = []
+        for finding in findings:
+            if not isinstance(finding, dict) or finding.get("round_id") != round_id:
+                raise ValueError("legacy attribution finding is unbound")
+            code = finding.get("code")
+            if code in _LEGACY_FALSE_WIRE_ISSUES:
+                evidence_item = finding.get("evidence")
+                evidence_item = evidence_item if isinstance(evidence_item, dict) else {}
+                subject = finding.get("subject_domain")
+                if (
+                    finding.get("category") != "protocol"
+                    or finding.get("certainty") != "deterministic"
+                    or subject not in {"candidate", "opponent"}
+                    or finding.get("candidate_impact")
+                    != ("block" if subject == "candidate" else "retry")
+                    or evidence_item.get("kind") != code
+                    or evidence_item.get("conn") not in {"A", "B"}
+                ):
+                    raise ValueError("legacy wire finding attribution is invalid")
+                wire_findings.append(finding)
+            elif code in _LEGACY_DOWNSTREAM_FINDINGS:
+                if (
+                    finding.get("category") != "harness"
+                    or finding.get("subject_domain") != "harness"
+                    or finding.get("candidate_impact") != "retry"
+                    or (finding.get("evidence") or {}).get("issue") != code
+                ):
+                    raise ValueError("legacy downstream finding is invalid")
+                downstream_codes.append(str(code))
+            else:
+                raise ValueError("legacy failure contains another finding")
+        if (
+            not wire_findings
+            or sorted(downstream_codes) != sorted(_LEGACY_DOWNSTREAM_FINDINGS)
+        ):
+            raise ValueError("legacy round findings are incomplete")
+
+        artifacts = evidence_round.get("artifacts")
+        artifacts = artifacts if isinstance(artifacts, dict) else {}
+        receipt_item = artifacts.get("receipt")
+        archive_path = str((receipt_item or {}).get("archive_path") or "")
+        pure_receipt = PurePosixPath(archive_path)
+        if (
+            len(pure_receipt.parts) != 4
+            or pure_receipt.parts[0] != slot
+            or pure_receipt.parts[1] != "executions"
+            or re.fullmatch(r"run_[0-9]+_[0-9]+", pure_receipt.parts[2]) is None
+            or pure_receipt.parts[3] != "receipt.json"
+        ):
+            raise ValueError("legacy round execution path is invalid")
+        execution_prefix = "/".join(pure_receipt.parts[:-1])
+        receipt_raw = _strict_artifact_bytes(
+            suite,
+            receipt_item,
+            expected_archive_path=f"{execution_prefix}/receipt.json",
+            max_bytes=1024 * 1024,
+        )
+        observed_receipt = json.loads(receipt_raw.decode("utf-8"))
+        if observed_receipt != receipt:
+            raise ValueError("legacy summary is not the exact round receipt")
+        slot_dir = suite / slot
+        executions = slot_dir / "executions"
+        execution_dir = executions / pure_receipt.parts[2]
+        for owned_directory in (slot_dir, executions, execution_dir):
+            _require_regular_directory(owned_directory)
+        if (
+            sorted(item.name for item in slot_dir.iterdir())
+            != ["executions", "receipt.json"]
+            or sorted(item.name for item in executions.iterdir())
+            != [pure_receipt.parts[2]]
+            or _read_regular_exact(slot_dir / "receipt.json", max_bytes=1024 * 1024)
+            != receipt_raw
+        ):
+            raise ValueError("legacy round has a resumed or duplicate execution")
+        wire_raw = _strict_artifact_bytes(
+            suite,
+            artifacts.get("wire_events"),
+            expected_archive_path=f"{execution_prefix}/wire_events.jsonl",
+            max_bytes=1024 * 1024,
+        )
+        replay_raw = _strict_artifact_bytes(
+            suite,
+            artifacts.get("replay_summary"),
+            expected_archive_path=f"{execution_prefix}/replay_summary.json",
+            max_bytes=1024 * 1024,
+        )
+        stored_replay = json.loads(replay_raw.decode("utf-8"))
+        if (
+            not isinstance(stored_replay, dict)
+            or receipt.get("wire_replay_summary") != stored_replay
+            or evidence_round.get("wire_replay_summary") != stored_replay
+        ):
+            raise ValueError("legacy replay summary is not cross-bound")
+        events = [
+            json.loads(line)
+            for line in wire_raw.decode("utf-8").splitlines()
+            if line.strip()
+        ]
+        legacy_summary_digest = _legacy_replay_matches_stored(
+            events,
+            stored_replay,
+        )
+        legacy_issue_kinds = [
+            str(item.get("kind") or "")
+            for item in (stored_replay.get("issues") or [])
+            if isinstance(item, dict)
+        ]
+        if (
+            not legacy_issue_kinds
+            or any(kind_name not in _LEGACY_FALSE_WIRE_ISSUES for kind_name in legacy_issue_kinds)
+            or legacy_issue_kinds
+            != [str(item.get("code")) for item in wire_findings]
+            or stored_replay.get("warnings") != []
+        ):
+            raise ValueError("legacy replay has a different failure")
+        evidence_attribution = evidence_round.get("attribution")
+        evidence_attribution = (
+            evidence_attribution
+            if isinstance(evidence_attribution, dict)
+            else {}
+        )
+        evidence_findings = evidence_attribution.get("findings")
+        evidence_findings = evidence_findings if isinstance(evidence_findings, list) else []
+        replay_findings = [
+            finding
+            for finding in evidence_findings
+            if isinstance(finding, dict) and finding.get("code") == "wire_replay"
+        ]
+        if len(replay_findings) != 1:
+            raise ValueError("legacy evidence replay finding is not unique")
+        replay_finding = replay_findings[0]
+        replay_issue = str((replay_finding.get("evidence") or {}).get("issue") or "")
+        if (
+            replay_finding.get("round_id") != round_id
+            or replay_finding.get("category") != "protocol"
+            or replay_finding.get("subject_domain") != "harness"
+            or replay_finding.get("subject_instance_id") != "official_harness"
+            or replay_finding.get("candidate_impact") != "retry"
+            or replay_finding.get("certainty") != "deterministic"
+            or replay_finding.get("connection") != ""
+            or replay_issue
+            not in {
+                f"wire_replay: {kind_name}"
+                for kind_name in set(legacy_issue_kinds)
+            }
+        ):
+            raise ValueError("legacy evidence replay finding is not derived")
+        normalized_evidence_attribution = dict(evidence_attribution)
+        normalized_evidence_attribution["findings"] = [
+            finding for finding in evidence_findings
+            if finding is not replay_finding
+        ]
+        normalized_evidence_attribution["retry_finding_ids"] = [
+            finding_id
+            for finding_id in (evidence_attribution.get("retry_finding_ids") or [])
+            if finding_id != replay_finding.get("finding_id")
+        ]
+        if normalized_evidence_attribution != attribution_round:
+            raise ValueError("legacy evidence attribution is not cross-bound")
+        round_issues = receipt.get("issues")
+        evidence_issues = evidence_round.get("issues")
+        if not isinstance(round_issues, list) or any(
+            not isinstance(item, str) for item in round_issues
+        ):
+            raise ValueError("legacy round issue list is invalid")
+        expected_wire_issue_prefixes = [f"wire_{kind_name}:" for kind_name in legacy_issue_kinds]
+        observed_wire_issues = [
+            item for item in round_issues
+            if any(item.startswith(prefix) for prefix in expected_wire_issue_prefixes)
+        ]
+        if (
+            len(observed_wire_issues) != len(legacy_issue_kinds)
+            or sorted(
+                item for item in round_issues if item not in observed_wire_issues
+            ) != sorted(_LEGACY_DOWNSTREAM_FINDINGS)
+            or not isinstance(evidence_issues, list)
+            or sorted(evidence_issues)
+            != sorted([
+                *round_issues,
+                *(f"wire_replay: {kind_name}" for kind_name in sorted(set(legacy_issue_kinds))),
+            ])
+        ):
+            raise ValueError("legacy round issues contain another failure")
+
+        causal_events, bindings = _legacy_wire_causalize(events)
+        frozen_now = max(float(event["t"]) for event in events)
+        corrected = replay_events(
+            causal_events,
+            now=frozen_now,
+            finalized=False,
+        )
+        pending_actions = corrected.get("pending_expected_actions")
+        pending_actions = pending_actions if isinstance(pending_actions, list) else []
+        pending_waits = [
+            float(item.get("waited_sec", 0.0) or 0.0)
+            for item in pending_actions
+            if isinstance(item, dict)
+        ]
+        max_pending_wait = max(pending_waits, default=0.0)
+        corrected_hands = corrected.get("hands_started_min")
+        corrected_settlements = corrected.get("settlements_min")
+        corrected_pending_count = len(pending_actions)
+        if (
+            corrected.get("issues") != []
+            or corrected.get("warnings") != []
+            or corrected.get("events_seen") != len(events)
+            or not 0.0 <= max_pending_wait < 60.0
+            or corrected_hands != _LEGACY_INCIDENT_HANDS[offset]
+            or corrected_settlements
+            != _LEGACY_INCIDENT_SETTLEMENTS[offset]
+            or type(corrected_hands) is not int
+            or type(corrected_settlements) is not int
+            or not 0 <= corrected_hands < 70
+            or not 0 <= corrected_settlements < 70
+            or corrected_pending_count != 1
+        ):
+            raise ValueError("causal replay does not clear only the old defect")
+
+        all_legacy_issue_kinds.extend(legacy_issue_kinds)
+        proof_rounds.append({
+            "slot": slot,
+            "round_id": round_id,
+            "receipt_sha256": _sha256_bytes(receipt_raw),
+            "wire_events_sha256": _sha256_bytes(wire_raw),
+            "replay_summary_sha256": _sha256_bytes(replay_raw),
+            "event_count": len(events),
+            "stored_events_seen": stored_replay["events_seen"],
+            "legacy_issue_kinds": legacy_issue_kinds,
+            "deferred_observation_bindings_digest": canonical_digest(bindings),
+            "legacy_summary_digest": legacy_summary_digest,
+            "corrected_summary_digest": canonical_digest(corrected),
+            "max_pending_wait_sec": round(max_pending_wait, 3),
+            "corrected_hands_started": corrected_hands,
+            "corrected_settlements": corrected_settlements,
+            "corrected_pending_count": corrected_pending_count,
+        })
+
+    if (
+        len(all_legacy_issue_kinds) != 10
+        or set(all_legacy_issue_kinds) != _LEGACY_FALSE_WIRE_ISSUES
+    ):
+        raise ValueError("legacy failure is not the exact ten-finding defect")
+    payload = {
+        "schema_version": 1,
+        "kind": _CAUSAL_FAILURE_DIAGNOSIS_KIND,
+        "defect_id": _CAUSAL_FAILURE_DEFECT_ID,
+        "baseline_wire_probe_sha256": baseline_wire_sha256,
+        "repair_wire_probe_sha256": repair_wire_sha256,
+        "evidence_sha256": evidence_sha256,
+        "evidence_archive_sha256": archive["archive_sha256"],
+        "evidence_archive_manifest_digest": archive["manifest_digest"],
+        "suite_summary_sha256": _sha256_bytes(summary_raw),
+        "attribution_digest": canonical_digest(attribution),
+        "original_issue_kinds": sorted(set(all_legacy_issue_kinds)),
+        "original_issue_count": len(all_legacy_issue_kinds),
+        "rounds": proof_rounds,
+        "strength_evaluation": "not_applicable",
+        "disposition": "abandon_and_reprepare_only_without_evidence_reuse",
+    }
+    return _validate_causal_failure_diagnosis_envelope({
+        **payload,
+        "proof_digest": canonical_digest(payload),
+    })
+
+
 def _terminal_job_facts(
     root: Path,
     *,
@@ -426,6 +1479,8 @@ def _terminal_job_facts(
     expected_first_strict_control_receipt_digest: str,
     expected_protocol_bootstrap_receipt: dict[str, Any],
     expected_first_strict_control_receipt: dict[str, Any],
+    expected_baseline_head: str,
+    expected_current_head: str,
 ) -> dict[str, Any]:
     from official_bootstrap import (
         CONTROL_ID,
@@ -433,7 +1488,10 @@ def _terminal_job_facts(
         _validated_ledger_entries,
         first_strict_control_consumption,
     )
-    from official_certification import official_compliance_verdict
+    from official_certification import (
+        _deterministic_status_receipt_issues,
+        official_compliance_verdict,
+    )
     from official_certification_job import (
         _job_lock,
         _public_state,
@@ -477,16 +1535,36 @@ def _terminal_job_facts(
         issues.append("bootstrap_contract_job_identity_mismatch")
     if public.get("pending") is not False or public.get("state") != "completed":
         issues.append("bootstrap_contract_job_not_terminal_completed")
-    if progress.get("rounds_requested") != 8 or progress.get("rounds_completed") != 0:
-        issues.append("bootstrap_contract_job_progress_not_zero_of_eight")
-    if status.get("status") != "official-inconclusive":
-        issues.append("bootstrap_contract_job_not_inconclusive")
     summary = status.get("summary") if isinstance(status.get("summary"), dict) else {}
-    if summary.get("rounds_run") != 0:
-        issues.append("bootstrap_contract_job_rounds_run_nonzero")
     verdict = official_compliance_verdict(status)
-    if not verdict.get("inconclusive") or verdict.get("blocking") or verdict.get("violation"):
-        issues.append("bootstrap_contract_job_candidate_violation_or_authority")
+    zero_round_inconclusive = bool(
+        progress.get("rounds_requested") == 8
+        and progress.get("rounds_completed") == 0
+        and status.get("status") == "official-inconclusive"
+        and summary.get("rounds_run") == 0
+        and verdict.get("inconclusive")
+        and not verdict.get("blocking")
+        and not verdict.get("violation")
+    )
+    legacy_causal_failure = bool(
+        progress.get("rounds_requested") == 8
+        and progress.get("rounds_completed") == 8
+        and status.get("status") == "official-failed"
+        and summary.get("rounds_run") == 8
+        and summary.get("passed_rounds") == 0
+        and summary.get("failed_rounds") == 8
+        and summary.get("resumed_rounds") == 0
+        and verdict.get("inconclusive") is False
+        and verdict.get("blocking") is True
+        and verdict.get("violation") is True
+    )
+    if not zero_round_inconclusive and not legacy_causal_failure:
+        issues.append("bootstrap_contract_terminal_job_profile_unsupported")
+    if legacy_causal_failure:
+        issues.extend(_deterministic_status_receipt_issues(
+            status,
+            candidate=candidate,
+        ))
     opponent = selection.get("opponent")
     opponent = opponent if isinstance(opponent, dict) else {}
     if (
@@ -649,7 +1727,11 @@ def _terminal_job_facts(
     matching = [
         entry for entry in entries
         if entry.get("candidate_hash") == candidate_hash
-        and entry.get("outcome") == "official-inconclusive"
+        and entry.get("outcome") == (
+            "official-failed"
+            if legacy_causal_failure
+            else "official-inconclusive"
+        )
         and entry.get("deterministic_status_receipt_digest") == deterministic.get("receipt_digest")
         and entry.get("job_envelope_digest") == envelope.get("envelope_digest")
     ]
@@ -660,13 +1742,53 @@ def _terminal_job_facts(
         ledger_entry = matching[0]
         if status.get("official_verdict_ledger_entry") != ledger_entry:
             issues.append("bootstrap_contract_status_ledger_entry_mismatch")
+        expected_ledger = (
+            (True, True, "protocol")
+            if legacy_causal_failure
+            else (False, False, "harness")
+        )
         if (
-            ledger_entry.get("authoritative") is not False
-            or ledger_entry.get("blocking") is not False
-            or ledger_entry.get("classification") != "harness"
+            (
+                ledger_entry.get("authoritative"),
+                ledger_entry.get("blocking"),
+                ledger_entry.get("classification"),
+            ) != expected_ledger
             or ledger_entry.get("certificate_digest") not in {None, ""}
+            or ledger_entry.get("strength_evaluation") != "not_applicable"
         ):
-            issues.append("bootstrap_contract_ledger_entry_has_authority")
+            issues.append("bootstrap_contract_ledger_entry_profile_invalid")
+        later_candidate_entries = [
+            entry
+            for entry in entries
+            if entry.get("candidate_hash") == candidate_hash
+            and type(entry.get("sequence")) is int
+            and entry["sequence"] > ledger_entry.get("sequence", -1)
+        ]
+        if later_candidate_entries:
+            issues.append("bootstrap_contract_terminal_ledger_not_latest_for_candidate")
+    diagnosis: dict[str, Any] | None = None
+    if legacy_causal_failure:
+        try:
+            diagnosis = _legacy_causal_failure_diagnosis(
+                root,
+                directory,
+                request=request,
+                state=state,
+                status=status,
+                candidate_hash=candidate_hash,
+                expected_baseline_head=expected_baseline_head,
+                expected_repair_head=expected_current_head,
+            )
+        except Exception as exc:
+            issues.append(
+                "bootstrap_contract_causal_failure_unproven:"
+                f"{type(exc).__name__}:{str(exc)[:160]}"
+            )
+    certificate_path = (
+        root / "official_certificates" / f"{bot_name(FIRST_STRICT_POLICY_VERSION)}.json"
+    )
+    if os.path.lexists(certificate_path):
+        issues.append("bootstrap_contract_published_certificate_present")
     consumption = first_strict_control_consumption(CONTROL_ID)
     if (
         consumption.get("valid") is not True
@@ -683,8 +1805,8 @@ def _terminal_job_facts(
         "result_digest": result["result_digest"],
         "status_digest": canonical_digest(status),
         "rounds_requested": 8,
-        "rounds_completed": 0,
-        "rounds_run": 0,
+        "rounds_completed": 8 if legacy_causal_failure else 0,
+        "rounds_run": 8 if legacy_causal_failure else 0,
         "ledger_entry_digest": ledger_entry["entry_digest"],
         "ledger_sequence": ledger_entry["sequence"],
         "deterministic_status_receipt_digest": deterministic.get("receipt_digest"),
@@ -696,6 +1818,11 @@ def _terminal_job_facts(
             status.get("official_evidence_archive") or {}
         ).get("archive_sha256"),
         "control_consumption": consumption,
+        **(
+            {"contract_failure_diagnosis": diagnosis}
+            if diagnosis is not None
+            else {}
+        ),
     }
 
 
@@ -870,6 +1997,8 @@ def build_claim(
             expected_first_strict_control_receipt=(
                 checkpoint_control_receipt
             ),
+            expected_baseline_head=full_expected_baseline,
+            expected_current_head=current_head,
         )
     except BootstrapContractRecoveryError as exc:
         issues.extend(exc.issues)
@@ -1140,6 +2269,14 @@ def _validate_claim_envelope(
     old = claim.get("old_checkpoint")
     candidate = claim.get("candidate")
     migration = claim.get("git_contract_migration")
+    terminal_job = claim.get("terminal_job")
+    if not isinstance(terminal_job, dict):
+        raise BootstrapContractRecoveryError([
+            "bootstrap_contract_claim_terminal_job_invalid"
+        ])
+    diagnosis = terminal_job.get("contract_failure_diagnosis")
+    if diagnosis is not None:
+        _validate_causal_failure_diagnosis_envelope(diagnosis)
     if (
         not isinstance(old, dict)
         or set(old) != {
@@ -1349,6 +2486,8 @@ def abandon_reason(claim_digest: str) -> str:
 def _historical_terminal_job_matches(
     claim: dict[str, Any],
     directory: Path,
+    *,
+    root: Path | None = None,
 ) -> bool:
     """Reopen immutable job/result/verdict bytes without a live old candidate."""
 
@@ -1362,9 +2501,13 @@ def _historical_terminal_job_matches(
     )
 
     expected = claim.get("terminal_job") or {}
-    if directory.name != expected.get("job_id"):
+    if (
+        not _HEX64.fullmatch(directory.name)
+        or directory.name != expected.get("job_id")
+    ):
         return False
     try:
+        _require_regular_directory(directory)
         with _job_lock(directory):
             request = _read_json(directory / "request.json") or {}
             state = _read_json(directory / "state.json") or {}
@@ -1374,6 +2517,11 @@ def _historical_terminal_job_matches(
             result = _result_payload(directory, state) or {}
         status = result.get("status") if isinstance(result.get("status"), dict) else {}
         progress = public.get("progress") if isinstance(public.get("progress"), dict) else {}
+        diagnosis = expected.get("contract_failure_diagnosis")
+        causal_profile = diagnosis is not None
+        if causal_profile:
+            _validate_causal_failure_diagnosis_envelope(diagnosis)
+        expected_rounds = 8 if causal_profile else 0
         if (
             public.get("state") != "completed"
             or public.get("pending") is not False
@@ -1382,10 +2530,39 @@ def _historical_terminal_job_matches(
             or result.get("result_digest") != expected.get("result_digest")
             or canonical_digest(status) != expected.get("status_digest")
             or progress.get("rounds_requested") != 8
-            or progress.get("rounds_completed") != 0
-            or (status.get("summary") or {}).get("rounds_run") != 0
+            or progress.get("rounds_completed") != expected_rounds
+            or (status.get("summary") or {}).get("rounds_run")
+            != expected_rounds
+            or status.get("status") != (
+                "official-failed"
+                if causal_profile
+                else "official-inconclusive"
+            )
         ):
             return False
+        if causal_profile:
+            project_root = Path(root).resolve() if root is not None else directory.parents[5]
+            rebuilt_diagnosis = _legacy_causal_failure_diagnosis(
+                project_root,
+                directory,
+                request=request,
+                state=state,
+                status=status,
+                candidate_hash=str((claim.get("candidate") or {}).get("artifact_hash") or ""),
+                expected_baseline_head=str(
+                    (claim.get("git_contract_migration") or {}).get("baseline_head") or ""
+                ),
+                expected_repair_head=str(
+                    (claim.get("git_contract_migration") or {}).get("current_head") or ""
+                ),
+                # A later reviewed wire implementation must not invalidate the
+                # immutable old-job exclusion.  Historical reopen still binds
+                # both Git blobs and recomputes the raw proof; only live claim
+                # construction requires checkout bytes to equal repair_head.
+                require_live_repair_source=False,
+            )
+            if rebuilt_diagnosis != diagnosis:
+                return False
         entries, issues = _validated_ledger_entries()
         if issues:
             return False
@@ -1398,11 +2575,18 @@ def _historical_terminal_job_matches(
         entry = matches[0]
         return bool(
             entry.get("sequence") == expected.get("ledger_sequence")
-            and entry.get("outcome") == "official-inconclusive"
-            and entry.get("classification") == "harness"
-            and entry.get("authoritative") is False
-            and entry.get("blocking") is False
+            and entry.get("outcome") == (
+                "official-failed"
+                if causal_profile
+                else "official-inconclusive"
+            )
+            and entry.get("classification") == (
+                "protocol" if causal_profile else "harness"
+            )
+            and entry.get("authoritative") is causal_profile
+            and entry.get("blocking") is causal_profile
             and entry.get("certificate_digest") in {None, ""}
+            and entry.get("strength_evaluation") == "not_applicable"
         )
     except Exception:
         return False
@@ -1495,7 +2679,7 @@ def finalized_claim_result(
         from official_certification_job import job_root
 
         directory = job_root() / str((claim.get("terminal_job") or {}).get("job_id") or "")
-        if not _historical_terminal_job_matches(claim, directory):
+        if not _historical_terminal_job_matches(claim, directory, root=root):
             return None
         terminal = _finalized_canonical_abandon(root, claim)
         if terminal is None:
@@ -1525,7 +2709,11 @@ def incomplete_claim_resume_identity(
         from tool_bot_management import _load_live_abandon_claim
 
         job_id = str((claim.get("terminal_job") or {}).get("job_id") or "")
-        if not _historical_terminal_job_matches(claim, job_root() / job_id):
+        if not _historical_terminal_job_matches(
+            claim,
+            job_root() / job_id,
+            root=root,
+        ):
             return None
         canonical = _load_live_abandon_claim()
         if not isinstance(canonical, dict):
@@ -1562,9 +2750,10 @@ def is_finalized_historical_bootstrap_job(
 ) -> bool:
     """Return true only for an exact old job consumed by canonical abandon.
 
-    This prevents a new v143 workflow from treating the immutable old 0/8 job
-    (which has the same candidate path) as a live ambiguous authorization.  A
-    changed request/result/verdict/claim/transaction remains related-invalid.
+    This prevents a new v143 workflow from treating either supported immutable
+    old job profile (which has the same candidate path) as a live ambiguous
+    authorization.  A changed request/result/verdict/claim/transaction remains
+    related-invalid.
     """
 
     root = Path(root).resolve()
@@ -1594,7 +2783,7 @@ def is_finalized_historical_bootstrap_job(
         ):
             continue
         if (
-            _historical_terminal_job_matches(claim, directory)
+            _historical_terminal_job_matches(claim, directory, root=root)
             and _finalized_canonical_abandon_matches(root, claim)
         ):
             matches.append(digest)

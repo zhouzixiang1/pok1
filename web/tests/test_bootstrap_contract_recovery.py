@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from contextlib import nullcontext
 import json
 from pathlib import Path
@@ -156,6 +157,372 @@ def _contract_chain():
         bootstrap_receipt,
         candidate_binding,
         control_receipt,
+    )
+
+
+def _legacy_false_illegal_call_events():
+    events = []
+    dt = 0.0
+
+    def add(conn, direction, event_type, raw, messages, remaining):
+        nonlocal dt
+        dt += 0.05
+        events.append({
+            "ts": f"2026-07-19T00:00:{dt:06.3f}",
+            "t": 1000.0 + dt,
+            "dt": dt,
+            "conn": conn,
+            "direction": direction,
+            "event_type": event_type,
+            "raw_repr": raw,
+            "raw_hex": raw.encode("utf-8").hex(),
+            "messages": messages,
+            "remaining": remaining,
+            "details": {},
+        })
+
+    add("A", "server_to_bot", "data", "name", ["name"], "")
+    add("B", "server_to_bot", "data", "name", ["name"], "")
+    add("A", "bot_to_server", "data", "BotA", [], "BotA")
+    add("B", "bot_to_server", "data", "BotB", [], "BotB")
+    add("A", "bot_to_server", "idle_flush", "", ["BotA"], "")
+    add("B", "bot_to_server", "idle_flush", "", ["BotB"], "")
+    add(
+        "A",
+        "server_to_bot",
+        "data",
+        "preflop|BIGBLIND|<2,8><1,3>",
+        ["preflop|BIGBLIND|<2,8><1,3>"],
+        "",
+    )
+    add(
+        "B",
+        "server_to_bot",
+        "data",
+        "preflop|SMALLBLIND|<1,7><0,11>",
+        ["preflop|SMALLBLIND|<1,7><0,11>"],
+        "",
+    )
+    add("B", "bot_to_server", "data", "raise 300", [], "raise 300")
+    add("A", "server_to_bot", "data", "raise 300", [], "raise 300")
+    add("B", "bot_to_server", "idle_flush", "", ["raise 300"], "")
+    add("A", "server_to_bot", "idle_flush", "", ["raise 300"], "")
+    add("A", "bot_to_server", "data", "call", [], "call")
+    add(
+        "A",
+        "server_to_bot",
+        "data",
+        "flop|<3,2><2,6><0,2>",
+        ["flop|<3,2><2,6><0,2>"],
+        "",
+    )
+    add(
+        "B",
+        "server_to_bot",
+        "data",
+        "flop|<3,2><2,6><0,2>",
+        ["flop|<3,2><2,6><0,2>"],
+        "",
+    )
+    add("A", "bot_to_server", "idle_flush", "", ["call"], "")
+    add("A", "bot_to_server", "stream_eof", "", [], "")
+    add("B", "bot_to_server", "stream_eof", "", [], "")
+    return events
+
+
+def _causal_failure_diagnosis():
+    issue_counts = (1, 2, 1, 1, 1, 1, 2, 1)
+    slots = [
+        *(f"self_play_{index:02d}" for index in range(1, 6)),
+        *(f"opponent_{index:02d}" for index in range(1, 4)),
+    ]
+    rounds = []
+    for offset, (slot, count) in enumerate(zip(slots, issue_counts), 1):
+        issue = "illegal_call" if offset == 1 else "unsolicited_client_action"
+        rounds.append({
+            "slot": slot,
+            "round_id": f"{slot}_20260719_000000",
+            "receipt_sha256": f"{offset:x}" * 64,
+            "wire_events_sha256": f"{offset + 1:x}" * 64,
+            "replay_summary_sha256": f"{offset + 2:x}" * 64,
+            "event_count": recovery._LEGACY_INCIDENT_EVENT_COUNTS[offset - 1],
+            "stored_events_seen": recovery._LEGACY_INCIDENT_STORED_COUNTS[offset - 1],
+            "legacy_issue_kinds": [issue] * count,
+            "deferred_observation_bindings_digest": f"{offset + 3:x}" * 64,
+            "legacy_summary_digest": f"{offset + 4:x}" * 64,
+            "corrected_summary_digest": f"{offset + 5:x}" * 64,
+            "max_pending_wait_sec": 1.04,
+            "corrected_hands_started": recovery._LEGACY_INCIDENT_HANDS[offset - 1],
+            "corrected_settlements": recovery._LEGACY_INCIDENT_SETTLEMENTS[offset - 1],
+            "corrected_pending_count": 1,
+        })
+    payload = {
+        "schema_version": 1,
+        "kind": recovery._CAUSAL_FAILURE_DIAGNOSIS_KIND,
+        "defect_id": recovery._CAUSAL_FAILURE_DEFECT_ID,
+        "baseline_wire_probe_sha256": "a" * 64,
+        "repair_wire_probe_sha256": "b" * 64,
+        "evidence_sha256": "c" * 64,
+        "evidence_archive_sha256": "d" * 64,
+        "evidence_archive_manifest_digest": "e" * 64,
+        "suite_summary_sha256": "f" * 64,
+        "attribution_digest": "1" * 64,
+        "original_issue_kinds": sorted(recovery._LEGACY_FALSE_WIRE_ISSUES),
+        "original_issue_count": 10,
+        "rounds": rounds,
+        "strength_evaluation": "not_applicable",
+        "disposition": "abandon_and_reprepare_only_without_evidence_reuse",
+    }
+    return {**payload, "proof_digest": canonical_digest(payload)}
+
+
+def test_legacy_idle_flush_false_call_is_rebuilt_from_raw_causally():
+    from official_wire_probe import replay_events
+
+    events = _legacy_false_illegal_call_events()
+    legacy = replay_events(events, now=max(item["t"] for item in events))
+
+    assert [item["kind"] for item in legacy["issues"]] == ["illegal_call"]
+    causal, bindings = recovery._legacy_wire_causalize(events)
+    corrected = replay_events(
+        causal,
+        now=max(item["t"] for item in events),
+        finalized=False,
+    )
+
+    assert corrected["issues"] == []
+    assert corrected["warnings"] == []
+    call_raw = next(
+        index for index, item in enumerate(events, 1)
+        if item["event_type"] == "data"
+        and item["direction"] == "bot_to_server"
+        and item["raw_repr"] == "call"
+    )
+    call_flush = next(
+        index for index, item in enumerate(events, 1)
+        if item["event_type"] == "idle_flush"
+        and item["messages"] == ["call"]
+    )
+    assert {
+        "flush_record_seq": call_flush,
+        "source_record_seq": call_raw,
+        "observation_seq": causal[call_raw - 1]["observation_seq"],
+    } in bindings
+    assert causal[call_flush - 1]["observation_t"] == events[call_raw - 1]["t"]
+
+
+def test_legacy_stored_replay_allows_only_full_or_last_eof_omission():
+    from official_wire_probe import replay_events
+
+    events = _legacy_false_illegal_call_events()
+    stored = replay_events(events, now=max(item["t"] for item in events))
+    assert recovery._legacy_replay_matches_stored(events, stored)
+
+    forged = copy.deepcopy(stored)
+    forged["events_seen"] = len(events) - 2
+    with pytest.raises(ValueError, match="event count is invalid"):
+        recovery._legacy_replay_matches_stored(events, forged)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda events: events[0].update(raw_hex="ff"),
+        lambda events: events[6].update(t=events[5]["t"] - 0.01),
+        lambda events: events[0].update(observation_seq=1),
+        lambda events: events[15].update(conn="B"),
+        lambda events: events.pop(),
+    ),
+)
+def test_legacy_causalizer_fails_closed_on_raw_time_shape_source_or_eof(
+    mutation,
+):
+    events = copy.deepcopy(_legacy_false_illegal_call_events())
+    mutation(events)
+
+    with pytest.raises((ValueError, UnicodeDecodeError)):
+        recovery._legacy_wire_causalize(events)
+
+
+def test_causal_failure_diagnosis_is_tagged_exact_and_cannot_be_resigned_wider():
+    diagnosis = _causal_failure_diagnosis()
+
+    assert recovery._validate_causal_failure_diagnosis_envelope(
+        diagnosis
+    ) == diagnosis
+
+    for mutation in (
+        lambda value: value.update(original_issue_count=9),
+        lambda value: value["rounds"][0].update(legacy_issue_kinds=[]),
+        lambda value: value["rounds"][0].update(event_count=19),
+        lambda value: value["rounds"][2].update(corrected_hands_started=1),
+        lambda value: value["rounds"][0].update(corrected_pending_count=0),
+        lambda value: value.update(strength_evaluation="candidate_strength"),
+        lambda value: value.update(
+            disposition="reuse_as_official_certification"
+        ),
+    ):
+        forged = copy.deepcopy(diagnosis)
+        mutation(forged)
+        forged["proof_digest"] = canonical_digest({
+            key: item for key, item in forged.items()
+            if key != "proof_digest"
+        })
+        with pytest.raises(recovery.BootstrapContractRecoveryError):
+            recovery._validate_causal_failure_diagnosis_envelope(forged)
+
+
+def test_round_job_envelope_must_equal_status_including_opponent_bindings():
+    status_envelope = {
+        "job_id": JOB_ID,
+        "attempt": 1,
+        "candidate_hash": CANDIDATE_HASH,
+        "opponent_hash": "6" * 64,
+        "opponent_selection_digest": "7" * 64,
+    }
+    assert recovery._require_exact_round_job_envelope(
+        dict(status_envelope),
+        status_envelope,
+        job_id=JOB_ID,
+        candidate_hash=CANDIDATE_HASH,
+    ) == status_envelope
+
+    for field in ("opponent_hash", "opponent_selection_digest"):
+        drifted = dict(status_envelope)
+        drifted[field] = "8" * 64
+        with pytest.raises(ValueError, match="not exact"):
+            recovery._require_exact_round_job_envelope(
+                drifted,
+                status_envelope,
+                job_id=JOB_ID,
+                candidate_hash=CANDIDATE_HASH,
+            )
+    with pytest.raises(ValueError, match="status official job envelope is missing"):
+        recovery._require_exact_round_job_envelope(
+            status_envelope,
+            {},
+            job_id=JOB_ID,
+            candidate_hash=CANDIDATE_HASH,
+        )
+
+
+def test_job_owned_intermediate_directory_symlink_fails_closed(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+
+    assert recovery._require_regular_directory(real) == real
+    with pytest.raises(ValueError, match="directory is unsafe"):
+        recovery._require_regular_directory(linked)
+
+
+def test_historical_causal_failure_reopens_raw_diagnosis_and_signed_failure(
+    tmp_path,
+    monkeypatch,
+):
+    import official_bootstrap
+
+    directory = tmp_path / JOB_ID
+    directory.mkdir()
+    diagnosis = _causal_failure_diagnosis()
+    entry = {
+        "entry_digest": "9" * 64,
+        "sequence": 3,
+        "outcome": "official-failed",
+        "classification": "protocol",
+        "authoritative": True,
+        "blocking": True,
+        "certificate_digest": "",
+        "strength_evaluation": "not_applicable",
+    }
+    status = {
+        "status": "official-failed",
+        "summary": {"rounds_run": 8},
+        "official_verdict_ledger_entry": entry,
+    }
+    request = {"request_digest": "6" * 64}
+    state = {"revision": 98, "attempt": 1}
+    result = {"result_digest": "7" * 64, "status": status}
+    public = {
+        "state": "completed",
+        "pending": False,
+        "progress": {"rounds_requested": 8, "rounds_completed": 8},
+    }
+    expected = {
+        "job_id": JOB_ID,
+        "request_digest": request["request_digest"],
+        "state_revision": state["revision"],
+        "result_digest": result["result_digest"],
+        "status_digest": canonical_digest(status),
+        "rounds_requested": 8,
+        "rounds_completed": 8,
+        "rounds_run": 8,
+        "ledger_entry_digest": entry["entry_digest"],
+        "ledger_sequence": entry["sequence"],
+        "contract_failure_diagnosis": diagnosis,
+    }
+    claim = {
+        "terminal_job": expected,
+        "candidate": {"artifact_hash": CANDIDATE_HASH},
+        "git_contract_migration": {
+            "baseline_head": OLD_HEAD,
+            "current_head": NEW_HEAD,
+        },
+    }
+    monkeypatch.setattr(official_certification_job, "_job_lock", lambda *_a: nullcontext())
+    monkeypatch.setattr(
+        official_certification_job,
+        "_read_json",
+        lambda path: request if path.name == "request.json" else state,
+    )
+    monkeypatch.setattr(official_certification_job, "_validate_request", lambda _r: [])
+    monkeypatch.setattr(official_certification_job, "_public_state", lambda *_a: public)
+    monkeypatch.setattr(official_certification_job, "_result_payload", lambda *_a: result)
+    monkeypatch.setattr(
+        official_bootstrap,
+        "_validated_ledger_entries",
+        lambda: ([entry], []),
+    )
+    observed = {"value": diagnosis, "kwargs": None}
+
+    def rebuild_diagnosis(*_args, **kwargs):
+        observed["kwargs"] = kwargs
+        return observed["value"]
+
+    monkeypatch.setattr(
+        recovery,
+        "_legacy_causal_failure_diagnosis",
+        rebuild_diagnosis,
+    )
+
+    assert recovery._historical_terminal_job_matches(
+        claim,
+        directory,
+        root=tmp_path,
+    )
+    assert observed["kwargs"]["require_live_repair_source"] is False
+    observed["value"] = {
+        **diagnosis,
+        "proof_digest": "0" * 64,
+    }
+    assert not recovery._historical_terminal_job_matches(
+        claim,
+        directory,
+        root=tmp_path,
+    )
+
+
+def test_historical_terminal_job_rejects_symlinked_job_directory(tmp_path):
+    real = tmp_path / "real-job"
+    real.mkdir()
+    linked = tmp_path / JOB_ID
+    linked.symlink_to(real, target_is_directory=True)
+
+    assert not recovery._historical_terminal_job_matches(
+        {"terminal_job": {"job_id": JOB_ID}},
+        linked,
+        root=tmp_path,
     )
 
 
@@ -1035,7 +1402,11 @@ def test_historical_job_requires_unique_finalized_claim_and_transaction(
     job.mkdir()
     claim = _build(root)
     recovery.publish_claim(root, claim)
-    monkeypatch.setattr(recovery, "_historical_terminal_job_matches", lambda *_a: True)
+    monkeypatch.setattr(
+        recovery,
+        "_historical_terminal_job_matches",
+        lambda *_a, **_k: True,
+    )
     monkeypatch.setattr(
         recovery,
         "_finalized_canonical_abandon_matches",
