@@ -423,6 +423,51 @@ def test_recovery_reports_partial_concurrent_conflict_without_hiding_claim(
     assert statuses == ["requested", "running"]
 
 
+def test_recovery_preflights_all_deadlines_before_any_durable_claim(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _adapter(tmp_path)
+    valid = _envelope()
+    expired = _envelope(
+        job_id="job:draft-1:quality-dynamic",
+        job_kind="quality-dynamic",
+        idempotency_key="draft-1:quality-dynamic:v1",
+        candidate_id="candidate-2",
+        artifact_digest=DIGESTS["c"],
+        deadline={
+            "submitted_at_epoch": 100.0,
+            "not_before_epoch": 100.0,
+            "expires_at_epoch": 110.0,
+        },
+    )
+    valid_effect_id = adapter.submit(valid)["effect_id"]
+    expired_effect_id = adapter.submit(expired)["effect_id"]
+    monkeypatch.setattr(
+        adapter.store,
+        "pending_outbox",
+        lambda **_kwargs: [
+            {"effect_id": valid_effect_id},
+            {"effect_id": expired_effect_id},
+        ],
+    )
+
+    with pytest.raises(
+        ProducerConsumerStoreError,
+        match="producer_consumer_lease_outside_envelope_deadline",
+    ):
+        adapter.recover(
+            owner="consumer-a",
+            lease_seconds=30,
+            now=120,
+            recovery_id="deadline-preflight",
+        )
+    assert {
+        effect["status"]
+        for effect in adapter.store.effects_for_run(valid["run_id"])
+    } == {"requested"}
+
+
 def test_infrastructure_failure_cannot_be_recorded_after_lease_expiry(tmp_path):
     adapter = _adapter(tmp_path)
     effect_id = adapter.submit(_envelope())["effect_id"]

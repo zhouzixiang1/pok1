@@ -410,9 +410,16 @@ class ProducerConsumerWorkflowAdapter:
         """Claim queued work and reclaim expired work after proven owner death."""
 
         pending = self.store.pending_outbox(now=now)
-        prepared: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+        prepared: list[
+            tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None, float]
+        ] = []
         for row in pending:
-            effect, _ = self._validated_effect(str(row["effect_id"]))
+            effect, envelope = self._validated_effect(str(row["effect_id"]))
+            bounded_seconds = _bounded_lease_seconds(
+                envelope,
+                now=now,
+                requested=lease_seconds,
+            )
             proof = None
             if effect.get("status") == "running":
                 if (
@@ -437,18 +444,12 @@ class ProducerConsumerWorkflowAdapter:
                         "producer_consumer_recovery_death_proof_invalid"
                     )
                 proof = deepcopy(dict(resolved))
-            prepared.append((effect, proof))
+            prepared.append((effect, envelope, proof, bounded_seconds))
 
         leases: list[dict[str, Any]] = []
         conflicts: list[dict[str, Any]] = []
-        for index, (effect, proof) in enumerate(prepared):
+        for index, (effect, envelope, proof, bounded_seconds) in enumerate(prepared):
             effect_id = str(effect["effect_id"])
-            _, envelope = self._validated_effect(effect_id)
-            bounded_seconds = _bounded_lease_seconds(
-                envelope,
-                now=now,
-                requested=lease_seconds,
-            )
             try:
                 if effect["status"] == "running":
                     assert proof is not None
