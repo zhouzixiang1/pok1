@@ -8,6 +8,8 @@ import type {
   ArenaSessionsResponse, ArenaBotsResponse, ArenaWireHistoryResponse,
 } from "./types";
 import { expectPipelineCheckpoint } from "./pipeline";
+import { expectAgentActivity } from "./agentActivity";
+import { expectStrengthJobs } from "./strengthJobs";
 const BASE = "/api";
 const FETCH_TIMEOUT = 30_000;
 
@@ -208,6 +210,12 @@ export const api = {
     await fetchJSON<unknown>(`${BASE}/pipeline/checkpoint`),
   ),
   pipelineFailures: (limit = 10) => fetchJSON<WorkerFailure[]>(`${BASE}/pipeline/failures?limit=${limit}`),
+  pipelineAgents: async () => expectAgentActivity(
+    await fetchJSON<unknown>(`${BASE}/pipeline/agents`),
+  ),
+  pipelineStrengthJobs: async () => expectStrengthJobs(
+    await fetchJSON<unknown>(`${BASE}/pipeline/strength-jobs`),
+  ),
 
   // Prompts
   listPrompts: () => fetchJSON<PromptInfo[]>(`${BASE}/prompts`),

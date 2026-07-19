@@ -707,3 +707,174 @@ export interface ArenaWireHistoryResponse extends ArenaEpochMetadata {
   after_sequence: number;
   complete: boolean;
 }
+
+// ── Structured agent activity (/api/pipeline/agents) ───────────────────────
+//
+// Read-only projection of Master/Scouts/Workers/Reviewer/Critic/Orchestrator
+// activity for the current strict workflow.  Field chain mirrors the backend
+// `_build_agents_projection`.  The dashboard must pair this with the
+// independent /api/control/health.pipeline view; it must not mix the two.
+
+export interface AgentGateFieldMap {
+  [key: string]: unknown;
+}
+
+export interface AgentGateView {
+  name: "quality" | "review" | "critic" | "precommit_eval" | "official_full";
+  present: true;
+  /** True only when the gate's own completion field chain passed. */
+  complete: boolean;
+  fields: AgentGateFieldMap;
+}
+
+export interface AgentWorkerTaskView {
+  worker_id: number | null;
+  role: string | null;
+  target_files: string[];
+  difficulty: string | null;
+  skill_layer: string | null;
+  behavior_hypothesis?: string | null;
+  expected_diff_shape?: string | null;
+  merge_policy?: string | null;
+}
+
+export interface AgentMasterView {
+  stage_reached: boolean;
+  plan_present: boolean;
+  analysis: string | null;
+  tasks: AgentWorkerTaskView[];
+}
+
+export interface AgentWorkerFailureRow {
+  worker_id: number | string | null;
+  role: string | null;
+  error: string | null;
+  failure_type: string | null;
+  category: string | null;
+  gen: number | null;
+}
+
+export interface AgentActivityProjection {
+  available: true;
+  evaluation_epoch: "national_tcp_policy_v1";
+  workflow_run_id: string | null;
+  run_id: string | null;
+  next_v: number | null;
+  source_v: number | null;
+  parent2_v: number | null;
+  checkpoint_revision: number | null;
+  stage: string | null;
+  attempts: {
+    generation: number;
+    audit: number;
+    precommit: number;
+  };
+  rework_counts: {
+    worker_failure: number;
+    precommit: number;
+    official: number;
+  };
+  orchestrator: {
+    stage: string | null;
+    reviewer_feedback: string | null;
+    infra_failure: Record<string, unknown> | null;
+  };
+  master: AgentMasterView;
+  direction_audit: Record<string, unknown> | null;
+  gates: {
+    quality: AgentGateView | null;
+    review: AgentGateView | null;
+    critic: AgentGateView | null;
+    precommit_eval: AgentGateView | null;
+    official_full: AgentGateView | null;
+  };
+  gate_keys_present: string[];
+  worker_failures: AgentWorkerFailureRow[];
+}
+
+export interface AgentActivityUnavailable {
+  available: false;
+  reason: string;
+  evaluation_epoch: "national_tcp_policy_v1";
+}
+
+export type AgentActivityResponse = AgentActivityProjection | AgentActivityUnavailable;
+
+// ── Background 70-hand strength jobs (/api/pipeline/strength-jobs) ──────────
+
+export interface StrengthAdmittedSample {
+  id: string | null;
+  timestamp: string | null;
+  bot0: string | null;
+  bot1: string | null;
+  bot0_wins: number | null;
+  bot1_wins: number | null;
+  draws: number | null;
+  strength_sample_count: number | null;
+  hands_per_strength_sample: number | null;
+  replay_sha256: string | null;
+}
+
+export interface StrengthStagedPendingSample {
+  filename: string;
+  id: string | null;
+  timestamp: string | null;
+  bot0: string | null;
+  bot1: string | null;
+  evaluation_identity_digest: string | null;
+  strength_sample_unit: string | null;
+  hands_per_strength_sample: number | null;
+  strength_sample_count: number | null;
+  strength_admitted: boolean | null;
+  strength_complete: boolean | null;
+  strength_compliance_passed: boolean | null;
+}
+
+export interface StrengthInadmissibleDiagnostic {
+  id: string | null;
+  timestamp: string | null;
+  bot0: string | null;
+  bot1: string | null;
+  strength_sample_count: number | null;
+  hands_per_strength_sample: number | null;
+  rejection_reasons: string[];
+}
+
+export interface DaemonHealthSnapshot {
+  alive: boolean;
+  exists?: boolean;
+  pid?: number | null;
+  process_identity?: string;
+  heartbeat_status?: string;
+  heartbeat_stale?: boolean;
+  heartbeat_age_sec?: number | null;
+  health_error?: string | null;
+  configured?: boolean;
+  last_heartbeat?: number | null;
+  activity_state?: string | null;
+  [key: string]: unknown;
+}
+
+export interface StrengthJobsProjection {
+  available: true;
+  evaluation_epoch: "national_tcp_policy_v1";
+  evaluation_identity_digest: string;
+  evaluation_manifest_digest: string | null;
+  epoch_reset_receipt_digest: string | null;
+  active_bots: string[];
+  daemon: DaemonHealthSnapshot;
+  admitted_samples: StrengthAdmittedSample[];
+  staged_pending: StrengthStagedPendingSample[];
+  inadmissible_diagnostics: StrengthInadmissibleDiagnostic[];
+  daemon_stats: Record<string, unknown>;
+}
+
+export interface StrengthJobsUnavailable {
+  available: false;
+  reason: string;
+  evaluation_epoch: "national_tcp_policy_v1";
+  active_bots: string[];
+  daemon: DaemonHealthSnapshot;
+}
+
+export type StrengthJobsResponse = StrengthJobsProjection | StrengthJobsUnavailable;

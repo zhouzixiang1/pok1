@@ -21,7 +21,16 @@
     "src/lib/controlRuntimeState.ts",
     "src/lib/pipelinePresentation.ts",
     "src/lib/canonicalGenerationIdentity.ts",
+    "src/lib/stabilityView.ts",
     "src/constants/pipeline.ts",
-    "src/api/pipeline.ts"
+    "src/api/pipeline.ts",
+    "src/api/types.ts",
+    "src/api/control.ts",
+    "src/api/agentActivity.ts",
+    "src/api/strengthJobs.ts",
+    "src/domain/agentActivityView.ts",
+    "src/domain/strengthJobView.ts",
+    "src/domain/evidenceAuthority.ts",
+    "src/domain/failureRecoveryView.ts"
   ]
 }
