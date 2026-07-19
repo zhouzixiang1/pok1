@@ -361,6 +361,70 @@ def test_identity_replan_checkpoint_cas_failure_restores_exact_preimage(
     assert hash_path(candidate) == retried["prepared_artifact_hash"]
 
 
+def test_identity_replan_cas_loser_never_rolls_back_advanced_master(
+    tmp_path,
+    monkeypatch,
+):
+    """A stale recovery cannot destroy bytes already owned by a successor."""
+
+    import evolution_infra
+    import tool_planning
+    from bot_artifact import hash_path
+
+    checkpoint, source, candidate, prepared_contract = _legacy_replan_fixture(
+        tmp_path
+    )
+    original_hash = hash_path(candidate)
+    successor = deepcopy(checkpoint)
+    successor["checkpoint_revision"] = 12
+    successor["stage"] = "master_planned"
+    successor["master_plan"] = {
+        "tasks": [{"worker_id": "successor-master"}],
+    }
+    successor["audit_context"] = {
+        "prepared_artifact_contract": deepcopy(prepared_contract),
+        "architecture_policy_identity_replan": {
+            "schema_version": 2,
+            "kind": "single-parent-architecture-policy-identity-replan-v2",
+            "prepared_artifact_hash": prepared_contract[
+                "prepared_artifact_hash"
+            ],
+        },
+    }
+    monkeypatch.setattr(evolution_infra, "RESULTS_DIR", tmp_path / "results")
+    monkeypatch.setattr(
+        tool_planning,
+        "write_pipeline_checkpoint",
+        lambda *_a, **_k: False,
+    )
+    monkeypatch.setattr(
+        tool_planning,
+        "_matching_checkpoint",
+        lambda *_a: deepcopy(successor),
+    )
+    monkeypatch.setattr(tool_planning, "log_system_event", lambda *_a, **_k: None)
+
+    result = _payload(
+        tool_planning._recover_persisted_architecture_policy_identity_replan(
+            checkpoint,
+            candidate,
+            source,
+        )
+    )
+
+    assert result["error"] == (
+        "ARCHITECTURE_POLICY_IDENTITY_REPLAN_"
+        "CHECKPOINT_CONCURRENTLY_ADVANCED"
+    )
+    assert result["expected_checkpoint_revision"] == 10
+    assert result["current_checkpoint_revision"] == 12
+    assert result["current_checkpoint_stage"] == "master_planned"
+    assert result["candidate_forward_preserved"] is True
+    assert result["candidate_preimage_restored"] is False
+    assert hash_path(candidate) == prepared_contract["prepared_artifact_hash"]
+    assert hash_path(candidate) != original_hash
+
+
 def test_identity_replan_rejects_forged_legacy_receipt_without_mutation(
     tmp_path,
     monkeypatch,

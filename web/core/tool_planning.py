@@ -5672,11 +5672,30 @@ def _materialize_identity_replan_candidate(
                 "architecture_policy_identity_replan"
             )
         )
+        current_replan_unsigned = (
+            {
+                key: value
+                for key, value in current_replan.items()
+                if key != "receipt_digest"
+            }
+            if isinstance(current_replan, dict)
+            else {}
+        )
         if (
             current.get("stage") == "direction_audited"
             and current_prepared == prepared_contract
             and isinstance(current_replan, dict)
             and current_replan.get("schema_version") == 2
+            and current_replan.get("receipt_digest")
+            == canonical_digest(current_replan_unsigned)
+            and current_replan.get("prepared_artifact_hash")
+            == prepared_hash
+            and current_replan.get("prepared_artifact_contract_digest")
+            == prepared_contract.get("contract_digest")
+            and current_replan.get("target_identity_refreshed") is True
+            and current_replan.get("stale_worker_gate_identity_cleared") is True
+            and str(current.get("workflow_run_id") or "")
+            == str(ckpt.get("workflow_run_id") or "")
             and hash_path(next_dir) == prepared_hash
         ):
             return _json_tool_result({
@@ -5686,6 +5705,49 @@ def _materialize_identity_replan_candidate(
                 "next_v": next_v,
                 "source_v": source_v,
                 "next_tool": "run_master",
+            })
+        # Candidate and checkpoint publication are two fenced CAS operations,
+        # not one filesystem transaction.  Rollback is safe only while the
+        # checkpoint authority is still the exact preimage this invocation
+        # read.  A concurrent recovery may have published revision N+1 and a
+        # second run_master may already have bound the prepared bytes in N+2;
+        # rolling those bytes back merely because N+2 is no longer the
+        # direction_audited idempotency shape would corrupt the successor.
+        checkpoint_preimage_unchanged = current == ckpt
+        if not checkpoint_preimage_unchanged:
+            return _json_tool_result({
+                "error": (
+                    "ARCHITECTURE_POLICY_IDENTITY_REPLAN_"
+                    "CHECKPOINT_CONCURRENTLY_ADVANCED"
+                ),
+                "failure_class": "control_plane",
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "candidate_forward_preserved": (
+                    hash_path(next_dir) == prepared_hash
+                ),
+                "candidate_preimage_restored": False,
+                "expected_checkpoint_revision": int(
+                    ckpt.get("checkpoint_revision") or 0
+                ),
+                "current_checkpoint_revision": current.get(
+                    "checkpoint_revision"
+                ),
+                "expected_checkpoint_stage": old_stage,
+                "current_checkpoint_stage": current.get("stage"),
+                "expected_workflow_run_id": str(
+                    ckpt.get("workflow_run_id") or ""
+                ),
+                "current_workflow_run_id": str(
+                    current.get("workflow_run_id") or ""
+                ),
+                "directive": (
+                    "Checkpoint authority changed after candidate content-CAS. "
+                    "The forward prepared bytes were preserved because a "
+                    "successor may already bind them. Re-read the canonical "
+                    "route; never roll back or edit the candidate by hand."
+                ),
             })
         if materialization.installed and current_hash != prepared_hash:
             rollback_id = f"{operation_id}-rollback"
