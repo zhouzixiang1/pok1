@@ -4832,3 +4832,58 @@ slot and extra-slot negatives, found no remaining P0/P1. Commit/push,
 stopped-runtime sync, recovery diagnostics and the resumed live v147 result
 remain pending and will be recorded in a later entry. Stability is still
 **0/10**.
+
+## 2026-07-19 — v147 Master recovery accepted; Worker retry layering exposed
+
+The reviewed Master repair was committed as
+`b7a83fbbca3a41392e8c5cdcc2ceb00d4ce3386c`, pushed to `origin/main`,
+and fast-forwarded into the stopped autonomous checkout. The pre-sync
+checkpoint SHA-256
+`c9c91af13a71a84f44989f82021f8b53492a68e178f9c7e7e97ad378542974af`
+remained byte-identical through synchronization. Read-only recovery reported
+`active=true`, `recoverable=true`, `issues=[]`; evaluation identity remained
+`2ddf96c996a457f189db5c74b2694460e69206298ae87a402755d51052cd0bbb`,
+official doctor was green, and the source-bound frontend receipt verified.
+The controlled restart started Web PID 46526 and Elo PID 57098 and reset the
+stability observation to **0/10**. The observer helper's initial health wait
+timed out, but the owned services remained alive and subsequent authoritative
+health returned `overall=healthy`, `issues=[]`; this was a slow read-only
+projection, not a runtime or checkpoint failure.
+
+Live v147 then created one `strict-authority-v3` run. All three first Scout
+outputs were deterministically schema-rejected, and each single permitted
+schema repair succeeded. The three Scout effects, two anonymous ballots and
+final Master effect all completed and were accepted; the five pre-final
+invocation logs were content-bound. At 22:00:32+08:00 the checkpoint advanced
+from `direction_audited` revision 7 to `master_planned` revision 8 with SHA-256
+`92076d600fc144d36174cdd1aaabd2664e9fd652da2f16c0413638e4f5dbd511`.
+The inherited `master_llm attempt=2/3` overlay was atomically removed, no label
+was abandoned, and only the selected Worker contract started. This is the
+first live proof of the partial-ensemble repair; it is not Bot publication or
+strength evidence.
+
+Worker execution exposed the next liveness defect. One durable Worker effect
+permits three attempts, but each attempt currently contains four hidden
+provider retries. v147 attempt 1 therefore performed four approximately
+193--200 second calls, each ending in confirmed-process-exit
+`stream_next_cancellation_unconfirmed`, before the journal wrote one
+`EffectFailed`. Attempt 2 then began the same inner loop. Thus automatic
+recovery is bounded rather than infinite, but the effective 3x4 retry product
+is too expensive and inner retries are absent from checkpoint/UI attempt
+projection. More importantly, an operator SIGTERM during an active Worker is
+not attempt-neutral: cancellation reaches the durable `execution_failed`
+transition, can consume the remaining effect attempt, and on attempt 3 can
+exhaust the generation. The runtime must not be stopped until Worker terminal
+projection and child-process absence are proven.
+
+Source-side follow-up gives a productive Worker the full 360-second idle/stall
+window while retaining the 180-second no-first-output gate and 1,000-second
+total ceiling. It passes 57 focused tests and the full Web suite (`3812 passed,
+5 skipped`), but remains uncommitted/uninstalled while v147 attempt 2 is live.
+An attempt-neutral operator-interruption transition and its crash/restart
+regressions are under isolated review. The dashboard latency root cause is also
+confirmed: synchronous strict-epoch/remote-publication projection from
+`/api/evolution/state` and SSE can block the ASGI loop after the five-second
+remote cache expires; concurrent live timings reached 10--25 seconds. That
+read path must be isolated/cached without allowing stale evidence to authorize
+Start or publication.

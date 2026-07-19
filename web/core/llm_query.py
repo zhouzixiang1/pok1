@@ -4367,8 +4367,11 @@ _ROLE_TIMEOUT_DEFAULTS = {
     # endpoints. Keep the idle ceiling, but give total wall-clock enough room so
     # a live stream is not killed and restarted at ~15 minutes.
     "CROSSOVER": (240.0, 420.0, 2400.0),
-    # Workers already have an outer WORKER_TIMEOUT. Idle timeout catches stalled
-    # streams inside that larger wall-clock budget.
+    # Workers already have an outer WORKER_TIMEOUT. Live v147 showed legitimate
+    # Read/tool reasoning repeatedly crossing the generic 180s mid-loop stall
+    # ceiling: four provider streams were restarted from the same frozen prompt
+    # before any Edit could land. Give a productive Worker the full 360s idle
+    # window while retaining the 180s no-first-output gate and 1000s total cap.
     "WORKER": (180.0, 360.0, 1000.0),
 }
 
@@ -4444,10 +4447,14 @@ def _role_timeout_policy(role_name: str) -> dict:
     # slow tool/think deltas. 0 disables (falls back to idle_timeout).
     stall_default = (
         360.0
-        if key == "MASTER_PROPOSAL"
+        if key in {"MASTER_PROPOSAL", "WORKER"}
         else 240.0 if key == "MASTER_FINAL" else 0.0
     )
-    if idle > 0 and key not in {"MASTER_FINAL", "MASTER_PROPOSAL"}:
+    if idle > 0 and key not in {
+        "MASTER_FINAL",
+        "MASTER_PROPOSAL",
+        "WORKER",
+    }:
         stall_default = max(60.0, min(180.0, idle * 0.55))
     stall = _env(prefix + "STALL_TIMEOUT", stall_default)
     return {

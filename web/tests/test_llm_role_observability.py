@@ -1282,6 +1282,26 @@ def test_final_master_has_independent_bounded_silence_policy(monkeypatch):
     }
 
 
+def test_worker_productive_tool_loop_uses_full_bounded_idle_window(monkeypatch):
+    for suffix in (
+        "FIRST_ACTIVITY_TIMEOUT",
+        "IDLE_TIMEOUT",
+        "STALL_TIMEOUT",
+        "TOTAL_TIMEOUT",
+    ):
+        monkeypatch.delenv(f"POK_LLM_WORKER_{suffix}", raising=False)
+
+    assert llm_query._role_timeout_policy(
+        "WORKER 1 (Algorithmic Logic Architect)"
+    ) == {
+        "policy_key": "WORKER",
+        "first_activity_timeout": 180.0,
+        "idle_timeout": 360.0,
+        "stall_timeout": 360.0,
+        "total_timeout": 1000.0,
+    }
+
+
 def test_master_proposal_timeout_override_precedence_and_legacy_fallback(
     monkeypatch,
 ):
