@@ -868,6 +868,68 @@ That proves the dependencies for five 70-hand self-play rounds plus three
 exact v143 checkpoint reaches `official_bootstrap_required`, bootstrap remains
 locked.
 
+### Current workflow-v63 causal-order recovery boundary
+
+As of 2026-07-19 the autonomous checkout is deliberately stopped at exact
+source `2bda867cae191255c2d7b3f64d7cd2b666241778`.  Its byte-preserved checkpoint
+is `generation:143:workflow-v63`, revision 21,
+`official_bootstrap_required`, for candidate artifact
+`f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+There is no published strict Bot, certificate, `.completed`, annotated v143
+tag, active rating pool, or stability credit; the observation remains
+**0/10**.  Do not start Web, Orchestrator, the rating daemon, or another
+official worker while the following recovery extension and exact claim are
+unfinished.
+
+Official job
+`137b9f75a47b0221be1beb6e04b5a03ebef6aba2a2b1d664a5ffd8f16159a09b`
+ran all eight requested executions under the old append-order wire replay and
+terminalized as `official-failed`.  Its signed ledger classification remains
+`protocol`, `authoritative=true`, and `blocking=true`.  Those immutable bytes
+must not be edited or re-labelled as inconclusive, non-authoritative, passed,
+or superseded.  The job produced no certificate and successful-control
+consumption remains `0/1`.
+
+The permitted diagnosis is narrower than a verdict rewrite.  For each of the
+eight exact execution receipts, bind the receipt, raw wire JSONL and stored
+summary digests; require legacy records with no causal-envelope fields; then
+reconstruct parser order only from the recorded raw bytes and their proven
+observation sequence.  Across the eight executions the old append-order
+summaries contain exactly ten `illegal_call` and/or
+`unsolicited_client_action` issues.  Correct causal replay removes all ten and
+leaves no replay issue or warning, but every execution was terminated before
+a complete formal round.  Therefore this proof establishes only that the
+recorded protocol attribution was caused by the old recorder/replay ordering.
+It establishes **neither** an official pass, a complete 70-hand result, native
+strength, certificate eligibility, nor permission to consume the first-strict
+control.  Downstream missing-THP/terminal-socket consequences cannot be
+promoted after the fact.
+
+The only allowed transition is a reviewed, content-bound terminal mode such
+as `legacy_causal_order_false_failure`: stopped-runtime diagnosis → exact
+external claim → canonical workflow/strict-authority fence → schema-2
+quarantine and abandon/finalize receipts → checkpoint clearance.  The old
+official-failed ledger, job and raw evidence remain immutable audit history.
+Generic abandon, manual checkpoint deletion, candidate copying, status edits,
+job reuse and receipt reinterpretation remain forbidden.  A fresh v143 must
+then re-run Master/Worker/Quality/Review/Critic/native precommit and a newly
+created full 5+3×70 official bootstrap under the causal raw-replay contract;
+none of the eight old executions can satisfy a new gate.
+
+The stopped-runtime source closure is detached commit
+`e16d49adc1e9ecb9d0534e4c62e9b2fd2fc7b30b`.  It accepts only the exact
+workflow-v63 incident: all eight round envelopes equal the signed status
+envelope; receipt/raw/stored-summary identities and the observed issue vector
+are exact; the final two records are the A/B client EOF pair; event/stored
+counts, incomplete hand/settlement counts and the sole pending action match
+the captured rounds.  Its live read-only rebuild produced diagnosis proof
+`e810bbebd7beee278bb6ff3675ab162e4ff7c2c1782de76c55b56012d47c3464`.
+Independent review found no remaining P0/P1/P2.  Verification is 68 focused,
+318 adjacent, full Web `3547 passed, 20 skipped`, and Sever `33 passed`, with
+active-source compile and `git diff --check` green.  Merge, exact final-HEAD
+dry-run claim and acknowledged execute remain pending at this boundary, so
+these results do not yet claim recovery, restart or Bot publication.
+
 ## Second bot and rating readiness
 
 v144 and later candidates use normal `official-full-v5`: five 70-hand

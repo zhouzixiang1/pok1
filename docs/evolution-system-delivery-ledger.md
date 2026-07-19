@@ -4422,3 +4422,68 @@ reopens the finalized migration proof before treating the old job as
 historical. It requires the exact old job/result, signed ledger row, canonical
 abandon finalize receipt and quarantined old artifact; drift keeps the old job
 related-invalid rather than silently ignoring evidence.
+
+## 2026-07-19 — workflow-v63 8/8 append-order false wire attribution
+
+The later fresh first-strict attempt is
+`generation:143:workflow-v63`, revision 21, parked at
+`official_bootstrap_required` with candidate artifact
+`f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50`.
+The autonomous checkout is stopped and tracked-clean at
+`2bda867cae191255c2d7b3f64d7cd2b666241778`; no Web, Orchestrator, rating
+daemon, official worker, Wine or Xvfb process owns this transition.  There are
+zero published strict Bots, no v143 certificate, `.completed` marker or
+annotated publication tag, no rating pool, and stability remains **0/10**.
+
+Official bootstrap job
+`137b9f75a47b0221be1beb6e04b5a03ebef6aba2a2b1d664a5ffd8f16159a09b`
+completed all eight requested executions under the old append-order replay.
+The immutable signed row says `outcome=official-failed`,
+`classification=protocol`, `authoritative=true`, and `blocking=true`; its
+certificate digest is empty and successful-control consumption remains
+`0/1`.  That row, the terminal job/status/result, round receipts and raw wire
+logs are retained byte-for-byte.  They are not rewritten as
+`official-inconclusive`, marked non-authoritative, deleted, or hidden by a new
+status projection.
+
+A content-bound diagnostic over the exact eight round receipts and their raw
+wire logs found ten stored append-order replay issues.  Their kinds are only
+`illegal_call` and `unsolicited_client_action`.  Reconstructing each parser
+transition from raw bytes in causal observation order removes all ten, leaves
+zero corrected replay issues/warnings and no pending raw UTF-8 buffer, and
+leaves each candidate wait below the official 60-second timeout.  This proves
+the ten candidate-attributed protocol findings were recorder/replay ordering
+artifacts.  It does **not** complete any execution: the old harness already
+terminated the rounds, strict THP/final socket proof is absent downstream, and
+the diagnostic cannot manufacture the unobserved remainder.  It therefore
+has zero pass, strength, certificate, control-consumption, publication, H2H,
+rating or stability authority.
+
+The proposed recovery extension must accept this as a second, explicit
+terminal mode rather than weakening the earlier 0/8 inconclusive path.  Its
+claim must bind the old HEAD and probe identity, checkpoint/candidate/job and
+ledger identities, all eight receipt/raw/stored/corrected-summary hashes, the
+exact old issue-kind set, zero corrected issues/warnings, incomplete-round
+boundary, consumption `0/1`, and absence of certificate/tag/`.completed`/pool.
+Every negative drift must preserve the parked checkpoint.  If and only if that
+claim validates, the existing canonical owner may fence both workflows,
+quarantine the exact candidate and publish schema-2 abandon/finalize receipts;
+the old official-failed evidence remains immutable audit history.
+
+After the controlled transaction, fresh v143 must start from a newly prepared
+identity and reproduce every deterministic/LLM/native gate plus an entirely
+new 5 self-play + 3 system-control × 70-hand official run.  No old execution,
+causal diagnostic or downstream partial evidence is reusable.
+
+The source closure is detached commit
+`e16d49adc1e9ecb9d0534e4c62e9b2fd2fc7b30b`.  It fixes the incident profile
+to the exact eight status/round job envelopes, raw/receipt/summary identities,
+issue distribution, final A/B client EOF pair, event/stored-event vector,
+incomplete hand/settlement vector and one pending action per round.  The live
+read-only rebuild produced proof
+`e810bbebd7beee278bb6ff3675ab162e4ff7c2c1782de76c55b56012d47c3464`.
+Independent review returned APPROVE with no remaining P0/P1/P2.  Verification:
+68 focused; 318 adjacent; full Web `3547 passed, 20 skipped`; Sever `33
+passed`; active-source compile and `git diff --check` green.  Merge, runtime
+sync, the final-HEAD dry-run claim and acknowledged execute remain pending.
+This entry therefore still does not claim v143 recovery or publication.
