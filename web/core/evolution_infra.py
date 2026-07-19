@@ -1324,6 +1324,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                worker_invocation_count=None,
                                parent2_v=None, direction_audit=None,
                                audit_context=None, reset_generation_attempt=False,
+                               replace_audit_context=False,
+                               audit_context_replacement_reason=None,
                                audit_attempt=None, reset_audit_attempt=False,
                                precommit_attempt=None, reset_precommit_attempt=False,
                                precommit_rework_count=None,
@@ -1337,6 +1339,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                official_job=None, clear_official_job=False,
                                expected_official_job_id=None,
                                repair_baseline_artifact_hash=None,
+                               clear_repair_baseline_artifact_hash=False,
                                reset_runtime_contract_ledger=False,
                                expected_runtime_contract_ledger_digest=None,
                                runtime_contract_ledger_reset_reason=None,
@@ -1651,6 +1654,87 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         if timeout_extensions is not None:
             existing_timeout_extensions = int(timeout_extensions)
 
+        old_stage_for_replacement = (
+            existing.get("stage") if isinstance(existing, dict) else None
+        )
+        identity_replan_replacement = bool(
+            audit_context_replacement_reason
+            == "architecture_policy_identity_replan"
+            and stage == "direction_audited"
+            and old_stage_for_replacement in {
+                "quality_failed",
+                "repair_planned",
+                "rework_running",
+                "direction_audited",
+            }
+        )
+        destructive_identity_reset = bool(
+            replace_audit_context or clear_repair_baseline_artifact_hash
+        )
+        if destructive_identity_reset:
+            if not identity_replan_replacement:
+                log.error(
+                    "Checkpoint destructive field reset is not an authorized "
+                    "architecture policy identity replan"
+                )
+                return False
+            replacement = audit_context if isinstance(audit_context, dict) else {}
+            replan = replacement.get("architecture_policy_identity_replan")
+            prepared = replacement.get("prepared_artifact_contract")
+            stale_keys = {
+                "strict_policy_identity_refresh",
+                "durable_worker_output",
+                "durable_worker_failure",
+                "worker_execution_failed_replan",
+                "quality_native_match_timing_plan",
+                "quality_native_match_timing_plan_digest",
+                "precommit_eval_plan",
+            }
+            try:
+                from bot_artifact import canonical_digest
+
+                replan_unsigned = {
+                    key: value for key, value in (replan or {}).items()
+                    if key != "receipt_digest"
+                }
+                prepared_unsigned = {
+                    key: value for key, value in (prepared or {}).items()
+                    if key != "contract_digest"
+                }
+                replacement_contract_valid = bool(
+                    replace_audit_context
+                    and clear_repair_baseline_artifact_hash
+                    and master_plan == {}
+                    and isinstance(replan, dict)
+                    and replan.get("schema_version") == 2
+                    and replan.get("kind")
+                    == "single-parent-architecture-policy-identity-replan-v2"
+                    and replan.get("receipt_digest")
+                    == canonical_digest(replan_unsigned)
+                    and replan.get("target_identity_refreshed") is True
+                    and replan.get("stale_worker_gate_identity_cleared") is True
+                    and isinstance(prepared, dict)
+                    and prepared.get("contract_digest")
+                    == canonical_digest(prepared_unsigned)
+                    and prepared.get("prepared_artifact_hash")
+                    == replan.get("prepared_artifact_hash")
+                    and prepared.get("contract_digest")
+                    == replan.get("prepared_artifact_contract_digest")
+                    and not stale_keys.intersection(replacement)
+                    and existing_parent2_v is None
+                    and existing_publication_intent is None
+                    and existing_official_job is None
+                    and existing_infra_failure is None
+                )
+            except Exception:
+                replacement_contract_valid = False
+            if not replacement_contract_valid:
+                log.error(
+                    "Checkpoint architecture identity replan replacement "
+                    "contract is invalid"
+                )
+                return False
+
         if gate_results:
             existing_gate_results.update(gate_results)
         if review_attempt_journal is not None:
@@ -1674,7 +1758,12 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_failure_count = worker_invocation_count
         if direction_audit is not None:
             existing_direction_audit = direction_audit
-        if audit_context is not None:
+        if replace_audit_context:
+            if not isinstance(audit_context, dict):
+                log.error("Audit context replacement requires an object")
+                return False
+            existing_audit_context = deepcopy(audit_context)
+        elif audit_context is not None:
             existing_audit_context.update(audit_context)
         if existing_epoch_binding is None:
             try:
@@ -1714,7 +1803,14 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                     if str(item).strip()
                 ),
             })
-        if repair_baseline_artifact_hash is not None:
+        if clear_repair_baseline_artifact_hash:
+            if repair_baseline_artifact_hash is not None:
+                log.error(
+                    "Repair baseline clear cannot carry a replacement hash"
+                )
+                return False
+            existing_repair_baseline_artifact_hash = None
+        elif repair_baseline_artifact_hash is not None:
             repair_hash = str(repair_baseline_artifact_hash).strip()
             if not re.fullmatch(r"[0-9a-f]{64}", repair_hash):
                 log.error("Invalid repair baseline artifact hash")

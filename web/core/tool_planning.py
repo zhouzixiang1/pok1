@@ -11,8 +11,10 @@ import re
 import hashlib
 import shutil
 import stat
+import tempfile
 import time
 import tokenize
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -2945,6 +2947,44 @@ async def run_master(args):
     )
     if _master_exhausted is not None:
         return _json_tool_result(_master_exhausted)
+    if isinstance(_master_entry_ckpt, dict):
+        try:
+            persisted_identity_recovery = (
+                _recover_persisted_architecture_policy_identity_replan(
+                    _master_entry_ckpt,
+                    get_bot_dir(next_v),
+                    get_bot_dir(source_v),
+                )
+            )
+        except Exception as exc:
+            log_system_event(
+                "pipeline.architecture_policy_identity_replan_recovery_failed",
+                "error",
+                (
+                    f"Could not recover persisted identity replan for v{next_v}: "
+                    f"{type(exc).__name__}: {str(exc)[:240]}"
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": _master_entry_ckpt.get("stage"),
+                },
+            )
+            return _json_tool_result({
+                "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_RECOVERY_FAILED",
+                "failure_class": "control_plane",
+                "action": "operator_reconcile",
+                "next_v": next_v,
+                "source_v": source_v,
+                "message": f"{type(exc).__name__}: {str(exc)[:300]}",
+                "directive": (
+                    "The journaled identity migration did not close. Retry "
+                    "run_master to recover the same content-CAS operation; do "
+                    "not edit the checkpoint or candidate directory by hand."
+                ),
+            })
+        if persisted_identity_recovery is not None:
+            return persisted_identity_recovery
     if (
         isinstance(_master_entry_ckpt, dict)
         and _master_entry_ckpt.get("stage") == "direction_audited"
@@ -5262,17 +5302,440 @@ def _cleanup_worker_transients_before_identity_refresh(next_dir):
     )
 
 
-def _full_reset_next_dir(next_dir, source_dir):
-    """Restore an invalid-policy candidate exactly from its authoritative source."""
-    from evolution_infra import copy_bot_tree_for_candidate
+_IDENTITY_REPLAN_AUDIT_KEYS = frozenset({
+    "selection",
+    "master_context",
+    "protocol_bootstrap",
+    "protocol_bootstrap_prepare",
+})
+_LEGACY_IDENTITY_REPLAN_KEYS = frozenset({
+    "source_stage",
+    "identity_errors",
+    "candidate_reset_to_source",
+    "runtime_contract_ledger_reset",
+    "previous_runtime_contract_ledger_digest",
+    "directive",
+})
+
+
+def _identity_replan_operation_id(ckpt, prepared_hash: str) -> str:
+    payload = {
+        "workflow_run_id": str(ckpt.get("workflow_run_id") or ""),
+        "checkpoint_revision": int(ckpt.get("checkpoint_revision") or 0),
+        "source_v": int(ckpt.get("source_v")),
+        "next_v": int(ckpt.get("next_v")),
+        "prepared_artifact_hash": str(prepared_hash),
+    }
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    # A completed forward projection may be rolled back when checkpoint CAS
+    # loses.  Its immutable completion receipt must never be reused for a later
+    # forward retry, because that receipt correctly proves that *that* exchange
+    # already finished.  A fresh suffix creates a new content-CAS operation;
+    # an actual crash inside an unfinished exchange is still recovered first by
+    # WorkerArtifactStore's destination journal.
+    return (
+        f"identity-replan-{int(ckpt['next_v'])}-{digest}-"
+        f"{uuid.uuid4().hex[:12]}"
+    )
+
+
+def _legacy_identity_replan_receipt_errors(
+    ckpt,
+    *,
+    source_hash: str,
+    current_hash: str,
+    prepared_contract: dict,
+) -> list[str]:
+    """Validate the exact post-540a broken-state recovery preimage.
+
+    The retired reset wrote no digest of its own.  Recovery therefore accepts
+    it only when every independently checkable boundary agrees: the checkpoint
+    is the empty Direction replan, the candidate is either the exact copied
+    parent or the deterministic target-version preparation, and the old
+    prepared contract is byte-for-byte the one rebuilt from that parent.
+    """
+
+    errors: list[str] = []
+    audit = ckpt.get("audit_context") or {}
+    receipt = audit.get("architecture_policy_identity_replan")
+    if not isinstance(receipt, dict):
+        return ["identity_replan_receipt_missing_or_not_object"]
+    if set(receipt) != _LEGACY_IDENTITY_REPLAN_KEYS:
+        errors.append("identity_replan_receipt_fields_mismatch")
+    if receipt.get("source_stage") not in {
+        "quality_failed",
+        "repair_planned",
+        "rework_running",
+    }:
+        errors.append("identity_replan_source_stage_invalid")
+    identity_errors = receipt.get("identity_errors")
+    if (
+        not isinstance(identity_errors, list)
+        or not identity_errors
+        or any(not isinstance(item, str) or not item for item in identity_errors)
+    ):
+        errors.append("identity_replan_policy_errors_invalid")
+    if receipt.get("candidate_reset_to_source") is not True:
+        errors.append("identity_replan_parent_reset_not_proven")
+    if receipt.get("runtime_contract_ledger_reset") is not True:
+        errors.append("identity_replan_ledger_reset_not_proven")
+    prior_ledger = str(receipt.get("previous_runtime_contract_ledger_digest") or "")
+    if prior_ledger and re.fullmatch(r"[0-9a-f]{64}", prior_ledger) is None:
+        errors.append("identity_replan_previous_ledger_digest_invalid")
+    if ckpt.get("stage") != "direction_audited":
+        errors.append("identity_replan_checkpoint_stage_invalid")
+    if ckpt.get("parent2_v") is not None:
+        errors.append("identity_replan_crossover_forbidden")
+    if ckpt.get("master_plan") not in ({}, None):
+        errors.append("identity_replan_master_plan_not_empty")
+    if ckpt.get("runtime_contract_ledger") is not None:
+        errors.append("identity_replan_runtime_contract_ledger_not_cleared")
+    if ckpt.get("gate_results") not in ({}, None):
+        errors.append("identity_replan_gate_results_not_cleared")
+    if ckpt.get("publication_intent") is not None:
+        errors.append("identity_replan_publication_intent_present")
+    if ckpt.get("official_job") is not None:
+        errors.append("identity_replan_official_job_present")
+    if ckpt.get("infra_failure") is not None:
+        errors.append("identity_replan_infrastructure_overlay_present")
+    if current_hash not in {
+        str(source_hash),
+        str(prepared_contract.get("prepared_artifact_hash") or ""),
+    }:
+        errors.append("identity_replan_candidate_preimage_mismatch")
+    if audit.get("prepared_artifact_contract") != prepared_contract:
+        errors.append("identity_replan_prepared_contract_not_reproducible")
+    return list(dict.fromkeys(errors))
+
+
+def _materialize_identity_replan_candidate(
+    ckpt,
+    next_dir,
+    source_dir,
+    *,
+    recover_persisted_reset: bool,
+):
+    """Rebuild and publish one single-parent prepared identity transaction.
+
+    Candidate bytes are projected with the existing journaled
+    ``RENAME_EXCHANGE`` content CAS.  The checkpoint then uses its independent
+    revision/stage/workflow CAS.  If that second CAS loses, the exact immutable
+    preimage is restored; a crash inside an unfinished exchange is recovered
+    from the destination journal before a fresh forward operation is opened.
+    """
+
+    from bot_artifact import canonical_digest, hash_path
+    from bot_namespace import (
+        POLICY_EPOCH_RECEIPT,
+        policy_identity_document_errors,
+        refresh_policy_identity_documents,
+        strict_lineage_parent_versions,
+    )
+    from candidate_hygiene import sanitize_candidate_dir
+    from evolution_infra import RESULTS_DIR, copy_bot_tree_for_candidate
+    from prepared_baseline_contract import build_prepared_artifact_contract
+    from worker_workflow import WorkerArtifactStore
 
     next_dir = Path(next_dir)
     source_dir = Path(source_dir)
-    if not source_dir.is_dir():
-        raise FileNotFoundError(f"source bot directory missing: {source_dir}")
-    if next_dir.exists():
-        shutil.rmtree(next_dir)
-    copy_bot_tree_for_candidate(source_dir, next_dir)
+    next_v = int(ckpt.get("next_v"))
+    source_v = int(ckpt.get("source_v"))
+    if ckpt.get("parent2_v") is not None:
+        raise RuntimeError("identity replan cannot reconstruct crossover lineage")
+    if not source_dir.is_dir() or source_dir.is_symlink():
+        raise RuntimeError("identity replan source is missing or nonregular")
+    if not next_dir.is_dir() or next_dir.is_symlink():
+        raise RuntimeError("identity replan candidate is missing or nonregular")
+    if (
+        ckpt.get("publication_intent") is not None
+        or ckpt.get("official_job") is not None
+        or ckpt.get("infra_failure") is not None
+    ):
+        raise RuntimeError("identity replan has an incompatible durable overlay")
+
+    try:
+        source_receipt = json.loads(
+            (source_dir / POLICY_EPOCH_RECEIPT).read_text(encoding="utf-8")
+        )
+        source_parents = tuple(
+            int(item)
+            for item in ((source_receipt.get("lineage") or {}).get("parent_versions") or [])
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"identity replan source receipt unavailable:{type(exc).__name__}"
+        ) from exc
+    source_identity_errors = policy_identity_document_errors(
+        source_dir,
+        source_v,
+        parent_versions=source_parents,
+    )
+    if source_identity_errors:
+        raise RuntimeError(
+            "identity replan source identity invalid:"
+            + ";".join(source_identity_errors[:8])
+        )
+    source_hash = hash_path(source_dir)
+    parent_identities = (
+        (ckpt.get("epoch_binding") or {}).get("published_parent_identities")
+        or []
+    )
+    source_bindings = [
+        item
+        for item in parent_identities
+        if isinstance(item, dict) and item.get("version") == source_v
+    ]
+    if (
+        len(source_bindings) != 1
+        or source_bindings[0].get("tag_artifact_hash") != source_hash
+    ):
+        raise RuntimeError("identity replan source tag artifact binding mismatch")
+
+    next_dir.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=f".{next_dir.name}.identity-replan-build-",
+        dir=next_dir.parent,
+    ) as temporary:
+        staged_dir = Path(temporary) / next_dir.name
+        copy_bot_tree_for_candidate(source_dir, staged_dir)
+        lineage = strict_lineage_parent_versions(next_v, source_v, None)
+        refreshed_identity = refresh_policy_identity_documents(
+            staged_dir,
+            next_v,
+            parent_versions=lineage,
+        )
+        sanitize_candidate_dir(staged_dir, require_native_tcp=True)
+        staged_errors = policy_identity_document_errors(
+            staged_dir,
+            next_v,
+            parent_versions=lineage,
+        )
+        if staged_errors:
+            raise RuntimeError(
+                "identity replan target identity invalid:"
+                + ";".join(staged_errors[:8])
+            )
+        prepared_contract = build_prepared_artifact_contract(
+            staged_dir,
+            source_v=source_v,
+            next_v=next_v,
+        )
+        prepared_hash = str(prepared_contract["prepared_artifact_hash"])
+        current_hash = hash_path(next_dir)
+        if recover_persisted_reset:
+            legacy_errors = _legacy_identity_replan_receipt_errors(
+                ckpt,
+                source_hash=source_hash,
+                current_hash=current_hash,
+                prepared_contract=prepared_contract,
+            )
+            if legacy_errors:
+                return _json_tool_result({
+                    "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_RECOVERY_INVALID",
+                    "failure_class": "state_migration",
+                    "action": "operator_reconcile",
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "validation_errors": legacy_errors,
+                    "candidate_overwritten": False,
+                    "directive": (
+                        "The persisted identity-replan preimage is not the exact "
+                        "legacy transaction produced by the system. Preserve all "
+                        "bytes and use canonical checkpoint reconciliation; never "
+                        "rewrite JSON or copy a parent by hand."
+                    ),
+                })
+
+        artifact_store = WorkerArtifactStore(
+            Path(RESULTS_DIR) / "workflow" / "artifacts"
+        )
+        preimage_snapshot = artifact_store.capture(next_dir)
+        prepared_snapshot = artifact_store.capture(staged_dir)
+        if preimage_snapshot != current_hash or prepared_snapshot != prepared_hash:
+            raise RuntimeError("identity replan immutable snapshot mismatch")
+
+    operation_id = _identity_replan_operation_id(ckpt, prepared_hash)
+    materialization = artifact_store.materialize(
+        prepared_snapshot,
+        next_dir,
+        expected_destination_digest=current_hash,
+        operation_id=operation_id,
+    )
+    if hash_path(next_dir) != prepared_hash:
+        raise RuntimeError("identity replan materialization hash mismatch")
+
+    prior_audit = ckpt.get("audit_context") or {}
+    policy_errors = (
+        (prior_audit.get("architecture_policy_identity_replan") or {}).get(
+            "identity_errors"
+        )
+        if recover_persisted_reset
+        else _checkpoint_architecture_policy_identity_errors(ckpt)
+    ) or []
+    replan_receipt = {
+        "schema_version": 2,
+        "kind": "single-parent-architecture-policy-identity-replan-v2",
+        "source_stage": str(
+            (prior_audit.get("architecture_policy_identity_replan") or {}).get(
+                "source_stage"
+            )
+            if recover_persisted_reset
+            else ckpt.get("stage")
+        ),
+        "recovery_mode": (
+            "legacy_parent_copy_recovery"
+            if recover_persisted_reset
+            else "quality_identity_replan"
+        ),
+        "identity_errors": [str(item) for item in policy_errors],
+        "source_artifact_hash": source_hash,
+        "replaced_artifact_hash": current_hash,
+        "prepared_artifact_hash": prepared_hash,
+        "prepared_artifact_contract_digest": prepared_contract["contract_digest"],
+        "runtime_manifest_digest": refreshed_identity["runtime_manifest_digest"],
+        "epoch_receipt_digest": refreshed_identity["epoch_receipt_digest"],
+        "materialization_operation_id": materialization.operation_id,
+        "materialization_receipt_digest": materialization.receipt_digest,
+        "candidate_reset_to_source": True,
+        "target_identity_refreshed": True,
+        "stale_worker_gate_identity_cleared": True,
+    }
+    replan_receipt["receipt_digest"] = canonical_digest(replan_receipt)
+    replacement_audit = {
+        key: deepcopy(prior_audit[key])
+        for key in _IDENTITY_REPLAN_AUDIT_KEYS
+        if key in prior_audit
+    }
+    replacement_audit.update({
+        "prepared_artifact_contract": prepared_contract,
+        "architecture_policy_identity_replan": replan_receipt,
+    })
+
+    old_stage = str(ckpt.get("stage") or "")
+    reset_ledger = old_stage != "direction_audited"
+    write_kwargs = {}
+    if reset_ledger:
+        write_kwargs = {
+            "reset_runtime_contract_ledger": True,
+            "expected_runtime_contract_ledger_digest": (
+                _checkpoint_runtime_contract_ledger_digest(ckpt)
+            ),
+            "runtime_contract_ledger_reset_reason": (
+                "architecture_policy_identity_replan"
+            ),
+        }
+    written = write_pipeline_checkpoint(
+        next_v,
+        source_v,
+        "direction_audited",
+        master_plan={},
+        direction_audit=ckpt.get("direction_audit"),
+        audit_context=replacement_audit,
+        replace_audit_context=True,
+        audit_context_replacement_reason=(
+            "architecture_policy_identity_replan"
+        ),
+        worker_failure_count=0,
+        clear_reviewer_feedback=True,
+        reset_generation_attempt=True,
+        reset_audit_attempt=True,
+        reset_precommit_attempt=True,
+        precommit_rework_count=0,
+        official_rework_count=0,
+        clear_repair_baseline_artifact_hash=True,
+        touch_stage_timestamp=True,
+        expected_checkpoint_revision=int(ckpt.get("checkpoint_revision") or 0),
+        expected_checkpoint_stage=old_stage,
+        expected_workflow_run_id=str(ckpt.get("workflow_run_id") or ""),
+        **write_kwargs,
+    )
+    if not written:
+        current = _matching_checkpoint(next_v, source_v) or {}
+        current_prepared = (
+            (current.get("audit_context") or {}).get("prepared_artifact_contract")
+        )
+        current_replan = (
+            (current.get("audit_context") or {}).get(
+                "architecture_policy_identity_replan"
+            )
+        )
+        if (
+            current.get("stage") == "direction_audited"
+            and current_prepared == prepared_contract
+            and isinstance(current_replan, dict)
+            and current_replan.get("schema_version") == 2
+            and hash_path(next_dir) == prepared_hash
+        ):
+            return _json_tool_result({
+                "success": True,
+                "recovered": True,
+                "idempotent_checkpoint_projection": True,
+                "next_v": next_v,
+                "source_v": source_v,
+                "next_tool": "run_master",
+            })
+        if materialization.installed and current_hash != prepared_hash:
+            rollback_id = f"{operation_id}-rollback"
+            artifact_store.materialize(
+                preimage_snapshot,
+                next_dir,
+                expected_destination_digest=prepared_hash,
+                operation_id=rollback_id,
+            )
+        return _json_tool_result({
+            "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_CHECKPOINT_CAS_FAILED",
+            "failure_class": "control_plane",
+            "action": "operator_reconcile",
+            "next_v": next_v,
+            "source_v": source_v,
+            "candidate_preimage_restored": hash_path(next_dir) == current_hash,
+        })
+
+    log_system_event(
+        "pipeline.architecture_policy_identity_replan",
+        "error",
+        (
+            f"Rebuilt target-version prepared identity for v{next_v} from "
+            f"strict parent v{source_v}; fresh Master plan required"
+        ),
+        {
+            "next_v": next_v,
+            "source_v": source_v,
+            "source_stage": old_stage,
+            "prepared_artifact_hash": prepared_hash,
+            "prepared_artifact_contract_digest": prepared_contract[
+                "contract_digest"
+            ],
+            "receipt_digest": replan_receipt["receipt_digest"],
+            "legacy_recovery": recover_persisted_reset,
+        },
+    )
+    return _json_tool_result({
+        "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN",
+        "recovered": True,
+        "next_v": next_v,
+        "source_v": source_v,
+        "identity_errors": list(policy_errors),
+        "candidate_reset_to_source": True,
+        "target_identity_refreshed": True,
+        "prepared_artifact_hash": prepared_hash,
+        "prepared_artifact_contract_digest": prepared_contract[
+            "contract_digest"
+        ],
+        "replan_receipt_digest": replan_receipt["receipt_digest"],
+        "next_tool": "run_master",
+        "directive": (
+            "The stale Worker/gate identity was cleared and the exact strict "
+            "parent was rematerialized as a target-version prepared artifact. "
+            "Call run_master again to build a fresh policy-bound plan."
+        ),
+    })
 
 
 def _checkpoint_architecture_policy_identity_errors(ckpt):
@@ -5333,63 +5796,50 @@ def _recover_architecture_policy_identity(ckpt, next_dir, source_dir):
                 "crossover from a fresh selected checkpoint under the current policy."
             ),
         })
-    ledger_digest = _checkpoint_runtime_contract_ledger_digest(ckpt)
-    _full_reset_next_dir(next_dir, source_dir)
-    existing_audit = ckpt.get("audit_context") or {}
-    audit_context = {
-        **(existing_audit if isinstance(existing_audit, dict) else {}),
-        "architecture_policy_identity_replan": {
-            "source_stage": ckpt.get("stage"),
-            "identity_errors": errors,
-            "candidate_reset_to_source": True,
-            "runtime_contract_ledger_reset": True,
-            "previous_runtime_contract_ledger_digest": ledger_digest,
-            "directive": (
-                "The persisted architecture policy no longer matches the source contract. "
-                "Build a fresh system-owned policy and Master plan before editing bot code."
-            ),
-        },
-    }
-    written = write_pipeline_checkpoint(
-        next_v,
-        source_v,
-        "direction_audited",
-        master_plan={},
-        direction_audit=ckpt.get("direction_audit"),
-        audit_context=audit_context,
-        worker_failure_count=ckpt.get("worker_failure_count", 0),
-        clear_reviewer_feedback=True,
-        touch_stage_timestamp=True,
-        reset_runtime_contract_ledger=True,
-        expected_runtime_contract_ledger_digest=ledger_digest,
-        runtime_contract_ledger_reset_reason="architecture_policy_identity_replan",
+    return _materialize_identity_replan_candidate(
+        ckpt,
+        next_dir,
+        source_dir,
+        recover_persisted_reset=False,
     )
-    if not written:
-        raise RuntimeError("checkpoint rejected architecture policy identity replan")
-    log_system_event(
-        "pipeline.architecture_policy_identity_replan",
-        "error",
-        f"Reset v{next_v} to source v{source_v}; stale architecture policy requires re-planning",
-        {
-            "next_v": next_v,
-            "source_v": source_v,
-            "source_stage": ckpt.get("stage"),
-            "identity_errors": errors,
-        },
+
+
+def _recover_persisted_architecture_policy_identity_replan(
+    ckpt,
+    next_dir,
+    source_dir,
+):
+    """Repair the exact direction_audited state emitted by the retired reset.
+
+    A valid new receipt with a matching prepared artifact is already complete.
+    Any other Direction checkpoint is outside this migration and remains under
+    the ordinary prepared-artifact drift gate.
+    """
+
+    if not isinstance(ckpt, dict) or ckpt.get("stage") != "direction_audited":
+        return None
+    audit = ckpt.get("audit_context") or {}
+    receipt = audit.get("architecture_policy_identity_replan")
+    if not isinstance(receipt, dict):
+        return None
+    from prepared_baseline_contract import validate_prepared_artifact_contract
+
+    prepared = audit.get("prepared_artifact_contract")
+    prepared_errors = validate_prepared_artifact_contract(
+        prepared,
+        prepared_dir=next_dir,
+        source_v=ckpt.get("source_v"),
+        next_v=ckpt.get("next_v"),
+        verify_live_content=True,
     )
-    return _json_tool_result({
-        "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN",
-        "next_v": next_v,
-        "source_v": source_v,
-        "identity_errors": errors,
-        "candidate_reset_to_source": True,
-        "next_tool": "run_master",
-        "directive": (
-            "The stale architecture policy cannot be repaired by a bot worker. "
-            "The candidate was reset to its source and the checkpoint moved to "
-            "direction_audited. Call run_master to build a fresh policy-bound plan."
-        ),
-    })
+    if receipt.get("schema_version") == 2 and not prepared_errors:
+        return None
+    return _materialize_identity_replan_candidate(
+        ckpt,
+        next_dir,
+        source_dir,
+        recover_persisted_reset=True,
+    )
 
 
 def _checkpoint_plan_with_tasks(ckpt, tasks, replace_existing_tasks=False):
