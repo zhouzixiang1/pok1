@@ -921,3 +921,43 @@ This block is generated from `web/core/national_alignment_matrix.py` (schema 16)
 - Superseded reason: Legacy engines, prompts, results, and reports remain retained audit material; they are not current execution inputs.
 
 <!-- executable-national-alignment-matrix:end -->
+
+### `architecture_policy_identity_replan_v2` — current / source-verified, live recovery pending
+
+- Authority/source: strict five-file ABI; published-parent tag/content authority; schema-2 checkpoint revision/stage/workflow CAS; `WorkerArtifactStore` content-CAS receipts.
+- Production owner: `web/core/tool_planning.py::_materialize_identity_replan_candidate`; `web/core/evolution_infra.py::write_pipeline_checkpoint`; `web/core/worker_workflow.py::WorkerArtifactStore`.
+- Dynamic gate: exact legacy receipt recognition before ordinary Master prepared-drift validation; deterministic target-version identity refresh; live candidate hash; installed materialization receipt plus retained preimage; checkpoint CAS and concurrent-successor reread.
+- Prompt statement: no role may repair or reinterpret a stale system architecture identity. The system rematerializes the exact published parent as a fresh target identity, clears stale Worker/gate evidence, then requires a new Master plan; policy strategy remains model-selected.
+- Producer → consumer: published parent/tag bytes + stopped checkpoint preimage → immutable source/prepared snapshots → journaled rename-exchange → closed replan receipt → exact checkpoint CAS → fresh Master consumer.
+- Positive regression: legacy v148 parent-copy recovery, crash after directory CAS, CAS-false rollback followed by retry, future Quality identity replan, and schema-2 idempotent replay; negative regression: forged/minimal/cross-version/cross-workflow receipt, missing CAS, missing/tampered completion receipt or retained tree, live-hash drift, and stale loser observing a `master_planned` successor.
+- Fail-closed: only a checkpoint still exactly equal to the caller's preimage may be rolled back. Any authority advance preserves forward bytes and requires reconciliation; any parent, manifest, identity, materialization or CAS mismatch performs no destructive checkpoint rewrite.
+
+### `master_change_symbol_reachable_contract` — current / source-verified, live pending
+
+- Authority/source: Master proposal schema v4, packet v6, prepared source AST graph and system-owned selected-proposal binding.
+- Production owner: `web/core/agent_master.py`; `web/core/plan_compiler.py`; `web/core/tool_gates.py::_selected_proposal_quality_evidence`; Master template `web/core/prompts/master_prompt.md`.
+- Dynamic gate: model-selected `change_symbol` must be an existing target-file symbol, terminate a current direct reachable chain, appear in the Worker write contract, avoid all exclusion/preserve sets, and have a changed AST digest at Quality.
+- Prompt statement: Scouts choose one concrete existing decision function to change and give its current caller chain; Workers implement that exact mechanism. The system does not prescribe the function or strategy direction.
+- Producer → consumer: prepared source graph → Scout proposal/change symbol → ballots/final Master → compiled Worker task → candidate AST → Quality recomputation and typed falsifier.
+- Positive regression: complete current caller-to-target chain with the target AST changed and the selected typed check executed; negative regression: old v148 caller/target mismatch, target in do-not-touch/read-only/prohibited/preserve, caller-only edit, unchanged target, comment/format-only edit, missing typed check.
+- Fail-closed: malformed or contradictory plans stop before Worker dispatch; unrelated byte/code changes cannot satisfy selected-proposal quality or reach Reviewer/native/official gates.
+
+### `official_ledger_observer_liveness` — current / source-verified, deployment pending
+
+- Authority/source: append-only signed official verdict ledger, signed head, allowed-signers file and signer trust policy; fresh mutation/publication reads remain canonical.
+- Production owner: `web/core/official_verdict_ledger.py`; certificate/namespace/epoch consumers; Web `control`, `evolution` and `pipeline` read-only observers.
+- Dynamic gate: shared-lock no-follow byte capture; exact stat+SHA-256 key before and after cryptographic validation; success-only process single-flight cache; explicit mutation invalidation; exclusive suffix recovery only on anomaly; typed observer 503 during same/changed-key refresh.
+- Prompt statement: none. Models cannot authorize, repair or cache an official verdict; this is a system observation and certificate boundary.
+- Producer → consumer: ledger/head/trust bytes → signature-chain verifier → immutable cached successful snapshot → deep-copied Web projection; launch/scheduler/certification/publication bypass observer cache and verify fresh.
+- Positive regression: concurrent readers invoke one verifier, followers return without blocking, a recovered transient verifier failure succeeds on unchanged bytes, and fresh callers bypass cache; negative regression: ledger/head/trust tamper, changed-key race, cached-object mutation, writer append and incomplete suffix.
+- Fail-closed: failures are never cached indefinitely or converted to authority; changed input invalidates old green state, anomalous recovery takes the writer lock, and observers return retryable unavailable rather than stale/mixed data.
+
+### `producer_consumer_slice2b_activation` — repairing / deliberately inert
+
+- Authority/source: `docs/evolution-producer-consumer-pipeline-v1.md`; existing `WorkflowStore`, `JobEnvelope`/`JobReceipt` and pure artifact reducer. No activation authority exists yet.
+- Production owner: current merged value/reducer/adapter primitives only; no production dispatcher, launcher, API, SSE, frontend capability or promotion adapter imports them.
+- Dynamic gate: all three Dashboard producer/consumer capability fields remain false. The reviewed but unmerged Slice-2b candidate must close trusted fresh guard resolution, one global resource domain, protected priority bands, drain/restart, replay-safe backpressure and broker-only recovery before any activation receipt is recognized.
+- Prompt statement: current Master/Worker/Reviewer/Critic/Orchestrator prompts describe only the canonical serial workflow. They do not claim a parallel Producer lane, queue capacity or asynchronous promotion.
+- Producer → consumer: not live. Future flow is isolated draft envelope → same-store lease/retry/broker → immutable seal → existing canonical Consumer/gates; version allocation and publication remain a synchronous single-owner barrier.
+- Positive regression required before activation: one-ahead high/low hysteresis across repeated transitions, cross-process/cross-scope capacity non-oversubscription, protected recovery/promotion priority, restart/death-proof reclaim and safe drain; negative regression required: caller-forged/stale guard, default-off recovery bypass, expired-row permanent backpressure, reactivation during drain, direct adapter claim and any nonterminal official/promotion overlap.
+- Fail-closed: the rejected `1e7bdcb6` candidate is not merged or enabled. Until all gaps close and a stopped-runtime canary succeeds, no provider, candidate, version, certificate, rating or frontend live-state claim may be produced by this lane.

@@ -4946,3 +4946,87 @@ outbox row, and explicitly records that operator shutdown is a system-only
 lifecycle fact rather than model-facing prompt content. The complete Web suite
 is not claimed by this detached handoff. Merge, stopped-runtime synchronization
 and a real controlled restart remain separate operator actions.
+
+## 2026-07-20 — v148 live production, identity-replan recovery, and observer liveness closure
+
+The first integration batch was merged and deployed through
+`origin/main=540a77d1e0aff8759d14421b8d866c0c41edeb36`. It includes the redesigned
+seven-view Dashboard, the default-inert producer/consumer value/reducer/store
+foundation, off-event-loop Web observers, productive Worker time windows,
+transient-cache cleanup before strict identity refresh, and attempt-neutral
+operator shutdown. The runtime was synchronized only through Git. A claimed
+Worker interrupted by the controlled synchronization was recovered through the
+schema-1 `EffectInterrupted` transaction, not by editing SQLite or the
+checkpoint. The restarted Worker reclaimed the same frozen envelope at a newer
+lease epoch and produced exact five-file artifact
+`98298f6d5b2cf300c73cc748ac0ae0b0c686a287392441d18c0e6aae33b468e5`.
+
+Live v148 Quality then provided a useful causal split. Compile, import,
+protected-runtime, raw native TCP and one complete 70-hand acceptance all
+passed; the acceptance observed exactly 70 hands, no protocol/timeout/process
+issue, and a compliant result. That single admission match is not a rating
+cycle or publication-strength claim. Quality correctly rejected the candidate
+because the source-owned architecture policy identity changed across the
+deployment (`architecture_policy_source_capability_digest_mismatch` and
+`architecture_policy_digest_mismatch`). The retired recovery code then exposed
+a control-plane P0: it copied the v143 parent bytes into `national_v148` but
+left the old prepared/Worker/gate identities in the checkpoint, creating a
+deterministic `direction_audited -> run_master` loop. Evolution and Elo were
+stopped through the authenticated control boundary while Web remained online;
+the stopped checkpoint is `generation:148:workflow-v1`, revision 10, and the
+stability count is **0/10**.
+
+The source closure is the integration chain from `aec2d72a` through
+`ad0ac32c`. It makes observer authority drift a typed retryable 503; validates
+the signed official ledger from a shared-lock byte snapshot; caches only a
+successful content/trust-bound validation; keeps launch, scheduling,
+certification and publication reads fresh; and prevents same-key or changed-key
+HTTP followers from waiting behind an uncancellable slow verifier. The prior
+30-second checkpoint timeout was signed-ledger lock contention, not ASGI static
+delivery: static `/` remained about 1--4 ms while authority GETs queued. The
+new cache key binds ledger, signed head, allowed signers and trust policy by
+stat identity plus SHA-256; append/init/recovery invalidate it, and anomalous
+suffix recovery alone takes the exclusive writer lock.
+
+Architecture replan is now a journaled content-CAS plus checkpoint-CAS
+transaction. Legacy recovery accepts only the exact six-field old receipt,
+single published parent/tag content, deterministic target-version prepared
+artifact and unchanged preimage. The destructive checkpoint projection
+requires explicit positive revision/stage/workflow CAS, a closed schema-2
+subject, exact prepared manifest and identity documents, the live candidate
+hash, and a real `WorkerArtifactStore` installed completion receipt with its
+retained preimage. A checkpoint-CAS loser may roll back only when the durable
+checkpoint is still byte-for-byte its original preimage; if another process
+has advanced to a successor Master/stage, forward bytes are preserved and the
+old process fails closed instead of destroying the winner. Crash-before-
+checkpoint replay, rollback/retry, forged/minimal/cross-subject receipts,
+missing/tampered materialization evidence and concurrent successor cases all
+have regression coverage.
+
+Master proposal schema v4 / packet v6 adds a model-selected `change_symbol`.
+It must be an existing symbol in `policy.py`, the terminal member of a current
+direct reachable chain, explicitly writable by a Worker, and absent from
+read-only/prohibited/do-not-touch/preserve constraints. Quality independently
+recomputes symbol AST digests and requires that exact target body to change;
+changing only a caller or comments/formatting cannot pass. The system selects
+no poker strategy function itself, so this closes a false-positive gate without
+reducing the Agent's choice of mechanism.
+
+Final source validation used an explicit temporary official-verdict ledger:
+combined focused `710 passed`; complete Web `4076 passed, 5 skipped` with only
+the existing Starlette/httpx deprecation warning; national server/protocol
+`36 passed`; frontend ESLint, `tsc -b`, `84` node tests and production build
+all passed; touched Python compile and `git diff --check` passed. Independent
+review found no remaining P0/P1 in the identity-replan/proposal or observer
+chain. Merge/push, stopped-runtime synchronization, evaluation-identity
+rotation, canonical recovery diagnostics and live v148 re-entry are recorded
+only after those actions complete.
+
+Producer/consumer Slice 1 remains intentionally inert in production. A
+separate Slice-2b candidate (`1e7bdcb6`, not merged) correctly reused the same
+`WorkflowStore` and kept every live capability false, but independent review
+found activation-guard, cross-scope resource, protected-priority, drain,
+backpressure replay and recovery-bypass defects. It was rejected for activation
+and returned for repair. No second scheduler, provider call, version allocation,
+promotion, certificate, rating sample, API capability or frontend live claim
+has been enabled by that candidate.
