@@ -1,0 +1,656 @@
+{
+  "schema_version": 2,
+  "kind": "official-platform-compliance-attestation",
+  "bot": "national_v156",
+  "published_at": "2026-07-20T14:22:39",
+  "certificate_digest": "30608a65ac2c24691ede858e37e3b28e13aa4629ed6e8f6a887c7cf0379a6465",
+  "signature": "-----BEGIN SSH SIGNATURE-----\nU1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgBvx7CyYk6zVySB8VRO5UW3iCIE\nUiLR1En6mnuZlDc5kAAAAUcG9rLW9mZmljaWFsLWNlcnQtdjQAAAAAAAAABnNoYTUxMgAA\nAFMAAAALc3NoLWVkMjU1MTkAAABA7mCHw778vkHIrJ2RCnoxGVf4cbVyyD/rfPtem58MdY\n6Pom0ztyvlpg4mhbfuqoHqcqpiCFm2wnPy7FaLnAPmDQ==\n-----END SSH SIGNATURE-----\n",
+  "signature_sha256": "027864860af3a2cf9b17fa515750291a5994abec607608aa799bb31cc3a3c2cb",
+  "issuer": {
+    "principal": "pok-official-certifier",
+    "namespace": "pok-official-cert-v4",
+    "key_fingerprint": "SHA256:93sCwWhJf1/y3HGhZOaOdHmiZHfb1VjMgg5jVZ/2urQ",
+    "public_key_sha256": "196ebd37a4a365021c2bce2f3cada30f3e8bf19630a72aa57e03da3f310a9a54",
+    "public_key_file_sha256": "369f6a70a6eedb00f99dabb5cdc6da303bbfef79d3a237357443d835de2ee577",
+    "signer_epoch": 2,
+    "trust_policy_id": "official-certifier-signer-epochs-v1",
+    "trust_policy_digest": "5c4fbf0f1418a66162e2ca85a02833992328fe70d401b66c49d4c251d85faf15"
+  },
+  "raw_evidence_retention": "content-addressed-local-archive",
+  "certificate": {
+    "schema_version": 5,
+    "kind": "official-exe-compliance-certificate",
+    "candidate_label": "national_v156",
+    "issuer": {
+      "principal": "pok-official-certifier",
+      "namespace": "pok-official-cert-v4",
+      "key_fingerprint": "SHA256:93sCwWhJf1/y3HGhZOaOdHmiZHfb1VjMgg5jVZ/2urQ",
+      "public_key_sha256": "196ebd37a4a365021c2bce2f3cada30f3e8bf19630a72aa57e03da3f310a9a54",
+      "public_key_file_sha256": "369f6a70a6eedb00f99dabb5cdc6da303bbfef79d3a237357443d835de2ee577",
+      "signer_epoch": 2,
+      "trust_policy_id": "official-certifier-signer-epochs-v1",
+      "trust_policy_digest": "5c4fbf0f1418a66162e2ca85a02833992328fe70d401b66c49d4c251d85faf15"
+    },
+    "issued_at": "2026-07-20T14:21:19",
+    "policy_id": "official-full-v5",
+    "mode": "full",
+    "spec": {
+      "mode": "full",
+      "policy_id": "official-full-v5",
+      "candidate": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+      "opponent": "/home/zzx/project/pok/.evolution_pok/bots/national_v143",
+      "self_play_rounds": 5,
+      "opponent_rounds": 3,
+      "target_hands": 70,
+      "round_timeout_sec": 900.0,
+      "no_progress_timeout_sec": 75.0,
+      "quality_admission": {
+        "admission_digest": "798451532fecdad40b635d547531bf1292160c85cf3a6338ba81a8ffab728cc0",
+        "candidate_hash": "83ce95c84f9cbc689503f082b90e49f866291112e8e19f78a8b2ec3c7012e9d0",
+        "candidate_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+        "capability_digest": "53e753753ccaa353d8f438facf84d422e4ba00ba52d5383e4a9cf292e82cee71",
+        "checkpoint": {
+          "evaluation_epoch": "national_tcp_policy_v1",
+          "next_v": 156,
+          "source_v": 143,
+          "workflow_run_id": "generation:156:workflow-v1"
+        },
+        "dynamic_probe_digest": "2fe87e32f85ecbcfcb873ebb55a4b9594cbe49cea84f453da3b4c0b0bc7f12d8",
+        "kind": "official-formal-quality-admission",
+        "quality_gate_digest": "b33abfe654650c504361abca9fec150a7e2ceeb795fb3087616c05e8fe1dff8d",
+        "runtime_contract_ledger_digest": "038b5183c0bbd48ed864305d324115e5bacc6b222a06a36296e7d9dfc58bf619",
+        "runtime_probe_identity": {
+          "limits_digest": "7f2a40ce4243328f747e167a1f275ec3a62b92d4c609c247d5d9fa78a16b04ae",
+          "managed_isolation_digest": "f67db8fa151f336cfe48d443f973606e0e327a009c45d7164ee3065f535b87e2",
+          "native_runtime_template_digest": "6cd9d402598927c42aea6bdf293117ae04ffad44eb3e14bc49267cca3b696c49",
+          "native_runtime_template_identity": {
+            "artifacts": {
+              "national_bot.py": {
+                "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+                "size": 107701
+              },
+              "precompute.py": {
+                "sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
+                "size": 13643
+              }
+            },
+            "combined_digest": "82b511440179309ab520b722303d086d8a35a552fe4e03f844eef7e8c0c814cd",
+            "entry": "national_bot.py",
+            "kind": "system-owned-national-tcp-runtime",
+            "schema_version": 2,
+            "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+            "size": 107701
+          },
+          "orchestrator_version": 19,
+          "probe_identity_digest": "d3e300af8f249a950cb436242dbdd8b2cda7fde56461d470535fe4a7af3383c4",
+          "repeatability_evidence_digest": "238a3bf3d8334b1f77b39301305c65d82395059119cf7f098beebcedaf920ed6",
+          "repeatability_schema_version": 3,
+          "repeatability_view_contract": "stable-safety-semantics-per-scenario-refinement-v3",
+          "scenario_digest": "7e030db73e327a5c41c9a42c2dc87e5094052fc1b81472afacc314c11306f8cc",
+          "schema_version": 18
+        },
+        "schema_version": 2,
+        "system_decision_runtime_version": 10,
+        "system_runtime_identity": {
+          "artifacts": {
+            "national_bot.py": {
+              "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+              "size": 107701
+            },
+            "precompute.py": {
+              "sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
+              "size": 13643
+            }
+          },
+          "combined_digest": "82b511440179309ab520b722303d086d8a35a552fe4e03f844eef7e8c0c814cd",
+          "entry": "national_bot.py",
+          "kind": "system-owned-national-tcp-runtime",
+          "schema_version": 2,
+          "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+          "size": 107701
+        }
+      }
+    },
+    "identity": {
+      "schema_version": 5,
+      "policy_id": "official-full-v5",
+      "runner_provenance": "official-exe",
+      "authority_scope": "production",
+      "test_only": false,
+      "spec": {
+        "mode": "full",
+        "policy_id": "official-full-v5",
+        "candidate": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+        "opponent": "/home/zzx/project/pok/.evolution_pok/bots/national_v143",
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70,
+        "round_timeout_sec": 900.0,
+        "no_progress_timeout_sec": 75.0,
+        "quality_admission": {
+          "admission_digest": "798451532fecdad40b635d547531bf1292160c85cf3a6338ba81a8ffab728cc0",
+          "candidate_hash": "83ce95c84f9cbc689503f082b90e49f866291112e8e19f78a8b2ec3c7012e9d0",
+          "candidate_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+          "capability_digest": "53e753753ccaa353d8f438facf84d422e4ba00ba52d5383e4a9cf292e82cee71",
+          "checkpoint": {
+            "evaluation_epoch": "national_tcp_policy_v1",
+            "next_v": 156,
+            "source_v": 143,
+            "workflow_run_id": "generation:156:workflow-v1"
+          },
+          "dynamic_probe_digest": "2fe87e32f85ecbcfcb873ebb55a4b9594cbe49cea84f453da3b4c0b0bc7f12d8",
+          "kind": "official-formal-quality-admission",
+          "quality_gate_digest": "b33abfe654650c504361abca9fec150a7e2ceeb795fb3087616c05e8fe1dff8d",
+          "runtime_contract_ledger_digest": "038b5183c0bbd48ed864305d324115e5bacc6b222a06a36296e7d9dfc58bf619",
+          "runtime_probe_identity": {
+            "limits_digest": "7f2a40ce4243328f747e167a1f275ec3a62b92d4c609c247d5d9fa78a16b04ae",
+            "managed_isolation_digest": "f67db8fa151f336cfe48d443f973606e0e327a009c45d7164ee3065f535b87e2",
+            "native_runtime_template_digest": "6cd9d402598927c42aea6bdf293117ae04ffad44eb3e14bc49267cca3b696c49",
+            "native_runtime_template_identity": {
+              "artifacts": {
+                "national_bot.py": {
+                  "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+                  "size": 107701
+                },
+                "precompute.py": {
+                  "sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
+                  "size": 13643
+                }
+              },
+              "combined_digest": "82b511440179309ab520b722303d086d8a35a552fe4e03f844eef7e8c0c814cd",
+              "entry": "national_bot.py",
+              "kind": "system-owned-national-tcp-runtime",
+              "schema_version": 2,
+              "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+              "size": 107701
+            },
+            "orchestrator_version": 19,
+            "probe_identity_digest": "d3e300af8f249a950cb436242dbdd8b2cda7fde56461d470535fe4a7af3383c4",
+            "repeatability_evidence_digest": "238a3bf3d8334b1f77b39301305c65d82395059119cf7f098beebcedaf920ed6",
+            "repeatability_schema_version": 3,
+            "repeatability_view_contract": "stable-safety-semantics-per-scenario-refinement-v3",
+            "scenario_digest": "7e030db73e327a5c41c9a42c2dc87e5094052fc1b81472afacc314c11306f8cc",
+            "schema_version": 18
+          },
+          "schema_version": 2,
+          "system_decision_runtime_version": 10,
+          "system_runtime_identity": {
+            "artifacts": {
+              "national_bot.py": {
+                "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+                "size": 107701
+              },
+              "precompute.py": {
+                "sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
+                "size": 13643
+              }
+            },
+            "combined_digest": "82b511440179309ab520b722303d086d8a35a552fe4e03f844eef7e8c0c814cd",
+            "entry": "national_bot.py",
+            "kind": "system-owned-national-tcp-runtime",
+            "schema_version": 2,
+            "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+            "size": 107701
+          }
+        }
+      },
+      "candidate_hash": "83ce95c84f9cbc689503f082b90e49f866291112e8e19f78a8b2ec3c7012e9d0",
+      "opponent_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
+      "platform": {
+        "exe_path": "/home/zzx/project/pok/.evolution_pok/sever/国赛平台/德州扑克对弈平台限时一分钟2021版/德州扑克对弈平台限时一分钟2021版.exe",
+        "exe_sha256": "9d01b443d4920a7e06a487d87ea1b050ea2ca5359023602f98c3c236c734e81a",
+        "harness_sha256": "a2e80a22c631b4628a7460fc07a552470cf19fef31ff1d579391e34bde52b468",
+        "service_sha256": "a4b568b1179371e1e740ba23196909cff42fe6f3e183ecf5fa1ba0a2d55083b6",
+        "attribution_sha256": "33cb1bfc708eb7346dcf041425971935f9a09c3cb098f757f1d31b16eb0b6de3",
+        "evidence_sha256": "0613054e23c2b692360120d21a76ea10dd89f915005de731a6d797745ec07062",
+        "wire_probe_sha256": "3320358f6d278d5b41e597112da2758bd713c997132a40c41df7180d70fa9de1",
+        "platform_resource_sha256": "f79fd8803dac781ab5b893f27e0c5bc3357542410f48b6ff470b583b3db3aede",
+        "evidence_archive_sha256": "1082981dd5d9d5d206286a5c70e83b10454a12953358ccfee4b7120ef45db233",
+        "certificate_signing_sha256": "4ec60c007269f4b890e50e15a58b84093afa2882f6be08104e5cb8dd57305dc3",
+        "execution_profile_sha256": "5bf7c8a7a36dff9dd8a7098d95d8509ccc51999c3bf6a88d6accb453ecbdd643",
+        "execution_profile_code_sha256": "29a45525c8cb762fd4a05f2f36f2df9ad143a6204e33f7509680b2c8750de2e8",
+        "bot_sandbox_sha256": "ce93aaad4a6882b5e0652dc1512e0ca752c832282634c9b2eceed66e6c3df495",
+        "certifier_trust_root_sha256": "e1b94fda5ed78d96d55bbf4a3459befdbf430b58c6c86ede8cfcee2eb31cab49",
+        "certifier_trust_policy_sha256": "71c53baf78cf2a46c8bd33bbd8005fb9e3c2d31c8f60b63cf4d3621ec4eae95c",
+        "managed_executor_sha256": "629a1654121236f4aa28a39e31ba07d0595dccf65bc9e38d3bc90c8422d6055b",
+        "managed_socket_sha256": "5d55f6a99de17f71d9fcc7d1c8991dcc936aadf5bdb25fccd471b959de2a9ece",
+        "managed_executor_identity": {
+          "schema": "pok-managed-executor-identity-v3",
+          "source": {
+            "path": "web/core/managed_bot_executor.py",
+            "sha256": "629a1654121236f4aa28a39e31ba07d0595dccf65bc9e38d3bc90c8422d6055b"
+          },
+          "sandbox_bootstrap_sha256": "e16fd65d9dc90888972b97afe3db7e5124330fee3484318e5fc88a6c3e17a33a",
+          "seccomp": {
+            "policy_sha256": "a6822783714c338bc648aa3f6121e8ef8d6758b43dead1b40d481a5641607fb8",
+            "bpf_sha256": "868cffd79ca7486a876c3f67b8ebf1f36893f8f0f95b77253be058b5498ffecc",
+            "bpf_size": 672,
+            "library": {
+              "path": "/usr/lib/x86_64-linux-gnu/libseccomp.so.2.5.5",
+              "sha256": "b4d9140a7797ccf3ac14f5d9d579b64f157111662940cb8330c632b11a8cea8e"
+            }
+          },
+          "tools": {
+            "bwrap": {
+              "path": "/usr/bin/bwrap",
+              "sha256": "52231e1caf55bcbc667b269f49c63599a6f7db4767ae6a039580d0ff853db712"
+            },
+            "python": {
+              "path": "/usr/bin/python3.12",
+              "sha256": "1643dacd9feaedc58f3cc581e4d22577dfe25c09b10282936186ccf0f2e61118"
+            },
+            "prlimit": {
+              "path": "/usr/bin/prlimit",
+              "sha256": "f27cfd8c1512a4cc6541b59b80cb4cdfd6ef28c34aa21db4299b48264cd0d128"
+            }
+          },
+          "contract": {
+            "namespaces": [
+              "user",
+              "ipc",
+              "pid",
+              "net",
+              "uts",
+              "cgroup"
+            ],
+            "explicit_namespace_flags": [
+              "--unshare-user",
+              "--unshare-ipc",
+              "--unshare-pid",
+              "--unshare-net",
+              "--unshare-uts",
+              "--unshare-cgroup"
+            ],
+            "nested_userns": "disabled-and-asserted",
+            "capabilities": "drop-all",
+            "environment": "clear-and-allowlist",
+            "host_process_environment": "optional-owner-marker-block-fd-verified-before-release",
+            "network": "loopback-exact-peer-inherited-stream-only",
+            "managed_bot_sources": "content-bound-top-level-files-sealed-before-spawn",
+            "managed_bot_source_mount": "sealed-memfd-ro-bind-data-only",
+            "managed_bot_python_flags": [
+              "-I",
+              "-B"
+            ],
+            "readonly_inputs": "named-ro-bind-only",
+            "writable_outputs": "named-new-file-bind-fd-only",
+            "max_output_files": 4,
+            "tmpfs_bytes": 67108864,
+            "resource_limits": {
+              "RLIMIT_NOFILE": 64,
+              "RLIMIT_NPROC": 64,
+              "RLIMIT_AS": 4294967296,
+              "RLIMIT_FSIZE": 16777216,
+              "RLIMIT_CORE": 0
+            },
+            "runtime_mounts": [
+              "/usr",
+              "/lib",
+              "/lib64"
+            ],
+            "host_root_mounted": false
+          }
+        },
+        "host": "127.0.0.1",
+        "port": 10001,
+        "wineprefix": "/home/zzx/.cache/pok_wine_national_platform",
+        "startup_timeout_sec": 45.0,
+        "listen_timeout_sec": 45.0,
+        "no_progress_timeout_sec": 75.0,
+        "round_timeout_sec": 900.0,
+        "settlement_grace_sec": 2.0,
+        "artifact_grace_sec": 20.0,
+        "ui": {
+          "gear_x": 72,
+          "gear_y": 42,
+          "ip_x": 677,
+          "ip_y": 343,
+          "start_x": 657,
+          "start_y": 392,
+          "ok_x": 752,
+          "ok_y": 392
+        }
+      },
+      "platform_fingerprint": "89734ea5827961b1418bdb31b140bfb570a61bd2826cd91bc9db7993b83661dc",
+      "identity_digest": "70d28c082be1b300168afe40c3674510d0901a8cd49664b991f7ed101f531b16"
+    },
+    "cache_key": "e8e700001dbee326abc9f19f9dcb22e7dc19244df53aa2456f5f24bd7201c887",
+    "opponent_selection": {
+      "selected": true,
+      "candidate": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+      "opponent": {
+        "bot": "national_v143",
+        "path": "/home/zzx/project/pok/.evolution_pok/bots/national_v143",
+        "artifact_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
+        "tag": "national-bot-v143",
+        "tag_object": "93d37eb4bb6bfe60af5036b46055d2a4644da083",
+        "eligible": true,
+        "reason": "official_certified",
+        "eligibility_receipt": {
+          "schema_version": 1,
+          "kind": "official_full_certificate",
+          "role": "official_opponent",
+          "bot": "national_v143",
+          "artifact_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
+          "policy_id": "official-full-v5",
+          "certificate_digest": "64d0e9a110ebd4dd2353516f489545d4dd761d94fea9e127f418cd1d5a552d24",
+          "receipt_digest": "129d87476694db31dedf816074d0923fef125cd444cd8b4260560edd75e85fa0"
+        }
+      }
+    },
+    "job_envelope": {
+      "schema_version": 5,
+      "kind": "official-exe-durable-job-envelope",
+      "job_id": "53c290c7ef6a394b19894ae9669e882973865cea1fd7d74f81424219107c7513",
+      "request_digest": "4c5c385232a078ccff21708a5dfff212e617c5253f78f41e6519465c98018491",
+      "attempt": 1,
+      "attempt_nonce": "327085667a94ec7a536736b251913b2628fc6b13668902a8383ed58c83384609",
+      "manager_sha256": "957b638dc36a95e9650b1fc3f4052295749afdf6d1e7a379f617c4f80caa0b15",
+      "certification_identity_digest": "70d28c082be1b300168afe40c3674510d0901a8cd49664b991f7ed101f531b16",
+      "candidate_hash": "83ce95c84f9cbc689503f082b90e49f866291112e8e19f78a8b2ec3c7012e9d0",
+      "opponent_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
+      "opponent_selection_digest": "f2d44fa5ea249f2e11b14f117d337147189c6e45d2617a099d90915da0b147d5",
+      "opponent_selection": {
+        "candidate": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+        "opponent": {
+          "artifact_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
+          "bot": "national_v143",
+          "eligibility_receipt": {
+            "artifact_hash": "f4e7b845a9bc18827532208556b67b76c2ecbb63baf9d2cf8a2a65ef7a54ca50",
+            "bot": "national_v143",
+            "certificate_digest": "64d0e9a110ebd4dd2353516f489545d4dd761d94fea9e127f418cd1d5a552d24",
+            "kind": "official_full_certificate",
+            "policy_id": "official-full-v5",
+            "receipt_digest": "129d87476694db31dedf816074d0923fef125cd444cd8b4260560edd75e85fa0",
+            "role": "official_opponent",
+            "schema_version": 1
+          },
+          "eligible": true,
+          "path": "/home/zzx/project/pok/.evolution_pok/bots/national_v143",
+          "reason": "official_certified",
+          "tag": "national-bot-v143",
+          "tag_object": "93d37eb4bb6bfe60af5036b46055d2a4644da083"
+        },
+        "selected": true
+      },
+      "operator_bootstrap_authorization_digest": null,
+      "bootstrap_control_id": null,
+      "certification_mode": "full",
+      "candidate_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+      "source_v": 143,
+      "quality_admission": {
+        "admission_digest": "798451532fecdad40b635d547531bf1292160c85cf3a6338ba81a8ffab728cc0",
+        "candidate_hash": "83ce95c84f9cbc689503f082b90e49f866291112e8e19f78a8b2ec3c7012e9d0",
+        "candidate_path": "/home/zzx/project/pok/.evolution_pok/bots/national_v156",
+        "capability_digest": "53e753753ccaa353d8f438facf84d422e4ba00ba52d5383e4a9cf292e82cee71",
+        "checkpoint": {
+          "evaluation_epoch": "national_tcp_policy_v1",
+          "next_v": 156,
+          "source_v": 143,
+          "workflow_run_id": "generation:156:workflow-v1"
+        },
+        "dynamic_probe_digest": "2fe87e32f85ecbcfcb873ebb55a4b9594cbe49cea84f453da3b4c0b0bc7f12d8",
+        "kind": "official-formal-quality-admission",
+        "quality_gate_digest": "b33abfe654650c504361abca9fec150a7e2ceeb795fb3087616c05e8fe1dff8d",
+        "runtime_contract_ledger_digest": "038b5183c0bbd48ed864305d324115e5bacc6b222a06a36296e7d9dfc58bf619",
+        "runtime_probe_identity": {
+          "limits_digest": "7f2a40ce4243328f747e167a1f275ec3a62b92d4c609c247d5d9fa78a16b04ae",
+          "managed_isolation_digest": "f67db8fa151f336cfe48d443f973606e0e327a009c45d7164ee3065f535b87e2",
+          "native_runtime_template_digest": "6cd9d402598927c42aea6bdf293117ae04ffad44eb3e14bc49267cca3b696c49",
+          "native_runtime_template_identity": {
+            "artifacts": {
+              "national_bot.py": {
+                "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+                "size": 107701
+              },
+              "precompute.py": {
+                "sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
+                "size": 13643
+              }
+            },
+            "combined_digest": "82b511440179309ab520b722303d086d8a35a552fe4e03f844eef7e8c0c814cd",
+            "entry": "national_bot.py",
+            "kind": "system-owned-national-tcp-runtime",
+            "schema_version": 2,
+            "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+            "size": 107701
+          },
+          "orchestrator_version": 19,
+          "probe_identity_digest": "d3e300af8f249a950cb436242dbdd8b2cda7fde56461d470535fe4a7af3383c4",
+          "repeatability_evidence_digest": "238a3bf3d8334b1f77b39301305c65d82395059119cf7f098beebcedaf920ed6",
+          "repeatability_schema_version": 3,
+          "repeatability_view_contract": "stable-safety-semantics-per-scenario-refinement-v3",
+          "scenario_digest": "7e030db73e327a5c41c9a42c2dc87e5094052fc1b81472afacc314c11306f8cc",
+          "schema_version": 18
+        },
+        "schema_version": 2,
+        "system_decision_runtime_version": 10,
+        "system_runtime_identity": {
+          "artifacts": {
+            "national_bot.py": {
+              "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+              "size": 107701
+            },
+            "precompute.py": {
+              "sha256": "8adeab7e8122465e1a76231a32fa34d1c08c30f77e70ef978bb8093920f00627",
+              "size": 13643
+            }
+          },
+          "combined_digest": "82b511440179309ab520b722303d086d8a35a552fe4e03f844eef7e8c0c814cd",
+          "entry": "national_bot.py",
+          "kind": "system-owned-national-tcp-runtime",
+          "schema_version": 2,
+          "sha256": "ec9e17951cc4c8070856432128492a5ae09eed146ea24fd86ce664a0bea2e366",
+          "size": 107701
+        }
+      },
+      "quality_admission_digest": "b5c7cdad549d0b3c5366ed213b71bf5ca09f6a6cd7e89e504474b2fdbb8aaada",
+      "quality_admission_required": true,
+      "suite_path_digest": "053e4014f5d1efb588c85456c4789e0be0319bc71b5841210bba03d446cddb74",
+      "envelope_digest": "781a2233c0fc7b10e4701fdc28c474ff2f13d144ae064b40595ef9b95f6b8868"
+    },
+    "evidence_archive": {
+      "schema_version": 1,
+      "storage": "content-addressed-local",
+      "path": "/home/zzx/.local/share/pok/official-evidence/653a55d5d31f41994135cb82b7599a033bb0fb4c4638fef8b11b89f39770ab3d.tar.gz",
+      "archive_sha256": "653a55d5d31f41994135cb82b7599a033bb0fb4c4638fef8b11b89f39770ab3d",
+      "archive_size_bytes": 3318607,
+      "manifest_digest": "e242f8993b6125f9a2e6a384337542e65e2245e292645f46f3f39a9dc77be644",
+      "file_count": 133,
+      "total_bytes": 31633919,
+      "evidence_sha256": "5d0b900f21b5f70738ec31b8298012b33a99665eef477841425e70bef4f046df"
+    },
+    "evidence": {
+      "path": "/home/zzx/project/pok/.evolution_pok/web/core/results/official_certification/jobs/53c290c7ef6a394b19894ae9669e882973865cea1fd7d74f81424219107c7513/suite_attempt_01/official_evidence.json",
+      "sha256": "5d0b900f21b5f70738ec31b8298012b33a99665eef477841425e70bef4f046df",
+      "size_bytes": 1164217,
+      "summary": {
+        "schema_version": 1,
+        "classification": "pass",
+        "blocking": false,
+        "inconclusive": false,
+        "violation": false,
+        "issue_count": 0,
+        "deterministic_issues": [],
+        "rounds_requested": 8,
+        "rounds_run": 8,
+        "target_hands": 70,
+        "strength_evaluation": "not_applicable"
+      }
+    },
+    "deterministic_receipt": {
+      "schema_version": 3,
+      "policy_id": "official-full-v5",
+      "spec": {
+        "self_play_rounds": 5,
+        "opponent_rounds": 3,
+        "target_hands": 70
+      },
+      "verdict": {
+        "passed": true,
+        "classification": "pass",
+        "blocking": false,
+        "inconclusive": false,
+        "candidate_verdict": "pass",
+        "rounds_requested": 8,
+        "rounds_run": 8,
+        "target_hands": 70,
+        "issue_count": 0
+      },
+      "rounds": [
+        {
+          "round_kind": "self_play",
+          "round_index": 1,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "49294636214f5350ddc278e13fc71e18d0144ac5d4e7502c5f9d76b466ad851b",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "a3ef37977feed1f21f4ef99c2893113cd58a29e16bae8fd8e9c3ca9f1c85b21f",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "self_play",
+          "round_index": 2,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "75b126b4c6a74e46740b44e524ed64a78b1916397752d9f3315fa453a846c400",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "9b814517250f056063bce61b1c1d11023fb725ea9a441b635dca4653711db493",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "self_play",
+          "round_index": 3,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "e9808ef957806604d2f84213af6fdac076768f3ed2175b91cd9c31ff81e2bbf4",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "fc8b87c133204af5ad5600974e14cda58e9cac28b8c71c2f87e91900f7296500",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "self_play",
+          "round_index": 4,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "3cd7ca0cac73ac6d5dc7f6329caaa93743d7692ee30684d1b853a2f183170a52",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "134792e4ce391d41ffe2aefa8c2586c6744d98d1609e8f259063a0bc5c815242",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "self_play",
+          "round_index": 5,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "64356cfa8c284e5e95ec11f2fd7a27d75a45de7f01899b53a99734ddce177241",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "858f413ea435c0d77fd18ba54e4bfa45f9a9503c98c7d56de88a693e4ea65e33",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "opponent",
+          "round_index": 1,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "6394f265578360ee54a56b1194bcaba730e45d5f4e3b240e36ced3cfce7594b5",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "1863a6182d866be88da994c3cdcf1fbda38fd725860e41be7d84cd897721200e",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "opponent",
+          "round_index": 2,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "99636f43989d68b9d8cd819763f54f360f2e699c726f03f9cee603a05e71daca",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "2a70e9659ef82bfed436cc1eae53ac508b103bc85634f6dc7f9c06ce50aca492",
+          "issue_count": 0
+        },
+        {
+          "round_kind": "opponent",
+          "round_index": 3,
+          "target_hands": 70,
+          "passed": true,
+          "classification": "pass",
+          "candidate_verdict": "pass",
+          "candidate_blocking": false,
+          "countable": true,
+          "hands_started": 70,
+          "settlements": 69,
+          "completed_hands": 70,
+          "thp_hands": 70,
+          "thp_sha256": "479920e296a0d2c60cd154cb094e29aed5b8392d9a7e4d79928a76ba025417d9",
+          "completion_kind": "official-thp-terminal-settlement",
+          "completion_evidence_digest": "5257f40d113b1bb4c39b9d5dd05d82bccd753297f8f59db75c79406b439096b5",
+          "issue_count": 0
+        }
+      ],
+      "evidence_sha256": "5d0b900f21b5f70738ec31b8298012b33a99665eef477841425e70bef4f046df",
+      "archive_sha256": "653a55d5d31f41994135cb82b7599a033bb0fb4c4638fef8b11b89f39770ab3d",
+      "archive_manifest_digest": "e242f8993b6125f9a2e6a384337542e65e2245e292645f46f3f39a9dc77be644",
+      "strength_evaluation": "not_applicable",
+      "receipt_digest": "8711a063af21ba8330707ccef9359c7bd497e13eac5ce99cac036c693f5b9814"
+    },
+    "strength_evaluation": "not_applicable",
+    "certificate_digest": "30608a65ac2c24691ede858e37e3b28e13aa4629ed6e8f6a887c7cf0379a6465"
+  },
+  "attestation_digest": "76cbf0d1b22dc38c83ccb85390cc83bf03a5050d76459633c52959c61e55f0dd"
+}
