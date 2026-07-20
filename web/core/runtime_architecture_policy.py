@@ -4,6 +4,24 @@ The policy treats raw TCP and state reconstruction as a system capability and
 poker decisions as a typed candidate policy capability.  Historical bot code
 is lineage only: it is never a baseline capability and is never opened by this
 module when the source directory is absent or does not implement the policy ABI.
+
+Identity vs. verification (source capability anchor)
+-----------------------------------------------------
+The frozen ``source_capability_digest`` binds the **identity** of the source
+bot at planning time. Identity must be a pure, content-addressable function of
+the source's static AST-contract capabilities (``evaluate_national_capabilities``);
+it must not depend on the typed runtime probe, which runs the candidate in an
+isolated subprocess and is a non-deterministic observation. Both the planner
+(``_build_generation_architecture_policy``) and the gate
+(``evaluate_architecture_transition``) therefore feed static capabilities into
+``build_architecture_policy`` for the source anchor, so a frozen policy can
+always match a freshly recomputed gate value.
+
+The typed runtime probe still runs and is still enforced — but as an
+independent dynamic gate (candidate regression / runtime floor), not as an
+input to the source identity digest. Static AST checks are the authoritative
+capability fingerprint; the probe is a live counterfactual confirmation that
+the candidate actually exercises the capabilities its AST claims.
 """
 
 from __future__ import annotations
@@ -1170,7 +1188,16 @@ def evaluate_architecture_transition(
             raise ValueError("architecture_transition_source_missing")
         source = Path(source_bot_dir)
         source_identity = source.name
-        source_cap = _lineage_capabilities(source)
+        # Identity anchor uses STATIC capabilities only, matching the path the
+        # planner takes when freezing architecture_policy at run_master time
+        # (_build_generation_architecture_policy feeds evaluate_national_capabilities
+        # directly into build_architecture_policy). The probe result for the
+        # source is a non-deterministic subprocess observation; feeding it into
+        # the content-addressed source_capability_digest made the frozen policy
+        # unmatchable on every recomputation (the v152 identity-replan loop).
+        # Candidate capability and regression checks below still apply the typed
+        # runtime probe; only the source identity anchor is made deterministic.
+        source_cap = evaluate_national_capabilities(source)
     candidate_cap = evaluate_national_capabilities(candidate)
     candidate_cap, runtime_probe, probe_infrastructure = _apply_typed_runtime_probe(
         candidate_cap,

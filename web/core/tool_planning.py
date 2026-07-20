@@ -5863,6 +5863,70 @@ def _checkpoint_architecture_policy_identity_errors(ckpt):
     return [str(item) for item in transition.get("policy_identity_errors") or [] if str(item)]
 
 
+# Identity replan circuit breaker. A deterministic identity error that is not
+# actually fixed by the replan path (e.g. a frozen-vs-recomputed digest
+# mismatch caused by non-determinism, as observed in the v152 loop) would
+# otherwise retrigger the same recovery forever, burning LLM budget with zero
+# possibility of success. Track consecutive identical error fingerprints; once
+# the threshold is crossed, abandon the generation and surface to the operator
+# instead of looping. Distinct fingerprints reset the count, so genuine
+# progressive repair is unaffected.
+IDENTITY_REPLAN_ABANDON_THRESHOLD = 3
+
+
+def _identity_replan_fingerprint(errors):
+    """Stable, deduplicated string key for the identity error set.
+
+    Serialized to a single string so the value round-trips through JSON
+    checkpoint storage and string comparisons in the circuit breaker.
+    """
+    items = sorted(set(str(item) for item in (errors or []) if str(item)))
+    return "|".join(items)
+
+
+def _identity_replan_counts(ckpt):
+    """Return the history list of recorded replan fingerprints (strings).
+
+    Stored under checkpoint key ``identity_replan_history``. Only the trailing
+    run identical to the most recent entry matters for the circuit breaker,
+    but the full list is kept for diagnostics.
+    """
+    if not isinstance(ckpt, dict):
+        return []
+    history = ckpt.get("identity_replan_history")
+    return [str(item) for item in (history or []) if isinstance(item, str)]
+
+
+def _identity_replan_consecutive_count(history, fingerprint):
+    """Count trailing history entries equal to ``fingerprint``."""
+    if not fingerprint:
+        return 0
+    count = 0
+    for item in reversed(history):
+        if item == fingerprint:
+            count += 1
+        else:
+            break
+    return count
+
+
+def _record_identity_replan_attempt(ckpt, fingerprint):
+    """Record one replan attempt and return the updated history list.
+
+    A different fingerprint from the prior attempt resets the consecutive run
+    (progressive repair). Caller is responsible for writing the checkpoint.
+    """
+    if not isinstance(ckpt, dict) or not fingerprint:
+        return _identity_replan_counts(ckpt)
+    history = _identity_replan_counts(ckpt)
+    if history and history[-1] != fingerprint:
+        history = []
+    history.append(fingerprint)
+    ckpt["identity_replan_history"] = list(history)
+    return history
+
+
+
 def _checkpoint_runtime_contract_ledger_digest(ckpt):
     ledger = ckpt.get("runtime_contract_ledger") if isinstance(ckpt, dict) else None
     if ledger is None and isinstance(ckpt, dict):
@@ -11210,6 +11274,62 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     "recover it from numeric high-water source bytes."
                 ),
             })
+        identity_errors = _checkpoint_architecture_policy_identity_errors(ckpt)
+        identity_fingerprint = _identity_replan_fingerprint(identity_errors)
+        identity_history = _identity_replan_counts(ckpt)
+        identity_consecutive = _identity_replan_consecutive_count(
+            identity_history, identity_fingerprint
+        )
+        if identity_consecutive >= IDENTITY_REPLAN_ABANDON_THRESHOLD:
+            log_system_event(
+                "pipeline.architecture_policy_identity_replan_abandoned",
+                "error",
+                (
+                    f"Abandoning v{next_v}: identical architecture policy "
+                    f"identity error recurred {identity_consecutive} times "
+                    f"without progress; recovery is unable to resolve it."
+                ),
+                {
+                    "next_v": next_v,
+                    "source_v": source_v,
+                    "stage": ckpt.get("stage"),
+                    "identity_errors": identity_errors,
+                    "consecutive_count": identity_consecutive,
+                    "threshold": IDENTITY_REPLAN_ABANDON_THRESHOLD,
+                },
+            )
+            return _json_tool_result({
+                "error": "ARCHITECTURE_POLICY_IDENTITY_REPLAN_EXHAUSTED",
+                "next_v": next_v,
+                "source_v": source_v,
+                "action": "abandon_generation",
+                "failure_class": "deterministic",
+                "consecutive_count": identity_consecutive,
+                "threshold": IDENTITY_REPLAN_ABANDON_THRESHOLD,
+                "identity_errors": identity_errors,
+                "directive": (
+                    "The same architecture policy identity error survived "
+                    "multiple replan attempts. Recovery cannot fix a frozen "
+                    "vs. recomputed mismatch deterministically; abandon this "
+                    "generation and let the planner rebuild on the current "
+                    "policy code, or escalate the identity comparator."
+                ),
+            })
+        updated_history = _record_identity_replan_attempt(ckpt, identity_fingerprint)
+        # Persist the circuit-breaker counter before recovery runs, so a crash
+        # or stage rewrite inside recovery cannot lose the attempt record.
+        # Stage is preserved; only the identity_replan_history field advances.
+        try:
+            write_pipeline_checkpoint(
+                next_v,
+                source_v,
+                ckpt.get("stage"),
+                identity_replan_history=updated_history,
+            )
+        except Exception:
+            # Counter persistence is best-effort; the in-memory ckpt copy still
+            # carries the update through this call's recovery path.
+            pass
         try:
             recovery = _recover_architecture_policy_identity(
                 ckpt,

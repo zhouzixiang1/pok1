@@ -1612,7 +1612,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
                                expected_workflow_run_id=None,
                                workflow_run_id=None,
                                terminal_gate_outcome=None,
-                               review_attempt_journal=None):
+                               review_attempt_journal=None,
+                               identity_replan_history=None):
     """Write pipeline stage checkpoint so a killed process can resume.
 
     Uses atomic tmp+rename under exclusive lock to prevent concurrent
@@ -1806,6 +1807,7 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         existing_publication_intent = None
         existing_terminal_gate_outcome = None
         existing_review_attempt_journal = []
+        existing_identity_replan_history = []
         existing_epoch_binding = None
         existing_workflow_run_id = ""
         requested_workflow_run_id = str(workflow_run_id or "").strip()
@@ -1863,6 +1865,16 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
             existing_review_attempt_journal = deepcopy(
                 existing.get("review_attempt_journal") or []
             )
+            if identity_replan_history is None:
+                existing_identity_replan_history = [
+                    str(item)
+                    for item in (existing.get("identity_replan_history") or [])
+                    if isinstance(item, str)
+                ]
+            else:
+                existing_identity_replan_history = [
+                    str(item) for item in identity_replan_history if isinstance(item, str)
+                ]
             existing_epoch_binding = existing.get("epoch_binding")
             existing_workflow_run_id = str(
                 existing.get("workflow_run_id")
@@ -2504,6 +2516,8 @@ def write_pipeline_checkpoint(next_v, source_v, stage, master_plan=None,
         }
         if existing_review_attempt_journal:
             state["review_attempt_journal"] = existing_review_attempt_journal
+        if existing_identity_replan_history:
+            state["identity_replan_history"] = existing_identity_replan_history
         if existing_terminal_gate_outcome is not None:
             state["terminal_gate_outcome"] = existing_terminal_gate_outcome
 

@@ -260,6 +260,20 @@ Active implementation is under `web/core/`. Major responsibilities include:
   `strategy_reference_pack.py` — typed, digest-bound planning evidence;
 - `workflow_kernel.py`, `worker_workflow.py` — Worker journal, fenced effects,
   immutable artifacts, crash-safe projection;
+- `runtime_architecture_policy.py` — architecture policy identity and gate.
+  The frozen `source_capability_digest` binds the source bot's **identity**,
+  which must be a pure content-addressable function of its static AST-contract
+  capabilities. Both the planner (`_build_generation_architecture_policy`) and
+  the gate (`evaluate_architecture_transition`) feed static capabilities into
+  `build_architecture_policy` for the source anchor, so a frozen policy can
+  always match a freshly recomputed gate value. The typed runtime probe still
+  runs and is enforced, but as an independent dynamic gate (candidate
+  regression / runtime floor), not as an input to the source identity digest —
+  static AST checks are the authoritative capability fingerprint, the probe is
+  a live counterfactual confirmation. A bounded identity-replan circuit breaker
+  abandons a generation when the same identity error fingerprint survives
+  repeated recovery attempts, so a frozen-vs-recomputed mismatch cannot loop
+  forever burning LLM budget;
 - `national_native.py`, `national_game_runtime.py`, and
   `sever/server/transport.py` — strict raw TCP runtime with one shared stream
   parser;
