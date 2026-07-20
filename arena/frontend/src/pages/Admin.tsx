@@ -1,311 +1,247 @@
 import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { adminToken, apiJson } from '../api'
+import { Link } from 'react-router-dom'
+import { useAuth } from '../components/useAuth'
+import { apiGet, apiJson, errMsg } from '../api'
 
-interface BotUser {
-  name: string
-  display_name: string
-  team: string
-  note: string
-  active: number
-  created_at: string
+interface MatchRow {
+  id?: string
+  match_id?: string
+  bot_a_name: string
+  bot_b_name: string
+  bot_a_display?: string
+  bot_b_display?: string
+  owner_id?: number | null
+  earnings_a: number
+  earnings_b: number
+  winner: number | null
+  status?: string
+  reason: string
+  hands_played: number
+  started_at: string
+}
+function mid(m: MatchRow): string {
+  return m.id ?? m.match_id ?? ''
+}
+function fmtTime(s?: string): string {
+  if (!s) return '—'
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleString()
 }
 
 export default function Admin() {
-  const token = adminToken.get()
-  const nav = useNavigate()
-
-  const [users, setUsers] = useState<BotUser[]>([])
-  const [loading, setLoading] = useState(true)
+  const { user, loading: authLoading } = useAuth()
   const [err, setErr] = useState('')
+  const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState(false)
 
-  // 新建表单
-  const [nName, setNName] = useState('')
-  const [nDisp, setNDisp] = useState('')
-  const [nTeam, setNTeam] = useState('')
-  const [nNote, setNNote] = useState('')
+  // 生成重置 token
+  const [resetInput, setResetInput] = useState('')
+  const [resetResult, setResetResult] = useState<{ user?: any; token?: string } | null>(null)
 
-  // 编辑状态
-  const [editing, setEditing] = useState<string | null>(null)
-  const [eTeam, setETeam] = useState('')
-  const [eNote, setENote] = useState('')
-  const [eActive, setEActive] = useState(1)
+  // 全局对局
+  const [matches, setMatches] = useState<MatchRow[]>([])
+  const [mLoading, setMLoading] = useState(true)
 
-  const loadUsers = async () => {
-    setLoading(true)
-    setErr('')
-    try {
-      const r = await fetch('/api/admin/users', { headers: { 'x-admin-token': token! } })
-      if (r.status === 401) {
-        adminToken.clear()
-        nav('/login')
-        return
-      }
-      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`)
-      const d = await r.json()
-      setUsers(d.users || [])
-    } catch (e) {
-      setErr(String(e))
-    } finally {
-      setLoading(false)
-    }
+  const loadMatches = () => {
+    setMLoading(true)
+    apiGet<{ matches: MatchRow[]; total: number }>('/api/matches?limit=30&offset=0')
+      .then((d) => setMatches(d.matches || []))
+      .catch((e) => setErr(errMsg(e, '加载失败')))
+      .finally(() => setMLoading(false))
   }
 
   useEffect(() => {
-    if (!token) {
-      nav('/login')
-      return
-    }
-    loadUsers()
+    if (!authLoading && user?.role === 'admin') loadMatches()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [authLoading, user])
 
-  const logout = async () => {
-    try {
-      await apiJson('/api/admin/logout', 'POST', undefined, token!)
-    } catch {
-      // 忽略服务端登出失败,本地仍清理
-    }
-    adminToken.clear()
-    nav('/login')
-  }
-
-  const create = async () => {
+  const genReset = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!resetInput.trim()) return
     setBusy(true)
     setErr('')
+    setMsg('')
     try {
-      await apiJson(
-        '/api/admin/users',
+      const d = await apiJson<{ ok: boolean; token: string; user: any }>(
+        '/api/auth/admin/create-reset-token',
         'POST',
-        {
-          name: nName.trim(),
-          display_name: nDisp.trim() || nName.trim(),
-          team: nTeam.trim(),
-          note: nNote.trim(),
-        },
-        token!,
+        { username_or_email: resetInput.trim() },
       )
-      setNName('')
-      setNDisp('')
-      setNTeam('')
-      setNNote('')
-      await loadUsers()
+      setResetResult(d)
+      setMsg('重置 token 已生成')
     } catch (e) {
-      setErr(`新建失败: ${String(e)}`)
+      setErr(errMsg(e, '生成失败'))
     } finally {
       setBusy(false)
     }
   }
 
-  const remove = async (name: string) => {
-    if (!window.confirm(`确认删除 bot「${name}」?该操作不可撤销。`)) return
+  const registerBuiltin = async () => {
+    if (!window.confirm('注册内置 bot 库(national_v*)?幂等,可重复执行。')) return
     setBusy(true)
     setErr('')
     try {
-      await apiJson(`/api/admin/users/${encodeURIComponent(name)}`, 'DELETE', undefined, token!)
-      await loadUsers()
+      const d = await apiJson<{ count: number }>('/api/bots/register-builtin', 'POST')
+      setMsg(`已注册 ${d.count} 个内置 bot`)
     } catch (e) {
-      setErr(`删除失败: ${String(e)}`)
+      setErr(errMsg(e, '注册失败'))
     } finally {
       setBusy(false)
     }
   }
 
-  const startEdit = (u: BotUser) => {
-    setEditing(u.name)
-    setETeam(u.team || '')
-    setENote(u.note || '')
-    setEActive(u.active ? 1 : 0)
+  if (authLoading) return <div className="p-8 text-center text-slate-400">加载…</div>
+  if (!user) {
+    return (
+      <div className="p-8 text-center">
+        <p className="mb-3 text-slate-300">请先登录</p>
+        <Link to="/login" className="text-amber-300 hover:underline">去登录 →</Link>
+      </div>
+    )
   }
-
-  const saveEdit = async (name: string) => {
-    setBusy(true)
-    setErr('')
-    try {
-      await apiJson(
-        `/api/admin/users/${encodeURIComponent(name)}`,
-        'PUT',
-        { team: eTeam.trim(), note: eNote.trim(), active: eActive },
-        token!,
-      )
-      setEditing(null)
-      await loadUsers()
-    } catch (e) {
-      setErr(`保存失败: ${String(e)}`)
-    } finally {
-      setBusy(false)
-    }
+  if (user.role !== 'admin') {
+    return (
+      <div className="p-8 text-center">
+        <p className="mb-3 text-rose-400">需要管理员权限</p>
+        <Link to="/" className="text-amber-300 hover:underline">回首页</Link>
+      </div>
+    )
   }
 
   return (
     <div className="mx-auto max-w-5xl p-4">
       <div className="mb-5 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-slate-100">
-          管理后台
-        </h1>
-        <button
-          onClick={logout}
-          className="rounded border border-slate-600 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
-        >
-          登出
-        </button>
+        <h1 className="text-xl font-bold text-slate-100">管理后台</h1>
+        <span className="rounded bg-rose-500/30 px-2 py-1 text-xs text-rose-300">admin</span>
       </div>
-
-      {/* 新建 bot */}
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          if (nName.trim() && !busy) create()
-        }}
-        className="mb-6 rounded-xl border border-slate-700 bg-slate-800/60 p-4"
-      >
-        <div className="mb-3 text-sm font-semibold text-amber-300">新建 bot</div>
-        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          <input
-            value={nName}
-            onChange={(e) => setNName(e.target.value)}
-            placeholder="name(唯一标识)"
-            className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-          />
-          <input
-            value={nDisp}
-            onChange={(e) => setNDisp(e.target.value)}
-            placeholder="display_name(可空)"
-            className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-          />
-          <input
-            value={nTeam}
-            onChange={(e) => setNTeam(e.target.value)}
-            placeholder="team(可空)"
-            className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-          />
-          <input
-            value={nNote}
-            onChange={(e) => setNNote(e.target.value)}
-            placeholder="note(可空)"
-            className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500"
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={!nName.trim() || busy}
-          className="mt-3 rounded bg-amber-400 px-4 py-2 text-sm font-bold text-slate-900 disabled:opacity-50"
-        >
-          {busy ? '处理中…' : '新建'}
-        </button>
-      </form>
 
       {err && (
         <div className="mb-4 rounded border border-rose-800 bg-rose-900/30 px-3 py-2 text-sm text-rose-400">
           {err}
         </div>
       )}
-
-      {loading ? (
-        <div className="py-10 text-center text-slate-400">加载用户列表…</div>
-      ) : users.length === 0 ? (
-        <div className="py-10 text-center text-slate-400">暂无 bot 用户,用上方表单新建一个。</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700 text-slate-400">
-                <th className="py-2 text-left">name</th>
-                <th className="text-left">display_name</th>
-                <th className="text-left">team</th>
-                <th className="text-left">note</th>
-                <th className="text-left">active</th>
-                <th className="text-right">操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {users.map((u) =>
-                editing === u.name ? (
-                  <tr key={u.name} className="border-b border-slate-800 bg-slate-800/40">
-                    <td className="py-2 font-mono text-amber-300">{u.name}</td>
-                    <td className="text-slate-300">{u.display_name}</td>
-                    <td>
-                      <input
-                        value={eTeam}
-                        onChange={(e) => setETeam(e.target.value)}
-                        placeholder="team"
-                        className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-slate-100 placeholder:text-slate-500"
-                      />
-                    </td>
-                    <td>
-                      <input
-                        value={eNote}
-                        onChange={(e) => setENote(e.target.value)}
-                        placeholder="note"
-                        className="w-full rounded border border-slate-600 bg-slate-900 px-2 py-1 text-slate-100 placeholder:text-slate-500"
-                      />
-                    </td>
-                    <td>
-                      <select
-                        value={eActive}
-                        onChange={(e) => setEActive(Number(e.target.value))}
-                        className="rounded border border-slate-600 bg-slate-900 px-2 py-1 text-slate-100"
-                      >
-                        <option value={1}>启用</option>
-                        <option value={0}>停用</option>
-                      </select>
-                    </td>
-                    <td className="text-right whitespace-nowrap">
-                      <button
-                        onClick={() => saveEdit(u.name)}
-                        disabled={busy}
-                        className="rounded bg-emerald-500 px-2.5 py-1 text-xs font-bold text-slate-900 disabled:opacity-50"
-                      >
-                        保存
-                      </button>
-                      <button
-                        onClick={() => setEditing(null)}
-                        disabled={busy}
-                        className="ml-1 rounded border border-slate-600 px-2.5 py-1 text-xs text-slate-300 disabled:opacity-50"
-                      >
-                        取消
-                      </button>
-                    </td>
-                  </tr>
-                ) : (
-                  <tr key={u.name} className="border-b border-slate-800 hover:bg-slate-800/50">
-                    <td className="py-2 font-mono text-slate-100">{u.name}</td>
-                    <td className="text-slate-200">{u.display_name}</td>
-                    <td className="text-slate-400">{u.team || '—'}</td>
-                    <td className="max-w-xs truncate text-slate-400" title={u.note}>
-                      {u.note || '—'}
-                    </td>
-                    <td>
-                      {u.active ? (
-                        <span className="rounded bg-emerald-500/20 px-2 py-0.5 text-xs text-emerald-400">启用</span>
-                      ) : (
-                        <span className="rounded bg-slate-600/30 px-2 py-0.5 text-xs text-slate-400">停用</span>
-                      )}
-                    </td>
-                    <td className="text-right whitespace-nowrap">
-                      <button
-                        onClick={() => startEdit(u)}
-                        disabled={busy}
-                        className="rounded border border-amber-500/60 px-2.5 py-1 text-xs text-amber-300 hover:bg-slate-800 disabled:opacity-50"
-                      >
-                        编辑
-                      </button>
-                      <button
-                        onClick={() => remove(u.name)}
-                        disabled={busy}
-                        className="ml-1 rounded border border-rose-600/60 px-2.5 py-1 text-xs text-rose-400 hover:bg-slate-800 disabled:opacity-50"
-                      >
-                        删除
-                      </button>
-                    </td>
-                  </tr>
-                ),
-              )}
-            </tbody>
-          </table>
+      {msg && (
+        <div className="mb-4 rounded border border-emerald-800 bg-emerald-900/30 px-3 py-2 text-sm text-emerald-300">
+          {msg}
         </div>
       )}
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        {/* 密码重置 token */}
+        <section className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+          <h2 className="mb-3 font-semibold text-slate-200">生成密码重置 token</h2>
+          <p className="mb-3 text-xs text-slate-400">
+            为某用户生成一次性重置 token,转交给用户后由其在「找回密码」页使用。
+          </p>
+          <form onSubmit={genReset} className="flex flex-col gap-2">
+            <input
+              value={resetInput}
+              onChange={(e) => setResetInput(e.target.value)}
+              placeholder="用户名或邮箱"
+              className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            />
+            <button
+              type="submit"
+              disabled={busy || !resetInput.trim()}
+              className="rounded bg-amber-400 px-4 py-2 text-sm font-bold text-slate-900 hover:bg-amber-300 disabled:opacity-50"
+            >
+              {busy ? '生成中…' : '生成 token'}
+            </button>
+          </form>
+          {resetResult && (
+            <div className="mt-3 rounded border border-slate-600 bg-slate-900 p-3 text-sm">
+              <div className="text-slate-300">
+                用户:
+                <span className="ml-1 font-semibold text-slate-100">
+                  {resetResult.user?.username ?? resetResult.user?.display_name ?? '—'}
+                </span>
+              </div>
+              <div className="mt-1 break-all font-mono text-xs text-amber-300">{resetResult.token}</div>
+            </div>
+          )}
+        </section>
+
+        {/* 内置 bot + 工具 */}
+        <section className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+          <h2 className="mb-3 font-semibold text-slate-200">平台维护</h2>
+          <div className="flex flex-col gap-3">
+            <button
+              onClick={registerBuiltin}
+              disabled={busy}
+              className="rounded border border-amber-500/60 px-4 py-2 text-sm font-bold text-amber-300 hover:bg-slate-700 disabled:opacity-50"
+            >
+              注册内置 bot 库(national_v*)
+            </button>
+            <Link
+              to="/leaderboard"
+              className="rounded border border-slate-600 px-4 py-2 text-center text-sm text-slate-300 hover:bg-slate-700"
+            >
+              查看排行榜 →
+            </Link>
+            <Link
+              to="/history"
+              className="rounded border border-slate-600 px-4 py-2 text-center text-sm text-slate-300 hover:bg-slate-700"
+            >
+              查看全部对局 →
+            </Link>
+          </div>
+        </section>
+      </div>
+
+      {/* 全局对局 */}
+      <section className="mt-4 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="font-semibold text-slate-200">最近对局(30)</h2>
+          <button
+            onClick={loadMatches}
+            className="text-xs text-amber-300 hover:underline"
+          >
+            刷新
+          </button>
+        </div>
+        {mLoading ? (
+          <div className="py-6 text-center text-sm text-slate-500">加载…</div>
+        ) : matches.length === 0 ? (
+          <div className="py-6 text-center text-sm text-slate-500">暂无对局</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-700 text-slate-400">
+                  <th className="px-2 py-2 text-left">对局</th>
+                  <th className="px-2 text-left">状态</th>
+                  <th className="px-2 text-right">手数</th>
+                  <th className="px-2 text-right">收益</th>
+                  <th className="px-2 text-left">时间</th>
+                </tr>
+              </thead>
+              <tbody>
+                {matches.map((m) => (
+                  <tr key={mid(m)} className="border-b border-slate-800/60 hover:bg-slate-800/50">
+                    <td className="px-2 py-1.5">
+                      <Link to={`/match/${mid(m)}`} className="text-slate-200 hover:text-amber-300 hover:underline">
+                        {(m.bot_a_display || m.bot_a_name).slice(0, 14)} vs {(m.bot_b_display || m.bot_b_name).slice(0, 14)}
+                      </Link>
+                    </td>
+                    <td className="px-2 text-slate-400">{m.status ?? '—'}</td>
+                    <td className="px-2 text-right font-mono text-slate-300">{m.hands_played}</td>
+                    <td className="px-2 text-right font-mono">
+                      <span className={m.earnings_a >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                        {m.earnings_a >= 0 ? '+' : ''}{m.earnings_a}
+                      </span>
+                      <span className="mx-1 text-slate-600">/</span>
+                      <span className={m.earnings_b >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                        {m.earnings_b >= 0 ? '+' : ''}{m.earnings_b}
+                      </span>
+                    </td>
+                    <td className="px-2 text-xs text-slate-500">{fmtTime(m.started_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   )
 }

@@ -1,142 +1,335 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { apiGet } from '../api'
+import { useAuth } from '../components/useAuth'
+import { apiGet, apiJson, errMsg } from '../api'
 
-interface Rating {
-  rating: number
-  rd: number
-  vol: number
-  wins: number
-  losses: number
-  draws: number
-  net_chips: number
-  matches_played: number
-  last_played_at: string
+interface Bot {
+  id: number
+  name: string
+  display_name: string
+  protocol: string
+  current_version: number
+  is_active: boolean
+  is_public: boolean
+  has_image: boolean
+  is_builtin: boolean
+  created_at: string
 }
+
 interface MatchRow {
-  match_id: string
-  name_a: string
-  name_b: string
+  id?: string
+  match_id?: string
+  bot_a_name: string
+  bot_b_name: string
+  bot_a_display?: string
+  bot_b_display?: string
+  bot_a_id?: number
+  bot_b_id?: number
   earnings_a: number
   earnings_b: number
+  winner: number | null
+  status?: string
   reason: string
   hands_played: number
   started_at: string
 }
-interface Data {
-  user: { name: string; display_name: string; team: string; note: string; active: number; created_at: string }
-  rating: Rating | null
-  pair_stats: { name_a: string; name_b: string; bb_per_100_mean: number; ci_low: number; ci_high: number; samples: number }[]
-  recent_matches: MatchRow[]
+
+function mid(m: MatchRow): string {
+  return m.id ?? m.match_id ?? ''
+}
+function fmtTime(s?: string): string {
+  if (!s) return '—'
+  const d = new Date(s)
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleString()
 }
 
 export default function UserProfile() {
   const { name = '' } = useParams()
-  const [d, setD] = useState<Data | null>(null)
-  const [err, setErr] = useState('')
-  const [loading, setLoading] = useState(true)
+  const { user, loading: authLoading, refresh } = useAuth()
+  const isMe = !!user && user.username === name
 
-  useEffect(() => {
+  const [bots, setBots] = useState<Bot[]>([])
+  const [matches, setMatches] = useState<MatchRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [err, setErr] = useState('')
+
+  // 改密码
+  const [pwd, setPwd] = useState({ old: '', new: '', confirm: '' })
+  const [pwdMsg, setPwdMsg] = useState('')
+  const [pwdErr, setPwdErr] = useState('')
+  const [pwdBusy, setPwdBusy] = useState(false)
+
+  const load = () => {
+    if (!isMe) {
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setErr('')
-    apiGet<Data>(`/api/users/${encodeURIComponent(name)}`)
-      .then(setD)
-      .catch((e) => setErr(String(e)))
+    Promise.all([
+      apiGet<{ bots: Bot[] }>('/api/bots?scope=mine').catch(() => ({ bots: [] })),
+      apiGet<{ matches: MatchRow[]; total: number }>('/api/matches?limit=20&offset=0').catch(
+        () => ({ matches: [], total: 0 }),
+      ),
+    ])
+      .then(([a, b]) => {
+        setBots(a.bots || [])
+        setMatches(b.matches || [])
+      })
+      .catch((e) => setErr(errMsg(e, '加载失败')))
       .finally(() => setLoading(false))
-  }, [name])
+  }
 
-  if (loading) return <div className="p-8 text-center text-slate-400">加载…</div>
-  if (err) return (
-    <div className="p-8 text-center">
-      <p className="mb-2 text-rose-400">{err.includes('404') ? `用户不存在: ${name}` : err}</p>
-      <Link to="/leaderboard" className="text-amber-300 hover:underline">回天梯</Link>
-    </div>
-  )
-  if (!d) return null
+  useEffect(() => {
+    if (!authLoading) load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authLoading, isMe, name])
 
-  const r = d.rating
-  const me = (m: MatchRow) => (m.name_a === name ? m.earnings_a : m.earnings_b)
-  const opp = (m: MatchRow) => (m.name_a === name ? m.name_b : m.name_a)
+  const changePwd = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setPwdErr('')
+    setPwdMsg('')
+    if (pwd.new !== pwd.confirm) {
+      setPwdErr('两次新密码不一致')
+      return
+    }
+    if (pwd.new.length < 8) {
+      setPwdErr('新密码至少 8 位')
+      return
+    }
+    setPwdBusy(true)
+    try {
+      const d = await apiJson<{ ok: boolean; message?: string }>(
+        '/api/auth/change-password',
+        'POST',
+        { old_password: pwd.old, new_password: pwd.new },
+      )
+      setPwdMsg(d.message || '密码已修改')
+      setPwd({ old: '', new: '', confirm: '' })
+      void refresh()
+    } catch (e) {
+      setPwdErr(errMsg(e, '修改失败'))
+    } finally {
+      setPwdBusy(false)
+    }
+  }
+
+  if (authLoading) {
+    return <div className="p-8 text-center text-slate-400">加载…</div>
+  }
+
+  if (!user) {
+    return (
+      <div className="p-8 text-center">
+        <p className="mb-3 text-slate-300">请先登录</p>
+        <Link to="/login" className="text-amber-300 hover:underline">去登录 →</Link>
+      </div>
+    )
+  }
+
+  // 非「我」的页面:新平台无公开用户详情接口,给个友好提示
+  if (!isMe) {
+    return (
+      <div className="mx-auto max-w-4xl p-4">
+        <h1 className="mb-3 text-xl font-bold text-slate-100">@{name}</h1>
+        <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-6 text-slate-400">
+          该用户档案暂不对外公开。可去
+          <Link to="/leaderboard" className="mx-1 text-amber-300 hover:underline">排行榜</Link>
+          查看 bot 战绩。
+        </div>
+      </div>
+    )
+  }
+
+  const activeBots = bots.filter((b) => b.is_active).length
+  const totalEarnings = matches.reduce((s, m) => {
+    // 我的视角:bot_a 通常是我发起的;若 bot_b_name 是我的用户名相关则取 b
+    // 这里没有 owner_id 字段简化处理,只统计我能确认是「我方」的:
+    // 由于 list_matches 不直接给 owner 视角,我们用 bot_a_id/bot_b_id 是否在我的 bot 中
+    const myBotIds = new Set(bots.map((b) => b.id))
+    let earn = 0
+    if (myBotIds.has(m.bot_a_id ?? -1)) earn += m.earnings_a
+    if (myBotIds.has(m.bot_b_id ?? -1)) earn += m.earnings_b
+    return s + earn
+  }, 0)
 
   return (
     <div className="mx-auto max-w-4xl p-4">
-      <div className="mb-4">
-        <h1 className="text-xl font-bold text-slate-100">
-          {d.user.display_name} <span className="text-base text-slate-400">({d.user.name})</span>
-        </h1>
-        {d.user.team && <p className="text-sm text-slate-400">队伍: {d.user.team}</p>}
-        {d.user.note && <p className="text-sm text-slate-400">{d.user.note}</p>}
-        {!d.user.active && <span className="text-xs text-rose-400">已停用</span>}
-      </div>
-      {r ? (
-        <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
-          <Card label="rating" value={r.rating.toFixed(1)} hl />
-          <Card label="RD" value={r.rd.toFixed(0)} />
-          <Card label="战绩" value={`${r.wins}-${r.losses}-${r.draws}`} />
-          <Card
-            label="净筹码"
-            value={(r.net_chips >= 0 ? '+' : '') + r.net_chips.toLocaleString()}
-            cls={r.net_chips >= 0 ? 'text-emerald-300' : 'text-rose-300'}
+      {/* 用户信息 */}
+      <div className="mb-4 rounded-2xl border border-slate-700 bg-slate-800/60 p-5">
+        <div className="flex items-center gap-3">
+          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-amber-400 to-amber-600 text-2xl font-bold text-slate-900">
+            {(user.display_name || user.username).slice(0, 1).toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-xl font-bold text-slate-100">
+              {user.display_name || user.username}
+              {user.role === 'admin' && (
+                <span className="ml-2 rounded bg-rose-500/30 px-1.5 text-xs text-rose-300">admin</span>
+              )}
+            </h1>
+            <div className="font-mono text-sm text-slate-400">@{user.username}</div>
+            <div className="text-xs text-slate-500">{user.email}</div>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-3 gap-3">
+          <Stat label="我的 Bot" value={`${bots.length}`} sub={`${activeBots} 上架`} />
+          <Stat label="最近 20 场" value={`${matches.length}`} sub="条记录" />
+          <Stat
+            label="近期净筹码"
+            value={`${totalEarnings >= 0 ? '+' : ''}${totalEarnings.toLocaleString()}`}
+            cls={totalEarnings >= 0 ? 'text-emerald-300' : 'text-rose-300'}
           />
         </div>
-      ) : (
-        <p className="mb-4 text-slate-400">暂无评分</p>
-      )}
-
-      {d.pair_stats.length > 0 && (
-        <div className="mb-4">
-          <h2 className="mb-2 font-semibold text-slate-200">对各对手 bb/100</h2>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-700 text-slate-400">
-                <th className="py-1 text-left">对手</th>
-                <th className="text-right">bb/100</th>
-                <th className="text-right">95% CI</th>
-                <th className="text-right">n</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.pair_stats.map((p, i) => (
-                <tr key={i} className="border-b border-slate-800">
-                  <td className="py-1">{p.name_a === name ? p.name_b : p.name_a}</td>
-                  <td className={`text-right font-mono ${p.bb_per_100_mean >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {p.bb_per_100_mean.toFixed(2)}
-                  </td>
-                  <td className="text-right font-mono text-slate-400">
-                    [{p.ci_low.toFixed(2)}, {p.ci_high.toFixed(2)}]
-                  </td>
-                  <td className="text-right text-slate-400">{p.samples}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="mt-3 text-xs text-slate-500">
+          注册于 {fmtTime(user.created_at)} · 最近登录 {fmtTime(user.last_login_at)}
         </div>
-      )}
+      </div>
 
-      <h2 className="mb-2 font-semibold text-slate-200">最近 {d.recent_matches.length} 场</h2>
-      <div className="flex flex-col gap-1">
-        {d.recent_matches.map((m) => (
+      <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+        {/* 左:bot + 对局 */}
+        <div className="flex flex-col gap-4">
+          {err && <div className="rounded bg-rose-900/30 px-3 py-2 text-sm text-rose-400">{err}</div>}
+
+          <section className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-semibold text-slate-200">我的 Bot</h2>
+              <Link to="/my-bots" className="text-xs text-amber-300 hover:underline">管理 →</Link>
+            </div>
+            {loading ? (
+              <div className="py-3 text-center text-sm text-slate-500">加载…</div>
+            ) : bots.length === 0 ? (
+              <div className="py-3 text-center text-sm text-slate-500">
+                还没有 bot,<Link to="/my-bots" className="text-amber-300 hover:underline">去上传 →</Link>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {bots.map((b) => (
+                  <div
+                    key={b.id}
+                    className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="truncate font-semibold text-slate-100">{b.display_name || b.name}</span>
+                        {b.is_active ? (
+                          <span className="rounded bg-emerald-500/20 px-1 text-[10px] text-emerald-300">上架</span>
+                        ) : (
+                          <span className="rounded bg-slate-600/30 px-1 text-[10px] text-slate-400">下架</span>
+                        )}
+                      </div>
+                      <div className="font-mono text-xs text-slate-500">
+                        {b.name} · {b.protocol} · v{b.current_version}
+                      </div>
+                    </div>
+                    <Link
+                      to="/challenge"
+                      className="shrink-0 rounded border border-amber-500/60 px-2 py-0.5 text-xs text-amber-300 hover:bg-slate-800"
+                    >
+                      对战
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-semibold text-slate-200">我的对局(近 20)</h2>
+              <Link to="/history" className="text-xs text-amber-300 hover:underline">全部 →</Link>
+            </div>
+            {matches.length === 0 ? (
+              <div className="py-3 text-center text-sm text-slate-500">暂无对局</div>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {matches.map((m) => (
+                  <Link
+                    key={mid(m)}
+                    to={`/match/${mid(m)}`}
+                    className="flex items-center justify-between rounded border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm hover:bg-slate-800/60"
+                  >
+                    <div className="min-w-0 flex-1 truncate">
+                      <span className="text-slate-300">{m.bot_a_display || m.bot_a_name}</span>
+                      <span className="mx-1 text-xs text-slate-500">vs</span>
+                      <span className="text-slate-300">{m.bot_b_display || m.bot_b_name}</span>
+                    </div>
+                    <span className="ml-2 shrink-0 font-mono text-xs text-slate-500">
+                      {fmtTime(m.started_at)}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+        </div>
+
+        {/* 右:改密码 */}
+        <aside className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+          <h2 className="mb-3 font-semibold text-slate-200">修改密码</h2>
+          <form onSubmit={changePwd} className="flex flex-col gap-2">
+            <input
+              type="password"
+              value={pwd.old}
+              onChange={(e) => setPwd({ ...pwd, old: e.target.value })}
+              placeholder="当前密码"
+              required
+              className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            />
+            <input
+              type="password"
+              value={pwd.new}
+              onChange={(e) => setPwd({ ...pwd, new: e.target.value })}
+              placeholder="新密码(至少 8 位)"
+              required
+              className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            />
+            <input
+              type="password"
+              value={pwd.confirm}
+              onChange={(e) => setPwd({ ...pwd, confirm: e.target.value })}
+              placeholder="确认新密码"
+              required
+              className="rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            />
+            {pwdErr && <div className="text-xs text-rose-400">{pwdErr}</div>}
+            {pwdMsg && <div className="text-xs text-emerald-300">{pwdMsg}</div>}
+            <button
+              type="submit"
+              disabled={pwdBusy}
+              className="rounded bg-amber-400 px-4 py-2 text-sm font-bold text-slate-900 hover:bg-amber-300 disabled:opacity-50"
+            >
+              {pwdBusy ? '修改中…' : '修改'}
+            </button>
+          </form>
           <Link
-            key={m.match_id}
-            to={`/match/${m.match_id}`}
-            className="flex items-center justify-between rounded border border-slate-800 bg-slate-800/40 px-3 py-2 text-sm hover:bg-slate-800"
+            to="/reset-password"
+            className="mt-3 block text-center text-xs text-slate-400 hover:text-amber-300 hover:underline"
           >
-            <span className="truncate text-slate-300">vs {opp(m)}</span>
-            <span className={`ml-2 font-mono ${me(m) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-              {me(m) >= 0 ? '+' : ''}{me(m)} ({m.reason})
-            </span>
+            忘记密码?
           </Link>
-        ))}
+        </aside>
       </div>
     </div>
   )
 }
 
-function Card({ label, value, hl, cls }: { label: string; value: string; hl?: boolean; cls?: string }) {
+function Stat({
+  label,
+  value,
+  sub,
+  cls,
+}: {
+  label: string
+  value: string
+  sub?: string
+  cls?: string
+}) {
   return (
-    <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-3">
+    <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-3 text-center">
       <div className="text-xs text-slate-400">{label}</div>
-      <div className={`font-mono text-lg font-bold ${cls || (hl ? 'text-amber-300' : 'text-slate-100')}`}>{value}</div>
+      <div className={`mt-1 font-mono text-lg font-bold ${cls || 'text-amber-300'}`}>{value}</div>
+      {sub && <div className="text-[10px] text-slate-500">{sub}</div>}
     </div>
   )
 }

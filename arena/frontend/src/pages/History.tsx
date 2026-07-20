@@ -1,39 +1,63 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { apiGet } from '../api'
+import { apiGet, errMsg } from '../api'
 
 interface MatchRow {
-  match_id: string
-  name_a: string
-  name_b: string
+  id?: string
+  match_id?: string
+  bot_a_name: string
+  bot_b_name: string
+  bot_a_display?: string
+  bot_b_display?: string
   earnings_a: number
   earnings_b: number
   winner: number | null
   reason: string
   hands_played: number
+  status?: string
+  match_type?: string
   started_at: string
-  ended_at: string
+  ended_at?: string
 }
 
 interface Data {
   matches: MatchRow[]
   total: number
+  limit?: number
+  offset?: number
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  pending: '排队中',
+  running: '进行中',
+  completed: '已完成',
+  errored: '出错',
+  cancelled: '已取消',
+}
+
+function mid(m: MatchRow): string {
+  return m.id ?? m.match_id ?? ''
+}
 function fmtTime(s?: string): string {
   if (!s) return '—'
   const d = new Date(s)
   return Number.isNaN(d.getTime()) ? s : d.toLocaleString()
 }
-
 function earningsStr(n: number): string {
-  return (n >= 0 ? '+' : '') + n.toLocaleString()
+  return (n >= 0 ? '+' : '') + (n ?? 0).toLocaleString()
+}
+function disp(m: MatchRow, side: 'a' | 'b'): string {
+  return side === 'a'
+    ? m.bot_a_display || m.bot_a_name
+    : m.bot_b_display || m.bot_b_name
 }
 
+const PAGE_SIZE = 20
+
 export default function History() {
-  const [userInput, setUserInput] = useState('')
-  const [user, setUser] = useState('')
-  const [limit] = useState(30)
+  const [statusFilter, setStatusFilter] = useState('')
+  const [botInput, setBotInput] = useState('')
+  const [botFilter, setBotFilter] = useState('')
   const [offset, setOffset] = useState(0)
   const [data, setData] = useState<Data | null>(null)
   const [loading, setLoading] = useState(true)
@@ -42,50 +66,80 @@ export default function History() {
   useEffect(() => {
     setLoading(true)
     setErr('')
-    const q = new URLSearchParams({ limit: String(limit), offset: String(offset) })
-    if (user) q.set('user', user)
+    const q = new URLSearchParams({
+      limit: String(PAGE_SIZE),
+      offset: String(offset),
+    })
+    if (statusFilter) q.set('status', statusFilter)
     apiGet<Data>(`/api/matches?${q.toString()}`)
       .then(setData)
-      .catch((e) => setErr(String(e)))
+      .catch((e) => setErr(errMsg(e, '加载失败')))
       .finally(() => setLoading(false))
-  }, [user, limit, offset])
+  }, [statusFilter, botFilter, offset])
 
   const onSearch = () => {
+    setBotFilter(botInput.trim())
     setOffset(0)
-    setUser(userInput.trim())
   }
 
-  const matches = data?.matches || []
+  const matches = (data?.matches || []).filter((m) => {
+    if (!botFilter) return true
+    const k = botFilter.toLowerCase()
+    return (
+      (m.bot_a_name || '').toLowerCase().includes(k) ||
+      (m.bot_b_name || '').toLowerCase().includes(k) ||
+      (m.bot_a_display || '').toLowerCase().includes(k) ||
+      (m.bot_b_display || '').toLowerCase().includes(k)
+    )
+  })
   const total = data?.total ?? 0
   const from = total > 0 ? offset + 1 : 0
-  const to = Math.min(offset + limit, total)
+  const to = Math.min(offset + PAGE_SIZE, total)
   const hasPrev = offset > 0
-  const hasNext = offset + limit < total
+  const hasNext = offset + PAGE_SIZE < total
 
   return (
     <div className="mx-auto max-w-4xl p-4">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-slate-100">历史对局</h1>
+          <h1 className="text-xl font-bold text-slate-100">对局历史</h1>
           <p className="text-sm text-slate-400">
             共 <span className="font-mono text-amber-300">{total.toLocaleString()}</span> 场
           </p>
         </div>
-        <div className="flex gap-2">
-          <input
-            value={userInput}
-            onChange={(e) => setUserInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') onSearch()
-            }}
-            placeholder="按用户名筛选"
-            className="w-48 rounded border border-slate-700 bg-slate-800 px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 outline-none focus:border-amber-400"
-          />
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="flex flex-col gap-1 text-xs text-slate-400">
+            状态
+            <select
+              value={statusFilter}
+              onChange={(e) => {
+                setStatusFilter(e.target.value)
+                setOffset(0)
+              }}
+              className="rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 focus:border-amber-400 focus:outline-none"
+            >
+              <option value="">全部</option>
+              <option value="completed">已完成</option>
+              <option value="running">进行中</option>
+              <option value="pending">排队中</option>
+              <option value="errored">出错</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-400">
+            按 bot 名筛
+            <input
+              value={botInput}
+              onChange={(e) => setBotInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && onSearch()}
+              placeholder="bot 名(任意一方)"
+              className="w-44 rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            />
+          </label>
           <button
             onClick={onSearch}
             className="rounded bg-amber-400 px-4 py-1.5 text-sm font-bold text-slate-900 hover:bg-amber-300"
           >
-            查询
+            筛选
           </button>
         </div>
       </div>
@@ -93,9 +147,11 @@ export default function History() {
       {loading ? (
         <div className="py-12 text-center text-slate-400">加载…</div>
       ) : err ? (
-        <div className="py-12 text-center text-rose-400">加载失败: {err}</div>
+        <div className="py-12 text-center text-rose-400">{err}</div>
       ) : matches.length === 0 ? (
-        <div className="py-12 text-center text-slate-400">暂无对局</div>
+        <div className="py-12 text-center text-slate-400">
+          {botFilter ? `没有匹配「${botFilter}」的对局` : '暂无对局'}
+        </div>
       ) : (
         <div className="flex flex-col gap-2">
           {matches.map((m) => {
@@ -103,23 +159,27 @@ export default function History() {
             const bWin = m.winner === 1
             return (
               <Link
-                key={m.match_id}
-                to={`/match/${m.match_id}`}
+                key={mid(m)}
+                to={`/match/${mid(m)}`}
                 className="block rounded-xl border border-slate-700 bg-slate-800/60 p-4 transition hover:border-amber-400/60 hover:bg-slate-800"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span
-                    className={`min-w-0 flex-1 truncate font-semibold ${aWin ? 'text-amber-300' : 'text-slate-100'}`}
+                    className={`min-w-0 flex-1 truncate font-semibold ${
+                      aWin ? 'text-amber-300' : 'text-slate-100'
+                    }`}
                   >
-                    {m.name_a}
+                    {disp(m, 'a')}
                     {aWin && <span className="ml-1 text-xs">胜</span>}
                   </span>
                   <span className="shrink-0 font-mono text-xs text-slate-500">vs</span>
                   <span
-                    className={`min-w-0 flex-1 truncate text-right font-semibold ${bWin ? 'text-amber-300' : 'text-slate-100'}`}
+                    className={`min-w-0 flex-1 truncate text-right font-semibold ${
+                      bWin ? 'text-amber-300' : 'text-slate-100'
+                    }`}
                   >
                     {bWin && <span className="mr-1 text-xs">胜</span>}
-                    {m.name_b}
+                    {disp(m, 'b')}
                   </span>
                 </div>
                 <div className="mt-2 flex items-center justify-between gap-2 text-sm">
@@ -132,10 +192,26 @@ export default function History() {
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
                   <span className="font-mono">{(m.hands_played ?? 0).toLocaleString()} 手</span>
+                  {m.status && (
+                    <>
+                      <span>·</span>
+                      <span
+                        className={
+                          m.status === 'running'
+                            ? 'text-emerald-400'
+                            : m.status === 'errored'
+                              ? 'text-rose-400'
+                              : ''
+                        }
+                      >
+                        {STATUS_LABEL[m.status] ?? m.status}
+                      </span>
+                    </>
+                  )}
                   {m.reason && (
                     <>
                       <span>·</span>
-                      <span>{m.reason}</span>
+                      <span className="truncate">{m.reason}</span>
                     </>
                   )}
                   <span>·</span>
@@ -150,7 +226,7 @@ export default function History() {
       {!loading && !err && total > 0 && (
         <div className="mt-4 flex items-center justify-between gap-2 text-sm">
           <button
-            onClick={() => setOffset((o) => Math.max(0, o - limit))}
+            onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}
             disabled={!hasPrev}
             className="rounded border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
           >
@@ -162,7 +238,7 @@ export default function History() {
             <span className="font-mono text-amber-300">{total.toLocaleString()}</span>
           </span>
           <button
-            onClick={() => setOffset((o) => Math.min(total - 1, o + limit))}
+            onClick={() => setOffset((o) => Math.min(total - 1, o + PAGE_SIZE))}
             disabled={!hasNext}
             className="rounded border border-slate-700 px-3 py-1 text-slate-200 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
           >

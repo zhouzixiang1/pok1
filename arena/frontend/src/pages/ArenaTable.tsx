@@ -1,49 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
+import CardView from '../components/CardView'
+import { apiGet } from '../api'
 
-// ── 卡牌:<suit,rank> -> ♠A 等 ──────────────────────────────
-// suit 0=♠ 1=♥ 2=♦ 3=♣ ; rank 0=2..8=T..12=A
-const SUIT_SYMBOL: Record<string, string> = { '0': '♠', '1': '♥', '2': '♦', '3': '♣' }
-const SUIT_RED: Record<string, boolean> = { '0': false, '1': true, '2': true, '3': false }
-const RANK: Record<string, string> = {
-  '0': '2', '1': '3', '2': '4', '3': '5', '4': '6', '5': '7', '6': '8',
-  '7': '9', '8': 'T', '9': 'J', '10': 'Q', '11': 'K', '12': 'A',
-}
+/* ══════════════════════════════════════════════════════════
+ * 实时观赛牌桌。
+ *
+ * 数据源:
+ *  - 进入时拉 /api/state 获取 current_match_id
+ *  - 若有,订阅 /api/matches/{id}/events(SSE)
+ *    · 首帧 snapshot(含 events: 已落盘历史事件)
+ *    · 后续按 match_id 过滤的事件(hand_start/stage/action/settle/...)
+ *  - 没有进行中比赛时,引导去 /history 或 /challenge
+ *
+ * 事件结构沿用旧版 applyEvent(与原 server SSE 兼容)。
+ * ══════════════════════════════════════════════════════════ */
 
-function parseCard(s: string): { suit: string; rank: string } | null {
-  const m = /^<(\d+),(\d+)>$/.exec(s)
-  return m ? { suit: m[1], rank: m[2] } : null
-}
-
-function CardView({ card, hidden }: { card?: string; hidden?: boolean }) {
-  if (hidden) {
-    return (
-      <span className="inline-flex h-14 w-10 items-center justify-center rounded-md border border-slate-500 bg-gradient-to-b from-slate-700 to-slate-800 text-lg shadow">
-        🂠
-      </span>
-    )
-  }
-  const c = card ? parseCard(card) : null
-  if (!c) {
-    return (
-      <span className="inline-flex h-14 w-10 items-center justify-center rounded-md border border-dashed border-slate-600 text-xs text-slate-600">
-        —
-      </span>
-    )
-  }
-  const red = SUIT_RED[c.suit]
-  return (
-    <span
-      className={`inline-flex h-14 w-10 flex-col items-center justify-center rounded-md border border-slate-300 bg-white font-bold shadow ${
-        red ? 'text-rose-600' : 'text-slate-900'
-      }`}
-    >
-      <span className="text-sm leading-none">{RANK[c.rank]}</span>
-      <span className="text-lg leading-none">{SUIT_SYMBOL[c.suit]}</span>
-    </span>
-  )
-}
-
-// ── 状态 ────────────────────────────────────────────────────
 interface ActionLog {
   idx: number
   action: string
@@ -108,12 +79,20 @@ const INITIAL: ArenaState = {
 }
 
 const STAGE_LABEL: Record<string, string> = {
-  preflop: '翻前', flop: '翻牌', turn: '转牌', river: '河牌',
+  preflop: '翻前',
+  flop: '翻牌',
+  turn: '转牌',
+  river: '河牌',
+  showdown: '摊牌',
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  idle: '未启动', listening: '等待引擎连接', waiting_clients: '等待第二个引擎',
-  playing: '比赛进行中', ended: '比赛结束', stopping: '停止中', match_ended: '比赛结束',
+  idle: '空闲',
+  running: '进行中',
+  pending: '排队中',
+  completed: '已完成',
+  errored: '出错',
+  not_found: '未找到',
 }
 
 function actionText(ev: any): string {
@@ -132,21 +111,21 @@ function applyEvent(prev: ArenaState, ev: any): ArenaState {
   const t = ev.type
   const s: ArenaState = { ...prev }
   switch (t) {
-    case 'snapshot':
+    case 'snapshot': {
+      // /api/matches/{id}/events 首帧:含 status / winner / earnings / events
       s.connected = true
       s.status = ev.status ?? s.status
       s.matchId = ev.match_id ?? s.matchId
-      if (ev.names?.length) s.names = ev.names
-      s.handsPerMatch = ev.hands_per_match ?? s.handsPerMatch
-      s.handNum = ev.hand_num ?? 0
-      s.totalEarnings = ev.total_earnings ?? s.totalEarnings
-      s.matchesPlayed = ev.matches_played ?? 0
-      return s
+      s.handNum = ev.hands_played ?? s.handNum
+      s.handsPerMatch = ev.total_hands ?? s.handsPerMatch
+      if (Array.isArray(ev.earnings)) s.totalEarnings = ev.earnings
+      // 重放历史事件(从空状态开始)
+      let st = { ...INITIAL, connected: true, matchId: s.matchId, status: s.status }
+      for (const h of ev.events || []) st = applyEvent(st, h)
+      return { ...s, ...st, connected: true }
+    }
     case 'connected':
       s.connected = true
-      return s
-    case 'server_started':
-      s.status = 'listening'
       return s
     case 'match_start':
       s.matchId = ev.match_id
@@ -158,7 +137,7 @@ function applyEvent(prev: ArenaState, ev: any): ArenaState {
       s.lastSettle = null
       s.matchEndReason = null
       s.matchEndLoser = null
-      s.status = 'playing'
+      s.status = 'running'
       return s
     case 'hand_start':
       s.handNum = ev.hand
@@ -171,6 +150,7 @@ function applyEvent(prev: ArenaState, ev: any): ArenaState {
       s.actingIdx = -1
       s.deadlineMs = 0
       s.lastSettle = null
+      if (ev.names?.length) s.names = ev.names
       return s
     case 'cards_dealt':
       if (ev.hole_cards) s.holeCards = ev.hole_cards
@@ -222,7 +202,7 @@ function applyEvent(prev: ArenaState, ev: any): ArenaState {
     case 'match_end':
       s.matchEndReason = ev.reason ?? 'completed'
       s.matchEndLoser = ev.loser_idx ?? null
-      s.status = 'ended'
+      s.status = 'completed'
       if (ev.total_earnings) s.totalEarnings = ev.total_earnings
       if (ev.hands_played) s.handNum = ev.hands_played
       s.actingIdx = -1
@@ -233,42 +213,49 @@ function applyEvent(prev: ArenaState, ev: any): ArenaState {
   }
 }
 
-function useNowTick(): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const i = setInterval(() => setNow(Date.now()), 250)
-    return () => clearInterval(i)
-  }, [])
-  return now
-}
-
 export default function ArenaTable() {
   const [state, setState] = useState<ArenaState>(INITIAL)
   const [showLog, setShowLog] = useState(true)
+  const [manualMatchId, setManualMatchId] = useState('')
+  const [targetMatchId, setTargetMatchId] = useState<string | null>(null)
+  const [noMatch, setNoMatch] = useState(false)
   const logRef = useRef<HTMLDivElement>(null)
-  const now = useNowTick()
 
+  // 取当前进行中的对局(自动观赛)
   useEffect(() => {
-    const es = new EventSource('/api/arena/events')
+    if (targetMatchId !== null) return // 已手动指定
+    apiGet<any>('/api/state')
+      .then((d) => {
+        if (d?.current_match_id) {
+          setTargetMatchId(d.current_match_id)
+        } else {
+          setNoMatch(true)
+        }
+      })
+      .catch(() => setNoMatch(true))
+  }, [targetMatchId])
+
+  // 订阅 SSE
+  useEffect(() => {
+    if (!targetMatchId) return
+    setState({ ...INITIAL })
+    const es = new EventSource(`/api/matches/${encodeURIComponent(targetMatchId)}/events`)
     es.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data)
         setState((prev) => applyEvent(prev, ev))
       } catch {
-        /* 忽略非 JSON 帧(keepalive 注释行不进 onmessage) */
+        /* 忽略 keepalive 注释 */
       }
     }
     es.onopen = () => setState((prev) => ({ ...prev, connected: true }))
     es.onerror = () => setState((prev) => ({ ...prev, connected: false }))
     return () => es.close()
-  }, [])
+  }, [targetMatchId])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [state.actions])
-
-  const remaining =
-    state.deadlineMs > 0 ? Math.max(0, Math.round((state.deadlineMs - now) / 1000)) : null
 
   const renderPlayer = (idx: number, isLower: boolean) => {
     const name = state.names[idx] ?? `玩家${idx}`
@@ -287,11 +274,9 @@ export default function ArenaTable() {
         } ${folded ? 'opacity-50' : ''}`}
       >
         <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-400">{isLower ? '▼ 桌面下方' : '▲ 桌面上方'}</span>
+          <span className="text-xs text-slate-400">{isLower ? '▼ 我方' : '▲ 对手'}</span>
           {acting && (
-            <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-slate-900">
-              行动中
-            </span>
+            <span className="rounded bg-amber-400 px-1.5 py-0.5 text-[10px] font-bold text-slate-900">行动中</span>
           )}
           {folded && (
             <span className="rounded bg-slate-600 px-1.5 py-0.5 text-[10px] text-slate-200">已弃牌</span>
@@ -301,8 +286,8 @@ export default function ArenaTable() {
         <div className="flex gap-1">
           {cards.length === 0 ? (
             <>
-              <CardView />
-              <CardView />
+              <CardView hidden />
+              <CardView hidden />
             </>
           ) : (
             cards.map((c, i) => <CardView key={i} card={showCards ? c : undefined} hidden={!showCards} />)
@@ -324,14 +309,14 @@ export default function ArenaTable() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-6xl flex-col gap-3 p-4">
+    <div className="mx-auto flex min-h-[80vh] max-w-6xl flex-col gap-3 p-4">
       <header className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-900/80 px-4 py-3">
         <div className="flex items-center gap-3">
           <span
             className={`h-3 w-3 rounded-full ${state.connected ? 'bg-emerald-400' : 'bg-slate-500'}`}
             title={state.connected ? '已连接 SSE' : '断开'}
           />
-          <h1 className="text-lg font-bold text-slate-100">德州扑克对弈平台</h1>
+          <h1 className="text-lg font-bold text-slate-100">观赛大厅</h1>
           <span className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-200">
             {STATUS_LABEL[state.status] ?? state.status}
           </span>
@@ -341,124 +326,139 @@ export default function ArenaTable() {
             第 <span className="font-mono font-bold text-amber-300">{state.handNum}</span> /{' '}
             {state.handsPerMatch} 手
           </span>
-          <span>
-            已完成 <span className="font-mono">{state.matchesPlayed}</span> 场
-          </span>
           {state.matchId && (
             <span className="hidden font-mono text-xs text-slate-500 md:inline">{state.matchId}</span>
           )}
         </div>
       </header>
 
-      <main className="grid gap-3 lg:grid-cols-[1fr_320px]">
-        <section className="rounded-2xl border border-slate-700 bg-gradient-to-b from-emerald-950 to-slate-900 p-5">
-          {renderPlayer(1, false)}
-          <div className="my-4 flex flex-col items-center gap-2">
-            <div className="text-xs uppercase tracking-wider text-emerald-300/70">
-              {state.stage ? STAGE_LABEL[state.stage] ?? state.stage : '公共牌'}
-            </div>
-            <div className="flex min-h-[56px] items-center gap-1.5">
-              {state.community.length === 0 ? (
-                <>
-                  <CardView />
-                  <CardView />
-                  <CardView />
-                  <CardView />
-                  <CardView />
-                </>
-              ) : (
-                state.community.map((c, i) => <CardView key={i} card={c} />)
-              )}
-            </div>
-            <div className="flex items-center gap-4">
-              <div className="text-sm text-slate-400">
-                底池 <span className="font-mono text-lg font-bold text-amber-300">{state.pot.toLocaleString()}</span>
-              </div>
-              {remaining != null && (
-                <div
-                  className={`rounded-lg px-3 py-1 font-mono text-lg font-bold ${
-                    remaining <= 10 ? 'bg-rose-600 text-white' : 'bg-slate-700 text-amber-300'
-                  }`}
-                >
-                  ⏱ {remaining}s
-                </div>
-              )}
-            </div>
+      {/* 手动指定 match_id */}
+      {!targetMatchId && (
+        <div className="rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+          <div className="mb-2 text-sm text-slate-300">
+            {noMatch ? '当前没有进行中的对局。可粘贴 match_id 观看回放直播,或去发起对战:' : '加载中…'}
           </div>
-          {renderPlayer(0, true)}
-
-          {state.lastSettle && (
-            <div className="mt-3 rounded-lg border border-slate-600 bg-slate-800/80 p-3 text-sm">
-              <div className="font-semibold text-slate-200">
-                第 {state.lastSettle.hand} 手结算：
-                {state.lastSettle.winnerIdx == null
-                  ? '平局'
-                  : `${state.names[state.lastSettle.winnerIdx] ?? `玩家${state.lastSettle.winnerIdx}`} 赢得底池`}
-                <span className="ml-2 font-mono text-amber-300">{state.lastSettle.pot.toLocaleString()}</span>
-              </div>
-              {state.lastSettle.isShowdown && (
-                <div className="mt-1 text-xs text-slate-400">
-                  {state.lastSettle.sbHand && <>SB({state.lastSettle.sbHand}) </>}
-                  {state.lastSettle.bbHand && <>BB({state.lastSettle.bbHand})</>}
-                </div>
-              )}
-            </div>
-          )}
-
-          {state.matchEndReason && (
-            <div
-              className={`mt-3 rounded-lg p-3 text-center font-semibold ${
-                state.matchEndReason === 'completed'
-                  ? 'bg-emerald-700/40 text-emerald-200'
-                  : 'bg-rose-700/40 text-rose-200'
-              }`}
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              value={manualMatchId}
+              onChange={(e) => setManualMatchId(e.target.value)}
+              placeholder="match_id(如 m-xxxx-a_vs_b)"
+              className="flex-1 rounded border border-slate-600 bg-slate-900 px-3 py-1.5 text-sm text-slate-100 placeholder:text-slate-500 focus:border-amber-400 focus:outline-none"
+            />
+            <button
+              onClick={() => manualMatchId.trim() && setTargetMatchId(manualMatchId.trim())}
+              disabled={!manualMatchId.trim()}
+              className="rounded bg-amber-400 px-4 py-1.5 text-sm font-bold text-slate-900 hover:bg-amber-300 disabled:opacity-50"
             >
-              比赛结束 ·{' '}
-              {state.matchEndReason === 'disconnected'
-                ? `玩家${state.matchEndLoser ?? ''}(${state.names[state.matchEndLoser ?? -1] ?? ''}) 断线弃权`
-                : state.matchEndReason === 'completed'
-                ? '正常完成'
-                : state.matchEndReason}
-              <span className="ml-2 font-mono">
-                ({state.totalEarnings[0].toLocaleString()} / {state.totalEarnings[1].toLocaleString()})
-              </span>
-            </div>
-          )}
-        </section>
+              观赛
+            </button>
+            <a
+              href="#/challenge"
+              className="rounded border border-amber-400/60 px-4 py-1.5 text-sm text-amber-300 hover:bg-slate-800"
+            >
+              发起对战 →
+            </a>
+            <a
+              href="#/history"
+              className="rounded border border-slate-600 px-4 py-1.5 text-sm text-slate-300 hover:bg-slate-800"
+            >
+              看历史
+            </a>
+          </div>
+        </div>
+      )}
 
-        <aside className="flex flex-col rounded-2xl border border-slate-700 bg-slate-900/80">
-          <button
-            onClick={() => setShowLog((v) => !v)}
-            className="flex items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-200"
-          >
-            <span>动作历史 ({state.actions.length})</span>
-            <span className="text-xs text-slate-500">{showLog ? '收起 ▲' : '展开 ▼'}</span>
-          </button>
-          {showLog && (
-            <div ref={logRef} className="max-h-[60vh] flex-1 overflow-y-auto px-3 pb-3 font-mono text-xs">
-              {state.actions.length === 0 ? (
-                <div className="px-2 py-4 text-center text-slate-500">暂无动作</div>
-              ) : (
-                state.actions.map((a, i) => (
-                  <div
-                    key={i}
-                    className={`border-b border-slate-800 py-1 ${
-                      a.idx === 0 ? 'text-sky-300' : 'text-fuchsia-300'
-                    }`}
-                  >
-                    <span className="text-slate-500">[H{a.hand} {STAGE_LABEL[a.stage] ?? a.stage}]</span>{' '}
-                    {state.names[a.idx] ?? `P${a.idx}`}: {a.text}
-                  </div>
-                ))
-              )}
+      {targetMatchId && (
+        <main className="grid gap-3 lg:grid-cols-[1fr_320px]">
+          <section className="rounded-2xl border border-slate-700 bg-gradient-to-b from-emerald-950 to-slate-900 p-5">
+            {renderPlayer(1, false)}
+            <div className="my-4 flex flex-col items-center gap-2">
+              <div className="text-xs uppercase tracking-wider text-emerald-300/70">
+                {state.stage ? STAGE_LABEL[state.stage] ?? state.stage : '公共牌'}
+              </div>
+              <div className="flex min-h-[56px] items-center gap-1.5">
+                {state.community.length === 0 ? (
+                  <>
+                    <CardView empty />
+                    <CardView empty />
+                    <CardView empty />
+                    <CardView empty />
+                    <CardView empty />
+                  </>
+                ) : (
+                  state.community.map((c, i) => <CardView key={i} card={c} />)
+                )}
+              </div>
+              <div className="flex items-center gap-4">
+                <div className="text-sm text-slate-400">
+                  底池 <span className="font-mono text-lg font-bold text-amber-300">{state.pot.toLocaleString()}</span>
+                </div>
+              </div>
             </div>
-          )}
-        </aside>
-      </main>
+            {renderPlayer(0, true)}
 
-      <footer className="text-center text-xs text-slate-600">
-        pok-arena · 刷新页面靠 SSE snapshot 首帧恢复 · TCP 50101 / Web 50180
-      </footer>
+            {state.lastSettle && (
+              <div className="mt-3 rounded-lg border border-slate-600 bg-slate-800/80 p-3 text-sm">
+                <div className="font-semibold text-slate-200">
+                  第 {state.lastSettle.hand} 手结算:
+                  {state.lastSettle.winnerIdx == null
+                    ? '平局'
+                    : `${state.names[state.lastSettle.winnerIdx] ?? `玩家${state.lastSettle.winnerIdx}`} 赢得底池`}
+                  <span className="ml-2 font-mono text-amber-300">{state.lastSettle.pot.toLocaleString()}</span>
+                </div>
+              </div>
+            )}
+
+            {state.matchEndReason && (
+              <div
+                className={`mt-3 rounded-lg p-3 text-center font-semibold ${
+                  state.matchEndReason === 'completed'
+                    ? 'bg-emerald-700/40 text-emerald-200'
+                    : 'bg-rose-700/40 text-rose-200'
+                }`}
+              >
+                比赛结束 · {state.matchEndReason}
+                <span className="ml-2 font-mono">
+                  ({state.totalEarnings[0].toLocaleString()} / {state.totalEarnings[1].toLocaleString()})
+                </span>
+                <a
+                  href={`#/match/${state.matchId}`}
+                  className="ml-3 text-xs text-amber-300 underline hover:no-underline"
+                >
+                  看完整回放 →
+                </a>
+              </div>
+            )}
+          </section>
+
+          <aside className="flex flex-col rounded-2xl border border-slate-700 bg-slate-900/80">
+            <button
+              onClick={() => setShowLog((v) => !v)}
+              className="flex items-center justify-between px-4 py-2 text-left text-sm font-semibold text-slate-200"
+            >
+              <span>动作历史 ({state.actions.length})</span>
+              <span className="text-xs text-slate-500">{showLog ? '收起 ▲' : '展开 ▼'}</span>
+            </button>
+            {showLog && (
+              <div ref={logRef} className="max-h-[60vh] flex-1 overflow-y-auto px-3 pb-3 font-mono text-xs">
+                {state.actions.length === 0 ? (
+                  <div className="px-2 py-4 text-center text-slate-500">暂无动作</div>
+                ) : (
+                  state.actions.map((a, i) => (
+                    <div
+                      key={i}
+                      className={`border-b border-slate-800 py-1 ${a.idx === 0 ? 'text-sky-300' : 'text-fuchsia-300'}`}
+                    >
+                      <span className="text-slate-500">[H{a.hand} {STAGE_LABEL[a.stage] ?? a.stage}]</span>{' '}
+                      {state.names[a.idx] ?? `P${a.idx}`}: {a.text}
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </aside>
+        </main>
+      )}
     </div>
   )
 }
