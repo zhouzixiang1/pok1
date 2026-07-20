@@ -88,6 +88,38 @@ def serve(
         typer.echo("interrupted", err=True)
 
 
+# ── serve-web(新平台,里程碑 8a)─────────────────────────────
+
+@app.command(name="serve-web")
+def serve_web(
+    host: str = typer.Option("127.0.0.1", "--host", help="绑定地址(默认 127.0.0.1)"),
+    web_port: int = typer.Option(50280, "--web-port", help="新平台 Web 端口(默认 50280,与旧 50180 区分)"),
+    db_path: str = typer.Option("arena_platform.db", "--db-path", help="新平台 SQLite 库"),
+    upload_root: Path = typer.Option(Path("bot_uploads"), "--upload-root", help="bot 上传根目录"),
+    no_builtin: bool = typer.Option(False, "--no-builtin", help="不自动注册内置 bot 库"),
+    log_file: str | None = typer.Option(None, "--log-file"),
+    log_level: str = typer.Option("INFO", "--log-level"),
+) -> None:
+    """启动新平台 web(botzone 风格:账号/bot上传/对战/排行榜/回放)。
+
+    与 serve(TCP 通道)隔离:独立端口 50280、独立 db arena_platform.db、
+    用户上传 bot 在 Docker 沙箱跑。
+    """
+    from .platform.main import WEB_DEFAULT_PORT, run_platform_server
+    if host == "0.0.0.0":
+        typer.echo("WARNING: binding 0.0.0.0 (新平台);务必配置好认证与防火墙。", err=True)
+    _setup_logging(log_file, log_level)
+    static_dir = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    try:
+        asyncio.run(run_platform_server(
+            host=host, web_port=web_port, db_path=db_path,
+            static_dir=static_dir, upload_root=str(upload_root),
+            register_builtin=not no_builtin,
+        ))
+    except KeyboardInterrupt:
+        typer.echo("interrupted", err=True)
+
+
 # ── connect(protocol exerciser)──────────────────────────────
 
 @app.command()

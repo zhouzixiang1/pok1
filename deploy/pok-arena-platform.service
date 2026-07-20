@@ -1,0 +1,22 @@
+# pok-arena 新平台 systemd user unit
+# 安装:mkdir -p ~/.config/systemd/user && cp deploy/pok-arena-platform.service ~/.config/systemd/user/
+# 启用:systemctl --user daemon-reload && systemctl --user enable --now pok-arena-platform
+# 查日志:journalctl --user -u pok-arena-platform -f
+# 注意:用 --user(不碰系统服务),不与现有 powmon-web/pok-worker-mcp 冲突
+
+[Unit]
+Description=pok-arena platform (botzone-style 对战平台)
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/project/pok-arena
+ExecStart=%h/project/pok-arena/.venv/bin/pok-arena serve-web
+Restart=on-failure
+RestartSec=5
+# 环境变量(可选)
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
