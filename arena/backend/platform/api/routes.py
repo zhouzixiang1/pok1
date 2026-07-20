@@ -6,6 +6,9 @@
 - POST /api/matches/challenge      发起对战(选对手)。需登录。
 - GET  /api/matches                对局列表(分页 + 按 owner/bot/status 筛选)
 - GET  /api/matches/{id}           对局详情(元数据 + replay events)
+- GET  /api/matches/{id}/replay    对局回放(逐手快照 + 原始事件,里程碑 7)
+- GET  /api/matches/{id}/replay/hands  逐手快照(轻量,回放器首屏)
+- GET  /api/matches/{id}/replay/step   逐步回放(查某 step 的中间状态)
 - GET  /api/matches/{id}/events    SSE 实时观赛(首帧 snapshot + 事件流 + keepalive)
 - GET  /api/state                  平台当前状态(snapshot)
 - GET  /api/leaderboard            天梯(按 rating 降序)
@@ -35,6 +38,7 @@ from pydantic import BaseModel, Field
 
 from ..auth.dependencies import require_user
 from ..runtime.orchestrator import MatchOrchestrator
+from ..runtime.replay import build_hand_snapshots, snapshot_at_step
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +168,96 @@ async def match_detail(match_id: str, request: Request,
 
 
 # ══════════════════════════════════════════════════════════
+# GET /api/matches/{id}/replay — 对局回放(逐手快照 + 原始事件)
+# ══════════════════════════════════════════════════════════
+
+@router.get("/matches/{match_id}/replay")
+async def match_replay(match_id: str, request: Request,
+                       user: dict = Depends(require_user)) -> JSONResponse:
+    """对局回放数据。
+
+    返回::
+
+        {
+          "match": {...},          # 对局元数据(_match_view)
+          "snapshots": [...],      # 逐手快照(build_hand_snapshots)
+          "events": [...]          # 原始事件流(供逐步回放)
+        }
+
+    前端回放器用 ``snapshots`` 按「手」切换、用 ``events`` 按「步」推进。
+    match 不存在或无 replay 记录 → 404。
+    """
+    orch = _get_orchestrator(request)
+    m = orch.store.get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="对局不存在")
+    events = _load_replay_events(orch.store, match_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail="该对局尚无回放数据")
+    snapshots = build_hand_snapshots(events)
+    return JSONResponse({
+        "match": _match_view(m),
+        "snapshots": snapshots,
+        "events": events,
+    })
+
+
+# ══════════════════════════════════════════════════════════
+# GET /api/matches/{id}/replay/hands — 逐手快照(轻量,回放器首屏)
+# ══════════════════════════════════════════════════════════
+
+@router.get("/matches/{match_id}/replay/hands")
+async def match_replay_hands(match_id: str, request: Request,
+                             user: dict = Depends(require_user)) -> JSONResponse:
+    """逐手快照列表(轻量,不含原始事件)。
+
+    回放器首屏用——前端拿到快照序列即可渲染手数列表 / 大纲导航,按需再
+    拉 ``/replay`` 拿完整事件做逐步回放。
+
+    返回 ``{"match_id": ..., "snapshots": [...], "hand_count": N}``。
+    """
+    orch = _get_orchestrator(request)
+    m = orch.store.get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="对局不存在")
+    events = _load_replay_events(orch.store, match_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail="该对局尚无回放数据")
+    snapshots = build_hand_snapshots(events)
+    return JSONResponse({
+        "match_id": match_id,
+        "snapshots": snapshots,
+        "hand_count": len(snapshots),
+    })
+
+
+# ══════════════════════════════════════════════════════════
+# GET /api/matches/{id}/replay/hands — 逐步回放(查询某 step 的中间状态)
+# ══════════════════════════════════════════════════════════
+
+@router.get("/matches/{match_id}/replay/step")
+async def match_replay_step(match_id: str, request: Request,
+                            step: int = Query(0, ge=0),
+                            user: dict = Depends(require_user)) -> JSONResponse:
+    """查逐步回放的某个中间状态(``snapshot_at_step``)。
+
+    Query 参数 ``step`` 是事件索引(0..len)。前端进度条 / 上一步下一步
+    时用,定位到某个中间状态。
+
+    返回 ``{"match_id": ..., **snapshot_at_step(events, step)}``。
+    """
+    orch = _get_orchestrator(request)
+    m = orch.store.get_match(match_id)
+    if m is None:
+        raise HTTPException(status_code=404, detail="对局不存在")
+    events = _load_replay_events(orch.store, match_id)
+    if events is None:
+        raise HTTPException(status_code=404, detail="该对局尚无回放数据")
+    snap = snapshot_at_step(events, step)
+    return JSONResponse({"match_id": match_id, **snap})
+
+
+# ══════════════════════════════════════════════════════════
 # GET /api/matches/{id}/events — SSE 实时观赛
 # ══════════════════════════════════════════════════════════
 
@@ -281,6 +375,26 @@ async def bot_record(bot_id: int, request: Request,
 # ══════════════════════════════════════════════════════════
 # 视图辅助(对外脱敏 + 计算字段)
 # ══════════════════════════════════════════════════════════
+
+def _load_replay_events(store, match_id: str) -> list[dict[str, Any]] | None:
+    """从 match_replays.events_json 加载事件流。
+
+    - 没有 match_replays 记录 → 返回 ``None``(路由层据此 404)。
+    - events_json 解析失败 → 返回空列表(空回放,非 404)。
+    """
+    replay = store.get_replay(match_id)
+    if replay is None:
+        return None
+    if not replay.get("events_json"):
+        return []
+    try:
+        events = json.loads(replay["events_json"])
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(events, list):
+        return []
+    return events
+
 
 def _match_view(m: dict[str, Any]) -> dict[str, Any]:
     """match 记录对外视图:保留元数据,去内部杂项。"""
