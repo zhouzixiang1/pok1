@@ -80,3 +80,4 @@ bot_images/
 
 # === ZCode 工具产物 ===
 .zcode/
+platform-ctl/
