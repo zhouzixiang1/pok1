@@ -4210,3 +4210,218 @@ def test_v5_packet_parser_is_total_for_malformed_proposal_collections(
     assert parsed is None
     assert any(item.startswith(error_code) for item in errors)
     assert not any(item.startswith("proposal_packet_validation_error:") for item in errors)
+
+
+def test_rate_prose_words_not_bound_as_foreign_rate_alias(tmp_path):
+    """Regression for v158 mechanism schema-retry false positive.
+
+    Natural-language "fold rate" / "raise rate" prose must not be read as the
+    closed ``fold_rate`` / ``raise_rate`` aliases when the expected axis is a
+    different root (opponent.terminal_response).  Only identifier-style
+    spellings (fold_rate / fold-rate / foldrate) bind for these prose-prone
+    aliases; a bare space must not.
+    """
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": (
+            "Build the fold rate as a bounded interpolation between "
+            "opponent.terminal_response.fold_to_raise and "
+            "opponent.terminal_response.fold_to_jam posterior endpoints."
+        ),
+        "expected_diff": (
+            "The fold rate and raise rate applied to each candidate are "
+            "interpolated by its pressure; all other decision_context "
+            "fields are byte-identical."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold opponent.terminal_response at neutral priors for the paired state.",
+        "intervention": (
+            "Change only opponent.terminal_response in the paired decision context."
+        ),
+        "expected_observation": "The fold rate applied to candidates changes.",
+    }
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload, payload["falsifier"]
+    )
+    assert not any(
+        item.startswith("proposal_mechanism_foreign_targets") for item in errors
+    ), errors
+
+
+def test_screaming_source_constant_not_misread_as_bare_shared_leaf(tmp_path):
+    """Regression for shared-leaf false positive.
+
+    A SCREAMING_SNAKE_CASE source constant reference (``FOLD_TO_RAISE_PRIOR``)
+    in executable prose must not normalize into the bare shared leaf
+    ``fold_to_raise``.  The constant is masked before lower-casing so its
+    ``fold_to_raise_prior`` form no longer contains the bounded shared-leaf
+    substring.
+    """
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": (
+            "Anchor the interpolation to the FOLD_TO_RAISE_PRIOR baseline so "
+            "sparse terminal evidence collapses to the current flat response."
+        ),
+        "expected_diff": (
+            "Collapse to FOLD_TO_RAISE_PRIOR when terminal adaptation weight "
+            "is zero; all other decision_context fields are byte-identical."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold at the FOLD_TO_RAISE_PRIOR baseline.",
+        "intervention": "Change only opponent.terminal_response in the paired state.",
+        "expected_observation": "The intent changes under the intervention.",
+    }
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload, payload["falsifier"]
+    )
+    assert not any(
+        item.startswith("proposal_mechanism_shared_leaf") for item in errors
+    ), errors
+
+
+def test_uppercase_bare_shared_leaf_still_requires_full_namespace(tmp_path):
+    """Guards the SCREAMING-mask protected-set.
+
+    An all-uppercase bare leaf ``FOLD_TO_RAISE`` (not a source constant) must
+    still be caught, because its lowercase form is a protected shared leaf.
+    The SCREAMING mask must not widen into a hole that hides a bare leaf.
+    """
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": "Route the decision through bare FOLD_TO_RAISE only.",
+        "expected_diff": "The intent responds to bare FOLD_TO_RAISE only.",
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold at the bounded prior for the paired state.",
+        "intervention": "Change via bare FOLD_TO_RAISE only in the paired state.",
+        "expected_observation": "The intent changes under the intervention.",
+    }
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload, payload["falsifier"]
+    )
+    assert (
+        "proposal_mechanism_shared_leaf_requires_full_namespace:fold_to_raise"
+        in errors
+    )
+
+
+def test_rate_hyphen_prose_not_bound_as_foreign_rate_alias(tmp_path):
+    """Regression for hyphenated rate prose (v157/v158 false positive).
+
+    "fold-rate" / "raise-fold rate" prose must not bind the closed
+    ``fold_rate`` / ``raise_rate`` aliases.  A hyphen is natural-language
+    prose, not the Python identifier separator; only ``fold_rate`` (underscore)
+    or ``foldrate`` (compact) bind for these prose-prone aliases.
+    """
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": (
+            "Replace the single fold-rate scalar with a size-conditioned "
+            "response derived from opponent.terminal_response."
+        ),
+        "expected_diff": (
+            "The raise-fold rate and jam-fold rate interpolate by candidate "
+            "pressure; all other decision_context fields are byte-identical."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold opponent.terminal_response at neutral priors for the paired state.",
+        "intervention": "Change only opponent.terminal_response in the paired state.",
+        "expected_observation": "The fold rate applied to candidates changes.",
+    }
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload, payload["falsifier"]
+    )
+    assert not any(
+        item.startswith("proposal_mechanism_foreign_targets") for item in errors
+    ), errors
+
+
+def test_local_rate_identifier_not_bound_as_foreign_rate_alias(tmp_path):
+    """Regression for local-identifier substring match (v158 false positive).
+
+    A local Python identifier such as ``raise_fold_rate`` / ``jam_fold_rate``
+    (terminal-response mechanism variables in policy.py) must not be misread
+    as the closed ``fold_rate`` alias.  The underscore character preceding the
+    leaf inside the longer identifier blocks the alias boundary.
+    """
+    import agent_master
+
+    source_dir = tmp_path / "source"
+    _write_source(source_dir)
+    graph, _digest = agent_master._source_symbol_graph(source_dir)
+    payload = json.loads(
+        _proposal("mechanism").split("```json\n", 1)[1].rsplit("\n```", 1)[0]
+    )
+    payload.update({
+        "mechanism_target": "opponent.terminal_response",
+        "structural_change": (
+            "Add it to raise_fold_rate and jam_fold_rate inside the existing "
+            "raise-EV scoring of opponent.terminal_response."
+        ),
+        "expected_diff": (
+            "The raise_fold_rate and jam_fold_rate scalars now reflect the "
+            "interpolation; all other decision_context fields are byte-identical."
+        ),
+    })
+    payload["falsifier"] = {
+        "test_name": "terminal_response_adaptation",
+        "state_learning_primary": "terminal_response",
+        "intervention_target": "opponent.terminal_response",
+        "control": "Hold opponent.terminal_response at neutral priors for the paired state.",
+        "intervention": "Change only opponent.terminal_response in the paired state.",
+        "expected_observation": "The intent changes under the intervention.",
+    }
+    errors = agent_master._proposal_mechanism_target_errors(
+        payload, payload["falsifier"]
+    )
+    assert not any(
+        item.startswith("proposal_mechanism_foreign_targets") for item in errors
+    ), errors

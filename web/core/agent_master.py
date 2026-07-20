@@ -37,6 +37,19 @@ from llm_availability import LLMAvailabilityBlocked, gather_llm_fail_fast
 _PROPOSAL_STRENGTH_SAMPLE_FLOOR = ">=30_complete_matches"
 _PROPOSAL_UNCERTAINTY_PROMPT_VALUE = "wilson_wld_interval"
 
+# Closed aliases whose natural-language spellings ("fold rate", "fold-rate",
+# "fold.rate") routinely appear in legitimate poker prose.  Bind these only at
+# an underscore separator (the Python identifier form, e.g. ``fold_rate``) or
+# as a compact token (``foldrate``); a space, hyphen, or dot is prose, not an
+# alias reference.  Axis-name aliases such as ``terminal_response`` deliberately
+# stay permissive so "terminal response" still binds.
+_PROSE_PRONE_ALIASES = frozenset({
+    "fold_rate",
+    "call_rate",
+    "raise_rate",
+    "allin_rate",
+})
+
 
 def _proposal_schema_repair_guidance(
     projection_hints: tuple[str, ...],
@@ -1047,13 +1060,40 @@ def _proposal_mechanism_target_errors(
 
         return root_pattern.sub(replace, text)
 
+    # A SCREAMING_SNAKE_CASE token in executable prose is a Python source
+    # constant reference (e.g. ``FOLD_TO_RAISE_PRIOR``), not a bare shared
+    # leaf.  Masking it before lower-casing keeps its normalized form
+    # (``fold_to_raise_prior``) from containing the bounded shared-leaf
+    # substring (``_fold_to_raise_``).  A token whose lowercase form is itself
+    # a known leaf or alias is left intact, so an all-uppercase bare leaf
+    # (``FOLD_TO_RAISE``) is still caught below.
+    _screaming_protected = {
+        leaf.lower() for leaf in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS
+    }
+    _screaming_protected |= {
+        alias.lower()
+        for aliases in STATE_LEARNING_INTERVENTION_TARGET_ALIASES.values()
+        for alias in aliases
+    }
+
+    def _mask_screaming_constants(text: str) -> str:
+        def _replace(match: re.Match[str]) -> str:
+            token = match.group(0)
+            return " " if token.lower() not in _screaming_protected else token
+
+        return re.sub(
+            r"(?<![A-Za-z0-9_])[A-Z][A-Z0-9_]{2,}(?![A-Za-z0-9_])",
+            _replace,
+            text,
+        )
+
     ambiguous_shared_leaves: list[str] = []
     unowned_fields = []
     for value in executable_fields.values():
         if not isinstance(value, str):
             continue
         masked_value = mask_literals(
-            value.lower(),
+            _mask_screaming_constants(value).lower(),
             [
                 owner
                 for owners in STATE_LEARNING_SHARED_INTERVENTION_LEAF_OWNERS.values()
@@ -1125,23 +1165,30 @@ def _proposal_mechanism_target_errors(
         parts = re.findall(r"[a-z0-9]+", alias.lower())
         if not parts:
             return False
-        alias_pattern = r"[^a-z0-9]*".join(map(re.escape, parts))
+        joiner = (
+            r"[_]*"
+            if alias.lower() in _PROSE_PRONE_ALIASES
+            else r"[^a-z0-9]*"
+        )
+        alias_pattern = joiner.join(map(re.escape, parts))
         if re.search(
-            r"(?<![a-z0-9])"
+            r"(?<![a-z0-9_])"
             + alias_pattern
-            + r"(?![a-z0-9])",
+            + r"(?![a-z0-9_])",
             foreign_scan_text,
         ):
             return True
         # Long closed aliases must also fail closed when identifier characters
-        # are appended (``terminalresponsebackup``). Keep a leading boundary,
-        # and keep short lexical terms such as ``donk`` boundary-only, so words
-        # such as ``interactionprofile`` and ``donkey`` remain legal.
+        # are appended (``terminalresponsebackup``).  Keep a leading boundary
+        # that also rejects an underscore prefix, so a longer local identifier
+        # such as ``raise_fold_rate`` is not misread as the ``fold_rate`` alias;
+        # keep short lexical terms such as ``donk`` boundary-only so words such
+        # as ``interactionprofile`` and ``donkey`` remain legal.
         compact_alias = "".join(parts)
         if len(compact_alias) < 8:
             return False
         return re.search(
-            r"(?<![a-z0-9])" + alias_pattern,
+            r"(?<![a-z0-9_])" + alias_pattern,
             foreign_scan_text,
         ) is not None
     # ``deadline`` is a universal safety boundary and can legitimately appear
