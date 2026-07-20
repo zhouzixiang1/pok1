@@ -84,6 +84,17 @@ archive/evolution_epochs/national_native_v1/runtime_legacy_untrusted/
 ref/llm_evolution/
 lll/
 
+# One-time legacy-retirement archives (2026-07-14). Preserved on disk for
+# forensic continuity; not active source and too bulky to track in Git.
+archive/operator_checkout_legacy_bots_20260714/
+archive/retired_facilities_20260714/
+
+# ZCode agent session plan cache (per-session scratch, like .claude/worktrees).
+.zcode/
+
+# Stray THP match output written outside sever/records/ by a national TCP run.
+sever/国赛平台/THP-*.txt
+
 # OS
 .DS_Store
 Thumbs.db
