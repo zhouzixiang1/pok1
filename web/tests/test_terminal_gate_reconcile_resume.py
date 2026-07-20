@@ -13,11 +13,21 @@ from claude_agent_sdk import ResultMessage
 def strict_authority(monkeypatch, tmp_path):
     import evolution_infra
     import strict_authority_workflow as module
+    import tool_bot_management
     from workflow_kernel import WorkflowStore
 
     results_dir = tmp_path / "results"
     store = WorkflowStore(results_dir / "workflow" / "events.sqlite3")
     monkeypatch.setattr(evolution_infra, "RESULTS_DIR", results_dir)
+    # ``tool_bot_management`` imports ``RESULTS_DIR`` into its own module
+    # namespace at import time, so ``terminal_gate_abandon_fence_proof_if_present``
+    # (and the abandon reconcile path) read its private binding rather than the
+    # patched ``evolution_infra.RESULTS_DIR``.  Without this the validator would
+    # reprove a stale Worker fence from the real on-disk event journal and fail
+    # with ``WorkerAbandoned_outer_reason_mismatch`` whenever the local
+    # ``core/results/workflow/events.sqlite3`` carried a prior run with the same
+    # ``workflow_run_id``.
+    monkeypatch.setattr(tool_bot_management, "RESULTS_DIR", results_dir)
     monkeypatch.setattr(module, "_store", lambda: store)
     monkeypatch.setattr(
         module,
@@ -468,6 +478,15 @@ def test_fenced_real_journal_projection_validates_and_resumes_canonically(
         "gate_results": {"quality": quality, "review": gate},
         "terminal_gate_outcome": outcome,
     })
+    # The canonical abandon fences the outer Worker journal first, then the
+    # strict child.  This projection is "fenced": reproduce both real journals
+    # so ``validate_terminal_gate_outcome`` re-proves the exact terminal prefix
+    # from the isolated store rather than reading a stale on-disk event log.
+    from worker_workflow import WorkerWorkflow
+
+    WorkerWorkflow.for_checkpoint(projected).abandon(
+        terminal_outcome_abandon_reason(outcome)
+    )
 
     monkeypatch.setattr(
         authority,
