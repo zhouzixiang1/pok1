@@ -314,7 +314,24 @@ def _render_master_proposal_provider_prompt(inputs):
         "required_proposal_terms become final Worker-prompt obligations. A "
         "plan_required_floor_checks entry is an additional generation-wide quality "
         "floor; it is NOT the proposal falsifier unless this filtered mapping says "
-        "it is compatible."
+        "it is compatible. "
+        "NAMESPACE LEAF EXAMPLES (the most common schema rejection — study them; "
+        "substitute YOUR selected mechanism_target for <your.target> below): "
+        "WRONG (bare leaf in executable field): expected_diff='replace penalty with "
+        "posterior['<leaf>'] derived term'. CORRECT (owner-qualified): expected_diff="
+        "'replace penalty with a <your.target>.<leaf>-derived term'. "
+        "WRONG (bracket path replacing the dot literal): structural_change='read "
+        "context['<owner>']['<leaf>']'. CORRECT: structural_change='read <your.target> "
+        "(a complete bracket path may supplement but not replace the dot literal)'. "
+        "DESCRIBING CODE TO REMOVE: when expected_diff describes deleting an existing "
+        "branch that references a foreign target, do NOT write that foreign target's "
+        "dotted literal in any executable field — refer to it only by role, e.g. "
+        "'remove the existing second condition of the guard' or 'delete the foreign "
+        "branch from the existing two-way check'. The same applies to every other "
+        "closed target you are not selecting: name it by role ('the existing "
+        "unselected branch'), never by its dotted literal. This keeps the executable "
+        "prose bound to the single selected mechanism_target while still letting you "
+        "describe deletions accurately."
         + " " + measurement_contract
     )
     code_scope = (
@@ -822,7 +839,23 @@ def _proposal_falsifier_mapping_text(
         if allowed is None or primary in allowed
     }
     if not rows:
-        raise ValueError("proposal falsifier mapping has no permitted rows")
+        # An over-narrow architecture-policy filter (e.g. a singleton
+        # no-strength bootstrap) can exclude every falsifier primary.  The Scout
+        # still needs a complete mapping table to choose a valid test_name, so
+        # fall back to the full unfiltered table rather than crashing the whole
+        # renderer and abandoning the generation.
+        rows = {
+            test_name: {
+                "state_learning_primary": primary,
+                "mechanism_target": (
+                    STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+                ),
+                "intervention_target": (
+                    STATE_LEARNING_PRIMARY_INTERVENTION_TARGETS[primary]
+                ),
+            }
+            for test_name, primary in MASTER_PROPOSAL_FALSIFIER_PRIMARY.items()
+        }
     return json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
