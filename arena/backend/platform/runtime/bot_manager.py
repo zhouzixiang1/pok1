@@ -22,8 +22,8 @@ from pathlib import Path
 from ..auth.auth_manager import _safe_user  # 复用脱敏
 from ..store import Store
 from ..store.schema import PROTO_JSON, PROTO_TCP
-from .builder import (BotBuildError, build_bot_image, checksum, remove_bot_image,
-                      save_upload, _safe_extract, _find_entry)
+from .builder import (BotBuildError, IMAGE_PREFIX, build_bot_image, checksum,
+                      remove_bot_image, save_upload, _safe_extract, _find_entry)
 
 logger = logging.getLogger(__name__)
 
@@ -204,9 +204,51 @@ class BotManager:
             # 内置 bot 的源码路径直接指向仓库 bots/ 目录(不复制)
             self.store.update_bot(
                 bot["id"], source_path=str(src),
-                docker_image="")  # 镜像按需构建(里程碑 4 runner 首次用时建)
+                docker_image="")  # 镜像按需构建(build_builtin_image 懒构建)
             results.append(_bot_view(bot))
         return results
+
+    def build_builtin_image(self, bot_id: int) -> str:
+        """为内置 bot 构建镜像(懒构建:首次 challenge 时 orchestrator 调用)。
+
+        内置 bot 源码在 bots/<name>/(仓库内),复制到临时目录后构建。
+        镜像名 ``arena-bot-<id>:builtin``。构建完回填 bots.docker_image。
+        返回镜像名。已构建则跳过返回现有镜像。
+        """
+        bot = self.store.get_bot(bot_id)
+        if not bot:
+            raise BotBuildError("no_bot", "bot 不存在")
+        if bot.get("docker_image"):
+            return bot["docker_image"]  # 已构建
+        if not bot.get("is_builtin"):
+            raise BotBuildError("not_builtin", "仅内置 bot 可用此方法")
+        src = Path(bot["source_path"])
+        if not src.exists():
+            raise BotBuildError("no_source", f"内置 bot 源码不存在: {src}")
+        # 复制到临时构建目录(避免污染源码目录)
+        import tempfile
+        build_dir = Path(tempfile.mkdtemp(prefix=f"builtin_{bot_id}_"))
+        try:
+            for f in src.iterdir():
+                if f.is_file():
+                    shutil.copy2(f, build_dir / f.name)
+            image = build_bot_image(
+                source_dir=build_dir, protocol=bot["protocol"],
+                entry_file=bot["entry_file"], runtime_lang=bot["runtime_lang"],
+                bot_id=bot_id, version=999,  # builtin 用固定 tag
+                bridge_src=self.bridge_src if bot["protocol"] == PROTO_TCP else None)
+            # 镜像名 build_bot_image 生成的是 arena-bot-<id>:v999,
+            # retag 成 arena-bot-<id>:builtin 更语义化
+            import subprocess
+            builtin_image = f"{IMAGE_PREFIX}-{bot_id}:builtin"
+            if image != builtin_image:
+                subprocess.run(["docker", "tag", image, builtin_image],
+                               check=False, capture_output=True, timeout=30)
+            self.store.update_bot(bot_id, docker_image=builtin_image)
+            logger.info("builtin bot %s image built: %s", bot["name"], builtin_image)
+            return builtin_image
+        finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
 
 
 def _bot_view(bot: dict) -> dict:

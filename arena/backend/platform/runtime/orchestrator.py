@@ -89,11 +89,15 @@ class MatchOrchestrator:
         *,
         hands_per_match: int = DEFAULT_HANDS_PER_MATCH,
         action_timeout: float = 60.0,
+        bot_manager: Any = None,
     ) -> None:
         self.store = store
         self.runner = runner
         self.hands_per_match = hands_per_match
         self.action_timeout = action_timeout
+        # BotManager(可选):内置 bot 无镜像时懒构建用。
+        # main.create_platform_app 注入。None 时内置 bot 无镜像则报错。
+        self.bot_manager = bot_manager
 
         # SSE 订阅者(同 loop asyncio.Queue)
         self._subscribers: list[asyncio.Queue[str]] = []
@@ -260,10 +264,28 @@ class MatchOrchestrator:
 
         MatchRunner 的 ``_emit`` 已支持同步/异步 sink(``iscoroutine`` 判定);
         这里用 async 实现,把同步 DB 调用 + 异步广播串起来。
+
+        每手 ``settle`` 时实时更新 ``matches.hands_played``(修复「中途进度
+        不刷新」问题:之前只在整场结束才写,前端轮询 ``/api/matches/{id}``
+        看到的 hands_played 一直是 0)。settle 事件的 hand 字段 = 已完成手数。
         """
         async def sink(event: dict[str, Any]) -> None:
             # 事件注入 match_id(SSE 端点按它过滤)
             tagged = {"match_id": match_id, **event}
+            # settle 事件:实时更新 hands_played + 最新筹码快照
+            # (settle.hand = 当前手数,已完成手数 = 该值;手从 1 计数)
+            if event.get("type") == "settle":
+                hand = event.get("hand")
+                if isinstance(hand, int) and hand > 0:
+                    earnings = event.get("earnings")
+                    try:
+                        update_fields: dict[str, Any] = {"hands_played": hand}
+                        # 同时刷最新累计筹码(settle.earnings 是本手净值,
+                        # 这里只更新 hands_played;累计 earnings 仍由
+                        # _run_match_task 在整场结束时写入,避免中途频繁写)
+                        self.store.update_match(match_id, **update_fields)
+                    except Exception:
+                        logger.exception("update_match hands_played failed match=%s", match_id)
             # DB 持久化(同步,毫秒级)
             try:
                 self.store.append_replay_event(match_id, tagged)
@@ -432,16 +454,31 @@ class MatchOrchestrator:
     # ══════════════════════════════════════════════════════════
 
     def _require_playable_bot(self, bot_id: int) -> dict[str, Any]:
-        """校验 bot 可对战:存在 / 上架 / 有镜像。失败抛 ``ValueError``。"""
+        """校验 bot 可对战:存在 / 上架 / 有镜像。失败抛 ``ValueError``。
+
+        **内置 bot 懒构建**:若 bot 是内置且无镜像但有 source_path,自动构建。
+        用户上传的 bot 无镜像则报错(用户应通过上传流程构建)。
+        """
         bot = self.store.get_bot(bot_id)
         if bot is None:
             raise ValueError(f"bot {bot_id} 不存在", bot_id)
         if not bot.get("is_active"):
             raise ValueError(f"bot {bot_id} 已下架", bot_id)
         if not bot.get("docker_image"):
-            raise ValueError(
-                f"bot {bot_id}({bot['name']})尚未构建镜像,请先上传/构建",
-                bot_id)
+            # 内置 bot 懒构建(首次 challenge 时自动建镜像)
+            if bot.get("is_builtin") and bot.get("source_path") and self.bot_manager is not None:
+                logger.info("builtin bot %s has no image, lazy-building...", bot["name"])
+                try:
+                    image = self.bot_manager.build_builtin_image(bot_id)
+                    bot = self.store.get_bot(bot_id)  # 重新取(含新镜像)
+                    logger.info("builtin bot %s image built: %s", bot["name"], image)
+                except Exception as exc:
+                    raise ValueError(
+                        f"内置 bot {bot['name']} 镜像构建失败:{exc}") from exc
+            else:
+                raise ValueError(
+                    f"bot {bot_id}({bot['name']})尚未构建镜像,请先上传/构建",
+                    bot_id)
         return bot
 
     @staticmethod

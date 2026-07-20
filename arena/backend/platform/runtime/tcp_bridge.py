@@ -292,12 +292,17 @@ class TCPBridge:
 
     def __init__(self, *, bot_entry: str, bot_name: str,
                  listen_host: str, listen_port: int,
-                 bot_cwd: str | None = None) -> None:
+                 bot_cwd: str | None = None,
+                 bot_cmd: list[str] | None = None) -> None:
         self.bot_entry = bot_entry
         self.bot_name = bot_name
         self.listen_host = listen_host
         self.listen_port = listen_port
         self.bot_cwd = bot_cwd
+        # bot 启动命令(基础部分)。None 时默认 ["python", bot_entry]。
+        # 桥自动追加国赛协议参数:--host/--port/--name。
+        # 多语言:C++/Java 编译后传 ["./bot_bin"] / ["java","Main"]。
+        self.bot_cmd = bot_cmd
         self.state = BridgeState()
         self._bot_reader: asyncio.StreamReader | None = None
         self._bot_writer: asyncio.StreamWriter | None = None
@@ -357,10 +362,12 @@ class TCPBridge:
     async def _spawn_bot(self) -> None:
         """spawn 用户 bot 子进程。
 
-        ``python <bot_entry> --host <listen_host> --port <listen_port> --name <name>``
+        默认 ``python <bot_entry> --host <listen_host> --port <listen_port> --name <name>``。
+        若设置了 ``bot_cmd``(多语言:C++/Java 编译后的命令),用它作基础命令。
+        国赛协议参数(--host/--port/--name)统一追加到基础命令后。
         """
-        cmd = [
-            sys.executable, self.bot_entry,
+        base_cmd = self.bot_cmd if self.bot_cmd else [sys.executable, self.bot_entry]
+        cmd = list(base_cmd) + [
             "--host", self.listen_host,
             "--port", str(self.listen_port),
             "--name", self.bot_name,
@@ -508,6 +515,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--listen-host", default=DEFAULT_LISTEN_HOST)
     p.add_argument("--listen-port", type=int, default=DEFAULT_LISTEN_PORT)
     p.add_argument("--bot-cwd", default=None, help="bot 工作目录")
+    p.add_argument("--bot-cmd", default=None,
+                   help="bot 启动命令(JSON 数组,如 '[\"./bot_bin\"]');"
+                        "默认 [python, bot_entry]。用于 C++/Java 编译型 bot")
     return p.parse_args(argv)
 
 
@@ -518,6 +528,18 @@ def main(argv: list[str] | None = None) -> int:
         or os.environ.get("BOT_NAME")
         or DEFAULT_BOT_NAME
     )
+    # 解析 bot_cmd(JSON 数组),None 则用默认(python entry)
+    bot_cmd: list[str] | None = None
+    if args.bot_cmd:
+        try:
+            parsed = json.loads(args.bot_cmd)
+            if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                bot_cmd = parsed
+            else:
+                raise ValueError("not a list of strings")
+        except (json.JSONDecodeError, ValueError) as exc:
+            logging.error("invalid --bot-cmd %r: %s", args.bot_cmd, exc)
+            return 2
     logging.basicConfig(
         level=os.environ.get("POK_BRIDGE_LOG_LEVEL", "INFO"),
         format="[bridge %(asctime)s] %(message)s",
@@ -528,6 +550,7 @@ def main(argv: list[str] | None = None) -> int:
         listen_host=args.listen_host,
         listen_port=args.listen_port,
         bot_cwd=args.bot_cwd,
+        bot_cmd=bot_cmd,
     )
     try:
         return asyncio.run(bridge.run())

@@ -47,7 +47,14 @@ class BotBuildError(Exception):
 
 
 def _dockerfile_json(entry_file: str, runtime_lang: str = "python") -> str:
-    """JSON bot 的 Dockerfile(stdin/stdout JSON 通信,无网络)。"""
+    """JSON bot 的 Dockerfile(stdin/stdout JSON 通信,无网络)。
+
+    支持 python / cpp / java:
+    - python:直接 ``python entry.py``
+    - cpp:构建阶段 g++ 编译成二进制,运行 ``./bot_bin``
+    - java:构建阶段 javac 编译,运行 ``java -cp /app Main``
+    用户上传时 entry_file 指源文件(main.py / bot.cpp / Main.java)。
+    """
     if runtime_lang == "python":
         return f"""FROM python:3.12-slim
 WORKDIR /app
@@ -58,8 +65,29 @@ USER botuser
 # stdin/stdout 通信:平台写 JSON 到 stdin,bot 从 stdout 读 JSON
 ENTRYPOINT ["python", "{entry_file}"]
 """
-    # 预留 cpp/java(里程碑 3 先实现 python,多语言后续)
-    raise BotBuildError("unsupported_lang", f"暂不支持 {runtime_lang},目前仅 python")
+    if runtime_lang == "cpp":
+        # C++:构建阶段编译,运行二进制。二进制名固定 bot_bin。
+        return f"""FROM gcc:13-slim
+WORKDIR /app
+COPY . /app/
+# 编译所有 .cpp 为单一二进制(入口文件 + 同目录 .cpp)
+RUN g++ -O2 -std=c++17 -o bot_bin *.cpp 2>/dev/null || g++ -O2 -std=c++17 -o bot_bin {entry_file}
+RUN useradd -m botuser && chown -R botuser:botuser /app
+USER botuser
+ENTRYPOINT ["./bot_bin"]
+"""
+    if runtime_lang == "java":
+        # Java:入口文件如 Main.java,编译后 java Main。
+        classname = entry_file[:-5] if entry_file.endswith(".java") else entry_file
+        return f"""FROM eclipse-temurin:21-jdk
+WORKDIR /app
+COPY . /app/
+RUN javac *.java
+RUN useradd -m botuser && chown -R botuser:botuser /app
+USER botuser
+ENTRYPOINT ["java", "{classname}"]
+"""
+    raise BotBuildError("unsupported_lang", f"暂不支持 {runtime_lang},目前仅 python/cpp/java")
 
 
 def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python") -> str:
@@ -70,21 +98,53 @@ def _dockerfile_tcp(entry_file: str, runtime_lang: str = "python") -> str:
     2. bot 启动,连 127.0.0.1:50101(回环,容器内永远成立)
     3. 桥用 stdin/stdout 与平台(JSON),用 socket 与 bot(TCP 文本)
     用户 bot 代码零改动。
+
+    多语言:python 用 ``python entry.py``;cpp/java 编译后桥用二进制/java 命令。
+    桥通过 ``--bot-cmd`` 接收完整的启动命令(JSON 数组)。
     """
-    if runtime_lang != "python":
-        raise BotBuildError("unsupported_lang", f"暂不支持 {runtime_lang},目前仅 python")
-    # entrypoint 脚本:先起桥后台,再起 bot(连回环)
-    return f"""FROM python:3.12-slim
-WORKDIR /app
-COPY . /app/
+    base, bot_cmd_json = _tcp_bot_base_and_cmd(entry_file, runtime_lang)
+    bridge_dir = "/app/_bridge"
+    return f"""{base}
 # 桥代理(里程碑 4 提供,构建时从 platform/runtime/ 复制)
-COPY tcp_bridge.py /app/_bridge/tcp_bridge.py
+COPY tcp_bridge.py {bridge_dir}/tcp_bridge.py
 RUN useradd -m botuser && chown -R botuser:botuser /app
 USER botuser
 # 桥先起(后台监听 50101),bot 再连回环 --host 127.0.0.1 --port 50101
 # 平台只与桥 stdin/stdout 通信(JSON),桥翻译成 TCP 喂给 bot
-ENTRYPOINT ["python", "/app/_bridge/tcp_bridge.py", "--bot-entry", "{entry_file}"]
+# --bot-cmd 传完整启动命令(JSON 数组),桥 spawn 它
+ENTRYPOINT ["python", "{bridge_dir}/tcp_bridge.py", "--bot-entry", "{entry_file}", "--bot-cmd", {bot_cmd_json}]
 """
+
+
+def _tcp_bot_base_and_cmd(entry_file: str, runtime_lang: str) -> tuple[str, str]:
+    """TCP bot 的基础镜像 + bot 启动命令(供 _dockerfile_tcp 复用)。
+
+    返回 (Dockerfile 基础部分含 COPY+编译, bot_cmd_json)。
+    bot_cmd_json 是 JSON 数组字符串,桥用它 spawn bot。
+    """
+    import json as _json
+    if runtime_lang == "python":
+        base = """FROM python:3.12-slim
+WORKDIR /app
+COPY . /app/"""
+        cmd = _json.dumps(["python", entry_file])
+        return base, cmd
+    if runtime_lang == "cpp":
+        base = f"""FROM gcc:13-slim
+WORKDIR /app
+COPY . /app/
+RUN g++ -O2 -std=c++17 -o bot_bin *.cpp 2>/dev/null || g++ -O2 -std=c++17 -o bot_bin {entry_file}"""
+        cmd = _json.dumps(["./bot_bin"])
+        return base, cmd
+    if runtime_lang == "java":
+        classname = entry_file[:-5] if entry_file.endswith(".java") else entry_file
+        base = """FROM eclipse-temurin:21-jdk
+WORKDIR /app
+COPY . /app/
+RUN javac *.java"""
+        cmd = _json.dumps(["java", classname])
+        return base, cmd
+    raise BotBuildError("unsupported_lang", f"暂不支持 {runtime_lang},目前仅 python/cpp/java")
 
 
 def make_dockerfile(*, protocol: str, entry_file: str,

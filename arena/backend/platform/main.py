@@ -64,7 +64,7 @@ def create_platform_app(*, db_path: str | Path = DEFAULT_DB_PATH,
     auth = AuthManager(store)
     bot_manager = BotManager(store, upload_root=upload_root)
     docker_runner = DockerRunner()
-    orchestrator = MatchOrchestrator(store, docker_runner)
+    orchestrator = MatchOrchestrator(store, docker_runner, bot_manager=bot_manager)
     system_uid = _ensure_system_user(store)
 
     app.state.platform_store = store
