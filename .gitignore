@@ -57,6 +57,11 @@ sever/records/
 
 # Research H2H evaluation results
 scripts/research_eval/results/
+# H2H eval scripts that drive the three-bot-consolidation research bots
+# (bots/research_native_lab/ lives only on that branch; the run_*.py scripts
+# are inert on main without it). Ship them with the branch, not main.
+scripts/research_eval/run_*.py
+scripts/research_eval/anchor_bots.py
 # committing bulky logs/replays/.bak into history.
 archive/logs/
 archive/forensic/
