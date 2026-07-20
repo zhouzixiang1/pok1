@@ -64,6 +64,19 @@ pok-arena-ctl/
 
 # 扩展功能产物
 arena.db
+arena_platform.db
 *.db
 *.db-journal
 logs/
+
+# === 新平台运行产物(里程碑 1+) ===
+# 用户上传的 bot 源码包与构建产物
+bot_uploads/
+bot_images/
+# Docker 构建临时目录
+.docker-tmp/
+# 平台运行时 PID
+*.pid
+
+# === ZCode 工具产物 ===
+.zcode/
