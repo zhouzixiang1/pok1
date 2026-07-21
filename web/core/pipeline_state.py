@@ -2451,7 +2451,7 @@ def generic_abandon_block(checkpoint: dict | None, *,
             # the checkpoint must take the canonical abandon path rather than
             # rerunning a sealed invalid Master indefinitely.
             ("system_strict_bootstrap_master_receipt_error:", {"direction_audited"}),
-            ("crossover_", {"preparing", "prepared", "crossover_running"}),
+            ("crossover_", {"preparing", "prepared", "crossover_running", "selected"}),
             ("worker_circuit_breaker", {"master_planned", "workers_done", "quality_failed"}),
             ("worker_infrastructure_exhausted", {"master_planned", "workers_done", "quality_failed", "repair_planned", "rework_running"}),
             ("worker_workflow_abandoned", {"master_planned", "workers_done", "quality_failed", "precommit_failed", "repair_planned", "rework_running", "official_failed"}),

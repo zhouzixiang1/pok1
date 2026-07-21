@@ -237,6 +237,28 @@ def _crossover_synthesis_in_progress(issue):
     }
 
 
+def _crossover_synthesis_effect_unrecoverable(issue):
+    """The effect-id namespace is poisoned for this run; this is fatal.
+
+    ``crossover-synthesis:{run_id}:attempt-N`` was previously bound to a
+    different input_digest (typically because a prior re-entry could not
+    abandon while the synthesis namespace was still live). Reusing the same id
+    now always raises WorkflowConflict, so synthesis can never succeed. This is
+    a deterministic, non-retryable control-plane conflict: it must NOT be
+    recorded as a "preserved candidate" infrastructure overlay (the candidate
+    was never synthesized/projected and its temp workspace has been removed).
+    The generation must be abandoned so the next preparation rebinds a clean
+    effect namespace.
+    """
+    return {
+        "success": False,
+        "outcome": "synthesis_effect_unrecoverable",
+        "failure_class": "infrastructure",
+        "component": "crossover_synthesis_effect",
+        "issue": str(issue),
+    }
+
+
 def _crossover_target_identity(target_dir):
     """Return the canonical target preimage without treating absence as data."""
     from crossover_projection import target_identity
@@ -986,9 +1008,8 @@ async def _run_crossover(
             )
         except WorkflowConflict as exc:
             shutil.rmtree(target_dir, ignore_errors=True)
-            return _crossover_projection_failure(
-                "crossover_synthesis_effect",
-                f"effect_prepare_conflict:{type(exc).__name__}:{str(exc)[:240]}",
+            return _crossover_synthesis_effect_unrecoverable(
+                f"effect_prepare_conflict:{type(exc).__name__}:{str(exc)[:240]}"
             )
         except Exception as exc:
             shutil.rmtree(target_dir, ignore_errors=True)
@@ -1310,7 +1331,32 @@ async def _run_crossover(
             else list(smoke_report.get("issues") or ["native_crossover_smoke_failed"])
         )
         if smoke_errors:
-            ui.log_history("Crossover smoke test failed, retrying...", "warn")
+            ui.log_history(
+                "Crossover smoke test failed, retrying: "
+                + "; ".join(str(e)[:200] for e in smoke_errors[:5]),
+                "warn",
+            )
+            try:
+                from system_log import log_system_event
+                log_system_event(
+                    "pipeline.crossover_smoke_failed",
+                    "warn",
+                    f"Crossover v{target_v} attempt {attempt + 1} native TCP smoke failed",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a_v,
+                        "parent_b": parent_b_v,
+                        "attempt": attempt + 1,
+                        "issues": [str(e)[:500] for e in smoke_errors[:16]],
+                        "smoke_report": {
+                            k: smoke_report.get(k)
+                            for k in ("passed", "error", "detail", "stderr")
+                            if k in smoke_report
+                        },
+                    },
+                )
+            except Exception:
+                pass
             continue
 
         from code_verification import check_code_size

@@ -1019,6 +1019,23 @@ class TestDoAbandonGeneration:
         assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
         assert blocked["stage"] == "reviewed"
 
+    def test_crossover_forced_abandon_is_disposable_at_selected_and_running(self):
+        # Bug A (v160): crossover synthesis runs at stage=selected (it advances
+        # to crossover_running only on success). crossover_llm_exhausted must
+        # be disposable at selected, otherwise exhausted raw-TCP smoke retries
+        # deadlock re-entry.
+        reason = "crossover_llm_exhausted:v143xv156"
+        for stage in ("selected", "crossover_running", "preparing", "prepared"):
+            ck = _strict_checkpoint(160, 143, stage, parent2_v=156)
+            assert tbm._generic_abandon_stage_block(ck, reason) is None, stage
+        # Non-crossover stages still reject the prefix.
+        blocked = tbm._generic_abandon_stage_block(
+            _strict_checkpoint(160, 143, "direction_audited", parent2_v=156),
+            reason,
+        )
+        assert blocked["blocked"] is True
+        assert blocked["reason"] == "forced_abandon_reason_stage_not_allowed"
+
     @pytest.mark.parametrize("reason", (
         "system_strict_bootstrap_master_receipt_invalid:"
         "system_bootstrap_proposal_contract_digest_mismatch",

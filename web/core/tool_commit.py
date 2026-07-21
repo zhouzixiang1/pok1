@@ -4562,19 +4562,62 @@ async def run_crossover(args):
             })
         crossover_infra = None
     if crossover_infra is not None:
-        if (
-            not target_dir.is_dir()
-            or (active_crossover_ckpt or {}).get("stage") != "crossover_running"
-        ):
+        candidate_missing = not target_dir.is_dir()
+        stage_drift = (active_crossover_ckpt or {}).get("stage") != "crossover_running"
+        if candidate_missing or stage_drift:
+            # Bug B backstop (v160): the overlay promised a "preserved
+            # candidate" retry but no such candidate exists (or the stage
+            # drifted). The old fail-closed return caused a no-op re-entry
+            # death-loop. Abandon so prepare_generation selects a fresh
+            # generation. (crossover_infrastructure_resume_target_missing:
+            # matches the crossover_ forced-rule prefix, disposable at
+            # selected/crossover_running after Bug A.)
+            from tool_bot_management import (
+                _do_abandon_generation,
+                expected_abandon_identity,
+            )
+            try:
+                abandon_result = await _do_abandon_generation(
+                    reason=f"crossover_infrastructure_resume_target_missing:v{target_v}",
+                    **expected_abandon_identity(read_pipeline_checkpoint()),
+                )
+            except Exception as exc:
+                abandon_result = {
+                    "abandoned": False,
+                    "reason": f"{type(exc).__name__}: {str(exc)[:300]}",
+                }
+            try:
+                log_system_event(
+                    "pipeline.crossover_resume_target_missing_abandoned",
+                    "warn" if abandon_result.get("abandoned") else "error",
+                    f"Crossover v{target_v} infra overlay could not resume "
+                    f"(candidate_missing={candidate_missing}, stage_drift={stage_drift}); "
+                    f"{'abandoned' if abandon_result.get('abandoned') else 'abandon did not complete'}.",
+                    {
+                        "target_v": target_v,
+                        "parent_a": parent_a,
+                        "parent_b": parent_b,
+                        "candidate_missing": candidate_missing,
+                        "stage_drift": stage_drift,
+                        "stage": (active_crossover_ckpt or {}).get("stage"),
+                        "abandon_result": abandon_result,
+                    },
+                )
+            except Exception:
+                pass
             return _json_tool_result({
-                "error": "CROSSOVER_INFRASTRUCTURE_RESUME_TARGET_MISSING",
+                "error": "CROSSOVER_LLM_EXHAUSTED",
+                "success": False,
+                "abandoned": bool(abandon_result.get("abandoned")),
                 "failure_class": "infrastructure",
+                "abandon_reason": "crossover_infrastructure_resume_target_missing",
                 "target_v": target_v,
                 "directive": (
-                    "The infrastructure overlay is bound to a preserved crossover "
-                    "candidate, but that candidate/stage is unavailable. Fail closed "
-                    "and inspect the checkpoint before any regeneration."
+                    "The crossover infrastructure overlay could not resume its preserved "
+                    "candidate (the candidate bytes are gone). The generation was abandoned; "
+                    "let prepare_generation select a fresh generation."
                 ),
+                "abandon_result": abandon_result,
             })
 
         # This retry skips synthesis and reuses the earlier deterministic
@@ -4874,6 +4917,80 @@ async def run_crossover(args):
             "parent_a": parent_a,
             "parent_b": parent_b,
             "issue": success.get("issue"),
+        })
+
+    if isinstance(success, dict) and success.get("outcome") == "synthesis_effect_unrecoverable":
+        # Bug B (v160): the effect-id namespace is poisoned (bound to a
+        # different input_digest in a prior re-entry). Synthesis can never
+        # succeed idempotently, so a "preserved candidate" retry overlay would
+        # loop forever: the overlay claims "preserved" but no candidate exists.
+        # Abandon directly; the next preparation rebinds a clean effect
+        # namespace. (crossover_effect_prepare_conflict: matches the crossover_
+        # forced-rule prefix, disposable at selected/crossover_running.)
+        issue = success.get("issue")
+        try:
+            log_system_event(
+                "pipeline.crossover_effect_prepare_conflict_unrecoverable",
+                "error",
+                f"Crossover v{parent_a}xv{parent_b} -> v{target_v} synthesis effect "
+                f"namespace is unrecoverable: {issue}",
+                {
+                    "target_v": target_v,
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                    "component": success.get("component"),
+                    "issue": str(issue)[:500],
+                },
+            )
+        except Exception:
+            pass
+        from tool_bot_management import (
+            _do_abandon_generation,
+            expected_abandon_identity,
+        )
+        try:
+            abandon_result = await _do_abandon_generation(
+                reason=f"crossover_effect_prepare_conflict:v{parent_a}xv{parent_b}",
+                **expected_abandon_identity(read_pipeline_checkpoint()),
+            )
+        except Exception as abandon_exc:
+            abandon_result = {
+                "abandoned": False,
+                "reason": f"{type(abandon_exc).__name__}: {abandon_exc}",
+            }
+        try:
+            log_system_event(
+                "pipeline.crossover_effect_prepare_conflict_abandoned",
+                "warn" if abandon_result.get("abandoned") else "error",
+                f"Crossover v{parent_a}xv{parent_b} effect-id conflict; "
+                f"{'abandoned generation' if abandon_result.get('abandoned') else 'abandon did not complete'}.",
+                {
+                    "target_v": target_v,
+                    "parent_a": parent_a,
+                    "parent_b": parent_b,
+                    "issue": str(issue)[:500],
+                    "abandon_result": abandon_result,
+                },
+            )
+        except Exception:
+            pass
+        return _json_tool_result({
+            "error": "CROSSOVER_LLM_EXHAUSTED",
+            "success": False,
+            "abandoned": bool(abandon_result.get("abandoned")),
+            "failure_class": "infrastructure",
+            "abandon_reason": "crossover_effect_prepare_conflict",
+            "target_v": target_v,
+            "parent_a": parent_a,
+            "parent_b": parent_b,
+            "directive": (
+                f"Crossover v{parent_a}xv{parent_b} -> v{target_v} has an unrecoverable "
+                "synthesis-effect id conflict (the effect was previously bound to a different "
+                "input). The generation was abandoned; let prepare_generation select a fresh generation."
+            ),
+            "message": f"Crossover v{parent_a}xv{parent_b} effect-id conflict abandoned.",
+            "abandon_result": abandon_result,
+            "logs": ui.get_output(),
         })
 
     if isinstance(success, dict) and success.get("outcome") == "infrastructure_failure":

@@ -532,6 +532,101 @@ def test_run_crossover_llm_exhausted_abandons_generation(tmp_path, monkeypatch):
     assert cleared == [True]
 
 
+def test_run_crossover_effect_prepare_conflict_abandons_without_deadloop(tmp_path, monkeypatch):
+    # Bug B (v160): effect_prepare_conflict (WorkflowConflict: effect id reused
+    # with different input) must NOT route through _record_crossover_infrastructure
+    # — that writes a "preserved candidate" overlay with candidate_fingerprint=
+    # "missing" and deadlocks on CROSSOVER_INFRASTRUCTURE_RESUME_TARGET_MISSING.
+    # It must abandon directly with a distinct reason (the effect-id namespace
+    # is poisoned and synthesis can never idempotently succeed).
+    import audit_agents
+    import evolution_core
+    import evolution_infra
+    import tool_bot_management
+    import tool_commit
+
+    parent_a_dir = tmp_path / "national_v149"
+    parent_b_dir = tmp_path / "national_v143"
+    target_dir = tmp_path / "national_v167"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "policy.py").write_text("# parent\n", encoding="utf-8")
+        (path / ".completed").touch()
+
+    def _bot_dir(version):
+        return {149: parent_a_dir, 143: parent_b_dir, 167: target_dir}[int(version)]
+
+    async def _compat(_parent_a, _parent_b, _ui, **_kwargs):
+        return {"compatible": True, "compatibility_score": 8}
+
+    async def _crossover_unrecoverable(*_args, **_kwargs):
+        # _run_crossover hit the unrecoverable effect_prepare_conflict path.
+        return {
+            "success": False,
+            "outcome": "synthesis_effect_unrecoverable",
+            "failure_class": "infrastructure",
+            "component": "crossover_synthesis_effect",
+            "issue": "effect_prepare_conflict:WorkflowConflict:effect id reused with different input",
+        }
+
+    recorded = []
+
+    async def _abandon_conflict(*, reason, **checkpoint_identity):
+        assert reason == "crossover_effect_prepare_conflict:v149xv143"
+        assert checkpoint_identity["expected_checkpoint_stage"] == "crossover_running"
+        assert checkpoint_identity["expected_workflow_run_id"] == "test-crossover-conflict-167-149"
+        recorded.append(reason)
+        return {"abandoned": True, "abandoned_v": 167, "reason": reason}
+
+    # The infra-overlay recorder must NEVER be called (that is the deadloop path).
+    async def _no_infra(*_a, **_k):
+        raise AssertionError("effect_prepare_conflict must not record an infra overlay")
+
+    fake_state = tmp_path / "pipeline_state.json"
+    fake_state.write_text("{}", encoding="utf-8")
+    results_dir = tmp_path / "conflict-results"
+    results_dir.mkdir()
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(tool_commit, "_run_crossover", _crossover_unrecoverable)
+    monkeypatch.setattr(tool_commit, "_record_crossover_infrastructure", _no_infra)
+    monkeypatch.setattr(audit_agents, "_run_crossover_compatibility_audit", _compat)
+
+    tool_bot_management._LAST_ABANDON_TS[0] = 0.0
+    tool_bot_management._LAST_ABANDON_TS[1] = ""
+    monkeypatch.setattr(evolution_core, "PIPELINE_STATE_FILE", fake_state)
+    monkeypatch.setattr(tool_bot_management, "RESULTS_DIR", results_dir)
+    conflict_checkpoint = _strict_checkpoint(
+        167,
+        149,
+        143,
+        stage="crossover_running",
+        workflow_run_id="test-crossover-conflict-167-149",
+    )
+    monkeypatch.setattr(tool_bot_management, "read_pipeline_checkpoint", lambda: conflict_checkpoint)
+    monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", lambda: conflict_checkpoint)
+    monkeypatch.setattr(tool_bot_management, "clear_pipeline_checkpoint", lambda **_k: True)
+    monkeypatch.setattr(tool_bot_management, "get_bot_dir", _bot_dir)
+    monkeypatch.setattr(tool_bot_management, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", _abandon_conflict)
+    monkeypatch.setattr(evolution_infra, "find_current_v", lambda: 166)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 149,
+        "parent_b": 143,
+        "target_v": 167,
+    }))
+    data = _tool_json(result)
+
+    assert data["success"] is False
+    assert data["abandoned"] is True, data
+    assert data["error"] == "CROSSOVER_LLM_EXHAUSTED"  # reused orchestrator-recognized token
+    assert data["abandon_reason"] == "crossover_effect_prepare_conflict"
+    assert recorded == ["crossover_effect_prepare_conflict:v149xv143"]
+
+
 def test_run_crossover_concurrent_synthesis_is_retryable_without_checkpoint_mutation(
     tmp_path, monkeypatch
 ):
@@ -941,6 +1036,100 @@ def test_run_crossover_infrastructure_resume_abandons_drifted_child_without_llm(
     assert data["success"] is False
     assert data["abandoned"] is True
     assert data["failure_class"] == "integrity"
+
+
+def test_run_crossover_infrastructure_resume_missing_candidate_abandons(
+    tmp_path, monkeypatch
+):
+    # Bug B backstop (v160): when the infra overlay promises a "preserved
+    # candidate" retry but the candidate bytes are gone (candidate_missing),
+    # the old fail-closed CROSSOVER_INFRASTRUCTURE_RESUME_TARGET_MISSING
+    # return deadlocked on every re-entry. It must abandon instead of looping.
+    import national_position_contract
+    import tool_bot_management
+    import tool_commit
+    from bot_artifact import hash_path
+    from pipeline_infrastructure import build_infrastructure_failure
+
+    parent_a_dir = tmp_path / "national_v149"
+    parent_b_dir = tmp_path / "national_v143"
+    target_dir = tmp_path / "national_v167"
+    for path in (parent_a_dir, parent_b_dir):
+        path.mkdir()
+        (path / "policy.py").write_text("# parent\n", encoding="utf-8")
+        (path / ".completed").touch()
+    # target_dir deliberately NOT created -> candidate_missing=True.
+
+    overlay = build_infrastructure_failure(
+        None,
+        component="crossover_synthesis_effect",
+        code="crossover_preplan_probe_inconclusive",
+        owner_tool="run_crossover",
+        resume_stage="crossover_running",
+        attempt_key="missing-candidate",
+        issues=["effect_prepare_conflict:WorkflowConflict"],
+        metadata={
+            "parent2_v": 143,
+            "candidate_fingerprint": "missing",
+            "source_fingerprint": hash_path(parent_a_dir),
+            "parent2_fingerprint": hash_path(parent_b_dir),
+        },
+    )
+    checkpoint = {
+        "next_v": 167,
+        "source_v": 149,
+        "parent2_v": 143,
+        "workflow_run_id": "test-crossover-missing-167-149",
+        "checkpoint_revision": 1,
+        "stage": "crossover_running",
+        "infra_failure": overlay,
+    }
+
+    def bot_dir(version):
+        return {149: parent_a_dir, 143: parent_b_dir, 167: target_dir}[int(version)]
+
+    async def no_exhausted(*_args, **_kwargs):
+        return None
+
+    async def must_not_synthesize(*_args, **_kwargs):
+        raise AssertionError("missing preserved candidate reached crossover synthesis")
+
+    recorded = []
+
+    async def abandon(*, reason, **checkpoint_identity):
+        assert reason == "crossover_infrastructure_resume_target_missing:v167"
+        recorded.append(reason)
+        return {"abandoned": True, "reason": reason, "abandoned_v": 167}
+
+    monkeypatch.setattr(tool_commit, "get_bot_dir", bot_dir)
+    monkeypatch.setattr(tool_commit, "read_pipeline_checkpoint", lambda: checkpoint)
+    monkeypatch.setattr(tool_commit, "git_has_tag", lambda _v: True)
+    monkeypatch.setattr(tool_commit, "git_dir_is_committed", lambda _v: False)
+    monkeypatch.setattr(
+        tool_commit,
+        "_execute_exhausted_infrastructure_failure",
+        no_exhausted,
+    )
+    monkeypatch.setattr(tool_commit, "_run_crossover", must_not_synthesize)
+    monkeypatch.setattr(
+        national_position_contract,
+        "detect_position_semantics_errors",
+        lambda _path: [],
+    )
+    monkeypatch.setattr(tool_bot_management, "_do_abandon_generation", abandon)
+
+    result = asyncio.run(tool_commit.run_crossover.handler({
+        "parent_a": 149,
+        "parent_b": 143,
+        "target_v": 167,
+    }))
+    data = _tool_json(result)
+
+    assert data["error"] == "CROSSOVER_LLM_EXHAUSTED"
+    assert data["success"] is False
+    assert data["abandoned"] is True
+    assert data["abandon_reason"] == "crossover_infrastructure_resume_target_missing"
+    assert recorded == ["crossover_infrastructure_resume_target_missing:v167"]
 
 
 def test_crossover_infrastructure_helper_persists_owned_retry_overlay(
