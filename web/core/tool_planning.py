@@ -11470,6 +11470,16 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     "frozen_rework_baseline_drift",
                     actor_lock_owned=actor_lock_owned,
                 )
+            else:
+                # See REWORK_TASK_AUTHORITY_INVALID: a non-frozen rework stage with a
+                # drifted repair baseline cannot be repaired and must be abandoned in
+                # tool, or the deterministic router loops on execute_workers by stage.
+                abandon_result = await _force_abandon_frozen_worker_generation(
+                    next_v,
+                    source_v,
+                    "worker_terminal_abandon_repair_baseline_drift",
+                    actor_lock_owned=actor_lock_owned,
+                )
             return _json_tool_result({
                 "error": "REPAIR_BASELINE_ARTIFACT_DRIFT",
                 "next_v": next_v,
@@ -11491,12 +11501,19 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
             else _checkpoint_rework_feedback(ckpt)
         )
         if not canonical_feedback:
+            abandon_result = await _force_abandon_frozen_worker_generation(
+                next_v,
+                source_v,
+                "worker_terminal_abandon_rework_feedback_missing",
+                actor_lock_owned=actor_lock_owned,
+            )
             return _json_tool_result({
                 "error": "REWORK_FEEDBACK_AUTHORITY_MISSING",
                 "next_v": next_v,
                 "source_v": source_v,
                 "checkpoint_stage": ckpt.get("stage"),
                 "next_tool": "abandon_generation",
+                **abandon_result,
                 "directive": (
                     "The checkpoint/gate receipt contains no canonical repair "
                     "feedback. Caller feedback cannot create repair authority."
@@ -11522,12 +11539,19 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     ).hexdigest(),
                 },
             )
+            abandon_result = await _force_abandon_frozen_worker_generation(
+                next_v,
+                source_v,
+                "worker_terminal_abandon_rework_feedback_mismatch",
+                actor_lock_owned=actor_lock_owned,
+            )
             return _json_tool_result({
                 "error": "REWORK_FEEDBACK_AUTHORITY_MISMATCH",
                 "next_v": next_v,
                 "source_v": source_v,
                 "checkpoint_stage": ckpt.get("stage"),
                 "next_tool": "abandon_generation",
+                **abandon_result,
                 "directive": (
                     "Pass empty reviewer_feedback to load the checkpoint receipt, "
                     "or echo that receipt exactly. Caller-authored feedback cannot "
@@ -11560,6 +11584,23 @@ async def _execute_workers_command(args, *, actor_lock_owned=False):
                     next_v,
                     source_v,
                     "frozen_rework_task_authority_invalid",
+                    actor_lock_owned=actor_lock_owned,
+                )
+            else:
+                # Non-frozen rework stage (quality_failed / precommit_failed /
+                # official_failed / repair_planned / rework_running) whose checkpoint
+                # or gate receipt cannot authorize any worker-writable repair task
+                # (e.g. a system-owned precompute/architecture regression that maps
+                # to no policy.py edit). Abandon here instead of returning a bare
+                # REWORK_TASK_AUTHORITY_INVALID: the deterministic router dispatches
+                # execute_workers purely by stage and would otherwise reschedule it
+                # forever. The worker_terminal_abandon_ prefix is allowed for every
+                # rework stage by forced_rules (pipeline_state.py), unlike the
+                # frozen_rework_ prefix which quality_failed rejects.
+                abandon_result = await _force_abandon_frozen_worker_generation(
+                    next_v,
+                    source_v,
+                    "worker_terminal_abandon_rework_task_authority_invalid",
                     actor_lock_owned=actor_lock_owned,
                 )
             return _json_tool_result({

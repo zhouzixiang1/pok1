@@ -2738,3 +2738,60 @@ def test_abandon_json_reader_rejects_same_inode_same_size_rewrite(
     with pytest.raises(RuntimeError, match="abandon_transaction_json_unsafe"):
         tbm._read_json_regular(path)
     assert injected == [True]
+
+
+def test_worker_terminal_abandon_rework_reasons_allowed_in_all_rework_stages():
+    """v165 quality_failed 死循环修复回归。
+
+    execute_workers 的 4 个 rework authority 失败点（REWORK_TASK_AUTHORITY_INVALID /
+    REPAIR_BASELINE_ARTIFACT_DRIFT / REWORK_FEEDBACK_AUTHORITY_MISSING /
+    REWORK_FEEDBACK_AUTHORITY_MISMATCH）现在在工具内用 worker_terminal_abandon_*
+    reason 调 _force_abandon_frozen_worker_generation 实际放弃，而非返回裸
+    next_tool:abandon_generation。这些 reason 必须在所有 rework_stages 被
+    forced_rules 接受，否则 deterministic routing（pipeline_state.py
+    quality_failed→execute_workers 等）会按 stage 无限重发 → 死循环
+    （v160 Bug A 教训：crossover_ reason 漏 selected 被 forced_rules 拒 + 死循环）。
+    """
+    import pipeline_state
+
+    rework_stages = [
+        "quality_failed",
+        "precommit_failed",
+        "official_failed",
+        "repair_planned",
+        "rework_running",
+    ]
+    reasons = [
+        "worker_terminal_abandon_rework_task_authority_invalid",
+        "worker_terminal_abandon_repair_baseline_drift",
+        "worker_terminal_abandon_rework_feedback_missing",
+        "worker_terminal_abandon_rework_feedback_mismatch",
+    ]
+    for stage in rework_stages:
+        checkpoint = _strict_checkpoint(166, 143, stage)
+        for reason in reasons:
+            block = pipeline_state.generic_abandon_block(checkpoint, reason=reason)
+            if block:
+                assert block.get("reason") != "forced_abandon_reason_stage_not_allowed", (
+                    f"{reason} forced_rules-rejected at stage={stage}: {block}"
+                )
+
+
+def test_rework_authority_failure_paths_abandon_in_tool_source():
+    """防御回归：4 个 rework authority 失败路径必须在工具内调
+    _force_abandon_frozen_worker_generation 并带 worker_terminal_abandon_ reason，
+    而非返回裸 next_tool:abandon_generation（v165 死循环根因）。
+    """
+    import inspect
+    import tool_planning
+
+    source = inspect.getsource(tool_planning)
+    for reason in [
+        "worker_terminal_abandon_rework_task_authority_invalid",
+        "worker_terminal_abandon_repair_baseline_drift",
+        "worker_terminal_abandon_rework_feedback_missing",
+        "worker_terminal_abandon_rework_feedback_mismatch",
+    ]:
+        assert reason in source, (
+            f"{reason} 缺失——rework authority 工具内 abandon 回归"
+        )
