@@ -817,7 +817,11 @@ def test_proposal_renderer_overrides_embedded_doc_reads_and_future_edges():
         ),
         "singleton_parent_no_strength",
     )
-    assert not agent_master._proposal_measurement_contract_valid(
+    # After the .lower() revert in _parsed_proposal_measurement, an uppercase
+    # variant of the canonical uncertainty literal is case-normalized and
+    # accepted (contract constants are lowercase; strength is recomputed
+    # downstream by precommit/elo_daemon, which do not read this field).
+    assert agent_master._proposal_measurement_contract_valid(
         round_trip_measurement.replace(
             agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE,
             agent_master._PROPOSAL_UNCERTAINTY_PROMPT_VALUE.upper(),

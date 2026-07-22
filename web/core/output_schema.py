@@ -575,8 +575,15 @@ def runtime_contract_missing_sections(
     return tuple(missing)
 
 
-def master_plan_executable_contract_text() -> str:
-    """Render the exact Master limits from the schema's single sources of truth."""
+def master_plan_executable_contract_text(selected_focus: dict | None = None) -> str:
+    """Render the exact Master limits from the schema's single sources of truth.
+
+    ``selected_focus`` is the system-selected architecture focus (or None when
+    the parent passes every selection check).  Only that focus's runtime_contract
+    section requirement is surfaced; when it is None, no focus_id literal is
+    rendered at all, so the model cannot copy one into task.architecture_focus_id
+    and trip architecture_focus_declared_without_selected_focus.
+    """
     allowed_events = ", ".join(
         f'"{event}"' for event in MATCH_MEMORY_ALLOWED_UPDATE_EVENTS
     )
@@ -664,7 +671,18 @@ def master_plan_executable_contract_text() -> str:
             f"- when runtime_contract.{section} is populated, worker_prompt must "
             f"literally contain: {rendered_terms}."
         )
+    selected_focus_id = ""
+    if isinstance(selected_focus, dict):
+        selected_focus_id = str(selected_focus.get("focus_id") or "")
     for focus_id, sections in RUNTIME_CONTRACT_REQUIRED_SECTIONS_BY_FOCUS.items():
+        if selected_focus_id:
+            if focus_id != selected_focus_id:
+                continue
+        else:
+            # selected_focus=none: surface no focus_id literal, otherwise the
+            # model copies one into task.architecture_focus_id and trips
+            # architecture_focus_declared_without_selected_focus.
+            continue
         lines.append(
             f"- architecture_focus_id=\"{focus_id}\" requires runtime_contract "
             f"section(s): {', '.join(sections)}."

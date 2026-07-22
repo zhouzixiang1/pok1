@@ -72,6 +72,22 @@ def _proposal_schema_repair_guidance(
         if text not in guidance:
             guidance.append(text)
 
+    if any("proposal_json_object_required" in item for item in hints):
+        add(
+            "Emit the entire proposal as one JSON object only; no prose, "
+            "fences, or trailing text outside that object."
+        )
+    if any("proposal_schema_mismatch" in item for item in hints):
+        add(
+            f"Set schema_version to exactly \"{_PROPOSAL_SCHEMA_VERSION}\" at the "
+            "top of each proposal object."
+        )
+    if any("proposal_execution_mode_mismatch" in item for item in hints):
+        add(
+            "Set execution_mode to the exact value required by this generation's "
+            "evidence_mode (strategy_implementation or "
+            "fixed_blueprint_capability_audit); copy it verbatim."
+        )
     if any("proposal_mechanism_foreign_targets" in item for item in hints):
         add(
             "Do not name, deny, preserve, or qualify any foreign closed target. "
@@ -100,6 +116,12 @@ def _proposal_schema_repair_guidance(
             + root_clause
             + " State that all other decision_context fields are byte-identical."
         )
+    if any("proposal_mechanism_root_scoped_unknown_leaf" in item for item in hints):
+        add(
+            "Under the selected root, keep only that root's known child fields; "
+            "remove any unrecognized leaf and express the same fact through the "
+            "root's existing fields only."
+        )
     if any(
         "proposal_mechanism_target_missing" in item
         or "proposal_mechanism_target_mismatch" in item
@@ -110,6 +132,16 @@ def _proposal_schema_repair_guidance(
             "Copy the selected row's exact dot target into structural_change, "
             "expected_diff, and falsifier.intervention; bracket notation is "
             "only supplementary and never replaces that literal."
+        )
+    if any("proposal_mechanism_target_invalid" in item for item in hints):
+        add(
+            "Set mechanism_target to the exact dot target from one mapping row "
+            "of the selected state_learning primary; no other path is valid."
+        )
+    if any("proposal_target_files_invalid" in item for item in hints):
+        add(
+            "Set target_files to exactly [\"policy.py\"]; no helper, asset, or "
+            "system file may appear there."
         )
     if any(
         "proposal_mechanism_qualified_target_identifier_continuation" in item
@@ -1402,13 +1434,16 @@ def _parsed_proposal_measurement(value: str) -> dict[str, str] | None:
         if "=" not in part:
             return None
         key, item = part.split("=", 1)
-        # The provider prompt publishes a canonical machine value, not a
-        # case-insensitive prose vocabulary. Preserve bytes after surrounding
-        # whitespace so keys and enum-like values must match that contract
-        # exactly; otherwise an output can look compliant while storing a
-        # different non-canonical measurement identity.
-        key = key.strip()
-        item = item.strip()
+        # The measurement string is an unproven post-publication strength
+        # hypothesis (see the Master prompt): the downstream native precommit
+        # and elo_daemon recompute strength from real 70-hand matches and do
+        # not read this field.  Normalize case after stripping whitespace so a
+        # model's natural capitalization of the canonical machine literals is
+        # not rejected; all contract constants are lowercase, so case-folding
+        # cannot weaken the evidence_mode split in
+        # _proposal_measurement_contract_valid.
+        key = key.strip().lower()
+        item = item.strip().lower()
         if not key or not item or key in parsed:
             return None
         parsed[key] = item
@@ -5403,7 +5438,13 @@ async def _run_master_analysis(source_v, next_v, stagnation_info, ui,
         "h2h_data_file": h2h_data_file,
         "selection_data_file": selection_data_file,
         "h2h_snapshot_contract": h2h_snapshot_contract,
-        "master_plan_executable_contract": master_plan_executable_contract_text(),
+        "master_plan_executable_contract": master_plan_executable_contract_text(
+            selected_focus=(
+                architecture_policy.get("selected_focus")
+                if isinstance(architecture_policy, dict)
+                else None
+            ),
+        ),
         "planning_code_input_contract": planning_code_input_contract,
         "source_selection_contract": source_selection_contract,
         "target_path_contract": target_path_contract,
