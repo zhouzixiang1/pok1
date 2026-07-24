@@ -153,6 +153,22 @@ python3 web/core/orchestrator.py --one-gen
 the instance. Monitor memory: the orchestrator + daemon + match workers should
 stay under ~2.5 GiB with these defaults.
 
+## LLM timing (GLM-5.2 deep reasoning)
+
+GLM-5.2 with `effort=max` + `budget_tokens=64000` routinely spends 250–320s
+thinking before emitting visible text on complex Master-proposal prompts. The
+default `MASTER_PROPOSAL` role timeouts in `web/core/llm_query.py`
+(`stall=360s`, `idle=360s`, `total=900s`) are too tight and killed Scouts
+mid-thought. `env.runtime` raises them via role-scoped env overrides:
+
+- `POK_LLM_MASTER_PROPOSAL_STALL_TIMEOUT=600` (productive-message silence)
+- `POK_LLM_MASTER_PROPOSAL_IDLE_TIMEOUT=600` (total stream silence)
+- `POK_LLM_MASTER_PROPOSAL_TOTAL_TIMEOUT=1200`
+
+The `stall` gate fires first and is the one that must be raised. Other roles
+(Review, Critic, Worker) keep their defaults; raise them similarly if a role
+repeatedly times out on GLM.
+
 ## What stays out of main
 
 - `bots/national_cloud_v<N>/` — committed to `tencent-cloud-runtime` only
