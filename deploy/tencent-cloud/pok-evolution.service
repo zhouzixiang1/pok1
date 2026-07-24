@@ -68,5 +68,14 @@ StandardError=journal
 # Resource sanity for a small VM: evolution forks many native-TCP match workers.
 LimitNOFILE=4096
 
+# The candidate quality-gate runtime import uses Bubblewrap (--unshare-net) to
+# sandbox the candidate policy/precompute import. --unshare-net creates a new
+# network namespace and configures loopback, which requires CAP_NET_ADMIN.
+# Without this, bwrap fails with "loopback: Failed RTM_NEWADDR: Operation not
+# permitted" and the quality gate's runtime-import smoke test rejects every
+# candidate.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
 [Install]
 WantedBy=multi-user.target
